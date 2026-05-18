@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.7+ distributed Node API and transport stabilization)
+//! Description: Sensor mesh — distributed actor service pattern
+
 // Sensor mesh — distributed actor service pattern
 //
 // A temperature monitoring system with three actor types:

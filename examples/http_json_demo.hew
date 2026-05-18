@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: HTTP + JSON pipeline demo.
+
 // HTTP + JSON pipeline demo.
 //
 // Demonstrates `std::net::http::http_client` and `std::encoding::json`

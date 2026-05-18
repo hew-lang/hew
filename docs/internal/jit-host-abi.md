@@ -10,7 +10,8 @@ We use an out-of-band allow-list instead of inline annotations because the same 
 
 - `scripts/verify-ffi-symbols.py --classify …`
 - the required CI lint gate (`make verify-ffi`, which runs `--classify stable --validate`)
-- the generated `hew-codegen` stable-symbol header consumed by `HewJitSymbolMap`
+- the stable runtime-symbol set consumed by `hew-mir::runtime_symbols` and
+  codegen-rs JIT/runtime lowering
 
 That keeps the ABI review surface centralized while still failing closed: the verifier rejects any `#[no_mangle] extern "C" fn` in `hew-runtime/src/` that is missing from the file or classified more than once.
 

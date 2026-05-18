@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Resilient Worker Pool
+
 // Resilient Worker Pool
 //
 // Demonstrates the fundamental supervision pattern: a pool of worker actors

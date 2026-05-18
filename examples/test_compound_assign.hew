@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Regression: compound assignment on field
+
 // Regression: compound assignment on field
 actor Counter {
     let value: int;

@@ -1,5 +1,9 @@
 # HBF to Cap'n Proto Migration — Reach Audit
 
+> **Status: historical — C++/MLIR was retired in v0.5 (commit 842842bd). Current implementation: hew-codegen-rs direct Rust/Inkwell LLVM emission.**
+> Codegen reachability findings in this audit describe the retired C++ backend;
+> runtime HBF inventory remains useful migration context.
+
 **Date**: 2026-05-17  
 **Branch**: `v05-integration` @ `35b60a9d`  
 **Scope**: Every file, function, and ABI symbol that touches the Hew Binary Format (HBF), classified by fate during a Cap'n Proto migration.
@@ -30,8 +34,8 @@ These two layers are implemented in a single file (`hew-runtime/src/wire.rs`) bu
 | `hew-runtime/src/cluster.rs` | 3,191 | No direct HBF imports found | **KEEP** — no change required |
 | `hew-runtime/src/remote_sup.rs` | 2,613 | No direct HBF imports found | **KEEP** — no change required |
 | `hew-runtime/src/sim_transport.rs` | 1,739 | No direct HBF imports found | **KEEP** — no change required |
-| `hew-codegen/src/mlir/MLIRGenWire.cpp` | 2,846 | Calls 22 distinct `hew_wire_*` symbols by name for MLIR codegen of `wire type` encode/decode lowering | **REPLACE** — all 22 symbols are in the field-encoding half; each must be replaced with Cap'n Proto equivalents |
-| `hew-codegen/tests/test_mlirgen.cpp` | (large) | References `hew_wire_buf_new`, `hew_wire_buf_init`, `hew_wire_encode_field_bytes`, `hew_wire_encode_field_string`, `hew_wire_decode_bytes`, `hew_wire_decode_string` in wire-encode test assertions | **REPLACE** — test assertions must be rewritten for Cap'n Proto symbol names |
+| `retired C++ backend: MLIRGenWire.cpp` | 2,846 | Calls 22 distinct `hew_wire_*` symbols by name for MLIR codegen of `wire type` encode/decode lowering | **REPLACE** — all 22 symbols are in the field-encoding half; each must be replaced with Cap'n Proto equivalents |
+| `retired C++ backend integration tests` | (large) | References `hew_wire_buf_new`, `hew_wire_buf_init`, `hew_wire_encode_field_bytes`, `hew_wire_encode_field_string`, `hew_wire_decode_bytes`, `hew_wire_decode_string` in wire-encode test assertions | **REPLACE** — test assertions must be rewritten for Cap'n Proto symbol names |
 | `std/encoding/wire/wire.hew` | 86 | Hew-language stdlib module that re-implements HBF header encode/decode/validate in pure Hew for user-facing use | **REPLACE** — header layout, magic, and validation logic all change with Cap'n Proto |
 | `hew-runtime/src/actor.rs` | — | No HBF imports found | **KEEP** |
 | `hew-types/` | — | No HBF imports found | **KEEP** |
@@ -115,7 +119,7 @@ These bridge between `HewWireBuf` and Hew's runtime bytes type (`HewVec`). Used 
 
 The brief's expected finding of "zero outside callers" is **incorrect**. There are two major external callers:
 
-### Caller 1: `hew-codegen/src/mlir/MLIRGenWire.cpp` (22 symbols)
+### Caller 1: `retired C++ backend: MLIRGenWire.cpp` (22 symbols)
 
 The C++ MLIR codegen layer calls 22 `hew_wire_*` symbols by name to lower `wire type` encode/decode operations to MLIR calls. This is the active ABI contract between the compiler and the runtime for user-defined wire types.
 
@@ -131,7 +135,7 @@ All 22 are in the field-encoding group (Group A + B + D). None of the HBF framin
 
 **Migration implication**: `MLIRGenWire.cpp` must be rewritten to emit Cap'n Proto builder/reader calls instead of `hew_wire_encode_field_*` / `hew_wire_decode_*` calls. This is a complete rewrite of 2,846 LOC of C++ MLIR codegen. This was not flagged in the networking master plan and is the most significant finding of this audit.
 
-### Caller 2: `hew-codegen/tests/test_mlirgen.cpp`
+### Caller 2: `retired C++ backend integration tests`
 
 Test assertions verify that the MLIR output contains calls to `hew_wire_buf_new`, `hew_wire_buf_init`, `hew_wire_encode_field_bytes`, `hew_wire_encode_field_string`, `hew_wire_decode_bytes`, `hew_wire_decode_string`. These tests must be updated to match the new Cap'n Proto symbol names.
 
@@ -150,7 +154,7 @@ These are all within `hew-runtime` and are expected callers.
 | Fate | Files | Approx LoC |
 |---|---|---|
 | **DELETE** | `wire.rs` (Group C: ~500 LoC of framing functions + HBF constants/structs), `std/encoding/wire/wire.hew` (86 LoC) | ~586 LoC removed |
-| **REPLACE** | `wire.rs` (Group A+B+D: ~1,800 LoC), `connection.rs` (~26 call sites), `transport.rs` (~9 call sites), `hew_node.rs` (~43 call sites), `MLIRGenWire.cpp` (2,846 LoC), `test_mlirgen.cpp` (partial) | ~4,800 LoC changed |
+| **REPLACE** | `wire.rs` (Group A+B+D: ~1,800 LoC), `connection.rs` (~26 call sites), `transport.rs` (~9 call sites), `hew_node.rs` (~43 call sites), `MLIRGenWire.cpp` (2,846 LoC), `retired backend integration tests` (partial) | ~4,800 LoC changed |
 | **KEEP** | `quic_transport.rs` (1,488), `cluster.rs` (3,191), `remote_sup.rs` (2,613), `sim_transport.rs` (1,739), `hew-types/`, `hew-mir/`, `hew-codegen-rs/`, `hew-cabi/`, `actor.rs` | ~9,000+ LoC unchanged |
 
 **Total HBF-coupled LoC**: approximately 5,386 LoC across 9 files.
@@ -200,7 +204,7 @@ The field-encoding symbols (`hew_wire_encode_field_varint`, `hew_wire_decode_byt
 | `std::encoding::wire` stdlib API is a breaking change | Medium | Any user code calling `wire.encode_header` / `wire.validate_header` breaks |
 | `HewWireEnvelope` layout is `repr(C)` | Medium | Three call sites in `hew_node.rs` directly construct the struct; Cap'n Proto envelope is a different shape |
 | Compression flag (`HBF_FLAG_COMPRESSED`) | Low | No evidence compression is actively used in `connection.rs`; the flag exists but payload inspection shows it's not set in normal paths |
-| Test coverage for wire encoding is extensive | Positive | `wire.rs` has ~900 LoC of inline tests; `test_mlirgen.cpp` has wire-specific test cases; coverage exists for the behaviours that must be preserved |
+| Test coverage for wire encoding is extensive | Positive | `wire.rs` has ~900 LoC of inline tests; `retired backend integration tests` has wire-specific test cases; coverage exists for the behaviours that must be preserved |
 
 ---
 

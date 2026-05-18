@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 concurrency surfaces plus codegen-rs parity)
+//! Description: Async Void example.
+
 fn print_message(msg: i32) {
     println(msg);
     println(42);

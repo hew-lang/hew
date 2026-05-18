@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: MQTT 3.1.1 broker — pure Hew actor implementation
+
 // MQTT 3.1.1 broker — pure Hew actor implementation
 // Listens on port 1883. Uses bytes type for all TCP I/O.
 //

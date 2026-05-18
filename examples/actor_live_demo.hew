@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Actor Live Demo example.
+
 actor Counter {
     let count: int;
 

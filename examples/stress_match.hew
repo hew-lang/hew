@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 stdlib/data-structure port plus codegen-rs parity)
+//! Description: stress_match.hew - Complex pattern matching stress test
+
 // stress_match.hew - Complex pattern matching stress test
 // Exercises advanced pattern matching with enum variants, data payloads, and nested logic
 enum ComplexData {

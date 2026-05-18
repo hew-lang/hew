@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: stress_scheduler.hew - Test M:N scheduling with many actors
+
 // stress_scheduler.hew - Test M:N scheduling with many actors
 // Spawns 50 actors, each processing 20 messages via a computation workload.
 // Uses a Collector actor to count completions. Verifies all counted.

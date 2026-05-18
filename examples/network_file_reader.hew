@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: File reader with actor message passing - Hew language example
+
 // File reader with actor message passing - Hew language example  
 // Demonstrates reading a file and printing via actor message passing
 actor Printer {

@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.5 codegen-rs parity for non-spine statements and stdlib calls)
+//! Description: Benchmark harness demo
+
 // Benchmark harness demo
 // Shows how to use std::bench to measure function performance.
 import std::bench;

@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Method Chaining Test example.
+
 type Point {
     x: f64;
     y: f64;

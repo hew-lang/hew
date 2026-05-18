@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Test: Closures and Lambdas
+
 // Test: Closures and Lambdas
 // Exercises: closure definition, capture, multi-capture, factory pattern, function parameters
 fn test_basic_lambda() -> i32 {

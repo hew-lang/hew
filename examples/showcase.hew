@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Language Showcase - All Core Features
+
 // Hew Language Showcase - All Core Features
 // Demonstrates: types, actors, pattern matching, enums, options, interpolation
 type Vec2 {

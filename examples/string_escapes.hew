@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 stdlib/data-structure port plus codegen-rs parity)
+//! Description: string escape sequences
+
 // string escape sequences
 // Demonstrates tab, newline, quote, and backslash escapes.
 //

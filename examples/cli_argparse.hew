@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 stdlib/data-structure port plus codegen-rs parity)
+//! Description: cli_argparse.hew — Command-line argument parser
+
 // cli_argparse.hew — Command-line argument parser
 // Demonstrates string processing, extern functions, and Vec<string> usage.
 //

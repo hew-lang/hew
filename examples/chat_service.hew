@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.7+ distributed Node API and transport stabilization)
+//! Description: Distributed chat service — idiomatic Hew networked actors
+
 // Distributed chat service — idiomatic Hew networked actors
 //
 // Architecture:

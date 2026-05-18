@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: HTTP static file server in Hew
+
 // HTTP static file server in Hew
 //
 // Accepts connections in main, dispatches each request to a Handler

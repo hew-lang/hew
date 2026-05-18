@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: none; editor syntax fixture should move out of examples or gain an issue)
+//! Description: Syntax Highlighting Test File
+
 // Hew Syntax Highlighting Test File
 // Tests all syntax constructs for the VS Code extension
 //

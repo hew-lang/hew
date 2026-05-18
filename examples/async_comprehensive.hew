@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 concurrency surfaces plus codegen-rs parity)
+//! Description: Comprehensive async/await demo for Hew language
+
 // Comprehensive async/await demo for Hew language
 fn simple_calculation(n: i32) -> i32 {
     let result = n * 2 + 1;

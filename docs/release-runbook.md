@@ -110,8 +110,8 @@ make pre-release
 
 If your only local arm64 hardware is Debian bookworm (for example pirea51),
 do not treat LLVM 22 apt failures there as a repo regression:
-`apt.llvm.org/bookworm` arm64 does not publish `llvm-22-dev`,
-`libmlir-22-dev`, `mlir-22-tools`, `clang-22`, or `lld-22`. The
+`apt.llvm.org/bookworm` arm64 may not publish the LLVM 22 development packages
+that `llvm-sys` needs (`llvm-22-dev`, `clang-22`, or `lld-22`). The
 authoritative local/CI-compatible path is Ubuntu 24.04 arm64
 (`ubuntu-24.04-arm` in CI, or an Ubuntu 24.04 arm VM/container locally).
 
@@ -143,8 +143,8 @@ What `make pre-release` does:
      - Verify binaries exist and run (`--version`)
      - Smoke test: compile and execute a .hew program
      - Linux: verify no dynamic LLVM deps (`ldd` check)
-     - Linux aarch64 (optional): rsync + SSH build on Ubuntu 24.04 arm64, with
-       LLVM 22 provisioned from `apt.llvm.org/noble`
+      - Linux aarch64 (optional): rsync + SSH build on Ubuntu 24.04 arm64, with
+        LLVM 22 provisioned from `apt.llvm.org/noble`
      - Remote platforms (macOS/FreeBSD/Windows): rsync + SSH build
      - Windows: require `LLVM_PREFIX`, then compile+run a smoke program so
        validation cannot silently pass a frontend-only `hew.exe`

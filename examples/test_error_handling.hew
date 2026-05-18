@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 stdlib/data-structure port plus codegen-rs parity)
+//! Description: Test: Error Handling
+
 // Test: Error Handling
 // Exercises: Result<T,E>, Ok/Err, Option<T>, Some/None, ? operator, match
 fn divide(a: i64, b: i64) -> Result<i64, string> {

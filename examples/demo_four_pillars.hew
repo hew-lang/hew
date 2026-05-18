@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: demo_four_pillars.hew — Overview of Hew's four pillars
+
 // demo_four_pillars.hew — Overview of Hew's four pillars
 // Demonstrates functions, actors, wire types, and supervision.
 actor Counter {

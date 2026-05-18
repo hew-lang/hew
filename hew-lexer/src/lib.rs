@@ -1110,8 +1110,15 @@ mod tests {
                 "unexpected error token in fibonacci.hew"
             );
         }
-        // Spot-check: starts with a line comment (skipped), then `fn`
-        assert_eq!(toks[0].0, Token::Fn);
+        // Spot-check: skip any leading inner-doc-comment header (a v0.5
+        // convention for example files documenting their status), then the
+        // first significant token should be `fn`.
+        let first_significant = toks
+            .iter()
+            .map(|(t, _)| t)
+            .find(|t| !matches!(t, Token::InnerDocComment(_)))
+            .expect("fibonacci.hew should contain a non-comment token");
+        assert_eq!(*first_significant, Token::Fn);
     }
 
     #[test]

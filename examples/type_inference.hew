@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 closures with captured environment plus codegen-rs parity)
+//! Description: Type inference example: bidirectional type inference for lambdas
+
 // Type inference example: bidirectional type inference for lambdas
 fn apply(f: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 {
     f(a, b)

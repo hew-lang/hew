@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Actor Net Reader example.
+
 import std::net;
 
 actor ServerReader {

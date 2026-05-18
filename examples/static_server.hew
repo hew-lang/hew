@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: Static Content Web Server in Hew
+
 // Static Content Web Server in Hew
 //
 // An actor-based HTTP server: the accept loop dispatches each request

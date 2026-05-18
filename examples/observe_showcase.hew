@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.7+ distributed Node API and transport stabilization)
+//! Description: observe_showcase.hew — Exemplar program for hew-observe
+
 // observe_showcase.hew — Exemplar program for hew-observe
 //
 // Run with profiling enabled:

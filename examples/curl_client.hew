@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: Simple HTTP downloader (curl-like client) in Hew
+
 // Simple HTTP downloader (curl-like client) in Hew
 //
 // Demonstrates: TCP networking, string manipulation, file I/O,

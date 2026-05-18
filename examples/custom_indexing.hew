@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: none yet; [] custom indexing needs deletion or a roadmap issue)
+//! Description: Custom type indexing: obj[key] desugars to obj.get(key)
+
 // Custom type indexing: obj[key] desugars to obj.get(key)
 type Grid {
     data: Vec<i32>;

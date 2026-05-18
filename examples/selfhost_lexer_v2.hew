@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: selfhost_lexer_v2.hew - Enhanced Hew lexer using string methods
+
 // selfhost_lexer_v2.hew - Enhanced Hew lexer using string methods
 // Uses: s.len(), s.char_at(), == operator, while, break, continue, var
 

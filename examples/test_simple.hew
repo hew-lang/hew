@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.5 codegen-rs parity for non-spine statements and stdlib calls)
+//! Description: Test Simple example.
+
 fn main() {
     println("Hello");
 }

@@ -449,7 +449,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | `(T1, T2, ...)`                    | All elements are `Send`                    |
 | `[T; N]`                           | `T` is `Send`                              |
 
-> **Note on array annotations:** Only fixed-size array annotations `[T; N]` are supported. Slice annotations `[T]` (unsized) are rejected by the type checker — MLIR lowering has no slice type lowering. Use `Vec<T>` for dynamically-sized sequences.
+> **Note on array annotations:** Only fixed-size array annotations `[T; N]` are supported. Slice annotations `[T]` (unsized) are rejected by the type checker — v0.5 codegen has no unsized slice lowering. Use `Vec<T>` for dynamically-sized sequences.
 
 **Frozen derivation:**
 
@@ -3660,7 +3660,7 @@ Hew adopts Protobuf-style invariants:
 
 Hew tooling provides:
 
-- `hew wire check --against <schema>` to enforce these rules at build/CI time.
+- `hew wire check --against <schema>` to enforce these rules during builds or CI.
 
 ### 7.3 Encoding Formats
 
@@ -4597,8 +4597,8 @@ If you want this to be directly executable as an engineering project, the next m
   `regex`, `process`, `compress` — move to HEW-FUTURE.md §3.
 - **MIR ladder.** §8 (compilation model) is rewritten around the new IR
   ladder: AST → Resolved HIR → THIR → Raw MIR → Checked MIR → Elaborated
-  MIR → LLVM IR via inkwell. The Rust-frontend / C++-MLIR / MessagePack-AST
-  pipeline of v0.4.0 is no longer the design.
+  MIR → LLVM IR via inkwell. The v0.4 Rust-frontend / C++ backend /
+  MessagePack-AST pipeline is no longer the design.
 - **Deferred to next edition.** Generators (`gen fn` / `async gen fn` /
   `receive gen fn` / `Lazy<T>` / `#[prefetch(N)]`), closures with captured
   environment, user-facing `Arc<T>`, `dyn Trait`, full `Iterator` trait

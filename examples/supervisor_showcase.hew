@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Supervisor Showcase: Demonstrates supervised actor trees in Hew
+
 // Supervisor Showcase: Demonstrates supervised actor trees in Hew
 //
 // Features shown:

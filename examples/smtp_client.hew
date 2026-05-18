@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: smtp_client.hew — std::net::smtp usage example
+
 // smtp_client.hew — std::net::smtp usage example
 //
 // This example requires a real SMTP server to run.  It is provided as a

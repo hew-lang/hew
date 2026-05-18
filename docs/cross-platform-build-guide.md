@@ -1,10 +1,10 @@
 # Cross-Platform Build Guide
 
 The Hew compiler links against LLVM 22 via the `hew-codegen-rs` crate
-(inkwell → llvm-sys-221). The previous C++/MLIR codegen subtree
-(`hew-codegen/`) was retired; the Rust IR ladder is the sole compiler
-backend. The platform-specific complexity captured below is now about
-provisioning the LLVM development libraries that `llvm-sys` builds against.
+(inkwell → llvm-sys-221). The previous C++/MLIR codegen subtree was retired;
+the Rust IR ladder is the sole compiler backend. The platform-specific
+complexity captured below is now about provisioning the LLVM development
+libraries that `llvm-sys` builds against.
 
 ## Overview
 
@@ -37,15 +37,13 @@ echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] \
   http://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" \
   | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
 sudo apt-get update
-sudo apt-get install -y cmake ninja-build \
-  llvm-22-dev libmlir-22-dev mlir-22-tools clang-22
+sudo apt-get install -y llvm-22-dev clang-22
 ```
 
 ### Build
 
-Use `make` from the repository root. It auto-detects LLVM/MLIR paths, invokes
-CMake to build the C++ object library, and then triggers `cargo build` which
-embeds that library into `hew`:
+Use `make` from the repository root. It builds the Rust workspace and links
+`hew-codegen-rs` into the `hew` binary through Cargo:
 
 ```bash
 make           # debug build
@@ -58,14 +56,7 @@ make release   # release build
 
 ### Prerequisites
 
-Same as x86_64, plus ensure these libraries are installed (some minimal
-installations miss them):
-
-```bash
-sudo apt-get install -y libzstd-dev zlib1g-dev
-```
-
-For Debian bookworm specifically, use `bookworm` instead of `noble` in the
+Same as x86_64. For Debian bookworm specifically, use `bookworm` instead of `noble` in the
 apt.llvm.org repository URL:
 
 ```
@@ -105,13 +96,12 @@ Similarly, when casting `libc::malloc` results or building C strings, use
 **Tested on:** macOS x86_64 (Homebrew LLVM 22.1.8), GitHub Actions `macos-13`
 (x86_64) and `macos-14` (aarch64)
 
-macOS is the most complex platform due to three interacting toolchain
-components: the compiler, the linker, and the C++ standard library.
+macOS source builds need an LLVM 22 installation discoverable by `llvm-sys`.
 
 ### Prerequisites
 
 ```bash
-brew install llvm ninja cmake
+brew install llvm
 ```
 
 Homebrew LLVM is keg-only (not symlinked into `/usr/local/bin`). You need the
@@ -143,7 +133,7 @@ through a full release cycle.
 
 ### Prerequisites
 
-The release workflow provisions LLVM/MLIR 22 into `C:\llvm-22` and builds with
+The release workflow provisions LLVM 22 into `C:\llvm-22` and builds with
 MSVC's `cl`. The local Windows validator in `scripts/pre-release-validate.sh`
 expects the same layout by default.
 
@@ -156,7 +146,7 @@ git clone --depth 1 --branch llvmorg-22.1.0 `
   --filter=blob:none --sparse `
   https://github.com/llvm/llvm-project.git C:\llvm-src
 Push-Location C:\llvm-src
-git sparse-checkout set clang llvm mlir cmake third-party
+git sparse-checkout set clang llvm cmake third-party
 Pop-Location
 
 cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
@@ -164,7 +154,7 @@ cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
   -DCMAKE_INSTALL_PREFIX="C:\llvm-22" `
   -DCMAKE_C_COMPILER=cl `
   -DCMAKE_CXX_COMPILER=cl `
-  -DLLVM_ENABLE_PROJECTS="clang;mlir" `
+  -DLLVM_ENABLE_PROJECTS="clang" `
   -DLLVM_TARGETS_TO_BUILD="X86;AArch64" `
   -DLLVM_BUILD_TOOLS=ON `
   -DLLVM_BUILD_UTILS=ON `
@@ -180,14 +170,11 @@ cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
   -DLLVM_ENABLE_ASSERTIONS=OFF `
   -DLLVM_BUILD_LLVM_DYLIB=OFF `
   -DLLVM_LINK_LLVM_DYLIB=OFF `
-  -DMLIR_BUILD_MLIR_C_DYLIB=OFF `
-  -DMLIR_ENABLE_BINDINGS_PYTHON=OFF `
   -DBUILD_SHARED_LIBS=OFF
 
 cmake --build C:\llvm-build --config Release
 cmake --install C:\llvm-build --config Release
 
-Test-Path 'C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake'
 Test-Path 'C:\llvm-22\bin\clang.exe'
 ```
 
@@ -225,8 +212,7 @@ Remove-Item -Force .\_smoke.hew, .\_smoke.exe
 ```
 
 Expect `smoke-ok` on stdout. This verifies that the built `hew.exe` can still
-compile and run a program with embedded codegen enabled, not just print
-`--version`.
+compile and run a program through `hew-codegen-rs`, not just print `--version`.
 
 ## Duplicate Symbol Errors When Linking stdlib Packages
 
@@ -247,14 +233,13 @@ non-empty.
 
 ## Quick Reference
 
-The table below covers the flags needed when invoking CMake directly (e.g. to
-run C++ unit tests). For a full build of `hew`, prefer `make` / `make release`
-which handles all of these automatically.
+For a full build of `hew`, prefer `make` / `make release`. The table below
+summarizes the LLVM install shape expected by local release validation.
 
-| Platform      | Compiler                     | Sysroot                    | Linker flags                              | Extra apt packages       |
-| ------------- | ---------------------------- | -------------------------- | ----------------------------------------- | ------------------------ |
-| Linux x86_64  | `clang-22`                   | n/a                        | n/a                                       | (standard)               |
-| Linux aarch64 | `clang-22`                   | n/a                        | n/a                                       | `libzstd-dev zlib1g-dev` |
-| macOS x86_64  | `${LLVM_PREFIX}/bin/clang++` | `$(xcrun --show-sdk-path)` | `-L${LLVM_PREFIX}/lib/c++ -Wl,-rpath,...` | n/a                      |
-| macOS aarch64 | `${LLVM_PREFIX}/bin/clang++` | `$(xcrun --show-sdk-path)` | `-L${LLVM_PREFIX}/lib/c++ -Wl,-rpath,...` | n/a                      |
-| Windows       | `cl` (or override to `clang-cl`) | n/a                    | n/a                                       | `cmake`, `ninja`; LLVM/MLIR 22 under `C:\llvm-22` |
+| Platform      | LLVM discovery                        | Extra packages |
+| ------------- | ------------------------------------- | -------------- |
+| Linux x86_64  | `llvm-config-22` on `PATH` or prefix  | n/a            |
+| Linux aarch64 | `llvm-config-22` on `PATH` or prefix  | n/a            |
+| macOS x86_64  | `LLVM_PREFIX="$(brew --prefix llvm)"` | n/a            |
+| macOS aarch64 | `LLVM_PREFIX="$(brew --prefix llvm)"` | n/a            |
+| Windows       | `LLVM_PREFIX=C:\llvm-22`              | `cmake`, `ninja` only if building LLVM locally |

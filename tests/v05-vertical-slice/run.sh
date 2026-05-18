@@ -17,6 +17,19 @@ grep -q 'return_ty: String' "${accept_output}"
 "${HEW}" compile --dump-mir raw "${ROOT}/tests/v05-vertical-slice/accept/01-arith.hew" >"${accept_output}"
 grep -q 'return_ty: I64' "${accept_output}"
 
+"${HEW}" compile "${ROOT}/tests/v05-vertical-slice/accept/arith_call.hew" >"${accept_output}" 2>&1
+arith_bin="${ROOT}/.tmp/compile-out/arith_call"
+if "${arith_bin}" >>"${accept_output}" 2>&1; then
+  arith_status=0
+else
+  arith_status=$?
+fi
+if [[ "${arith_status}" -ne 5 ]]; then
+  echo "expected arith_call fixture to exit 5, got ${arith_status}" >&2
+  cat "${accept_output}" >&2
+  exit 1
+fi
+
 if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unresolved_symbol.hew" >"${reject_output}" 2>&1; then
   echo "expected unresolved symbol fixture to fail" >&2
   exit 1

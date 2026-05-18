@@ -299,7 +299,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     // names through to LLVM and could not be linked).
     //
     // The Call lowering arm dispatches on this set: a callee name in
-    // this set → `Instr::CallDirect`; otherwise the runtime-ABI/indirect
+    // this set → `Terminator::Call`; otherwise the runtime-ABI/indirect
     // fail-closed paths apply.
     let mut module_fn_names: HashSet<String> = HashSet::new();
     for item in &module.items {
@@ -1108,7 +1108,7 @@ struct Builder {
     record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>>,
     /// Names of every user-defined function declared in the module. Used by
     /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
-    /// (→ `Instr::CallDirect`) from runtime-ABI callees (→
+    /// (→ `Terminator::Call`) from runtime-ABI callees (→
     /// `Instr::CallRuntimeAbi`) and from indirect/closure callees
     /// (→ `CutoverUnsupported`). Name-string matching is the reliable
     /// discriminator here because the HIR bridge does not yet emit
@@ -1574,7 +1574,7 @@ impl Builder {
                             return self.lower_direct_call(&mangled, args, &ret_ty, expr.site);
                         }
                     }
-                    // User-defined function in the same module: emit CallDirect.
+                    // User-defined function in the same module: emit a call terminator.
                     // The callee symbol is the bare function name as declared;
                     // codegen resolves it against the module's fn_symbols table.
                     if self.module_fn_names.contains(name) {
@@ -3653,17 +3653,17 @@ impl Builder {
         Some(unit_place)
     }
 
-    /// Emit `Instr::CallDirect` for a static call to a user-defined function
+    /// Emit `Terminator::Call` for a static call to a user-defined function
     /// in the same module. Arguments are lowered left-to-right; if any
     /// argument fails to produce a Place (an unsupported construct in its
     /// own right), the whole call fails closed and returns `None` —
     /// diagnostics from the argument lowering already capture the root cause.
     ///
     /// The `dest` Place is allocated here and written by the emitted
-    /// `Instr::CallDirect`. For void-return functions (`ret_ty` is
-    /// `ResolvedTy::Unit`) the dest is `None`; the instruction emits
-    /// only the call with no result binding. For all other return types
-    /// a fresh local is allocated and returned so the caller can bind it.
+    /// call terminator. For unit-returning functions (`ret_ty` is
+    /// `ResolvedTy::Unit`) the dest is `None`; the terminator emits only
+    /// the call and branch. For all other return types a fresh local is
+    /// allocated and returned so the caller can bind it.
     fn lower_direct_call(
         &mut self,
         callee_symbol: &str,
@@ -3683,18 +3683,21 @@ impl Builder {
         }
 
         // Allocate a destination local for the return value, unless the
-        // callee is declared void (Unit return type).
+        // callee is declared Unit-returning.
         let dest = if matches!(ret_ty, ResolvedTy::Unit) {
             None
         } else {
             Some(self.alloc_local(ret_ty.clone()))
         };
 
-        self.instructions.push(Instr::CallDirect {
-            callee_symbol: callee_symbol.to_string(),
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: callee_symbol.to_string(),
             args: arg_places,
             dest,
+            next,
         });
+        self.start_block(next);
 
         dest
     }
@@ -5220,23 +5223,6 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         // is identical.
         Instr::CharLit { dest, .. } | Instr::UnitLit { dest } | Instr::DurationLit { dest, .. } => {
             vec![*dest]
-        }
-        Instr::CallDirect {
-            callee_symbol: _,
-            args,
-            dest,
-        } => {
-            // All argument Places are live at the call site (read),
-            // and the dest Place (if present) is written. Surface all
-            // so the cross-block split-state seed pass and dataflow
-            // passes can observe value movement through user function
-            // calls. Field names are all destructured explicitly (no `..`)
-            // so a future field addition produces a compile error here.
-            let mut places: Vec<Place> = args.clone();
-            if let Some(d) = dest {
-                places.push(*d);
-            }
-            places
         }
         Instr::MakeClosure { env, dest, .. } => vec![*env, *dest],
         Instr::ClosureEnvFieldLoad { env, dest, .. } => vec![*env, *dest],

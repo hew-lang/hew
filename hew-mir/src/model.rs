@@ -407,13 +407,12 @@ pub enum Terminator {
         then_target: u32,
         else_target: u32,
     },
-    /// Call into a sibling function by name; store its return value into
-    /// `dest`, then branch to `next`. Cluster 1 doesn't construct this; it
-    /// exists so the emitter match is exhaustive.
+    /// Call into a sibling function by name, optionally store its return value,
+    /// then branch to `next`.
     Call {
         callee: String,
         args: Vec<Place>,
-        dest: Place,
+        dest: Option<Place>,
         next: u32,
     },
     /// Hard abort: emit `llvm.trap` followed by `unreachable`. The
@@ -909,35 +908,6 @@ pub enum Instr {
     /// impossible because `RuntimeCall`'s fields are private
     /// (LESSONS P0 `boundary-fail-closed`).
     CallRuntimeAbi(RuntimeCall),
-    /// Direct call to a user-defined function in the same module. The callee
-    /// is identified by its bare function name (the same string that appears
-    /// as `RawMirFunction::name` for the target function). Arguments are
-    /// passed in declaration order and must match the callee's `params` list
-    /// in count; type agreement is enforced by the HIR checker upstream.
-    ///
-    /// `dest = Some(place)` writes the call's return value into `place`;
-    /// `dest = None` is emitted when the caller discards the return value
-    /// (e.g. a void-result call in a statement context). Codegen looks up the
-    /// callee in the `fn_symbols` map populated by `declare_function`, which
-    /// runs over ALL module functions before any body is lowered, so forward
-    /// references are handled correctly.
-    ///
-    /// Indirect calls (closures, higher-order function values) are out of
-    /// scope for this instruction; the producer emits `CutoverUnsupported`
-    /// for those. Only static callee names that appear in the module's
-    /// function-item registry are lowered here.
-    ///
-    /// LESSONS: `boundary-fail-closed` — the callee name is validated against
-    /// `module_fn_names` at MIR construction in `lower_value`; an unrecognised
-    /// name never silently produces a broken `CallDirect`.
-    CallDirect {
-        /// Bare function name matching the callee's `RawMirFunction::name`.
-        callee_symbol: String,
-        /// Argument Places in declaration order.
-        args: Vec<Place>,
-        /// Destination for the return value, or `None` if discarded.
-        dest: Option<Place>,
-    },
     /// Construct a first-class callable value from a closure invoke shim and
     /// the environment record materialised at the literal site.
     MakeClosure {

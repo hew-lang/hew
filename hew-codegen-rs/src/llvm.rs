@@ -11,8 +11,7 @@
 //! - Two-pass lowering per module: every non-coroutine function is declared
 //!   into the LLVM module before any body is lowered, populating
 //!   `FnSymbolMap` so `Terminator::Call` can resolve forward references
-//!   without ordering constraints in the source. Cluster 1 never constructs
-//!   `Call`, but the discipline survives intact for Cluster 2/3.
+//!   without ordering constraints in the source.
 //! - `place_pointer` resolves every `Place` (`Local(N)` / `ReturnSlot`) to
 //!   a stack slot allocated in the function's entry block; loads and stores
 //!   go through the slot. Fail-closed on unallocated locals — the emitter
@@ -399,10 +398,8 @@ struct FnCtx<'a, 'ctx> {
     /// `StructType<'ctx>` values share the codegen context's lifetime.
     record_layouts: &'a RecordLayoutMap<'ctx>,
     /// Module-wide function symbol table. Populated before any body is
-    /// lowered by the `declare_function` pass in `build_module`. Carried
-    /// here so `Instr::CallDirect` arms in `lower_instruction` can resolve
-    /// the callee without being promoted to a terminator. The borrow is
-    /// shared (read-only) — no new declarations are added during body
+    /// lowered by the `declare_function` pass in `build_module`. The borrow
+    /// is shared (read-only) — no new declarations are added during body
     /// lowering.
     fn_symbols: &'a FnSymbolMap<'ctx>,
 }
@@ -411,7 +408,14 @@ struct FnCtx<'a, 'ctx> {
 /// function name (a normal module-level identity); the value carries the
 /// LLVM function value plus its return type so `Terminator::Call` can
 /// resolve forward without re-deriving anything from the MIR shape.
-type FnSymbolMap<'ctx> = HashMap<String, (FunctionValue<'ctx>, BasicTypeEnum<'ctx>)>;
+type FnSymbolMap<'ctx> = HashMap<String, FnSymbol<'ctx>>;
+
+#[derive(Clone, Copy)]
+struct FnSymbol<'ctx> {
+    value: FunctionValue<'ctx>,
+    return_ty: BasicTypeEnum<'ctx>,
+    returns_unit: bool,
+}
 
 /// Lazily-interned C-ABI extern function declarations for runtime symbols
 /// referenced by `Instr::CallRuntimeAbi` and `Instr::Drop`. Keyed by the
@@ -919,20 +923,25 @@ fn get_or_create_task_wrapper<'ctx>(
         return Ok(existing);
     }
 
-    let (callee, callee_ret_ty) = *fn_ctx.fn_symbols.get(callee_symbol).ok_or_else(|| {
+    let callee_symbol_entry = *fn_ctx.fn_symbols.get(callee_symbol).ok_or_else(|| {
         CodegenError::FailClosed(format!(
             "SpawnTaskDirect callee `{callee_symbol}` was not declared"
         ))
     })?;
-    if !matches!(callee_ret_ty, BasicTypeEnum::IntType(_)) {
+    if !callee_symbol_entry.returns_unit
+        || !matches!(callee_symbol_entry.return_ty, BasicTypeEnum::IntType(_))
+    {
         return Err(CodegenError::FailClosed(format!(
             "SpawnTaskDirect callee `{callee_symbol}` must be unit-lowered to the i8 \
-             stand-in return type; got {callee_ret_ty:?}"
+             stand-in return type; got {:?}",
+            callee_symbol_entry.return_ty
         )));
     }
 
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    if callee.get_nth_param(0).is_none() || callee.get_nth_param(1).is_some() {
+    if callee_symbol_entry.value.get_nth_param(0).is_none()
+        || callee_symbol_entry.value.get_nth_param(1).is_some()
+    {
         return Err(CodegenError::FailClosed(format!(
             "SpawnTaskDirect callee `{callee_symbol}` must take a leading \
              HewExecutionContext* and no user parameters"
@@ -956,7 +965,11 @@ fn get_or_create_task_wrapper<'ctx>(
         CodegenError::FailClosed("task wrapper missing HewTask* parameter".into())
     })?;
     builder
-        .build_call(callee, &[ctx_param.into()], "task_body_call")
+        .build_call(
+            callee_symbol_entry.value,
+            &[ctx_param.into()],
+            "task_body_call",
+        )
         .map_err(|e| CodegenError::Llvm(format!("task wrapper body call: {e:?}")))?;
 
     let complete = intern_runtime_decl(
@@ -1019,19 +1032,24 @@ fn get_or_create_task_closure_wrapper<'ctx>(
         return Ok(existing);
     }
 
-    let (closure_fn, closure_ret_ty) = *fn_ctx.fn_symbols.get(fn_symbol).ok_or_else(|| {
+    let closure_symbol = *fn_ctx.fn_symbols.get(fn_symbol).ok_or_else(|| {
         CodegenError::FailClosed(format!(
             "SpawnTaskClosure closure invoke shim `{fn_symbol}` was not declared"
         ))
     })?;
-    if !matches!(closure_ret_ty, BasicTypeEnum::IntType(_)) {
+    if !closure_symbol.returns_unit
+        || !matches!(closure_symbol.return_ty, BasicTypeEnum::IntType(_))
+    {
         return Err(CodegenError::FailClosed(format!(
             "SpawnTaskClosure shim `{fn_symbol}` must be unit-lowered to the i8 \
-             stand-in return type; got {closure_ret_ty:?}"
+             stand-in return type; got {:?}",
+            closure_symbol.return_ty
         )));
     }
 
-    if closure_fn.get_nth_param(0).is_none() || closure_fn.get_nth_param(1).is_none() {
+    if closure_symbol.value.get_nth_param(0).is_none()
+        || closure_symbol.value.get_nth_param(1).is_none()
+    {
         return Err(CodegenError::FailClosed(format!(
             "SpawnTaskClosure shim `{fn_symbol}` must take leading \
              HewExecutionContext* and closure environment parameters"
@@ -1072,7 +1090,7 @@ fn get_or_create_task_closure_wrapper<'ctx>(
         .into_pointer_value();
     builder
         .build_call(
-            closure_fn,
+            closure_symbol.value,
             &[ctx_param.into(), env_ptr.into()],
             "closure_task_body_call",
         )
@@ -2012,72 +2030,6 @@ fn lower_instruction(
                 .map_err(|e| CodegenError::Llvm(format!("DurationLit store: {e:?}")))?;
             let _ = ctx;
         }
-        Instr::CallDirect {
-            callee_symbol,
-            args,
-            dest,
-        } => {
-            // Direct call to a user-defined function in the same module.
-            // The callee is resolved from `fn_symbols` (populated up front
-            // by `declare_function` for every `raw_mir` function). Arguments
-            // are loaded from their local slots and passed as LLVM value
-            // arguments in declaration order; the return value (if any) is
-            // stored into the `dest` slot.
-            let (llvm_fn, callee_ret_ty) =
-                *fn_ctx.fn_symbols.get(callee_symbol).ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "Instr::CallDirect: callee `{callee_symbol}` was not found in fn_symbols; \
-                     the MIR producer must only emit CallDirect for functions declared in the \
-                     same module (module_fn_names gate). If the callee name is a mangled \
-                     monomorphisation (contains `$$`), the HIR/MIR registry did not emit a \
-                     specialised function for this (fn, type-args) pair — check that the call \
-                     site's concrete type arguments are recorded in HirModule.monomorphisations."
-                    ))
-                })?;
-            let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
-                Vec::with_capacity(args.len());
-            for arg in args {
-                let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
-                let loaded = fn_ctx
-                    .builder
-                    .build_load(arg_ty, arg_ptr, "direct_call_arg")
-                    .map_err(|e| CodegenError::Llvm(format!("CallDirect arg load: {e:?}")))?;
-                arg_vals.push(match loaded {
-                    BasicValueEnum::IntValue(v) => v.into(),
-                    BasicValueEnum::FloatValue(v) => v.into(),
-                    BasicValueEnum::PointerValue(v) => v.into(),
-                    BasicValueEnum::StructValue(v) => v.into(),
-                    BasicValueEnum::ArrayValue(v) => v.into(),
-                    BasicValueEnum::VectorValue(v) => v.into(),
-                    BasicValueEnum::ScalableVectorValue(v) => v.into(),
-                });
-            }
-            let call_site = fn_ctx
-                .builder
-                .build_call(llvm_fn, &arg_vals, "direct_call_result")
-                .map_err(|e| CodegenError::Llvm(format!("CallDirect build_call: {e:?}")))?;
-            if let Some(dest_place) = dest {
-                let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
-                if dest_ty != callee_ret_ty {
-                    return Err(CodegenError::FailClosed(format!(
-                        "Instr::CallDirect(`{callee_symbol}`): dest type {dest_ty:?} does not \
-                         match callee return type {callee_ret_ty:?}; type-checker invariant \
-                         violation"
-                    )));
-                }
-                let ret_val = call_site.try_as_basic_value().basic().ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "Instr::CallDirect(`{callee_symbol}`): callee returns void but dest \
-                         place is present; MIR producer must not emit a dest for void callees"
-                    ))
-                })?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, ret_val)
-                    .map_err(|e| CodegenError::Llvm(format!("CallDirect store result: {e:?}")))?;
-            }
-            let _ = ctx;
-        }
         Instr::MakeClosure {
             fn_symbol,
             env,
@@ -2324,11 +2276,15 @@ fn lower_make_closure(
             )))
         }
     };
-    let (shim, _) = *fn_ctx.fn_symbols.get(fn_symbol).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "MakeClosure references missing closure invoke shim `{fn_symbol}`"
-        ))
-    })?;
+    let shim = fn_ctx
+        .fn_symbols
+        .get(fn_symbol)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "MakeClosure references missing closure invoke shim `{fn_symbol}`"
+            ))
+        })?
+        .value;
     let (env_ptr, _) = place_pointer(fn_ctx, env)?;
     let fn_field = fn_ctx
         .builder
@@ -3714,7 +3670,7 @@ fn lower_terminator<'ctx>(
             dest,
             next,
         } => {
-            let (llvm_fn, callee_ret_ty) = *fn_symbols.get(callee).ok_or_else(|| {
+            let callee_symbol_entry = *fn_symbols.get(callee).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "Call to `{callee}` with no declared symbol (coroutine targets are not callable yet)"
                 ))
@@ -3739,23 +3695,35 @@ fn lower_terminator<'ctx>(
             }
             let call_site = fn_ctx
                 .builder
-                .build_call(llvm_fn, &arg_vals, "call_result")
+                .build_call(callee_symbol_entry.value, &arg_vals, "call_result")
                 .map_err(|e| CodegenError::Llvm(format!("build_call: {e:?}")))?;
-            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
-            if dest_ty != callee_ret_ty {
+            if let Some(dest_place) = dest {
+                if callee_symbol_entry.returns_unit {
+                    return Err(CodegenError::FailClosed(format!(
+                        "Call to unit-returning fn `{callee}` must not carry a Terminator::Call dest"
+                    )));
+                }
+                let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+                if dest_ty != callee_symbol_entry.return_ty {
+                    return Err(CodegenError::FailClosed(format!(
+                        "Call dest type {dest_ty:?} does not match callee return {:?}",
+                        callee_symbol_entry.return_ty
+                    )));
+                }
+                let ret_val = call_site.try_as_basic_value().basic().ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "Call to void-returning fn is not usable with Terminator::Call dest".into(),
+                    )
+                })?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, ret_val)
+                    .map_err(|e| CodegenError::Llvm(format!("call store: {e:?}")))?;
+            } else if !callee_symbol_entry.returns_unit {
                 return Err(CodegenError::FailClosed(format!(
-                    "Call dest type {dest_ty:?} does not match callee return {callee_ret_ty:?}"
+                    "Call to value-returning fn `{callee}` must carry a Terminator::Call dest"
                 )));
             }
-            let ret_val = call_site.try_as_basic_value().basic().ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "Call to void-returning fn is not usable as Terminator::Call dest".into(),
-                )
-            })?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, ret_val)
-                .map_err(|e| CodegenError::Llvm(format!("call store: {e:?}")))?;
             let next_bb = *fn_ctx
                 .blocks
                 .get(next)
@@ -4110,7 +4078,7 @@ fn declare_function<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     func: &RawMirFunction,
     record_layouts: &RecordLayoutMap<'ctx>,
-) -> CodegenResult<(FunctionValue<'ctx>, BasicTypeEnum<'ctx>)> {
+) -> CodegenResult<FnSymbol<'ctx>> {
     let linkage = if func.name == "main" {
         Some(Linkage::External)
     } else {
@@ -4171,7 +4139,11 @@ fn declare_function<'ctx>(
         BasicTypeEnum::ScalableVectorType(v) => v.fn_type(&param_tys, false),
     };
     let llvm_fn = llvm_mod.add_function(&func.name, fn_ty, linkage);
-    Ok((llvm_fn, return_ty_llvm))
+    Ok(FnSymbol {
+        value: llvm_fn,
+        return_ty: return_ty_llvm,
+        returns_unit: matches!(func.return_ty, ResolvedTy::Unit),
+    })
 }
 
 /// Lower one function from `raw_mir`, consuming `elaborated_mir.drop_plans`
@@ -4197,12 +4169,14 @@ fn lower_function<'ctx>(
     checked: Option<&CheckedMirFunction>,
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<()> {
-    let (llvm_fn, return_ty_llvm) = *fn_symbols.get(&func.name).ok_or_else(|| {
+    let symbol = *fn_symbols.get(&func.name).ok_or_else(|| {
         CodegenError::FailClosed(format!(
             "function `{}` was not declared before body lowering",
             func.name
         ))
     })?;
+    let llvm_fn = symbol.value;
+    let return_ty_llvm = symbol.return_ty;
     let context_marker_findings = validate_context_markers(func);
     if !context_marker_findings.is_empty() {
         return Err(CodegenError::FailClosed(format!(

@@ -165,7 +165,7 @@ fn dual_t_identity_produces_two_distinct_llvm_functions() {
 }
 
 /// The `main` function's call sites must use the mangled symbols, confirming
-/// that `Instr::CallDirect` with a mangled callee symbol resolves correctly
+/// that `Terminator::Call` with a mangled callee symbol resolves correctly
 /// through `fn_symbols` to the right LLVM `FunctionValue`.
 #[test]
 fn main_callsites_use_mangled_symbols() {

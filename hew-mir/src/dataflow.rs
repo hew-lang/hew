@@ -361,11 +361,11 @@ fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             let writes = call.dest().into_iter().collect();
             (reads, writes)
         }
-        Instr::CallDirect { args, dest, .. } | Instr::CallClosure { args, dest, .. } => {
+        Instr::CallClosure {
+            callee, args, dest, ..
+        } => {
             let mut reads = args.clone();
-            if let Instr::CallClosure { callee, .. } = instr {
-                reads.insert(0, *callee);
-            }
+            reads.insert(0, *callee);
             let writes = dest.iter().copied().collect();
             (reads, writes)
         }
@@ -707,8 +707,8 @@ fn is_back_edge_goto(block: &BasicBlock) -> bool {
     }
 }
 
-/// Return true if a block contains a call instruction — `Instr::CallDirect`,
-/// `Instr::CallRuntimeAbi`, or `Terminator::Call`.
+/// Return true if a block contains a call — `Instr::CallRuntimeAbi` or
+/// `Terminator::Call`.
 ///
 /// Used by the leaf-function heuristic: a function that calls other
 /// functions is not a leaf and cannot be skipped.
@@ -716,7 +716,7 @@ fn block_has_call(block: &BasicBlock) -> bool {
     let instr_has_call = block
         .instructions
         .iter()
-        .any(|i| matches!(i, Instr::CallDirect { .. } | Instr::CallRuntimeAbi(_)));
+        .any(|i| matches!(i, Instr::CallRuntimeAbi(_)));
     let terminator_is_call = matches!(block.terminator, Terminator::Call { .. });
     instr_has_call || terminator_is_call
 }
@@ -726,7 +726,7 @@ fn block_has_call(block: &BasicBlock) -> bool {
 ///
 /// A function is a leaf when ALL of the following hold:
 /// 1. Total `MirStatement` count across all blocks is < `LEAF_STATEMENT_THRESHOLD`.
-/// 2. No block contains a `CallDirect`, `CallRuntimeAbi`, or `Terminator::Call`.
+/// 2. No block contains a `CallRuntimeAbi` or `Terminator::Call`.
 /// 3. No block has a back-edge `Goto` (no loops).
 ///
 /// WHY factor this out: the future `#[no_reductions_check]` attribute and

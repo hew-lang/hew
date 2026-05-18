@@ -78,11 +78,11 @@ fn v05_pipeline_accepts_float_literal_in_mir() {
 }
 
 /// A direct call to a module function now lowers cleanly via
-/// `Instr::CallDirect`. `main` returns `add(10, 32)`; the MIR pipeline must
+/// `Terminator::Call`. `main` returns `add(10, 32)`; the MIR pipeline must
 /// accept the program without `CutoverUnsupported` or `UnresolvedPlace`
 /// diagnostics, and codegen must emit valid LLVM IR.
 #[test]
-fn v05_pipeline_accepts_user_fn_call_via_call_direct() {
+fn v05_pipeline_accepts_user_fn_call_via_call_terminator() {
     let parsed = hew_parser::parse(
         "fn add(x: int, y: int) -> int { x + y }\n\
          fn main() -> int { add(10, 32) }\n",

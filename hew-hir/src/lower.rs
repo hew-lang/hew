@@ -26,6 +26,7 @@ use crate::node::{
     HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind,
     HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
 };
+use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ValueClass};
 
 type ScopeBinding = (BindingId, ResolvedTy, std::ops::Range<usize>);
@@ -48,6 +49,7 @@ struct FnEntry {
     id: ItemId,
     return_ty: ResolvedTy,
     param_tys: Vec<ResolvedTy>,
+    linkage: Option<BuiltinLinkage>,
     /// Source-declared generic type parameter names, in order. Empty for
     /// non-generic functions. Consulted at `Expr::Call` lowering sites to
     /// decide whether the callee is a generic top-level user fn that
@@ -112,6 +114,7 @@ pub fn lower_program_with_mono_cap(
     mono_cap: usize,
 ) -> LowerOutput {
     let mut ctx = LowerCtx::new(type_check_output, mono_cap);
+    ctx.seed_stdlib_fn_registry();
 
     // First pass: collect all function signatures so that forward and mutual
     // references in call expressions resolve to the correct return type.
@@ -890,6 +893,11 @@ impl LowerCtx {
             // line 79).
             return;
         };
+        if entry.linkage.is_some() {
+            // Catalog-seeded stdlib functions are already monomorphic HIR
+            // targets. They never produce user-function specialisations.
+            return;
+        }
         if entry.type_params.is_empty() {
             // Non-generic callee — nothing to monomorphise.
             return;
@@ -1120,6 +1128,26 @@ impl LowerCtx {
 }
 
 impl LowerCtx {
+    fn seed_stdlib_fn_registry(&mut self) {
+        for (index, builtin) in stdlib_catalog::entries().iter().enumerate() {
+            // Keep catalog IDs out of the source-item sequence so existing HIR
+            // item IDs remain stable while builtin callees still carry Item refs.
+            let index = u32::try_from(index).expect("stdlib catalog fits in u32");
+            let id = ItemId(u32::MAX - index);
+            let param_tys = builtin.params.iter().map(|ty| ty.to_resolved()).collect();
+            self.fn_registry.insert(
+                builtin.name.to_string(),
+                FnEntry {
+                    id,
+                    return_ty: builtin.return_ty.to_resolved(),
+                    param_tys,
+                    linkage: Some(builtin.linkage),
+                    type_params: Vec::new(),
+                },
+            );
+        }
+    }
+
     fn register_fn_entry(&mut self, name: &str, func: &FnDecl) {
         let id = self.ids.item();
         let return_ty = func
@@ -1138,9 +1166,122 @@ impl LowerCtx {
                 id,
                 return_ty,
                 param_tys,
+                linkage: None,
                 type_params,
             },
         );
+    }
+
+    fn lower_stdlib_callee(&mut self, entry: &BuiltinEntry, span: Span) -> HirExpr {
+        let (id, param_tys, return_ty) = {
+            let registry_entry = self
+                .fn_registry
+                .get(entry.name)
+                .expect("catalog entries are seeded before expression lowering");
+            (
+                registry_entry.id,
+                registry_entry.param_tys.clone(),
+                registry_entry.return_ty.clone(),
+            )
+        };
+        let fn_ty = ResolvedTy::Function {
+            params: param_tys,
+            ret: Box::new(return_ty),
+        };
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&fn_ty, &self.type_classes),
+            ty: fn_ty,
+            intent: IntentKind::Read,
+            kind: HirExprKind::BindingRef {
+                name: entry.name.to_string(),
+                resolved: ResolvedRef::Item(id),
+            },
+            span,
+        }
+    }
+
+    fn unresolved_builtin_callee(&mut self, name: &str, span: Span) -> HirExpr {
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::BitCopy,
+            ty: ResolvedTy::Unit,
+            intent: IntentKind::Read,
+            kind: HirExprKind::BindingRef {
+                name: name.to_string(),
+                resolved: ResolvedRef::Unresolved,
+            },
+            span,
+        }
+    }
+
+    fn lower_regular_call(
+        &mut self,
+        function: &Spanned<Expr>,
+        args: Vec<HirExpr>,
+        span: &Span,
+        site: SiteId,
+    ) -> (HirExprKind, ResolvedTy) {
+        let callee = self.lower_expr(function, IntentKind::Read);
+        // Record the per-instantiation monomorphisation if the callee is a
+        // generic top-level user fn. Direct-name callees only;
+        // `record_monomorphisation` filters out non-generic callees, non-
+        // `fn_registry` callees (builtins, runtime symbols, local bindings),
+        // and callsites the checker did not record. Fail-closed on poisoned
+        // entries and on registry-cap exhaustion.
+        self.record_monomorphisation(&function.0, span, site);
+        // Checker authority takes precedence: consult expr_types at the full
+        // call-expression span. The checker records the call result type here
+        // for checker-registered builtins that have no AST `fn` item and
+        // therefore no `fn_registry` hit. (LESSONS: checker-authority P0)
+        let checker_key = SpanKey::from(span);
+        let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+            match ResolvedTy::from_ty(&ty) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    let callee_name = if let Expr::Identifier(name) = &function.0 {
+                        name.clone()
+                    } else {
+                        "<expr>".to_string()
+                    };
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: callee_name,
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "checker-authoritative call result type failed boundary conversion",
+                    ));
+                    ResolvedTy::Unit
+                }
+            }
+        } else if let ResolvedTy::Function { ret, .. } = &callee.ty {
+            *ret.clone()
+        } else {
+            if matches!(
+                callee.kind,
+                HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Unresolved,
+                    ..
+                }
+            ) {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::UnresolvedInferenceVar,
+                    span.clone(),
+                    "call result type cannot be determined: callee is unresolved",
+                ));
+            }
+            ResolvedTy::Unit
+        };
+        (
+            HirExprKind::Call {
+                callee: Box::new(callee),
+                args,
+            },
+            result_ty,
+        )
     }
 
     fn lower_fn(&mut self, func: &FnDecl, span: std::ops::Range<usize>) -> HirFn {
@@ -2252,83 +2393,48 @@ impl LowerCtx {
                 )
             }
             Expr::Call { function, args, .. } => {
-                let callee = self.lower_expr(function, IntentKind::Read);
                 let args = args
                     .iter()
                     .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
-                    .collect();
-                // Record the per-instantiation monomorphisation if the
-                // callee is a generic top-level user fn. Direct-name
-                // callees only; `record_monomorphisation` filters out
-                // non-generic callees, non-`fn_registry` callees (builtins,
-                // runtime symbols, local bindings), and callsites the
-                // checker did not record. Fail-closed on poisoned entries
-                // and on registry-cap exhaustion.
-                //
-                // Also threads the resolved `Vec<ResolvedTy>` for this
-                // call site (concrete or symbolic-T) into
-                // `call_site_type_args` keyed by the wrapping HirExpr's
-                // SiteId so MIR lowering can rewrite the call to the
-                // mangled symbol of the right per-monomorphisation MIR
-                // function.
-                self.record_monomorphisation(&function.0, &span, site);
-                // Checker authority takes precedence: consult expr_types at the
-                // full call-expression span.  The checker records the call result
-                // type here — including for checker-registered builtins like
-                // `duplex_pair` that have no AST `fn` item and therefore no
-                // `fn_registry` hit.  (LESSONS: checker-authority P0)
-                let checker_key = SpanKey::from(&span);
-                let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
-                    match ResolvedTy::from_ty(&ty) {
-                        Ok(resolved) => resolved,
-                        Err(err) => {
-                            // Fail-closed: checker side-table is poisoned for
-                            // this call.  Emit a diagnostic; never silently
-                            // substitute Unit.  (LESSONS: checker-output-boundary P0)
-                            let callee_name = if let Expr::Identifier(name) = &function.0 {
-                                name.clone()
-                            } else {
-                                "<expr>".to_string()
-                            };
+                    .collect::<Vec<_>>();
+                if let Expr::Identifier(name) = &function.0 {
+                    if stdlib_catalog::is_overloaded_builtin(name) {
+                        let arg_tys = args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>();
+                        if let Some(entry) = stdlib_catalog::resolve_overload(name, &arg_tys) {
+                            let result_ty = entry.return_ty.to_resolved();
+                            let callee = self.lower_stdlib_callee(entry, function.1.clone());
+                            (
+                                HirExprKind::Call {
+                                    callee: Box::new(callee),
+                                    args,
+                                },
+                                result_ty,
+                            )
+                        } else {
+                            let arg_ty = arg_tys.first().cloned().unwrap_or(ResolvedTy::Unit);
                             self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: callee_name,
-                                    reason: err.to_string(),
+                                HirDiagnosticKind::UnresolvedBuiltinOverload {
+                                    name: name.clone(),
+                                    arg_ty,
                                 },
                                 span.clone(),
-                                "checker-authoritative call result type failed boundary conversion",
+                                "builtin call has no registered monomorphic overload for this argument type",
                             ));
-                            ResolvedTy::Unit
+                            let callee = self.unresolved_builtin_callee(name, function.1.clone());
+                            (
+                                HirExprKind::Call {
+                                    callee: Box::new(callee),
+                                    args,
+                                },
+                                ResolvedTy::Unit,
+                            )
                         }
+                    } else {
+                        self.lower_regular_call(function, args, &span, site)
                     }
-                } else if let ResolvedTy::Function { ret, .. } = &callee.ty {
-                    // No checker entry: fall through to the callee's HIR-inferred
-                    // function type (used for calls to functions that are in
-                    // fn_registry or locally resolved).
-                    *ret.clone()
                 } else {
-                    if matches!(
-                        callee.kind,
-                        HirExprKind::BindingRef {
-                            resolved: ResolvedRef::Unresolved,
-                            ..
-                        }
-                    ) {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::UnresolvedInferenceVar,
-                            span.clone(),
-                            "call result type cannot be determined: callee is unresolved",
-                        ));
-                    }
-                    ResolvedTy::Unit
-                };
-                (
-                    HirExprKind::Call {
-                        callee: Box::new(callee),
-                        args,
-                    },
-                    result_ty,
-                )
+                    self.lower_regular_call(function, args, &span, site)
+                }
             }
             Expr::Block(block) => {
                 let block = self.lower_block(block, &ResolvedTy::Unit);
@@ -4715,6 +4821,83 @@ mod tests {
                         && reason == "closure_capture_facts has no record for closure literal span"
             )),
             "missing closure_capture_facts entry must emit root-cause boundary diagnostic; got {:#?}",
+            lowered.diagnostics
+        );
+    }
+
+    #[test]
+    fn stdlib_println_resolves_to_i64_overload() {
+        let (_program, _tco, lowered) = parse_typecheck_and_lower(
+            r"
+            fn main() {
+                println(42);
+            }
+            ",
+        );
+        assert!(
+            !lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::UnresolvedSymbol { name } if name == "println"
+            )),
+            "println must not fall through to unresolved symbol: {:#?}",
+            lowered.diagnostics
+        );
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "lower diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+
+        let body = main_function_body(&lowered);
+        let HirStmtKind::Expr(expr) = &body.statements[0].kind else {
+            panic!("expected println statement expression");
+        };
+        let HirExprKind::Call { callee, .. } = &expr.kind else {
+            panic!("expected println call, got {:#?}", expr.kind);
+        };
+        let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
+            panic!("expected callee binding ref, got {:#?}", callee.kind);
+        };
+        assert_eq!(name, "println_i64");
+        assert!(
+            matches!(resolved, ResolvedRef::Item(_)),
+            "expected println_i64 item ref, got {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn stdlib_println_unsupported_type_emits_overload_diagnostic() {
+        let parsed = hew_parser::parse(
+            r"
+            fn main() {
+                let w: Widget;
+                println(w);
+            }
+            ",
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+
+        let lowered = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::UnresolvedBuiltinOverload { name, arg_ty }
+                    if name == "println"
+                        && matches!(arg_ty, ResolvedTy::Named { name, .. } if name == "Widget")
+            )),
+            "expected unsupported println overload diagnostic, got {:#?}",
+            lowered.diagnostics
+        );
+        assert!(
+            !lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::UnresolvedSymbol { name } if name == "println"
+            )),
+            "unsupported println overload must not fall through to UnresolvedSymbol: {:#?}",
             lowered.diagnostics
         );
     }

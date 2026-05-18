@@ -1257,6 +1257,23 @@ impl Builder {
                     }
                 }
                 if matches!(
+                    callee.kind,
+                    HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Item(_),
+                        ..
+                    }
+                ) {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::CutoverUnsupported {
+                            construct: "function call".to_string(),
+                            site: expr.site,
+                        },
+                        note: "resolved callee has no MIR body or runtime lowering in the current cutover spine"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                if matches!(
                     callee.ty,
                     ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
                 ) {

@@ -12,6 +12,7 @@ pub mod intent;
 pub mod lower;
 pub mod monomorph;
 pub mod node;
+pub mod stdlib_catalog;
 pub mod value_class;
 pub mod verify;
 

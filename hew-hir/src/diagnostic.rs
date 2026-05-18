@@ -46,6 +46,10 @@ pub enum HirDiagnosticKind {
     UnresolvedSymbol {
         name: String,
     },
+    UnresolvedBuiltinOverload {
+        name: String,
+        arg_ty: ResolvedTy,
+    },
     UnresolvedInferenceVar,
     DuplicateBindingId {
         id: BindingId,

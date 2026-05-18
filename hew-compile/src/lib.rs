@@ -2348,6 +2348,7 @@ mod tests {
             supervisor_child_slots: std::collections::HashMap::new(),
             dyn_trait_coercions: std::collections::HashMap::new(),
             dyn_trait_method_calls: std::collections::HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
         };
 
         let err = enrich_program_ast(

@@ -1,4 +1,4 @@
-use crate::env::TypeEnv;
+use crate::env::{TypeBindingId, TypeEnv};
 use crate::error::TypeError;
 use crate::lowering_facts::LoweringFact;
 use crate::module_registry::ModuleRegistry;
@@ -189,6 +189,40 @@ pub struct TypeCheckOutput {
     /// as a trait object but whose span is absent from this map is a HIR
     /// diagnostic, not a runtime panic.
     pub dyn_trait_method_calls: HashMap<SpanKey, DynMethodCall>,
+    /// Checker-authoritative closure capture facts keyed by the closure literal span.
+    ///
+    /// The checker records the exact lexical binding for every captured name before
+    /// HIR/MIR lowering. Downstream stages must consume this ledger rather than
+    /// rediscovering capture legality from expression shape.
+    pub closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+}
+
+/// By-value capture mode selected for one closure environment field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClosureCaptureMode {
+    /// The source value implements `Copy`, so an implicit by-value copy is legal.
+    Copy,
+    /// The closure was written `move |...|`; the source binding is consumed.
+    Move,
+}
+
+/// Checker-owned capture record for one binding referenced by a closure body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosureCaptureFact {
+    /// Checker-local identity of the captured lexical binding.
+    pub binding_id: TypeBindingId,
+    /// Surface name used at the capture site.
+    pub name: String,
+    /// Fully resolved captured type at checker-output time.
+    pub ty: Ty,
+    /// Capture mode selected by the checker.
+    pub mode: ClosureCaptureMode,
+    /// Whether the captured type satisfies the actor/task boundary marker.
+    pub is_send: bool,
+    /// Source span of this use inside the closure body.
+    pub use_span: Span,
+    /// Definition span of the captured binding when user-authored.
+    pub def_span: Option<Span>,
 }
 
 /// Checker-resolved metadata for a `T → dyn Trait` coercion call site.
@@ -374,6 +408,7 @@ impl Default for TypeCheckOutput {
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: HashMap::new(),
         }
     }
 }
@@ -1127,6 +1162,8 @@ pub struct Checker {
     /// into `TypeCheckOutput::dyn_trait_method_calls` at the end of
     /// `check_program`.
     pub(super) dyn_trait_method_calls: HashMap<SpanKey, DynMethodCall>,
+    /// Binding-accurate closure capture facts keyed by closure literal span.
+    pub(super) closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
     /// Maps actor name to its `init()` parameter list: `(param_name, outer_type, first_type_arg)`.
     ///
     /// `outer_type` is the outermost named type (e.g. `"ActorRef"` for `ActorRef<WorkerPool>`).
@@ -1138,6 +1175,8 @@ pub struct Checker {
     pub(super) lambda_capture_depth: Option<usize>,
     /// Captured variable types accumulated during lambda body checking.
     pub(super) lambda_captures: Vec<Ty>,
+    /// Binding-accurate capture facts accumulated during lambda body checking.
+    pub(super) lambda_capture_facts: Vec<ClosureCaptureFact>,
     /// Tracks imported module paths with their source spans and originating module for
     /// unused-import detection and source attribution.
     /// Key: (`owner_module`, `short_name`), Value: (import span, source module).
@@ -1319,9 +1358,11 @@ impl Checker {
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: HashMap::new(),
             actor_init_params: HashMap::new(),
             lambda_capture_depth: None,
             lambda_captures: Vec::new(),
+            lambda_capture_facts: Vec::new(),
             import_spans: HashMap::new(),
             used_modules: RefCell::new(HashSet::new()),
             user_modules: HashSet::new(),

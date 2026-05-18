@@ -1514,6 +1514,14 @@ pub enum MirDiagnosticKind {
         name: String,
         site: SiteId,
     },
+    /// A HIR-declared closure/lambda-actor capture could not be mapped to a MIR
+    /// backend place. Capture analysis is checker/HIR authority; MIR must not
+    /// silently drop a capture and emit a smaller environment.
+    CannotMaterializeClosureCapture {
+        binding: BindingId,
+        name: String,
+        site: SiteId,
+    },
     /// Drop-elaboration aborted because the M2 substrate's per-exit
     /// drop plan could not be determined for a `Return` block. Surfaced
     /// from `MirCheck::DropPlanUndetermined`; the elaborator never

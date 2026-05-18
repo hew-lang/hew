@@ -36,9 +36,10 @@ mod util;
 
 pub use self::types::{
     ActorSendAliasing, ActorSendCopyReason, ActorStateGuard, AllocationClass, AssignTargetKind,
-    AssignTargetShape, Checker, ChildKind, ChildSlot, DynAssocBinding, DynCoercion, DynMethodCall,
-    DynVtableEntry, DynVtableKey, FnSig, MethodCallReceiverKind, MethodCallRewrite, SpanKey,
-    StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
+    AssignTargetShape, Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureCaptureMode,
+    DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, FnSig,
+    MethodCallReceiverKind, MethodCallRewrite, SpanKey, StackHint, TypeCheckOutput, TypeDef,
+    TypeDefKind, VariantDef,
 };
 use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,
@@ -283,6 +284,19 @@ impl Checker {
                     (k, resolved)
                 })
                 .collect();
+        let resolved_closure_capture_facts = std::mem::take(&mut self.closure_capture_facts)
+            .into_iter()
+            .map(|(k, facts)| {
+                let resolved = facts
+                    .into_iter()
+                    .map(|mut fact| {
+                        fact.ty = self.subst.resolve(&fact.ty).materialize_literal_defaults();
+                        fact
+                    })
+                    .collect();
+                (k, resolved)
+            })
+            .collect();
 
         // Move data out of Checker — it is not used after check_program.
         // Resolve any remaining type variables in expr_types via the
@@ -364,6 +378,7 @@ impl Checker {
             stack_hints: std::mem::take(&mut self.stack_hints),
             dyn_trait_coercions: std::mem::take(&mut self.dyn_trait_coercions),
             dyn_trait_method_calls: std::mem::take(&mut self.dyn_trait_method_calls),
+            closure_capture_facts: resolved_closure_capture_facts,
         };
 
         // Detect actor reference cycles and emit warnings.

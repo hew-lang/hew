@@ -15574,6 +15574,78 @@ mod for_loop_iterable_fail_closed {
         );
     }
 
+    #[test]
+    fn closure_capture_facts_are_binding_accurate_and_deduplicated() {
+        let output = check_source(
+            r"
+            fn main() {
+                let k: i32 = 2;
+                let f = |n: i32| n + k + k;
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "copy capture should type-check cleanly: {:?}",
+            output.errors
+        );
+
+        let facts: Vec<_> = output
+            .closure_capture_facts
+            .values()
+            .flat_map(|facts| facts.iter())
+            .filter(|fact| fact.name == "k")
+            .collect();
+        assert_eq!(
+            facts.len(),
+            1,
+            "capture facts should deduplicate by binding id"
+        );
+        assert_eq!(facts[0].ty, Ty::I32);
+        assert_eq!(facts[0].mode, ClosureCaptureMode::Copy);
+    }
+
+    #[test]
+    fn closure_non_copy_capture_without_move_is_rejected() {
+        let output = check_source(
+            r#"
+            fn main() {
+                let s: string = "hew";
+                let f = || s;
+            }
+            "#,
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|err| matches!(err.kind, TypeErrorKind::ClosureExplicitMoveRequired { .. })),
+            "non-Copy capture without move should require explicit move: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn move_closure_capture_consumes_non_copy_binding() {
+        let output = check_source(
+            r#"
+            fn main() {
+                let s: string = "hew";
+                let f = move || s;
+                let again = s;
+            }
+            "#,
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|err| err.kind == TypeErrorKind::UseAfterMove),
+            "use after move capture should be rejected: {:?}",
+            output.errors
+        );
+    }
+
     // ── already-errored / divergent iterables must not get extra diagnostics ─
 
     #[test]

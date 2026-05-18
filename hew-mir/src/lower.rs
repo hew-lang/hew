@@ -3393,14 +3393,9 @@ impl Builder {
     /// (§5.9 ratification 2).
     ///
     /// Every HIR-resolved capture is forwarded into the function's
-    /// `lambda_captures` ledger with the source binding's MIR
-    /// `Place` looked up via `binding_locals`. A capture whose
-    /// source binding has no backend slot in the enclosing function
-    /// (typically a function parameter that hasn't been wired through
-    /// `binding_locals` yet) is skipped — the structural checker
-    /// never sees a missing entry as a violation, and a future
-    /// surface that populates parameter slots will populate this
-    /// ledger the same way.
+    /// `lambda_captures` ledger after proving that the source binding has a MIR
+    /// `Place` in `binding_locals`. A capture whose source binding has no backend
+    /// slot is a lowering error, never a silently smaller capture set.
     ///
     /// Body lowering (the actor's per-message dispatch) is a
     /// follow-up slice; the MIR shape only needs the handle Place plus
@@ -3429,16 +3424,23 @@ impl Builder {
             Place::LambdaActorHandle(local_id)
         };
         for capture in captures {
-            // Each captured binding must already have a backend slot
-            // in the enclosing function. The forward-bound recursive
-            // self capture is the let-binding itself, whose
-            // `binding_locals` entry was populated by the `stmt` Let
-            // arm before this producer ran. Captures from outer
-            // bindings with no `binding_locals` entry (typically
-            // function parameters, which the spine doesn't wire) are
-            // silently skipped — `validate_lambda_captures` treats a
-            // missing entry as no-finding rather than as a violation.
+            // Each captured binding must already have a backend slot in the
+            // enclosing function. The forward-bound recursive self capture is
+            // the let-binding itself, whose `binding_locals` entry was populated
+            // by the `stmt` Let arm before this producer ran.
             if !self.binding_locals.contains_key(&capture.binding) {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CannotMaterializeClosureCapture {
+                        binding: capture.binding,
+                        name: capture.name.clone(),
+                        site: expr.site,
+                    },
+                    note: format!(
+                        "closure capture `{}` was resolved by HIR but has no MIR backend slot; \
+                         refusing to drop the capture from the environment",
+                        capture.name
+                    ),
+                });
                 continue;
             }
             let capture_kind = match capture.kind {
@@ -5647,6 +5649,57 @@ mod slice3_invariants {
         }];
         let elab = make_elab_with_captures(captures);
         assert!(validate_drop_plan(&elab).is_empty());
+    }
+
+    #[test]
+    fn lambda_actor_capture_without_backend_slot_is_diagnostic() {
+        let body = HirExpr {
+            node: hew_hir::HirNodeId(1),
+            site: hew_hir::SiteId(1),
+            value_class: ValueClass::BitCopy,
+            ty: ResolvedTy::Unit,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(HirLiteral::Unit),
+            span: 0..0,
+        };
+        let expr = HirExpr {
+            node: hew_hir::HirNodeId(2),
+            site: hew_hir::SiteId(42),
+            value_class: ValueClass::BitCopy,
+            ty: ResolvedTy::Unit,
+            intent: IntentKind::Read,
+            kind: HirExprKind::SpawnLambdaActor {
+                params: vec![],
+                reply_ty: ResolvedTy::Unit,
+                body: Box::new(body),
+                captures: vec![hew_hir::HirLambdaCapture {
+                    binding: BindingId(99),
+                    name: "missing".to_string(),
+                    kind: hew_hir::HirCaptureKind::Strong,
+                }],
+            },
+            span: 0..0,
+        };
+        let mut builder = Builder::default();
+
+        let _ = builder.lower_spawn_lambda_actor(&expr);
+
+        assert!(
+            builder.diagnostics.iter().any(|diag| matches!(
+                diag.kind,
+                MirDiagnosticKind::CannotMaterializeClosureCapture {
+                    binding: BindingId(99),
+                    site: hew_hir::SiteId(42),
+                    ..
+                }
+            )),
+            "missing backend slot must be diagnosed, got {:?}",
+            builder.diagnostics
+        );
+        assert!(
+            builder.lambda_captures.is_empty(),
+            "unmaterialized captures must not enter lambda_captures"
+        );
     }
 
     #[test]

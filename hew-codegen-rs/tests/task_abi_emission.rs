@@ -55,6 +55,7 @@ fn pipeline_with_task_abi_call(
         raw_mir: vec![RawMirFunction {
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
+            call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: locals.clone(),
             blocks: raw_blocks.clone(),
@@ -117,6 +118,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
             RawMirFunction {
                 name: "main".to_string(),
                 return_ty: ResolvedTy::Unit,
+                call_conv: hew_mir::FunctionCallConv::Default,
                 params: vec![],
                 locals: vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))],
                 blocks: vec![main_block.clone()],
@@ -125,6 +127,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
             RawMirFunction {
                 name: "long_op".to_string(),
                 return_ty: ResolvedTy::Unit,
+                call_conv: hew_mir::FunctionCallConv::Default,
                 params: vec![],
                 locals: vec![ResolvedTy::Unit],
                 blocks: vec![long_op_block.clone()],

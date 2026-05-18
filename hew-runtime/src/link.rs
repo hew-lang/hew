@@ -421,7 +421,8 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64};
     use std::time::Duration;
 
-    unsafe extern "C" fn noop_dispatch(
+    unsafe extern "C-unwind" fn noop_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,

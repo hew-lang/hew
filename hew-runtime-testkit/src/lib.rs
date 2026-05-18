@@ -25,7 +25,8 @@
 //!
 //! ## What we still leave raw in test code
 //!
-//! - `extern "C"` dispatch callbacks (`fn(*mut c_void, i32, *mut c_void, usize)`).
+//! - `extern "C-unwind"` dispatch callbacks
+//!   (`fn(*mut HewExecutionContext, *mut c_void, i32, *mut c_void, usize)`).
 //!   These are FFI-boundary types by nature; a safe wrapper would require
 //!   trampolines that obscure what the test is exercising.
 //! - Reply-channel pointer manipulation inside dispatch callbacks.
@@ -91,14 +92,16 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 pub use hew_runtime::actor::HewActor;
+pub use hew_runtime::execution_context::HewExecutionContext;
 pub use hew_runtime::internal::types::{HewActorState, HewError};
 pub use hew_runtime::mailbox::{HewMailbox, HewMsgNode, OverflowPolicy};
 pub use hew_runtime::scope::HewScope;
 pub use hew_runtime::stream::HewStream;
 pub use hew_runtime::supervisor::HewSupervisor;
 
-/// `extern "C"` dispatch callback signature. Re-exported for callers.
-pub type DispatchFn = unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize);
+/// `extern "C-unwind"` dispatch callback signature. Re-exported for callers.
+pub type DispatchFn =
+    unsafe extern "C-unwind" fn(*mut HewExecutionContext, *mut c_void, i32, *mut c_void, usize);
 
 /// Initialise the runtime scheduler exactly once across all tests in the
 /// process.

@@ -168,6 +168,7 @@ fn vec_index_i64_mir() -> RawMirFunction {
     RawMirFunction {
         name: "vec_index_i64_test".to_string(),
         return_ty: ResolvedTy::I64,
+        call_conv: hew_mir::FunctionCallConv::Default,
         params: vec![],
         locals: vec![
             ResolvedTy::Named {

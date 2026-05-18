@@ -22,12 +22,13 @@
 
 use std::collections::VecDeque;
 use std::ffi::{c_int, c_void};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
 
 #[cfg(test)]
 use crate::actor::HEW_PRIORITY_NORMAL;
 use crate::actor::{HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET, HEW_PRIORITY_HIGH, HEW_PRIORITY_LOW};
-use crate::internal::types::HewActorState;
+use crate::internal::types::{HewActorState, HewDispatchFn};
 
 #[inline]
 fn notify_actor_group_waiters(actor_id: u64) {
@@ -55,7 +56,7 @@ pub struct HewActor {
     pub pid: u64,
     pub state: *mut c_void,
     pub state_size: usize,
-    pub dispatch: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)>,
+    pub dispatch: Option<HewDispatchFn>,
     pub mailbox: *mut c_void,
     pub actor_state: AtomicI32,
     pub budget: AtomicI32,
@@ -953,6 +954,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
         actor_id: a.id,
         arena: a.arena.cast::<crate::arena::ActorArena>(),
         prev_context: crate::execution_context::current_context(),
+        lock_seat: crate::actor::actor_state_lock_seat(actor.cast::<crate::actor::HewActor>()),
         ..crate::execution_context::HewExecutionContext::default()
     };
     let prev_context = execution_context.prev_context;
@@ -1016,12 +1018,63 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                 a.reductions
                     .store(HEW_DEFAULT_REDUCTIONS, Ordering::Relaxed);
 
-                // SAFETY: `dispatch` and `a.state` are valid; message fields
-                // come from a well-formed `HewMsgNode`.
-                unsafe {
-                    let msg_ref = &*msg;
-                    set_current_reply_channel(msg_ref.reply_channel);
-                    dispatch(a.state, msg_ref.msg_type, msg_ref.data, msg_ref.data_size);
+                // SAFETY: `msg` is exclusively owned by this scheduler tick.
+                let msg_ref = unsafe { &*msg };
+                set_current_reply_channel(msg_ref.reply_channel);
+
+                // SAFETY: `execution_context` is the scheduler-owned activation
+                // context, and lock acquisition fails closed if its seat is absent
+                // or poisoned.
+                let lock_acquired = unsafe {
+                    crate::actor::hew_actor_state_lock_acquire_for_context(
+                        &raw mut execution_context,
+                    )
+                } == crate::actor::HEW_ACTOR_STATE_LOCK_OK;
+                if !lock_acquired {
+                    a.actor_state
+                        .store(HewActorState::Crashed as i32, Ordering::Release);
+                    let _ = clear_current_reply_channel();
+                    // SAFETY: msg is exclusively owned by this scheduler tick.
+                    unsafe {
+                        (*msg).reply_channel = std::ptr::null_mut();
+                        hew_msg_node_free(msg);
+                    }
+                    break;
+                }
+
+                // SAFETY: `dispatch`, `ctx`, and `a.state` are valid; message
+                // fields come from a well-formed `HewMsgNode`.
+                let dispatch_result = catch_unwind(AssertUnwindSafe(|| unsafe {
+                    dispatch(
+                        &raw mut execution_context,
+                        a.state,
+                        msg_ref.msg_type,
+                        msg_ref.data,
+                        msg_ref.data_size,
+                    );
+                }));
+
+                // SAFETY: `execution_context.lock_seat` was initialized from the
+                // live actor immediately before the matching acquire.
+                let release_result = unsafe {
+                    crate::actor::hew_actor_state_lock_release_for_context(
+                        &raw mut execution_context,
+                    )
+                };
+                if release_result != crate::actor::HEW_ACTOR_STATE_LOCK_OK {
+                    a.actor_state
+                        .store(HewActorState::Crashed as i32, Ordering::Release);
+                    let _ = clear_current_reply_channel();
+                    // SAFETY: msg is exclusively owned by this scheduler tick.
+                    unsafe {
+                        (*msg).reply_channel = std::ptr::null_mut();
+                        hew_msg_node_free(msg);
+                    }
+                    break;
+                }
+
+                if dispatch_result.is_err() {
+                    crate::set_last_error("actor dispatch panicked");
                 }
 
                 let reply_consumed = current_reply_channel_consumed();
@@ -1460,7 +1513,8 @@ mod tests {
         value: i32,
     }
 
-    unsafe extern "C" fn reply_with_observed_channel(
+    unsafe extern "C-unwind" fn reply_with_observed_channel(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         state: *mut c_void,
         msg_type: i32,
         data: *mut c_void,
@@ -1492,7 +1546,8 @@ mod tests {
     static REPLY_DISPATCHES: AtomicI32 = AtomicI32::new(0);
     static LATE_REPLY_SAW_CANCELLED: AtomicBool = AtomicBool::new(false);
 
-    unsafe extern "C" fn noisy_dispatch(
+    unsafe extern "C-unwind" fn noisy_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -1501,7 +1556,8 @@ mod tests {
         NOISY_DISPATCHES.fetch_add(1, Ordering::Relaxed);
     }
 
-    unsafe extern "C" fn reply_payload_dispatch(
+    unsafe extern "C-unwind" fn reply_payload_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         data: *mut c_void,
@@ -1532,7 +1588,8 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn reply_payload_observes_cancelled_dispatch(
+    unsafe extern "C-unwind" fn reply_payload_observes_cancelled_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         data: *mut c_void,
@@ -2151,7 +2208,8 @@ mod tests {
     static DISPATCH_SAW_ACTOR_ID: std::sync::atomic::AtomicI64 =
         std::sync::atomic::AtomicI64::new(-999);
 
-    unsafe extern "C" fn dispatch_record_current_id(
+    unsafe extern "C-unwind" fn dispatch_record_current_id(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -2207,7 +2265,8 @@ mod tests {
     static OUTER_ID_AFTER_INNER: std::sync::atomic::AtomicI64 =
         std::sync::atomic::AtomicI64::new(-999);
 
-    unsafe extern "C" fn outer_dispatch_nested(
+    unsafe extern "C-unwind" fn outer_dispatch_nested(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -2228,7 +2287,8 @@ mod tests {
         );
     }
 
-    unsafe extern "C" fn inner_dispatch_noop(
+    unsafe extern "C-unwind" fn inner_dispatch_noop(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -2640,6 +2700,7 @@ mod tests {
             let msg_ref = &*msg;
             set_current_reply_channel(msg_ref.reply_channel);
             dispatch(
+                ptr::null_mut(),
                 actor.state,
                 msg_ref.msg_type,
                 msg_ref.data,
@@ -2739,7 +2800,8 @@ mod tests {
     /// specific `hew_actor_self_stop` call (which differs between native and
     /// WASM targets) while still exercising the real scheduler post-activation
     /// `Stopping → Stopped` branch.
-    unsafe extern "C" fn self_stopping_dispatch(
+    unsafe extern "C-unwind" fn self_stopping_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -2757,7 +2819,8 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn self_stopping_dispatch_via_api(
+    unsafe extern "C-unwind" fn self_stopping_dispatch_via_api(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -3147,7 +3210,8 @@ mod tests {
         static ARENA_DURING_DISPATCH: std::sync::atomic::AtomicUsize =
             std::sync::atomic::AtomicUsize::new(0);
 
-        unsafe extern "C" fn capture_arena_dispatch(
+        unsafe extern "C-unwind" fn capture_arena_dispatch(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
             _state: *mut c_void,
             _msg_type: i32,
             _data: *mut c_void,
@@ -3217,7 +3281,8 @@ mod tests {
     fn arena_is_reset_after_activation() {
         // Items must precede all statements to satisfy clippy::items_after_statements.
         // Dispatch allocates from the arena so the cursor advances.
-        unsafe extern "C" fn alloc_in_dispatch(
+        unsafe extern "C-unwind" fn alloc_in_dispatch(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
             _state: *mut c_void,
             _msg_type: i32,
             _data: *mut c_void,
@@ -3282,7 +3347,8 @@ mod tests {
 
         // Outer dispatch: enqueues and runs the inner actor inline (simulating
         // re-entrant activation through hew_actor_ask / hew_sched_run).
-        unsafe extern "C" fn outer_dispatch(
+        unsafe extern "C-unwind" fn outer_dispatch(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
             state: *mut c_void,
             _msg_type: i32,
             _data: *mut c_void,
@@ -3496,7 +3562,8 @@ mod tests {
     /// Expects `state` to point to the owning `HewActor` — set by the test via
     /// `actor.state = actor_ptr.cast()` so that this function can read the
     /// field directly without requiring a global actor slot.
-    unsafe extern "C" fn dispatch_check_reductions(
+    unsafe extern "C-unwind" fn dispatch_check_reductions(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -3825,7 +3892,8 @@ mod tests {
         // Items before statements required by clippy::items_after_statements.
         static ARENA_SEEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-        unsafe extern "C" fn capture_arena_ptr(
+        unsafe extern "C-unwind" fn capture_arena_ptr(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
             _state: *mut c_void,
             _msg_type: i32,
             _data: *mut c_void,
@@ -4451,7 +4519,8 @@ mod tests {
         static DISPATCHED: AtomicI32 = AtomicI32::new(0);
         // SAFETY: `hew_now_ms` is safe to call from dispatch; `request_sleep`
         // is designed to be called from within a dispatch handler.
-        unsafe extern "C" fn sleeping_dispatch(
+        unsafe extern "C-unwind" fn sleeping_dispatch(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
             _state: *mut c_void,
             _msg_type: i32,
             _data: *mut c_void,
@@ -4671,7 +4740,8 @@ mod tests {
     fn pending_sleep_cleared_when_actor_crashes_mid_dispatch() {
         // Items before statements.
         static CRASH_COUNT: AtomicI32 = AtomicI32::new(0);
-        unsafe extern "C" fn crashing_dispatch(
+        unsafe extern "C-unwind" fn crashing_dispatch(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
             _state: *mut c_void,
             _msg_type: i32,
             _data: *mut c_void,
@@ -4694,7 +4764,8 @@ mod tests {
         }
 
         static NORMAL_COUNT: AtomicI32 = AtomicI32::new(0);
-        unsafe extern "C" fn normal_dispatch(
+        unsafe extern "C-unwind" fn normal_dispatch(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
             _state: *mut c_void,
             _msg_type: i32,
             _data: *mut c_void,
@@ -4781,6 +4852,60 @@ mod tests {
         hew_sched_shutdown();
     }
 
+    #[test]
+    fn wasm_scheduler_releases_state_lock_after_handler_panic() {
+        static SUCCESS_COUNT: AtomicI32 = AtomicI32::new(0);
+        unsafe extern "C-unwind" fn panic_then_success_dispatch(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
+            state: *mut c_void,
+            _msg_type: i32,
+            data: *mut c_void,
+            data_size: usize,
+        ) {
+            // SAFETY: the test payload is either null or a queued i32 message body.
+            let should_panic = !data.is_null()
+                && data_size == std::mem::size_of::<i32>()
+                && unsafe { *data.cast::<i32>() } == 1;
+            assert!(
+                !should_panic,
+                "intentional wasm actor-state-lock panic release test"
+            );
+            let count = state.cast::<i32>();
+            // SAFETY: the test actor state is a valid `i32` for this actor lifetime.
+            unsafe { *count += 1 };
+            SUCCESS_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+
+        SUCCESS_COUNT.store(0, Ordering::Relaxed);
+        // SAFETY: the test owns and frees this mailbox.
+        let mb = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
+        let mut state = 0_i32;
+        let mut actor = stub_actor();
+        actor.state = (&raw mut state).cast();
+        actor.state_size = std::mem::size_of::<i32>();
+        actor.dispatch = Some(panic_then_success_dispatch);
+        actor.mailbox = mb.cast();
+        let actor_ptr: *mut HewActor = (&raw mut actor);
+
+        // SAFETY: the queued messages target the stack-owned test actor while active.
+        unsafe {
+            queue_wasm_message(actor_ptr, 1);
+            queue_wasm_message(actor_ptr, 2);
+            activate_actor_wasm(actor_ptr);
+        }
+
+        assert_eq!(
+            SUCCESS_COUNT.load(Ordering::Relaxed),
+            1,
+            "second WASM dispatch should run after the first handler panics"
+        );
+        assert_eq!(state, 1);
+    }
+
     // ── Fix 1 regression: activation-entry PENDING clear ────────────────
 
     /// Regression: `PENDING_SLEEP_DEADLINE_MS` set before activation (e.g.,
@@ -4862,7 +4987,8 @@ mod tests {
     #[test]
     fn message_to_sleeping_actor_queues_without_early_wake() {
         static DISPATCHED: AtomicI32 = AtomicI32::new(0);
-        unsafe extern "C" fn counting_dispatch(
+        unsafe extern "C-unwind" fn counting_dispatch(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
             _state: *mut c_void,
             _msg_type: i32,
             _data: *mut c_void,
@@ -5020,7 +5146,8 @@ mod tests {
         // Declare items before statements (items-after-statements lint).
         static DRAIN_DISPATCHED: AtomicI32 = AtomicI32::new(0);
         // SAFETY: `request_sleep` is safe to call from dispatch context.
-        unsafe extern "C" fn sleep_requesting_dispatch(
+        unsafe extern "C-unwind" fn sleep_requesting_dispatch(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
             _state: *mut c_void,
             _msg_type: i32,
             _data: *mut c_void,
@@ -5099,7 +5226,8 @@ mod tests {
         /// Phase 1 (`msg_type` == 1): retain the reply channel, request a 1 ms
         /// cooperative sleep, self-send a continuation.
         /// Phase 2 (`msg_type` == 2): deposit the reply on the stored channel.
-        unsafe extern "C" fn sleep_then_reply_dispatch(
+        unsafe extern "C-unwind" fn sleep_then_reply_dispatch(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
             _state: *mut c_void,
             msg_type: i32,
             _data: *mut c_void,

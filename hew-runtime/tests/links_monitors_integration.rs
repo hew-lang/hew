@@ -152,7 +152,8 @@ impl ExitDispatchSignal {
 
 static EXIT_DISPATCH_SIGNAL: ExitDispatchSignal = ExitDispatchSignal::new();
 
-unsafe extern "C" fn test_dispatch(
+unsafe extern "C-unwind" fn test_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,
@@ -161,7 +162,8 @@ unsafe extern "C" fn test_dispatch(
     // Simple test dispatch - does nothing
 }
 
-unsafe extern "C" fn monitor_dispatch(
+unsafe extern "C-unwind" fn monitor_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     msg_type: i32,
     data: *mut c_void,
@@ -170,7 +172,8 @@ unsafe extern "C" fn monitor_dispatch(
     MONITOR_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
 }
 
-unsafe extern "C" fn exit_dispatch(
+unsafe extern "C-unwind" fn exit_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     msg_type: i32,
     data: *mut c_void,

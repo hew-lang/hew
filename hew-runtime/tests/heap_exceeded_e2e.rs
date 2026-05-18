@@ -150,7 +150,8 @@ const ALLOC_OVER_CAP_BYTES: usize = 1024;
 /// `hew_arena_malloc` returns null AND triggers
 /// `try_direct_longjmp_with_code(HEW_TRAP_HEAP_EXCEEDED)`, unwinding through
 /// the scheduler's sigsetjmp frame back to the supervisor seam.
-unsafe extern "C" fn capped_dispatch(
+unsafe extern "C-unwind" fn capped_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     msg_type: i32,
     _data: *mut c_void,

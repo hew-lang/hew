@@ -121,7 +121,8 @@ unsafe fn wait_for_crash_report_signal(log_before: i32, timeout: Duration) -> Op
 }
 
 /// Normal dispatch: counts and signals.
-unsafe extern "C" fn counting_dispatch(
+unsafe extern "C-unwind" fn counting_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,
@@ -160,7 +161,8 @@ fn overflow_trap_surfaces_as_actor_crash_not_process_abort() {
 
     // Dispatch that selects behaviour based on message type:
     // MSG_NORMAL → count and signal; MSG_TRAP → execute hardware trap.
-    unsafe extern "C" fn selectable_dispatch(
+    unsafe extern "C-unwind" fn selectable_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         msg_type: i32,
         _data: *mut c_void,

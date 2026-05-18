@@ -20,6 +20,7 @@
 
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -68,6 +69,32 @@ impl Drop for ActivationMetricsGuard {
 
 #[cfg(test)]
 static ACTIVATE_PRE_REENQUEUE_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> = PoisonSafe::new(None);
+
+#[cfg(any(test, debug_assertions))]
+static INJECT_NULL_LOCK_SEAT_ONCE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(any(test, debug_assertions))]
+pub fn inject_null_lock_seat_once_for_test() {
+    INJECT_NULL_LOCK_SEAT_ONCE.store(true, Ordering::Release);
+}
+
+#[cfg(any(test, debug_assertions))]
+fn dispatch_lock_seat_for_actor(
+    actor: *mut HewActor,
+) -> *mut crate::execution_context::HewActorStateLockState {
+    if INJECT_NULL_LOCK_SEAT_ONCE.swap(false, Ordering::AcqRel) {
+        std::ptr::null_mut()
+    } else {
+        crate::actor::actor_state_lock_seat(actor)
+    }
+}
+
+#[cfg(not(any(test, debug_assertions)))]
+fn dispatch_lock_seat_for_actor(
+    actor: *mut HewActor,
+) -> *mut crate::execution_context::HewActorStateLockState {
+    crate::actor::actor_state_lock_seat(actor)
+}
 
 #[cfg(test)]
 fn run_activate_pre_reenqueue_hook(actor: *mut HewActor) {
@@ -770,7 +797,7 @@ fn activate_actor(actor: *mut HewActor) {
                         trace: msg_ref.trace_context,
                         partition_policy: std::ptr::null_mut(),
                         prev_context: crate::execution_context::current_context(),
-                        lock_seat: std::ptr::null_mut(),
+                        lock_seat: dispatch_lock_seat_for_actor(actor),
                         _reserved: [0],
                     };
                     let prev_context = execution_context.prev_context;
@@ -779,11 +806,99 @@ fn activate_actor(actor: *mut HewActor) {
                     debug_assert_eq!(installed_prev, prev_context);
                     crate::tracing::hew_trace_begin(a.id, msg_ref.msg_type);
 
-                    // SAFETY: `dispatch` and `a.state` are valid; message fields
-                    // come from a well-formed `HewMsgNode`.
-                    unsafe {
-                        dispatch(a.state, msg_ref.msg_type, dispatch_data, dispatch_size);
+                    // SAFETY: `execution_context` is the scheduler-owned stack
+                    // context for this dispatch and its lock seat came from the
+                    // actor's registered sidecar. The helper fails closed when
+                    // the seat is absent or poisoned.
+                    let lock_acquired = unsafe {
+                        crate::actor::hew_actor_state_lock_acquire_for_context(
+                            &raw mut execution_context,
+                        )
+                    } == crate::actor::HEW_ACTOR_STATE_LOCK_OK;
+                    if !lock_acquired {
+                        // Refuse to enter the handler without the per-actor lock.
+                        // SAFETY: `actor` is the actor currently owned by this
+                        // scheduler frame.
+                        unsafe {
+                            crate::actor::hew_actor_trap(
+                                actor,
+                                crate::actor::HEW_ACTOR_STATE_LOCK_ERR,
+                            );
+                        }
+                        crate::signal::clear_dispatch_recovery();
+                        crate::tracing::hew_trace_end(a.id, msg_ref.msg_type);
+                        let restored_context =
+                            crate::execution_context::set_current_context(prev_context);
+                        debug_assert_eq!(restored_context, &raw mut execution_context);
+
+                        let reply_consumed = current_reply_channel_consumed();
+                        let crash_reply = clear_current_reply_channel();
+                        if !reply_consumed && !crash_reply.is_null() {
+                            // SAFETY: crash_reply is a valid HewReplyChannel pointer.
+                            unsafe {
+                                let _ = crate::reply_channel::hew_reply(
+                                    crash_reply.cast(),
+                                    std::ptr::null_mut(),
+                                    0,
+                                );
+                            }
+                        }
+                        // SAFETY: msg is exclusively owned by this worker.
+                        unsafe {
+                            (*msg).reply_channel = std::ptr::null_mut();
+                            hew_msg_node_free(msg);
+                        }
+                        crashed = true;
+                        break;
                     }
+
+                    // SAFETY: `dispatch`, `ctx`, and `a.state` are valid;
+                    // message fields come from a well-formed `HewMsgNode`.
+                    let dispatch_result = catch_unwind(AssertUnwindSafe(|| unsafe {
+                        dispatch(
+                            &raw mut execution_context,
+                            a.state,
+                            msg_ref.msg_type,
+                            dispatch_data,
+                            dispatch_size,
+                        );
+                    }));
+
+                    // SAFETY: `execution_context.lock_seat` was initialized from the
+                    // live actor immediately before the matching acquire.
+                    let release_result = unsafe {
+                        crate::actor::hew_actor_state_lock_release_for_context(
+                            &raw mut execution_context,
+                        )
+                    };
+                    if release_result != crate::actor::HEW_ACTOR_STATE_LOCK_OK {
+                        // SAFETY: `actor` is the actor currently owned by this
+                        // scheduler frame.
+                        unsafe {
+                            crate::actor::hew_actor_trap(
+                                actor,
+                                crate::actor::HEW_ACTOR_STATE_LOCK_ERR,
+                            );
+                        }
+                        crate::signal::clear_dispatch_recovery();
+                        crate::tracing::hew_trace_end(a.id, msg_ref.msg_type);
+                        let restored_context =
+                            crate::execution_context::set_current_context(prev_context);
+                        debug_assert_eq!(restored_context, &raw mut execution_context);
+                        let _ = clear_current_reply_channel();
+                        // SAFETY: msg is exclusively owned by this worker.
+                        unsafe {
+                            (*msg).reply_channel = std::ptr::null_mut();
+                            hew_msg_node_free(msg);
+                        }
+                        crashed = true;
+                        break;
+                    }
+
+                    if dispatch_result.is_err() {
+                        set_last_error("actor dispatch panicked");
+                    }
+
                     let reply_consumed = current_reply_channel_consumed();
                     clear_current_reply_channel();
 
@@ -1332,7 +1447,8 @@ mod tests {
         assert_ne!(a, c);
     }
 
-    unsafe extern "C" fn noop_dispatch(
+    unsafe extern "C-unwind" fn noop_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut std::ffi::c_void,
         _msg_type: i32,
         _data: *mut std::ffi::c_void,

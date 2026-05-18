@@ -145,7 +145,8 @@ impl DownSignal {
 static EXIT_SIGNAL: ExitSignal = ExitSignal::new();
 static DOWN_SIGNAL: DownSignal = DownSignal::new();
 
-unsafe extern "C" fn noop_dispatch(
+unsafe extern "C-unwind" fn noop_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,
@@ -153,7 +154,8 @@ unsafe extern "C" fn noop_dispatch(
 ) {
 }
 
-unsafe extern "C" fn exit_capture_dispatch(
+unsafe extern "C-unwind" fn exit_capture_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     msg_type: i32,
     data: *mut c_void,
@@ -162,7 +164,8 @@ unsafe extern "C" fn exit_capture_dispatch(
     EXIT_SIGNAL.record(msg_type, data, data_size);
 }
 
-unsafe extern "C" fn down_capture_dispatch(
+unsafe extern "C-unwind" fn down_capture_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     msg_type: i32,
     data: *mut c_void,

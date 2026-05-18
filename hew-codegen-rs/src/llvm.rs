@@ -61,8 +61,8 @@ use std::process::Command;
 
 use hew_mir::{
     CheckedMirFunction, CmpPred, CooperateKind, CooperateSite, ElabDrop, ElaboratedMirFunction,
-    ExitPath, FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, Place,
-    RawMirFunction, RecordLayout, Terminator, TrapKind,
+    ExitPath, FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness,
+    IrPipeline, Place, RawMirFunction, RecordLayout, Terminator, TrapKind,
 };
 use hew_types::ResolvedTy;
 
@@ -3955,7 +3955,13 @@ fn declare_function<'ctx>(
     // are both legal LLVM value-param types for the current spine subset).
     // The parameter-prologue in `lower_function` stores each LLVM function
     // argument into the corresponding `locals[i]` alloca slot.
-    let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(func.params.len());
+    let ctx_ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(
+        func.params.len() + usize::from(func.call_conv == FunctionCallConv::ActorHandler),
+    );
+    if func.call_conv == FunctionCallConv::ActorHandler {
+        param_tys.push(ctx_ptr_ty.into());
+    }
     for param_ty in &func.params {
         let llvm_ty = resolve_ty(ctx, param_ty, record_layouts)?;
         param_tys.push(match llvm_ty {
@@ -4065,13 +4071,17 @@ fn lower_function<'ctx>(
         let param_idx_u32 = u32::try_from(param_idx).map_err(|_| {
             CodegenError::FailClosed("function exceeds u32::MAX params — impossible".into())
         })?;
-        let llvm_param = llvm_fn.get_nth_param(param_idx as u32).ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "function `{}` has no LLVM param at index {param_idx}; \
+        let llvm_param_idx =
+            param_idx + usize::from(func.call_conv == FunctionCallConv::ActorHandler);
+        let llvm_param = llvm_fn
+            .get_nth_param(llvm_param_idx as u32)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "function `{}` has no LLVM param at index {llvm_param_idx}; \
                      declare_function and lower_function param counts disagree",
-                func.name
-            ))
-        })?;
+                    func.name
+                ))
+            })?;
         let (slot, _slot_ty) = *locals.get(&param_idx_u32).ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "function `{}` has no local slot for param index {param_idx}",
@@ -4296,6 +4306,7 @@ mod tests {
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: return_ty.clone(),
+            call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![return_ty.clone()],
             blocks: vec![BasicBlock {
@@ -4333,6 +4344,47 @@ mod tests {
         assert!(m.verify().is_ok(), "const-42 module must pass LLVM verify");
     }
 
+    #[test]
+    fn actor_handler_signature_leads_with_execution_context_pointer() {
+        let handler = RawMirFunction {
+            name: "handler".to_string(),
+            return_ty: ResolvedTy::I64,
+            call_conv: FunctionCallConv::ActorHandler,
+            params: vec![ResolvedTy::I64],
+            locals: vec![ResolvedTy::I64],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(0),
+                }],
+                terminator: Terminator::Return,
+            }],
+            decisions: Vec::new(),
+        };
+        let pipeline = IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![handler],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
+        };
+        let ctx = Context::create();
+        let m = build_module(&ctx, &pipeline, "handler_ctx_test")
+            .expect("actor-handler module must build");
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("define internal i64 @handler(ptr %0, i64 %1)"),
+            "handler ABI must lead with opaque HewExecutionContext* before user params:\n{ir}"
+        );
+        assert!(
+            !ir.contains("hew_actor_state_lock_acquire"),
+            "actor-state locking belongs in the scheduler wrapper, not emitted handler IR:\n{ir}"
+        );
+    }
+
     // `String` is now a lowerable return type (maps to opaque `ptr`).
     // This test exercises a String-returning function with a `StringLit`
     // instruction that populates the return slot. It must build and verify.
@@ -4344,6 +4396,7 @@ mod tests {
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: return_ty.clone(),
+            call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![return_ty.clone()],
             blocks: vec![BasicBlock {
@@ -4390,6 +4443,7 @@ mod tests {
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: return_ty.clone(),
+            call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: Vec::new(),
             blocks: vec![BasicBlock {
@@ -4429,6 +4483,7 @@ mod tests {
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
+            call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64],
             blocks: vec![BasicBlock {

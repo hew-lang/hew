@@ -9,12 +9,14 @@ use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use hew_runtime::actor::{
-    hew_actor_self, hew_actor_state_lock_acquire, hew_actor_state_lock_poison_after_panic,
+    hew_actor_get_error, hew_actor_state_lock_acquire, hew_actor_state_lock_poison_after_panic,
     hew_actor_state_lock_release, hew_actor_state_lock_release_after_panic,
     HEW_ACTOR_STATE_LOCK_ERR, HEW_ACTOR_STATE_LOCK_OK,
 };
 use hew_runtime::hew_last_error;
 use hew_runtime_testkit::{ensure_scheduler, TestActor};
+
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct DispatchSignal {
     count: Mutex<i32>,
@@ -57,7 +59,8 @@ impl DispatchSignal {
     }
 }
 
-unsafe extern "C" fn noop_dispatch(
+unsafe extern "C-unwind" fn noop_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,
@@ -67,6 +70,7 @@ unsafe extern "C" fn noop_dispatch(
 
 #[test]
 fn state_lock_serializes_parallel_dispatch_attempts() {
+    let _test_lock = TEST_LOCK.lock().unwrap();
     let actor = TestActor::spawn(noop_dispatch);
     let actor_addr = actor.as_ptr() as usize;
 
@@ -103,6 +107,7 @@ fn state_lock_serializes_parallel_dispatch_attempts() {
 
 #[test]
 fn state_lock_released_after_dispatch_panic() {
+    let _test_lock = TEST_LOCK.lock().unwrap();
     let actor = TestActor::spawn(noop_dispatch);
 
     assert_eq!(
@@ -126,6 +131,7 @@ fn state_lock_released_after_dispatch_panic() {
 
 #[test]
 fn poisoned_state_lock_fails_closed_with_typed_diagnostic() {
+    let _test_lock = TEST_LOCK.lock().unwrap();
     let actor = TestActor::spawn(noop_dispatch);
 
     assert_eq!(
@@ -151,14 +157,14 @@ fn poisoned_state_lock_fails_closed_with_typed_diagnostic() {
 static COUNTER_SIGNAL: DispatchSignal = DispatchSignal::new();
 static COUNTER_ERRORS: AtomicI32 = AtomicI32::new(0);
 
-unsafe extern "C" fn locked_counter_dispatch(
+unsafe extern "C-unwind" fn locked_counter_dispatch(
+    ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     state: *mut c_void,
     _msg_type: i32,
     data: *mut c_void,
     size: usize,
 ) {
-    let actor = hew_actor_self();
-    if unsafe { hew_actor_state_lock_acquire(actor) } != HEW_ACTOR_STATE_LOCK_OK {
+    if ctx.is_null() || unsafe { (*ctx).lock_seat.is_null() } {
         COUNTER_ERRORS.fetch_add(1, Ordering::Relaxed);
         return;
     }
@@ -167,14 +173,12 @@ unsafe extern "C" fn locked_counter_dispatch(
         let counter = state.cast::<i32>();
         unsafe { *counter += n };
     }
-    if unsafe { hew_actor_state_lock_release(actor) } != HEW_ACTOR_STATE_LOCK_OK {
-        COUNTER_ERRORS.fetch_add(1, Ordering::Relaxed);
-    }
     COUNTER_SIGNAL.record();
 }
 
 #[test]
-fn counter_actor_with_guarded_concurrent_inc_is_linearized() {
+fn counter_actor_with_scheduler_guarded_concurrent_inc_is_linearized() {
+    let _test_lock = TEST_LOCK.lock().unwrap();
     ensure_scheduler();
     COUNTER_SIGNAL.reset();
     COUNTER_ERRORS.store(0, Ordering::Relaxed);
@@ -209,13 +213,91 @@ fn counter_actor_with_guarded_concurrent_inc_is_linearized() {
     assert_eq!(
         COUNTER_ERRORS.load(Ordering::Relaxed),
         0,
-        "guarded dispatch should not report lock ABI failures"
+        "scheduler-guarded dispatch should receive a non-null lock seat"
     );
 
     let final_state = unsafe { *(*actor.as_ptr()).state.cast::<i32>() };
     assert_eq!(
         final_state, expected,
         "guarded counter state must equal the sum of accepted messages"
+    );
+}
+
+static PANIC_RELEASE_SIGNAL: DispatchSignal = DispatchSignal::new();
+
+unsafe extern "C-unwind" fn panic_then_count_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
+    state: *mut c_void,
+    msg_type: i32,
+    _data: *mut c_void,
+    _size: usize,
+) {
+    assert_ne!(
+        msg_type, 1,
+        "intentional actor-state-lock panic release test"
+    );
+    let counter = state.cast::<i32>();
+    unsafe { *counter += 1 };
+    PANIC_RELEASE_SIGNAL.record();
+}
+
+#[test]
+fn scheduler_releases_state_lock_after_handler_panic() {
+    let _test_lock = TEST_LOCK.lock().unwrap();
+    ensure_scheduler();
+    PANIC_RELEASE_SIGNAL.reset();
+
+    let mut initial = 0_i32;
+    let actor = TestActor::spawn_with_state(&mut initial, panic_then_count_dispatch);
+
+    actor.send_empty(1);
+    actor.send_empty(2);
+
+    assert!(
+        PANIC_RELEASE_SIGNAL.wait_for(1, Duration::from_secs(10)),
+        "second dispatch did not run after the first handler panicked"
+    );
+    let final_state = unsafe { *(*actor.as_ptr()).state.cast::<i32>() };
+    assert_eq!(final_state, 1);
+}
+
+static NULL_LOCK_SIGNAL: DispatchSignal = DispatchSignal::new();
+
+unsafe extern "C-unwind" fn null_lock_must_not_enter_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
+    _state: *mut c_void,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _size: usize,
+) {
+    NULL_LOCK_SIGNAL.record();
+}
+
+#[test]
+fn dispatch_refuses_null_context_lock_seat() {
+    let _test_lock = TEST_LOCK.lock().unwrap();
+    ensure_scheduler();
+    NULL_LOCK_SIGNAL.reset();
+
+    let actor = TestActor::spawn(null_lock_must_not_enter_dispatch);
+    hew_runtime::scheduler::inject_null_lock_seat_once_for_test();
+    actor.send_empty(1);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while unsafe { hew_actor_get_error(actor.as_ptr()) } == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "null lock-seat dispatch did not trap the actor"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        !NULL_LOCK_SIGNAL.wait_for(1, Duration::from_millis(50)),
+        "dispatch body must not run when ctx->lock_seat is null"
+    );
+    assert_eq!(
+        unsafe { hew_actor_get_error(actor.as_ptr()) },
+        HEW_ACTOR_STATE_LOCK_ERR
     );
 }
 

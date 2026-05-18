@@ -311,7 +311,8 @@ mod tests {
 
     static NEXT_TEST_ACTOR_ID: AtomicU64 = AtomicU64::new(1);
 
-    unsafe extern "C" fn count_dispatch(
+    unsafe extern "C-unwind" fn count_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,

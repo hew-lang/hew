@@ -477,6 +477,7 @@ fn lower_function(
     let raw = RawMirFunction {
         name: emit_name.clone(),
         return_ty: return_ty.clone(),
+        call_conv: crate::model::FunctionCallConv::Default,
         params: func
             .params
             .iter()
@@ -3715,6 +3716,7 @@ impl Builder {
         let raw = RawMirFunction {
             name: shim_name.to_string(),
             return_ty: ret_ty.clone(),
+            call_conv: crate::model::FunctionCallConv::Default,
             params: raw_params,
             locals: builder.locals.clone(),
             blocks,

@@ -1564,7 +1564,8 @@ unsafe fn apply_restart(sup: &mut HewSupervisor, failed_index: usize, exit_state
 }
 
 /// Supervisor dispatch function (handles system messages).
-unsafe extern "C" fn supervisor_dispatch(
+unsafe extern "C-unwind" fn supervisor_dispatch(
+    _ctx: *mut crate::execution_context::HewExecutionContext,
     state: *mut c_void,
     msg_type: i32,
     data: *mut c_void,
@@ -1974,7 +1975,8 @@ mod tests {
         })
     }
 
-    unsafe extern "C" fn noop_child_dispatch(
+    unsafe extern "C-unwind" fn noop_child_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,

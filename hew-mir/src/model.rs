@@ -65,6 +65,7 @@ pub struct ThirFunction {
 pub struct RawMirFunction {
     pub name: String,
     pub return_ty: ResolvedTy,
+    pub call_conv: FunctionCallConv,
     /// Declared parameter types in declaration order. `params[i]` is the
     /// `ResolvedTy` of the i-th function parameter. Codegen uses this to
     /// declare the LLVM function signature and to emit the parameter-prologue
@@ -84,6 +85,13 @@ pub struct RawMirFunction {
     pub locals: Vec<ResolvedTy>,
     pub blocks: Vec<BasicBlock>,
     pub decisions: Vec<DecisionFact>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FunctionCallConv {
+    #[default]
+    Default,
+    ActorHandler,
 }
 
 #[derive(Debug, Clone, PartialEq)]

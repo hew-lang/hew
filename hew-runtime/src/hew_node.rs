@@ -2267,7 +2267,8 @@ mod tests {
         (node, port)
     }
 
-    unsafe extern "C" fn noop_dispatch(
+    unsafe extern "C-unwind" fn noop_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -3160,7 +3161,8 @@ mod tests {
     /// Stores the `msg_type` of the most-recently received remote message.
     static SEND_PROBE_MSG_TYPE: AtomicU32 = AtomicU32::new(0);
 
-    unsafe extern "C" fn send_probe_dispatch(
+    unsafe extern "C-unwind" fn send_probe_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         msg_type: i32,
         _data: *mut c_void,
@@ -3259,7 +3261,8 @@ mod tests {
     // ── Test: remote ask / reply round-trip ───────────────────────────────
 
     /// Echo-double dispatch: reads a u32 from `data`, replies with `value * 2`.
-    unsafe extern "C" fn ask_probe_dispatch(
+    unsafe extern "C-unwind" fn ask_probe_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         data: *mut c_void,
@@ -3286,7 +3289,8 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn void_ask_probe_dispatch(
+    unsafe extern "C-unwind" fn void_ask_probe_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -3302,7 +3306,8 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn orphaned_void_ask_dispatch(
+    unsafe extern "C-unwind" fn orphaned_void_ask_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -3311,7 +3316,8 @@ mod tests {
         crate::actor::hew_actor_self_stop();
     }
 
-    unsafe extern "C" fn blocked_ask_probe_dispatch(
+    unsafe extern "C-unwind" fn blocked_ask_probe_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,

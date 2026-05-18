@@ -310,6 +310,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &record_field_orders,
                     &module_fn_names,
                     &module.call_site_type_args,
+                    crate::model::FunctionCallConv::Default,
                 );
                 thir.push(lowered.thir);
                 raw_mir.push(lowered.raw);
@@ -378,6 +379,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             &record_field_orders,
             &module_fn_names,
             &module.call_site_type_args,
+            crate::model::FunctionCallConv::Default,
         );
         thir.push(lowered.thir);
         raw_mir.push(lowered.raw);
@@ -416,6 +418,34 @@ struct LoweredFunction {
     record_layouts: Vec<crate::model::RecordLayout>,
 }
 
+/// Insert execution-context carrier markers into an actor-handler CFG.
+///
+/// The entry block starts with `EnterContext`; every terminal block (`Return`
+/// and `Trap` in today's MIR) ends with `ExitContext` immediately before the
+/// terminator. The helper is idempotent so synthetic tests and future actor-body
+/// producers can call it before validation without double-inserting markers.
+pub fn bracket_actor_handler_blocks(blocks: &mut [BasicBlock]) {
+    if let Some(entry) = blocks.first_mut() {
+        if !matches!(entry.instructions.first(), Some(Instr::EnterContext)) {
+            entry.instructions.insert(0, Instr::EnterContext);
+        }
+    }
+
+    for block in blocks {
+        if matches!(
+            block.terminator,
+            Terminator::Return | Terminator::Trap { .. }
+        ) && !matches!(block.instructions.last(), Some(Instr::ExitContext))
+        {
+            block.instructions.push(Instr::ExitContext);
+        }
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "lowering threads shared module tables plus the call-convention discriminator"
+)]
 fn lower_function(
     func: &HirFn,
     emit_name: String,
@@ -424,6 +454,7 @@ fn lower_function(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    call_conv: crate::model::FunctionCallConv,
 ) -> LoweredFunction {
     let mut builder = Builder {
         type_classes: type_classes.clone(),
@@ -454,7 +485,10 @@ fn lower_function(
     // singleton blocks vector; Slice 2+ may surface multiple blocks
     // when `If` (and later `Match` / loops) split the CFG. The order is
     // monotone in block id.
-    let blocks = builder.finalize_blocks(Terminator::Return);
+    let mut blocks = builder.finalize_blocks(Terminator::Return);
+    if call_conv == crate::model::FunctionCallConv::ActorHandler {
+        bracket_actor_handler_blocks(&mut blocks);
+    }
     // THIR's `statements` is the union of every block's checker stream
     // in CFG-construction order — the THIR snapshot's job is preserving
     // the pre-CFG flat-stream shape for diagnostic readers that haven't
@@ -477,7 +511,7 @@ fn lower_function(
     let raw = RawMirFunction {
         name: emit_name.clone(),
         return_ty: return_ty.clone(),
-        call_conv: crate::model::FunctionCallConv::Default,
+        call_conv,
         params: func
             .params
             .iter()
@@ -492,7 +526,10 @@ fn lower_function(
     // stream. The `MirDiagnostic` surface that the CLI rejects on is
     // projected from these checks — there is one source of truth for
     // move/borrow/init legality.
-    let dataflow_result = check_function(&builder, &raw.blocks, func);
+    let mut dataflow_result = check_function(&builder, &raw.blocks, func);
+    dataflow_result
+        .checks
+        .extend(crate::model::validate_context_markers(&raw));
     let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
         .checks
         .iter()
@@ -3976,6 +4013,27 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
                    partial drop plan (LESSONS cleanup-all-exits)"
                 .to_string(),
         }),
+        MirCheck::ContextBoundaryViolation {
+            function,
+            block,
+            kind,
+            reason,
+        } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::ContextBoundaryViolation {
+                function: function.clone(),
+                block: *block,
+                kind,
+                reason: reason.clone(),
+            },
+            note: "actor-handler execution context markers are structurally invalid".to_string(),
+        }),
+        MirCheck::ContextBindingEscapes { place, block } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::ContextBindingEscapes {
+                place: *place,
+                block: *block,
+            },
+            note: "context-derived MIR place escapes past ExitContext".to_string(),
+        }),
         // No construction surface in the v0.5 integer spine. The
         // corresponding `MirDiagnosticKind` projections will land
         // alongside the construction surface for borrows, generators,
@@ -4762,6 +4820,8 @@ fn transfer_block_split(
 )]
 fn instr_places(instr: &Instr) -> Vec<Place> {
     match instr {
+        Instr::EnterContext | Instr::ExitContext | Instr::CheckCancellation => Vec::new(),
+        Instr::ContextField { dest, .. } => vec![*dest],
         // ConstI64 and StringLit both produce only their dest place.
         Instr::ConstI64 { dest, .. } | Instr::StringLit { dest, .. } => vec![*dest],
         Instr::IntAdd { dest, lhs, rhs }

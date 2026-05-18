@@ -60,9 +60,9 @@ use std::path::Path;
 use std::process::Command;
 
 use hew_mir::{
-    CheckedMirFunction, CmpPred, CooperateKind, CooperateSite, ElabDrop, ElaboratedMirFunction,
-    ExitPath, FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness,
-    IrPipeline, Place, RawMirFunction, RecordLayout, Terminator, TrapKind,
+    validate_context_markers, CheckedMirFunction, CmpPred, CooperateKind, CooperateSite, ElabDrop,
+    ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp,
+    IntSignedness, IrPipeline, Place, RawMirFunction, RecordLayout, Terminator, TrapKind,
 };
 use hew_types::ResolvedTy;
 
@@ -75,6 +75,21 @@ use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, StructType};
 use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 use inkwell::IntPredicate;
+
+// Mirrored from `hew-runtime/src/execution_context.rs`'s HEW_CTX_OFFSET_* ABI
+// constants. Runtime asserts those offsets with `offset_of!`; codegen keeps a
+// copy so the compiler backend does not depend on the runtime crate.
+const HEW_CTX_OFFSET_ACTOR: usize = 0;
+const HEW_CTX_OFFSET_ACTOR_ID: usize = 8;
+const HEW_CTX_OFFSET_PARENT_SUPERVISOR: usize = 16;
+const HEW_CTX_OFFSET_SUPERVISOR_CHILD_INDEX: usize = 24;
+const HEW_CTX_OFFSET_FLAGS: usize = 28;
+const HEW_CTX_OFFSET_CANCEL_TOKEN: usize = 32;
+const HEW_CTX_OFFSET_TASK_SCOPE: usize = 40;
+const HEW_CTX_OFFSET_ARENA: usize = 48;
+const HEW_CTX_OFFSET_PARTITION_POLICY: usize = 96;
+const HEW_CTX_OFFSET_PREV_CONTEXT: usize = 104;
+const HEW_CTX_OFFSET_LOCK_SEAT: usize = 112;
 
 // ---------------------------------------------------------------------------
 // Error model
@@ -359,6 +374,7 @@ struct FnCtx<'a, 'ctx> {
     builder: Builder<'ctx>,
     return_slot: PointerValue<'ctx>,
     return_ty: BasicTypeEnum<'ctx>,
+    execution_context: Option<PointerValue<'ctx>>,
     /// Local-register id → (stack slot, slot's LLVM type). Keyed by the
     /// `Place::Local(N)` index — an MIR identity, not a checker derivative.
     locals: HashMap<u32, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
@@ -1103,7 +1119,12 @@ fn emit_spawn_task_closure(
     Ok(())
 }
 
-fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()> {
+fn lower_instruction(
+    fn_ctx: &FnCtx<'_, '_>,
+    instr: &Instr,
+    block_id: u32,
+    drop_plans: &[(ExitPath, hew_mir::DropPlan)],
+) -> CodegenResult<()> {
     let ctx = fn_ctx
         .builder
         .get_insert_block()
@@ -1115,6 +1136,24 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
     })?;
 
     match instr {
+        Instr::EnterContext | Instr::ExitContext => {
+            if fn_ctx.execution_context.is_none() {
+                return Err(CodegenError::FailClosed(
+                    "context boundary marker requires an actor-handler execution context".into(),
+                ));
+            }
+        }
+        Instr::CheckCancellation => {
+            if fn_ctx.execution_context.is_none() {
+                return Err(CodegenError::FailClosed(
+                    "CheckCancellation requires an actor-handler execution context".into(),
+                ));
+            }
+            emit_cooperate_check(fn_ctx, block_id, drop_plans)?;
+        }
+        Instr::ContextField { dest, offset } => {
+            lower_context_field(fn_ctx, *dest, *offset)?;
+        }
         Instr::ConstI64 { dest, value } => {
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let int_ty = match dest_ty {
@@ -2245,6 +2284,69 @@ fn lower_make_closure(
         .builder
         .build_store(env_field, env_ptr)
         .map_err(|e| CodegenError::Llvm(format!("MakeClosure env store: {e:?}")))?;
+    Ok(())
+}
+
+fn context_field_matches_dest<'ctx>(
+    ctx: &'ctx Context,
+    offset: usize,
+    dest_ty: BasicTypeEnum<'ctx>,
+) -> bool {
+    let ptr_ok = matches!(dest_ty, BasicTypeEnum::PointerType(_));
+    let int_bits = match dest_ty {
+        BasicTypeEnum::IntType(int_ty) => Some(int_ty.get_bit_width()),
+        _ => None,
+    };
+    match offset {
+        HEW_CTX_OFFSET_ACTOR
+        | HEW_CTX_OFFSET_PARENT_SUPERVISOR
+        | HEW_CTX_OFFSET_CANCEL_TOKEN
+        | HEW_CTX_OFFSET_TASK_SCOPE
+        | HEW_CTX_OFFSET_ARENA
+        | HEW_CTX_OFFSET_PARTITION_POLICY
+        | HEW_CTX_OFFSET_PREV_CONTEXT
+        | HEW_CTX_OFFSET_LOCK_SEAT => ptr_ok,
+        HEW_CTX_OFFSET_ACTOR_ID => int_bits == Some(ctx.i64_type().get_bit_width()),
+        HEW_CTX_OFFSET_SUPERVISOR_CHILD_INDEX | HEW_CTX_OFFSET_FLAGS => {
+            int_bits == Some(ctx.i32_type().get_bit_width())
+        }
+        _ => false,
+    }
+}
+
+fn lower_context_field(fn_ctx: &FnCtx<'_, '_>, dest: Place, offset: usize) -> CodegenResult<()> {
+    let ctx_ptr = fn_ctx.execution_context.ok_or_else(|| {
+        CodegenError::FailClosed("ContextField requires an actor-handler execution context".into())
+    })?;
+    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+    if !context_field_matches_dest(fn_ctx.ctx, offset, dest_ty) {
+        return Err(CodegenError::FailClosed(format!(
+            "ContextField offset {offset} is not valid for destination type {dest_ty:?}"
+        )));
+    }
+    let offset_u64 = u64::try_from(offset).map_err(|_| {
+        CodegenError::FailClosed(format!("ContextField offset {offset} exceeds u64::MAX"))
+    })?;
+    let offset_val = fn_ctx.ctx.i64_type().const_int(offset_u64, false);
+    let field_ptr = unsafe {
+        fn_ctx
+            .builder
+            .build_gep(
+                fn_ctx.ctx.i8_type(),
+                ctx_ptr,
+                &[offset_val],
+                &format!("ctx_field_{offset}_ptr"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("ContextField gep: {e:?}")))?
+    };
+    let field_val = fn_ctx
+        .builder
+        .build_load(dest_ty, field_ptr, &format!("ctx_field_{offset}_load"))
+        .map_err(|e| CodegenError::Llvm(format!("ContextField load: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, field_val)
+        .map_err(|e| CodegenError::Llvm(format!("ContextField store: {e:?}")))?;
     Ok(())
 }
 
@@ -4019,6 +4121,13 @@ fn lower_function<'ctx>(
             func.name
         ))
     })?;
+    let context_marker_findings = validate_context_markers(func);
+    if !context_marker_findings.is_empty() {
+        return Err(CodegenError::FailClosed(format!(
+            "function `{}` has invalid execution-context markers: {context_marker_findings:?}",
+            func.name
+        )));
+    }
     let builder = ctx.create_builder();
 
     let entry_block = func.blocks.first().ok_or_else(|| {
@@ -4043,6 +4152,18 @@ fn lower_function<'ctx>(
     let return_slot = builder
         .build_alloca(return_ty_llvm, "return_slot")
         .map_err(|e| CodegenError::Llvm(format!("alloca return_slot: {e:?}")))?;
+
+    let execution_context = if func.call_conv == FunctionCallConv::ActorHandler {
+        let param = llvm_fn.get_nth_param(0).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "actor handler `{}` has no leading execution-context LLVM parameter",
+                func.name
+            ))
+        })?;
+        Some(param.into_pointer_value())
+    } else {
+        None
+    };
 
     let mut locals: HashMap<u32, (PointerValue, BasicTypeEnum)> = HashMap::new();
     for (idx, ty) in func.locals.iter().enumerate() {
@@ -4099,6 +4220,7 @@ fn lower_function<'ctx>(
         builder,
         return_slot,
         return_ty: return_ty_llvm,
+        execution_context,
         locals,
         blocks: blocks.clone(),
         runtime_decls: RefCell::new(HashMap::new()),
@@ -4149,7 +4271,7 @@ fn lower_function<'ctx>(
         let bb = *blocks.get(&block.id).expect("block in map");
         fn_ctx.builder.position_at_end(bb);
         for instr in &block.instructions {
-            lower_instruction(&fn_ctx, instr)?;
+            lower_instruction(&fn_ctx, instr, block.id, drop_plans)?;
         }
         if cooperate_sites
             .iter()
@@ -4355,10 +4477,14 @@ mod tests {
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
-                instructions: vec![Instr::Move {
-                    dest: Place::ReturnSlot,
-                    src: Place::Local(0),
-                }],
+                instructions: vec![
+                    Instr::EnterContext,
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(0),
+                    },
+                    Instr::ExitContext,
+                ],
                 terminator: Terminator::Return,
             }],
             decisions: Vec::new(),
@@ -4382,6 +4508,65 @@ mod tests {
         assert!(
             !ir.contains("hew_actor_state_lock_acquire"),
             "actor-state locking belongs in the scheduler wrapper, not emitted handler IR:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn context_field_actor_offset_emits_gep_and_load() {
+        let handler = RawMirFunction {
+            name: "handler_ctx_field".to_string(),
+            return_ty: ResolvedTy::I64,
+            call_conv: FunctionCallConv::ActorHandler,
+            params: vec![],
+            locals: vec![
+                ResolvedTy::Pointer {
+                    is_mutable: true,
+                    pointee: Box::new(ResolvedTy::Never),
+                },
+                ResolvedTy::I64,
+            ],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![
+                    Instr::EnterContext,
+                    Instr::ContextField {
+                        dest: Place::Local(0),
+                        offset: HEW_CTX_OFFSET_ACTOR,
+                    },
+                    Instr::ConstI64 {
+                        dest: Place::Local(1),
+                        value: 0,
+                    },
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(1),
+                    },
+                    Instr::ExitContext,
+                ],
+                terminator: Terminator::Return,
+            }],
+            decisions: Vec::new(),
+        };
+        let pipeline = IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![handler],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
+        };
+        let ctx = Context::create();
+        let m = build_module(&ctx, &pipeline, "ctx_field_test")
+            .expect("ContextField actor load must build");
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("getelementptr i8, ptr %0, i64 0"),
+            "ContextField must lower to byte-offset GEP from ctx arg:\n{ir}"
+        );
+        assert!(
+            ir.contains("load ptr, ptr %ctx_field_0_ptr"),
+            "ContextField actor offset must load a pointer from the GEP:\n{ir}"
         );
     }
 

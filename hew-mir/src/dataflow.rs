@@ -66,7 +66,7 @@ use hew_hir::{BindingId, IntentKind, SiteId, TypeClassTable, ValueClass};
 use hew_types::ResolvedTy;
 
 use crate::model::{
-    BasicBlock, CooperateKind, CooperateSite, Instr, MirCheck, MirStatement, Terminator,
+    BasicBlock, CooperateKind, CooperateSite, Instr, MirCheck, MirStatement, Place, Terminator,
 };
 
 /// Per-binding state in the four-state lattice. `Uninit` is the
@@ -304,6 +304,197 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct ContextFlowState {
+    derived: HashSet<Place>,
+    after_exit: bool,
+}
+
+impl ContextFlowState {
+    fn meet(&self, other: &Self) -> Self {
+        let mut derived = self.derived.clone();
+        derived.extend(other.derived.iter().copied());
+        Self {
+            derived,
+            after_exit: self.after_exit || other.after_exit,
+        }
+    }
+}
+
+fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
+    match instr {
+        Instr::EnterContext | Instr::ExitContext | Instr::CheckCancellation => (vec![], vec![]),
+        Instr::ContextField { dest, .. }
+        | Instr::ConstI64 { dest, .. }
+        | Instr::StringLit { dest, .. }
+        | Instr::FloatLit { dest, .. }
+        | Instr::CharLit { dest, .. }
+        | Instr::UnitLit { dest }
+        | Instr::DurationLit { dest, .. } => (vec![], vec![*dest]),
+        Instr::IntAdd { dest, lhs, rhs }
+        | Instr::IntSub { dest, lhs, rhs }
+        | Instr::IntMul { dest, lhs, rhs }
+        | Instr::IntDiv { dest, lhs, rhs, .. }
+        | Instr::IntRem { dest, lhs, rhs, .. }
+        | Instr::IntBitAnd { dest, lhs, rhs }
+        | Instr::IntBitOr { dest, lhs, rhs }
+        | Instr::IntBitXor { dest, lhs, rhs }
+        | Instr::IntShl { dest, lhs, rhs }
+        | Instr::IntShr { dest, lhs, rhs, .. }
+        | Instr::IntCmp { dest, lhs, rhs, .. }
+        | Instr::IdentityCompare { dest, lhs, rhs }
+        | Instr::FloatAdd { dest, lhs, rhs, .. }
+        | Instr::FloatSub { dest, lhs, rhs, .. }
+        | Instr::FloatMul { dest, lhs, rhs, .. }
+        | Instr::FloatDiv { dest, lhs, rhs, .. }
+        | Instr::FloatRem { dest, lhs, rhs, .. } => (vec![*lhs, *rhs], vec![*dest]),
+        Instr::IntArithChecked {
+            dest,
+            lhs,
+            rhs,
+            overflow_flag,
+            ..
+        } => (vec![*lhs, *rhs], vec![*dest, *overflow_flag]),
+        Instr::Move { dest, src } => (vec![*src], vec![*dest]),
+        Instr::CallRuntimeAbi(call) => {
+            let reads = call.args().to_vec();
+            let writes = call.dest().into_iter().collect();
+            (reads, writes)
+        }
+        Instr::CallDirect { args, dest, .. } | Instr::CallClosure { args, dest, .. } => {
+            let mut reads = args.clone();
+            if let Instr::CallClosure { callee, .. } = instr {
+                reads.insert(0, *callee);
+            }
+            let writes = dest.iter().copied().collect();
+            (reads, writes)
+        }
+        Instr::MakeClosure { env, dest, .. } | Instr::ClosureEnvFieldLoad { env, dest, .. } => {
+            (vec![*env], vec![*dest])
+        }
+        Instr::SpawnTaskDirect { task, .. } => (vec![*task], vec![]),
+        Instr::SpawnTaskClosure { task, env, .. } => (vec![*task, *env], vec![]),
+        Instr::Drop { place, .. } => (vec![*place], vec![]),
+        Instr::RecordInit { fields, dest, .. } => {
+            let reads = fields.iter().map(|(_, place)| *place).collect();
+            (reads, vec![*dest])
+        }
+        Instr::RecordFieldLoad { record, dest, .. } => (vec![*record], vec![*dest]),
+        Instr::TupleFieldLoad { tuple, dest, .. } => (vec![*tuple], vec![*dest]),
+        Instr::CoerceToDynTrait { value, dest, .. } => (vec![*value], vec![*dest]),
+        Instr::CallTraitMethod {
+            fat_pointer,
+            args,
+            dest,
+            ..
+        } => {
+            let mut reads = Vec::with_capacity(args.len().saturating_add(1));
+            reads.push(*fat_pointer);
+            reads.extend(args.iter().copied());
+            let writes = dest.iter().copied().collect();
+            (reads, writes)
+        }
+    }
+}
+
+fn transfer_context_flow(
+    mut state: ContextFlowState,
+    block: &BasicBlock,
+    checks: &mut Vec<MirCheck>,
+    seen: &mut HashSet<(Place, u32)>,
+) -> ContextFlowState {
+    for instr in &block.instructions {
+        match instr {
+            Instr::EnterContext => {
+                state.after_exit = false;
+            }
+            Instr::ExitContext => {
+                if state.derived.contains(&Place::ReturnSlot)
+                    && seen.insert((Place::ReturnSlot, block.id))
+                {
+                    checks.push(MirCheck::ContextBindingEscapes {
+                        place: Place::ReturnSlot,
+                        block: block.id,
+                    });
+                }
+                state.after_exit = true;
+            }
+            Instr::ContextField { dest, .. } => {
+                if state.after_exit && seen.insert((*dest, block.id)) {
+                    checks.push(MirCheck::ContextBindingEscapes {
+                        place: *dest,
+                        block: block.id,
+                    });
+                }
+                state.derived.insert(*dest);
+            }
+            _ => {
+                let (reads, writes) = instr_reads_writes(instr);
+                let reads_context = reads.iter().any(|place| state.derived.contains(place));
+                if state.after_exit && reads_context {
+                    if let Some(place) = reads
+                        .iter()
+                        .copied()
+                        .find(|place| state.derived.contains(place))
+                    {
+                        if seen.insert((place, block.id)) {
+                            checks.push(MirCheck::ContextBindingEscapes {
+                                place,
+                                block: block.id,
+                            });
+                        }
+                    }
+                }
+                for dest in writes {
+                    if reads_context {
+                        state.derived.insert(dest);
+                    } else {
+                        state.derived.remove(&dest);
+                    }
+                }
+            }
+        }
+    }
+    state
+}
+
+fn check_context_flow(blocks: &[BasicBlock]) -> Vec<MirCheck> {
+    if blocks.is_empty() {
+        return Vec::new();
+    }
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
+    let entry_id = 0;
+    let mut entry_states: HashMap<u32, ContextFlowState> = HashMap::new();
+    let mut exit_states: HashMap<u32, ContextFlowState> = HashMap::new();
+    let mut checks = Vec::new();
+    let mut seen: HashSet<(Place, u32)> = HashSet::new();
+    let mut worklist: VecDeque<u32> = VecDeque::from([entry_id]);
+    entry_states.insert(entry_id, ContextFlowState::default());
+
+    while let Some(bb_id) = worklist.pop_front() {
+        let Some(block) = by_id.get(&bb_id).copied() else {
+            continue;
+        };
+        let entry = entry_states.get(&bb_id).cloned().unwrap_or_default();
+        let exit = transfer_context_flow(entry, block, &mut checks, &mut seen);
+        let changed = exit_states.get(&bb_id) != Some(&exit);
+        exit_states.insert(bb_id, exit.clone());
+        if changed {
+            for succ in successors(block) {
+                let next = entry_states
+                    .get(&succ)
+                    .map_or_else(|| exit.clone(), |prev| prev.meet(&exit));
+                if entry_states.get(&succ) != Some(&next) {
+                    entry_states.insert(succ, next);
+                    worklist.push_back(succ);
+                }
+            }
+        }
+    }
+
+    checks
+}
+
 /// Run the per-block move-checker over a function's CFG. Emits the
 /// `InitialisedBeforeUse` / `UseAfterConsume` / `MustConsume` checks
 /// derived from the four-state lattice.
@@ -467,6 +658,8 @@ pub fn analyze(
         // and Uninit-at-Return doesn't need a separate diagnostic
         // (the Bind never happened on any path reaching the exit).
     }
+
+    checks.extend(check_context_flow(blocks));
 
     DataflowResult {
         checks,
@@ -658,7 +851,6 @@ pub fn compute_cooperate_sites(blocks: &[BasicBlock]) -> Vec<CooperateSite> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Place;
 
     fn states() -> Vec<BindingState> {
         vec![

@@ -104,7 +104,9 @@ fn diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         | hew_mir::MirDiagnosticKind::InitialisedBeforeUse { .. }
         | hew_mir::MirDiagnosticKind::DecisionMapTotal { .. }
         | hew_mir::MirDiagnosticKind::MustConsume { .. }
-        | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. } => "E_MIR_CHECK",
+        | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
+        | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
+        | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. } => "E_MIR_CHECK",
         hew_mir::MirDiagnosticKind::CutoverUnsupported { .. } => "E_CUTOVER_UNSUPPORTED",
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }

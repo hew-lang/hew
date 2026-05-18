@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use hew_hir::{BindingId, IntentKind, SiteId, ValueClass};
 use hew_types::ResolvedTy;
 
@@ -94,6 +96,210 @@ pub enum FunctionCallConv {
     ActorHandler,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextState {
+    Outside,
+    Inside,
+    Exited,
+    Invalid,
+}
+
+impl ContextState {
+    fn meet(self, other: Self) -> Self {
+        if self == other {
+            self
+        } else {
+            Self::Invalid
+        }
+    }
+}
+
+/// Validate execution-context carrier marker invariants on hand-built or
+/// lowered MIR.
+///
+/// Actor handlers must enter exactly at the entry block, exit before every
+/// terminal path, and use context-observing instructions only while the marker
+/// lattice is inside the context. Non-handler functions reject all carrier
+/// instructions so the context substrate cannot be smuggled into ordinary code.
+#[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "CFG marker validation keeps entry/exit/use checks together so diagnostics share one dedupe ledger"
+)]
+pub fn validate_context_markers(func: &RawMirFunction) -> Vec<MirCheck> {
+    let mut findings = Vec::new();
+    let mut seen: HashSet<(String, u32, &'static str)> = HashSet::new();
+    let push = |findings: &mut Vec<MirCheck>,
+                seen: &mut HashSet<(String, u32, &'static str)>,
+                block: u32,
+                kind: &'static str,
+                reason: String| {
+        if seen.insert((func.name.clone(), block, kind)) {
+            findings.push(MirCheck::ContextBoundaryViolation {
+                function: func.name.clone(),
+                block,
+                kind,
+                reason,
+            });
+        }
+    };
+
+    if func.call_conv != FunctionCallConv::ActorHandler {
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                if matches!(
+                    instr,
+                    Instr::EnterContext
+                        | Instr::ExitContext
+                        | Instr::CheckCancellation
+                        | Instr::ContextField { .. }
+                ) {
+                    push(
+                        &mut findings,
+                        &mut seen,
+                        block.id,
+                        "context-marker-outside-handler",
+                        "execution-context carrier instructions are only legal in actor handlers"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        return findings;
+    }
+
+    let Some(entry) = func.blocks.first() else {
+        push(
+            &mut findings,
+            &mut seen,
+            0,
+            "missing-enter-context",
+            "actor handler has no entry block, so EnterContext cannot dominate the body"
+                .to_string(),
+        );
+        return findings;
+    };
+    if !matches!(entry.instructions.first(), Some(Instr::EnterContext)) {
+        push(
+            &mut findings,
+            &mut seen,
+            entry.id,
+            "missing-enter-context",
+            "actor handler entry block must start with EnterContext".to_string(),
+        );
+    }
+
+    for block in &func.blocks {
+        if matches!(
+            block.terminator,
+            Terminator::Return | Terminator::Trap { .. }
+        ) && !matches!(block.instructions.last(), Some(Instr::ExitContext))
+        {
+            push(
+                &mut findings,
+                &mut seen,
+                block.id,
+                "missing-exit-context",
+                "actor handler terminal block must end with ExitContext before its terminator"
+                    .to_string(),
+            );
+        }
+    }
+
+    let by_id: HashMap<u32, &BasicBlock> = func.blocks.iter().map(|b| (b.id, b)).collect();
+    let mut entry_states: HashMap<u32, ContextState> = HashMap::new();
+    let mut worklist = vec![entry.id];
+    entry_states.insert(entry.id, ContextState::Outside);
+
+    while let Some(block_id) = worklist.pop() {
+        let Some(block) = by_id.get(&block_id).copied() else {
+            continue;
+        };
+        let mut state = entry_states
+            .get(&block_id)
+            .copied()
+            .unwrap_or(ContextState::Invalid);
+
+        for instr in &block.instructions {
+            match instr {
+                Instr::EnterContext => {
+                    if state == ContextState::Outside {
+                        state = ContextState::Inside;
+                    } else {
+                        push(
+                            &mut findings,
+                            &mut seen,
+                            block.id,
+                            "invalid-enter-context",
+                            "EnterContext is only legal before the handler context has been entered"
+                                .to_string(),
+                        );
+                        state = ContextState::Invalid;
+                    }
+                }
+                Instr::ExitContext => {
+                    if state == ContextState::Inside {
+                        state = ContextState::Exited;
+                    } else {
+                        push(
+                            &mut findings,
+                            &mut seen,
+                            block.id,
+                            "invalid-exit-context",
+                            "ExitContext is only legal while the handler context is active"
+                                .to_string(),
+                        );
+                        state = ContextState::Invalid;
+                    }
+                }
+                Instr::CheckCancellation | Instr::ContextField { .. }
+                    if state != ContextState::Inside =>
+                {
+                    push(
+                        &mut findings,
+                        &mut seen,
+                        block.id,
+                        "context-use-outside-boundary",
+                        "context-observing instructions must execute between EnterContext and ExitContext"
+                            .to_string(),
+                    );
+                    state = ContextState::Invalid;
+                }
+                _ => {}
+            }
+        }
+
+        if matches!(
+            block.terminator,
+            Terminator::Return | Terminator::Trap { .. }
+        ) && state != ContextState::Exited
+        {
+            push(
+                &mut findings,
+                &mut seen,
+                block.id,
+                "missing-exit-context",
+                "actor handler terminal path reaches its terminator outside an exited context"
+                    .to_string(),
+            );
+        }
+
+        for succ in block.successors() {
+            let next = entry_states
+                .get(&succ)
+                .copied()
+                .map_or(state, |prev| prev.meet(state));
+            let changed = entry_states.get(&succ).copied() != Some(next);
+            if changed {
+                entry_states.insert(succ, next);
+                worklist.push(succ);
+            }
+        }
+    }
+
+    findings
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct BasicBlock {
     pub id: u32,
@@ -107,6 +313,26 @@ pub struct BasicBlock {
     /// agree on what each `SiteId` resolves to.
     pub instructions: Vec<Instr>,
     pub terminator: Terminator,
+}
+
+impl BasicBlock {
+    #[must_use]
+    pub fn successors(&self) -> Vec<u32> {
+        match &self.terminator {
+            Terminator::Return | Terminator::Trap { .. } => Vec::new(),
+            Terminator::Goto { target } => vec![*target],
+            Terminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } => vec![*then_target, *else_target],
+            Terminator::Call { next, .. }
+            | Terminator::Yield { next, .. }
+            | Terminator::Send { next, .. }
+            | Terminator::Ask { next, .. }
+            | Terminator::Select { next, .. } => vec![*next],
+        }
+    }
 }
 
 /// Failure class carried by `Terminator::Trap`. The discriminant lets
@@ -462,6 +688,23 @@ pub enum FloatWidth {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instr {
+    /// Semantic marker at actor-handler entry. Codegen emits no user-visible
+    /// instruction, but validates that the hidden execution-context argument is
+    /// bound before any context-dependent carrier op can execute.
+    EnterContext,
+    /// Semantic marker at actor-handler exit. Bounds context-derived values:
+    /// after this marker they may not be read, returned, captured, or otherwise
+    /// propagated across the handler boundary.
+    ExitContext,
+    /// Explicit cancellation observation point. Codegen lowers this through
+    /// the same `hew_actor_cooperate` runtime consult used by cooperate-site
+    /// injection.
+    CheckCancellation,
+    /// Load one field from the hidden `*mut HewExecutionContext` actor-handler
+    /// argument by stable byte offset. `dest` supplies the expected field type;
+    /// codegen validates it against the known execution-context ABI table before
+    /// emitting the byte-offset GEP + typed load.
+    ContextField { dest: Place, offset: usize },
     /// `dest = const <value>` as i64.
     ConstI64 { dest: Place, value: i64 },
     /// Two's-complement wrapping `dest = lhs + rhs`. No overflow check.
@@ -1197,6 +1440,18 @@ pub enum MirCheck {
     /// the offending block id and a short reason so the diagnostic
     /// surface can anchor the rejection.
     DropPlanUndetermined { block: u32, reason: String },
+    /// Execution-context carrier invariant failed: actor handlers must bracket
+    /// their bodies with EnterContext/ExitContext and ordinary functions must
+    /// not contain carrier instructions.
+    ContextBoundaryViolation {
+        function: String,
+        block: u32,
+        kind: &'static str,
+        reason: String,
+    },
+    /// A value derived from `Instr::ContextField` crossed an `ExitContext`
+    /// boundary by being read or returned after the context had been exited.
+    ContextBindingEscapes { place: Place, block: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1580,6 +1835,15 @@ pub enum MirDiagnosticKind {
     /// emits a partial drop (fail-closed per LESSONS
     /// `cleanup-all-exits` / `boundary-fail-closed`).
     DropPlanUndetermined { block: u32, reason: String },
+    /// Execution-context carrier marker validation failed.
+    ContextBoundaryViolation {
+        function: String,
+        block: u32,
+        kind: &'static str,
+        reason: String,
+    },
+    /// A context-derived place escaped past `ExitContext`.
+    ContextBindingEscapes { place: Place, block: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

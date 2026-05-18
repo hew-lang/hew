@@ -10,7 +10,7 @@ pub mod lower;
 pub mod model;
 pub mod runtime_symbols;
 
-pub use lower::lower_hir_module;
+pub use lower::{bracket_actor_handler_blocks, lower_hir_module};
 
 /// Test-only access to the per-Place + per-`ResolvedTy` drop-kind
 /// dispatcher. Tests pin the boundary contract that codegen consumes
@@ -23,11 +23,11 @@ pub fn drop_kind_for_test(place: Place, ty: &hew_types::ResolvedTy) -> DropKind 
     lower::drop_kind_for_test_only(place, ty)
 }
 pub use model::{
-    BasicBlock, BlockKind, BorrowKind, CaptureKind, CheckedMirFunction, CmpPred, CooperateKind,
-    CooperateSite, CoroutineSchema, DecisionFact, Direction, DropKind, DropPlan, ElabBlock,
-    ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, FunctionCallConv, Instr,
-    IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MirCheck, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, RawMirFunction, RecordLayout, RuntimeCall, SelectArm,
-    SelectArmKind, Strategy, Terminator, ThirFunction, TrapKind,
+    validate_context_markers, BasicBlock, BlockKind, BorrowKind, CaptureKind, CheckedMirFunction,
+    CmpPred, CooperateKind, CooperateSite, CoroutineSchema, DecisionFact, Direction, DropKind,
+    DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth,
+    FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MirCheck,
+    MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, RecordLayout,
+    RuntimeCall, SelectArm, SelectArmKind, Strategy, Terminator, ThirFunction, TrapKind,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;

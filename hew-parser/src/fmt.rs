@@ -656,6 +656,7 @@ impl<'a> Formatter<'a> {
                     name,
                     bounds,
                     default,
+                    ..
                 } => {
                     let pos = if self.has_comments() {
                         self.find_keyword_after(&format!("type {name}"), self.prev_source_pos)

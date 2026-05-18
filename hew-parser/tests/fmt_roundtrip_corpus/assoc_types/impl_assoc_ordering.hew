@@ -1,0 +1,17 @@
+trait Container {
+    type Item;
+
+    fn first(value: Self) -> Self::Item;
+}
+
+type Widget {
+    value: i32;
+}
+
+impl Container for Widget {
+    type Item = i32;
+
+    fn first(value: Widget) -> Self::Item {
+        value.value
+    }
+}

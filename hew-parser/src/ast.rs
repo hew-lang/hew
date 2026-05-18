@@ -937,6 +937,8 @@ pub enum TraitItem {
         name: String,
         bounds: Vec<TraitBound>,
         default: Option<Spanned<TypeExpr>>,
+        #[serde(default)]
+        span: Span,
     },
 }
 

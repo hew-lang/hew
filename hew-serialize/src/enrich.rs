@@ -5853,6 +5853,7 @@ mod tests {
                             },
                             0..0,
                         )),
+                        span: 0..0,
                     },
                 ],
                 doc_comment: None,

@@ -2171,6 +2171,7 @@ impl<'src> Parser<'src> {
                 }))
             }
             Some(Token::Type) => {
+                let type_start = self.peek_span().start;
                 self.advance();
                 let name = self.expect_ident()?;
 
@@ -2186,11 +2187,12 @@ impl<'src> Parser<'src> {
                     None
                 };
 
-                self.expect(&Token::Semicolon)?;
+                let semi_span = self.expect(&Token::Semicolon)?;
                 Some(TraitItem::AssociatedType {
                     name,
                     bounds,
                     default,
+                    span: type_start..semi_span.end,
                 })
             }
             _ => {

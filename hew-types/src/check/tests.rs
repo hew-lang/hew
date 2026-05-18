@@ -9130,6 +9130,7 @@ fn make_checker_with_trait(
             name: "Output".to_string(),
             default: None,
             bounds: vec![],
+            span: 0..0,
         });
     }
 
@@ -10605,6 +10606,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
                 name: "Output".to_string(),
                 default: None,
                 bounds: vec![],
+                span: 0..0,
             },
             TraitItem::Method(TraitMethod {
                 name: "do_it".to_string(),

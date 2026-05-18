@@ -841,13 +841,7 @@ pub(super) struct TraitAssociatedTypeInfo {
     /// associated-types lane can read `type_args` without a schema migration.
     pub(super) bounds: Vec<TraitBound>,
     pub(super) default: Option<Spanned<TypeExpr>>,
-    /// Span of the `type Bar` declaration in the trait body. Currently
-    /// consumed only by the trait-side duplicate-definition diagnostic
-    /// (via the local `seen_assoc` map in `trait_info_from_decl_with_diagnostics`).
-    /// Retained on the stored struct so slice 2 of the associated-types
-    /// lane can attach bound-failure diagnostics to the trait-body site
-    /// when the impl provides no surface span.
-    #[expect(dead_code, reason = "reserved for slice 2 trait-side diagnostics")]
+    /// Span of the `type Bar` declaration in the trait body.
     pub(super) span: Span,
 }
 

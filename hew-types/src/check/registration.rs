@@ -2088,27 +2088,8 @@ impl Checker {
                     name,
                     bounds,
                     default,
+                    span,
                 } => {
-                    // SHIM: `TraitItem::AssociatedType` does not carry a
-                    // dedicated span field today. Prefer the default's
-                    // span, otherwise the first bound type-arg's span,
-                    // otherwise an empty span. The only diagnostic that
-                    // reads this is the trait-body duplicate-definition
-                    // report; the bound-violation path uses impl-side
-                    // entry spans where the actionable location lives.
-                    // WHEN-OBSOLETE: the parser attaches a per-item span
-                    // to `TraitItem::AssociatedType`.
-                    let span = default
-                        .as_ref()
-                        .map(|d| d.1.clone())
-                        .or_else(|| {
-                            bounds
-                                .first()
-                                .and_then(|b| b.type_args.as_ref())
-                                .and_then(|args| args.first())
-                                .map(|arg| arg.1.clone())
-                        })
-                        .unwrap_or(0..0);
                     if let Some(prev_span) = seen_assoc.insert(name.clone(), span.clone()) {
                         errors.push(TypeError::duplicate_definition(
                             span.clone(),
@@ -2121,7 +2102,7 @@ impl Checker {
                         name: name.clone(),
                         bounds: bounds.clone(),
                         default: default.clone(),
-                        span,
+                        span: span.clone(),
                     });
                 }
             }
@@ -2239,20 +2220,23 @@ impl Checker {
                     .get(&tb.name)
                     .map(|info| info.associated_types.clone());
                 if let Some(associated_types) = trait_snapshot {
-                    let missing: Vec<String> = associated_types
+                    let missing: Vec<TraitAssociatedTypeInfo> = associated_types
                         .iter()
                         .filter(|assoc| !entries.contains_key(&assoc.name))
-                        .map(|assoc| assoc.name.clone())
+                        .cloned()
                         .collect();
                     let target_name_owned = target_name.to_string();
                     let tb_name = tb.name.clone();
-                    for name in missing {
-                        self.report_error(
+                    for assoc in missing {
+                        self.report_error_with_note(
                             TypeErrorKind::UndefinedType,
                             span,
                             format!(
-                                "impl `{tb_name}` for `{target_name_owned}` must define associated type `{name}`"
+                                "impl `{tb_name}` for `{target_name_owned}` must define associated type `{}`",
+                                assoc.name
                             ),
+                            &assoc.span,
+                            "required associated type declared here".to_string(),
                         );
                     }
                     self.check_assoc_type_bounds(

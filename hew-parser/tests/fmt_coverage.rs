@@ -1543,6 +1543,13 @@ fn fmt_trait_object_assoc_binding_roundtrip() {
 }
 
 #[test]
+fn fmt_trait_implicit_self_roundtrip() {
+    exact_roundtrip(
+        "trait Iterator {\n    type Item;\n\n    fn next(self) -> Option<Self::Item>;\n}\n",
+    );
+}
+
+#[test]
 fn fmt_trait_object_multiple_assoc_bindings_roundtrip() {
     exact_roundtrip("fn use_pair(pair: dyn Pair<Left = i32, Right = string>) {\n}\n");
 }

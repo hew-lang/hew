@@ -6,6 +6,55 @@ use super::*;
 use crate::builtin_names::BuiltinNamedType;
 
 impl Checker {
+    fn iterator_trait_item_ty(&mut self, iter_ty: &Ty, span: &Span) -> Option<Ty> {
+        let resolved = self.subst.resolve(iter_ty);
+        if let Ty::TraitObject { traits } = &resolved {
+            for bound in traits {
+                if bound.trait_name != "Iterator"
+                    && !self.trait_extends(&bound.trait_name, "Iterator")
+                {
+                    continue;
+                }
+                if let Some((_, item_ty)) =
+                    bound.assoc_bindings.iter().find(|(name, _)| name == "Item")
+                {
+                    return Some(item_ty.clone());
+                }
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "`for` over `dyn Iterator` requires an `Item` associated-type binding"
+                        .to_string(),
+                );
+                return Some(Ty::Error);
+            }
+        }
+
+        if let Ty::Named { name, args } = &resolved {
+            if name == "Generator" || name == "AsyncGenerator" {
+                return args.first().cloned().or_else(|| {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!("`for` over a {name} requires a resolved yield type"),
+                    );
+                    Some(Ty::Error)
+                });
+            }
+        }
+
+        if !self.type_satisfies_trait_bound(&resolved, "Iterator") {
+            return None;
+        }
+
+        let item_projection = Ty::AssocType {
+            base: Box::new(resolved),
+            trait_name: "Iterator".into(),
+            assoc_name: "Item".into(),
+        };
+        Some(self.project_assoc_types(&item_projection))
+    }
+
     fn assignment_root_binding_name(expr: &Expr) -> Option<&str> {
         match expr {
             Expr::Identifier(name) => Some(name.as_str()),
@@ -807,12 +856,16 @@ impl Checker {
                     Ty::Error => Ty::Error,
                     Ty::Never => Ty::Never,
                     _ => {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            &iterable.1,
-                            "type is not iterable".to_string(),
-                        );
-                        Ty::Error
+                        if let Some(item_ty) = self.iterator_trait_item_ty(&iter_ty, &iterable.1) {
+                            item_ty
+                        } else {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "type is not iterable".to_string(),
+                            );
+                            Ty::Error
+                        }
                     }
                 };
                 self.env.push_scope();

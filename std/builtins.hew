@@ -120,6 +120,19 @@ impl<T: ActorMsg> Pid for RemotePid<T> {
 }
 
 // ---------------------------------------------------------------------------
+// Iterator trait
+// ---------------------------------------------------------------------------
+/// Produce a sequence of values one item at a time.
+///
+/// User-defined iterators implement this trait directly; `for` loops accept
+/// values whose type implements `Iterator` and bind each yielded `Item`.
+pub trait Iterator {
+    type Item;
+
+    fn next(self) -> Option<Self::Item>;
+}
+
+// ---------------------------------------------------------------------------
 // Display trait
 // ---------------------------------------------------------------------------
 /// Convert a value of type `Self` into a human-readable `string`.

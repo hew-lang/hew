@@ -6689,7 +6689,7 @@ fn test_self_with_generics_in_impl() {
 fn test_trait_object_type_args_substitution() {
     // Bug 2: Test that dyn Trait<Args> methods get correct substitutions
     let source = r"
-        trait Iterator<T> {
+        trait MyIter<T> {
             fn next(iter: Self) -> Option<T>;
         }
 
@@ -6697,14 +6697,14 @@ fn test_trait_object_type_args_substitution() {
             count: int;
         }
 
-        impl Iterator<int> for Counter {
+        impl MyIter<int> for Counter {
             fn next(c: Counter) -> Option<int> {
                 Some(42)
             }
         }
 
         fn test_iterator() -> int {
-            let iter: dyn Iterator<int> = Counter { count: 5 };
+            let iter: dyn MyIter<int> = Counter { count: 5 };
             let result = iter.next(); // Should be Option<int>, not Option<T>
             match result {
                 Some(x) => x,
@@ -15428,6 +15428,80 @@ mod for_loop_iterable_fail_closed {
         assert!(
             errors.is_empty(),
             "Range<i64> iterable must not emit errors; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn user_iterator_impl_is_valid_for_loop_iterable() {
+        let output = check_source(
+            r"
+            type Counter {
+                val: i32;
+            }
+
+            impl Iterator for Counter {
+                type Item = i32;
+                fn next(self) -> Option<i32> {
+                    Some(self.val)
+                }
+            }
+
+            fn takes_i32(x: i32) {}
+
+            fn main() {
+                for x in Counter { val: 0 } {
+                    takes_i32(x);
+                }
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "user Iterator impl should type-check as a for-loop iterable: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn builtin_dyn_iterator_item_binding_smoke() {
+        let output = check_source(
+            r"
+            type Counter {
+                val: i32;
+            }
+
+            impl Iterator for Counter {
+                type Item = i32;
+                fn next(self) -> Option<i32> {
+                    Some(self.val)
+                }
+            }
+
+            fn use_iter(iter: dyn Iterator<Item = i32>) -> Option<i32> {
+                iter.next()
+            }
+
+            fn main() {
+                use_iter(Counter { val: 1 });
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "builtin dyn Iterator<Item = i32> should accept Counter: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn generator_blocks_are_deferred_to_generator_surface_slice() {
+        // TODO(D24-position-3): when `gen { ... }` blocks parse, add the
+        // Iterator trait smoke for generator block values here. Today only
+        // `gen fn` / `async gen fn` are accepted by the parser.
+        let result = hew_parser::parse("fn main() { let g = gen { yield 1; yield 2; }; }");
+        assert!(
+            !result.errors.is_empty(),
+            "gen blocks are not expected to parse until the generator surface slice"
         );
     }
 

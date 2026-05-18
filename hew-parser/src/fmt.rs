@@ -1456,6 +1456,18 @@ impl<'a> Formatter<'a> {
 
     fn format_params(&mut self, params: &[Param]) {
         self.comma_sep(params, |f, p| {
+            if p.name == "self"
+                && matches!(
+                    &p.ty.0,
+                    TypeExpr::Named {
+                        name,
+                        type_args: None,
+                    } if name == "Self"
+                )
+            {
+                f.write("self");
+                return;
+            }
             if p.is_mutable {
                 f.write("var ");
             }

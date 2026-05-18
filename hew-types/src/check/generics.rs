@@ -421,6 +421,13 @@ impl Checker {
 
     pub(super) fn type_satisfies_trait_bound(&mut self, ty: &Ty, trait_name: &str) -> bool {
         match ty {
+            Ty::Named { name, args }
+                if trait_name == "Iterator"
+                    && ((name == "Generator" && !args.is_empty())
+                        || (name == "AsyncGenerator" && args.len() == 1)) =>
+            {
+                true
+            }
             Ty::Named { name, .. } => {
                 let name = name.clone();
                 if self.type_implements_trait(&name, trait_name)

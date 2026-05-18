@@ -394,6 +394,9 @@ pub struct Parser<'src> {
     /// Stack of token mutations performed by `eat_closing_angle`, so they can
     /// be rolled back on speculative-parse backtrack.
     angle_mutations: Vec<(usize, (Token<'src>, Span))>,
+    /// True while parsing an impl-method parameter list that accepts bare
+    /// `self` as sugar for a `Self` receiver parameter.
+    allow_implicit_self_params: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -494,6 +497,7 @@ impl<'src> Parser<'src> {
             errors,
             depth: Cell::new(0),
             angle_mutations: Vec::new(),
+            allow_implicit_self_params: false,
         }
     }
 
@@ -1623,7 +1627,7 @@ impl<'src> Parser<'src> {
         let type_params = self.parse_opt_type_params()?;
 
         self.expect(&Token::LeftParen)?;
-        let params = self.parse_params();
+        let params = self.parse_params_with_implicit_self(self.allow_implicit_self_params);
         self.expect(&Token::RightParen)?;
 
         let return_type = self.parse_opt_return_type()?;
@@ -2144,7 +2148,7 @@ impl<'src> Parser<'src> {
                 let type_params = self.parse_opt_type_params()?;
 
                 self.expect(&Token::LeftParen)?;
-                let params = self.parse_params();
+                let params = self.parse_params_with_implicit_self(true);
                 self.expect(&Token::RightParen)?;
 
                 let return_type = self.parse_opt_return_type()?;
@@ -2259,9 +2263,12 @@ impl<'src> Parser<'src> {
                 Some(Token::Fn) => {
                     let fn_start = self.peek_span().start;
                     self.advance();
-                    if let Some(mut method) =
-                        self.parse_function(fn_start, false, false, vis, is_pure, Vec::new())
-                    {
+                    let prev_allow_implicit_self =
+                        std::mem::replace(&mut self.allow_implicit_self_params, true);
+                    let parsed_method =
+                        self.parse_function(fn_start, false, false, vis, is_pure, Vec::new());
+                    self.allow_implicit_self_params = prev_allow_implicit_self;
+                    if let Some(mut method) = parsed_method {
                         if let Some(doc) = doc_comment {
                             method.doc_comment = Some(doc);
                         }
@@ -3941,6 +3948,10 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_params(&mut self) -> Vec<Param> {
+        self.parse_params_with_implicit_self(false)
+    }
+
+    fn parse_params_with_implicit_self(&mut self, allow_implicit_self: bool) -> Vec<Param> {
         let mut params = Vec::new();
 
         while !self.at_end() && self.peek() != Some(&Token::RightParen) {
@@ -3949,16 +3960,36 @@ impl<'src> Parser<'src> {
                 break;
             };
 
-            // `self` is not a valid parameter name in Hew — neither bare nor typed.
-            // Users must use named receivers: fn method(val: Self) or fn method(p: Point)
             if name == "self" {
                 let span = self
                     .tokens
                     .get(self.pos.wrapping_sub(1))
                     .map_or(self.peek_span(), |(_, s)| s.clone());
+                if allow_implicit_self
+                    && params.is_empty()
+                    && !is_mutable
+                    && self.peek() != Some(&Token::Colon)
+                {
+                    params.push(Param {
+                        name,
+                        ty: (
+                            TypeExpr::Named {
+                                name: "Self".to_string(),
+                                type_args: None,
+                            },
+                            span,
+                        ),
+                        is_mutable: false,
+                    });
+                    if !self.eat(&Token::Comma) {
+                        break;
+                    }
+                    continue;
+                }
                 self.errors.push(ParseError {
                     message: "`self` is not a valid parameter name in Hew; \
-                              use a named receiver with explicit type instead: \
+                              use bare `self` as the first parameter of a trait/impl method, \
+                              or use a named receiver with explicit type: \
                               `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
                         .to_string(),
                     span,
@@ -7169,18 +7200,18 @@ fn demo() {}
 
     #[test]
     fn parse_trait_declaration() {
-        let source = "trait Printable { fn print(val: Self); }";
+        let source = "trait Printable { fn print(self); }";
         let result = parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     }
 
     #[test]
-    fn parse_bare_self_is_error() {
-        let source = "trait Printable { fn print(self); }";
+    fn parse_bare_self_in_free_fn_is_error() {
+        let source = "fn print(self) {}";
         let result = parse(source);
         assert!(
             !result.errors.is_empty(),
-            "expected parse error for bare `self` parameter"
+            "expected parse error for bare `self` in free function"
         );
         assert!(
             result.errors[0]
@@ -7206,6 +7237,13 @@ fn demo() {}
             "error message should mention self is not a valid parameter name, got: {}",
             result.errors[0].message,
         );
+    }
+
+    #[test]
+    fn parse_impl_method_bare_self_receiver() {
+        let source = "type Foo { x: int } impl Foo { fn bar(self) -> int { self.x } }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     }
 
     #[test]

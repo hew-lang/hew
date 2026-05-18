@@ -2889,17 +2889,20 @@ impl Checker {
             }
             // String methods
             (Ty::String, _) => self.check_string_method(method, args, span),
-            // Generator methods: .next() returns the yielded type
+            // Generator methods route through the Iterator contract:
+            // .next() returns Option<yielded type>.
             (
                 Ty::Named {
                     name,
                     args: type_args,
                 },
                 "next",
-            ) if name == "Generator" || name == "AsyncGenerator" => type_args
-                .first()
-                .cloned()
-                .unwrap_or(Ty::Var(TypeVar::fresh())),
+            ) if name == "Generator" || name == "AsyncGenerator" => Ty::option(
+                type_args
+                    .first()
+                    .cloned()
+                    .unwrap_or(Ty::Var(TypeVar::fresh())),
+            ),
             // Stream<T> methods
             //
             // LIMITATION: Stream element-type validation only triggers here (on

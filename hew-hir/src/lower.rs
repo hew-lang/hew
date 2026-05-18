@@ -3145,15 +3145,23 @@ impl LowerCtx {
         let lowered_body = self.lower_expr(body, IntentKind::Read);
         self.pop_scope();
 
-        let captures = self.materialize_closure_captures(
-            &lowered_body,
-            &outer_bindings,
-            self.closure_capture_facts
-                .get(&checker_key)
-                .cloned()
-                .unwrap_or_default(),
-            span.clone(),
-        );
+        let checker_facts = if let Some(facts) = self.closure_capture_facts.get(&checker_key) {
+            facts.clone()
+        } else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "closure literal".to_string(),
+                    reason: "closure_capture_facts has no record for closure literal span"
+                        .to_string(),
+                },
+                span.clone(),
+                "closure literal reached HIR without checker capture metadata",
+            ));
+            Vec::new()
+        };
+
+        let captures =
+            self.materialize_closure_captures(&lowered_body, &outer_bindings, checker_facts, span);
 
         (
             HirExprKind::Closure {
@@ -4569,5 +4577,129 @@ fn describe_select_source_shape(expr: &Expr) -> String {
         Expr::Yield(_) => "yield expression".into(),
         Expr::This => "this".into(),
         _ => "expression".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hew_types::module_registry::ModuleRegistry;
+    use hew_types::Checker;
+
+    fn parse_typecheck_and_lower(
+        source: &str,
+    ) -> (hew_parser::ast::Program, TypeCheckOutput, LowerOutput) {
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&parsed.program);
+        assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+
+        let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx);
+        (parsed.program, tco, lowered)
+    }
+
+    fn main_function_body(output: &LowerOutput) -> &HirBlock {
+        let Some(HirItem::Function(function)) =
+            output.module.items.iter().find(
+                |item| matches!(item, HirItem::Function(function) if function.name == "main"),
+            )
+        else {
+            panic!("expected lowered main function: {:#?}", output.module.items);
+        };
+        &function.body
+    }
+
+    fn checker_fact_named<'a>(
+        facts: impl Iterator<Item = &'a ClosureCaptureFact>,
+        name: &str,
+    ) -> &'a ClosureCaptureFact {
+        let mut matches = facts.filter(|fact| fact.name == name);
+        let first = matches
+            .next()
+            .unwrap_or_else(|| panic!("expected checker fact named {name}"));
+        assert!(
+            matches.next().is_none(),
+            "expected exactly one checker fact named {name}"
+        );
+        first
+    }
+
+    #[test]
+    fn closure_capture_uses_checker_mode_and_send_fact() {
+        let (_program, tco, lowered) = parse_typecheck_and_lower(
+            r"
+            fn main() {
+                let k: i32 = 2;
+                let f = |n: i32| n + k;
+            }
+            ",
+        );
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "lower diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+
+        let checker_fact = checker_fact_named(
+            tco.closure_capture_facts
+                .values()
+                .flat_map(|facts| facts.iter()),
+            "k",
+        );
+
+        let body = main_function_body(&lowered);
+        let HirStmtKind::Let(k_binding, _) = &body.statements[0].kind else {
+            panic!("expected first statement to bind k");
+        };
+        let HirStmtKind::Let(_, Some(closure_expr)) = &body.statements[1].kind else {
+            panic!("expected second statement to bind closure");
+        };
+        let HirExprKind::Closure { captures, .. } = &closure_expr.kind else {
+            panic!("expected closure initializer, got {:#?}", closure_expr.kind);
+        };
+        let hir_capture = captures
+            .iter()
+            .find(|capture| capture.name == "k")
+            .unwrap_or_else(|| panic!("expected HIR capture named k: {captures:#?}"));
+
+        assert_eq!(hir_capture.binding, k_binding.id);
+        assert_eq!(hir_capture.mode, checker_fact.mode);
+        assert_eq!(hir_capture.is_send, checker_fact.is_send);
+    }
+
+    #[test]
+    fn missing_closure_capture_facts_emit_boundary_diagnostic() {
+        let (program, mut tco, _) = parse_typecheck_and_lower(
+            r"
+            fn main() {
+                let k: i32 = 2;
+                let f = |n: i32| n + k;
+            }
+            ",
+        );
+        assert!(
+            !tco.closure_capture_facts.is_empty(),
+            "test setup requires checker-produced closure capture facts"
+        );
+        tco.closure_capture_facts.clear();
+
+        let lowered = lower_program(&program, &tco, &ResolutionCtx);
+
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
+                    if name == "closure literal"
+                        && reason == "closure_capture_facts has no record for closure literal span"
+            )),
+            "missing closure_capture_facts entry must emit root-cause boundary diagnostic; got {:#?}",
+            lowered.diagnostics
+        );
     }
 }

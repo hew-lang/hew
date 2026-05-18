@@ -25,13 +25,12 @@ pub use monomorph::{
     MONOMORPHISATION_REGISTRY_CAP,
 };
 pub use node::{
-    HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn,
-    HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirClosureCapture, HirExpr,
-    HirExprKind, HirField, HirFn, HirItem, HirLambdaCapture, HirLifecycleHook,
-    HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent, HirMachineState,
-    HirMachineTransition, HirModule, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind,
-    HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy,
-    HirTypeDecl,
+    HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
+    HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
+    HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
+    HirMachineEvent, HirMachineState, HirMachineTransition, HirModule, HirRestartPolicy, HirSelect,
+    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirSupervisorStrategy, HirTypeDecl,
 };
 pub use value_class::{contains_named_type, named_type_names, TypeClassTable, ValueClass};
 pub use verify::verify_hir;

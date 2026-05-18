@@ -19,13 +19,12 @@ use crate::monomorph::{
     RecordLayoutRegistry, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,
 };
 use crate::node::{
-    HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn,
-    HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirClosureCapture, HirExpr,
-    HirExprKind, HirField, HirFn, HirItem, HirLambdaCapture, HirLifecycleHook,
-    HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent, HirMachineState,
-    HirMachineTransition, HirModule, HirRecordDecl, HirRestartPolicy, HirSelect, HirSelectArm,
-    HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
-    HirSupervisorStrategy, HirTypeDecl,
+    HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
+    HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
+    HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
+    HirMachineEvent, HirMachineState, HirMachineTransition, HirModule, HirRecordDecl,
+    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind,
+    HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
 };
 use crate::{IntentKind, ValueClass};
 
@@ -1677,11 +1676,8 @@ impl LowerCtx {
         })
     }
 
-    /// Lower an `actor` declaration into `HirActorDecl`. Structural-only:
-    /// `init`, `receive fn`, method, and lifecycle-hook bodies are NOT lowered
-    /// to `HirBlock` in Lane A — they remain on the parser AST and are
-    /// consumed by the C++ MLIR pipeline today. The next M6 slice will
-    /// promote bodies to `HirBlock`. See `HirActorDecl` doc comment.
+    /// Lower an `actor` declaration into `HirActorDecl`, including executable
+    /// bodies for init blocks, receive handlers, methods, and lifecycle hooks.
     fn lower_actor(&mut self, decl: &ActorDecl, span: Span) -> HirActorDecl {
         let state_fields: Vec<HirField> = decl
             .fields
@@ -1693,8 +1689,9 @@ impl LowerCtx {
             })
             .collect();
 
-        let init = decl.init.as_ref().map(|init| HirActorInit {
-            params: self.lower_actor_params(&init.params),
+        let init = decl.init.as_ref().map(|init| {
+            let (params, body) = self.lower_actor_body(&init.params, &init.body, &ResolvedTy::Unit);
+            HirActorInit { params, body }
         });
 
         let receive_handlers: Vec<HirActorReceiveFn> = decl
@@ -1723,24 +1720,39 @@ impl LowerCtx {
         }
     }
 
-    fn lower_actor_params(&mut self, params: &[Param]) -> Vec<HirActorParam> {
-        params
+    fn lower_actor_body(
+        &mut self,
+        params: &[Param],
+        body: &Block,
+        expected_ty: &ResolvedTy,
+    ) -> (Vec<HirBinding>, HirBlock) {
+        let saved_scope_depth = self.scope_depth;
+        self.scope_depth = 0;
+        self.push_scope();
+        let params = params
             .iter()
-            .map(|p| HirActorParam {
-                name: p.name.clone(),
-                ty: self.lower_type(&p.ty),
-                mutable: p.is_mutable,
-                span: p.ty.1.clone(),
+            .map(|p| {
+                let ty = self.lower_type(&p.ty);
+                self.bind(p.name.clone(), ty, p.is_mutable, p.ty.1.clone())
             })
-            .collect()
+            .collect();
+        let body = self.lower_block(body, expected_ty);
+        self.pop_scope();
+        self.scope_depth = saved_scope_depth;
+        (params, body)
     }
 
     fn lower_actor_receive_fn(&mut self, rf: &ReceiveFnDecl) -> HirActorReceiveFn {
-        let params = self.lower_actor_params(&rf.params);
         let return_ty = rf
             .return_type
             .as_ref()
             .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
+        let body_expected_ty = if rf.is_generator {
+            ResolvedTy::Unit
+        } else {
+            return_ty.clone()
+        };
+        let (params, body) = self.lower_actor_body(&rf.params, &rf.body, &body_expected_ty);
         let state_guard = match self
             .actor_handler_state_guards
             .get(&SpanKey::from(&rf.span))
@@ -1766,8 +1778,10 @@ impl LowerCtx {
             .and_then(AttributeArg::as_duration_ns);
         HirActorReceiveFn {
             name: rf.name.clone(),
+            is_generator: rf.is_generator,
             params,
             return_ty,
+            body,
             state_guard,
             every_ns,
             span: rf.span.clone(),
@@ -1787,11 +1801,11 @@ impl LowerCtx {
         let mut plain = Vec::new();
         let mut hooks = Vec::new();
         for method in methods {
-            let params = self.lower_actor_params(&method.params);
             let return_ty = method
                 .return_type
                 .as_ref()
                 .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
+            let (params, body) = self.lower_actor_body(&method.params, &method.body, &return_ty);
             let hook_attr = method.attributes.iter().find(|a| a.name == "on");
             let hook_kind = hook_attr
                 .and_then(|a| a.args.first())
@@ -1809,12 +1823,14 @@ impl LowerCtx {
                     name: method.name.clone(),
                     params,
                     return_ty,
+                    body,
                     span: method.fn_span.clone(),
                 }),
                 None => plain.push(HirActorMethod {
                     name: method.name.clone(),
                     params,
                     return_ty,
+                    body,
                     span: method.fn_span.clone(),
                 }),
             }

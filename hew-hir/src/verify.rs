@@ -53,13 +53,31 @@ impl Verifier {
                     self.node(record.node, record.span.clone());
                 }
                 HirItem::Actor(actor) => {
-                    // Actor declarations contribute only their HirNodeId
-                    // uniqueness to the verifier in Lane A — method, receive,
-                    // and lifecycle-hook bodies are not lowered to HirExpr in
-                    // this slice (see `HirActorDecl` doc comment). Lifecycle
-                    // hook uniqueness (`#[on(start)]` at most once, etc.) is
-                    // enforced upstream by the checker.
                     self.node(actor.node, actor.span.clone());
+                    if let Some(init) = &actor.init {
+                        for param in &init.params {
+                            self.binding(param.id, param.span.clone());
+                        }
+                        self.block(&init.body);
+                    }
+                    for receive in &actor.receive_handlers {
+                        for param in &receive.params {
+                            self.binding(param.id, param.span.clone());
+                        }
+                        self.block(&receive.body);
+                    }
+                    for method in &actor.methods {
+                        for param in &method.params {
+                            self.binding(param.id, param.span.clone());
+                        }
+                        self.block(&method.body);
+                    }
+                    for hook in &actor.lifecycle_hooks {
+                        for param in &hook.params {
+                            self.binding(param.id, param.span.clone());
+                        }
+                        self.block(&hook.body);
+                    }
                 }
                 HirItem::Supervisor(sup) => {
                     // Supervisor declarations contribute only their HirNodeId

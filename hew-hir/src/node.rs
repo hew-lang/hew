@@ -90,16 +90,9 @@ pub enum HirItem {
 ///
 /// Carries the structural shape of an `actor` item — state fields, optional
 /// `init { ... }` block, receive handlers (`receive fn`), regular methods, and
-/// `#[on(start|stop|crash|upgrade)]` lifecycle hooks — together with the
-/// runtime-configuration metadata lifted from the parser surface and the
-/// checker side-tables (`#[max_heap(N)]` arena cap).
-///
-/// Method, receive-handler, and init bodies are **not** lowered to `HirBlock`
-/// in this slice (Lane A). Mirrors `HirMachineDecl`: bodies stay on the parser
-/// AST and are consumed by the C++ MLIR pipeline today; the next M6 slice
-/// (HIR-MIR actor-body lowering) will populate them. The Rust MIR producer
-/// treats `HirItem::Actor` as a no-op tier alongside `Record`/`TypeDecl`/
-/// `Machine` for now.
+/// `#[on(start|stop|crash|upgrade)]` lifecycle hooks — together with lowered
+/// bodies, parameter bindings, runtime-configuration metadata lifted from the
+/// parser surface, and checker side-tables (`#[max_heap(N)]` arena cap).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorDecl {
     pub id: ItemId,
@@ -117,9 +110,8 @@ pub struct HirActorDecl {
     /// periodic scheduling (validated by the checker; recorded here as a
     /// structural flag plus the duration in nanoseconds).
     pub receive_handlers: Vec<HirActorReceiveFn>,
-    /// Plain methods on the actor (not lifecycle hooks). Methods are
-    /// dispatched through the actor's mailbox at the codegen layer; their
-    /// bodies are not lowered to HIR in Lane A.
+    /// Plain methods on the actor (not lifecycle hooks), with lowered HIR
+    /// bodies ready for MIR/codegen consumers.
     pub methods: Vec<HirActorMethod>,
     /// `#[on(start|stop|crash|upgrade)]` lifecycle hooks, exhaustively
     /// bucketed by `kind`. The checker (`check_actor_methods`) enforces
@@ -151,31 +143,24 @@ pub struct HirActorDecl {
     pub span: Span,
 }
 
-/// One parameter on an actor `init` / `receive fn` / `method`. Carries the
-/// resolved parameter type but not a `BindingId` — Lane A does not lower
-/// actor bodies, so no scope is opened over these parameters yet. The
-/// next slice (body lowering) will replace this with full `HirBinding`s.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirActorParam {
-    pub name: String,
-    pub ty: ResolvedTy,
-    pub mutable: bool,
-    pub span: Span,
-}
-
-/// Lowered `init` block on an actor. The body is not lowered to `HirBlock`
-/// in Lane A; the next slice will populate it.
+/// Lowered `init` block on an actor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorInit {
-    pub params: Vec<HirActorParam>,
+    pub params: Vec<HirBinding>,
+    pub body: HirBlock,
 }
 
 /// Lowered `receive fn` on an actor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorReceiveFn {
     pub name: String,
-    pub params: Vec<HirActorParam>,
+    pub is_generator: bool,
+    pub params: Vec<HirBinding>,
+    /// For ordinary receive handlers this is the handler return type. For
+    /// generator receive handlers this remains the declared yield element type;
+    /// the body itself lowers with unit expectation.
     pub return_ty: ResolvedTy,
+    pub body: HirBlock,
     /// Compiler-inserted actor-state guard required around this receive body.
     pub state_guard: HirActorStateGuard,
     /// `#[every(<duration>)]` periodic scheduling annotation. `None` if the
@@ -198,8 +183,9 @@ pub enum HirActorStateGuard {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorMethod {
     pub name: String,
-    pub params: Vec<HirActorParam>,
+    pub params: Vec<HirBinding>,
     pub return_ty: ResolvedTy,
+    pub body: HirBlock,
     /// Source span of the `fn` declaration (from the parser's
     /// `FnDecl.fn_span`).
     pub span: Span,
@@ -212,8 +198,9 @@ pub struct HirActorMethod {
 pub struct HirLifecycleHook {
     pub kind: HirLifecycleHookKind,
     pub name: String,
-    pub params: Vec<HirActorParam>,
+    pub params: Vec<HirBinding>,
     pub return_ty: ResolvedTy,
+    pub body: HirBlock,
     /// Source span of the `fn` declaration (from the parser's
     /// `FnDecl.fn_span`).
     pub span: Span,

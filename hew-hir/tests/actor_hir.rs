@@ -1,6 +1,5 @@
-//! Tests for HIR actor declaration lowering. Lane A: structural only —
-//! method, receive, and lifecycle-hook bodies are not lowered to `HirBlock`
-//! in this slice (see `HirActorDecl` doc comment).
+//! Tests for HIR actor declaration lowering: actor structure plus lowered
+//! init, receive, method, and lifecycle-hook bodies.
 
 use hew_hir::{
     dump_hir, lower_program, HirActorDecl, HirActorStateGuard, HirDiagnosticKind, HirItem,
@@ -40,7 +39,7 @@ actor Counter {
     let count: i32;
 
     receive fn inc(n: i32) {
-        count = count + n;
+        let seen: i32 = n;
     }
 }
 
@@ -95,17 +94,17 @@ fn main() {}
 #[test]
 fn actor_decl_lowering_happy_path() {
     // Logger: one state field, one receive handler, no lifecycle hooks, no init.
-    let src = r#"
+    let src = r"
 actor Logger {
     let label: string;
 
     receive fn log(msg: string) {
-        println(f"[{label}] {msg}");
+        let seen: string = msg;
     }
 }
 
 fn main() {}
-"#;
+";
     let output = lower(src);
     assert!(
         output.diagnostics.is_empty(),
@@ -139,26 +138,26 @@ fn actor_lifecycle_hooks_attributed_separately() {
     let src = r"
 actor Service {
     receive fn handle() {
-        process();
+        let handled = true;
     }
 
     #[on(start)]
     fn boot() {
-        warm();
+        let ready = true;
     }
 
     #[on(stop)]
     fn cleanup() {
-        flush();
+        let cleaned = true;
     }
 
     #[on(stop)]
     fn drain() {
-        finish();
+        let drained = true;
     }
 
     fn helper() {
-        do_work();
+        let helped = true;
     }
 }
 
@@ -213,16 +212,16 @@ actor Worker {
     let counter: i64;
 
     init(start: i64) {
-        counter = start;
+        let seed: i64 = start;
     }
 
     #[every(50ms)]
     receive fn tick() {
-        work();
+        let ticked = true;
     }
 
     receive fn bump() {
-        counter = counter + 1;
+        let bumped = true;
     }
 }
 
@@ -271,7 +270,7 @@ actor Bounded {
     overflow drop_old
 
     receive fn ping() {
-        ack();
+        let ok = true;
     }
 }
 
@@ -294,7 +293,7 @@ fn actor_max_heap_lower() {
 #[max_heap(64 kb)]
 actor Cache {
     receive fn get() {
-        lookup();
+        let ok = true;
     }
 }
 

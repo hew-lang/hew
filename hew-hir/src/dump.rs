@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use crate::node::{HirExpr, HirExprKind, HirItem, HirModule, HirStmtKind};
+use crate::node::{HirBlock, HirExpr, HirExprKind, HirItem, HirModule, HirStmtKind};
 
 #[must_use]
 #[allow(
@@ -122,40 +122,94 @@ pub fn dump_hir(module: &HirModule) -> String {
                         .expect("write to string");
                 }
                 if let Some(init) = &actor.init {
-                    writeln!(out, "  init params={}", init.params.len()).expect("write to string");
+                    writeln!(
+                        out,
+                        "  init params={} body_scope={}",
+                        init.params.len(),
+                        init.body.scope
+                    )
+                    .expect("write to string");
+                    for param in &init.params {
+                        writeln!(
+                            out,
+                            "    param {} {}: {}",
+                            param.id,
+                            param.name,
+                            param.ty.user_facing()
+                        )
+                        .expect("write to string");
+                    }
+                    dump_block(&mut out, &init.body, 4);
                 }
                 for rf in &actor.receive_handlers {
                     writeln!(
                         out,
-                        "  receive {} params={} -> {} state_guard={:?} every_ns={:?}",
+                        "  receive {} params={} -> {} state_guard={:?} every_ns={:?} is_generator={} body_scope={}",
                         rf.name,
                         rf.params.len(),
                         rf.return_ty.user_facing(),
                         rf.state_guard,
-                        rf.every_ns
+                        rf.every_ns,
+                        rf.is_generator,
+                        rf.body.scope
                     )
                     .expect("write to string");
+                    for param in &rf.params {
+                        writeln!(
+                            out,
+                            "    param {} {}: {}",
+                            param.id,
+                            param.name,
+                            param.ty.user_facing()
+                        )
+                        .expect("write to string");
+                    }
+                    dump_block(&mut out, &rf.body, 4);
                 }
                 for m in &actor.methods {
                     writeln!(
                         out,
-                        "  method {} params={} -> {}",
+                        "  method {} params={} -> {} body_scope={}",
                         m.name,
                         m.params.len(),
-                        m.return_ty.user_facing()
+                        m.return_ty.user_facing(),
+                        m.body.scope
                     )
                     .expect("write to string");
+                    for param in &m.params {
+                        writeln!(
+                            out,
+                            "    param {} {}: {}",
+                            param.id,
+                            param.name,
+                            param.ty.user_facing()
+                        )
+                        .expect("write to string");
+                    }
+                    dump_block(&mut out, &m.body, 4);
                 }
                 for h in &actor.lifecycle_hooks {
                     writeln!(
                         out,
-                        "  on({:?}) {} params={} -> {}",
+                        "  on({:?}) {} params={} -> {} body_scope={}",
                         h.kind,
                         h.name,
                         h.params.len(),
-                        h.return_ty.user_facing()
+                        h.return_ty.user_facing(),
+                        h.body.scope
                     )
                     .expect("write to string");
+                    for param in &h.params {
+                        writeln!(
+                            out,
+                            "    param {} {}: {}",
+                            param.id,
+                            param.name,
+                            param.ty.user_facing()
+                        )
+                        .expect("write to string");
+                    }
+                    dump_block(&mut out, &h.body, 4);
                 }
             }
             HirItem::Supervisor(sup) => {
@@ -164,6 +218,39 @@ pub fn dump_hir(module: &HirModule) -> String {
         }
     }
     out
+}
+
+fn dump_block(out: &mut String, block: &HirBlock, indent: usize) {
+    let pad = " ".repeat(indent);
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(binding, value) => {
+                writeln!(
+                    out,
+                    "{pad}let {} {}: {}",
+                    binding.id,
+                    binding.name,
+                    binding.ty.user_facing()
+                )
+                .expect("write to string");
+                if let Some(value) = value {
+                    dump_expr(out, value, indent + 2);
+                }
+            }
+            HirStmtKind::Expr(expr) => dump_expr(out, expr, indent),
+            HirStmtKind::Return(Some(expr)) => {
+                writeln!(out, "{pad}return").expect("write to string");
+                dump_expr(out, expr, indent + 2);
+            }
+            HirStmtKind::Return(None) => {
+                writeln!(out, "{pad}return unit").expect("write to string");
+            }
+        }
+    }
+    if let Some(tail) = &block.tail {
+        writeln!(out, "{pad}tail").expect("write to string");
+        dump_expr(out, tail, indent + 2);
+    }
 }
 
 #[allow(

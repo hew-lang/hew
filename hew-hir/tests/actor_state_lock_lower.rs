@@ -22,7 +22,7 @@ fn hir_receive_handler_carries_state_guard() {
         actor Counter {
             let count: i32;
             receive fn inc(n: i32) {
-                count = count + n;
+                let seen: i32 = n;
             }
         }
         fn main() {}

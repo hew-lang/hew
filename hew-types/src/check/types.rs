@@ -4,7 +4,7 @@ use crate::lowering_facts::LoweringFact;
 use crate::module_registry::ModuleRegistry;
 use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
-use hew_parser::ast::{Span, Spanned, TraitMethod, TypeExpr};
+use hew_parser::ast::{Span, Spanned, TraitBound, TraitMethod, TypeExpr};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
@@ -789,7 +789,22 @@ pub(super) struct TraitInfo {
 #[derive(Debug, Clone)]
 pub(super) struct TraitAssociatedTypeInfo {
     pub(super) name: String,
+    /// Trait bounds declared on this associated type
+    /// (e.g. `type Out: Display` → one `TraitBound { name: "Display", .. }`).
+    /// Enforced at impl-registration time: an impl's `type Out = X` must
+    /// supply a type `X` that satisfies every bound in this list.
+    /// Stored as the full `TraitBound` (with `type_args`) so slice 2 of the
+    /// associated-types lane can read `type_args` without a schema migration.
+    pub(super) bounds: Vec<TraitBound>,
     pub(super) default: Option<Spanned<TypeExpr>>,
+    /// Span of the `type Bar` declaration in the trait body. Currently
+    /// consumed only by the trait-side duplicate-definition diagnostic
+    /// (via the local `seen_assoc` map in `trait_info_from_decl_with_diagnostics`).
+    /// Retained on the stored struct so slice 2 of the associated-types
+    /// lane can attach bound-failure diagnostics to the trait-body site
+    /// when the impl provides no surface span.
+    #[expect(dead_code, reason = "reserved for slice 2 trait-side diagnostics")]
+    pub(super) span: Span,
 }
 
 #[derive(Debug)]

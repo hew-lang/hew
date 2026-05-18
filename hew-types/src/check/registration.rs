@@ -911,7 +911,9 @@ impl Checker {
                     if !self.register_type_namespace_name(&td.name, span) {
                         continue;
                     }
-                    let info = Self::trait_info_from_decl(td);
+                    let mut trait_errors = Vec::new();
+                    let info = Self::trait_info_from_decl_with_diagnostics(td, &mut trait_errors);
+                    self.errors.extend(trait_errors);
                     self.trait_defs.insert(td.name.clone(), info);
                     self.local_trait_defs.insert(td.name.clone());
                     // Record super-trait relationships
@@ -2059,15 +2061,60 @@ impl Checker {
     }
 
     pub(super) fn trait_info_from_decl(tr: &TraitDecl) -> TraitInfo {
+        Self::trait_info_from_decl_with_diagnostics(tr, &mut Vec::new())
+    }
+
+    /// Build `TraitInfo` and surface trait-body diagnostics. Duplicate
+    /// `type Bar; type Bar;` declarations are reported here (the impl-side
+    /// duplicate-detection is handled separately in `build_impl_alias_entries`).
+    pub(super) fn trait_info_from_decl_with_diagnostics(
+        tr: &TraitDecl,
+        errors: &mut Vec<TypeError>,
+    ) -> TraitInfo {
         let mut methods = Vec::new();
-        let mut associated_types = Vec::new();
+        let mut associated_types: Vec<TraitAssociatedTypeInfo> = Vec::new();
+        let mut seen_assoc: HashMap<String, Span> = HashMap::new();
         for item in &tr.items {
             match item {
                 TraitItem::Method(m) => methods.push(m.clone()),
-                TraitItem::AssociatedType { name, default, .. } => {
+                TraitItem::AssociatedType {
+                    name,
+                    bounds,
+                    default,
+                } => {
+                    // SHIM: `TraitItem::AssociatedType` does not carry a
+                    // dedicated span field today. Prefer the default's
+                    // span, otherwise the first bound type-arg's span,
+                    // otherwise an empty span. The only diagnostic that
+                    // reads this is the trait-body duplicate-definition
+                    // report; the bound-violation path uses impl-side
+                    // entry spans where the actionable location lives.
+                    // WHEN-OBSOLETE: the parser attaches a per-item span
+                    // to `TraitItem::AssociatedType`.
+                    let span = default
+                        .as_ref()
+                        .map(|d| d.1.clone())
+                        .or_else(|| {
+                            bounds
+                                .first()
+                                .and_then(|b| b.type_args.as_ref())
+                                .and_then(|args| args.first())
+                                .map(|arg| arg.1.clone())
+                        })
+                        .unwrap_or(0..0);
+                    if let Some(prev_span) = seen_assoc.insert(name.clone(), span.clone()) {
+                        errors.push(TypeError::duplicate_definition(
+                            span.clone(),
+                            name,
+                            prev_span,
+                        ));
+                        continue;
+                    }
                     associated_types.push(TraitAssociatedTypeInfo {
                         name: name.clone(),
+                        bounds: bounds.clone(),
                         default: default.clone(),
+                        span,
                     });
                 }
             }
@@ -2143,24 +2190,37 @@ impl Checker {
         let entries = self.build_impl_alias_entries(id);
         if enforce {
             if let Some(tb) = &id.trait_bound {
-                if let Some(info) = self.trait_defs.get(&tb.name) {
-                    let missing: Vec<String> = info
-                        .associated_types
+                // Snapshot trait-side data we need; cloned so we can release
+                // the borrow on `self.trait_defs` before calling into the
+                // resolver / bound-checker which need `&mut self`.
+                let trait_snapshot = self
+                    .trait_defs
+                    .get(&tb.name)
+                    .map(|info| info.associated_types.clone());
+                if let Some(associated_types) = trait_snapshot {
+                    let missing: Vec<String> = associated_types
                         .iter()
                         .filter(|assoc| !entries.contains_key(&assoc.name))
                         .map(|assoc| assoc.name.clone())
                         .collect();
-                    let target_name = target_name.to_string();
+                    let target_name_owned = target_name.to_string();
                     let tb_name = tb.name.clone();
                     for name in missing {
                         self.report_error(
                             TypeErrorKind::UndefinedType,
                             span,
                             format!(
-                                "impl `{tb_name}` for `{target_name}` must define associated type `{name}`"
+                                "impl `{tb_name}` for `{target_name_owned}` must define associated type `{name}`"
                             ),
                         );
                     }
+                    self.check_assoc_type_bounds(
+                        &associated_types,
+                        &entries,
+                        &tb_name,
+                        &target_name_owned,
+                        id,
+                    );
                 }
             }
         }
@@ -2175,6 +2235,88 @@ impl Checker {
 
     pub(super) fn exit_impl_scope(&mut self) {
         self.impl_alias_scopes.pop();
+    }
+
+    /// Enforce trait-side bounds on each impl-side associated-type binding.
+    ///
+    /// For `trait Foo { type Out: Display; }` and `impl Foo for X { type Out = Y; }`,
+    /// verifies `Y: Display`. Handles two distinct shapes for the chosen `Y`:
+    ///
+    /// - **Concrete type** (`Ty::Named { name, .. }` where `name` is a known
+    ///   type-def): consult `type_satisfies_trait_bound` directly.
+    /// - **Impl type-param** (`Ty::Named { name, .. }` where `name` is one of
+    ///   the impl's declared type params, e.g. `impl<T: Display> Foo for X { type Out = T; }`):
+    ///   consult the impl's own `collect_type_param_bounds` map, because at
+    ///   impl-registration time `current_function` is not set and
+    ///   `type_satisfies_trait_bound`'s `type_param_carries_bound` fallback
+    ///   would return false-negative.
+    fn check_assoc_type_bounds(
+        &mut self,
+        associated_types: &[TraitAssociatedTypeInfo],
+        entries: &HashMap<String, ImplAliasEntry>,
+        trait_name: &str,
+        target_name: &str,
+        id: &ImplDecl,
+    ) {
+        // Pre-collect impl-side type-param bounds. Keys are param names
+        // (e.g. `T`), values are bound trait names. Reused across all assoc
+        // types in this impl.
+        let impl_param_bounds: HashMap<String, Vec<String>> =
+            self.collect_type_param_bounds(id.type_params.as_ref(), id.where_clause.as_ref());
+        let impl_param_names: HashSet<String> = id
+            .type_params
+            .as_ref()
+            .map(|tps| tps.iter().map(|tp| tp.name.clone()).collect())
+            .unwrap_or_default();
+
+        for assoc in associated_types {
+            if assoc.bounds.is_empty() {
+                continue;
+            }
+            let Some(entry) = entries.get(&assoc.name) else {
+                continue;
+            };
+            let expr = entry.expr.clone();
+            let entry_span = expr.1.clone();
+            let resolved = self.resolve_type_expr(&expr);
+            // Skip bounds checking when the RHS itself failed to resolve.
+            // `resolve_type_expr` already emitted the primary diagnostic;
+            // running `type_satisfies_trait_bound(&Ty::Error, _)` here would
+            // produce a spurious cascading `BoundsNotSatisfied` on top of it.
+            if matches!(resolved, Ty::Error) {
+                continue;
+            }
+            for bound in &assoc.bounds {
+                let bound_name = &bound.name;
+                let satisfied = match &resolved {
+                    Ty::Named { name, .. } if impl_param_names.contains(name) => {
+                        // Impl type-param: check the impl's own bounds map.
+                        impl_param_bounds.get(name).is_some_and(|bs| {
+                            bs.iter()
+                                .any(|b| b == bound_name || self.trait_extends(b, bound_name))
+                        })
+                    }
+                    _ => self.type_satisfies_trait_bound(&resolved, bound_name),
+                };
+                if satisfied {
+                    continue;
+                }
+                self.report_error(
+                    TypeErrorKind::BoundsNotSatisfied,
+                    &entry_span,
+                    format!(
+                        "associated type `{}::{}` in impl for `{}` is bound by trait \
+                         `{}` but `{}` does not implement `{}`",
+                        trait_name,
+                        assoc.name,
+                        target_name,
+                        bound_name,
+                        resolved.user_facing(),
+                        bound_name,
+                    ),
+                );
+            }
+        }
     }
 
     pub(super) fn resolve_impl_associated_type(&mut self, alias: &str) -> Option<Ty> {

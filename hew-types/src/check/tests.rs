@@ -16554,3 +16554,343 @@ mod methods {
         }
     }
 }
+
+// ── Associated-types — slice 1 (bounds + defaults end-to-end) ──────────────
+//
+// Trait-side `type Bar [: Bound] [= default]` declarations flow through
+// `trait_info_from_decl_with_diagnostics` into `TraitInfo.associated_types`.
+// Impl-side `type Bar = X;` flows through `build_impl_alias_entries` and is
+// bound-checked by `check_assoc_type_bounds` in `enter_impl_scope` when
+// `enforce = true`.
+//
+// These tests pin the user-visible behaviour of slice 1:
+//   1. defaults fill missing impl bindings;
+//   2. trait-side bounds on assoc types reject violating impls;
+//   3. impl-side type params satisfy assoc-type bounds via the impl's own
+//      `where`/`<T: Bound>` clauses (not via `current_function` plumbing);
+//   4. missing-binding diagnostics fire when no default exists;
+//   5. `Self::Bar` continues to resolve in trait method signatures;
+//   6. duplicate `type Bar; type Bar;` in a trait body is rejected.
+mod assoc_types_slice1 {
+    use super::*;
+
+    #[test]
+    fn assoc_type_default_fills_missing_impl_binding() {
+        // Trait declares `type Step = i32`; impl omits the binding.
+        // Resolution must use the default rather than reporting "missing".
+        let output = check_source(
+            r"
+            trait Counter {
+                type Step = i32;
+                fn step(val: Self) -> Self::Step;
+            }
+
+            type Tick {}
+
+            impl Counter for Tick {
+                fn step(val: Tick) -> i32 { 1 }
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "expected no errors; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn assoc_type_bound_violation_rejects_impl() {
+        // Trait declares `type Out: Display`; impl binds it to a type
+        // that does not implement Display. Must produce BoundsNotSatisfied.
+        let (errors, _warnings) = parse_and_check_with_stdlib(
+            r"
+            trait Show {
+                type Out: Display;
+                fn show(val: Self) -> Self::Out;
+            }
+
+            type Widget {}
+
+            type Plain {}
+
+            impl Show for Widget {
+                type Out = Plain;
+                fn show(val: Widget) -> Plain { Plain {} }
+            }
+            ",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied)
+                    && e.message.contains("Display")
+                    && e.message.contains("Plain")),
+            "expected BoundsNotSatisfied citing Display and Plain; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn assoc_type_bound_satisfied_by_impl_type_param() {
+        // `impl<T: Display> Show for Holder<T> { type Out = T; }` — the
+        // assoc-type binding is itself a type parameter that carries the
+        // required bound. Must accept without spurious BoundsNotSatisfied.
+        let (errors, _warnings) = parse_and_check_with_stdlib(
+            r"
+            trait Show {
+                type Out: Display;
+                fn show(val: Self) -> Self::Out;
+            }
+
+            type Holder<T> {
+                value: T;
+            }
+
+            impl<T: Display> Show for Holder<T> {
+                type Out = T;
+                fn show(val: Holder<T>) -> T { val.value }
+            }
+            ",
+        );
+        let bound_errors: Vec<_> = errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied))
+            .collect();
+        assert!(
+            bound_errors.is_empty(),
+            "impl<T: Display> binding `type Out = T` must satisfy `type Out: Display`; \
+             got bound errors: {bound_errors:?}; all errors: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn assoc_type_missing_binding_diagnostic() {
+        // Non-defaulted assoc type with no impl-side binding must be
+        // diagnosed at impl-registration time.
+        let output = check_source(
+            r"
+            trait Container {
+                type Item;
+                fn first(val: Self) -> Self::Item;
+            }
+
+            type Box {}
+
+            impl Container for Box {
+                fn first(val: Box) -> int { 0 }
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Item") && e.message.contains("associated type")),
+            "expected missing-associated-type diagnostic citing `Item`; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn self_assoc_in_trait_method_signature_resolves() {
+        // Regression: the existing `Self::Bar` prefix-match path
+        // (resolution.rs ~line 613) survives the TraitInfo schema change.
+        // The method's declared return type is `Self::Item`; the impl
+        // binds `type Item = int`. Checker must accept the impl's `next`
+        // returning `Option<int>` against `Option<Self::Item>`.
+        let output = check_source(
+            r"
+            trait Iterator {
+                type Item;
+                fn next(val: Self) -> Option<Self::Item>;
+            }
+
+            type Counter {
+                value: int;
+            }
+
+            impl Iterator for Counter {
+                type Item = int;
+                fn next(c: Counter) -> Option<int> { Some(c.value) }
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "expected clean check; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn duplicate_assoc_type_in_trait_body_rejected() {
+        // `type Bar; type Bar;` in a single trait body is a duplicate
+        // declaration. Must report DuplicateDefinition.
+        let output = check_source(
+            r"
+            trait Foo {
+                type Bar;
+                type Bar;
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::DuplicateDefinition)
+                    && e.message.contains("Bar")),
+            "expected DuplicateDefinition citing `Bar`; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn assoc_type_bound_skips_when_rhs_is_error() {
+        // Regression: when the impl-side `type Out = <unresolvable>` itself
+        // produces a `Ty::Error` (e.g. an undefined type), the bounds
+        // checker must skip its trait-bound check so we don't pile a
+        // cascading `BoundsNotSatisfied` on top of the primary error.
+        let (errors, _warnings) = parse_and_check_with_stdlib(
+            r"
+            trait Show {
+                type Out: Display;
+                fn show(val: Self) -> Self::Out;
+            }
+
+            type Widget {}
+
+            impl Show for Widget {
+                type Out = Task<int>;
+                fn show(val: Widget) -> int { 0 }
+            }
+            ",
+        );
+        let bound_errors: Vec<_> = errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied))
+            .collect();
+        assert!(
+            bound_errors.is_empty(),
+            "Ty::Error RHS (from `Task<int>` not being nameable) must suppress the \
+             bound-check cascade; got bound errors: {bound_errors:?}; all errors: {errors:?}"
+        );
+        // Sanity: the primary error from the bad RHS must still fire.
+        assert!(
+            !errors.is_empty(),
+            "expected the primary diagnostic from the unresolvable RHS to remain"
+        );
+    }
+
+    #[test]
+    fn assoc_type_bound_violation_in_default_points_at_default() {
+        // When a trait body supplies a default that violates its own
+        // declared bound (`type Out: Display = Plain`), the impl that
+        // omits the binding inherits the (bad) default — and the
+        // diagnostic must point at the default expression in the trait
+        // body, not at the trait header or the impl header.
+        let source = r"
+            trait Show {
+                type Out: Display = Plain;
+                fn show(val: Self) -> Self::Out;
+            }
+
+            type Plain {}
+
+            type Widget {}
+
+            impl Show for Widget {
+                fn show(val: Widget) -> Plain { Plain {} }
+            }
+            ";
+        let (errors, _warnings) = parse_and_check_with_stdlib(source);
+        let bound_err = errors
+            .iter()
+            .find(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied))
+            .expect("expected BoundsNotSatisfied for default `Plain` vs `Display`");
+        let snippet = &source[bound_err.span.clone()];
+        assert_eq!(
+            snippet, "Plain",
+            "diagnostic span must cover the default `Plain` site, not the trait \
+             or impl header; got {snippet:?} (full span {:?})",
+            bound_err.span
+        );
+    }
+
+    #[test]
+    fn assoc_type_composite_generic_binding_fails_closed() {
+        // `impl<T: Display> Show for Container<T> { type Out = Option<T>; }`
+        // — the RHS is a composite generic (`Option<T>`), not a bare impl
+        // type-param. Slice 1 deliberately does *not* yet propagate bounds
+        // through composite shapes, so `Option<T>` falls through to
+        // `type_satisfies_trait_bound`, which (correctly) reports that
+        // `Option<T>` does not implement `Display`. This test pins the
+        // fail-closed behaviour: we'd rather reject a maybe-valid impl than
+        // silently accept an unverified bound. Slice 2 (composite bound
+        // propagation) is the proper home for the relaxation.
+        let (errors, _warnings) = parse_and_check_with_stdlib(
+            r"
+            trait Show {
+                type Out: Display;
+                fn show(val: Self) -> Self::Out;
+            }
+
+            type Container<T> {
+                value: T;
+            }
+
+            impl<T: Display> Show for Container<T> {
+                type Out = Option<T>;
+                fn show(val: Container<T>) -> Option<T> { Some(val.value) }
+            }
+            ",
+        );
+        let bound_err = errors
+            .iter()
+            .find(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied))
+            .expect(
+                "slice 1 must fail closed on composite `type Out = Option<T>`; \
+                 slice 2 is the proper home for composite bound propagation",
+            );
+        assert!(
+            bound_err.message.contains("Option") && bound_err.message.contains("Display"),
+            "expected BoundsNotSatisfied citing `Option` and `Display`; got: {bound_err:?}"
+        );
+    }
+
+    // TODO(assoc-types slice 2 / parser): `TraitDecl` does not yet parse a
+    // `where` clause at the trait header, so `trait Foo where Self::Bar:
+    // Display { ... }` cannot be tested end-to-end. Once the parser
+    // surfaces `TraitDecl.where_clause`, drop the `#[ignore]` and verify
+    // the bound is enforced on impls whose `Self::Bar` binding does not
+    // satisfy `Display`.
+    #[test]
+    #[ignore = "trait-header where-clause syntax not yet parsed; see TODO above"]
+    fn assoc_type_where_clause_bound_enforced() {
+        let (errors, _warnings) = parse_and_check_with_stdlib(
+            r"
+            trait Show where Self::Out: Display {
+                type Out;
+                fn show(val: Self) -> Self::Out;
+            }
+
+            type Widget {}
+
+            type Plain {}
+
+            impl Show for Widget {
+                type Out = Plain;
+                fn show(val: Widget) -> Plain { Plain {} }
+            }
+            ",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied)
+                    && e.message.contains("Display")
+                    && e.message.contains("Plain")),
+            "expected BoundsNotSatisfied citing Display and Plain; got: {errors:?}"
+        );
+    }
+}

@@ -606,8 +606,15 @@ impl TraitRegistry {
                 _ => false,
             },
 
-            // Var: NOT Send by default
-            Ty::Var(_) => false,
+            // Var: NOT Send by default.
+            // AssocType { base, .. }: a projection's marker disposition cannot
+            // be decided without seeing the impl-side binding. The projection
+            // is collapsed to a concrete `Ty` before reaching MIR; while still
+            // unresolved (generic-fn signature), no marker query can be
+            // meaningfully answered. Conservatively return `false` — callers
+            // that need a marker on a projection must run projection-collapse
+            // first.
+            Ty::Var(_) | Ty::AssocType { .. } => false,
 
             // Trait objects: check if any of the traits has the bound
             Ty::TraitObject { traits } => traits.iter().any(|bound| {

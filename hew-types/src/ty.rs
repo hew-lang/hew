@@ -163,6 +163,32 @@ pub enum Ty {
     /// Display: `<task<T>>` (angle brackets signal compiler-internal origin).
     Task(Box<Ty>),
 
+    /// Deferred associated-type projection: `T::Bar` where `T` is a generic
+    /// type parameter with a trait bound that declares `type Bar`.
+    ///
+    /// Produced by the resolver when it sees `T::Bar` in a type expression and
+    /// `T` is a known type parameter whose bounds include a trait declaring
+    /// `Bar`. The variant carries the trait name (disambiguating when `T` has
+    /// multiple bounds) plus the assoc-type name. Substitution collapses this
+    /// to the impl's binding once `base` becomes concrete (see
+    /// `Checker::project_assoc_types`).
+    ///
+    /// Display: `<base>::<assoc>` (e.g. `I::Item`).
+    ///
+    /// Strings are boxed to keep the variant under the `result_large_err`
+    /// clippy threshold (Ty appears as both arms of `UnifyError::Mismatch`).
+    AssocType {
+        /// Carrier of the type parameter (`Ty::Named { name: "I", args: [] }`
+        /// at registration time; may become a concrete `Ty` after
+        /// monomorphisation substitutes the type-arg).
+        base: Box<Ty>,
+        /// Trait that declares the associated type. Required for
+        /// disambiguation when `base` has multiple bounds.
+        trait_name: Box<str>,
+        /// Associated type name (e.g. `"Item"`).
+        assoc_name: Box<str>,
+    },
+
     /// Error recovery — a type that unifies with anything
     Error,
 }
@@ -534,6 +560,12 @@ impl Ty {
                 inner.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 write!(f, ">>")
             }
+            Ty::AssocType {
+                base, assoc_name, ..
+            } => {
+                base.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                write!(f, "::{assoc_name}")
+            }
             Ty::Error => write!(f, "<error>"),
         }
     }
@@ -643,6 +675,7 @@ impl Ty {
                 .iter()
                 .any(|bound| bound.args.iter().any(Ty::has_inference_var)),
             Ty::Task(inner) => inner.has_inference_var(),
+            Ty::AssocType { base, .. } => base.has_inference_var(),
             _ => false,
         }
     }
@@ -1258,8 +1291,26 @@ impl Ty {
                     .collect(),
             },
             Ty::Task(inner) => Ty::Task(Box::new(inner.apply_subst_inner(subst, visited))),
+            Ty::AssocType {
+                base,
+                trait_name,
+                assoc_name,
+            } => Ty::AssocType {
+                base: Box::new(base.apply_subst_inner(subst, visited)),
+                trait_name: trait_name.clone(),
+                assoc_name: assoc_name.clone(),
+            },
             _ => self.clone(),
         }
+    }
+
+    /// Public counterpart to `map_children`: apply `f` to each child type
+    /// and reconstruct the composite. Intended for cross-module walkers
+    /// (e.g. the checker's projection-collapse) that need structural
+    /// recursion without re-implementing every variant.
+    #[must_use]
+    pub fn map_children_pub(&self, f: &impl Fn(&Ty) -> Ty) -> Ty {
+        self.map_children(f)
     }
 
     /// Apply a function to each child type, reconstructing the composite.
@@ -1303,6 +1354,15 @@ impl Ty {
                     .collect(),
             },
             Ty::Task(inner) => Ty::Task(Box::new(f(inner))),
+            Ty::AssocType {
+                base,
+                trait_name,
+                assoc_name,
+            } => Ty::AssocType {
+                base: Box::new(f(base)),
+                trait_name: trait_name.clone(),
+                assoc_name: assoc_name.clone(),
+            },
             _ => self.clone(),
         }
     }
@@ -1322,6 +1382,7 @@ impl Ty {
             Ty::Pointer { pointee, .. } => f(pointee),
             Ty::TraitObject { traits } => traits.iter().any(|bound| bound.args.iter().any(f)),
             Ty::Task(inner) => f(inner),
+            Ty::AssocType { base, .. } => f(base),
             _ => false,
         }
     }
@@ -1402,6 +1463,18 @@ impl Ty {
             Ty::Task(inner) => Ty::Task(Box::new(
                 inner.substitute_named_param(param_name, replacement),
             )),
+            // AssocType { base: T, trait, name }: when `T` is the type param
+            // being substituted, recurse into `base` so a later projection-
+            // collapse pass can resolve the assoc binding from the impl.
+            Ty::AssocType {
+                base,
+                trait_name,
+                assoc_name,
+            } => Ty::AssocType {
+                base: Box::new(base.substitute_named_param(param_name, replacement)),
+                trait_name: trait_name.clone(),
+                assoc_name: assoc_name.clone(),
+            },
             _ => self.clone(),
         }
     }

@@ -161,6 +161,16 @@ pub enum BoundaryError {
         /// Number of type arguments that were actually present.
         got: usize,
     },
+    /// A [`Ty::AssocType`] projection survived past type-checking. Such a
+    /// projection must be collapsed (via the impl's `type Bar = X` binding)
+    /// before crossing the checker→HIR boundary; reaching this point means
+    /// monomorphisation did not resolve the projection.
+    UnresolvedAssocProjection {
+        /// Trait that declares the associated type.
+        trait_name: String,
+        /// Associated-type name (e.g. `"Item"`).
+        assoc_name: String,
+    },
 }
 
 impl fmt::Display for BoundaryError {
@@ -182,6 +192,15 @@ impl fmt::Display for BoundaryError {
                 write!(
                     f,
                     "generic arity mismatch: expected {expected} type argument(s), got {got}"
+                )
+            }
+            BoundaryError::UnresolvedAssocProjection {
+                trait_name,
+                assoc_name,
+            } => {
+                write!(
+                    f,
+                    "unresolved associated-type projection `{trait_name}::{assoc_name}` leaked to boundary"
                 )
             }
         }
@@ -272,6 +291,14 @@ impl ResolvedTy {
                     .collect::<Result<Vec<_>, _>>()?,
             }),
             Ty::Task(inner) => Ok(ResolvedTy::Task(Box::new(Self::from_ty(inner)?))),
+            Ty::AssocType {
+                trait_name,
+                assoc_name,
+                ..
+            } => Err(BoundaryError::UnresolvedAssocProjection {
+                trait_name: trait_name.to_string(),
+                assoc_name: assoc_name.to_string(),
+            }),
         }
     }
 

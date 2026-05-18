@@ -82,6 +82,11 @@ fn ty_contains_unresolved_var(ty: &Ty) -> bool {
         // type-checking (today it is only produced during HIR lowering after
         // the checker has run, so this arm is structurally unreachable here).
         Ty::Task(inner) => ty_contains_unresolved_var(inner),
+        // AssocType { base, .. }: recurse into the base carrier, matching the
+        // Task<T> precedent. A still-unresolved projection carrier is itself
+        // a checker-internal leak, but this helper is for inference-var
+        // detection specifically.
+        Ty::AssocType { base, .. } => ty_contains_unresolved_var(base),
     }
 }
 

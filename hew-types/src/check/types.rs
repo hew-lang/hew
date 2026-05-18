@@ -1012,6 +1012,18 @@ pub struct Checker {
     /// module path for callers that only populate `resolved_items`.
     pub(super) registered_stdlib_hew_sources: HashSet<String>,
     pub(super) generic_ctx: Vec<HashMap<String, Ty>>,
+    /// Parallel stack to `generic_ctx`: bounds declared on each generic type
+    /// parameter in the current scope (fn, impl, receive-fn). Keyed by param
+    /// name, value is the list of trait-bound names (e.g. `["Iterator"]` for
+    /// `<I: Iterator>`). Pushed/popped alongside `generic_ctx` by signature
+    /// registration; consulted by the resolver when it encounters `T::Bar`
+    /// projections to find which trait declares `Bar`.
+    ///
+    /// Why a separate stack rather than enriching `generic_ctx`: `generic_ctx`
+    /// maps name → `Ty` and is consumed by many call sites that only care
+    /// about substitution. Bounds are slice-2-specific. Keeping them apart
+    /// avoids invalidating every existing reader.
+    pub(super) current_type_param_bounds: Vec<HashMap<String, Vec<String>>>,
     pub(super) current_return_type: Option<Ty>,
     pub(super) in_generator: bool,
     pub(super) loop_depth: u32,
@@ -1111,6 +1123,22 @@ pub struct Checker {
     /// Field names of the current actor (for purity checks on bare field assignment).
     pub(super) current_actor_fields: Vec<String>,
     pub(super) impl_alias_scopes: Vec<ImplAliasScope>,
+    /// When set, the resolver is inside a trait-body context that gives
+    /// meaning to `Self::Bar` as a projection into this trait's associated
+    /// types. Used to materialise a deferred `Ty::AssocType { base: Self,
+    /// trait_name, assoc_name }` when no impl scope is active (e.g.
+    /// registering a trait method signature). The carrier is collapsed at
+    /// call sites where `Self` is substituted by a concrete type.
+    pub(super) current_trait_for_self_projection: Option<String>,
+    /// Resolved impl-side `type Bar = X` bindings, keyed by
+    /// `(impl_type_name, trait_name, assoc_name)`. Populated at impl
+    /// registration so that downstream projection-collapse
+    /// (`project_assoc_types`) can substitute `Ty::AssocType` carriers once
+    /// their `base` becomes concrete.
+    ///
+    /// Distinct from `ImplAliasScope.entries`, which is the per-impl scope
+    /// stack used for `Self::Bar` lookup during impl-body checking.
+    pub(super) impl_assoc_type_bindings: HashMap<(String, String, String), Ty>,
     /// Names of functions that require an unsafe block to call.
     pub(super) unsafe_functions: HashSet<String>,
     /// Whether warnings for WASM-only builds should be emitted.
@@ -1217,6 +1245,7 @@ impl Checker {
             registered_flat_file_import_sources: HashSet::new(),
             registered_stdlib_hew_sources: HashSet::new(),
             generic_ctx: Vec::new(),
+            current_type_param_bounds: Vec::new(),
             current_return_type: None,
             in_generator: false,
             loop_depth: 0,
@@ -1253,6 +1282,8 @@ impl Checker {
             current_actor_type: None,
             current_actor_fields: Vec::new(),
             impl_alias_scopes: Vec::new(),
+            current_trait_for_self_projection: None,
+            impl_assoc_type_bindings: HashMap::new(),
             unsafe_functions: HashSet::new(),
             wasm_target: false,
             wasm_warning_spans: HashSet::new(),

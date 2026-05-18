@@ -368,6 +368,19 @@ impl Checker {
         self.in_pure_function = fd.is_pure;
         self.env.push_scope();
 
+        // Push this fn's type-param bounds onto the resolver stack so
+        // `T::Bar` projections inside `let x: T::Bar = ...` and other in-body
+        // type annotations resolve. Popped at end of body check.
+        let body_bounds = self
+            .fn_sigs
+            .get(fn_name)
+            .map(|sig| sig.type_param_bounds.clone())
+            .unwrap_or_default();
+        let pushed_body_bounds = !body_bounds.is_empty();
+        if pushed_body_bounds {
+            self.current_type_param_bounds.push(body_bounds);
+        }
+
         // If inside an actor, push a separate scope for parameters so
         // shadowing checks detect collisions with actor field names.
         let in_actor = !self.current_actor_fields.is_empty();
@@ -475,6 +488,9 @@ impl Checker {
         self.in_pure_function = prev_in_pure;
         self.current_return_type = None;
         self.current_function = prev_function;
+        if pushed_body_bounds {
+            self.current_type_param_bounds.pop();
+        }
         if in_actor {
             self.env.pop_scope();
         }

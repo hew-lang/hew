@@ -133,6 +133,12 @@ impl Checker {
                     .collect();
                 ret = ret.substitute_named_param(tp, ta);
             }
+            // Collapse any `Ty::AssocType` carriers whose `base` has now
+            // become concrete (e.g. `I::Item` with `I → Counter` and the
+            // impl `Counter: Iterator { type Item = i32 }`). Carriers whose
+            // base is still abstract pass through unchanged.
+            params = params.iter().map(|p| self.project_assoc_types(p)).collect();
+            ret = self.project_assoc_types(&ret);
         }
 
         // For each call, freshen any unresolved type variables in the signature
@@ -769,6 +775,11 @@ impl Checker {
             } else {
                 0
             };
+            // Activate `Self::Bar` projection so the resolver materialises
+            // a `Ty::AssocType` carrier for the trait method's signature.
+            let prev_trait_self = self
+                .current_trait_for_self_projection
+                .replace(trait_name.to_string());
             let params: Vec<Ty> = m
                 .params
                 .iter()
@@ -779,6 +790,7 @@ impl Checker {
                 .return_type
                 .as_ref()
                 .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation));
+            self.current_trait_for_self_projection = prev_trait_self;
             let param_names: Vec<String> =
                 m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
             let type_params = m

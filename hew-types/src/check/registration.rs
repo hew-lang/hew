@@ -175,7 +175,14 @@ impl Checker {
             // struct field types (there is no surface annotation for Task<T>),
             // so this arm is structurally unreachable today. Explicit rather
             // than wildcard so the sweep stays honest.
-            | Ty::Task(_) => false,
+            | Ty::Task(_)
+            // Ty::AssocType is a projection carrier present only in generic
+            // signatures during checking; field-type validation walks
+            // user-declared struct/record/enum fields, which cannot themselves
+            // be associated-type projections (no `field: T::Item` surface).
+            // If a future surface admits projections in field types, this arm
+            // must descend into `base`.
+            | Ty::AssocType { .. } => false,
         }
     }
 
@@ -2188,6 +2195,40 @@ impl Checker {
             return false;
         };
         let entries = self.build_impl_alias_entries(id);
+        // Populate impl_assoc_type_bindings on every enter (not gated on
+        // `enforce`) so projection collapse can find bindings during
+        // call-site monomorphisation even when this scope was entered by
+        // a non-enforcing registration sweep. The first writer wins;
+        // subsequent calls with the same impl idempotently re-resolve.
+        if let Some(tb) = &id.trait_bound {
+            // Snapshot trait-side assoc-type list to avoid double-borrow
+            // of trait_defs while we call resolve_type_expr.
+            let assoc_names: Vec<String> = self
+                .trait_defs
+                .get(&tb.name)
+                .map(|info| {
+                    info.associated_types
+                        .iter()
+                        .map(|a| a.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let tb_name = tb.name.clone();
+            let target_owned = target_name.to_string();
+            for assoc_name in assoc_names {
+                let key = (target_owned.clone(), tb_name.clone(), assoc_name.clone());
+                if self.impl_assoc_type_bindings.contains_key(&key) {
+                    continue;
+                }
+                if let Some(entry) = entries.get(&assoc_name) {
+                    let expr = entry.expr.clone();
+                    let resolved = self.resolve_type_expr(&expr);
+                    if !matches!(resolved, Ty::Error) {
+                        self.impl_assoc_type_bindings.insert(key, resolved);
+                    }
+                }
+            }
+        }
         if enforce {
             if let Some(tb) = &id.trait_bound {
                 // Snapshot trait-side data we need; cloned so we can release
@@ -2701,6 +2742,12 @@ impl Checker {
         if self.fn_sigs.contains_key(&method_key) {
             return;
         }
+        // Activate trait-body `Self::Bar` projection while resolving this
+        // method's signature, so `Self::Item` in the return type becomes a
+        // deferred `Ty::AssocType` carrier instead of an opaque named type.
+        let prev_trait_self = self
+            .current_trait_for_self_projection
+            .replace(trait_name.to_string());
         self.register_fn_sig_with_name(
             &method_key,
             &FnDecl {
@@ -2723,6 +2770,35 @@ impl Checker {
                 fn_span: 0..0,
             },
         );
+        self.current_trait_for_self_projection = prev_trait_self;
+    }
+
+    /// Like `collect_type_param_bounds` but always includes a key for every
+    /// declared type param, with an empty `Vec` when no bounds are
+    /// declared. Used by the resolver to distinguish "type param in scope
+    /// with no bounds" (emit missing-bound diagnostic) from "name is not a
+    /// type param at all" (fall through to other resolution paths).
+    pub(super) fn collect_type_param_scope_with_bounds(
+        &self,
+        type_params: Option<&Vec<TypeParam>>,
+        where_clause: Option<&WhereClause>,
+    ) -> HashMap<String, Vec<String>> {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        if let Some(params) = type_params {
+            for param in params {
+                map.entry(param.name.clone()).or_default();
+            }
+        }
+        let with_bounds = self.collect_type_param_bounds(type_params, where_clause);
+        for (k, v) in with_bounds {
+            let entry = map.entry(k).or_default();
+            for b in v {
+                if !entry.iter().any(|existing| existing == &b) {
+                    entry.push(b);
+                }
+            }
+        }
+        map
     }
 
     #[expect(
@@ -2819,6 +2895,19 @@ impl Checker {
         } else {
             0
         };
+        // Push the type-param bounds map BEFORE resolving the signature so
+        // the resolver can validate `T::Bar` projections that appear in
+        // param/return types. Includes type params with no bounds so the
+        // resolver can distinguish "in scope with no bounds" (emit
+        // missing-bound diagnostic) from "not in scope" (fall through).
+        let fn_bounds = self.collect_type_param_scope_with_bounds(
+            fd.type_params.as_ref(),
+            fd.where_clause.as_ref(),
+        );
+        let pushed_bounds = !fn_bounds.is_empty();
+        if pushed_bounds {
+            self.current_type_param_bounds.push(fn_bounds);
+        }
         let mut hole_vars = Vec::new();
         let param_names = fd
             .params
@@ -2835,6 +2924,9 @@ impl Checker {
         let declared_return = fd.return_type.as_ref().map_or(Ty::Unit, |ret| {
             self.resolve_registered_annotation_ty(ret, &mut hole_vars)
         });
+        if pushed_bounds {
+            self.current_type_param_bounds.pop();
+        }
         // Wrap return type for generator functions
         let return_type = if fd.is_generator && fd.is_async {
             Ty::async_generator(declared_return)
@@ -2888,7 +2980,19 @@ impl Checker {
         impl_where_clause: Option<&WhereClause>,
     ) -> FnSig {
         let method_key = format!("{type_name}::{}", method.name);
+        // Push impl-level bounds onto the resolver's stack so the method
+        // signature can reference `T::Bar` where `T` is an impl type param
+        // (e.g. `impl<I: Iterator> Foo for X { fn next() -> I::Item }`).
+        let impl_bounds_map =
+            self.collect_type_param_scope_with_bounds(impl_type_params, impl_where_clause);
+        let pushed_impl_bounds = !impl_bounds_map.is_empty();
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.push(impl_bounds_map);
+        }
         self.register_fn_sig_with_name(&method_key, method);
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.pop();
+        }
 
         // Patch the fn_sigs entry to include impl-level type params and their
         // bounds. `register_fn_sig_with_name` only records method-level params,
@@ -3089,6 +3193,15 @@ impl Checker {
             self.generic_ctx.push(generic_bindings);
         }
 
+        let rf_scope = self.collect_type_param_scope_with_bounds(
+            rf.type_params.as_ref(),
+            rf.where_clause.as_ref(),
+        );
+        let pushed_rf_bounds = !rf_scope.is_empty();
+        if pushed_rf_bounds {
+            self.current_type_param_bounds.push(rf_scope);
+        }
+
         let mut hole_vars = Vec::new();
         let param_names = rf.params.iter().map(|p| p.name.clone()).collect();
         let params = rf
@@ -3105,6 +3218,9 @@ impl Checker {
             declared_return_type
         };
 
+        if pushed_rf_bounds {
+            self.current_type_param_bounds.pop();
+        }
         if rf.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
             self.generic_ctx.pop();
         }

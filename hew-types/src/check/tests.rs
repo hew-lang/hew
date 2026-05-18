@@ -16894,3 +16894,192 @@ mod assoc_types_slice1 {
         );
     }
 }
+
+// ── Associated-types — slice 2 (T::Bar projection in generic signatures) ──
+//
+// Slice 1 closed `Self::Bar` end-to-end. Slice 2 adds the load-bearing piece:
+// `T::Bar` projections where `T` is a generic type parameter with a trait
+// bound that declares `Bar`. The parser already stringifies `T::Bar` into
+// `TypeExpr::Named { name: "T::Bar" }`; this slice teaches the resolver to
+// (a) materialise a deferred `Ty::AssocType` carrier, (b) collapse it at
+// call-site monomorphisation when `T` becomes concrete, and (c) reject
+// surfaces where `T` has no bound declaring `Bar`.
+mod assoc_types_slice2 {
+    use super::*;
+
+    #[test]
+    fn tbar_projection_in_fn_signature_resolves() {
+        // Trait declares `type Item`; generic fn returns `I::Item`. With no
+        // call site, the signature alone must check clean — the return type
+        // is a deferred `Ty::AssocType` carrier.
+        let output = check_source(
+            r"
+            trait Iterator {
+                type Item;
+                fn next(it: Self) -> Option<Self::Item>;
+            }
+
+            fn make<I: Iterator>(it: I) -> I::Item {
+                it.next().unwrap()
+            }
+            ",
+        );
+        // The body itself uses `it.next()` which requires dispatch to a
+        // trait method on a generic-typed receiver. Whether that
+        // dispatches today is orthogonal; the *signature* must accept
+        // `I::Item` without an UndefinedType diagnostic citing `I::Item`.
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::UndefinedType)
+                    && e.message.contains("I::Item")
+                    && e.message.contains("no bounds")),
+            "signature `I::Item` must resolve via the `Iterator` bound; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn tbar_substitutes_at_call_site() {
+        // Calling `make(counter)` where `Counter: Iterator<Item = i32>`
+        // must materialise the return type as `i32` (the impl's binding).
+        let output = check_source(
+            r"
+            trait Iterator {
+                type Item;
+                fn next(it: Self) -> Option<Self::Item>;
+            }
+
+            type Counter {
+                value: int;
+            }
+
+            impl Iterator for Counter {
+                type Item = int;
+                fn next(c: Counter) -> Option<int> { Some(c.value) }
+            }
+
+            fn make<I: Iterator>(it: I) -> Option<I::Item> {
+                it.next()
+            }
+
+            fn caller() -> Option<int> {
+                make(Counter { value: 1 })
+            }
+            ",
+        );
+        // No type-mismatch error: caller's `Option<int>` annotation must
+        // unify with `make`'s monomorphised return `Option<I::Item>` →
+        // `Option<int>` once `I = Counter` collapses via the impl's
+        // `type Item = int` binding.
+        let mismatches: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. }))
+            .collect();
+        assert!(
+            mismatches.is_empty(),
+            "expected `make(counter)` to monomorphise to `Option<int>`; got mismatches: {mismatches:?}; all errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn tbar_missing_bound_diagnostic() {
+        // `fn bad<T>(_: T) -> T::Item` with no bound on `T`. The resolver
+        // must reject with a typed diagnostic naming the missing-bound
+        // surface — not silently treat `T::Item` as an opaque named type.
+        let output = check_source(
+            r"
+            trait Iterator {
+                type Item;
+                fn next(it: Self) -> Option<Self::Item>;
+            }
+
+            fn bad<T>(it: T) -> T::Item {
+                it.next().unwrap()
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::UndefinedType)
+                    && e.message.contains("T::Item")
+                    && (e.message.contains("no bounds") || e.message.contains("no trait bound"))),
+            "expected projection-missing-bound diagnostic; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn tbar_in_generic_position_collect() {
+        // The canonical motivating example: `Vec<I::Item>` in a return type.
+        // The carrier nests inside Vec, and at call-site monomorphisation
+        // the projection collapses to the impl's binding.
+        let output = check_source(
+            r"
+            trait Iterator {
+                type Item;
+                fn next(it: Self) -> Option<Self::Item>;
+            }
+
+            type Counter {}
+
+            impl Iterator for Counter {
+                type Item = int;
+                fn next(c: Counter) -> Option<int> { None }
+            }
+
+            fn collect<I: Iterator>(it: I) -> Vec<I::Item> {
+                Vec::new()
+            }
+
+            fn caller() -> Vec<int> {
+                collect(Counter {})
+            }
+            ",
+        );
+        let mismatches: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. }))
+            .collect();
+        assert!(
+            mismatches.is_empty(),
+            "expected `Vec<I::Item>` to monomorphise to `Vec<int>`; got mismatches: {mismatches:?}; all errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn tbar_unknown_assoc_diagnostic() {
+        // `T: Iterator` declares `type Item`. `T::Other` references an
+        // assoc name the trait does not declare. Must produce a typed
+        // diagnostic citing the bounds in scope.
+        let output = check_source(
+            r"
+            trait Iterator {
+                type Item;
+                fn next(it: Self) -> Option<Self::Item>;
+            }
+
+            fn bad<T: Iterator>(it: T) -> T::Other {
+                it.next().unwrap()
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::UndefinedType)
+                    && e.message.contains("Other")
+                    && e.message.contains("Iterator")),
+            "expected unknown-assoc diagnostic citing Other and Iterator; got: {:?}",
+            output.errors
+        );
+    }
+}

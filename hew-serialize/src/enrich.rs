@@ -269,6 +269,11 @@ fn ty_has_ownership_sensitive_bindings(
         Ty::Closure { captures, .. } => captures
             .iter()
             .any(|capture| ty_has_ownership_sensitive_bindings(capture, registry)),
+        // AssocType { base, .. }: projection carriers should be collapsed to
+        // their concrete impl binding before serialize/enrich runs. Conservatively
+        // descend into `base` so a partially-collapsed projection still reports
+        // its carrier's ownership sensitivity.
+        Ty::AssocType { base, .. } => ty_has_ownership_sensitive_bindings(base, registry),
     }
 }
 

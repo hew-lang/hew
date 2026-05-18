@@ -103,6 +103,13 @@ impl Checker {
     }
 
     pub(super) fn expect_type(&mut self, expected: &Ty, actual: &Ty, span: &Span) {
+        // Re-project any `Ty::AssocType` carriers whose `base` has become
+        // concrete via prior substitution. Carriers with still-abstract
+        // bases pass through unchanged and may collapse on a later call.
+        let expected_projected = self.project_assoc_types(expected);
+        let actual_projected = self.project_assoc_types(actual);
+        let expected = &expected_projected;
+        let actual = &actual_projected;
         // Snapshot substitution so partial bindings are rolled back on failure
         let snapshot = self.subst.snapshot();
         if let Err(_e) = unify(&mut self.subst, expected, actual) {

@@ -53,7 +53,11 @@
 // the substrate-grouping for readability; the binary-search
 // invariant is over the flat ordering.
 const M2_RUNTIME_SYMBOLS: &[&str] = &[
-    // --- Actor link/monitor surface (native-only; WASM-TODO(#1451)) --------
+    // --- Actor cooperate/link/monitor surface -------------------------------
+    // `hew_actor_cooperate() -> c_int` — reduction-budget safepoint injected
+    // by codegen at Checked MIR cooperate sites. Implemented by both native
+    // and WASM schedulers.
+    "hew_actor_cooperate",
     // `hew_actor_link(parent, child)` — bidirectional link; void return. The
     // Hew `link()` builtin wraps the call in `Ok(())` unconditionally because
     // the current runtime does not surface AlreadyLinked as a return code.

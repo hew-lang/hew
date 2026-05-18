@@ -759,11 +759,14 @@ arg
     ;
 
 // ----------------------------------------------------------------
-//  Closures  — arrow syntax only (v0.6.0: pipe syntax |x| removed)
+//  Closures
 // ----------------------------------------------------------------
 
 lambda
-    : 'move'? typeParams? '(' lambdaParams? ')' retType? '=>' ( expr | block )
+    : 'move'? '|' lambdaParams? '|' expr
+    | 'move'? '||' expr
+    | 'move'? '|' lambdaParams? '|' retType block
+    | typeParams '(' lambdaParams? ')' retType? '=>' ( expr | block )
     ;
 
 lambdaParams

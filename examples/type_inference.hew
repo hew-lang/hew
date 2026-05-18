@@ -11,24 +11,24 @@ fn transform(f: fn(i32) -> i32, x: i32) -> i32 {
 }
 
 fn main() {
-    // Arrow lambda with types inferred from apply's signature
-    let sum = apply((x, y) => x + y, 3, 4);
-    let product = apply((x, y) => x * y, 3, 4);
+    // Pipe closure with types inferred from apply's signature
+    let sum = apply(|x, y| x + y, 3, 4);
+    let product = apply(|x, y| x * y, 3, 4);
     println(sum);
     println(product);
 
-    // Arrow lambda with single param
-    let doubled = transform((x) => x * 2, 21);
+    // Pipe closure with single param
+    let doubled = transform(|x| x * 2, 21);
     println(doubled);
 
-    // Arrow lambda with explicit types
-    let diff = apply((x: i32, y: i32) -> i32 => {
+    // Pipe closure with explicit types
+    let diff = apply(|x: i32, y: i32| -> i32 {
         x - y
     }, 10, 3);
     println(diff);
 
-    // Arrow lambda with inferred types
-    let modulo = apply((x, y) => {
+    // Pipe closure with inferred types
+    let modulo = apply(|x, y| {
         x - y * (x / y)
     }, 17, 5);
     println(modulo);

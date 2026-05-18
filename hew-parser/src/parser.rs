@@ -439,6 +439,8 @@ pub enum ParseDiagnosticKind {
         /// The token (or `"end of file"`) that was encountered.
         got: String,
     },
+    /// Pipe-closure syntax is malformed or incomplete.
+    ClosurePipeSyntax,
     /// Every other error not yet assigned a structured variant.
     Other,
 }
@@ -453,6 +455,7 @@ impl ParseDiagnosticKind {
             Self::InvalidLiteral => "InvalidLiteral",
             Self::MissingExpression { .. } => "MissingExpression",
             Self::InvalidPattern { .. } => "InvalidPattern",
+            Self::ClosurePipeSyntax => "ClosurePipeSyntax",
             Self::Other => "Other",
         }
     }
@@ -678,6 +681,21 @@ impl<'src> Parser<'src> {
             hint: Some(hint.into()),
             severity: Severity::Error,
             kind: ParseDiagnosticKind::Other,
+        });
+    }
+
+    fn error_closure_pipe_syntax(
+        &mut self,
+        message: impl Into<String>,
+        span: Span,
+        hint: impl Into<String>,
+    ) {
+        self.errors.push(ParseError {
+            message: message.into(),
+            span,
+            hint: Some(hint.into()),
+            severity: Severity::Error,
+            kind: ParseDiagnosticKind::ClosurePipeSyntax,
         });
     }
 
@@ -5271,6 +5289,7 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::RightBracket)?;
                 Expr::Array(elements)
             }
+            Token::Pipe | Token::PipePipe => self.parse_pipe_lambda(false, start)?,
             Token::LeftBrace => {
                 // Disambiguate: {"str": expr, ...} → MapLiteral, else → Block
                 // Note: bare {} remains a Block — empty HashMap coercion is
@@ -5455,7 +5474,9 @@ impl<'src> Parser<'src> {
             }
             Token::Move => {
                 self.advance();
-                if self.eat(&Token::LeftParen) {
+                if matches!(self.peek(), Some(Token::Pipe | Token::PipePipe)) {
+                    self.parse_pipe_lambda(true, start)?
+                } else if self.eat(&Token::LeftParen) {
                     // Move lambda
                     let params = self.try_parse_lambda_params()?;
                     self.expect(&Token::RightParen)?;
@@ -5473,7 +5494,12 @@ impl<'src> Parser<'src> {
                         body,
                     }
                 } else {
-                    self.error("expected '(' after 'move'".to_string());
+                    self.error_closure_pipe_syntax(
+                        "E_CLOSURE_PIPE_SYNTAX: expected `|` after `move` to begin a closure"
+                            .to_string(),
+                        self.peek_span(),
+                        "write `move |params| expr`",
+                    );
                     return None;
                 }
             }
@@ -5696,6 +5722,68 @@ impl<'src> Parser<'src> {
         Some((expr, start..end))
     }
 
+    fn parse_pipe_lambda(&mut self, is_move: bool, start: usize) -> Option<Expr> {
+        let params = if self.eat(&Token::PipePipe) {
+            Vec::new()
+        } else {
+            self.expect(&Token::Pipe)?;
+            let params = self.try_parse_pipe_lambda_params().or_else(|| {
+                self.error_closure_pipe_syntax(
+                    "E_CLOSURE_PIPE_SYNTAX: malformed closure parameter list".to_string(),
+                    start..self.peek_span().start,
+                    "write parameters as `|name|` or `|name: Type|`",
+                );
+                None
+            })?;
+            self.expect(&Token::Pipe).or_else(|| {
+                self.error_closure_pipe_syntax(
+                    "E_CLOSURE_PIPE_SYNTAX: expected `|` to close closure parameters".to_string(),
+                    start..self.peek_span().start,
+                    "write `|params| expr`",
+                );
+                None
+            })?;
+            params
+        };
+
+        let return_type = self.parse_opt_return_type()?;
+        let body = if return_type.is_some() {
+            if self.peek() != Some(&Token::LeftBrace) {
+                self.error_closure_pipe_syntax(
+                    "E_CLOSURE_PIPE_SYNTAX: typed pipe closures require a braced body".to_string(),
+                    self.peek_span(),
+                    "write `|params| -> Type { expr }`",
+                );
+                return None;
+            }
+            let body_start = self.peek_span().start;
+            let body_block = self.parse_block()?;
+            let body_end = self.peek_span().start;
+            Box::new((Expr::Block(body_block), body_start..body_end))
+        } else {
+            if matches!(
+                self.peek(),
+                Some(Token::Semicolon | Token::RightBrace) | None
+            ) {
+                self.error_closure_pipe_syntax(
+                    "E_CLOSURE_PIPE_SYNTAX: closure body is required".to_string(),
+                    self.peek_span(),
+                    "write `|| expr` or `|| { ... }`",
+                );
+                return None;
+            }
+            Box::new(self.parse_expr()?)
+        };
+
+        Some(Expr::Lambda {
+            is_move,
+            type_params: None,
+            params,
+            return_type,
+            body,
+        })
+    }
+
     /// Parse map literal entries after the opening `{` has already been consumed.
     /// Expects at least one `key: value` pair, followed by optional comma-separated pairs.
     fn parse_map_literal_entries(&mut self) -> Option<Expr> {
@@ -5715,6 +5803,28 @@ impl<'src> Parser<'src> {
         }
         self.expect(&Token::RightBrace)?;
         Some(Expr::MapLiteral { entries })
+    }
+
+    fn try_parse_pipe_lambda_params(&mut self) -> Option<Vec<LambdaParam>> {
+        let mut params = Vec::new();
+
+        while !self.at_end() && self.peek() != Some(&Token::Pipe) {
+            let name = self.expect_ident()?;
+
+            let ty = if self.eat(&Token::Colon) {
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+
+            params.push(LambdaParam { name, ty });
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+
+        Some(params)
     }
 
     fn try_parse_lambda_params(&mut self) -> Option<Vec<LambdaParam>> {
@@ -6482,7 +6592,7 @@ mod tests {
 
     #[test]
     fn parse_lambda() {
-        let source = "fn main() { let f = (x: i32) => x * 2; }";
+        let source = "fn main() { let f = |x: i32| x * 2; }";
         let result = parse(source);
         if !result.errors.is_empty() {
             for error in &result.errors {
@@ -6490,6 +6600,44 @@ mod tests {
             }
         }
         assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn parse_pipe_closure_forms() {
+        for source in [
+            "fn main() { let f = |x| x + 1; }",
+            "fn main() { let f = |x: i32| x + 1; }",
+            "fn main() { let f = |x: i32| -> i32 { x + 1 }; }",
+            "fn main() { let f = || 42; }",
+            "fn main() { let f = move |x| x; }",
+        ] {
+            let result = parse(source);
+            assert!(
+                result.errors.is_empty(),
+                "expected pipe closure to parse cleanly: {source}\nerrors: {:?}",
+                result.errors
+            );
+        }
+    }
+
+    #[test]
+    fn parse_pipe_closure_malformed_surfaces_are_explicit_errors() {
+        for source in [
+            "fn main() { let f = ||; }",
+            "fn main() { let f = |x| -> i32 x + 1; }",
+        ] {
+            let result = parse(source);
+            assert!(
+                result.errors.iter().any(|error| matches!(
+                    error.kind,
+                    ParseDiagnosticKind::ClosurePipeSyntax
+                ) && error
+                    .message
+                    .contains("E_CLOSURE_PIPE_SYNTAX")),
+                "expected typed E_CLOSURE_PIPE_SYNTAX for {source}, got {:?}",
+                result.errors
+            );
+        }
     }
 
     #[test]

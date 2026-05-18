@@ -1711,24 +1711,25 @@ fn noop() { }  // no -> at all: returns void
 ```hew
 fn apply(f: fn(int, int) -> int, a: int, b: int) -> int { f(a, b) }
 
-// Lambda parameters infer int from apply's signature
-let sum = apply((x, y) => x + y, 3, 4);      // x: int, y: int inferred
-let product = apply((x, y) => x * y, 3, 4);  // types flow from apply's signature
+// Closure parameters infer int from apply's signature
+let sum = apply(|x, y| x + y, 3, 4);      // x: int, y: int inferred
+let product = apply(|x, y| x * y, 3, 4);  // types flow from apply's signature
 
 // Method chaining with inference
 numbers
-    .filter((x) => x > 0)           // x: int inferred from Vec<int>
-    .map((x) => x * 2)              // x: int, result: int
-    .reduce((a, b) => a + b)        // a: int, b: int from reduce signature
+    .filter(|x| x > 0)              // x: int inferred from Vec<int>
+    .map(|x| x * 2)                 // x: int, result: int
+    .reduce(|a, b| a + b)           // a: int, b: int from reduce signature
 ```
 
-**Lambda syntax:**
+**Closure syntax:**
 
-Hew uses arrow syntax for all lambda expressions:
+Hew uses pipe-delimited closure syntax for first-class function values:
 
 ```hew
-let doubled = transform((x) => x * 2, 21);
-let sum = numbers.reduce((a, b) => a + b);
+let doubled = transform(|x| x * 2, 21);
+let sum = numbers.reduce(|a, b| a + b);
+let checked = |x: int| -> int { x + 1 };
 ```
 
 **Untyped parameters when context provides types:**
@@ -1737,7 +1738,7 @@ let sum = numbers.reduce((a, b) => a + b);
 fn map<T, U>(items: Vec<T>, transform: fn(T) -> U) -> Vec<U> { /* ... */ }
 
 // T=int, U=String inferred from usage
-let strings = map([1, 2, 3], (x) => x.to_string());  // x: int inferred
+let strings = map([1, 2, 3], |x| x.to_string());  // x: int inferred
 ```
 
 **Actor message type inference:**
@@ -1756,8 +1757,8 @@ actor Calculator {
 
 let calc = spawn Calculator();
 // Lambda types inferred from receive fn signature
-calc.apply_operation((a, b) => a + b, 10);  // a: int, b: int inferred
-calc.apply_operation((a, b) => a * b, 5);   // also inferred
+calc.apply_operation(|a, b| a + b, 10);  // a: int, b: int inferred
+calc.apply_operation(|a, b| a * b, 5);   // also inferred
 ```
 
 **Generic lambda constraints:**
@@ -1777,13 +1778,13 @@ generic_add(1.0, 2.0);    // f64
 
 ```hew
 // ERROR: Cannot infer types for lambda parameters
-let f = (x, y) => x + y;  // No context to determine x, y types
+let f = |x, y| x + y;  // No context to determine x, y types
 
 // Solution 1: Annotate the variable
-let f: fn(int, int) -> int = (x, y) => x + y;
+let f: fn(int, int) -> int = |x, y| x + y;
 
 // Solution 2: Annotate parameters
-let f = (x: int, y: int) => x + y;
+let f = |x: int, y: int| x + y;
 ```
 
 **Constraint solving for complex bounds:**
@@ -1800,7 +1801,7 @@ where
 
 // All constraints automatically verified:
 // - int: Send ✓, Clone ✓, Display ✓
-let results = process([1, 2, 3], (x) => {
+let results = process([1, 2, 3], |x| {
     print(f"Processing: {x}");  // Display bound allows this
     x * 2
 });
@@ -1814,17 +1815,17 @@ When inference fails, the compiler provides clear, actionable errors:
 error[E0282]: type annotations needed for lambda parameters
   --> src/main.hew:5:15
    |
-5  |     let f = (x, y) => x + y;
+5  |     let f = |x, y| x + y;
    |               ^^^^^^^^^^^^^ cannot infer types for `x` and `y`
    |
 help: consider annotating the lambda variable type
    |
-5  |     let f: fn(int, int) -> int = (x, y) => x + y;
+5  |     let f: fn(int, int) -> int = |x, y| x + y;
    |            ++++++++++++++++++
    |
 help: or annotate the lambda parameters directly
    |
-5  |     let f = (x: int, y: int) => x + y;
+5  |     let f = |x: int, y: int| x + y;
    |                +++     +++
 ```
 
@@ -4328,7 +4329,7 @@ operators, duration literals, `machine` declarations, and map literals.
 
 When the grammar files and this specification disagree, the parser implementation (`hew-parser/src/parser.rs`) is the authoritative source of truth.
 
-**Implementation note:** closures use lambda lifting — captured variables are passed as extra parameters to the generated function. Full closure implementation with heap-allocated environment structs is future work.
+**Implementation note:** pipe closures lower through `Expr::Lambda`; captured closure environment records are the v0.5 substrate direction, while generic `<T>(...) => ...` remains an internal transitional form until generic pipe closure syntax is ratified.
 
 ### 12.1 Built-in Numeric Types
 

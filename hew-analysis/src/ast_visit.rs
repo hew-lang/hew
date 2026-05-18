@@ -1117,7 +1117,7 @@ mod tests {
     #[test]
     fn lambda_params_to_bindings_use_non_zero_name_spans() {
         let source =
-            "fn main() { let first = (x: int) => x; let second = (y: int, z: int) => y + z; }";
+            "fn main() { let first = |x: int| x; let second = |y: int, z: int| { y + z }; }";
         let parse_result = hew_parser::parse(source);
         let Item::Function(function) = &parse_result.program.items[0].0 else {
             panic!("expected function");

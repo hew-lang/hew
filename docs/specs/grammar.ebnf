@@ -256,8 +256,11 @@ ExprList       = Expr { "," Expr } ;
 Args           = Arg { "," Arg } ;
 Arg            = ( Ident ":" )? Expr ;
 
-(* Closures — arrow syntax only (v0.6.0: pipe syntax |x| removed) *)
-Lambda         = "move"? TypeParams? "(" LambdaParams? ")" RetType? "=>" (Expr | Block) ;
+(* Closures *)
+Lambda         = "move"? "|" LambdaParams? "|" Expr
+               | "move"? "||" Expr
+               | "move"? "|" LambdaParams? "|" RetType Block
+               | TypeParams "(" LambdaParams? ")" RetType? "=>" (Expr | Block) ;
 LambdaParams   = LambdaParam { "," LambdaParam } ;
 LambdaParam    = Ident ( ":" Type )? ;
 

@@ -6,13 +6,13 @@ fn apply(f: fn(int) -> int, x: int) -> int {
 }
 
 fn main() {
-    let double = (x: int) -> int => {
+    let double = |x: int| -> int {
         x * 2
     };
-    let square = (x: int) -> int => {
+    let square = |x: int| -> int {
         x * x
     };
-    let negate = (x: int) -> int => {
+    let negate = |x: int| -> int {
         0 - x
     };
     // Calculate and store the value for display

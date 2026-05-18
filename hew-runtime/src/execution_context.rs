@@ -26,6 +26,8 @@ pub type HewCancelToken = c_void;
 pub type HewTaskScope = c_void;
 
 pub(crate) const EXECUTION_CONTEXT_NOT_INSTALLED: &str = "execution context not installed";
+pub(crate) const EXECUTION_CONTEXT_NOT_INSTALLED_AT_SPAWN: &str =
+    "execution context not installed at spawn site";
 
 /// Opaque actor-state-lock seat reserved for the D24-1 lock migration.
 #[derive(Debug)]

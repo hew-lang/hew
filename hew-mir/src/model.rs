@@ -94,6 +94,14 @@ pub enum FunctionCallConv {
     #[default]
     Default,
     ActorHandler,
+    ClosureInvoke,
+}
+
+impl FunctionCallConv {
+    #[must_use]
+    pub fn carries_execution_context(self) -> bool {
+        matches!(self, Self::ActorHandler | Self::ClosureInvoke)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,10 +125,11 @@ impl ContextState {
 /// Validate execution-context carrier marker invariants on hand-built or
 /// lowered MIR.
 ///
-/// Actor handlers must enter exactly at the entry block, exit before every
-/// terminal path, and use context-observing instructions only while the marker
-/// lattice is inside the context. Non-handler functions reject all carrier
-/// instructions so the context substrate cannot be smuggled into ordinary code.
+/// Context-bearing functions must enter exactly at the entry block, exit before
+/// every terminal path, and use context-observing instructions only while the
+/// marker lattice is inside the context. Contextless functions reject all
+/// carrier instructions so the context substrate cannot be smuggled into
+/// ordinary code.
 #[must_use]
 #[allow(
     clippy::too_many_lines,
@@ -144,7 +153,7 @@ pub fn validate_context_markers(func: &RawMirFunction) -> Vec<MirCheck> {
         }
     };
 
-    if func.call_conv != FunctionCallConv::ActorHandler {
+    if !func.call_conv.carries_execution_context() {
         for block in &func.blocks {
             for instr in &block.instructions {
                 if matches!(
@@ -159,7 +168,7 @@ pub fn validate_context_markers(func: &RawMirFunction) -> Vec<MirCheck> {
                         &mut seen,
                         block.id,
                         "context-marker-outside-handler",
-                        "execution-context carrier instructions are only legal in actor handlers"
+                            "execution-context carrier instructions are only legal in context-bearing functions"
                             .to_string(),
                     );
                 }
@@ -174,7 +183,7 @@ pub fn validate_context_markers(func: &RawMirFunction) -> Vec<MirCheck> {
             &mut seen,
             0,
             "missing-enter-context",
-            "actor handler has no entry block, so EnterContext cannot dominate the body"
+            "context-bearing function has no entry block, so EnterContext cannot dominate the body"
                 .to_string(),
         );
         return findings;
@@ -185,7 +194,7 @@ pub fn validate_context_markers(func: &RawMirFunction) -> Vec<MirCheck> {
             &mut seen,
             entry.id,
             "missing-enter-context",
-            "actor handler entry block must start with EnterContext".to_string(),
+            "context-bearing function entry block must start with EnterContext".to_string(),
         );
     }
 
@@ -200,7 +209,7 @@ pub fn validate_context_markers(func: &RawMirFunction) -> Vec<MirCheck> {
                 &mut seen,
                 block.id,
                 "missing-exit-context",
-                "actor handler terminal block must end with ExitContext before its terminator"
+                "context-bearing function terminal block must end with ExitContext before its terminator"
                     .to_string(),
             );
         }
@@ -279,7 +288,7 @@ pub fn validate_context_markers(func: &RawMirFunction) -> Vec<MirCheck> {
                 &mut seen,
                 block.id,
                 "missing-exit-context",
-                "actor handler terminal path reaches its terminator outside an exited context"
+                "context-bearing function terminal path reaches its terminator outside an exited context"
                     .to_string(),
             );
         }
@@ -914,7 +923,7 @@ pub enum Instr {
     /// Construct a first-class callable value from a closure invoke shim and
     /// the environment record materialised at the literal site.
     MakeClosure {
-        /// Synthetic function symbol whose ABI is `(env_ptr, user_args...)`.
+        /// Synthetic function symbol whose ABI is `(ctx, env_ptr, user_args...)`.
         fn_symbol: String,
         /// Environment record place. Codegen stores this place's address in
         /// the closure pair; the env layout is registered in `record_layouts`.
@@ -935,7 +944,7 @@ pub enum Instr {
     },
     /// Call a first-class callable pair. Codegen loads the function pointer and
     /// environment pointer from `callee`, then emits an indirect call with the
-    /// environment pointer prepended to `args`.
+    /// current execution context and environment pointer prepended to `args`.
     CallClosure {
         callee: Place,
         args: Vec<Place>,
@@ -953,8 +962,8 @@ pub enum Instr {
     /// The producer materialises the closure environment record in the parent
     /// frame, then codegen copies it into the task-owned Rc environment before
     /// spawning the worker. The worker wrapper fetches the task env and calls
-    /// `fn_symbol(env_ptr)`, inheriting the existing task-scope cancellation
-    /// token path.
+    /// `fn_symbol(ctx, env_ptr)`, inheriting the parent execution context's
+    /// cancellation, supervisor-lineage, and trace lanes.
     SpawnTaskClosure {
         task: Place,
         fn_symbol: String,

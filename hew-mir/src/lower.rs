@@ -418,12 +418,13 @@ struct LoweredFunction {
     record_layouts: Vec<crate::model::RecordLayout>,
 }
 
-/// Insert execution-context carrier markers into an actor-handler CFG.
+/// Insert execution-context carrier markers into a context-bearing CFG.
 ///
 /// The entry block starts with `EnterContext`; every terminal block (`Return`
 /// and `Trap` in today's MIR) ends with `ExitContext` immediately before the
-/// terminator. The helper is idempotent so synthetic tests and future actor-body
-/// producers can call it before validation without double-inserting markers.
+/// terminator. The helper is idempotent so synthetic tests and future
+/// context-bearing producers can call it before validation without
+/// double-inserting markers.
 pub fn bracket_actor_handler_blocks(blocks: &mut [BasicBlock]) {
     if let Some(entry) = blocks.first_mut() {
         if !matches!(entry.instructions.first(), Some(Instr::EnterContext)) {
@@ -486,7 +487,7 @@ fn lower_function(
     // when `If` (and later `Match` / loops) split the CFG. The order is
     // monotone in block id.
     let mut blocks = builder.finalize_blocks(Terminator::Return);
-    if call_conv == crate::model::FunctionCallConv::ActorHandler {
+    if call_conv.carries_execution_context() {
         bracket_actor_handler_blocks(&mut blocks);
     }
     // THIR's `statements` is the union of every block's checker stream
@@ -3753,7 +3754,7 @@ impl Builder {
         let raw = RawMirFunction {
             name: shim_name.to_string(),
             return_ty: ret_ty.clone(),
-            call_conv: crate::model::FunctionCallConv::Default,
+            call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             params: raw_params,
             locals: builder.locals.clone(),
             blocks,

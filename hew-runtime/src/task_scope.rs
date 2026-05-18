@@ -623,6 +623,13 @@ pub unsafe extern "C" fn hew_task_set_cancel_token(
 /// `hew_task_complete_threaded` from within this function.
 pub type TaskFn = unsafe extern "C" fn(*mut HewTask);
 
+/// Context-aware task function type used by spawned closure/fork-child codegen.
+///
+/// The first parameter is the child thread's installed execution context. The
+/// second is the task pointer whose result/completion is owned by the wrapper.
+pub type ContextTaskFn =
+    unsafe extern "C" fn(*mut crate::execution_context::HewExecutionContext, *mut HewTask);
+
 /// Spawn a task on a new OS thread.
 ///
 /// The runtime calls `task_fn(task)` on a new thread. The task function
@@ -689,6 +696,106 @@ pub unsafe extern "C" fn hew_task_spawn_thread(task: *mut HewTask, task_fn: Task
     });
 
     t.thread_handle = Some(handle);
+}
+
+/// Spawn a task on a new OS thread with a child execution context derived from
+/// `parent_ctx`.
+///
+/// The child inherits cancellation lineage, supervisor lineage, and trace
+/// context by value. Actor identity, actor-local arena, and lock seat remain
+/// empty for the spawned task's own execution context.
+///
+/// Returns `0` on success and `-1` on fail-closed rejection.
+///
+/// # Safety
+///
+/// - `parent_ctx` must be the live execution context installed at the spawn
+///   site.
+/// - `task` must be a valid pointer returned by [`hew_task_new`].
+/// - `task_fn` must be a valid function pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_spawn_thread_with_inherited_context(
+    parent_ctx: *mut crate::execution_context::HewExecutionContext,
+    task: *mut HewTask,
+    task_fn: ContextTaskFn,
+) -> i32 {
+    if parent_ctx.is_null() {
+        crate::set_last_error(crate::execution_context::EXECUTION_CONTEXT_NOT_INSTALLED_AT_SPAWN);
+        return -1;
+    }
+    cabi_guard!(task.is_null(), -1);
+
+    // Snapshot inherited lanes before the parent dispatch frame can move on.
+    // SAFETY: caller guarantees parent_ctx is live for this call.
+    let (parent_supervisor_raw, supervisor_child_index, trace, parent_cancel_token) = unsafe {
+        let parent = &*parent_ctx;
+        (
+            parent.parent_supervisor as usize,
+            parent.supervisor_child_index,
+            parent.trace,
+            parent.cancel_token,
+        )
+    };
+
+    // SAFETY: task is valid. If the parent has a cancellation token, make the
+    // task own a child token linked to that parent; otherwise keep the token
+    // installed by hew_task_scope_spawn.
+    let t = unsafe { &mut *task };
+    if !parent_cancel_token.is_null() {
+        // SAFETY: parent_cancel_token was snapshotted from a live parent context.
+        let child_token = unsafe { hew_cancel_token_new_child(parent_cancel_token) };
+        // SAFETY: task is valid and takes ownership of child_token.
+        unsafe { hew_task_set_cancel_token(task, child_token) };
+    }
+    let child_scope_raw = t.scope as usize;
+    let child_token_raw = t.cancel_token as usize;
+
+    // Set up the done signal for cross-thread notification.
+    let signal = Arc::new(TaskDoneSignal::new());
+    t.done_signal = Some(Arc::clone(&signal));
+    t.store_state(HewTaskState::Running, Ordering::Relaxed);
+
+    let task_raw = task as usize;
+    let fn_raw = task_fn as usize;
+
+    let handle = std::thread::spawn(move || {
+        let task_ptr = task_raw as *mut HewTask;
+        let child_scope = child_scope_raw as *mut HewTaskScope;
+        let child_token = child_token_raw as *mut HewCancellationToken;
+        let parent_supervisor = parent_supervisor_raw as *mut c_void;
+        // SAFETY: fn_raw is a valid ContextTaskFn supplied through the C ABI.
+        let fn_ptr: ContextTaskFn = unsafe { std::mem::transmute(fn_raw) };
+
+        let mut execution_context = crate::execution_context::HewExecutionContext {
+            actor: ptr::null_mut(),
+            actor_id: 0,
+            parent_supervisor,
+            supervisor_child_index,
+            flags: 0,
+            cancel_token: child_token,
+            task_scope: child_scope,
+            arena: ptr::null_mut(),
+            trace,
+            partition_policy: ptr::null_mut(),
+            prev_context: ptr::null_mut(),
+            lock_seat: ptr::null_mut(),
+            _reserved: [0],
+        };
+        let installed_previous =
+            crate::execution_context::set_current_context(&raw mut execution_context);
+        debug_assert!(installed_previous.is_null());
+
+        // SAFETY: fn_ptr is the validated ContextTaskFn supplied to this
+        // helper, and task_ptr stays live until scope teardown.
+        unsafe { fn_ptr(&raw mut execution_context, task_ptr) };
+
+        let restored_context = crate::execution_context::set_current_context(ptr::null_mut());
+        debug_assert_eq!(restored_context, &raw mut execution_context);
+        signal.notify_done();
+    });
+
+    t.thread_handle = Some(handle);
+    0
 }
 
 /// Block the calling thread until the task completes, then return
@@ -1535,6 +1642,214 @@ mod tests {
             assert!(OBSERVED_CANCEL.load(Ordering::SeqCst));
             assert_eq!((*task).error, HewTaskError::Cancelled);
             hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn spawned_thread_with_inherited_context_observes_parent_cancel() {
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Duration, Instant};
+
+        static STARTED: AtomicBool = AtomicBool::new(false);
+        static OBSERVED_CANCEL: AtomicBool = AtomicBool::new(false);
+
+        unsafe extern "C" fn cooperative_task(ctx: *mut HewExecutionContext, task: *mut HewTask) {
+            assert_eq!(ctx, crate::execution_context::current_context());
+            STARTED.store(true, Ordering::SeqCst);
+            while crate::scheduler::hew_actor_cooperate() != 2 {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            OBSERVED_CANCEL.store(true, Ordering::SeqCst);
+            // SAFETY: `task` is the live task pointer owned by this worker.
+            unsafe { hew_task_complete_threaded(task) };
+        }
+
+        STARTED.store(false, Ordering::SeqCst);
+        OBSERVED_CANCEL.store(false, Ordering::SeqCst);
+
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let _ctx = TestExecutionContext::install(HewExecutionContext::default());
+            let scope = hew_task_scope_new();
+            let previous = hew_task_scope_set_current(scope);
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            assert_eq!(
+                hew_task_spawn_thread_with_inherited_context(
+                    crate::execution_context::current_context(),
+                    task,
+                    cooperative_task,
+                ),
+                0
+            );
+
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !STARTED.load(Ordering::SeqCst) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(STARTED.load(Ordering::SeqCst), "worker did not start");
+
+            hew_task_scope_cancel(scope);
+            let _ = hew_task_await_blocking(task);
+
+            assert!(OBSERVED_CANCEL.load(Ordering::SeqCst));
+            assert_eq!((*task).error, HewTaskError::Cancelled);
+            let _ = hew_task_scope_set_current(previous);
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The snapshot test pins every inherited and non-inherited context lane together."
+    )]
+    fn inherited_context_snapshots_supervisor_lineage_and_trace() {
+        use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize};
+        use std::time::{Duration, Instant};
+
+        static STARTED: AtomicBool = AtomicBool::new(false);
+        static RELEASE: AtomicBool = AtomicBool::new(false);
+        static SEEN_PARENT_SUPERVISOR: AtomicUsize = AtomicUsize::new(0);
+        static SEEN_CHILD_INDEX: AtomicI32 = AtomicI32::new(0);
+        static SEEN_TRACE_ID_HI: AtomicU64 = AtomicU64::new(0);
+        static SEEN_TRACE_ID_LO: AtomicU64 = AtomicU64::new(0);
+        static SEEN_SPAN_ID: AtomicU64 = AtomicU64::new(0);
+        static SEEN_PARENT_SPAN_ID: AtomicU64 = AtomicU64::new(0);
+        static SEEN_ACTOR: AtomicUsize = AtomicUsize::new(usize::MAX);
+        static SEEN_ACTOR_ID: AtomicU64 = AtomicU64::new(u64::MAX);
+        static SEEN_ARENA: AtomicUsize = AtomicUsize::new(usize::MAX);
+        static SEEN_LOCK_SEAT: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+        unsafe extern "C" fn record_context(ctx: *mut HewExecutionContext, task: *mut HewTask) {
+            STARTED.store(true, Ordering::SeqCst);
+            while !RELEASE.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(ctx, crate::execution_context::current_context());
+            // SAFETY: ctx is the live child context installed by the spawn helper.
+            let ctx_ref = unsafe { &*ctx };
+            SEEN_PARENT_SUPERVISOR.store(ctx_ref.parent_supervisor as usize, Ordering::SeqCst);
+            SEEN_CHILD_INDEX.store(ctx_ref.supervisor_child_index, Ordering::SeqCst);
+            SEEN_TRACE_ID_HI.store(ctx_ref.trace.trace_id_hi, Ordering::SeqCst);
+            SEEN_TRACE_ID_LO.store(ctx_ref.trace.trace_id_lo, Ordering::SeqCst);
+            SEEN_SPAN_ID.store(ctx_ref.trace.span_id, Ordering::SeqCst);
+            SEEN_PARENT_SPAN_ID.store(ctx_ref.trace.parent_span_id, Ordering::SeqCst);
+            SEEN_ACTOR.store(ctx_ref.actor as usize, Ordering::SeqCst);
+            SEEN_ACTOR_ID.store(ctx_ref.actor_id, Ordering::SeqCst);
+            SEEN_ARENA.store(ctx_ref.arena as usize, Ordering::SeqCst);
+            SEEN_LOCK_SEAT.store(ctx_ref.lock_seat as usize, Ordering::SeqCst);
+            // SAFETY: `task` is the live task pointer owned by this worker.
+            unsafe { hew_task_complete_threaded(task) };
+        }
+
+        let parent_supervisor = 0x1234usize as *mut c_void;
+        let mutated_supervisor = 0x5678usize as *mut c_void;
+        let trace = crate::tracing::HewTraceContext {
+            trace_id_hi: 11,
+            trace_id_lo: 22,
+            span_id: 33,
+            parent_span_id: 44,
+            flags: 1,
+        };
+        let mutated_trace = crate::tracing::HewTraceContext {
+            trace_id_hi: 111,
+            trace_id_lo: 222,
+            span_id: 333,
+            parent_span_id: 444,
+            flags: 0,
+        };
+
+        STARTED.store(false, Ordering::SeqCst);
+        RELEASE.store(false, Ordering::SeqCst);
+        SEEN_PARENT_SUPERVISOR.store(0, Ordering::SeqCst);
+        SEEN_CHILD_INDEX.store(0, Ordering::SeqCst);
+        SEEN_TRACE_ID_HI.store(0, Ordering::SeqCst);
+        SEEN_TRACE_ID_LO.store(0, Ordering::SeqCst);
+        SEEN_SPAN_ID.store(0, Ordering::SeqCst);
+        SEEN_PARENT_SPAN_ID.store(0, Ordering::SeqCst);
+        SEEN_ACTOR.store(usize::MAX, Ordering::SeqCst);
+        SEEN_ACTOR_ID.store(u64::MAX, Ordering::SeqCst);
+        SEEN_ARENA.store(usize::MAX, Ordering::SeqCst);
+        SEEN_LOCK_SEAT.store(usize::MAX, Ordering::SeqCst);
+
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                parent_supervisor,
+                supervisor_child_index: 7,
+                trace,
+                ..HewExecutionContext::default()
+            });
+            let parent_ctx = crate::execution_context::current_context();
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            assert_eq!(
+                hew_task_spawn_thread_with_inherited_context(parent_ctx, task, record_context),
+                0
+            );
+
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !STARTED.load(Ordering::SeqCst) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(STARTED.load(Ordering::SeqCst), "worker did not start");
+
+            (*parent_ctx).parent_supervisor = mutated_supervisor;
+            (*parent_ctx).supervisor_child_index = 99;
+            (*parent_ctx).trace = mutated_trace;
+            RELEASE.store(true, Ordering::SeqCst);
+            let _ = hew_task_await_blocking(task);
+
+            assert_eq!(
+                SEEN_PARENT_SUPERVISOR.load(Ordering::SeqCst),
+                parent_supervisor as usize
+            );
+            assert_eq!(SEEN_CHILD_INDEX.load(Ordering::SeqCst), 7);
+            assert_eq!(SEEN_TRACE_ID_HI.load(Ordering::SeqCst), trace.trace_id_hi);
+            assert_eq!(SEEN_TRACE_ID_LO.load(Ordering::SeqCst), trace.trace_id_lo);
+            assert_eq!(SEEN_SPAN_ID.load(Ordering::SeqCst), trace.span_id);
+            assert_eq!(
+                SEEN_PARENT_SPAN_ID.load(Ordering::SeqCst),
+                trace.parent_span_id
+            );
+            assert_eq!(SEEN_ACTOR.load(Ordering::SeqCst), 0);
+            assert_eq!(SEEN_ACTOR_ID.load(Ordering::SeqCst), 0);
+            assert_eq!(SEEN_ARENA.load(Ordering::SeqCst), 0);
+            assert_eq!(SEEN_LOCK_SEAT.load(Ordering::SeqCst), 0);
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn inherited_context_spawn_with_null_parent_fails_closed() {
+        unsafe extern "C" fn unreachable_task(_: *mut HewExecutionContext, _: *mut HewTask) {
+            panic!("null parent context must reject before spawning");
+        }
+
+        crate::hew_clear_error();
+        // SAFETY: test owns the task pointer exclusively.
+        unsafe {
+            let task = hew_task_new();
+            assert_eq!(
+                hew_task_spawn_thread_with_inherited_context(
+                    ptr::null_mut(),
+                    task,
+                    unreachable_task,
+                ),
+                -1
+            );
+            let err = crate::hew_last_error();
+            assert!(!err.is_null());
+            // SAFETY: hew_last_error returned a non-null C string.
+            let err = CStr::from_ptr(err).to_str().unwrap();
+            assert_eq!(
+                err,
+                crate::execution_context::EXECUTION_CONTEXT_NOT_INSTALLED_AT_SPAWN
+            );
+            crate::hew_clear_error();
+            hew_task_free(task);
         }
     }
 

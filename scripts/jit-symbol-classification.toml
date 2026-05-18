@@ -572,6 +572,7 @@ stable = [
   "hew_task_set_env",
   "hew_task_set_result",
   "hew_task_spawn_thread",
+  "hew_task_spawn_thread_with_inherited_context",
   "hew_tcp_accept",
   "hew_tcp_broadcast_except",
   "hew_tcp_close",

@@ -7,17 +7,17 @@
 //! `native: false, wasm: false` skips the `hew-emit-v05` back-half so
 //! these run purely in-process.
 //!
-//! `hew_task_spawn_thread` is NOT tested here — its `lower_call_runtime_abi`
-//! arm is intentionally fail-closed pending the spawn-producer landing (the
-//! fn-ptr Place convention is undecided). Its `intern_runtime_decl` entry is
-//! covered by the allowlist presence test in `hew-mir`.
+//! Direct `RuntimeCall` emission for `hew_task_spawn_thread` remains
+//! fail-closed; spawned task producers use dedicated MIR instructions that
+//! synthesize wrappers and call the inherited-context spawn helper.
 //!
 //! LESSONS: boundary-fail-closed (P0 row 49), parity-or-tracked-gap.
 
 use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_mir::{
     BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
-    ExitPath, Instr, IrPipeline, Place, RawMirFunction, RuntimeCall, Terminator,
+    ExitPath, FunctionCallConv, Instr, IrPipeline, Place, RawMirFunction, RecordLayout,
+    RuntimeCall, Terminator,
 };
 use hew_types::ResolvedTy;
 
@@ -98,18 +98,26 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
     let main_block = BasicBlock {
         id: 0,
         statements: vec![],
-        instructions: vec![Instr::SpawnTaskDirect {
-            task: Place::Local(0),
-            callee_symbol: "long_op".to_string(),
-        }],
+        instructions: vec![
+            Instr::EnterContext,
+            Instr::SpawnTaskDirect {
+                task: Place::Local(0),
+                callee_symbol: "long_op".to_string(),
+            },
+            Instr::ExitContext,
+        ],
         terminator: Terminator::Return,
     };
     let long_op_block = BasicBlock {
         id: 0,
         statements: vec![],
-        instructions: vec![Instr::UnitLit {
-            dest: Place::Local(0),
-        }],
+        instructions: vec![
+            Instr::EnterContext,
+            Instr::UnitLit {
+                dest: Place::Local(0),
+            },
+            Instr::ExitContext,
+        ],
         terminator: Terminator::Return,
     };
     IrPipeline {
@@ -118,7 +126,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
             RawMirFunction {
                 name: "main".to_string(),
                 return_ty: ResolvedTy::Unit,
-                call_conv: hew_mir::FunctionCallConv::Default,
+                call_conv: FunctionCallConv::ActorHandler,
                 params: vec![],
                 locals: vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))],
                 blocks: vec![main_block.clone()],
@@ -127,7 +135,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
             RawMirFunction {
                 name: "long_op".to_string(),
                 return_ty: ResolvedTy::Unit,
-                call_conv: hew_mir::FunctionCallConv::Default,
+                call_conv: FunctionCallConv::ActorHandler,
                 params: vec![],
                 locals: vec![ResolvedTy::Unit],
                 blocks: vec![long_op_block.clone()],
@@ -155,6 +163,164 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         elaborated_mir: vec![],
         diagnostics: vec![],
         record_layouts: vec![],
+    }
+}
+
+fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
+    let main_block = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![
+            Instr::EnterContext,
+            Instr::SpawnTaskDirect {
+                task: Place::Local(0),
+                callee_symbol: "long_op".to_string(),
+            },
+            Instr::ExitContext,
+        ],
+        terminator: Terminator::Return,
+    };
+    let long_op_block = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![Instr::UnitLit {
+            dest: Place::Local(0),
+        }],
+        terminator: Terminator::Return,
+    };
+    IrPipeline {
+        thir: vec![],
+        raw_mir: vec![
+            RawMirFunction {
+                name: "main".to_string(),
+                return_ty: ResolvedTy::Unit,
+                call_conv: FunctionCallConv::ActorHandler,
+                params: vec![],
+                locals: vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))],
+                blocks: vec![main_block.clone()],
+                decisions: vec![],
+            },
+            RawMirFunction {
+                name: "long_op".to_string(),
+                return_ty: ResolvedTy::Unit,
+                call_conv: FunctionCallConv::Default,
+                params: vec![],
+                locals: vec![ResolvedTy::Unit],
+                blocks: vec![long_op_block.clone()],
+                decisions: vec![],
+            },
+        ],
+        checked_mir: vec![
+            CheckedMirFunction {
+                name: "main".to_string(),
+                return_ty: ResolvedTy::Unit,
+                blocks: vec![main_block],
+                decisions: vec![],
+                checks: vec![],
+                cooperate_sites: vec![],
+            },
+            CheckedMirFunction {
+                name: "long_op".to_string(),
+                return_ty: ResolvedTy::Unit,
+                blocks: vec![long_op_block],
+                decisions: vec![],
+                checks: vec![],
+                cooperate_sites: vec![],
+            },
+        ],
+        elaborated_mir: vec![],
+        diagnostics: vec![],
+        record_layouts: vec![],
+    }
+}
+
+fn pipeline_with_spawn_task_closure() -> IrPipeline {
+    let env_ty = ResolvedTy::Named {
+        name: "__hew_closure_env_main_0".to_string(),
+        args: vec![],
+    };
+    let env_ptr_ty = ResolvedTy::Pointer {
+        is_mutable: false,
+        pointee: Box::new(env_ty.clone()),
+    };
+    let main_block = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![
+            Instr::EnterContext,
+            Instr::RecordInit {
+                ty: env_ty.clone(),
+                fields: vec![],
+                dest: Place::Local(1),
+            },
+            Instr::SpawnTaskClosure {
+                task: Place::Local(0),
+                fn_symbol: "__hew_closure_invoke_main_0".to_string(),
+                env: Place::Local(1),
+                env_ty: env_ty.clone(),
+            },
+            Instr::ExitContext,
+        ],
+        terminator: Terminator::Return,
+    };
+    let closure_block = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![
+            Instr::EnterContext,
+            Instr::UnitLit {
+                dest: Place::Local(1),
+            },
+            Instr::ExitContext,
+        ],
+        terminator: Terminator::Return,
+    };
+    IrPipeline {
+        thir: vec![],
+        raw_mir: vec![
+            RawMirFunction {
+                name: "main".to_string(),
+                return_ty: ResolvedTy::Unit,
+                call_conv: FunctionCallConv::ActorHandler,
+                params: vec![],
+                locals: vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit)), env_ty.clone()],
+                blocks: vec![main_block.clone()],
+                decisions: vec![],
+            },
+            RawMirFunction {
+                name: "__hew_closure_invoke_main_0".to_string(),
+                return_ty: ResolvedTy::Unit,
+                call_conv: FunctionCallConv::ClosureInvoke,
+                params: vec![env_ptr_ty.clone()],
+                locals: vec![env_ptr_ty, ResolvedTy::Unit],
+                blocks: vec![closure_block.clone()],
+                decisions: vec![],
+            },
+        ],
+        checked_mir: vec![
+            CheckedMirFunction {
+                name: "main".to_string(),
+                return_ty: ResolvedTy::Unit,
+                blocks: vec![main_block],
+                decisions: vec![],
+                checks: vec![],
+                cooperate_sites: vec![],
+            },
+            CheckedMirFunction {
+                name: "__hew_closure_invoke_main_0".to_string(),
+                return_ty: ResolvedTy::Unit,
+                blocks: vec![closure_block],
+                decisions: vec![],
+                checks: vec![],
+                cooperate_sites: vec![],
+            },
+        ],
+        elaborated_mir: vec![],
+        diagnostics: vec![],
+        record_layouts: vec![RecordLayout {
+            name: "__hew_closure_env_main_0".to_string(),
+            field_tys: vec![],
+        }],
     }
 }
 
@@ -291,8 +457,8 @@ fn task_abi_emission_spawn_task_direct_synthesizes_wrapper() {
     emit_module(&pipeline, &options).expect("SpawnTaskDirect emission should succeed");
     let ir = read_ll(&tmp);
     assert!(
-        ir.contains("@hew_task_spawn_thread"),
-        "emitted IR must call @hew_task_spawn_thread; got:\n{ir}",
+        ir.contains("@hew_task_spawn_thread_with_inherited_context"),
+        "emitted IR must call @hew_task_spawn_thread_with_inherited_context; got:\n{ir}",
     );
     assert!(
         ir.contains("__hew_task_wrapper_long_op"),
@@ -304,8 +470,56 @@ fn task_abi_emission_spawn_task_direct_synthesizes_wrapper() {
     );
 }
 
-/// `hew_task_spawn_thread` is fail-closed — no MIR producer has landed yet
-/// and the fn-ptr Place convention is undecided (inventory row 3).
+#[test]
+fn task_abi_emission_spawn_task_direct_rejects_contextless_target() {
+    use hew_codegen_rs::CodegenError;
+
+    let pipeline = pipeline_with_spawn_task_direct_target_without_context();
+    let tmp = std::env::temp_dir().join("hew-task-abi-spawn-task-contextless-target");
+    let options = EmitOptions {
+        module_name: "probe",
+        out_dir: &tmp,
+        native: false,
+        wasm: false,
+    };
+    match emit_module(&pipeline, &options) {
+        Err(CodegenError::FailClosed(msg)) => {
+            assert!(
+                msg.contains("must take a leading") && msg.contains("HewExecutionContext"),
+                "FailClosed message must identify missing target ctx parameter; got: {msg}",
+            );
+        }
+        Err(other) => {
+            panic!("expected CodegenError::FailClosed for contextless spawn target; got {other:?}")
+        }
+        Ok(_) => panic!("contextless spawn target must fail closed"),
+    }
+}
+
+#[test]
+fn task_abi_emission_spawn_task_closure_threads_execution_context() {
+    let pipeline = pipeline_with_spawn_task_closure();
+    let tmp = std::env::temp_dir().join("hew-task-abi-spawn-task-closure");
+    let options = EmitOptions {
+        module_name: "probe",
+        out_dir: &tmp,
+        native: false,
+        wasm: false,
+    };
+    emit_module(&pipeline, &options).expect("SpawnTaskClosure emission should succeed");
+    let ir = read_ll(&tmp);
+    assert!(
+        ir.contains("@hew_task_spawn_thread_with_inherited_context"),
+        "spawned closures must use inherited-context spawn helper; got:\n{ir}",
+    );
+    assert!(
+        ir.contains("call i8 @__hew_closure_invoke_main_0(ptr %0, ptr %hew_task_get_env_call)"),
+        "closure task wrapper must call the invoke shim with ctx then env; got:\n{ir}",
+    );
+}
+
+/// Direct `CallRuntimeAbi` emission of `hew_task_spawn_thread` remains
+/// fail-closed; spawn producers synthesize typed wrappers instead.
 #[test]
 fn task_abi_emission_task_spawn_thread_fail_closed() {
     use hew_codegen_rs::CodegenError;

@@ -375,6 +375,7 @@ struct FnCtx<'a, 'ctx> {
     return_slot: PointerValue<'ctx>,
     return_ty: BasicTypeEnum<'ctx>,
     execution_context: Option<PointerValue<'ctx>>,
+    execution_context_is_actor_handler: bool,
     /// Local-register id → (stack slot, slot's LLVM type). Keyed by the
     /// `Place::Local(N)` index — an MIR identity, not a checker derivative.
     locals: HashMap<u32, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
@@ -568,6 +569,17 @@ fn intern_runtime_decl<'ctx>(
         "hew_task_spawn_thread" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_task_spawn_thread_with_inherited_context(
+        //     parent_ctx: *mut HewExecutionContext,
+        //     task: *mut HewTask,
+        //     task_fn: ContextTaskFn,
+        // ) -> i32
+        // (`hew-runtime/src/task_scope.rs`). Spawns a codegen-synthesised
+        // `void (*)(HewExecutionContext*, HewTask*)` wrapper and installs a
+        // child context derived from parent_ctx on the worker thread.
+        "hew_task_spawn_thread_with_inherited_context" => {
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)
+        }
         // hew_task_await_blocking(task: *mut HewTask) -> *mut c_void
         // (`hew-runtime/src/task_scope.rs:411`). Blocks until the task
         // completes and returns its result pointer (null for void tasks).
@@ -917,15 +929,31 @@ fn get_or_create_task_wrapper<'ctx>(
     }
 
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    let wrapper_ty = fn_ctx.ctx.void_type().fn_type(&[ptr_ty.into()], false);
+    if callee.get_nth_param(0).is_none() || callee.get_nth_param(1).is_some() {
+        return Err(CodegenError::FailClosed(format!(
+            "SpawnTaskDirect callee `{callee_symbol}` must take a leading \
+             HewExecutionContext* and no user parameters"
+        )));
+    }
+
+    let wrapper_ty = fn_ctx
+        .ctx
+        .void_type()
+        .fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
     let wrapper = fn_ctx
         .llvm_mod
         .add_function(&wrapper_name, wrapper_ty, Some(Linkage::Internal));
     let bb = fn_ctx.ctx.append_basic_block(wrapper, "entry");
     let builder = fn_ctx.ctx.create_builder();
     builder.position_at_end(bb);
+    let ctx_param = wrapper.get_nth_param(0).ok_or_else(|| {
+        CodegenError::FailClosed("task wrapper missing HewExecutionContext* parameter".into())
+    })?;
+    let task_param = wrapper.get_nth_param(1).ok_or_else(|| {
+        CodegenError::FailClosed("task wrapper missing HewTask* parameter".into())
+    })?;
     builder
-        .build_call(callee, &[], "task_body_call")
+        .build_call(callee, &[ctx_param.into()], "task_body_call")
         .map_err(|e| CodegenError::Llvm(format!("task wrapper body call: {e:?}")))?;
 
     let complete = intern_runtime_decl(
@@ -934,9 +962,6 @@ fn get_or_create_task_wrapper<'ctx>(
         &mut fn_ctx.runtime_decls.borrow_mut(),
         "hew_task_complete_threaded",
     )?;
-    let task_param = wrapper.get_nth_param(0).ok_or_else(|| {
-        CodegenError::FailClosed("task wrapper missing HewTask* parameter".into())
-    })?;
     builder
         .build_call(
             complete,
@@ -955,23 +980,30 @@ fn emit_spawn_task_direct(
     task: Place,
     callee_symbol: &str,
 ) -> CodegenResult<()> {
+    let parent_ctx = fn_ctx.execution_context.ok_or_else(|| {
+        CodegenError::FailClosed("SpawnTaskDirect spawn site requires an execution context".into())
+    })?;
     let task_ptr = load_duplex_handle(fn_ctx, task, "SpawnTaskDirect task")?;
     let wrapper = get_or_create_task_wrapper(fn_ctx, callee_symbol)?;
     let spawn = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
         &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_task_spawn_thread",
+        "hew_task_spawn_thread_with_inherited_context",
     )?;
     let fn_ptr = wrapper.as_global_value().as_pointer_value();
     fn_ctx
         .builder
         .build_call(
             spawn,
-            &[task_ptr.into(), fn_ptr.into()],
-            "hew_task_spawn_thread_call",
+            &[parent_ctx.into(), task_ptr.into(), fn_ptr.into()],
+            "hew_task_spawn_thread_with_inherited_context_call",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_task_spawn_thread call: {e:?}")))?;
+        .map_err(|e| {
+            CodegenError::Llvm(format!(
+                "hew_task_spawn_thread_with_inherited_context call: {e:?}"
+            ))
+        })?;
     Ok(())
 }
 
@@ -996,15 +1028,30 @@ fn get_or_create_task_closure_wrapper<'ctx>(
         )));
     }
 
+    if closure_fn.get_nth_param(0).is_none() || closure_fn.get_nth_param(1).is_none() {
+        return Err(CodegenError::FailClosed(format!(
+            "SpawnTaskClosure shim `{fn_symbol}` must take leading \
+             HewExecutionContext* and closure environment parameters"
+        )));
+    }
+
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    let wrapper_ty = fn_ctx.ctx.void_type().fn_type(&[ptr_ty.into()], false);
+    let wrapper_ty = fn_ctx
+        .ctx
+        .void_type()
+        .fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
     let wrapper = fn_ctx
         .llvm_mod
         .add_function(&wrapper_name, wrapper_ty, Some(Linkage::Internal));
     let bb = fn_ctx.ctx.append_basic_block(wrapper, "entry");
     let builder = fn_ctx.ctx.create_builder();
     builder.position_at_end(bb);
-    let task_param = wrapper.get_nth_param(0).ok_or_else(|| {
+    let ctx_param = wrapper.get_nth_param(0).ok_or_else(|| {
+        CodegenError::FailClosed(
+            "closure task wrapper missing HewExecutionContext* parameter".into(),
+        )
+    })?;
+    let task_param = wrapper.get_nth_param(1).ok_or_else(|| {
         CodegenError::FailClosed("closure task wrapper missing HewTask* parameter".into())
     })?;
     let get_env = intern_runtime_decl(
@@ -1021,7 +1068,11 @@ fn get_or_create_task_closure_wrapper<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("hew_task_get_env returned void".into()))?
         .into_pointer_value();
     builder
-        .build_call(closure_fn, &[env_ptr.into()], "closure_task_body_call")
+        .build_call(
+            closure_fn,
+            &[ctx_param.into(), env_ptr.into()],
+            "closure_task_body_call",
+        )
         .map_err(|e| CodegenError::Llvm(format!("closure task body call: {e:?}")))?;
 
     let complete = intern_runtime_decl(
@@ -1050,6 +1101,9 @@ fn emit_spawn_task_closure(
     env: Place,
     env_ty: &ResolvedTy,
 ) -> CodegenResult<()> {
+    let parent_ctx = fn_ctx.execution_context.ok_or_else(|| {
+        CodegenError::FailClosed("SpawnTaskClosure spawn site requires an execution context".into())
+    })?;
     let task_ptr = load_duplex_handle(fn_ctx, task, "SpawnTaskClosure task")?;
     let env_struct = record_struct_for(fn_ctx, env_ty)?;
     let (env_ptr, env_slot_ty) = place_pointer(fn_ctx, env)?;
@@ -1103,19 +1157,24 @@ fn emit_spawn_task_closure(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
         &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_task_spawn_thread",
+        "hew_task_spawn_thread_with_inherited_context",
     )?;
     fn_ctx
         .builder
         .build_call(
             spawn,
             &[
+                parent_ctx.into(),
                 task_ptr.into(),
                 wrapper.as_global_value().as_pointer_value().into(),
             ],
-            "hew_task_spawn_thread_closure_call",
+            "hew_task_spawn_thread_with_inherited_context_closure_call",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_task_spawn_thread call: {e:?}")))?;
+        .map_err(|e| {
+            CodegenError::Llvm(format!(
+                "hew_task_spawn_thread_with_inherited_context call: {e:?}"
+            ))
+        })?;
     Ok(())
 }
 
@@ -2318,6 +2377,19 @@ fn lower_context_field(fn_ctx: &FnCtx<'_, '_>, dest: Place, offset: usize) -> Co
     let ctx_ptr = fn_ctx.execution_context.ok_or_else(|| {
         CodegenError::FailClosed("ContextField requires an actor-handler execution context".into())
     })?;
+    if !fn_ctx.execution_context_is_actor_handler
+        && matches!(
+            offset,
+            HEW_CTX_OFFSET_ACTOR
+                | HEW_CTX_OFFSET_ACTOR_ID
+                | HEW_CTX_OFFSET_ARENA
+                | HEW_CTX_OFFSET_LOCK_SEAT
+        )
+    {
+        return Err(CodegenError::FailClosed(format!(
+            "ContextField offset {offset} requires an actor-owned execution context"
+        )));
+    }
     let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
     if !context_field_matches_dest(fn_ctx.ctx, offset, dest_ty) {
         return Err(CodegenError::FailClosed(format!(
@@ -2449,6 +2521,9 @@ fn lower_call_closure(
     ret_ty: &ResolvedTy,
     dest: Option<Place>,
 ) -> CodegenResult<()> {
+    let ctx_ptr = fn_ctx.execution_context.ok_or_else(|| {
+        CodegenError::FailClosed("CallClosure requires an execution context".into())
+    })?;
     let (callee_ptr, callee_ty) = place_pointer(fn_ctx, callee)?;
     let pair_ty = match callee_ty {
         BasicTypeEnum::StructType(st) if st.count_fields() == 2 => st,
@@ -2475,10 +2550,12 @@ fn lower_call_closure(
         .into_pointer_value();
 
     let mut param_tys: Vec<BasicMetadataTypeEnum> =
-        Vec::with_capacity(args.len().saturating_add(1));
+        Vec::with_capacity(args.len().saturating_add(2));
+    param_tys.push(fn_ctx.ctx.ptr_type(AddressSpace::default()).into());
     param_tys.push(fn_ctx.ctx.ptr_type(AddressSpace::default()).into());
     let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
-        Vec::with_capacity(args.len().saturating_add(1));
+        Vec::with_capacity(args.len().saturating_add(2));
+    arg_vals.push(ctx_ptr.into());
     arg_vals.push(env_ptr.into());
     for arg in args {
         let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
@@ -4059,9 +4136,9 @@ fn declare_function<'ctx>(
     // argument into the corresponding `locals[i]` alloca slot.
     let ctx_ptr_ty = ctx.ptr_type(AddressSpace::default());
     let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(
-        func.params.len() + usize::from(func.call_conv == FunctionCallConv::ActorHandler),
+        func.params.len() + usize::from(func.call_conv.carries_execution_context()),
     );
-    if func.call_conv == FunctionCallConv::ActorHandler {
+    if func.call_conv.carries_execution_context() {
         param_tys.push(ctx_ptr_ty.into());
     }
     for param_ty in &func.params {
@@ -4153,10 +4230,10 @@ fn lower_function<'ctx>(
         .build_alloca(return_ty_llvm, "return_slot")
         .map_err(|e| CodegenError::Llvm(format!("alloca return_slot: {e:?}")))?;
 
-    let execution_context = if func.call_conv == FunctionCallConv::ActorHandler {
+    let execution_context = if func.call_conv.carries_execution_context() {
         let param = llvm_fn.get_nth_param(0).ok_or_else(|| {
             CodegenError::FailClosed(format!(
-                "actor handler `{}` has no leading execution-context LLVM parameter",
+                "context-bearing function `{}` has no leading execution-context LLVM parameter",
                 func.name
             ))
         })?;
@@ -4192,8 +4269,7 @@ fn lower_function<'ctx>(
         let param_idx_u32 = u32::try_from(param_idx).map_err(|_| {
             CodegenError::FailClosed("function exceeds u32::MAX params — impossible".into())
         })?;
-        let llvm_param_idx =
-            param_idx + usize::from(func.call_conv == FunctionCallConv::ActorHandler);
+        let llvm_param_idx = param_idx + usize::from(func.call_conv.carries_execution_context());
         let llvm_param = llvm_fn
             .get_nth_param(llvm_param_idx as u32)
             .ok_or_else(|| {
@@ -4221,6 +4297,7 @@ fn lower_function<'ctx>(
         return_slot,
         return_ty: return_ty_llvm,
         execution_context,
+        execution_context_is_actor_handler: func.call_conv == FunctionCallConv::ActorHandler,
         locals,
         blocks: blocks.clone(),
         runtime_decls: RefCell::new(HashMap::new()),

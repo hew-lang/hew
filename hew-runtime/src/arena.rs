@@ -314,20 +314,30 @@ fn get_current_arena() -> *mut ActorArena {
 
 /// Allocate memory from the current execution context's arena.
 ///
+/// **Requires an installed execution context with an active arena.** Returns
+/// null and sets `hew_last_error` to `"execution context not installed"` if
+/// no context is installed. Returns null (without setting an error) if a
+/// context is installed but its arena lane is null.
+///
+/// Use `libc::malloc` for allocation outside dispatch; do not call this
+/// function from code that runs without a scheduler-installed execution
+/// context.
+///
 /// When an arena with a non-zero cap is active and this allocation would
 /// exceed that cap, returns null **and** triggers a `HeapExceeded` actor
-/// crash via the longjmp/supervisor seam (fail-closed per
-/// `boundary-fail-closed` LESSON). The actor's `error_code` is set to
-/// `HEW_TRAP_HEAP_EXCEEDED` (200). Teardown (timers, links, monitors,
-/// arena free) runs via the normal crash path (`cleanup-all-exits` LESSON).
+/// crash via the longjmp/supervisor seam. The actor's `error_code` is set
+/// to `HEW_TRAP_HEAP_EXCEEDED` (200). Teardown (timers, links, monitors,
+/// arena free) runs via the normal crash path.
 ///
 /// On WASM the longjmp seam is absent; the null is returned to the caller
 /// and the WASM `catch_unwind` path handles any subsequent trap.
 ///
 /// # Safety
 ///
-/// The returned pointer must be freed with `hew_arena_free` or `free()` depending
-/// on whether an arena was active during allocation.
+/// The returned pointer must be freed via `hew_arena_reset` or
+/// `hew_arena_free_all` — never via `free()`. There is no per-pointer
+/// ownership outside the arena; mixing arena pointers with `free()` is
+/// undefined behaviour.
 #[no_mangle]
 pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
     let arena_ptr = get_current_arena();
@@ -360,19 +370,24 @@ pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
     }
 }
 
-/// Free memory - no-op during arena dispatch.
+/// Free memory — intentional no-op.
 ///
-/// # Contract
+/// Arena memory is reclaimed in bulk via `hew_arena_reset` or
+/// `hew_arena_free_all`; per-pointer tracking is not supported. This
+/// function exists solely to satisfy C callers that pair every `malloc`
+/// with a `free`.
 ///
-/// - **Arena active**: this is intentionally a no-op.  Memory is reclaimed in bulk via
-///   `hew_arena_reset` or `hew_arena_free_all`.  Callers must not mix arena-allocated
-///   pointers with direct `free()` calls.
-/// - **No execution context or arena lane**: sets `hew_last_error` at the reader site
-///   and returns without fabricating ownership.
+/// When no execution context is installed, `hew_last_error` is set (via
+/// `get_current_arena` → `require_current_context`) and this function
+/// returns without touching the pointer. The pointer must **not** be
+/// passed to `libc::free` — it was allocated from an arena, not from the
+/// system heap.
 ///
 /// # Safety
 ///
-/// `ptr` must be a valid pointer returned by `hew_arena_malloc` or `malloc()`, or null.
+/// `ptr` must be a valid pointer returned by `hew_arena_malloc`, or null.
+/// Do **not** pass pointers allocated with `libc::malloc` or
+/// `libc::calloc` to this function.
 #[no_mangle]
 pub unsafe extern "C" fn hew_arena_free(_ptr: *mut c_void) {
     let _arena_ptr = get_current_arena();

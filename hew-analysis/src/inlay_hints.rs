@@ -669,6 +669,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
         }
     }
 

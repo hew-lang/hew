@@ -633,6 +633,19 @@ fn collect_unknown_self_fields_in_expr(
                 collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
             }
         }
+        HirExprKind::Spawn { args, .. } => {
+            for (_, arg) in args {
+                collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
+            }
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+            collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
+            for arg in args {
+                collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
+            }
+        }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
         | HirExprKind::ForkBlock { body: block, .. } => {
@@ -723,12 +736,6 @@ fn collect_unknown_self_fields_in_expr(
         }
         HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
-        }
-        HirExprKind::CallDynMethod { receiver, args, .. } => {
-            collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
-            for arg in args {
-                collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
-            }
         }
     }
 }
@@ -1922,6 +1929,19 @@ impl Builder {
                 // lands in a follow-up slice (it fails closed on a
                 // Place::LambdaActorHandle today).
                 Some(self.lower_spawn_lambda_actor(expr))
+            }
+            HirExprKind::Spawn { .. }
+            | HirExprKind::ActorSend { .. }
+            | HirExprKind::ActorAsk { .. } => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UnsupportedNode {
+                        reason: "named actor spawn/send/ask MIR lowering lands in actor slice 4"
+                            .to_string(),
+                    },
+                    note: "HIR actor call surface reached MIR before the slice-4 runtime lowering"
+                        .to_string(),
+                });
+                None
             }
             HirExprKind::Closure {
                 params,

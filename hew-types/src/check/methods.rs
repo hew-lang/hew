@@ -454,6 +454,16 @@ impl Checker {
             .insert(SpanKey::from(span), rewrite);
     }
 
+    fn record_actor_method_dispatch(&mut self, span: &Span, method_id: String, reply_ty: Ty) {
+        let dispatch = if matches!(self.subst.resolve(&reply_ty), Ty::Unit) {
+            ActorMethodKind::Fire(method_id)
+        } else {
+            ActorMethodKind::Ask(method_id, reply_ty)
+        };
+        self.actor_method_dispatch
+            .insert(SpanKey::from(span), dispatch);
+    }
+
     fn canonical_handle_receiver_type_name(&self, receiver_ty: &Ty) -> Option<String> {
         let Ty::Named { name, .. } = receiver_ty else {
             return None;
@@ -801,12 +811,6 @@ impl Checker {
     ) -> Ty {
         if let Some(ty) = self.try_resolve_named_method(receiver_ty, method_name, args, span) {
             if let Ty::Named { name, .. } = receiver_ty {
-                self.record_method_call_receiver_kind(
-                    span,
-                    MethodCallReceiverKind::NamedTypeInstance {
-                        type_name: name.clone(),
-                    },
-                );
                 // If the receiver type is a registered actor declaration AND
                 // the resolved method is a receive handler (tracked in
                 // `actor_receive_methods`), this dispatch crosses the
@@ -815,15 +819,28 @@ impl Checker {
                 // `methods` declared on the same actor (also keyed
                 // `{Actor}::{name}` in `fn_sigs`) stay on the regular
                 // method-call path.
-                if self
+                let method_key = format!("{name}::{method_name}");
+                let is_actor_receive_dispatch = self
                     .type_defs
                     .get(name)
                     .is_some_and(|td| td.kind == TypeDefKind::Actor)
-                    && self
-                        .actor_receive_methods
-                        .contains(&format!("{name}::{method_name}"))
-                {
+                    && self.actor_receive_methods.contains(&method_key);
+                if is_actor_receive_dispatch {
+                    self.record_method_call_receiver_kind(
+                        span,
+                        MethodCallReceiverKind::ActorInstance {
+                            actor_name: name.clone(),
+                        },
+                    );
                     self.enforce_actor_method_send_args(args);
+                    self.record_actor_method_dispatch(span, method_key, ty.clone());
+                } else {
+                    self.record_method_call_receiver_kind(
+                        span,
+                        MethodCallReceiverKind::NamedTypeInstance {
+                            type_name: name.clone(),
+                        },
+                    );
                 }
             }
             self.record_handle_method_call_rewrite_if_any(receiver_ty, method_name, span);
@@ -2729,6 +2746,17 @@ impl Checker {
                             };
                             self.enforce_actor_boundary_send(expr, sp, sp, &ty);
                         }
+                        self.record_method_call_receiver_kind(
+                            span,
+                            MethodCallReceiverKind::ActorInstance {
+                                actor_name: actor_name.clone(),
+                            },
+                        );
+                        self.record_actor_method_dispatch(
+                            span,
+                            method_key,
+                            sig.return_type.clone(),
+                        );
                         return sig.return_type;
                     }
                 }
@@ -2812,6 +2840,17 @@ impl Checker {
                                 };
                                 self.enforce_actor_boundary_send(expr, sp, sp, &ty);
                             }
+                            self.record_method_call_receiver_kind(
+                                span,
+                                MethodCallReceiverKind::ActorInstance {
+                                    actor_name: actor_name.clone(),
+                                },
+                            );
+                            self.record_actor_method_dispatch(
+                                span,
+                                method_key,
+                                sig.return_type.clone(),
+                            );
                             return sig.return_type;
                         }
                     }

@@ -479,6 +479,31 @@ pub enum HirExprKind {
         callee: Box<HirExpr>,
         args: Vec<HirExpr>,
     },
+    /// `spawn Actor(field: value, ...)` — named-actor spawn. The checker owns
+    /// the result type (`LocalPid<Actor>`); HIR carries only the structural spawn
+    /// surface and lowered init arguments for MIR/codegen.
+    Spawn {
+        actor_name: String,
+        args: Vec<(String, HirExpr)>,
+    },
+    /// Fire-and-forget actor receive dispatch, selected from the checker's
+    /// `actor_method_dispatch` side table. HIR does not reclassify receiver
+    /// types; absence of a checker discriminator for an actor receiver is a
+    /// boundary diagnostic.
+    ActorSend {
+        receiver: Box<HirExpr>,
+        method_id: String,
+        args: Vec<HirExpr>,
+    },
+    /// Request/reply actor receive dispatch, selected from the checker's
+    /// `actor_method_dispatch` side table. `reply_ty` is checker-resolved and
+    /// crosses the boundary as `ResolvedTy`.
+    ActorAsk {
+        receiver: Box<HirExpr>,
+        method_id: String,
+        args: Vec<HirExpr>,
+        reply_ty: ResolvedTy,
+    },
     Block(HirBlock),
     If {
         condition: Box<HirExpr>,

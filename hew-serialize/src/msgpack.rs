@@ -47,6 +47,9 @@ pub enum MethodCallReceiverKindData {
     NamedTypeInstance {
         type_name: String,
     },
+    ActorInstance {
+        actor_name: String,
+    },
     HandleInstance {
         type_name: String,
     },
@@ -1096,6 +1099,11 @@ pub fn build_method_call_receiver_kind_entries(
                             type_name: type_name.clone(),
                         }
                     }
+                    CheckedMethodCallReceiverKind::ActorInstance { actor_name } => {
+                        MethodCallReceiverKindData::ActorInstance {
+                            actor_name: actor_name.clone(),
+                        }
+                    }
                     CheckedMethodCallReceiverKind::HandleInstance { type_name } => {
                         MethodCallReceiverKindData::HandleInstance {
                             type_name: type_name.clone(),
@@ -1142,6 +1150,11 @@ pub fn build_method_call_receiver_kind_entries(
                     CheckedMethodCallReceiverKind::NamedTypeInstance { type_name } => {
                         MethodCallReceiverKindData::NamedTypeInstance {
                             type_name: type_name.clone(),
+                        }
+                    }
+                    CheckedMethodCallReceiverKind::ActorInstance { actor_name } => {
+                        MethodCallReceiverKindData::ActorInstance {
+                            actor_name: actor_name.clone(),
                         }
                     }
                     CheckedMethodCallReceiverKind::HandleInstance { type_name } => {
@@ -2087,6 +2100,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -2177,6 +2191,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -2394,6 +2409,7 @@ mod tests {
             ]),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -2480,6 +2496,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::from([(
                 SpanKey {
                     start: assign_target_span.start,
@@ -2573,6 +2590,7 @@ mod tests {
                 },
             )]),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -2690,6 +2708,7 @@ mod tests {
             )]),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -3026,6 +3045,7 @@ mod tests {
                     c_symbol: "hew_tcp_close".to_string(),
                 },
             )]),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -3123,6 +3143,7 @@ mod tests {
                 },
                 MethodCallRewrite::DeferToLowering,
             )]),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -3210,6 +3231,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::from([(key.clone(), AssignTargetKind::LocalVar)]),
             assign_target_shapes: HashMap::from([(
                 key.clone(),
@@ -3299,6 +3321,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::from([(key.clone(), AssignTargetKind::LocalVar)]),
             assign_target_shapes: HashMap::from([(
                 key.clone(),

@@ -35,9 +35,9 @@ mod types;
 mod util;
 
 pub use self::types::{
-    ActorSendAliasing, ActorSendCopyReason, ActorStateGuard, AllocationClass, AssignTargetKind,
-    AssignTargetShape, Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureCaptureMode,
-    DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey,
+    ActorMethodKind, ActorSendAliasing, ActorSendCopyReason, ActorStateGuard, AllocationClass,
+    AssignTargetKind, AssignTargetShape, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
+    ClosureCaptureMode, DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey,
     ExecutionContextReader, FnSig, MethodCallReceiverKind, MethodCallRewrite, SpanKey, StackHint,
     TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
 };
@@ -297,6 +297,20 @@ impl Checker {
                 (k, resolved)
             })
             .collect();
+        let resolved_actor_method_dispatch = std::mem::take(&mut self.actor_method_dispatch)
+            .into_iter()
+            .map(|(k, kind)| {
+                let resolved_kind = match kind {
+                    ActorMethodKind::Fire(method_id) => ActorMethodKind::Fire(method_id),
+                    ActorMethodKind::Ask(method_id, reply_ty) => ActorMethodKind::Ask(
+                        method_id,
+                        self.subst.resolve(&reply_ty).materialize_literal_defaults(),
+                    ),
+                };
+                (k, resolved_kind)
+            })
+            .collect();
+        self.actor_method_dispatch = resolved_actor_method_dispatch;
 
         // Move data out of Checker — it is not used after check_program.
         // Resolve any remaining type variables in expr_types via the
@@ -359,6 +373,7 @@ impl Checker {
             supervisor_child_slots: std::mem::take(&mut self.supervisor_child_slots),
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
+            actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),
             assign_target_shapes: std::mem::take(&mut self.assign_target_shapes),
             errors: std::mem::take(&mut self.errors),

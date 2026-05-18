@@ -7,9 +7,9 @@ use hew_parser::ast::{
     TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
 };
 use hew_types::{
-    ActorStateGuard, AssignTargetKind, AssignTargetShape, ClosureCaptureFact,
-    ExecutionContextReader, LoweringFact, MethodCallRewrite, ResolvedTy, SpanKey, Ty,
-    TypeCheckOutput,
+    ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ClosureCaptureFact,
+    ExecutionContextReader, LoweringFact, MethodCallReceiverKind, MethodCallRewrite, ResolvedTy,
+    SpanKey, Ty, TypeCheckOutput,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -439,6 +439,18 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
                 collect_call_sites_in_expr(a, out);
             }
         }
+        HirExprKind::Spawn { args, .. } => {
+            for (_, arg) in args {
+                collect_call_sites_in_expr(arg, out);
+            }
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. } => {
+            collect_call_sites_in_expr(receiver, out);
+            for arg in args {
+                collect_call_sites_in_expr(arg, out);
+            }
+        }
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_call_sites_in_expr(left, out);
             collect_call_sites_in_expr(right, out);
@@ -605,6 +617,14 @@ struct LowerCtx {
     /// here and rewrites to `HirExprKind::Call` with the runtime symbol.
     /// A missing entry is a fail-closed diagnostic (`MethodCallNoRewrite`).
     method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Checker-owned actor receive dispatch decisions keyed by method-call span.
+    /// HIR consumes these to choose `ActorSend` / `ActorAsk` without reclassifying
+    /// receiver types.
+    actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    /// Checker-owned method-call receiver classifications. Used only to fail
+    /// closed when the checker classified a receiver as actor-dispatchable but
+    /// omitted the corresponding `actor_method_dispatch` discriminator.
+    method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     /// Per-call-site `T → dyn Trait` coercion side-table. Keyed by the
     /// argument expression span. `lower_expr` consults this at every
     /// expression's exit; if the just-lowered expression's span has an
@@ -774,6 +794,8 @@ impl LowerCtx {
             type_classes,
             diagnostics: Vec::new(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
+            actor_method_dispatch: tc_output.actor_method_dispatch.clone(),
+            method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
@@ -2603,6 +2625,30 @@ impl LowerCtx {
                 }
             }
             Expr::Await(inner) => {
+                if matches!(
+                    self.actor_method_dispatch.get(&SpanKey::from(&inner.1)),
+                    Some(ActorMethodKind::Ask(_, _))
+                ) {
+                    if !in_stmt_position {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::AwaitOutOfPosition,
+                            span.clone(),
+                            "`await actor.method(...)` is only legal as a statement-expression in v0.5",
+                        ));
+                        return HirExpr {
+                            node: self.ids.node(),
+                            site: self.ids.site(),
+                            value_class: ValueClass::BitCopy,
+                            ty: ResolvedTy::Unit,
+                            intent,
+                            kind: HirExprKind::Unsupported(
+                                "`await actor.method(...)` out of position".to_string(),
+                            ),
+                            span,
+                        };
+                    }
+                    return self.lower_expr(inner, intent);
+                }
                 // `await expr` — only legal as the direct statement-expression
                 // inside a `scope{}` body in v0.5 (TI-4). Sub-expression positions
                 // (return value, function argument, binary operand, let value, block
@@ -2692,6 +2738,7 @@ impl LowerCtx {
             Expr::Select { arms, timeout } => {
                 self.lower_select(arms, timeout.as_deref(), span.clone())
             }
+            Expr::Spawn { target, args } => self.lower_spawn(target, args, span.clone()),
             Expr::SpawnLambdaActor {
                 params,
                 return_type,
@@ -3383,6 +3430,77 @@ impl LowerCtx {
         captures
     }
 
+    fn lower_spawn(
+        &mut self,
+        target: &Spanned<Expr>,
+        args: &[(String, Spanned<Expr>)],
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let actor_name = match &target.0 {
+            Expr::Identifier(name) => Some(name.clone()),
+            Expr::FieldAccess { object, field } => {
+                if let Expr::Identifier(module) = &object.0 {
+                    Some(format!("{module}.{field}"))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let Some(actor_name) = actor_name else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CutoverUnsupported {
+                    construct: "spawn target expression".to_string(),
+                    slice_target: "actor-body-slice3".to_string(),
+                },
+                span,
+                "`spawn` currently requires a named actor target",
+            ));
+            return (
+                HirExprKind::Unsupported("unsupported spawn target".to_string()),
+                ResolvedTy::Unit,
+            );
+        };
+
+        let lowered_args = args
+            .iter()
+            .map(|(name, expr)| (name.clone(), self.lower_expr(expr, IntentKind::Read)))
+            .collect::<Vec<_>>();
+        let ty = if let Some(ty) = self.expr_types.get(&SpanKey::from(&span)).cloned() {
+            match ResolvedTy::from_ty(&ty) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: format!("spawn {actor_name}"),
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "checker-authoritative spawn result type failed boundary conversion",
+                    ));
+                    ResolvedTy::Unit
+                }
+            }
+        } else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: format!("spawn {actor_name}"),
+                    reason: "missing expr_types entry".to_string(),
+                },
+                span.clone(),
+                "checker did not provide a result type for this actor spawn expression",
+            ));
+            ResolvedTy::Unit
+        };
+        (
+            HirExprKind::Spawn {
+                actor_name,
+                args: lowered_args,
+            },
+            ty,
+        )
+    }
+
     /// Lower an `Expr::SpawnLambdaActor` to an
     /// `HirExprKind::SpawnLambdaActor` with a resolved capture set.
     ///
@@ -3813,6 +3931,69 @@ impl LowerCtx {
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         let key = SpanKey::from(&span);
+        if let Some(dispatch) = self.actor_method_dispatch.get(&key).cloned() {
+            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            let lowered_args: Vec<HirExpr> = args
+                .iter()
+                .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                .collect();
+            return match dispatch {
+                ActorMethodKind::Fire(method_id) => (
+                    HirExprKind::ActorSend {
+                        receiver: Box::new(lowered_receiver),
+                        method_id,
+                        args: lowered_args,
+                    },
+                    ResolvedTy::Unit,
+                ),
+                ActorMethodKind::Ask(method_id, reply_ty) => match ResolvedTy::from_ty(&reply_ty) {
+                    Ok(reply_ty) => (
+                        HirExprKind::ActorAsk {
+                            receiver: Box::new(lowered_receiver),
+                            method_id,
+                            args: lowered_args,
+                            reply_ty: reply_ty.clone(),
+                        },
+                        reply_ty,
+                    ),
+                    Err(err) => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: format!("actor method `.{method}`"),
+                                reason: err.to_string(),
+                            },
+                            span.clone(),
+                            "checker-authoritative actor_method_dispatch reply type failed boundary conversion",
+                        ));
+                        (
+                            HirExprKind::Unsupported(format!(
+                                "actor method `.{method}` has poisoned dispatch reply type"
+                            )),
+                            ResolvedTy::Unit,
+                        )
+                    }
+                },
+            };
+        }
+        if matches!(
+            self.method_call_receiver_kinds.get(&key),
+            Some(MethodCallReceiverKind::ActorInstance { .. })
+        ) {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: format!("actor method `.{method}`"),
+                    reason: "missing actor_method_dispatch entry".to_string(),
+                },
+                span.clone(),
+                "checker classified this method-call receiver as actor-typed but omitted the actor dispatch discriminator",
+            ));
+            return (
+                HirExprKind::Unsupported(format!(
+                    "actor method `.{method}` has no dispatch discriminator"
+                )),
+                ResolvedTy::Unit,
+            );
+        }
         // `dyn Trait` receivers take precedence: the checker's
         // `dyn_trait_method_calls` side-table pins the trait/method/slot
         // resolution authoritatively, and these calls do NOT have a
@@ -4302,6 +4483,19 @@ fn collect_captures_walk(
                 collect_captures_walk(arg, param_ids, seen, captures, self_id);
             }
         }
+        HirExprKind::Spawn { args, .. } => {
+            for (_, arg) in args {
+                collect_captures_walk(arg, param_ids, seen, captures, self_id);
+            }
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
+            for arg in args {
+                collect_captures_walk(arg, param_ids, seen, captures, self_id);
+            }
+        }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
         | HirExprKind::ForkBlock { body: block, .. } => {
@@ -4399,12 +4593,6 @@ fn collect_captures_walk(
         HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_captures_walk(value, param_ids, seen, captures, self_id);
         }
-        HirExprKind::CallDynMethod { receiver, args, .. } => {
-            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
-            for arg in args {
-                collect_captures_walk(arg, param_ids, seen, captures, self_id);
-            }
-        }
     }
 }
 
@@ -4455,6 +4643,19 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_general_closure_captures_walk(callee, outer_bindings, seen, captures);
+            for arg in args {
+                collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::Spawn { args, .. } => {
+            for (_, arg) in args {
+                collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
             for arg in args {
                 collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
             }
@@ -4562,12 +4763,6 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
-        }
-        HirExprKind::CallDynMethod { receiver, args, .. } => {
-            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
-            for arg in args {
-                collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
-            }
         }
     }
 }

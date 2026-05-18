@@ -139,6 +139,19 @@ impl Verifier {
                     self.expr(arg);
                 }
             }
+            HirExprKind::Spawn { args, .. } => {
+                for (_, arg) in args {
+                    self.expr(arg);
+                }
+            }
+            HirExprKind::ActorSend { receiver, args, .. }
+            | HirExprKind::ActorAsk { receiver, args, .. }
+            | HirExprKind::CallDynMethod { receiver, args, .. } => {
+                self.expr(receiver);
+                for arg in args {
+                    self.expr(arg);
+                }
+            }
             HirExprKind::Block(block) => self.block(block),
             HirExprKind::If {
                 condition,
@@ -270,12 +283,6 @@ impl Verifier {
             }
             HirExprKind::CoerceToDynTrait { value, .. } => {
                 self.expr(value);
-            }
-            HirExprKind::CallDynMethod { receiver, args, .. } => {
-                self.expr(receiver);
-                for arg in args {
-                    self.expr(arg);
-                }
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive

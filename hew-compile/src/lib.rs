@@ -2329,6 +2329,7 @@ mod tests {
             method_call_receiver_kinds: std::collections::HashMap::new(),
             lowering_facts: std::collections::HashMap::new(),
             method_call_rewrites: std::collections::HashMap::new(),
+            actor_method_dispatch: std::collections::HashMap::new(),
             assign_target_kinds: std::collections::HashMap::new(),
             assign_target_shapes: std::collections::HashMap::new(),
             errors: Vec::new(),

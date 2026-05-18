@@ -297,6 +297,41 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, arg, indent + 4);
             }
         }
+        HirExprKind::Spawn { actor_name, args } => {
+            writeln!(out, "{pad}  spawn {actor_name}").expect("write to string");
+            for (arg_name, value) in args {
+                writeln!(out, "{pad}    {arg_name}:").expect("write to string");
+                dump_expr(out, value, indent + 6);
+            }
+        }
+        HirExprKind::ActorSend {
+            receiver,
+            method_id,
+            args,
+        } => {
+            writeln!(out, "{pad}  actor-send {method_id}").expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+            for arg in args {
+                dump_expr(out, arg, indent + 4);
+            }
+        }
+        HirExprKind::ActorAsk {
+            receiver,
+            method_id,
+            args,
+            reply_ty,
+        } => {
+            writeln!(
+                out,
+                "{pad}  actor-ask {method_id} -> {}",
+                reply_ty.user_facing()
+            )
+            .expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+            for arg in args {
+                dump_expr(out, arg, indent + 4);
+            }
+        }
         HirExprKind::Block(block) => {
             writeln!(out, "{pad}  block {}", block.scope).expect("write to string");
         }

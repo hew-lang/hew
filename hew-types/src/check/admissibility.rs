@@ -460,6 +460,17 @@ impl Checker {
             .retain(|key, _| expr_types.contains_key(key));
         self.method_call_rewrites
             .retain(|key, _| expr_types.contains_key(key));
+        self.actor_method_dispatch.retain(|key, dispatch| {
+            if !expr_types.contains_key(key) {
+                return false;
+            }
+            match dispatch {
+                ActorMethodKind::Fire(_) => true,
+                ActorMethodKind::Ask(_, reply_ty) => {
+                    !reply_ty.has_inference_var() && !reply_ty.contains_error()
+                }
+            }
+        });
     }
 
     /// Validates `method_call_receiver_kinds` at the checker output boundary.
@@ -504,6 +515,9 @@ impl Checker {
                         || type_name.contains('.')
                         || known_type_params.contains(type_name.as_str())
                 }
+                MethodCallReceiverKind::ActorInstance { actor_name } => type_defs
+                    .get(actor_name)
+                    .is_some_and(|type_def| type_def.kind == TypeDefKind::Actor),
                 MethodCallReceiverKind::HandleInstance { type_name } => !type_name.is_empty(),
                 MethodCallReceiverKind::TraitObject { trait_name } => {
                     known_trait_names.contains(trait_name)

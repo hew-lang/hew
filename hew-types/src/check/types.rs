@@ -107,6 +107,12 @@ pub struct TypeCheckOutput {
     /// consume a single authoritative contract instead of re-resolving C
     /// symbols from receiver types or the module registry.
     pub method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Checker-owned actor mailbox dispatch decisions keyed by the method call span.
+    ///
+    /// Populated only when a method call resolves to an actor `receive fn`.
+    /// HIR lowering consumes this side table before the generic method-call
+    /// rewrite bridge and never reclassifies the receiver type downstream.
+    pub actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span. Missing entry means the checker rejected the target.
     pub assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
@@ -445,6 +451,7 @@ impl Default for TypeCheckOutput {
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
@@ -606,6 +613,9 @@ pub enum MethodCallReceiverKind {
     NamedTypeInstance {
         type_name: String,
     },
+    ActorInstance {
+        actor_name: String,
+    },
     HandleInstance {
         type_name: String,
     },
@@ -641,6 +651,14 @@ pub enum MethodCallRewrite {
         c_symbol: String,
     },
     DeferToLowering,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActorMethodKind {
+    /// Fire-and-forget dispatch to an actor receive handler that returns `()`.
+    Fire(String),
+    /// Request/reply dispatch to an actor receive handler with a non-unit reply.
+    Ask(String, Ty),
 }
 
 #[derive(Debug, Clone)]
@@ -1097,6 +1115,7 @@ pub struct Checker {
     /// same variable every time).
     pub(super) deferred_channel_rewrites: HashMap<SpanKey, DeferredChannelMethodRewrite>,
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     /// Diagnostic-only stack-allocation hints accumulated by `classify_stack_hints`.
@@ -1366,6 +1385,7 @@ impl Checker {
             deferred_vec_admission: HashMap::new(),
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             stack_hints: Vec::new(),

@@ -5,7 +5,7 @@ use hew_hir::{
     HirModule, HirStmtKind, IntentKind, ResolvedRef, ValueClass,
 };
 use hew_parser::ast::BinaryOp;
-use hew_types::ResolvedTy;
+use hew_types::{ExecutionContextReader, ResolvedTy};
 
 use crate::dataflow;
 use crate::model::{
@@ -15,6 +15,20 @@ use crate::model::{
     MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy, Terminator, ThirFunction,
     TrapKind,
 };
+
+const HEW_CTX_OFFSET_ACTOR_ID: usize = 8;
+const HEW_CTX_OFFSET_PARENT_SUPERVISOR: usize = 16;
+const HEW_CTX_OFFSET_TRACE: usize = 56;
+const HEW_TRACE_OFFSET_SPAN_ID: usize = 16;
+const HEW_CTX_OFFSET_TRACE_SPAN: usize = HEW_CTX_OFFSET_TRACE + HEW_TRACE_OFFSET_SPAN_ID;
+
+fn context_reader_offset(reader: ExecutionContextReader) -> usize {
+    match reader {
+        ExecutionContextReader::ActorId => HEW_CTX_OFFSET_ACTOR_ID,
+        ExecutionContextReader::Supervisor => HEW_CTX_OFFSET_PARENT_SUPERVISOR,
+        ExecutionContextReader::TraceSpan => HEW_CTX_OFFSET_TRACE_SPAN,
+    }
+}
 
 /// Classify a resolved integer type as signed or unsigned. Returns
 /// `None` for non-integer types — callers that demand an integer
@@ -1125,6 +1139,14 @@ impl Builder {
         self.decide(expr);
         match &expr.kind {
             HirExprKind::Literal(lit) => self.lower_literal(lit, &expr.ty, expr.site),
+            HirExprKind::ContextReader { reader } => {
+                let dest = self.alloc_local(self.subst_ty(&expr.ty));
+                self.instructions.push(Instr::ContextField {
+                    dest,
+                    offset: context_reader_offset(*reader),
+                });
+                Some(dest)
+            }
             HirExprKind::BindingRef {
                 name,
                 resolved: ResolvedRef::Binding(id),
@@ -5341,6 +5363,87 @@ fn enumerate_exits(
 mod slice3_invariants {
     use super::*;
     use crate::model::{CaptureKind, Direction};
+    use hew_hir::HirStmt;
+
+    fn reader_ty(reader: ExecutionContextReader) -> ResolvedTy {
+        ResolvedTy::from_ty(&reader.ty()).expect("context reader type resolves")
+    }
+
+    fn function_evaluating_context_reader(reader: ExecutionContextReader) -> HirFn {
+        let ty = reader_ty(reader);
+        HirFn {
+            id: hew_hir::ItemId(0),
+            node: hew_hir::HirNodeId(0),
+            name: "handler".to_string(),
+            type_params: vec![],
+            params: vec![],
+            return_ty: ResolvedTy::Unit,
+            body: HirBlock {
+                node: hew_hir::HirNodeId(1),
+                scope: hew_hir::ScopeId(0),
+                statements: vec![HirStmt {
+                    node: hew_hir::HirNodeId(2),
+                    kind: HirStmtKind::Expr(HirExpr {
+                        node: hew_hir::HirNodeId(3),
+                        site: hew_hir::SiteId(0),
+                        ty: ty.clone(),
+                        value_class: ValueClass::of_ty(&ty, &hew_hir::TypeClassTable::default()),
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::ContextReader { reader },
+                        span: 0..0,
+                    }),
+                    span: 0..0,
+                }],
+                tail: None,
+                ty: ResolvedTy::Unit,
+                span: 0..0,
+            },
+            span: 0..0,
+        }
+    }
+
+    #[test]
+    fn context_readers_lower_to_context_field_offsets() {
+        for (reader, expected_offset) in [
+            (ExecutionContextReader::ActorId, HEW_CTX_OFFSET_ACTOR_ID),
+            (
+                ExecutionContextReader::Supervisor,
+                HEW_CTX_OFFSET_PARENT_SUPERVISOR,
+            ),
+            (ExecutionContextReader::TraceSpan, HEW_CTX_OFFSET_TRACE_SPAN),
+        ] {
+            let func = function_evaluating_context_reader(reader);
+            let lowered = lower_function(
+                &func,
+                "handler".to_string(),
+                HashMap::new(),
+                &hew_hir::TypeClassTable::default(),
+                &HashMap::new(),
+                &HashSet::new(),
+                &HashMap::new(),
+                crate::model::FunctionCallConv::ActorHandler,
+            );
+            let offsets: Vec<_> = lowered
+                .raw
+                .blocks
+                .iter()
+                .flat_map(|block| &block.instructions)
+                .filter_map(|instr| {
+                    if let Instr::ContextField { offset, .. } = instr {
+                        Some(*offset)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(offsets, vec![expected_offset], "{reader:?}");
+            assert!(
+                lowered.diagnostics.is_empty(),
+                "{reader:?} diagnostics: {:?}",
+                lowered.diagnostics
+            );
+        }
+    }
 
     /// A `Duplex<i64, i64>` `ResolvedTy` used as a stand-in payload
     /// for synthetic `ElabDrop` entries. The body of these tests

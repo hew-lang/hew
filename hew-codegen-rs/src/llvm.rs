@@ -87,6 +87,9 @@ const HEW_CTX_OFFSET_FLAGS: usize = 28;
 const HEW_CTX_OFFSET_CANCEL_TOKEN: usize = 32;
 const HEW_CTX_OFFSET_TASK_SCOPE: usize = 40;
 const HEW_CTX_OFFSET_ARENA: usize = 48;
+const HEW_CTX_OFFSET_TRACE: usize = 56;
+const HEW_TRACE_OFFSET_SPAN_ID: usize = 16;
+const HEW_CTX_OFFSET_TRACE_SPAN: usize = HEW_CTX_OFFSET_TRACE + HEW_TRACE_OFFSET_SPAN_ID;
 const HEW_CTX_OFFSET_PARTITION_POLICY: usize = 96;
 const HEW_CTX_OFFSET_PREV_CONTEXT: usize = 104;
 const HEW_CTX_OFFSET_LOCK_SEAT: usize = 112;
@@ -2365,7 +2368,9 @@ fn context_field_matches_dest<'ctx>(
         | HEW_CTX_OFFSET_PARTITION_POLICY
         | HEW_CTX_OFFSET_PREV_CONTEXT
         | HEW_CTX_OFFSET_LOCK_SEAT => ptr_ok,
-        HEW_CTX_OFFSET_ACTOR_ID => int_bits == Some(ctx.i64_type().get_bit_width()),
+        HEW_CTX_OFFSET_ACTOR_ID | HEW_CTX_OFFSET_TRACE_SPAN => {
+            int_bits == Some(ctx.i64_type().get_bit_width())
+        }
         HEW_CTX_OFFSET_SUPERVISOR_CHILD_INDEX | HEW_CTX_OFFSET_FLAGS => {
             int_bits == Some(ctx.i32_type().get_bit_width())
         }

@@ -37,9 +37,9 @@ mod util;
 pub use self::types::{
     ActorSendAliasing, ActorSendCopyReason, ActorStateGuard, AllocationClass, AssignTargetKind,
     AssignTargetShape, Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureCaptureMode,
-    DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, FnSig,
-    MethodCallReceiverKind, MethodCallRewrite, SpanKey, StackHint, TypeCheckOutput, TypeDef,
-    TypeDefKind, VariantDef,
+    DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey,
+    ExecutionContextReader, FnSig, MethodCallReceiverKind, MethodCallRewrite, SpanKey, StackHint,
+    TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
 };
 use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,

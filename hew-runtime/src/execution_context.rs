@@ -54,6 +54,9 @@ pub const HEW_CTX_OFFSET_TASK_SCOPE: usize = 40;
 pub const HEW_CTX_OFFSET_ARENA: usize = 48;
 /// Byte offset of [`HewExecutionContext::trace`].
 pub const HEW_CTX_OFFSET_TRACE: usize = 56;
+/// Byte offset of [`HewExecutionContext::trace.span_id`].
+pub const HEW_CTX_OFFSET_TRACE_SPAN: usize =
+    HEW_CTX_OFFSET_TRACE + offset_of!(HewTraceContext, span_id);
 /// Byte offset of [`HewExecutionContext::partition_policy`].
 pub const HEW_CTX_OFFSET_PARTITION_POLICY: usize = 96;
 /// Byte offset of [`HewExecutionContext::prev_context`].
@@ -181,6 +184,10 @@ const _: () = {
     assert!(offset_of!(HewExecutionContext, task_scope) == HEW_CTX_OFFSET_TASK_SCOPE);
     assert!(offset_of!(HewExecutionContext, arena) == HEW_CTX_OFFSET_ARENA);
     assert!(offset_of!(HewExecutionContext, trace) == HEW_CTX_OFFSET_TRACE);
+    assert!(
+        offset_of!(HewExecutionContext, trace) + offset_of!(HewTraceContext, span_id)
+            == HEW_CTX_OFFSET_TRACE_SPAN
+    );
     assert!(offset_of!(HewExecutionContext, partition_policy) == HEW_CTX_OFFSET_PARTITION_POLICY);
     assert!(offset_of!(HewExecutionContext, prev_context) == HEW_CTX_OFFSET_PREV_CONTEXT);
     assert!(offset_of!(HewExecutionContext, lock_seat) == HEW_CTX_OFFSET_LOCK_SEAT);
@@ -283,6 +290,10 @@ mod tests {
         );
         assert_eq!(offset_of!(HewExecutionContext, arena), HEW_CTX_OFFSET_ARENA);
         assert_eq!(offset_of!(HewExecutionContext, trace), HEW_CTX_OFFSET_TRACE);
+        assert_eq!(
+            offset_of!(HewExecutionContext, trace) + offset_of!(HewTraceContext, span_id),
+            HEW_CTX_OFFSET_TRACE_SPAN
+        );
         assert_eq!(
             offset_of!(HewExecutionContext, partition_policy),
             HEW_CTX_OFFSET_PARTITION_POLICY

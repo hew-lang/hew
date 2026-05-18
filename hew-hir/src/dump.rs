@@ -277,6 +277,9 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::BindingRef { name, resolved } => {
             writeln!(out, "{pad}  ref {name} -> {resolved:?}").expect("write to string");
         }
+        HirExprKind::ContextReader { reader } => {
+            writeln!(out, "{pad}  context-reader {reader:?}").expect("write to string");
+        }
         HirExprKind::Binary { op, left, right } => {
             writeln!(out, "{pad}  binary {op}").expect("write to string");
             dump_expr(out, left, indent + 4);

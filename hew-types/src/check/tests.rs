@@ -1752,6 +1752,77 @@ fn typecheck_actor_receive_fn_registered() {
     assert!(output.fn_sigs.contains_key("Greeter::greet"));
 }
 
+fn span_key_for(source: &str, needle: &str) -> SpanKey {
+    let start = source
+        .find(needle)
+        .unwrap_or_else(|| panic!("missing `{needle}` in source"));
+    SpanKey {
+        start,
+        end: start + needle.len(),
+    }
+}
+
+#[test]
+fn context_readers_typecheck_inside_receive_handler() {
+    let source = "\
+        actor Worker {
+            receive fn ping() {
+                let actor_value = @actor_id;
+                let supervisor_value = @supervisor;
+                let span_value = @trace_span;
+            }
+        }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_eq!(
+        output.expr_types.get(&span_key_for(source, "@actor_id")),
+        Some(&Ty::U64)
+    );
+    assert_eq!(
+        output.expr_types.get(&span_key_for(source, "@trace_span")),
+        Some(&Ty::U64)
+    );
+    assert_eq!(
+        output.expr_types.get(&span_key_for(source, "@supervisor")),
+        Some(&Ty::Pointer {
+            is_mutable: true,
+            pointee: Box::new(Ty::Unit),
+        })
+    );
+}
+
+#[test]
+fn context_reader_outside_handler_is_typed_diagnostic() {
+    let output = check_source("fn main() -> u64 { @actor_id }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ContextReaderOutsideHandler),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn context_reader_in_non_actor_lambda_is_typed_diagnostic() {
+    let source = "\
+        actor Worker {
+            receive fn ping() {
+                let f = () => @actor_id;
+            }
+        }";
+    let output = check_source(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ContextReaderOutsideHandler),
+        "{:?}",
+        output.errors
+    );
+}
+
 /// `#[max_heap(N)]` on an actor → `actor_max_heap` side-table entry for that actor.
 #[test]
 fn max_heap_attribute_populates_side_table() {

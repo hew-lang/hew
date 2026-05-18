@@ -767,6 +767,32 @@ impl Checker {
     }
 
     pub(super) fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
+        if let Some(reader) = ExecutionContextReader::from_surface_name(name) {
+            if self.in_actor_handler_context {
+                return reader.ty();
+            }
+            self.report_error(
+                TypeErrorKind::ContextReaderOutsideHandler,
+                span,
+                format!(
+                    "context reader `{}` is only available directly inside an actor handler body; \
+                     nested lambdas and ordinary functions have no in-scope execution context",
+                    reader.surface_name()
+                ),
+            );
+            return Ty::Error;
+        }
+        if name.starts_with('@') {
+            self.report_error(
+                TypeErrorKind::UndefinedVariable,
+                span,
+                format!(
+                    "unknown context reader `{name}`; valid readers are @actor_id, \
+                     @supervisor, and @trace_span"
+                ),
+            );
+            return Ty::Error;
+        }
         if let Some((depth, binding)) = self.env.lookup_with_depth(name) {
             let binding_id = binding.id;
             let is_moved = binding.is_moved;
@@ -3453,6 +3479,8 @@ impl Checker {
         let prev_capture_depth = self.lambda_capture_depth;
         let prev_captures = std::mem::take(&mut self.lambda_captures);
         let prev_capture_facts = std::mem::take(&mut self.lambda_capture_facts);
+        let prev_actor_handler_context = self.in_actor_handler_context;
+        self.in_actor_handler_context = false;
 
         // Record the scope depth BEFORE pushing the lambda scope — any variable
         // found below this depth during body checking is a capture.
@@ -3563,6 +3591,7 @@ impl Checker {
         };
 
         self.current_return_type = prev_return_type;
+        self.in_actor_handler_context = prev_actor_handler_context;
         self.in_generator = prev_in_generator;
         self.env.pop_scope();
 

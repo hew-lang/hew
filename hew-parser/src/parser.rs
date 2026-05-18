@@ -4237,8 +4237,11 @@ impl<'src> Parser<'src> {
         let _guard = self.enter_recursion()?;
         let start = self.peek_span().start;
 
-        // Check for labeled loop/while: 'label: loop/while
-        if let Some(Token::Label(_)) = self.peek() {
+        // Check for labeled loop/while: @label: loop/while. A bare @name in
+        // expression position is a context-reader candidate.
+        if matches!(self.peek(), Some(Token::Label(_)))
+            && self.peek_at(self.pos + 1) == Some(&Token::Colon)
+        {
             return self.parse_labeled_stmt(start);
         }
 
@@ -4998,6 +5001,11 @@ impl<'src> Parser<'src> {
             Token::False => {
                 self.advance();
                 Expr::Literal(Literal::Bool(false))
+            }
+            Token::Label(label) => {
+                let name = (*label).to_string();
+                self.advance();
+                Expr::Identifier(name)
             }
             Token::Identifier(name)
                 if *name == "bytes" && self.peek_at(self.pos + 1) == Some(&Token::LeftBracket) =>
@@ -6728,6 +6736,20 @@ mod tests {
         } else {
             panic!("expected Function item");
         }
+    }
+
+    #[test]
+    fn parse_context_reader_as_identifier_expression() {
+        let source = "fn main() -> u64 { @actor_id }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let Item::Function(function) = &result.program.items[0].0 else {
+            panic!("expected function item");
+        };
+        let Some((Expr::Identifier(name), _)) = function.body.trailing_expr.as_deref() else {
+            panic!("expected context reader identifier tail");
+        };
+        assert_eq!(name, "@actor_id");
     }
 
     #[test]

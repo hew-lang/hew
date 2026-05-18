@@ -855,6 +855,8 @@ impl Checker {
         }
 
         // ── Body checking ───────────────────────────────────────────────
+        let prev_actor_handler_context = self.in_actor_handler_context;
+        self.in_actor_handler_context = true;
         self.env.push_scope();
 
         let qualified_name = format!("{actor_name}::{}", hook.name);
@@ -868,6 +870,7 @@ impl Checker {
         self.current_return_type = Some(Ty::Unit);
         self.check_block(&hook.body, None);
         self.current_return_type = None;
+        self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
         self.env.pop_scope();
@@ -1026,6 +1029,8 @@ impl Checker {
         let return_ty = self.check_crash_hook_return_type(actor_name, hook, hook_kind);
 
         // ── Body checking ───────────────────────────────────────────────
+        let prev_actor_handler_context = self.in_actor_handler_context;
+        self.in_actor_handler_context = true;
         self.env.push_scope();
 
         let qualified_name = format!("{actor_name}::{}", hook.name);
@@ -1045,6 +1050,7 @@ impl Checker {
         self.current_return_type = Some(return_ty);
         self.check_block(&hook.body, None);
         self.current_return_type = None;
+        self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
         self.env.pop_scope();
@@ -1162,6 +1168,8 @@ impl Checker {
         self.in_pure_function = rf.is_pure;
         let prev_in_receive_fn = self.in_receive_fn;
         self.in_receive_fn = true;
+        let prev_actor_handler_context = self.in_actor_handler_context;
+        self.in_actor_handler_context = true;
         self.env.push_scope();
 
         // Set current_function so calls within this receive fn are recorded
@@ -1245,6 +1253,7 @@ impl Checker {
 
         self.in_generator = prev_in_generator;
         self.in_receive_fn = prev_in_receive_fn;
+        self.in_actor_handler_context = prev_actor_handler_context;
         self.in_pure_function = prev_in_pure;
         self.current_return_type = None;
         self.current_function = prev_function;

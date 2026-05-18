@@ -358,6 +358,8 @@ pub enum TypeErrorKind {
     InvalidSend,
     /// Operation not supported for this type
     InvalidOperation,
+    /// Execution-context reader used outside an actor handler context
+    ContextReaderOutsideHandler,
     /// Wrong number of arguments
     ArityMismatch,
     /// Generic bounds not satisfied
@@ -510,6 +512,7 @@ impl TypeErrorKind {
             Self::UndefinedMethod => "UndefinedMethod",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
+            Self::ContextReaderOutsideHandler => "ContextReaderOutsideHandler",
             Self::ArityMismatch => "ArityMismatch",
             Self::BoundsNotSatisfied => "BoundsNotSatisfied",
             Self::InferenceFailed => "InferenceFailed",

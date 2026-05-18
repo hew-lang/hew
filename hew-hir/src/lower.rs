@@ -7,8 +7,9 @@ use hew_parser::ast::{
     TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
 };
 use hew_types::{
-    ActorStateGuard, AssignTargetKind, AssignTargetShape, ClosureCaptureFact, LoweringFact,
-    MethodCallRewrite, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
+    ActorStateGuard, AssignTargetKind, AssignTargetShape, ClosureCaptureFact,
+    ExecutionContextReader, LoweringFact, MethodCallRewrite, ResolvedTy, SpanKey, Ty,
+    TypeCheckOutput,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -3626,6 +3627,17 @@ impl LowerCtx {
         name: &str,
         span: std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
+        if let Some(reader) = ExecutionContextReader::from_surface_name(name) {
+            let key = SpanKey::from(&span);
+            if self
+                .expr_types
+                .get(&key)
+                .is_some_and(|ty| *ty == reader.ty())
+            {
+                let ty = ResolvedTy::from_ty(&reader.ty()).expect("reader type resolves");
+                return (HirExprKind::ContextReader { reader }, ty);
+            }
+        }
         if let Some((id, ty)) = self.lookup(name) {
             (
                 HirExprKind::BindingRef {
@@ -4275,6 +4287,7 @@ fn collect_captures_walk(
         //     frame and were classified when the inner lambda lowered.
         //   - Unsupported: nothing to walk.
         HirExprKind::BindingRef { .. }
+        | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
         | HirExprKind::SpawnLambdaActor { .. }
         | HirExprKind::Closure { .. }
@@ -4432,6 +4445,7 @@ fn collect_general_closure_captures_walk(
             }
         }
         HirExprKind::BindingRef { .. }
+        | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
         | HirExprKind::SpawnLambdaActor { .. }
         | HirExprKind::Unsupported(_) => {}

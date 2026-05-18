@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{BinaryOp, OverflowPolicy, ResourceMarker, Span};
-use hew_types::ResolvedTy;
+use hew_types::{ExecutionContextReader, ResolvedTy};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::monomorph::{MonomorphizedFn, RecordLayout};
@@ -466,6 +466,9 @@ pub enum HirExprKind {
     BindingRef {
         name: String,
         resolved: ResolvedRef,
+    },
+    ContextReader {
+        reader: ExecutionContextReader,
     },
     Binary {
         op: BinaryOp,

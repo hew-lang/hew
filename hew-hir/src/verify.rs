@@ -162,7 +162,7 @@ impl Verifier {
             HirExprKind::FieldAccess { object, .. } => {
                 self.expr(object);
             }
-            HirExprKind::Literal(_) => {}
+            HirExprKind::ContextReader { .. } | HirExprKind::Literal(_) => {}
             HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => self.block(body),
             HirExprKind::ScopeDeadline { duration, body } => {
                 self.expr(duration);

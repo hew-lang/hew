@@ -33,6 +33,45 @@ impl ImportKey {
 }
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExecutionContextReader {
+    ActorId,
+    Supervisor,
+    TraceSpan,
+}
+
+impl ExecutionContextReader {
+    #[must_use]
+    pub fn from_surface_name(name: &str) -> Option<Self> {
+        match name {
+            "@actor_id" => Some(Self::ActorId),
+            "@supervisor" => Some(Self::Supervisor),
+            "@trace_span" => Some(Self::TraceSpan),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn surface_name(self) -> &'static str {
+        match self {
+            Self::ActorId => "@actor_id",
+            Self::Supervisor => "@supervisor",
+            Self::TraceSpan => "@trace_span",
+        }
+    }
+
+    #[must_use]
+    pub fn ty(self) -> Ty {
+        match self {
+            Self::ActorId | Self::TraceSpan => Ty::U64,
+            Self::Supervisor => Ty::Pointer {
+                is_mutable: true,
+                pointee: Box::new(Ty::Unit),
+            },
+        }
+    }
+}
+
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
@@ -1204,6 +1243,12 @@ pub struct Checker {
     /// Whether we are currently inside an actor receive function body.
     /// Used to warn about blocking calls that can starve the scheduler.
     pub(super) in_receive_fn: bool,
+    /// Whether execution-context surface readers may resolve in the current body.
+    ///
+    /// Set for actor dispatch handlers and lifecycle hooks; cleared for nested
+    /// lambdas so `@actor_id`-style readers cannot silently capture a dispatch
+    /// context across an unmodelled closure boundary.
+    pub(super) in_actor_handler_context: bool,
     /// Whether we are currently inside an unsafe block.
     pub(super) in_unsafe: bool,
     /// The module currently being processed (enables per-module scoping in future).
@@ -1373,6 +1418,7 @@ impl Checker {
             in_for_binding: false,
             in_pure_function: false,
             in_receive_fn: false,
+            in_actor_handler_context: false,
             in_unsafe: false,
             current_module: None,
             local_type_defs: HashSet::new(),

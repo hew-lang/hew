@@ -574,7 +574,8 @@ impl Checker {
                 let (idx_expr, idx_sp) = args[1].expr();
                 self.check_against(idx_expr, idx_sp, &Ty::I64);
 
-                if let Some(Ty::Named { name: sup_name, .. }) = sup_ty_resolved.as_actor_ref() {
+                // Accept ActorRef<T>, Actor<T>, and LocalPid<T> as supervisor handles.
+                if let Some(Ty::Named { name: sup_name, .. }) = sup_ty_resolved.as_actor_handle() {
                     if let Some(sup_children) = self.supervisor_children.get(sup_name) {
                         // `supervisor_child` builtin indexes into the static slot space.
                         let statics = &sup_children.statics;

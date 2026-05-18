@@ -667,6 +667,18 @@ impl Ty {
         Self::normalize_named("ActorRef".to_string(), vec![inner])
     }
 
+    /// Construct `LocalPid<inner>` — actor pid in this process, returned by `spawn`.
+    #[must_use]
+    pub fn local_pid(inner: Ty) -> Ty {
+        Self::normalize_named("LocalPid".to_string(), vec![inner])
+    }
+
+    /// Construct `RemotePid<inner>` — actor pid on a remote node.
+    #[must_use]
+    pub fn remote_pid(inner: Ty) -> Ty {
+        Self::normalize_named("RemotePid".to_string(), vec![inner])
+    }
+
     /// Construct `Sender<inner>`.
     #[must_use]
     pub fn sender(inner: Ty) -> Ty {
@@ -911,12 +923,36 @@ impl Ty {
         }
     }
 
-    /// If this is an actor handle (`ActorRef<T>` or `Actor<T>`), return `Some(&T)`.
+    /// If this is `LocalPid<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_local_pid(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args } if name == "LocalPid" && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    /// If this is `RemotePid<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_remote_pid(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args } if name == "RemotePid" && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    /// If this is an actor handle (`ActorRef<T>`, `Actor<T>`, or `LocalPid<T>`), return `Some(&T)`.
+    ///
+    /// `LocalPid<T>` is included because it is the v0.5 spawn-return type and is
+    /// accepted everywhere `ActorRef<T>` is accepted (built-in functions `close`,
+    /// `link`, `monitor`, etc.).  `RemotePid<T>` is intentionally excluded — it
+    /// is a distinct type that does not participate in the local actor graph.
     #[must_use]
     pub fn as_actor_handle(&self) -> Option<&Ty> {
         match self {
             Ty::Named { name, args }
-                if (name == "ActorRef" || name == "Actor") && args.len() == 1 =>
+                if (name == "ActorRef" || name == "Actor" || name == "LocalPid")
+                    && args.len() == 1 =>
             {
                 Some(&args[0])
             }

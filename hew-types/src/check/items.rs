@@ -224,8 +224,10 @@ impl Checker {
 
         let (_, outer_type, first_inner_type) = param;
 
-        // Expected: outer = "ActorRef", inner = expected_sibling_type.
-        let type_ok = outer_type == "ActorRef"
+        // Expected: outer = "ActorRef" | "LocalPid", inner = expected_sibling_type.
+        // RemotePid is intentionally rejected here: supervisors are local, and a
+        // wired_to child param typed `RemotePid<Sibling>` is semantically invalid.
+        let type_ok = (outer_type == "ActorRef" || outer_type == "LocalPid")
             && first_inner_type
                 .as_deref()
                 .is_some_and(|t| t == expected_sibling_type);
@@ -247,7 +249,7 @@ impl Checker {
                     "E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: in supervisor `{supervisor_name}`, \
                      child `{dependent_child_name}` wires `{param_key}` to sibling of type \
                      `{expected_sibling_type}`, but `{dependent_actor_type}::init` parameter \
-                     `{param_key}` has type `{actual_type}` (expected `ActorRef<{expected_sibling_type}>`)"
+                     `{param_key}` has type `{actual_type}` (expected `ActorRef<{expected_sibling_type}>` or `LocalPid<{expected_sibling_type}>`)"
                 ),
             ));
         }

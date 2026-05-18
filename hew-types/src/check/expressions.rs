@@ -3091,7 +3091,8 @@ impl Checker {
         match &resolved {
             Ty::Named { name, args } => {
                 // Named supervisor child access: sup.child_name → ActorRef<ChildType>
-                if let Some(Ty::Named { name: sup_name, .. }) = resolved.as_actor_ref() {
+                // Accepts ActorRef<T>, Actor<T>, and LocalPid<T> via as_actor_handle().
+                if let Some(Ty::Named { name: sup_name, .. }) = resolved.as_actor_handle() {
                     if let Some(sup_children) = self.supervisor_children.get(sup_name) {
                         // Check static children first, then pool children.
                         let resolved_slot =
@@ -3816,9 +3817,9 @@ impl Checker {
                 let ty_raw = self.synthesize(arg, as_);
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
             }
-            Ty::actor_ref(Ty::Named { name, args: vec![] })
+            Ty::local_pid(Ty::Named { name, args: vec![] })
         } else {
-            Ty::actor_ref(Ty::Error)
+            Ty::local_pid(Ty::Error)
         }
     }
 

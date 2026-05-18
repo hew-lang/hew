@@ -275,6 +275,23 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
             Ok(())
         }
 
+        // LocalPid<T> ↔ ActorRef<T>: bridge for migration.
+        //
+        // SHIM: LocalPid is the v0.5 spawn-return type; existing built-in functions
+        // (`close`, `link`, `monitor`, etc.) still accept ActorRef parameters.
+        // This bridge lets spawned actors be passed to those functions without changes.
+        // Remove once all ActorRef call sites migrate to LocalPid (post v0.5).
+        (Ty::Named { name: an, args: aa }, Ty::Named { name: bn, args: ba })
+            if (an == "LocalPid" || an == "ActorRef")
+                && (bn == "LocalPid" || bn == "ActorRef")
+                && aa.len() == ba.len() =>
+        {
+            for (a, b) in aa.iter().zip(ba.iter()) {
+                unify(subst, a, b)?;
+            }
+            Ok(())
+        }
+
         // Also handles module-qualified names: "json.Value" matches "Value"
         (Ty::Named { name: an, args: aa }, Ty::Named { name: bn, args: ba })
             if an == bn || Ty::names_match_qualified(an, bn) =>

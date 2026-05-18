@@ -139,6 +139,8 @@ const fn builtin_named_type_index(kind: BuiltinNamedType) -> usize {
         BuiltinNamedType::Stream => 2,
         BuiltinNamedType::Sink => 3,
         BuiltinNamedType::Duplex => 4,
+        BuiltinNamedType::LocalPid => 5,
+        BuiltinNamedType::RemotePid => 6,
     }
 }
 
@@ -280,6 +282,38 @@ builtin_named_types! {
         methods_const: DUPLEX_METHODS,
         canonical: "Duplex",
         qualified: "duplex.Duplex",
+        methods: []
+    },
+    // LocalPid<T>: actor pid in this process, returned by `spawn`.
+    //
+    // A `LocalPid<T>` is process-local: it refers to an actor running in the current
+    // node. Unifies with `ActorRef<T>` so existing built-in functions (`close`, `link`,
+    // `monitor`, etc.) continue to accept spawn return values.
+    //
+    // Methods (`.tell`) are declared in `std/builtins.hew` as `impl LocalPid<T>` and
+    // resolved via the normal user-type method dispatch path.
+    LocalPid {
+        consts: (LOCAL_PID, QUALIFIED_LOCAL_PID),
+        methods_const: LOCAL_PID_METHODS,
+        canonical: "LocalPid",
+        qualified: "LocalPid",
+        methods: []
+    },
+    // RemotePid<T>: actor pid on a remote node.
+    //
+    // A `RemotePid<T>` is produced by peer-discovery or explicit construction
+    // (`RemotePid::from_raw`). It does NOT unify with `ActorRef<T>` or `LocalPid<T>`.
+    // Coercion from local → remote is explicit: `local_pid.to_remote_via(node_handle)`.
+    //
+    // `.tell` is a fail-closed stub in S1; actual routing arrives in S4.
+    //
+    // SHIM: `RemotePid::from_raw` + `.tell` stub are S1 scaffolds;
+    //       remove / replace when `hew_actor_send_remote` ABI lands in S4.
+    RemotePid {
+        consts: (REMOTE_PID, QUALIFIED_REMOTE_PID),
+        methods_const: REMOTE_PID_METHODS,
+        canonical: "RemotePid",
+        qualified: "RemotePid",
         methods: []
     },
 }

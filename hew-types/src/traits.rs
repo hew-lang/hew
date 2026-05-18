@@ -231,6 +231,12 @@ impl TraitRegistry {
             // T is a phantom dispatch type, and actor graph cycles are handled
             // separately by cycle.rs.
             Ty::Named { name, .. } if name == "ActorRef" => RcFreeStatus::RcFree,
+            // LocalPid<T> lowers to a pid-shaped scalar with no ref-counted fields;
+            // T is a phantom dispatch type, treated like ActorRef.
+            Ty::Named { name, .. } if name == "LocalPid" => RcFreeStatus::RcFree,
+            // RemotePid<T> lowers to (node_id, serial) scalars; no ref-counted fields,
+            // T is a phantom dispatch type.
+            Ty::Named { name, .. } if name == "RemotePid" => RcFreeStatus::RcFree,
             Ty::Named { name, args } => {
                 match self.combine_rc_free_status(args.iter().cloned(), visiting) {
                     RcFreeStatus::RcFree => {}
@@ -406,6 +412,30 @@ impl TraitRegistry {
 
             // ActorRef: always Send + Sync + Frozen + Copy (identity reference)
             Ty::Named { name, .. } if name == "ActorRef" => matches!(
+                marker,
+                MarkerTrait::Send
+                    | MarkerTrait::Sync
+                    | MarkerTrait::Frozen
+                    | MarkerTrait::Copy
+                    | MarkerTrait::Clone
+                    | MarkerTrait::Debug
+            ),
+
+            // LocalPid<T>: process-local actor pid returned by `spawn`.
+            // Same marker set as ActorRef — an opaque identity reference, not a resource.
+            Ty::Named { name, .. } if name == "LocalPid" => matches!(
+                marker,
+                MarkerTrait::Send
+                    | MarkerTrait::Sync
+                    | MarkerTrait::Frozen
+                    | MarkerTrait::Copy
+                    | MarkerTrait::Clone
+                    | MarkerTrait::Debug
+            ),
+
+            // RemotePid<T>: remote actor pid, from peer-discovery or explicit construction.
+            // Same marker set as LocalPid — the pid value itself is an opaque u64.
+            Ty::Named { name, .. } if name == "RemotePid" => matches!(
                 marker,
                 MarkerTrait::Send
                     | MarkerTrait::Sync

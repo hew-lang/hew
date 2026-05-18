@@ -5,6 +5,80 @@
 //! program control flow.
 
 // ---------------------------------------------------------------------------
+// Actor pid types
+// ---------------------------------------------------------------------------
+/// A process-local actor pid returned by `spawn`.
+///
+/// `LocalPid<T>` is accepted by all built-in actor functions (`close`, `link`,
+/// `monitor`, etc.) and by any function that takes `dyn Pid<T>`.
+///
+/// Coercion to a remote pid is explicit:
+///
+/// ```
+/// let remote = pid.to_remote_via(node_handle);
+/// ```
+pub type LocalPid<T> {
+}
+
+/// An actor pid on a remote node.
+///
+/// Produced by peer-discovery or explicit construction via `RemotePid::from_raw`.
+/// Does NOT coerce implicitly to `LocalPid<T>` — remote actors are a distinct class.
+///
+/// `.tell` is a fail-closed stub until S4 wires up `hew_actor_send_remote`.
+///
+/// # SHIM
+///
+/// `RemotePid::from_raw` and `.tell` are scaffolds for S1 tests.
+/// Replace when the remote routing ABI (`hew_actor_send_remote`) lands in S4.
+pub type RemotePid<T> {
+}
+
+/// Trait satisfied by both `LocalPid<T>` and `RemotePid<T>`.
+///
+/// Use `dyn Pid<T>` (or `P: Pid<T>`) when a function should accept either:
+///
+/// ```
+/// fn ping<P: Pid<Msg>>(p: P, msg: Msg) {
+///     p.tell(msg);
+/// }
+/// ```
+pub trait Pid<T> {
+    fn tell(pid: Self, msg: T);
+}
+
+impl LocalPid<T> {
+    /// Send a message to this local actor.
+    fn tell(pid: LocalPid<T>, msg: T) {}
+
+    // WASM-TODO(#1451): RemotePid cross-node routing is native-only until
+    // a wasm peer transport is decided.
+    /// Obtain a remote pid that routes to the same actor via `node_handle`.
+    ///
+    /// SHIM: `node_handle` is currently unused; actual cross-node routing
+    /// arrives in S4 when `hew_actor_send_remote` is wired up.
+    fn to_remote_via(pid: LocalPid<T>, node_handle: dyn Display) -> RemotePid<T> {}
+}
+
+impl RemotePid<T> {
+
+    // WASM-TODO(#1451): RemotePid construction is native-only until a wasm
+    // peer transport is decided.
+    /// Construct a remote pid from raw node/serial components.
+    ///
+    /// SHIM: fail-closed stub. Used in tests to surface a `RemotePid<T>`
+    /// value without a live peer-discovery mechanism. The empty body keeps
+    /// codegen fail-closed (no self-recursive stack overflow). Replace when
+    /// the peer API lands.
+    fn from_raw(node_id: u16, serial: u64) -> RemotePid<T> {}
+    /// Send a message to this remote actor.
+    ///
+    /// SHIM: fail-closed stub for S1. Actual routing via `hew_actor_send_remote`
+    /// arrives in S4; this stub ensures the `.tell` surface compiles.
+    fn tell(pid: RemotePid<T>, msg: T) {}
+}
+
+// ---------------------------------------------------------------------------
 // Display trait
 // ---------------------------------------------------------------------------
 /// Convert a value of type `Self` into a human-readable `string`.

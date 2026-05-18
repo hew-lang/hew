@@ -2665,6 +2665,102 @@ impl Checker {
                     }
                 }
             }
+            // LocalPid<T> methods — first check LocalPid's own impl methods,
+            // then fall through to actor receive-fn dispatch on the inner type T.
+            //
+            // Own methods (e.g. `tell`, `to_remote_via`) are declared in
+            // `impl LocalPid<T>` in std/builtins.hew and registered in type_defs /
+            // fn_sigs as `"LocalPid::{method}"`.  Actor receive-fn dispatch
+            // (e.g. `pid.greet(arg)`) works the same as ActorRef<T>.
+            (resolved, _) if resolved.as_local_pid().is_some() => {
+                // `.send(payload)` is the legacy fire-and-forget surface inherited
+                // from ActorRef; enforce the Send bound on the payload.
+                if method == "send" {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        let ty = self.synthesize(expr, sp);
+                        self.enforce_actor_boundary_send(expr, sp, sp, &ty);
+                    }
+                    return Ty::Unit;
+                }
+                // Try LocalPid's own methods first.
+                if let Some(sig) = self.lookup_named_method_sig("LocalPid", &[], method) {
+                    return self
+                        .apply_instantiated_call_signature(
+                            &sig,
+                            None,
+                            args,
+                            span,
+                            SignatureArgApplication::PositionalOnly {
+                                arity_context: format!("method '{method}'"),
+                            },
+                            true,
+                        )
+                        .return_type;
+                }
+                // Fall through to actor receive-fn dispatch on the inner type.
+                let inner = resolved.as_local_pid().unwrap();
+                if let Ty::Named {
+                    name: actor_name, ..
+                } = inner
+                {
+                    let method_key = format!("{actor_name}::{method}");
+                    if let Some(sig) = self.fn_sigs.get(&method_key).cloned() {
+                        for (i, arg) in args.iter().enumerate() {
+                            let (expr, sp) = arg.expr();
+                            let ty = if let Some(param_ty) = sig.params.get(i) {
+                                self.check_against(expr, sp, param_ty)
+                            } else {
+                                self.synthesize(expr, sp)
+                            };
+                            self.enforce_actor_boundary_send(expr, sp, sp, &ty);
+                        }
+                        return sig.return_type;
+                    }
+                }
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!("no method `{method}` on `{}`", resolved.user_facing()),
+                    self.similar_methods(resolved, method),
+                );
+                Ty::Error
+            }
+            // RemotePid<T> methods — dispatch to RemotePid's own impl methods.
+            //
+            // RemotePid does NOT fall through to actor receive-fn dispatch; it is
+            // a distinct remote type that cannot dispatch local actor methods.
+            (resolved, _) if resolved.as_remote_pid().is_some() => {
+                if let Some(sig) = self.lookup_named_method_sig("RemotePid", &[], method) {
+                    return self
+                        .apply_instantiated_call_signature(
+                            &sig,
+                            None,
+                            args,
+                            span,
+                            SignatureArgApplication::PositionalOnly {
+                                arity_context: format!("method '{method}'"),
+                            },
+                            true,
+                        )
+                        .return_type;
+                }
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!("no method `{method}` on `{}`", resolved.user_facing()),
+                    self.similar_methods(resolved, method),
+                );
+                Ty::Error
+            }
             // ActorRef methods
             (resolved, _) if resolved.as_actor_ref().is_some() => {
                 let inner = resolved.as_actor_ref().unwrap();

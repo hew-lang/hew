@@ -87,8 +87,8 @@ fn collect_actor_refs<'a>(
             }
         }
         Ty::Named { name, args } => {
-            if name == "ActorRef" {
-                // ActorRef<X> — record X if it's a known actor
+            if name == "ActorRef" || name == "LocalPid" {
+                // ActorRef<X> / LocalPid<X> — record X if it's a known actor
                 if let Some(Ty::Named {
                     name: actor_name, ..
                 }) = args.first()

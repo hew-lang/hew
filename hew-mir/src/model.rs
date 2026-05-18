@@ -616,7 +616,7 @@ pub enum Instr {
     /// WHY (M2 slice 4.5c): the typecheck→HIR/MIR bridge that maps
     /// `Duplex<S, R>::send(msg)` (a `MethodCallRewrite` side-table
     /// entry produced by `hew-types` slice 4.5b) to this variant
-    /// does not yet reach the Rust MIR pipeline (`hew compile-v05`
+    /// does not yet reach the Rust MIR pipeline (`hew compile`
     /// never invokes the typechecker). The variant lands first so
     /// slice 5 codegen can wire a real `inkwell::BuildCall` arm and
     /// the producer-side bridge work in a follow-up slice does not
@@ -1109,7 +1109,7 @@ pub struct CheckedMirFunction {
 
 /// Per-function legality findings produced by Checked MIR. A
 /// `CheckedMirFunction` with any non-`DecisionMapTotal` `MirCheck`
-/// is rejected by `hew compile-v05`; no backend artefact is emitted.
+/// is rejected by `hew compile`; no backend artefact is emitted.
 ///
 /// The variants are exhaustive over the v0.5 move/borrow/init/aliasing
 /// surface. Variants whose construction surface doesn't yet exist in

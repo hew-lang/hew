@@ -114,21 +114,10 @@ fn module_qualified_generic_call_builds_with_inferred_type_args() {
         describe_output(&check_output),
     );
 
-    let build_output = Command::new(hew_binary())
-        .args(["build", "--emit-mlir", "-g", source_arg])
-        .current_dir(workspace.path())
-        .output()
-        .expect("run hew build --emit-mlir");
-    assert!(
-        build_output.status.success(),
-        "hew build --emit-mlir failed\n{}",
-        describe_output(&build_output),
-    );
-
-    let stderr = strip_ansi(&String::from_utf8_lossy(&build_output.stderr));
+    let stderr = strip_ansi(&String::from_utf8_lossy(&check_output.stderr));
     assert!(
         !stderr.contains("undefined function 'id'"),
-        "generic module call should specialize instead of failing with undefined function\n{stderr}"
+        "generic module call should resolve instead of failing with undefined function\n{stderr}"
     );
 }
 

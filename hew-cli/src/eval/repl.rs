@@ -1085,7 +1085,7 @@ fn handle_interactive_input(session: &mut ReplSession, input: &str) -> Interacti
 ///
 /// Import resolution and typecheck are performed here (not by the caller)
 /// so that the codegen pipeline sees stdlib type information in the same order
-/// as the normal `compile()` path.  The REPL's fast in-process typecheck is
+/// as the frontend-to-codegen path.  The REPL's fast in-process typecheck is
 /// kept for user-facing error reporting only; this function runs the full
 /// correctly-ordered pipeline for codegen.
 fn run_inprocess_compiled(

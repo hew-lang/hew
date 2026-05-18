@@ -295,10 +295,10 @@ fn duplex_close_drop_blocks_wasm_emission() {
 }
 
 /// With `wasm: false`, the duplex pipeline emits the textual LLVM IR and
-/// native object normally — `--no-wasm` is the documented escape hatch.
+/// native object normally.
 /// The native path must NOT be blocked by the duplex detection gate.
 #[test]
-fn duplex_pair_native_only_succeeds_with_no_wasm() {
+fn duplex_pair_native_only_succeeds_without_wasm_emit() {
     let pipeline = pipeline_with_duplex_pair_call();
     let dir = out_dir("duplex-native-only");
     let options = EmitOptions {

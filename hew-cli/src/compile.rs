@@ -1,9 +1,9 @@
-//! Build command: parse, type-check, serialize to `MessagePack`, invoke the
-//! embedded MLIR/LLVM backend, and link the final executable.
+//! Frontend helpers for check/eval paths that still need parser/typechecker
+//! diagnostics and `MessagePack` serialization.
 
 use std::fmt;
+#[cfg(test)]
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
@@ -12,7 +12,6 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 
 use hew_compile::{
-    check_file as frontend_check_file, compile_file as frontend_compile_file,
     compile_program_to_msgpack as frontend_compile_program_to_msgpack, FrontendDiagnostic,
     FrontendDiagnosticKind, FrontendOptions,
 };
@@ -39,8 +38,6 @@ use crate::target::TargetSpec;
     reason = "variants match C API enum naming"
 )]
 enum EmbeddedCodegenMode {
-    EmitMlir = 0,
-    EmitLlvm = 1,
     EmitObject = 2,
 }
 
@@ -74,36 +71,10 @@ unsafe extern "C" {
     fn hew_codegen_last_error() -> *const std::ffi::c_char;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CodegenMode {
-    #[default]
-    LinkExecutable,
-    EmitAst,
-    EmitJson,
-    EmitMsgpack,
-    #[allow(dead_code, reason = "dormant during v0.5 cutover")]
-    EmitMlir,
-    #[allow(dead_code, reason = "dormant during v0.5 cutover")]
-    EmitLlvm,
-    EmitObj,
-}
-
-impl CodegenMode {
-    fn embedded_mode(self) -> Option<EmbeddedCodegenMode> {
-        match self {
-            Self::LinkExecutable | Self::EmitAst | Self::EmitJson | Self::EmitMsgpack => None,
-            Self::EmitMlir => Some(EmbeddedCodegenMode::EmitMlir),
-            Self::EmitLlvm => Some(EmbeddedCodegenMode::EmitLlvm),
-            Self::EmitObj => Some(EmbeddedCodegenMode::EmitObject),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
     pub no_typecheck: bool,
     pub werror: bool,
-    pub codegen_mode: CodegenMode,
     pub target: Option<String>,
     pub extra_libs: Vec<String>,
     /// Build with debug info (no optimizations, no stripping).
@@ -383,87 +354,6 @@ pub(crate) fn check_explain_cow(
             Err(failure.message)
         }
     }
-}
-
-fn write_output(output: Option<&str>, data: &[u8]) -> Result<String, String> {
-    if let Some(output_path) = output {
-        fs::write(output_path, data)
-            .map_err(|e| format!("Error: cannot write output to {output_path}: {e}"))?;
-        Ok(output_path.to_string())
-    } else {
-        std::io::stdout()
-            .write_all(data)
-            .map_err(|e| format!("Error: cannot write output: {e}"))?;
-        Ok(String::new())
-    }
-}
-
-pub fn compile(
-    input: &str,
-    output: Option<&str>,
-    check_only: bool,
-    options: &CompileOptions,
-) -> Result<String, String> {
-    let target = TargetSpec::from_requested(options.target.as_deref())?;
-    let frontend_options = frontend_options(&target, options);
-
-    if check_only {
-        return match frontend_check_file(input, &frontend_options) {
-            Ok(result) => {
-                render_frontend_diagnostics(&result.diagnostics);
-                Ok(String::new())
-            }
-            Err(failure) => {
-                render_frontend_diagnostics(&failure.diagnostics);
-                Err(failure.message)
-            }
-        };
-    }
-
-    let frontend = match frontend_compile_file(input, &frontend_options) {
-        Ok(frontend) => frontend,
-        Err(failure) => {
-            render_frontend_diagnostics(&failure.diagnostics);
-            return Err(failure.message);
-        }
-    };
-    render_frontend_diagnostics(&frontend.diagnostics);
-
-    if options.codegen_mode == CodegenMode::EmitAst {
-        let json = serde_json::to_string_pretty(&frontend.program)
-            .map_err(|e| format!("Error: cannot serialize AST: {e}"))?;
-        println!("{json}");
-        return Ok(String::new());
-    }
-
-    if options.codegen_mode == CodegenMode::EmitJson {
-        println!("{}", frontend.to_json());
-        return Ok(String::new());
-    }
-
-    let ast_data = frontend.to_msgpack();
-
-    if options.codegen_mode == CodegenMode::EmitMsgpack {
-        return write_output(output, &ast_data);
-    }
-
-    if let Some(mode) = options.codegen_mode.embedded_mode() {
-        if options.codegen_mode == CodegenMode::EmitObj {
-            let default_output = default_output_name(input, target.object_suffix(), "output");
-            let output_path = output.unwrap_or(&default_output);
-            let _ = run_embedded_codegen(&ast_data, mode, &target, options, Some(output_path))?;
-            return Ok(output_path.to_string());
-        }
-
-        let text_output = run_embedded_codegen(&ast_data, mode, &target, options, None)?;
-        return write_output(output, &text_output);
-    }
-
-    if !target.can_link_with_host_tools() {
-        return Err(target.unsupported_native_link_error());
-    }
-
-    compile_and_link(&ast_data, input, output, &target, options)
 }
 
 /// Compile a parsed program through the frontend pipeline only, yielding the

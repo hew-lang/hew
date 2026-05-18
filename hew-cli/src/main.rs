@@ -1,9 +1,8 @@
 //! `hew` — the Hew programming language compiler driver.
 //!
 //! ```text
-//! hew build file.hew [-o output]   # Compile to executable
-//! hew compile-v05 file.hew [--emit-dir DIR] [--dump-mir raw|elab] [--no-wasm]
-//!                                  # Run the v0.5 IR ladder and emit native + wasm binaries
+//! hew compile file.hew [--emit-dir DIR] [--dump-mir raw|elab] [--target wasm32-unknown-unknown]
+//!                                  # Run the v0.5 IR ladder and emit native or WASM
 //! hew run file.hew [-- args...]    # Compile and run
 //! hew debug file.hew [-- args...]  # Build with debug info + launch gdb/lldb
 //! hew check file.hew               # Parse + typecheck only
@@ -95,25 +94,6 @@ fn hew_main() {
 // Sub-commands
 // ---------------------------------------------------------------------------
 
-// The dispatcher short-circuits `hew build` and `hew run` with a cutover
-// error before reaching the bodies below; each `#[allow(dead_code, ...)]`
-// keeps the body compiled while it is dormant. The attributes come off when
-// the C++ codegen subtree is removed in a later stage of the v0.5 cutover.
-
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
-fn cmd_build(a: &args::BuildArgs) {
-    let input = a.input.display().to_string();
-    let output = a.output.as_ref().map(|p| p.display().to_string());
-    let options = a.to_compile_options();
-    match compile::compile(&input, output.as_deref(), false, &options) {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    }
-}
-
 /// Surface the diagnostic family in the CLI prefix so users see what
 /// gate tripped at a glance. `MirCheck` findings (move/init/aliasing
 /// legality) are a distinct family from spine-subset rejections; the
@@ -133,24 +113,38 @@ fn diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "linear CLI entry point: parse → typecheck → lower → MIR; \
-              splitting on line count would scatter a sequential pipeline"
-)]
-fn cmd_compile_v05(a: &args::CompileV05Args) {
-    let input = a.input.display().to_string();
-    let source = std::fs::read_to_string(&a.input).unwrap_or_else(|e| {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompileEmitTarget {
+    Native,
+    Wasm,
+}
+
+fn resolve_compile_emit_target(requested: Option<&str>) -> CompileEmitTarget {
+    match requested {
+        None => CompileEmitTarget::Native,
+        Some("wasm32-unknown-unknown") => CompileEmitTarget::Wasm,
+        Some(other) => {
+            eprintln!(
+                "Error: unsupported --target `{other}` for `hew compile`; \
+                 supported targets: wasm32-unknown-unknown"
+            );
+            std::process::exit(2);
+        }
+    }
+}
+
+fn lower_file_to_mir(input_path: &Path) -> Result<hew_mir::IrPipeline, ()> {
+    let input = input_path.display().to_string();
+    let source = std::fs::read_to_string(input_path).map_err(|e| {
         eprintln!("Error: cannot read {input}: {e}");
-        std::process::exit(1);
-    });
+    })?;
 
     let parsed = hew_parser::parse(&source);
     if !parsed.errors.is_empty() {
         for error in parsed.errors {
             eprintln!("{error:?}");
         }
-        std::process::exit(1);
+        return Err(());
     }
 
     // Type-check the program and collect the side-table before HIR lowering.
@@ -164,7 +158,7 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
         for error in &tc_output.errors {
             eprintln!("E_TYPE: {error:?}");
         }
-        std::process::exit(1);
+        return Err(());
     }
 
     let lower_output = hew_hir::lower_program(&parsed.program, &tc_output, &hew_hir::ResolutionCtx);
@@ -174,7 +168,7 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
         for diagnostic in diagnostics {
             eprintln!("{diagnostic:?}");
         }
-        std::process::exit(1);
+        return Err(());
     }
 
     let pipeline = hew_mir::lower_hir_module(&lower_output.module);
@@ -182,8 +176,79 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
         for diagnostic in &pipeline.diagnostics {
             eprintln!("{} {diagnostic:?}", diagnostic_prefix(&diagnostic.kind));
         }
-        std::process::exit(1);
+        return Err(());
     }
+
+    Ok(pipeline)
+}
+
+fn emit_v05_module(
+    pipeline: &hew_mir::IrPipeline,
+    module_name: &str,
+    emit_dir: &Path,
+    emit_target: CompileEmitTarget,
+) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
+    let options = hew_codegen_rs::EmitOptions {
+        module_name,
+        out_dir: emit_dir,
+        native: emit_target == CompileEmitTarget::Native,
+        wasm: emit_target == CompileEmitTarget::Wasm,
+    };
+    match hew_codegen_rs::emit_module(pipeline, &options) {
+        Ok(artefacts) => Ok(artefacts),
+        Err(hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { symbol }) => {
+            // WASM-TODO(#1451): hew_duplex_* symbols are excluded from wasm32
+            // builds via `hew-runtime/src/duplex.rs:54`. Surface a structured
+            // diagnostic so the user knows to omit the WASM target instead of
+            // seeing a raw `wasm-ld: undefined symbol` linker error.
+            eprintln!(
+                "error: WASM target does not support the duplex concurrency \
+                 substrate (symbol: {symbol}; WASM-TODO(#1451))\n\
+                 hint: remove `--target wasm32-unknown-unknown` to emit a \
+                 native binary instead"
+            );
+            Err(())
+        }
+        Err(e) => {
+            eprintln!("E_CUTOVER_UNSUPPORTED: {e}");
+            Err(())
+        }
+    }
+}
+
+fn link_native_object(obj: &Path, bin_path: &Path) -> Result<(), ()> {
+    let target = target::TargetSpec::from_requested(None).map_err(|e| {
+        eprintln!("Error: cannot determine host target: {e}");
+    })?;
+    let obj_str = obj.to_str().ok_or_else(|| {
+        eprintln!("Error: object path is not valid UTF-8");
+    })?;
+    let bin_str = bin_path.to_str().ok_or_else(|| {
+        eprintln!("Error: output path is not valid UTF-8");
+    })?;
+    crate::link::link_executable(obj_str, bin_str, &target, &[], false).map_err(|e| {
+        eprintln!("{e}");
+    })
+}
+
+pub(crate) fn compile_native_binary(input: &Path, bin_path: &Path) -> Result<(), ()> {
+    let pipeline = lower_file_to_mir(input)?;
+    let emit_dir = bin_path.parent().unwrap_or_else(|| Path::new("."));
+    let module_name = bin_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("module");
+    let artefacts = emit_v05_module(&pipeline, module_name, emit_dir, CompileEmitTarget::Native)?;
+    let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
+        eprintln!("E_CUTOVER_UNSUPPORTED: native codegen did not produce an object");
+    })?;
+    link_native_object(obj, bin_path)
+}
+
+fn cmd_compile(a: &args::CompileArgs) {
+    let pipeline = lower_file_to_mir(&a.input).unwrap_or_else(|()| {
+        std::process::exit(1);
+    });
 
     // Dump path: print the requested MIR stage and exit. Useful for
     // spot-checking the lowering during development.
@@ -216,9 +281,9 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
         return;
     }
 
-    // Default emit dir: `.tmp/compile-v05-out` under the cwd. `.tmp/` is
+    // Default emit dir: `.tmp/compile-out` under the cwd. `.tmp/` is
     // gitignored across the workspace.
-    let default_dir = std::path::PathBuf::from(".tmp/compile-v05-out");
+    let default_dir = std::path::PathBuf::from(".tmp/compile-out");
     let emit_dir = a.emit_dir.as_ref().unwrap_or(&default_dir);
     let module_name = a
         .input
@@ -226,32 +291,11 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
         .and_then(|s| s.to_str())
         .unwrap_or("module");
 
-    let options = hew_codegen_rs::EmitOptions {
-        module_name,
-        out_dir: emit_dir,
-        native: true,
-        wasm: !a.no_wasm,
-    };
-    let artefacts = match hew_codegen_rs::emit_module(&pipeline, &options) {
-        Ok(a) => a,
-        Err(hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { symbol }) => {
-            // WASM-TODO(#1451): hew_duplex_* symbols are excluded from wasm32
-            // builds via `hew-runtime/src/duplex.rs:54`. Surface a structured
-            // diagnostic so the user knows to pass `--no-wasm` instead of
-            // seeing a raw `wasm-ld: undefined symbol` linker error.
-            eprintln!(
-                "error: WASM target does not support the duplex concurrency \
-                 substrate (symbol: {symbol}; WASM-TODO(#1451))\n\
-                 hint: pass `--no-wasm` to skip WASM emission and produce a \
-                 native binary only"
-            );
+    let emit_target = resolve_compile_emit_target(a.target.as_deref());
+    let artefacts =
+        emit_v05_module(&pipeline, module_name, emit_dir, emit_target).unwrap_or_else(|()| {
             std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("E_CUTOVER_UNSUPPORTED: {e}");
-            std::process::exit(1);
-        }
-    };
+        });
 
     // Link the native object into an executable using the shared
     // `link::link_executable` path. This resolves `libhew.a` (the
@@ -259,89 +303,18 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
     // build -p hew-lib`) via `find_hew_lib`, applies the per-platform
     // link plan (dead-strip, strip, system libs including `-lpthread
     // -ldl -lm -lrt` on Linux, CoreFoundation + Security on macOS), and
-    // routes through lld when available. The same path is exercised by
-    // `hew build`, so compile-v05 binaries now have the same linker
-    // behaviour as release builds.
+    // routes through lld when available, so compile binaries use the same
+    // linker behaviour as release builds.
     if let Some(obj) = &artefacts.native_obj_path {
         let bin_path = emit_dir.join(module_name);
-        // compile-v05 always targets the host — no cross-compilation yet.
-        let target = target::TargetSpec::from_requested(None).unwrap_or_else(|e| {
-            eprintln!("Error: cannot determine host target: {e}");
+        link_native_object(obj, &bin_path).unwrap_or_else(|()| {
             std::process::exit(1);
         });
-        let obj_str = obj.to_str().unwrap_or_else(|| {
-            eprintln!("Error: object path is not valid UTF-8");
-            std::process::exit(1);
-        });
-        let bin_str = bin_path.to_str().unwrap_or_else(|| {
-            eprintln!("Error: output path is not valid UTF-8");
-            std::process::exit(1);
-        });
-        if let Err(e) = link::link_executable(obj_str, bin_str, &target, &[], false) {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
         println!("native: {}", bin_path.display());
     }
     if let Some(wasm) = &artefacts.wasm_path {
         println!("wasm:   {}", wasm.display());
     }
-}
-
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
-fn cmd_run(a: &args::RunArgs) {
-    let input = a.input.display().to_string();
-    let timeout = resolve_optional_timeout(a.timeout.as_deref());
-    let options = a.to_compile_options();
-    let target = resolve_run_target(options.target.as_deref(), a.profile);
-    if a.show_stack_hints {
-        // Print stack hints before invoking codegen so the user sees them in
-        // the same stderr stream regardless of whether compile/run later
-        // exits non-zero. Failures here are best-effort: if the frontend
-        // rejects the program we let the subsequent `compile_temp_run_artifact`
-        // call surface the canonical diagnostics.
-        let frontend_options = compile::frontend_options_for_check(&options);
-        if let Ok(out) = hew_compile::check_file(&input, &frontend_options) {
-            diagnostic::print_stack_hints(&out.source, &input, &out.stack_hints);
-        }
-    }
-    let artifact = compile_temp_run_artifact(&input, &options, &target);
-
-    if target.is_wasi() {
-        exit_after_wasi_run(artifact, &a.program_args, timeout);
-    }
-
-    exit_after_native_run(artifact, &a.program_args, timeout, a.profile);
-}
-
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
-fn resolve_optional_timeout(raw: Option<&str>) -> Option<std::time::Duration> {
-    raw.map(crate::util::parse_timeout)
-        .transpose()
-        .unwrap_or_else(|e| {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
-        })
-}
-
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
-fn resolve_run_target(requested: Option<&str>, profile: bool) -> target::ExecutionTarget {
-    let target = target::ExecutionTarget::from_requested(requested).unwrap_or_else(|e| {
-        eprintln!("{e}");
-        std::process::exit(1);
-    });
-
-    if target.is_wasi() && profile {
-        eprintln!("Error: `hew run --profile` is not supported for wasm32-wasi targets yet");
-        std::process::exit(1);
-    }
-
-    if target.is_native() && !target.can_run_on_host() {
-        eprintln!("{}", target.cross_target_run_error("run"));
-        std::process::exit(1);
-    }
-
-    target
 }
 
 struct CompiledTempExecutable {
@@ -350,32 +323,13 @@ struct CompiledTempExecutable {
 }
 
 enum TempExecutableCleanup {
-    #[allow(dead_code, reason = "dormant during v0.5 cutover")]
-    TempPath {
-        _temp_path: tempfile::TempPath,
-    },
-    TempDir {
-        _temp_dir: tempfile::TempDir,
-    },
+    TempDir { _temp_dir: tempfile::TempDir },
 }
 
 impl CompiledTempExecutable {
     fn path(&self) -> &Path {
         &self.path
     }
-
-    fn path_string(&self) -> String {
-        self.path.display().to_string()
-    }
-}
-
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
-fn compile_temp_run_artifact(
-    input: &str,
-    options: &compile::CompileOptions,
-    target: &target::ExecutionTarget,
-) -> CompiledTempExecutable {
-    compile_temp_artifact(input, create_run_temp_artifact(target), options)
 }
 
 fn compile_temp_debug_artifact(
@@ -389,40 +343,15 @@ fn compile_temp_debug_artifact(
 fn compile_temp_artifact(
     input: &str,
     artifact: CompiledTempExecutable,
-    options: &compile::CompileOptions,
+    _options: &compile::CompileOptions,
 ) -> CompiledTempExecutable {
-    let output = artifact.path_string();
-
-    match compile::compile(input, Some(&output), false, options) {
-        Ok(_) => artifact,
-        Err(e) => {
-            eprintln!("{e}");
-            drop(artifact);
-            // Exit 125 = compile failure (sentinel used by the playground to
-            // distinguish compile errors from program exit codes).
-            std::process::exit(125);
-        }
-    }
-}
-
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
-fn create_run_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempExecutable {
-    let temp_path = tempfile::Builder::new()
-        .prefix("hew_run_")
-        .suffix(target.executable_suffix())
-        .tempfile()
-        .unwrap_or_else(|e| {
-            eprintln!("Error: cannot create temp file: {e}");
-            std::process::exit(1);
-        })
-        .into_temp_path();
-    let path = temp_path.to_path_buf();
-
-    CompiledTempExecutable {
-        path,
-        _cleanup: TempExecutableCleanup::TempPath {
-            _temp_path: temp_path,
-        },
+    if let Ok(()) = compile_native_binary(Path::new(input), artifact.path()) {
+        artifact
+    } else {
+        drop(artifact);
+        // Exit 125 = compile failure (sentinel used by the playground to
+        // distinguish compile errors from program exit codes).
+        std::process::exit(125);
     }
 }
 
@@ -441,136 +370,15 @@ fn create_debug_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempE
     }
 }
 
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
-fn exit_after_native_run(
-    artifact: CompiledTempExecutable,
-    program_args: &[String],
-    timeout: Option<std::time::Duration>,
-    profile: bool,
-) -> ! {
-    let mut cmd = std::process::Command::new(artifact.path());
-    cmd.args(program_args);
-    configure_profiler_env(&mut cmd, profile);
-
-    let status = run_native_binary(&mut cmd, timeout);
-    drop(artifact);
-
-    match (timeout, status) {
-        (_, Ok(crate::process::ChildWaitOutcome::Exited(status))) => {
-            std::process::exit(status.code().unwrap_or(1))
-        }
-        (Some(timeout), Ok(crate::process::ChildWaitOutcome::Timeout)) => {
-            eprintln!(
-                "Error: program timed out after {}",
-                crate::process::format_timeout(timeout)
-            );
-            std::process::exit(1);
-        }
-        (None, Ok(crate::process::ChildWaitOutcome::Timeout)) => {
-            unreachable!("timeout outcome requires an explicit timeout")
-        }
-        (_, Err(e)) => {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
-        }
-    }
-}
-
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
-fn run_native_binary(
-    cmd: &mut std::process::Command,
-    timeout: Option<std::time::Duration>,
-) -> Result<crate::process::ChildWaitOutcome, String> {
-    match timeout {
-        None => {
-            let mut child = cmd
-                .spawn()
-                .map_err(|e| format!("cannot run compiled binary: {e}"))?;
-            // Forward SIGTERM/SIGINT to the child so that signals sent directly
-            // to the wrapper also terminate the compiled program.
-            #[cfg(unix)]
-            signal::forward_signals_to_child(child.id());
-            child
-                .wait()
-                .map(crate::process::ChildWaitOutcome::Exited)
-                .map_err(|e| format!("cannot wait for child process: {e}"))
-        }
-        Some(timeout) => {
-            let mut bounded = crate::process::BoundedChild::spawn(cmd)
-                .map_err(|e| format!("cannot run compiled binary: {e}"))?;
-            // Forward signals to the child PID; the process-group kill on
-            // timeout handles the broader tree teardown.
-            #[cfg(unix)]
-            signal::forward_signals_to_child(bounded.id());
-            bounded.wait_with_timeout(timeout)
-        }
-    }
-}
-
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
-fn configure_profiler_env(cmd: &mut std::process::Command, profile: bool) {
-    if !profile || std::env::var_os("HEW_PPROF").is_some() {
-        return;
-    }
-
-    // --profile: enable the built-in runtime profiler by setting HEW_PPROF on
-    // the child process. "auto" on Unix → per-user unix socket +
-    // auto-discovery for hew-observe. ":6060" on non-Unix → TCP listener.
-    #[cfg(unix)]
-    {
-        cmd.env("HEW_PPROF", "auto");
-        eprintln!("[hew] profiler enabled (unix socket) — run `hew-observe` to attach");
-    }
-    #[cfg(not(unix))]
-    {
-        cmd.env("HEW_PPROF", ":6060");
-        eprintln!(
-            "[hew] profiler enabled on :6060 — run `hew-observe --addr localhost:6060` to attach"
-        );
-    }
-}
-
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
-fn exit_after_wasi_run(
-    artifact: CompiledTempExecutable,
-    program_args: &[String],
-    timeout: Option<std::time::Duration>,
-) -> ! {
-    let status = wasi_runner::run_module(artifact.path(), program_args, timeout);
-    drop(artifact);
-
-    match (timeout, status) {
-        (_, Ok(wasi_runner::WasiRunOutcome::Exited(status))) => {
-            std::process::exit(status.code().unwrap_or(1))
-        }
-        (Some(timeout), Ok(wasi_runner::WasiRunOutcome::Timeout)) => {
-            eprintln!(
-                "Error: program timed out after {}",
-                crate::process::format_timeout(timeout)
-            );
-            std::process::exit(1);
-        }
-        (None, Ok(wasi_runner::WasiRunOutcome::Timeout)) => {
-            unreachable!("timeout outcome requires an explicit timeout")
-        }
-        (_, Err(e)) => {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
-        }
-    }
-}
-
 fn cmd_check(a: &args::CheckArgs) {
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
 
     if a.show_stack_hints {
-        // Re-run the frontend through `check_file` so we can surface the
-        // typechecker's stack-allocation hints. The plain `compile::compile`
-        // path discards the source string and TCO, both of which the printer
-        // needs for file:line:col attribution. The hints render on stderr
-        // before the OK/error verdict so the user sees them in declaration
-        // order independent of the verdict's exit-code outcome.
+        // Run the frontend through `check_file` so we can surface the
+        // typechecker's stack-allocation hints. The hints render before the
+        // OK/error verdict so the user sees them in declaration order
+        // independent of the exit code.
         let frontend_options = compile::frontend_options_for_check(&options);
         match hew_compile::check_file(&input, &frontend_options) {
             Ok(out) => {
@@ -611,12 +419,15 @@ fn cmd_check(a: &args::CheckArgs) {
         return;
     }
 
-    match compile::compile(&input, None, true, &options) {
-        Ok(_) => {
+    let frontend_options = compile::frontend_options_for_check(&options);
+    match hew_compile::check_file(&input, &frontend_options) {
+        Ok(result) => {
+            compile::render_frontend_diagnostics(&result.diagnostics);
             eprintln!("{input}: OK");
         }
-        Err(e) => {
-            eprintln!("{e}");
+        Err(failure) => {
+            compile::render_frontend_diagnostics(&failure.diagnostics);
+            eprintln!("{}", failure.message);
             std::process::exit(1);
         }
     }

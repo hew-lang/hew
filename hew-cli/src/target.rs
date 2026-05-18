@@ -305,8 +305,7 @@ impl TargetSpec {
     pub fn cross_target_run_error(&self, verb: &str) -> String {
         format!(
             "Error: cannot {verb} target {} on this host. Cross-target executable {verb} is not \
-             supported yet; use `hew build --target {} --emit-obj` instead.",
-            self.normalized_triple(),
+             supported yet; object-only cross-target emission is not available on the v0.5 compile surface.",
             self.normalized_triple(),
         )
     }
@@ -314,9 +313,8 @@ impl TargetSpec {
     pub fn unsupported_native_link_error(&self) -> String {
         format!(
             "Error: target {} can emit objects, but native executable linking is only supported \
-             for the host target right now. Use `hew build --target {} --emit-obj` for this \
-             target.",
-            self.normalized_triple(),
+             for the host target right now. Object-only cross-target emission is not available \
+             on the v0.5 compile surface.",
             self.normalized_triple(),
         )
     }
@@ -552,6 +550,7 @@ impl ExecutionTarget {
         self.spec.executable_suffix()
     }
 
+    #[cfg(test)]
     pub fn is_native(&self) -> bool {
         self.kind == ExecutionTargetKind::Native
     }

@@ -25,7 +25,7 @@
 //! WHY (M2 slice 4.5c shim): the typecheck→MIR bridge that maps
 //! `Duplex<S, R>::send(msg)` (a `MethodCallRewrite` side-table entry
 //! in `hew-types`) to a free-function call on a runtime ABI symbol
-//! does not yet reach the Rust MIR pipeline (`hew compile-v05`).
+//! does not yet reach the Rust MIR pipeline (`hew compile`).
 //! Producers in `hew-mir` therefore have no callsite today; the
 //! allowlist + the `Instr::CallRuntimeAbi` variant land first so
 //! slice 5 codegen (LLVM IR emission) has a target to wire and

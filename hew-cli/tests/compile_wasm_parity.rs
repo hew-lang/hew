@@ -3,17 +3,17 @@
 //! Three behaviours under test:
 //!
 //! 1. Non-duplex programs (`01-arith.hew`) still emit a `.wasm` artefact when
-//!    WASM is requested (no `--no-wasm`). The duplex detection gate must not
-//!    fire for programs that don't use the duplex substrate.
+//!    WASM is requested with `--target wasm32-unknown-unknown`. The duplex
+//!    detection gate must not fire for programs that don't use the duplex
+//!    substrate.
 //!
-//! 2. The `--no-wasm` flag on a non-duplex program silently skips WASM
-//!    emission and produces only the native binary.  This verifies the
-//!    existing flag continues to work as documented.
+//! 2. A bare compile of a non-duplex program skips WASM emission and produces
+//!    only the native binary.
 //!
 //! 3. WASM-TODO(#1451): `hew_duplex_*` symbols are excluded from wasm32
 //!    builds via `hew-runtime/src/duplex.rs:54`. The codegen layer returns
 //!    `CodegenError::WasmUnsupportedSubstrate` before invoking `wasm-ld`,
-//!    so the CLI surfaces a structured diagnostic pointing to `--no-wasm`
+//!    so the CLI surfaces a structured diagnostic pointing to the WASM target
 //!    rather than a raw linker error. This sub-test is `#[ignore]` because
 //!    reaching it end-to-end requires the HIR→MIR duplex surface to be wired
 //!    through the checker (E3), which has not yet landed on `v05-integration`.
@@ -56,23 +56,30 @@ fn non_duplex_program_emits_wasm() {
     assert!(fixture.exists(), "fixture not found: {}", fixture.display());
 
     let emit_dir = tempfile::Builder::new()
-        .prefix("compile-v05-wasm-non-duplex-")
+        .prefix("compile-wasm-non-duplex-")
         .tempdir()
         .expect("create temp dir");
 
     let fixture_str = fixture.to_str().expect("fixture path is valid UTF-8");
     let emit_dir_str = emit_dir.path().to_str().expect("emit dir is valid UTF-8");
 
-    // No --no-wasm: WASM emission is requested.
+    // WASM emission is requested explicitly through --target.
     let output = Command::new(hew_binary())
-        .args(["compile-v05", "--emit-dir", emit_dir_str, fixture_str])
+        .args([
+            "compile",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--emit-dir",
+            emit_dir_str,
+            fixture_str,
+        ])
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile-v05");
+        .expect("invoke hew compile");
 
     assert!(
         output.status.success(),
-        "hew compile-v05 (non-duplex, with WASM) failed:\n{}",
+        "hew compile (non-duplex, with WASM) failed:\n{}",
         describe_output(&output),
     );
 
@@ -96,21 +103,20 @@ fn non_duplex_program_emits_wasm() {
 }
 
 // ---------------------------------------------------------------------------
-// --no-wasm flag on non-duplex: no wasm line, native binary present
+// Bare non-duplex compile: no wasm line, native binary present
 // ---------------------------------------------------------------------------
 
-/// `--no-wasm` on a non-duplex program silently skips WASM emission; the
-/// native binary is still produced.  Verifies the flag works as documented
-/// and as an escape hatch.
+/// A bare compile of a non-duplex program skips WASM emission; the native
+/// binary is still produced.
 #[test]
-fn no_wasm_flag_skips_wasm_for_non_duplex() {
+fn bare_compile_skips_wasm_for_non_duplex() {
     require_codegen();
 
     let fixture = repo_root().join("tests/v05-vertical-slice/accept/01-arith.hew");
     assert!(fixture.exists(), "fixture not found: {}", fixture.display());
 
     let emit_dir = tempfile::Builder::new()
-        .prefix("compile-v05-no-wasm-flag-")
+        .prefix("compile-native-default-")
         .tempdir()
         .expect("create temp dir");
 
@@ -118,20 +124,14 @@ fn no_wasm_flag_skips_wasm_for_non_duplex() {
     let emit_dir_str = emit_dir.path().to_str().expect("emit dir is valid UTF-8");
 
     let output = Command::new(hew_binary())
-        .args([
-            "compile-v05",
-            "--no-wasm",
-            "--emit-dir",
-            emit_dir_str,
-            fixture_str,
-        ])
+        .args(["compile", "--emit-dir", emit_dir_str, fixture_str])
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile-v05 --no-wasm");
+        .expect("invoke hew compile");
 
     assert!(
         output.status.success(),
-        "hew compile-v05 --no-wasm (non-duplex) failed:\n{}",
+        "hew compile (native default, non-duplex) failed:\n{}",
         describe_output(&output),
     );
 
@@ -142,7 +142,7 @@ fn no_wasm_flag_skips_wasm_for_non_duplex() {
     );
     assert!(
         !stdout.lines().any(|l| l.starts_with("wasm:")),
-        "expected no `wasm:` line when --no-wasm is passed; got:\n{stdout}"
+        "expected no `wasm:` line for bare native compile; got:\n{stdout}"
     );
 }
 
@@ -154,7 +154,7 @@ fn no_wasm_flag_skips_wasm_for_non_duplex() {
 /// (`hew-runtime/src/duplex.rs:54`, `#![cfg(not(target_arch = "wasm32"))]`).
 /// `emit_module` returns `CodegenError::WasmUnsupportedSubstrate` before
 /// invoking `wasm-ld`, and the CLI surfaces a structured diagnostic with a
-/// `--no-wasm` hint instead of a raw linker failure.
+/// `--target wasm32-unknown-unknown` hint instead of a raw linker failure.
 ///
 /// This test is ignored because the HIR→MIR duplex surface requires E3
 /// (checker-side `duplex_pair` resolution in the HIR bridge) which has not yet
@@ -172,51 +172,52 @@ fn duplex_program_wasm_surfaces_structured_diagnostic() {
     let fixture = repo_root().join("tests/v05-vertical-slice/accept/duplex_pair_send_skeleton.hew");
 
     let emit_dir = tempfile::Builder::new()
-        .prefix("compile-v05-duplex-wasm-")
+        .prefix("compile-duplex-wasm-")
         .tempdir()
         .expect("create temp dir");
 
     let fixture_str = fixture.to_str().expect("fixture path is valid UTF-8");
     let emit_dir_str = emit_dir.path().to_str().expect("emit dir is valid UTF-8");
 
-    // Without --no-wasm: expect structured diagnostic referencing #1451.
+    // With the WASM target: expect structured diagnostic referencing #1451.
     let output = Command::new(hew_binary())
-        .args(["compile-v05", "--emit-dir", emit_dir_str, fixture_str])
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile-v05 (duplex, without --no-wasm)");
-
-    assert!(
-        !output.status.success(),
-        "expected non-zero exit for duplex program without --no-wasm"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("duplex") && stderr.contains("--no-wasm"),
-        "expected diagnostic mentioning duplex substrate and --no-wasm hint; got:\n{stderr}"
-    );
-
-    // With --no-wasm: native binary produced, exits 0.
-    let output_no_wasm = Command::new(hew_binary())
         .args([
-            "compile-v05",
-            "--no-wasm",
+            "compile",
+            "--target",
+            "wasm32-unknown-unknown",
             "--emit-dir",
             emit_dir_str,
             fixture_str,
         ])
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile-v05 --no-wasm (duplex)");
+        .expect("invoke hew compile (duplex, WASM target)");
 
     assert!(
-        output_no_wasm.status.success(),
-        "hew compile-v05 --no-wasm (duplex) must succeed; got:\n{}",
-        describe_output(&output_no_wasm)
+        !output.status.success(),
+        "expected non-zero exit for duplex program with WASM target"
     );
-    let stdout_no_wasm = String::from_utf8_lossy(&output_no_wasm.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stdout_no_wasm.lines().any(|l| l.starts_with("native:")),
-        "expected `native:` line with --no-wasm; got:\n{stdout_no_wasm}"
+        stderr.contains("duplex") && stderr.contains("--target wasm32-unknown-unknown"),
+        "expected diagnostic mentioning duplex substrate and WASM target hint; got:\n{stderr}"
+    );
+
+    // Bare native compile: native binary produced, exits 0.
+    let output_native = Command::new(hew_binary())
+        .args(["compile", "--emit-dir", emit_dir_str, fixture_str])
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew compile (duplex, native default)");
+
+    assert!(
+        output_native.status.success(),
+        "hew compile native default (duplex) must succeed; got:\n{}",
+        describe_output(&output_native)
+    );
+    let stdout_native = String::from_utf8_lossy(&output_native.stdout);
+    assert!(
+        stdout_native.lines().any(|l| l.starts_with("native:")),
+        "expected `native:` line with native default; got:\n{stdout_native}"
     );
 }

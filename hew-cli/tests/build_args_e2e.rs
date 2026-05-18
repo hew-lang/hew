@@ -8,7 +8,7 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 fn werror_flag_is_accepted_by_build_style_commands() {
     // --Werror must stay accepted by the build-style commands even when the
     // input itself is otherwise invalid.
-    for command in ["build", "check", "run", "debug"] {
+    for command in ["check", "run", "debug"] {
         let output = Command::new(hew_binary())
             .args([command, "--Werror", "placeholder.hew"])
             .current_dir(repo_root())
@@ -21,6 +21,27 @@ fn werror_flag_is_accepted_by_build_style_commands() {
             "{command} rejected --Werror flag: {stderr}",
         );
     }
+}
+
+#[test]
+fn build_subcommand_is_rejected_after_compile_cutover() {
+    let output = Command::new(hew_binary())
+        .args(["build", "placeholder.hew"])
+        .current_dir(repo_root())
+        .output()
+        .expect("run hew build");
+
+    assert!(
+        !output.status.success(),
+        "hew build must be rejected after compile cutover\n{}",
+        describe_output(&output),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unrecognized subcommand 'build'")
+            || stderr.contains("unrecognised subcommand 'build'"),
+        "expected clap to reject build; got:\n{stderr}"
+    );
 }
 
 // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.

@@ -6,41 +6,42 @@ HEW="${ROOT}/target/debug/hew"
 
 cargo build -q -p hew-cli
 
-"${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/accept/string_return.hew" \
-  | grep -q 'hew.return : !hew.string'
-
-"${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/accept/01-arith.hew" \
-  | grep -q 'hew.return : i64'
-
 mkdir -p "${ROOT}/.tmp"
+accept_output="${ROOT}/.tmp/v05-vertical-slice-accept-output.txt"
 reject_output="${ROOT}/.tmp/v05-vertical-slice-reject-output.txt"
-trap 'rm -f "${reject_output}"' EXIT
+trap 'rm -f "${accept_output}" "${reject_output}"' EXIT
 
-if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unresolved_symbol.hew" >"${reject_output}" 2>&1; then
+"${HEW}" compile --dump-mir raw "${ROOT}/tests/v05-vertical-slice/accept/string_return.hew" >"${accept_output}"
+grep -q 'return_ty: String' "${accept_output}"
+
+"${HEW}" compile --dump-mir raw "${ROOT}/tests/v05-vertical-slice/accept/01-arith.hew" >"${accept_output}"
+grep -q 'return_ty: I64' "${accept_output}"
+
+if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unresolved_symbol.hew" >"${reject_output}" 2>&1; then
   echo "expected unresolved symbol fixture to fail" >&2
   exit 1
 fi
-grep -q 'UnresolvedSymbol' "${reject_output}"
+grep -q 'UndefinedVariable' "${reject_output}"
 
-if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/use_after_consume.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/use_after_consume.hew" >"${reject_output}" 2>&1; then
   echo "expected use-after-consume fixture to fail" >&2
   exit 1
 fi
 grep -q 'UseAfterConsume' "${reject_output}"
 
-if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unresolved_inference.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unresolved_inference.hew" >"${reject_output}" 2>&1; then
   echo "expected unresolved-inference fixture to fail" >&2
   exit 1
 fi
 grep -q 'UnresolvedInferenceVar' "${reject_output}"
 
-if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_type.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_type.hew" >"${reject_output}" 2>&1; then
   echo "expected unknown-named-type fixture to fail" >&2
   exit 1
 fi
 grep -q 'UnknownType' "${reject_output}"
 
-if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_tuple_type.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_tuple_type.hew" >"${reject_output}" 2>&1; then
   echo "expected unknown-named-tuple-type fixture to fail" >&2
   exit 1
 fi
@@ -50,7 +51,7 @@ if grep -q 'panicked at' "${reject_output}"; then
   exit 1
 fi
 
-if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_array_type.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_array_type.hew" >"${reject_output}" 2>&1; then
   echo "expected unknown-named-array-type fixture to fail" >&2
   exit 1
 fi
@@ -61,7 +62,7 @@ if grep -q 'panicked at' "${reject_output}"; then
 fi
 
 # Lambda-actor and Duplex surface: type-checker-level fixtures (slice 2).
-# These use `hew check` rather than `compile-v05` because the HIR codegen
+# These use `hew check` rather than `compile` because the HIR codegen
 # path does not yet support actor expressions (slice 4 concern).
 
 # Accept: tell-shaped lambda actor call dispatch.

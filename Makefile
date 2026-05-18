@@ -93,7 +93,7 @@ all: hew adze runtime stdlib assemble
 
 # Build the hew compiler driver (debug).
 # hew-emit-v05 is the out-of-process LLVM object emitter required by
-# `hew compile-v05`; it must sit alongside the hew binary at runtime.
+# `hew compile`; it must sit alongside the hew binary at runtime.
 hew:
 	cargo build -p hew-cli
 	cargo build -p hew-codegen-rs --bin hew-emit-v05

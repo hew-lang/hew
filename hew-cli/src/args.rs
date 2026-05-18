@@ -25,10 +25,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Compile a .hew file to an executable.
-    Build(BuildArgs),
-    /// Run the local v0.5 IR ladder and print a pre-MLIR Hew-IR textual proof.
-    CompileV05(CompileV05Args),
+    /// Compile a .hew file through the v0.5 IR ladder.
+    Compile(CompileArgs),
     /// Compile and run a .hew file.
     Run(RunArgs),
     /// Build with debug info and launch under gdb/lldb.
@@ -60,11 +58,11 @@ pub enum Command {
 }
 
 #[derive(Debug, Args)]
-pub struct CompileV05Args {
+pub struct CompileArgs {
     /// Input .hew file.
     pub input: PathBuf,
     /// Directory to write `<name>.ll`, `<name>.o`, `<name>.wasm.o`, and
-    /// `<name>.wasm` artefacts into. Default: `.tmp/compile-v05-out`.
+    /// `<name>.wasm` artefacts into. Default: `.tmp/compile-out`.
     #[arg(long = "emit-dir", value_name = "DIR")]
     pub emit_dir: Option<PathBuf>,
     /// Emit a textual MIR dump and exit (no LLVM emission).
@@ -74,9 +72,9 @@ pub struct CompileV05Args {
     /// spot-checking the front-half lowering during development.
     #[arg(long = "dump-mir", value_name = "STAGE", value_parser = ["raw", "checked", "elab"])]
     pub dump_mir: Option<String>,
-    /// Skip the wasm emit + wasm-ld link step. Native object still emits.
-    #[arg(long = "no-wasm")]
-    pub no_wasm: bool,
+    /// Compilation target. Omit for native; pass `wasm32-unknown-unknown` for WASM.
+    #[arg(long, value_name = "TRIPLE")]
+    pub target: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +97,7 @@ pub struct CommonBuildArgs {
 impl CommonBuildArgs {
     /// Build a base [`crate::compile::CompileOptions`] from the common flags.
     ///
-    /// Per-command fields (`target`, `extra_libs`, `debug`, `codegen_mode`)
+    /// Per-command fields (`target`, `extra_libs`, `debug`)
     /// are left at their defaults; callers override with struct-update syntax:
     ///
     /// ```ignore
@@ -114,84 +112,6 @@ impl CommonBuildArgs {
             werror: self.werror,
             pkg_path: self.pkg_path.clone(),
             ..Default::default()
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Build
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Args)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "emit flags are mutually exclusive via clap group, not independent bools"
-)]
-pub struct BuildArgs {
-    /// Input .hew file.
-    pub input: PathBuf,
-    /// Output path. Defaults to `<input stem><target suffix>`.
-    #[arg(short = 'o', value_name = "FILE")]
-    pub output: Option<PathBuf>,
-    /// Build with debug info (no optimization, no stripping).
-    #[arg(long, short = 'g')]
-    pub debug: bool,
-    /// Pass an extra library or linker argument to the native link step.
-    #[arg(long = "link-lib", value_name = "PATH")]
-    pub link_libs: Vec<String>,
-    /// Target triple.
-    #[arg(long, value_name = "TRIPLE")]
-    pub target: Option<String>,
-    /// Emit enriched AST as JSON.
-    #[arg(long, group = "emit_mode")]
-    pub emit_ast: bool,
-    /// Emit full codegen IR as JSON (same as msgpack, for debugging).
-    #[arg(long, group = "emit_mode")]
-    pub emit_json: bool,
-    /// Emit full codegen IR as msgpack.
-    #[arg(long, group = "emit_mode")]
-    pub emit_msgpack: bool,
-    /// Emit MLIR instead of linking.
-    #[arg(long, group = "emit_mode")]
-    pub emit_mlir: bool,
-    /// Emit LLVM IR instead of linking.
-    #[arg(long, group = "emit_mode")]
-    pub emit_llvm: bool,
-    /// Emit object code instead of linking.
-    #[arg(long, group = "emit_mode")]
-    pub emit_obj: bool,
-    #[command(flatten)]
-    pub common: CommonBuildArgs,
-}
-
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
-impl BuildArgs {
-    pub fn codegen_mode(&self) -> crate::compile::CodegenMode {
-        use crate::compile::CodegenMode;
-        if self.emit_ast {
-            CodegenMode::EmitAst
-        } else if self.emit_json {
-            CodegenMode::EmitJson
-        } else if self.emit_msgpack {
-            CodegenMode::EmitMsgpack
-        } else if self.emit_mlir {
-            CodegenMode::EmitMlir
-        } else if self.emit_llvm {
-            CodegenMode::EmitLlvm
-        } else if self.emit_obj {
-            CodegenMode::EmitObj
-        } else {
-            CodegenMode::LinkExecutable
-        }
-    }
-
-    pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
-        crate::compile::CompileOptions {
-            codegen_mode: self.codegen_mode(),
-            target: self.target.clone(),
-            extra_libs: self.link_libs.clone(),
-            debug: self.debug,
-            ..self.common.base_compile_options()
         }
     }
 }

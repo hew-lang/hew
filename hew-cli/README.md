@@ -5,7 +5,8 @@ The Hew programming language compiler driver.
 ## Usage
 
 ```sh
-hew build file.hew [-o output]    # Compile to executable
+hew compile file.hew [--emit-dir DIR] [--target wasm32-unknown-unknown]
+                                   # Compile through the v0.5 IR ladder
 hew run file.hew [-- args...]     # Compile and run
 hew run file.hew --profile        # Compile, run, and enable the built-in profiler
 hew debug file.hew [-- args...]   # Build with debug info + launch gdb/lldb
@@ -33,7 +34,7 @@ hew completions <shell>           # Generate shell completions
 hew version                       # Print version info
 ```
 
-`hew file.hew` is shorthand for `hew build file.hew`.
+`hew file.hew` is shorthand for `hew compile file.hew`.
 
 ### WASI runner prototype
 
@@ -296,7 +297,7 @@ directory to layer `hew.toml` on top of the existing source files.
 
 ## Multi-file projects
 
-For `hew check`, `hew build`, `hew run`, and `hew debug`, pass a **single
+For `hew check`, `hew compile`, `hew run`, and `hew debug`, pass a **single
 entry-point file**. The compiler resolves imports recursively from that file,
 so you never need to list every source file on the command line.
 
@@ -314,8 +315,8 @@ All three commands below operate on the whole project through `main.hew`:
 
 ```sh
 hew check myapp/main.hew
+hew compile myapp/main.hew --emit-dir .tmp/myapp
 hew run   myapp/main.hew
-hew build myapp/main.hew -o myapp
 ```
 
 The `greeting/` directory is a **directory-form module**: `greeting/greeting.hew`
@@ -330,7 +331,7 @@ For the current wildcard-import warning caveat, see the
 
 `hew test` discovers and runs test functions declared with `#[test]` in one or
 more `.hew` files or directories. Each test is compiled to a native binary via
-the standard `hew build` pipeline and executed in a child process for
+the standard `hew compile` pipeline and executed in a child process for
 isolation. A per-test timeout prevents hung tests from blocking the suite.
 
 ```sh

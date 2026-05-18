@@ -3,7 +3,7 @@
 // `let x;` declares the binding without initialising it. `let _y = x;`
 // reads `x` before any `Bind` for it appears in the function's MIR
 // statement stream. The Checked MIR init pass rejects the program and
-// `hew compile-v05` exits non-zero without producing a binary. The
+// `hew compile` exits non-zero without producing a binary. The
 // diagnostic payload carries the binding name and the use site.
 fn main() {
     let x;

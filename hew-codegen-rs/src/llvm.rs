@@ -105,7 +105,7 @@ pub enum CodegenError {
     /// the wasm32 build (`hew-runtime/src/duplex.rs:54` gates the entire
     /// duplex module out via `#![cfg(not(target_arch = "wasm32"))]`).
     /// WASM-TODO(#1451): duplex WASM parity is tracked in issue #1451.
-    /// Pass `--no-wasm` to skip WASM emission and produce a native binary.
+    /// Omit the WASM target to produce a native binary instead.
     WasmUnsupportedSubstrate { symbol: String },
 }
 
@@ -121,8 +121,8 @@ impl std::fmt::Display for CodegenError {
             Self::WasmUnsupportedSubstrate { symbol } => write!(
                 f,
                 "WASM target does not support the duplex concurrency substrate \
-                 (symbol: {symbol}; WASM-TODO(#1451)); pass `--no-wasm` to skip \
-                 WASM emission and produce a native binary only"
+                 (symbol: {symbol}; WASM-TODO(#1451)); omit the WASM target to \
+                 produce a native binary instead"
             ),
         }
     }
@@ -211,7 +211,7 @@ pub fn emit_module(
         // the entire duplex module out of wasm32 builds via
         // `#![cfg(not(target_arch = "wasm32"))]`, so `wasm-ld` would fail
         // with `undefined symbol: hew_duplex_*`.  Surface a structured
-        // diagnostic with a `--no-wasm` pointer rather than a raw linker
+        // diagnostic with a WASM-target pointer rather than a raw linker
         // error.  WASM-TODO(#1451): duplex WASM parity is tracked there.
         // LESSONS: boundary-fail-closed (P0), user-surface-correctness (P0).
         if let Some(symbol) = uses_wasm_excluded_symbol(pipeline) {
@@ -408,7 +408,7 @@ type RuntimeDeclMap<'ctx> = HashMap<String, FunctionValue<'ctx>>;
 /// E4 plan §D1-D3 (revised 2026-05-15). All three signatures use 64-bit
 /// integer widths for `usize`-typed args; the spine subset is 64-bit-only
 /// by design and wasm32 surfaces a width mismatch handled at the E5c
-/// `--no-wasm` seam, not here.
+/// CLI target-selection seam, not here.
 ///
 /// Unknown symbols return `FailClosed`. The `RuntimeCall::new` allowlist
 /// guard ensures construction-time rejection of unknown names, so reaching

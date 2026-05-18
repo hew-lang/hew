@@ -4537,6 +4537,7 @@ mod tests {
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
         }
     }
 
@@ -4578,6 +4579,7 @@ mod tests {
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -4637,6 +4639,7 @@ mod tests {
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -4690,6 +4693,7 @@ mod tests {
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m =
@@ -4728,6 +4732,7 @@ mod tests {
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let err =
@@ -4775,6 +4780,7 @@ mod tests {
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
         }
     }
 

@@ -174,6 +174,7 @@ fn vec_index_i64_pipeline() -> IrPipeline {
         }],
         diagnostics: vec![],
         record_layouts: vec![],
+        actor_layouts: vec![],
     }
 }
 

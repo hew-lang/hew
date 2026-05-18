@@ -38,6 +38,11 @@ pub struct IrPipeline {
     /// or `RecordFieldLoad` instructions and need no codegen layout entry
     /// in this slice.
     pub record_layouts: Vec<RecordLayout>,
+    /// Layout descriptors for every actor declaration in the module. Populated
+    /// by `lower_hir_module` from `HirItem::Actor` declarations in source
+    /// order. Codegen/runtime dispatch slices consume this to materialise actor
+    /// state storage and init-call signatures without re-reading HIR.
+    pub actor_layouts: Vec<ActorLayout>,
 }
 
 /// Layout descriptor for a named-form `record` declaration. The codegen
@@ -54,6 +59,19 @@ pub struct RecordLayout {
     /// Field types in declaration order. Index `i` corresponds to
     /// `FieldOffset(i)`.
     pub field_tys: Vec<ResolvedTy>,
+}
+
+/// Layout descriptor for an `actor` declaration. The state field list follows
+/// declaration order; the init parameter list follows source parameter order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActorLayout {
+    /// Actor type name.
+    pub name: String,
+    /// Actor state field types in declaration order.
+    pub state_field_tys: Vec<ResolvedTy>,
+    /// Actor init parameter types in declaration order. Empty when the actor
+    /// has no explicit init block.
+    pub init_param_tys: Vec<ResolvedTy>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1853,6 +1871,16 @@ pub enum MirDiagnosticKind {
     },
     /// A context-derived place escaped past `ExitContext`.
     ContextBindingEscapes { place: Place, block: u32 },
+    /// A hand-built or malformed HIR actor body referenced `self.<field>` for a
+    /// field that is not declared in the actor's state layout.
+    UnknownActorStateField { actor: String, field: String },
+    /// Two actor receive handlers, or a handler and an existing function symbol,
+    /// resolved to the same emitted MIR symbol.
+    ActorHandlerSymbolCollision {
+        symbol: String,
+        existing: String,
+        duplicate: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

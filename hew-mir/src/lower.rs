@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use hew_hir::{
-    named_type_names, BindingId, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral,
-    HirModule, HirStmtKind, IntentKind, ResolvedRef, ValueClass,
+    named_type_names, BindingId, HirActorDecl, HirBlock, HirExpr, HirExprKind, HirFn, HirItem,
+    HirLiteral, HirModule, HirStmtKind, IntentKind, ResolvedRef, ValueClass,
 };
 use hew_parser::ast::BinaryOp;
 use hew_types::{ExecutionContextReader, ResolvedTy};
@@ -200,6 +200,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     // StructInit, so they never appear here.
     let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
     let mut record_layouts: Vec<crate::model::RecordLayout> = Vec::new();
+    let mut actor_layouts: Vec<crate::model::ActorLayout> = Vec::new();
     for item in &module.items {
         match item {
             HirItem::Record(decl) => {
@@ -255,6 +256,21 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     record_field_orders.insert(decl.name.clone(), fields);
                 }
             }
+            HirItem::Actor(actor) => {
+                actor_layouts.push(crate::model::ActorLayout {
+                    name: actor.name.clone(),
+                    state_field_tys: actor
+                        .state_fields
+                        .iter()
+                        .map(|field| field.ty.clone())
+                        .collect(),
+                    init_param_tys: actor
+                        .init
+                        .as_ref()
+                        .map(|init| init.params.iter().map(|param| param.ty.clone()).collect())
+                        .unwrap_or_default(),
+                });
+            }
             _ => {}
         }
     }
@@ -296,6 +312,10 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     for mono in &module.monomorphisations {
         module_fn_names.insert(mono.mangled_name.clone());
     }
+    let mut emitted_actor_handler_symbols: HashMap<String, String> = module_fn_names
+        .iter()
+        .map(|name| (name.clone(), format!("function `{name}`")))
+        .collect();
 
     // Build origin lookup: ItemId → &HirFn. Each monomorphisation's
     // `key.origin` resolves to the generic origin fn whose body is
@@ -341,16 +361,41 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 }
                 diagnostics.extend(lowered.diagnostics);
             }
+            HirItem::Actor(actor) => {
+                let lowered_handlers = lower_actor_receive_handlers(
+                    actor,
+                    &module.type_classes,
+                    &record_field_orders,
+                    &module_fn_names,
+                    &module.call_site_type_args,
+                    &mut emitted_actor_handler_symbols,
+                    &mut diagnostics,
+                );
+                for lowered in lowered_handlers {
+                    thir.push(lowered.thir);
+                    raw_mir.push(lowered.raw);
+                    checked_mir.push(lowered.checked);
+                    elaborated_mir.push(lowered.elaborated);
+                    record_layouts.extend(lowered.record_layouts);
+                    for generated in lowered.generated {
+                        thir.push(generated.thir);
+                        raw_mir.push(generated.raw);
+                        checked_mir.push(generated.checked);
+                        elaborated_mir.push(generated.elaborated);
+                        diagnostics.extend(generated.diagnostics);
+                        record_layouts.extend(generated.record_layouts);
+                    }
+                    diagnostics.extend(lowered.diagnostics);
+                }
+            }
             HirItem::Record(_)
             | HirItem::TypeDecl(_)
             | HirItem::Machine(_)
-            | HirItem::Actor(_)
             | HirItem::Supervisor(_) => {
-                // Neither type declarations nor Lane A machine / actor /
-                // supervisor declarations have executable MIR bodies in S-A.
-                // TypeDecl markers are consumed via `HirModule.type_classes`;
-                // machine codegen is Lane B; actor body lowering is the next
-                // M6 slice; supervisor lowering is S-C (separate slice).
+                // Neither type declarations nor Lane A machine / supervisor
+                // declarations have executable MIR bodies in S-A. TypeDecl
+                // markers are consumed via `HirModule.type_classes`; machine
+                // codegen is Lane B; supervisor lowering is S-C.
             }
         }
     }
@@ -418,6 +463,264 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         elaborated_mir,
         diagnostics,
         record_layouts,
+        actor_layouts,
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "actor receive lowering threads the same module tables as regular function lowering"
+)]
+fn lower_actor_receive_handlers(
+    actor: &HirActorDecl,
+    type_classes: &hew_hir::TypeClassTable,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    module_fn_names: &HashSet<String>,
+    call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    emitted_symbols: &mut HashMap<String, String>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) -> Vec<LoweredFunction> {
+    let state_fields: HashSet<String> = actor
+        .state_fields
+        .iter()
+        .map(|field| field.name.clone())
+        .collect();
+    let mut lowered = Vec::new();
+
+    for handler in &actor.receive_handlers {
+        if handler.is_generator {
+            diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnsupportedNode {
+                    reason: "actor receive fn declared as generator; generator MIR lowering is a separate lane"
+                        .to_string(),
+                },
+                note: format!(
+                    "actor `{}` receive fn `{}` is a generator and is skipped by ActorHandler MIR lowering",
+                    actor.name, handler.name
+                ),
+            });
+            continue;
+        }
+
+        let self_field_errors = unknown_self_fields_in_block(&handler.body, &state_fields);
+        if !self_field_errors.is_empty() {
+            for field in self_field_errors {
+                diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UnknownActorStateField {
+                        actor: actor.name.clone(),
+                        field: field.clone(),
+                    },
+                    note: format!(
+                        "actor `{}` receive fn `{}` references unknown state field `self.{field}`",
+                        actor.name, handler.name
+                    ),
+                });
+            }
+            continue;
+        }
+
+        let emit_name = mangle_actor_receive_handler(&actor.name, &handler.name);
+        let duplicate_label = format!("actor `{}` receive fn `{}`", actor.name, handler.name);
+        if let Some(existing) = emitted_symbols.get(&emit_name) {
+            diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::ActorHandlerSymbolCollision {
+                    symbol: emit_name,
+                    existing: existing.clone(),
+                    duplicate: duplicate_label,
+                },
+                note:
+                    "actor receive handler symbol mangling must be one-to-one before MIR emission"
+                        .to_string(),
+            });
+            continue;
+        }
+        emitted_symbols.insert(emit_name.clone(), duplicate_label);
+
+        let synthetic_fn = HirFn {
+            id: actor.id,
+            node: actor.node,
+            name: format!("{}::{}", actor.name, handler.name),
+            type_params: Vec::new(),
+            params: handler.params.clone(),
+            return_ty: handler.return_ty.clone(),
+            body: handler.body.clone(),
+            span: handler.span.clone(),
+        };
+        lowered.push(lower_function(
+            &synthetic_fn,
+            emit_name,
+            HashMap::new(),
+            type_classes,
+            record_field_orders,
+            module_fn_names,
+            call_site_type_args,
+            crate::model::FunctionCallConv::ActorHandler,
+        ));
+    }
+
+    lowered
+}
+
+/// Deterministic actor receive-handler symbol mangling.
+///
+/// Scheme: `<Actor>__recv__<handler>`, with source identifiers preserved
+/// verbatim. The module-level actor lowering loop rejects collisions with
+/// existing function symbols and earlier handler symbols before body emission.
+fn mangle_actor_receive_handler(actor_name: &str, handler_name: &str) -> String {
+    format!("{actor_name}__recv__{handler_name}")
+}
+
+fn unknown_self_fields_in_block(block: &HirBlock, state_fields: &HashSet<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut unknown = Vec::new();
+    collect_unknown_self_fields_in_block(block, state_fields, &mut seen, &mut unknown);
+    unknown
+}
+
+fn collect_unknown_self_fields_in_block(
+    block: &HirBlock,
+    state_fields: &HashSet<String>,
+    seen: &mut HashSet<String>,
+    unknown: &mut Vec<String>,
+) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(_, Some(expr))
+            | HirStmtKind::Expr(expr)
+            | HirStmtKind::Return(Some(expr)) => {
+                collect_unknown_self_fields_in_expr(expr, state_fields, seen, unknown);
+            }
+            HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_unknown_self_fields_in_expr(tail, state_fields, seen, unknown);
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "visitor mirrors the sealed HirExprKind surface so self-field validation is exhaustive"
+)]
+fn collect_unknown_self_fields_in_expr(
+    expr: &HirExpr,
+    state_fields: &HashSet<String>,
+    seen: &mut HashSet<String>,
+    unknown: &mut Vec<String>,
+) {
+    match &expr.kind {
+        HirExprKind::Literal(_)
+        | HirExprKind::BindingRef { .. }
+        | HirExprKind::AwaitTask { .. }
+        | HirExprKind::ContextReader { .. }
+        | HirExprKind::Unsupported(_) => {}
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+            collect_unknown_self_fields_in_expr(left, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_expr(right, state_fields, seen, unknown);
+        }
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            collect_unknown_self_fields_in_expr(callee, state_fields, seen, unknown);
+            for arg in args {
+                collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
+            }
+        }
+        HirExprKind::Block(block)
+        | HirExprKind::Scope { body: block }
+        | HirExprKind::ForkBlock { body: block, .. } => {
+            collect_unknown_self_fields_in_block(block, state_fields, seen, unknown);
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_unknown_self_fields_in_expr(condition, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_expr(then_expr, state_fields, seen, unknown);
+            if let Some(else_expr) = else_expr {
+                collect_unknown_self_fields_in_expr(else_expr, state_fields, seen, unknown);
+            }
+        }
+        HirExprKind::StructInit { fields, base, .. } => {
+            for (_, field_expr) in fields {
+                collect_unknown_self_fields_in_expr(field_expr, state_fields, seen, unknown);
+            }
+            if let Some(base) = base {
+                collect_unknown_self_fields_in_expr(base, state_fields, seen, unknown);
+            }
+        }
+        HirExprKind::FieldAccess { object, field } => {
+            if matches!(
+                &object.kind,
+                HirExprKind::BindingRef {
+                    name,
+                    resolved: ResolvedRef::Unresolved | ResolvedRef::Binding(_) | ResolvedRef::Item(_)
+                } if name == "self"
+            ) && !state_fields.contains(field)
+                && seen.insert(field.clone())
+            {
+                unknown.push(field.clone());
+            }
+            collect_unknown_self_fields_in_expr(object, state_fields, seen, unknown);
+        }
+        HirExprKind::ScopeDeadline { duration, body } => {
+            collect_unknown_self_fields_in_expr(duration, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
+        }
+        HirExprKind::Select(select) => {
+            for arm in &select.arms {
+                match &arm.kind {
+                    hew_hir::HirSelectArmKind::StreamNext { stream } => {
+                        collect_unknown_self_fields_in_expr(stream, state_fields, seen, unknown);
+                    }
+                    hew_hir::HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                        collect_unknown_self_fields_in_expr(actor, state_fields, seen, unknown);
+                        for arg in args {
+                            collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
+                        }
+                    }
+                    hew_hir::HirSelectArmKind::TaskAwait { task } => {
+                        collect_unknown_self_fields_in_expr(task, state_fields, seen, unknown);
+                    }
+                    hew_hir::HirSelectArmKind::AfterTimer { duration } => {
+                        collect_unknown_self_fields_in_expr(duration, state_fields, seen, unknown);
+                    }
+                }
+                collect_unknown_self_fields_in_expr(&arm.body, state_fields, seen, unknown);
+            }
+        }
+        HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
+            collect_unknown_self_fields_in_expr(body, state_fields, seen, unknown);
+        }
+        HirExprKind::TupleIndex { tuple, .. } => {
+            collect_unknown_self_fields_in_expr(tuple, state_fields, seen, unknown);
+        }
+        HirExprKind::Index { container, index } => {
+            collect_unknown_self_fields_in_expr(container, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_expr(index, state_fields, seen, unknown);
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            ..
+        } => {
+            collect_unknown_self_fields_in_expr(container, state_fields, seen, unknown);
+            if let Some(start) = start {
+                collect_unknown_self_fields_in_expr(start, state_fields, seen, unknown);
+            }
+            if let Some(end) = end {
+                collect_unknown_self_fields_in_expr(end, state_fields, seen, unknown);
+            }
+        }
+        HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
+        }
+        HirExprKind::CallDynMethod { receiver, args, .. } => {
+            collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
+            for arg in args {
+                collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
+            }
+        }
     }
 }
 

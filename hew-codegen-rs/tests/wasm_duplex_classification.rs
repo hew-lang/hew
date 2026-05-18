@@ -102,6 +102,7 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
         }],
         diagnostics: vec![],
         record_layouts: vec![],
+        actor_layouts: vec![],
     }
 }
 
@@ -160,6 +161,7 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
         }],
         diagnostics: vec![],
         record_layouts: vec![],
+        actor_layouts: vec![],
     }
 }
 
@@ -222,6 +224,7 @@ fn pipeline_no_duplex() -> IrPipeline {
         }],
         diagnostics: vec![],
         record_layouts: vec![],
+        actor_layouts: vec![],
     }
 }
 

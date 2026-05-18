@@ -344,6 +344,7 @@ fn vec_index_mir_wraps_in_pipeline_without_errors() {
         elaborated_mir: vec![],
         diagnostics: vec![],
         record_layouts: vec![],
+        actor_layouts: vec![],
     };
     // No diagnostics from the hand-built MIR (it is already valid).
     assert!(

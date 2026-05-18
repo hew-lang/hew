@@ -266,7 +266,7 @@ let result = await counter.get();
 
 **Integration with `scope` blocks (normative):**
 
-Lambda actors spawned within a `scope` block have their **lifetime** managed by that block, but are NOT integrated with the block's task cancellation or trap propagation:
+Lambda actors spawned within a `scope` block are **scope-owned** by that block, but are NOT integrated with the block's task cancellation or trap propagation:
 
 ```hew
 scope {
@@ -2603,10 +2603,10 @@ scope {
 
 **Semantics:**
 
-1. **Lifetime containment**: Child tasks cannot outlive their enclosing `scope` block.
+1. **Scope containment**: Child tasks cannot outlive their enclosing `scope` block.
 2. **Automatic join**: The block waits for every child task before returning.
 3. **Block value**: A `scope` block is **Unit-typed**. It is a statement, not a value-producer.
-   `scope` is the lexical-lifetime bracket; the `fork name = expr` children carry the values.
+   `scope` is the scope bracket; the `fork name = expr` children carry the values.
    Conflating the bracket with a value-producer re-introduces the surface duplication that the
    2026 edition resolved by splitting the two keywords. Use `await` inside the scope body
    to resolve child values, bind them to `let` or `var` bindings, and return them from the
@@ -2617,7 +2617,7 @@ scope {
    expression for that child: `?` on `await task` propagates `Err` to the enclosing function;
    an unhandled trap unwinds the scope and propagates to the enclosing context.
 
-> **Design note.** `scope` is the lifetime bracket; `fork name = expr` is the value-producer.
+> **Design note.** `scope` is the scope bracket; `fork name = expr` is the value-producer.
 > These are deliberately separate keywords so neither can be confused for the other. See the
 > Historical note in §4.9 for the earlier `scope |s| { s.spawn { … } }` surface that mixed
 > the two roles and was removed in the 2026 edition.
@@ -3074,7 +3074,7 @@ fn heavy_computation() {
 Hew combines Go's lightweight spawn ergonomics with Erlang's actor
 isolation and Swift/Kotlin/Loom-grade structured concurrency:
 
-- **Like Go**: a pair of short keywords — `scope { ... }` for the lifetime boundary and `fork name = call(...)` for child-start — with no nursery/scope object to pass around.
+- **Like Go**: a pair of short keywords — `scope { ... }` for the scope boundary and `fork name = call(...)` for child-start — with no nursery/scope object to pass around.
 - **Like Erlang**: actors are isolated failure domains with supervisors; child tasks inside an actor cannot reach the actor's state.
 - **Like Swift / Kotlin / Loom**: every child has a known parent block, the first failure cancels siblings, and no child error is silently dropped — `?` propagates `ScopeError::primary`.
 
@@ -3084,8 +3084,8 @@ Earlier drafts exposed the structured-concurrency surface as
 `scope |s| { s.launch { … } / s.spawn { … } / s.cancel() }`, with two
 child verbs distinguished by scheduling discipline (`launch` for
 cooperative coroutines, `spawn` for OS threads). The 2026 edition
-removed that surface in its entirety: `scope { ... }` is the lexical-
-lifetime boundary; `fork name = call(...);` inside a scope is the
+removed that surface in its entirety: `scope { ... }` is the scope
+boundary; `fork name = call(...);` inside a scope is the
 child-start verb; the two keywords are not synonyms and the
 `s.launch / s.spawn / s.cancel` methods are not reintroduced. The
 cooperative coroutine layer (`hew-runtime/src/coro.rs`) and the
@@ -3298,7 +3298,7 @@ diagnostic pointing at the offending position.
 | `select {}` inside a `scope {}` body or child             | Legal           | The four `select` forms are single-await constructs and compose with the scope block's cancellation discipline at their safepoints.                                                                |
 | `fork name = select { ... }`                             | Legal           | A child task's expression may be a `select` expression; the binding is the `select` expression's result type.                                                                                      |
 | `scope {}` inside a `select` arm's `=>` result expression | Legal           | The arm has already won; its result expression runs in the surrounding scope as ordinary code that happens to contain a scope block.                                                               |
-| `scope { ... }` as a `select` arm source                  | **Rejected**    | The four sealed arm sources are exhaustive (§4.11.1). A scope block is a *lexical region*, not a pending operation, and starting one as a `select` competitor would create children whose lifetime is unclear if the arm loses. Hint: wrap the fork in a child task and `await` the task instead. |
+| `scope { ... }` as a `select` arm source                  | **Rejected**    | The four sealed arm sources are exhaustive (§4.11.1). A scope block is a *lexical region*, not a pending operation, and starting one as a `select` competitor would create children whose scope is unclear if the arm loses. Hint: wrap the fork in a child task and `await` the task instead. |
 | `await <task>` arm where `<task>` was bound by `fork name = expr` of the enclosing block | Legal | A scoped child handle is a legal `await` source; the `select` arm's loser-cleanup rule (cancel the awaited task) is exactly what scope-structural cancellation expects when the awaited task is no longer needed. |
 
 **Cancellation propagation across the composition (normative):**
@@ -3310,7 +3310,7 @@ diagnostic pointing at the offending position.
   does not return a value in this case; control unwinds.
 - When a `select` arm wins inside a scope-block body, only the *losing*
   arms run their loser-cleanup. Sibling fork-children are not affected
-  by the arm transition; their lifetime is bound to the enclosing scope
+  by the arm transition; their scope is bound to the enclosing scope
   block, not to the `select` site.
 - A child task failing (typed `Err(E)` or trap) while a `select` in the
   scope-block body is still pending cancels the scope block; the
@@ -4588,7 +4588,7 @@ If you want this to be directly executable as an engineering project, the next m
   timer (§4.11). Not user-extensible in this edition.
 - **`scope{}` / `fork` split.** The `scope |s| { s.launch / s.spawn / s.cancel }`
   surface is removed entirely. `scope { }` is the structured-concurrency
-  block (the lexical-lifetime boundary). `fork name = expr;` / `fork expr;`
+  block (the scope boundary). `fork name = expr;` / `fork expr;`
   are the only child-start forms, and they are only legal inside a
   `scope { }` body. `scope` and `fork` are not synonyms.
   Historical note retained at §4.9.

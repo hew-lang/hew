@@ -89,6 +89,8 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_lambda_actor_weak_clone",
     "hew_lambda_actor_weak_drop",
     "hew_lambda_actor_weak_send",
+    // --- Rc allocation for task-owned closure environments --------------------
+    "hew_rc_new",
     // --- RecvHalf<T> ---------------------------------------------
     "hew_recv_half_recv",
     "hew_recv_half_try_recv",
@@ -128,6 +130,7 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // and its result buffer. Called by the scope teardown path and by the
     // await-sequence after consuming the result. Part of row 4.
     "hew_task_free",
+    "hew_task_get_env",
     "hew_task_get_error",
     // `hew_task_get_result(task: *mut HewTask) -> *mut c_void`
     // (`hew-runtime/src/task_scope.rs:283`). Returns the task's result
@@ -147,6 +150,7 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_task_scope_new",
     "hew_task_scope_set_current",
     "hew_task_scope_spawn",
+    "hew_task_set_env",
     // `hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void`
     // (`hew-runtime/src/task_scope.rs:368`). Spawns `task_fn(task)` on a
     // new OS thread. `TaskFn = unsafe extern "C" fn(*mut HewTask)`. The

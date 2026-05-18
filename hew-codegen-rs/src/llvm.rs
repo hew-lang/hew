@@ -520,6 +520,7 @@ fn intern_runtime_decl<'ctx>(
         // actor list; returns 0 on success, -1 if full. i32 return is a
         // runtime-internal signal — MIR producers discard it (dest: None).
         "hew_scope_spawn" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_rc_new" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
         // hew_task_new() -> *mut HewTask
         // (`hew-runtime/src/task_scope.rs:214`). Box-allocates a HewTask
         // in the Ready state. Producer calls this to obtain a task handle
@@ -527,6 +528,7 @@ fn intern_runtime_decl<'ctx>(
         "hew_task_new" => ptr_ty.fn_type(&[], false),
         "hew_task_complete_threaded" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         "hew_task_get_error" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_task_get_env" => ptr_ty.fn_type(&[ptr_ty.into()], false),
         "hew_task_scope_new" => ptr_ty.fn_type(&[], false),
         "hew_task_scope_destroy" | "hew_task_scope_join_all" => {
             ctx.void_type().fn_type(&[ptr_ty.into()], false)
@@ -535,6 +537,9 @@ fn intern_runtime_decl<'ctx>(
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         "hew_task_scope_set_current" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_task_set_env" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         "hew_task_scope_cancel_after_ns" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
@@ -798,15 +803,11 @@ fn primitive_to_llvm<'ctx>(
             "D10 violation: Named/user type `{name}` reached the LLVM emitter; \
              the MIR D10 gate should have rejected this earlier"
         ))),
-        ResolvedTy::Function { .. } => Err(CodegenError::Unsupported(
-            "Function type — first-class fn values are Cluster 4 (closure cluster)",
-        )),
-        ResolvedTy::Closure { .. } => Err(CodegenError::Unsupported(
-            "Closure type — Cluster 4 lowering",
-        )),
-        ResolvedTy::Pointer { .. } => Err(CodegenError::Unsupported(
-            "Pointer type — explicit pointers are out of the spine subset",
-        )),
+        ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => {
+            let ptr = ctx.ptr_type(AddressSpace::default()).into();
+            Ok(ctx.struct_type(&[ptr, ptr], false).into())
+        }
+        ResolvedTy::Pointer { .. } => Ok(ctx.ptr_type(AddressSpace::default()).into()),
         ResolvedTy::TraitObject { .. } => Err(CodegenError::Unsupported(
             "TraitObject type — Cluster 4 lowering",
         )),
@@ -868,6 +869,14 @@ fn task_wrapper_name(callee_symbol: &str) -> String {
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
         .collect();
     format!("__hew_task_wrapper_{sanitized}")
+}
+
+fn task_closure_wrapper_name(fn_symbol: &str) -> String {
+    let sanitized: String = fn_symbol
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect();
+    format!("__hew_task_closure_wrapper_{sanitized}")
 }
 
 fn get_or_create_task_wrapper<'ctx>(
@@ -945,6 +954,150 @@ fn emit_spawn_task_direct(
             spawn,
             &[task_ptr.into(), fn_ptr.into()],
             "hew_task_spawn_thread_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_task_spawn_thread call: {e:?}")))?;
+    Ok(())
+}
+
+fn get_or_create_task_closure_wrapper<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    fn_symbol: &str,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let wrapper_name = task_closure_wrapper_name(fn_symbol);
+    if let Some(existing) = fn_ctx.llvm_mod.get_function(&wrapper_name) {
+        return Ok(existing);
+    }
+
+    let (closure_fn, closure_ret_ty) = *fn_ctx.fn_symbols.get(fn_symbol).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "SpawnTaskClosure closure invoke shim `{fn_symbol}` was not declared"
+        ))
+    })?;
+    if !matches!(closure_ret_ty, BasicTypeEnum::IntType(_)) {
+        return Err(CodegenError::FailClosed(format!(
+            "SpawnTaskClosure shim `{fn_symbol}` must be unit-lowered to the i8 \
+             stand-in return type; got {closure_ret_ty:?}"
+        )));
+    }
+
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let wrapper_ty = fn_ctx.ctx.void_type().fn_type(&[ptr_ty.into()], false);
+    let wrapper = fn_ctx
+        .llvm_mod
+        .add_function(&wrapper_name, wrapper_ty, Some(Linkage::Internal));
+    let bb = fn_ctx.ctx.append_basic_block(wrapper, "entry");
+    let builder = fn_ctx.ctx.create_builder();
+    builder.position_at_end(bb);
+    let task_param = wrapper.get_nth_param(0).ok_or_else(|| {
+        CodegenError::FailClosed("closure task wrapper missing HewTask* parameter".into())
+    })?;
+    let get_env = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_get_env",
+    )?;
+    let env_ptr = builder
+        .build_call(get_env, &[task_param.into()], "hew_task_get_env_call")
+        .map_err(|e| CodegenError::Llvm(format!("hew_task_get_env call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_task_get_env returned void".into()))?
+        .into_pointer_value();
+    builder
+        .build_call(closure_fn, &[env_ptr.into()], "closure_task_body_call")
+        .map_err(|e| CodegenError::Llvm(format!("closure task body call: {e:?}")))?;
+
+    let complete = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_complete_threaded",
+    )?;
+    builder
+        .build_call(
+            complete,
+            &[task_param.into()],
+            "hew_task_complete_threaded_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_task_complete_threaded call: {e:?}")))?;
+    builder
+        .build_return(None)
+        .map_err(|e| CodegenError::Llvm(format!("closure task wrapper return: {e:?}")))?;
+    Ok(wrapper)
+}
+
+fn emit_spawn_task_closure(
+    fn_ctx: &FnCtx<'_, '_>,
+    task: Place,
+    fn_symbol: &str,
+    env: Place,
+    env_ty: &ResolvedTy,
+) -> CodegenResult<()> {
+    let task_ptr = load_duplex_handle(fn_ctx, task, "SpawnTaskClosure task")?;
+    let env_struct = record_struct_for(fn_ctx, env_ty)?;
+    let (env_ptr, env_slot_ty) = place_pointer(fn_ctx, env)?;
+    if env_slot_ty != BasicTypeEnum::StructType(env_struct) {
+        return Err(CodegenError::FailClosed(format!(
+            "SpawnTaskClosure env place type {env_slot_ty:?} does not match registered env \
+             struct {env_struct:?}"
+        )));
+    }
+    let Some(env_size) = env_struct.size_of() else {
+        return Err(CodegenError::FailClosed(
+            "SpawnTaskClosure could not compute closure environment byte size".into(),
+        ));
+    };
+    let rc_new = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_rc_new",
+    )?;
+    let null_drop = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
+    let rc_env = fn_ctx
+        .builder
+        .build_call(
+            rc_new,
+            &[env_ptr.into(), env_size.into(), null_drop.into()],
+            "hew_closure_env_rc_new",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_rc_new call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_rc_new returned void".into()))?
+        .into_pointer_value();
+    let set_env = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_set_env",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            set_env,
+            &[task_ptr.into(), rc_env.into()],
+            "hew_task_set_env_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_task_set_env call: {e:?}")))?;
+
+    let wrapper = get_or_create_task_closure_wrapper(fn_ctx, fn_symbol)?;
+    let spawn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_spawn_thread",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            spawn,
+            &[
+                task_ptr.into(),
+                wrapper.as_global_value().as_pointer_value().into(),
+            ],
+            "hew_task_spawn_thread_closure_call",
         )
         .map_err(|e| CodegenError::Llvm(format!("hew_task_spawn_thread call: {e:?}")))?;
     Ok(())
@@ -1824,11 +1977,46 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
             }
             let _ = ctx;
         }
+        Instr::MakeClosure {
+            fn_symbol,
+            env,
+            dest,
+        } => {
+            lower_make_closure(fn_ctx, fn_symbol, *env, *dest)?;
+            let _ = ctx;
+        }
+        Instr::ClosureEnvFieldLoad {
+            env,
+            env_ty,
+            field_offset,
+            dest,
+        } => {
+            lower_closure_env_field_load(fn_ctx, *env, env_ty, *field_offset, *dest)?;
+            let _ = ctx;
+        }
+        Instr::CallClosure {
+            callee,
+            args,
+            ret_ty,
+            dest,
+        } => {
+            lower_call_closure(fn_ctx, *callee, args, ret_ty, *dest)?;
+            let _ = ctx;
+        }
         Instr::SpawnTaskDirect {
             task,
             callee_symbol,
         } => {
             emit_spawn_task_direct(fn_ctx, *task, callee_symbol)?;
+            let _ = ctx;
+        }
+        Instr::SpawnTaskClosure {
+            task,
+            fn_symbol,
+            env,
+            env_ty,
+        } => {
+            emit_spawn_task_closure(fn_ctx, *task, fn_symbol, *env, env_ty)?;
             let _ = ctx;
         }
         // TO-3 lands the MIR shape (`Instr::CoerceToDynTrait`,
@@ -2017,6 +2205,210 @@ fn lower_record_field_load(
         .builder
         .build_store(dest_ptr, field_val)
         .map_err(|e| CodegenError::Llvm(format!("RecordFieldLoad field {idx} store: {e:?}")))?;
+    Ok(())
+}
+
+fn lower_make_closure(
+    fn_ctx: &FnCtx<'_, '_>,
+    fn_symbol: &str,
+    env: Place,
+    dest: Place,
+) -> CodegenResult<()> {
+    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+    let struct_ty = match dest_ty {
+        BasicTypeEnum::StructType(st) if st.count_fields() == 2 => st,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "MakeClosure dest must be the two-pointer closure pair, got {other:?}"
+            )))
+        }
+    };
+    let (shim, _) = *fn_ctx.fn_symbols.get(fn_symbol).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "MakeClosure references missing closure invoke shim `{fn_symbol}`"
+        ))
+    })?;
+    let (env_ptr, _) = place_pointer(fn_ctx, env)?;
+    let fn_field = fn_ctx
+        .builder
+        .build_struct_gep(struct_ty, dest_ptr, 0, "closure_fn_ptr")
+        .map_err(|e| CodegenError::Llvm(format!("MakeClosure fn gep: {e:?}")))?;
+    let env_field = fn_ctx
+        .builder
+        .build_struct_gep(struct_ty, dest_ptr, 1, "closure_env_ptr")
+        .map_err(|e| CodegenError::Llvm(format!("MakeClosure env gep: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(fn_field, shim.as_global_value().as_pointer_value())
+        .map_err(|e| CodegenError::Llvm(format!("MakeClosure fn store: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(env_field, env_ptr)
+        .map_err(|e| CodegenError::Llvm(format!("MakeClosure env store: {e:?}")))?;
+    Ok(())
+}
+
+fn lower_closure_env_field_load(
+    fn_ctx: &FnCtx<'_, '_>,
+    env: Place,
+    env_ty: &ResolvedTy,
+    field_offset: FieldOffset,
+    dest: Place,
+) -> CodegenResult<()> {
+    let env_struct = record_struct_for(fn_ctx, env_ty)?;
+    let (env_slot, env_slot_ty) = place_pointer(fn_ctx, env)?;
+    if !matches!(env_slot_ty, BasicTypeEnum::PointerType(_)) {
+        return Err(CodegenError::FailClosed(format!(
+            "ClosureEnvFieldLoad env slot must hold a pointer, got {env_slot_ty:?}"
+        )));
+    }
+    let env_ptr = fn_ctx
+        .builder
+        .build_load(env_slot_ty, env_slot, "closure_env_ptr_load")
+        .map_err(|e| CodegenError::Llvm(format!("ClosureEnvFieldLoad env load: {e:?}")))?
+        .into_pointer_value();
+    let idx = field_offset.0;
+    let idx_usize = usize::try_from(idx).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "ClosureEnvFieldLoad field offset {idx} exceeds usize::MAX — impossible"
+        ))
+    })?;
+    let field_ty = *env_struct.get_field_types().get(idx_usize).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "ClosureEnvFieldLoad field offset {idx} out of bounds"
+        ))
+    })?;
+    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+    if dest_ty != field_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "ClosureEnvFieldLoad dest type {dest_ty:?} does not match field type {field_ty:?}"
+        )));
+    }
+    let field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(env_struct, env_ptr, idx, "closure_capture_ptr")
+        .map_err(|e| CodegenError::Llvm(format!("ClosureEnvFieldLoad gep: {e:?}")))?;
+    let value = fn_ctx
+        .builder
+        .build_load(field_ty, field_ptr, "closure_capture_load")
+        .map_err(|e| CodegenError::Llvm(format!("ClosureEnvFieldLoad field load: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, value)
+        .map_err(|e| CodegenError::Llvm(format!("ClosureEnvFieldLoad store: {e:?}")))?;
+    Ok(())
+}
+
+fn metadata_type_from_basic<'ctx>(ty: BasicTypeEnum<'ctx>) -> BasicMetadataTypeEnum<'ctx> {
+    match ty {
+        BasicTypeEnum::ArrayType(t) => t.into(),
+        BasicTypeEnum::FloatType(t) => t.into(),
+        BasicTypeEnum::IntType(t) => t.into(),
+        BasicTypeEnum::PointerType(t) => t.into(),
+        BasicTypeEnum::StructType(t) => t.into(),
+        BasicTypeEnum::VectorType(t) => t.into(),
+        BasicTypeEnum::ScalableVectorType(t) => t.into(),
+    }
+}
+
+fn metadata_value_from_basic<'ctx>(
+    value: BasicValueEnum<'ctx>,
+) -> inkwell::values::BasicMetadataValueEnum<'ctx> {
+    match value {
+        BasicValueEnum::IntValue(v) => v.into(),
+        BasicValueEnum::FloatValue(v) => v.into(),
+        BasicValueEnum::PointerValue(v) => v.into(),
+        BasicValueEnum::StructValue(v) => v.into(),
+        BasicValueEnum::ArrayValue(v) => v.into(),
+        BasicValueEnum::VectorValue(v) => v.into(),
+        BasicValueEnum::ScalableVectorValue(v) => v.into(),
+    }
+}
+
+fn fn_type_from_return<'ctx>(
+    ret: BasicTypeEnum<'ctx>,
+    params: &[BasicMetadataTypeEnum<'ctx>],
+) -> inkwell::types::FunctionType<'ctx> {
+    match ret {
+        BasicTypeEnum::ArrayType(t) => t.fn_type(params, false),
+        BasicTypeEnum::FloatType(t) => t.fn_type(params, false),
+        BasicTypeEnum::IntType(t) => t.fn_type(params, false),
+        BasicTypeEnum::PointerType(t) => t.fn_type(params, false),
+        BasicTypeEnum::StructType(t) => t.fn_type(params, false),
+        BasicTypeEnum::VectorType(t) => t.fn_type(params, false),
+        BasicTypeEnum::ScalableVectorType(t) => t.fn_type(params, false),
+    }
+}
+
+fn lower_call_closure(
+    fn_ctx: &FnCtx<'_, '_>,
+    callee: Place,
+    args: &[Place],
+    ret_ty: &ResolvedTy,
+    dest: Option<Place>,
+) -> CodegenResult<()> {
+    let (callee_ptr, callee_ty) = place_pointer(fn_ctx, callee)?;
+    let pair_ty = match callee_ty {
+        BasicTypeEnum::StructType(st) if st.count_fields() == 2 => st,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "CallClosure callee must be the two-pointer closure pair, got {other:?}"
+            )))
+        }
+    };
+    let pair = fn_ctx
+        .builder
+        .build_load(pair_ty, callee_ptr, "closure_pair_load")
+        .map_err(|e| CodegenError::Llvm(format!("CallClosure pair load: {e:?}")))?
+        .into_struct_value();
+    let fn_ptr = fn_ctx
+        .builder
+        .build_extract_value(pair, 0, "closure_fn_extract")
+        .map_err(|e| CodegenError::Llvm(format!("CallClosure fn extract: {e:?}")))?
+        .into_pointer_value();
+    let env_ptr = fn_ctx
+        .builder
+        .build_extract_value(pair, 1, "closure_env_extract")
+        .map_err(|e| CodegenError::Llvm(format!("CallClosure env extract: {e:?}")))?
+        .into_pointer_value();
+
+    let mut param_tys: Vec<BasicMetadataTypeEnum> =
+        Vec::with_capacity(args.len().saturating_add(1));
+    param_tys.push(fn_ctx.ctx.ptr_type(AddressSpace::default()).into());
+    let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
+        Vec::with_capacity(args.len().saturating_add(1));
+    arg_vals.push(env_ptr.into());
+    for arg in args {
+        let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
+        param_tys.push(metadata_type_from_basic(arg_ty));
+        let loaded = fn_ctx
+            .builder
+            .build_load(arg_ty, arg_ptr, "closure_call_arg")
+            .map_err(|e| CodegenError::Llvm(format!("CallClosure arg load: {e:?}")))?;
+        arg_vals.push(metadata_value_from_basic(loaded));
+    }
+
+    let ret_llvm = resolve_ty(fn_ctx.ctx, ret_ty, fn_ctx.record_layouts)?;
+    let fn_ty = fn_type_from_return(ret_llvm, &param_tys);
+    let call = fn_ctx
+        .builder
+        .build_indirect_call(fn_ty, fn_ptr, &arg_vals, "closure_call_result")
+        .map_err(|e| CodegenError::Llvm(format!("CallClosure indirect call: {e:?}")))?;
+    if let Some(dest_place) = dest {
+        let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
+        if dest_ty != ret_llvm {
+            return Err(CodegenError::FailClosed(format!(
+                "CallClosure dest type {dest_ty:?} does not match return type {ret_llvm:?}"
+            )));
+        }
+        let ret_val = call.try_as_basic_value().basic().ok_or_else(|| {
+            CodegenError::FailClosed("CallClosure produced void for value-return call".into())
+        })?;
+        fn_ctx
+            .builder
+            .build_store(dest_ptr, ret_val)
+            .map_err(|e| CodegenError::Llvm(format!("CallClosure result store: {e:?}")))?;
+    }
     Ok(())
 }
 

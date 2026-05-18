@@ -315,6 +315,15 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 raw_mir.push(lowered.raw);
                 checked_mir.push(lowered.checked);
                 elaborated_mir.push(lowered.elaborated);
+                record_layouts.extend(lowered.record_layouts);
+                for generated in lowered.generated {
+                    thir.push(generated.thir);
+                    raw_mir.push(generated.raw);
+                    checked_mir.push(generated.checked);
+                    elaborated_mir.push(generated.elaborated);
+                    diagnostics.extend(generated.diagnostics);
+                    record_layouts.extend(generated.record_layouts);
+                }
                 diagnostics.extend(lowered.diagnostics);
             }
             HirItem::Record(_)
@@ -374,6 +383,15 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         raw_mir.push(lowered.raw);
         checked_mir.push(lowered.checked);
         elaborated_mir.push(lowered.elaborated);
+        record_layouts.extend(lowered.record_layouts);
+        for generated in lowered.generated {
+            thir.push(generated.thir);
+            raw_mir.push(generated.raw);
+            checked_mir.push(generated.checked);
+            elaborated_mir.push(generated.elaborated);
+            diagnostics.extend(generated.diagnostics);
+            record_layouts.extend(generated.record_layouts);
+        }
         diagnostics.extend(lowered.diagnostics);
     }
 
@@ -394,6 +412,8 @@ struct LoweredFunction {
     checked: CheckedMirFunction,
     elaborated: ElaboratedMirFunction,
     diagnostics: Vec<MirDiagnostic>,
+    generated: Vec<LoweredFunction>,
+    record_layouts: Vec<crate::model::RecordLayout>,
 }
 
 fn lower_function(
@@ -411,6 +431,7 @@ fn lower_function(
         module_fn_names: module_fn_names.clone(),
         subst,
         call_site_type_args: call_site_type_args.clone(),
+        current_function_symbol: emit_name.clone(),
         ..Builder::default()
     };
     // Allocate parameter locals BEFORE lowering the function body so
@@ -542,6 +563,8 @@ fn lower_function(
         checked,
         elaborated,
         diagnostics,
+        generated: builder.generated_functions,
+        record_layouts: builder.closure_record_layouts,
     }
 }
 
@@ -755,6 +778,19 @@ struct Builder {
     /// per-monomorphisation mangled symbol.
     call_site_type_args: HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     current_task_scope: Option<Place>,
+    current_function_symbol: String,
+    next_closure_id: u32,
+    generated_functions: Vec<LoweredFunction>,
+    closure_record_layouts: Vec<crate::model::RecordLayout>,
+    capture_env_sources: HashMap<BindingId, CaptureEnvSource>,
+}
+
+#[derive(Debug, Clone)]
+struct CaptureEnvSource {
+    env: Place,
+    env_ty: ResolvedTy,
+    field_offset: FieldOffset,
+    ty: ResolvedTy,
 }
 
 impl Builder {
@@ -1067,6 +1103,16 @@ impl Builder {
                 {
                     self.mark_binding_moved(*id);
                 }
+                if let Some(source) = self.capture_env_sources.get(id).cloned() {
+                    let dest = self.alloc_local(source.ty.clone());
+                    self.instructions.push(Instr::ClosureEnvFieldLoad {
+                        env: source.env,
+                        env_ty: source.env_ty,
+                        field_offset: source.field_offset,
+                        dest,
+                    });
+                    return Some(dest);
+                }
                 let place = self.binding_locals.get(id).copied();
                 if place.is_none() {
                     // Function parameters and other bindings without a
@@ -1170,6 +1216,29 @@ impl Builder {
                     if self.module_fn_names.contains(name) {
                         return self.lower_direct_call(name, args, &expr.ty, expr.site);
                     }
+                }
+                if matches!(
+                    callee.ty,
+                    ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+                ) {
+                    let callee_place = self.lower_value(callee)?;
+                    let mut arg_places = Vec::with_capacity(args.len());
+                    for arg in args {
+                        arg_places.push(self.lower_value(arg)?);
+                    }
+                    let ret_ty = self.subst_ty(&expr.ty);
+                    let dest = if matches!(ret_ty, ResolvedTy::Unit) {
+                        None
+                    } else {
+                        Some(self.alloc_local(ret_ty.clone()))
+                    };
+                    self.instructions.push(Instr::CallClosure {
+                        callee: callee_place,
+                        args: arg_places,
+                        ret_ty,
+                        dest,
+                    });
+                    return dest;
                 }
                 // Indirect calls (closures, higher-order function values,
                 // or unresolved bindings): not yet supported. Walk the children
@@ -1464,6 +1533,12 @@ impl Builder {
                 // Place::LambdaActorHandle today).
                 Some(self.lower_spawn_lambda_actor(expr))
             }
+            HirExprKind::Closure {
+                params,
+                ret_ty,
+                body,
+                captures,
+            } => self.lower_closure_literal(expr, params, ret_ty, body, captures),
             HirExprKind::TupleIndex { tuple, index } => {
                 // Walk the inner tuple expression.  If the tuple sub-expression
                 // resolves to a proxy local from a multi-output runtime call
@@ -2981,6 +3056,16 @@ impl Builder {
             });
             return None;
         };
+        if matches!(callee.kind, HirExprKind::Closure { .. }) {
+            return self.lower_spawned_closure_task(
+                callee,
+                args,
+                task_ty,
+                inner,
+                scope_place,
+                site,
+            );
+        }
         let callee_symbol =
             self.direct_no_arg_unit_callee(callee, args, inner, site, "spawned call")?;
 
@@ -2990,6 +3075,71 @@ impl Builder {
         self.instructions.push(Instr::SpawnTaskDirect {
             task: task_place,
             callee_symbol,
+        });
+        Some(task_place)
+    }
+
+    fn lower_spawned_closure_task(
+        &mut self,
+        callee: &HirExpr,
+        args: &[HirExpr],
+        task_ty: &ResolvedTy,
+        inner: &ResolvedTy,
+        scope_place: Place,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let HirExprKind::Closure {
+            params,
+            ret_ty,
+            body,
+            captures,
+        } = &callee.kind
+        else {
+            unreachable!("caller checked closure callee");
+        };
+        if !args.is_empty()
+            || !params.is_empty()
+            || !matches!(inner, ResolvedTy::Unit)
+            || !matches!(ret_ty, ResolvedTy::Unit)
+        {
+            for arg in args {
+                let _ = self.lower_value(arg);
+            }
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "spawned closure".to_string(),
+                    site,
+                },
+                note: "spawned-closure task lowering supports only zero-argument closures \
+                       returning unit; value/result task propagation remains fail-closed"
+                    .to_string(),
+            });
+            return None;
+        }
+        if let Some(capture) = captures.iter().find(|capture| !capture.is_send) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "spawned closure non-Send capture".to_string(),
+                    site,
+                },
+                note: format!(
+                    "closure capture `{}` is not Send; refusing to transfer its environment \
+                     across the spawned task boundary",
+                    capture.name
+                ),
+            });
+            return None;
+        }
+        let (fn_symbol, env_ty, env_place) =
+            self.materialize_closure_env(callee, params, ret_ty, body, captures)?;
+        let task_place = self.alloc_local(task_ty.clone());
+        self.push_runtime_call("hew_task_new", vec![], Some(task_place));
+        self.push_runtime_call("hew_task_scope_spawn", vec![scope_place, task_place], None);
+        self.instructions.push(Instr::SpawnTaskClosure {
+            task: task_place,
+            fn_symbol,
+            env: env_place,
+            env_ty,
         });
         Some(task_place)
     }
@@ -3382,6 +3532,239 @@ impl Builder {
         ));
 
         None // send result (i32 error code) is discarded
+    }
+
+    fn sanitize_symbol_component(input: &str) -> String {
+        input
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect()
+    }
+
+    fn closure_env_pointer_ty(env_ty: &ResolvedTy) -> ResolvedTy {
+        ResolvedTy::Pointer {
+            is_mutable: false,
+            pointee: Box::new(env_ty.clone()),
+        }
+    }
+
+    fn lower_closure_literal(
+        &mut self,
+        expr: &HirExpr,
+        params: &[hew_hir::HirBinding],
+        ret_ty: &ResolvedTy,
+        body: &HirExpr,
+        captures: &[hew_hir::HirClosureCapture],
+    ) -> Option<Place> {
+        let (shim_name, _env_ty, env_place) =
+            self.materialize_closure_env(expr, params, ret_ty, body, captures)?;
+        let closure_place = self.alloc_local(expr.ty.clone());
+        self.instructions.push(Instr::MakeClosure {
+            fn_symbol: shim_name,
+            env: env_place,
+            dest: closure_place,
+        });
+
+        Some(closure_place)
+    }
+
+    fn materialize_closure_env(
+        &mut self,
+        expr: &HirExpr,
+        params: &[hew_hir::HirBinding],
+        ret_ty: &ResolvedTy,
+        body: &HirExpr,
+        captures: &[hew_hir::HirClosureCapture],
+    ) -> Option<(String, ResolvedTy, Place)> {
+        let closure_id = self.next_closure_id;
+        self.next_closure_id = self
+            .next_closure_id
+            .checked_add(1)
+            .expect("closure id overflow");
+        let owner = Self::sanitize_symbol_component(&self.current_function_symbol);
+        let env_name = format!("__hew_closure_env_{owner}_{closure_id}");
+        let shim_name = format!("__hew_closure_invoke_{owner}_{closure_id}");
+        let env_ty = ResolvedTy::Named {
+            name: env_name.clone(),
+            args: vec![],
+        };
+
+        self.closure_record_layouts
+            .push(crate::model::RecordLayout {
+                name: env_name,
+                field_tys: captures.iter().map(|capture| capture.ty.clone()).collect(),
+            });
+
+        let mut field_pairs = Vec::with_capacity(captures.len());
+        let mut failed = false;
+        for (idx, capture) in captures.iter().enumerate() {
+            let offset =
+                FieldOffset(u32::try_from(idx).expect("closure capture count exceeds u32::MAX"));
+            let src = if let Some(place) = self.binding_locals.get(&capture.binding).copied() {
+                place
+            } else if let Some(source) = self.capture_env_sources.get(&capture.binding).cloned() {
+                let temp = self.alloc_local(source.ty.clone());
+                self.instructions.push(Instr::ClosureEnvFieldLoad {
+                    env: source.env,
+                    env_ty: source.env_ty,
+                    field_offset: source.field_offset,
+                    dest: temp,
+                });
+                temp
+            } else {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CannotMaterializeClosureCapture {
+                        binding: capture.binding,
+                        name: capture.name.clone(),
+                        site: expr.site,
+                    },
+                    note: format!(
+                        "closure capture `{}` has no MIR backend slot or enclosing closure env field",
+                        capture.name
+                    ),
+                });
+                failed = true;
+                continue;
+            };
+            field_pairs.push((offset, src));
+        }
+        if failed {
+            return None;
+        }
+
+        let env_place = self.alloc_local(env_ty.clone());
+        self.instructions.push(Instr::RecordInit {
+            ty: env_ty.clone(),
+            fields: field_pairs,
+            dest: env_place,
+        });
+
+        let lowered = self.lower_closure_shim(&shim_name, &env_ty, params, ret_ty, body, captures);
+        self.generated_functions.push(lowered);
+
+        Some((shim_name, env_ty, env_place))
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "closure shim construction keeps raw/checked/elaborated MIR snapshots aligned"
+    )]
+    fn lower_closure_shim(
+        &self,
+        shim_name: &str,
+        env_ty: &ResolvedTy,
+        params: &[hew_hir::HirBinding],
+        ret_ty: &ResolvedTy,
+        body: &HirExpr,
+        captures: &[hew_hir::HirClosureCapture],
+    ) -> LoweredFunction {
+        let env_ptr_ty = Self::closure_env_pointer_ty(env_ty);
+        let mut builder = Builder {
+            type_classes: self.type_classes.clone(),
+            record_field_orders: self.record_field_orders.clone(),
+            module_fn_names: self.module_fn_names.clone(),
+            subst: self.subst.clone(),
+            call_site_type_args: self.call_site_type_args.clone(),
+            current_function_symbol: shim_name.to_string(),
+            ..Builder::default()
+        };
+
+        let env_place = builder.alloc_local(env_ptr_ty.clone());
+        for (idx, capture) in captures.iter().enumerate() {
+            builder.capture_env_sources.insert(
+                capture.binding,
+                CaptureEnvSource {
+                    env: env_place,
+                    env_ty: env_ty.clone(),
+                    field_offset: FieldOffset(
+                        u32::try_from(idx).expect("closure capture count exceeds u32::MAX"),
+                    ),
+                    ty: capture.ty.clone(),
+                },
+            );
+        }
+        for param in params {
+            let place = builder.alloc_local(param.ty.clone());
+            builder.binding_locals.insert(param.id, place);
+        }
+
+        if let Some(src) = builder.lower_value(body) {
+            builder.instructions.push(Instr::Move {
+                dest: Place::ReturnSlot,
+                src,
+            });
+        }
+        builder.statements.push(MirStatement::Return {
+            site: Some(body.site),
+            ty: ret_ty.clone(),
+        });
+
+        let blocks = builder.finalize_blocks(Terminator::Return);
+        let thir_statements: Vec<MirStatement> = blocks
+            .iter()
+            .flat_map(|b| b.statements.iter().cloned())
+            .collect();
+        let thir = ThirFunction {
+            name: shim_name.to_string(),
+            return_ty: ret_ty.clone(),
+            statements: thir_statements,
+        };
+        let mut raw_params = Vec::with_capacity(params.len() + 1);
+        raw_params.push(env_ptr_ty);
+        raw_params.extend(params.iter().map(|param| param.ty.clone()));
+        let raw = RawMirFunction {
+            name: shim_name.to_string(),
+            return_ty: ret_ty.clone(),
+            params: raw_params,
+            locals: builder.locals.clone(),
+            blocks,
+            decisions: builder.decisions.clone(),
+        };
+        let synthetic_func = HirFn {
+            id: hew_hir::ItemId(0),
+            node: hew_hir::HirNodeId(0),
+            name: shim_name.to_string(),
+            type_params: Vec::new(),
+            params: params.to_vec(),
+            return_ty: ret_ty.clone(),
+            body: hew_hir::HirBlock {
+                node: hew_hir::HirNodeId(0),
+                scope: hew_hir::ScopeId(0),
+                statements: Vec::new(),
+                tail: None,
+                ty: ret_ty.clone(),
+                span: body.span.clone(),
+            },
+            span: body.span.clone(),
+        };
+        let dataflow_result = check_function(&builder, &raw.blocks, &synthetic_func);
+        let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
+            .checks
+            .iter()
+            .filter_map(check_to_diagnostic)
+            .collect();
+        diagnostics.append(&mut builder.diagnostics);
+        collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
+        let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
+        let checked = CheckedMirFunction {
+            name: shim_name.to_string(),
+            return_ty: ret_ty.clone(),
+            blocks: raw.blocks.clone(),
+            decisions: builder.decisions.clone(),
+            checks: dataflow_result.checks.clone(),
+            cooperate_sites,
+        };
+        let elaborated = elaborate(&checked, &builder, &thir.statements, &dataflow_result);
+
+        LoweredFunction {
+            thir,
+            raw,
+            checked,
+            elaborated,
+            diagnostics,
+            generated: builder.generated_functions,
+            record_layouts: builder.closure_record_layouts,
+        }
     }
 
     /// Lower an `HirExprKind::SpawnLambdaActor` literal to a MIR
@@ -4450,7 +4833,23 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             }
             places
         }
+        Instr::MakeClosure { env, dest, .. } => vec![*env, *dest],
+        Instr::ClosureEnvFieldLoad { env, dest, .. } => vec![*env, *dest],
+        Instr::CallClosure {
+            callee,
+            args,
+            ret_ty: _,
+            dest,
+        } => {
+            let mut places: Vec<Place> = vec![*callee];
+            places.extend(args.iter().copied());
+            if let Some(d) = dest {
+                places.push(*d);
+            }
+            places
+        }
         Instr::SpawnTaskDirect { task, .. } => vec![*task],
+        Instr::SpawnTaskClosure { task, env, .. } => vec![*task, *env],
         Instr::CoerceToDynTrait { value, dest, .. } => vec![*value, *dest],
         Instr::CallTraitMethod {
             fat_pointer,

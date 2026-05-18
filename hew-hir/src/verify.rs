@@ -205,6 +205,30 @@ impl Verifier {
                     }
                 }
             }
+            HirExprKind::Closure { body, captures, .. } => {
+                self.expr(body);
+                let mut seen = std::collections::HashSet::new();
+                for capture in captures {
+                    if !self.bindings.contains(&capture.binding) {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::DanglingRef {
+                                resolved: ResolvedRef::Binding(capture.binding),
+                            },
+                            expr.span.clone(),
+                            "closure capture references a binding not declared in resolved HIR",
+                        ));
+                    }
+                    if !seen.insert(capture.binding) {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::DuplicateBindingId {
+                                id: capture.binding,
+                            },
+                            expr.span.clone(),
+                            "closure capture list contains the same binding more than once",
+                        ));
+                    }
+                }
+            }
             HirExprKind::TupleIndex { tuple, .. } => {
                 self.expr(tuple);
             }

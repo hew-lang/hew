@@ -382,6 +382,34 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             }
             dump_expr(out, body, indent + 4);
         }
+        HirExprKind::Closure {
+            params,
+            ret_ty,
+            body,
+            captures,
+        } => {
+            writeln!(
+                out,
+                "{pad}  closure params={} ret_ty={} captures={}",
+                params.len(),
+                ret_ty.user_facing(),
+                captures.len()
+            )
+            .expect("write to string");
+            for capture in captures {
+                writeln!(
+                    out,
+                    "{pad}    capture {} ({}) ty={} mode={:?} send={}",
+                    capture.name,
+                    capture.binding,
+                    capture.ty.user_facing(),
+                    capture.mode,
+                    capture.is_send
+                )
+                .expect("write to string");
+            }
+            dump_expr(out, body, indent + 4);
+        }
         HirExprKind::TupleIndex { tuple, index } => {
             writeln!(out, "{pad}  tuple-index .{index}").expect("write to string");
             dump_expr(out, tuple, indent + 4);

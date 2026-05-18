@@ -660,12 +660,56 @@ pub enum Instr {
         /// Destination for the return value, or `None` if discarded.
         dest: Option<Place>,
     },
+    /// Construct a first-class callable value from a closure invoke shim and
+    /// the environment record materialised at the literal site.
+    MakeClosure {
+        /// Synthetic function symbol whose ABI is `(env_ptr, user_args...)`.
+        fn_symbol: String,
+        /// Environment record place. Codegen stores this place's address in
+        /// the closure pair; the env layout is registered in `record_layouts`.
+        env: Place,
+        /// Destination closure-pair value (`{ fn_ptr, env_ptr }`).
+        dest: Place,
+    },
+    /// Load one captured field from a closure invoke shim's environment pointer.
+    ClosureEnvFieldLoad {
+        /// Local holding the opaque env pointer parameter.
+        env: Place,
+        /// Named env-record type whose layout defines `field_offset`.
+        env_ty: ResolvedTy,
+        /// Capture field index in first-use order.
+        field_offset: FieldOffset,
+        /// Destination place receiving the field value.
+        dest: Place,
+    },
+    /// Call a first-class callable pair. Codegen loads the function pointer and
+    /// environment pointer from `callee`, then emits an indirect call with the
+    /// environment pointer prepended to `args`.
+    CallClosure {
+        callee: Place,
+        args: Vec<Place>,
+        ret_ty: ResolvedTy,
+        dest: Option<Place>,
+    },
     /// Spawn a no-argument, unit-returning user function as a scope-owned task.
     ///
     /// Codegen synthesises the C-ABI task wrapper (`void (*)(HewTask*)`) and
     /// passes it to `hew_task_spawn_thread`. MIR only constructs this after
     /// validating the fork body is directly observable by cancellation.
     SpawnTaskDirect { task: Place, callee_symbol: String },
+    /// Spawn a no-argument, unit-returning closure as a scope-owned task.
+    ///
+    /// The producer materialises the closure environment record in the parent
+    /// frame, then codegen copies it into the task-owned Rc environment before
+    /// spawning the worker. The worker wrapper fetches the task env and calls
+    /// `fn_symbol(env_ptr)`, inheriting the existing task-scope cancellation
+    /// token path.
+    SpawnTaskClosure {
+        task: Place,
+        fn_symbol: String,
+        env: Place,
+        env_ty: ResolvedTy,
+    },
     /// Run the drop ritual for `place`. Cluster 3 makes this first-class:
     /// `drop_fn = Some(name)` calls the `@resource` type's declared
     /// `close(consuming self)` method; `drop_fn = None` is a trivial drop

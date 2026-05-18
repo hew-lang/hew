@@ -604,6 +604,19 @@ pub enum HirExprKind {
         body: Box<HirExpr>,
         captures: Vec<HirLambdaCapture>,
     },
+    /// General closure literal (`|...| ...` / `move |...| ...`).
+    ///
+    /// The checker owns capture legality and records binding-accurate capture
+    /// facts keyed by the closure literal span. HIR lowers those facts into a
+    /// resolved capture ledger with HIR binding ids and fully-resolved field
+    /// types so MIR can materialise a concrete environment record rather than
+    /// rediscovering captures from expression shape.
+    Closure {
+        params: Vec<HirBinding>,
+        ret_ty: ResolvedTy,
+        body: Box<HirExpr>,
+        captures: Vec<HirClosureCapture>,
+    },
     /// Project one element out of a tuple value: `expr.<index>`.
     ///
     /// Produced exclusively by tuple-let lowering (`let (a, b) = …`) — not a
@@ -728,6 +741,21 @@ pub struct HirLambdaCapture {
     pub name: String,
     /// Capture-strength discriminator.
     pub kind: HirCaptureKind,
+}
+
+/// One captured binding inside a general closure environment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirClosureCapture {
+    /// The captured binding's id in the enclosing HIR scope.
+    pub binding: BindingId,
+    /// Surface name used at the capture site.
+    pub name: String,
+    /// Fully-resolved field type stored in the generated environment record.
+    pub ty: ResolvedTy,
+    /// Checker-selected by-value capture mode.
+    pub mode: hew_types::ClosureCaptureMode,
+    /// Whether the captured type satisfies the checker-owned Send contract.
+    pub is_send: bool,
 }
 
 /// Capture-strength selector for an `HirLambdaCapture`. Mirrors

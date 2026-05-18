@@ -7,8 +7,8 @@ use hew_parser::ast::{
     TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
 };
 use hew_types::{
-    ActorStateGuard, AssignTargetKind, AssignTargetShape, LoweringFact, MethodCallRewrite,
-    ResolvedTy, SpanKey, Ty, TypeCheckOutput,
+    ActorStateGuard, AssignTargetKind, AssignTargetShape, ClosureCaptureFact, LoweringFact,
+    MethodCallRewrite, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -20,13 +20,19 @@ use crate::monomorph::{
 };
 use crate::node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn,
-    HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField,
-    HirFn, HirItem, HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
-    HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirModule,
-    HirRecordDecl, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt,
-    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
+    HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirClosureCapture, HirExpr,
+    HirExprKind, HirField, HirFn, HirItem, HirLambdaCapture, HirLifecycleHook,
+    HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent, HirMachineState,
+    HirMachineTransition, HirModule, HirRecordDecl, HirRestartPolicy, HirSelect, HirSelectArm,
+    HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirSupervisorStrategy, HirTypeDecl,
 };
 use crate::{IntentKind, ValueClass};
+
+type ScopeBinding = (BindingId, ResolvedTy, std::ops::Range<usize>);
+type ScopeMap = HashMap<String, ScopeBinding>;
+type OuterClosureBinding = (String, ResolvedTy, std::ops::Range<usize>);
+type ClosureCaptureCandidate = (BindingId, String, std::ops::Range<usize>);
 
 #[derive(Debug, Clone, Default)]
 pub struct ResolutionCtx;
@@ -481,7 +487,9 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
                 collect_call_sites_in_expr(e, out);
             }
         }
-        HirExprKind::SpawnLambdaActor { body, .. } => collect_call_sites_in_expr(body, out),
+        HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
+            collect_call_sites_in_expr(body, out);
+        }
         _ => {}
     }
 }
@@ -579,7 +587,7 @@ fn contains_abstract_symbol(
 #[derive(Debug)]
 struct LowerCtx {
     ids: IdGen,
-    scopes: Vec<HashMap<String, (BindingId, ResolvedTy)>>,
+    scopes: Vec<ScopeMap>,
     /// Maps function name → pre-allocated `ItemId` + return type + param types.
     fn_registry: HashMap<String, FnEntry>,
     /// Per-named-type marker + close-method registry. Pre-populated from
@@ -614,6 +622,10 @@ struct LowerCtx {
     /// (e.g. `duplex_pair`) that have no AST `fn` entry and therefore no
     /// `fn_registry` hit.
     expr_types: HashMap<SpanKey, Ty>,
+    /// Checker-authoritative general-closure capture facts keyed by closure
+    /// literal span. HIR consumes this ledger fail-closed when materialising
+    /// `HirExprKind::Closure`; it does not infer capture legality from syntax.
+    closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
     /// Depth counter for nested `scope{}` bodies. When > 0, statement-expression
     /// calls are inferred as child-task spawns (TI-1); outside any scope body
     /// all calls are synchronous (TI-3). Using a depth counter rather than a
@@ -762,6 +774,7 @@ impl LowerCtx {
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
+            closure_capture_facts: tc_output.closure_capture_facts.clone(),
             scope_depth: 0,
             statement_position: false,
             current_actor_self: None,
@@ -2562,6 +2575,12 @@ impl LowerCtx {
                 body,
                 ..
             } => self.lower_spawn_lambda_actor(params, return_type.as_ref(), body),
+            Expr::Lambda {
+                params,
+                return_type,
+                body,
+                ..
+            } => self.lower_closure(params, return_type.as_ref(), body, span.clone()),
             Expr::MethodCall {
                 receiver,
                 method,
@@ -3024,6 +3043,213 @@ impl LowerCtx {
             name: "Duplex".to_string(),
             args: vec![msg_ty, reply_ty],
         }
+    }
+
+    fn closure_signature_from_ty(ty: &ResolvedTy) -> Option<(Vec<ResolvedTy>, ResolvedTy)> {
+        match ty {
+            ResolvedTy::Function { params, ret } | ResolvedTy::Closure { params, ret, .. } => {
+                Some((params.clone(), ret.as_ref().clone()))
+            }
+            _ => None,
+        }
+    }
+
+    fn visible_outer_bindings(&self) -> HashMap<BindingId, OuterClosureBinding> {
+        let mut visible_by_name: HashMap<String, ScopeBinding> = HashMap::new();
+        for scope in self.scopes.iter().rev() {
+            for (name, (id, ty, span)) in scope {
+                visible_by_name
+                    .entry(name.clone())
+                    .or_insert_with(|| (*id, ty.clone(), span.clone()));
+            }
+        }
+        visible_by_name
+            .into_iter()
+            .map(|(name, (id, ty, span))| (id, (name, ty, span)))
+            .collect()
+    }
+
+    fn lower_closure(
+        &mut self,
+        params: &[LambdaParam],
+        return_type: Option<&Spanned<TypeExpr>>,
+        body: &Spanned<Expr>,
+        span: std::ops::Range<usize>,
+    ) -> (HirExprKind, ResolvedTy) {
+        let checker_key = SpanKey::from(&span);
+        let closure_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+            match ResolvedTy::from_ty(&ty) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "closure literal".to_string(),
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "closure literal type failed checker-boundary conversion",
+                    ));
+                    ResolvedTy::Function {
+                        params: vec![],
+                        ret: Box::new(ResolvedTy::Unit),
+                    }
+                }
+            }
+        } else {
+            let param_tys: Vec<ResolvedTy> = params
+                .iter()
+                .map(|p| {
+                    p.ty.as_ref()
+                        .map_or(ResolvedTy::Unit, |annotation| self.lower_type(annotation))
+                })
+                .collect();
+            let ret_ty = return_type
+                .as_ref()
+                .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
+            ResolvedTy::Function {
+                params: param_tys,
+                ret: Box::new(ret_ty),
+            }
+        };
+
+        let (signature_params, ret_ty) = Self::closure_signature_from_ty(&closure_ty)
+            .unwrap_or_else(|| {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "closure literal".to_string(),
+                        reason: format!("expected Function/Closure type, got {closure_ty:?}"),
+                    },
+                    span.clone(),
+                    "closure literal did not type as a callable value",
+                ));
+                (vec![], ResolvedTy::Unit)
+            });
+
+        let outer_bindings = self.visible_outer_bindings();
+        self.push_scope();
+        let mut hir_params: Vec<HirBinding> = Vec::with_capacity(params.len());
+        for (idx, param) in params.iter().enumerate() {
+            let ty = signature_params
+                .get(idx)
+                .cloned()
+                .or_else(|| {
+                    param
+                        .ty
+                        .as_ref()
+                        .map(|annotation| self.lower_type(annotation))
+                })
+                .unwrap_or(ResolvedTy::Unit);
+            let binding = self.bind(param.name.clone(), ty, false, 0..0);
+            hir_params.push(binding);
+        }
+        let lowered_body = self.lower_expr(body, IntentKind::Read);
+        self.pop_scope();
+
+        let captures = self.materialize_closure_captures(
+            &lowered_body,
+            &outer_bindings,
+            self.closure_capture_facts
+                .get(&checker_key)
+                .cloned()
+                .unwrap_or_default(),
+            span.clone(),
+        );
+
+        (
+            HirExprKind::Closure {
+                params: hir_params,
+                ret_ty,
+                body: Box::new(lowered_body),
+                captures,
+            },
+            closure_ty,
+        )
+    }
+
+    fn materialize_closure_captures(
+        &mut self,
+        body: &HirExpr,
+        outer_bindings: &HashMap<BindingId, OuterClosureBinding>,
+        facts: Vec<ClosureCaptureFact>,
+        span: std::ops::Range<usize>,
+    ) -> Vec<HirClosureCapture> {
+        let mut seen: HashSet<BindingId> = HashSet::new();
+        let mut ordered: Vec<ClosureCaptureCandidate> = Vec::new();
+        collect_general_closure_captures_walk(body, outer_bindings, &mut seen, &mut ordered);
+
+        let mut remaining_facts = facts;
+        let mut captures = Vec::with_capacity(ordered.len());
+        for (binding, name, def_span) in ordered {
+            let fact_idx = remaining_facts.iter().position(|fact| {
+                fact.name == name
+                    && fact
+                        .def_span
+                        .as_ref()
+                        .is_some_and(|fact_def_span| *fact_def_span == def_span)
+            });
+            let fact_idx = fact_idx.or_else(|| {
+                let mut matches = remaining_facts
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, fact)| fact.name == name);
+                let first = matches.next()?;
+                if matches.next().is_none() {
+                    Some(first.0)
+                } else {
+                    None
+                }
+            });
+            let Some(fact_idx) = fact_idx else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: name.clone(),
+                        reason:
+                            "closure_capture_facts has no unambiguous entry for captured HIR binding"
+                                .to_string(),
+                    },
+                    span.clone(),
+                    "closure capture reached HIR without checker materialization metadata",
+                ));
+                continue;
+            };
+            let fact = remaining_facts.remove(fact_idx);
+            let ty = match ResolvedTy::from_ty(&fact.ty) {
+                Ok(ty) => ty,
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: fact.name.clone(),
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "closure capture type failed checker-boundary conversion",
+                    ));
+                    continue;
+                }
+            };
+            captures.push(HirClosureCapture {
+                binding,
+                name,
+                ty,
+                mode: fact.mode,
+                is_send: fact.is_send,
+            });
+        }
+
+        for fact in remaining_facts {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: fact.name,
+                    reason:
+                        "checker reported a capture that HIR name resolution did not materialize"
+                            .to_string(),
+                },
+                span.clone(),
+                "closure capture metadata and lowered HIR body disagree",
+            ));
+        }
+
+        captures
     }
 
     /// Lower an `Expr::SpawnLambdaActor` to an
@@ -3595,7 +3821,7 @@ impl LowerCtx {
     ) -> HirBinding {
         let id = self.ids.binding();
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.clone(), (id, ty.clone()));
+            scope.insert(name.clone(), (id, ty.clone(), span.clone()));
         }
         HirBinding {
             id,
@@ -3610,7 +3836,7 @@ impl LowerCtx {
         self.scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.get(name).map(|(id, ty)| (*id, ty.clone())))
+            .find_map(|scope| scope.get(name).map(|(id, ty, _)| (*id, ty.clone())))
     }
 
     fn push_scope(&mut self) {
@@ -3921,6 +4147,7 @@ fn collect_captures_walk(
         HirExprKind::BindingRef { .. }
         | HirExprKind::Literal(_)
         | HirExprKind::SpawnLambdaActor { .. }
+        | HirExprKind::Closure { .. }
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_captures_walk(left, param_ids, seen, captures, self_id);
@@ -4035,6 +4262,191 @@ fn collect_captures_walk(
                 collect_captures_walk(arg, param_ids, seen, captures, self_id);
             }
         }
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "single exhaustive walker over HirExprKind variants; splitting risks traversal gaps"
+)]
+fn collect_general_closure_captures_walk(
+    expr: &HirExpr,
+    outer_bindings: &HashMap<BindingId, OuterClosureBinding>,
+    seen: &mut HashSet<BindingId>,
+    captures: &mut Vec<ClosureCaptureCandidate>,
+) {
+    match &expr.kind {
+        HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(id),
+        } if outer_bindings.contains_key(id) => {
+            if seen.insert(*id) {
+                let span = outer_bindings
+                    .get(id)
+                    .map(|(_, _, span)| span.clone())
+                    .unwrap_or_default();
+                captures.push((*id, name.clone(), span));
+            }
+        }
+        HirExprKind::Closure {
+            captures: nested, ..
+        } => {
+            for capture in nested {
+                if outer_bindings.contains_key(&capture.binding) && seen.insert(capture.binding) {
+                    let span = outer_bindings
+                        .get(&capture.binding)
+                        .map(|(_, _, span)| span.clone())
+                        .unwrap_or_default();
+                    captures.push((capture.binding, capture.name.clone(), span));
+                }
+            }
+        }
+        HirExprKind::BindingRef { .. }
+        | HirExprKind::Literal(_)
+        | HirExprKind::SpawnLambdaActor { .. }
+        | HirExprKind::Unsupported(_) => {}
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+            collect_general_closure_captures_walk(left, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(right, outer_bindings, seen, captures);
+        }
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            collect_general_closure_captures_walk(callee, outer_bindings, seen, captures);
+            for arg in args {
+                collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::Block(block)
+        | HirExprKind::Scope { body: block }
+        | HirExprKind::ForkBlock { body: block, .. } => {
+            collect_general_closure_captures_walk_block(block, outer_bindings, seen, captures);
+        }
+        HirExprKind::ScopeDeadline { duration, body } => {
+            collect_general_closure_captures_walk(duration, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_general_closure_captures_walk(condition, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(then_expr, outer_bindings, seen, captures);
+            if let Some(else_expr) = else_expr {
+                collect_general_closure_captures_walk(else_expr, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::StructInit { fields, base, .. } => {
+            for (_, field) in fields {
+                collect_general_closure_captures_walk(field, outer_bindings, seen, captures);
+            }
+            if let Some(base) = base {
+                collect_general_closure_captures_walk(base, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::FieldAccess { object, .. } => {
+            collect_general_closure_captures_walk(object, outer_bindings, seen, captures);
+        }
+        HirExprKind::AwaitTask { binding_id, .. } => {
+            if let Some((name, _, span)) = outer_bindings.get(binding_id) {
+                if seen.insert(*binding_id) {
+                    captures.push((*binding_id, name.clone(), span.clone()));
+                }
+            }
+        }
+        HirExprKind::Select(select) => {
+            for arm in &select.arms {
+                match &arm.kind {
+                    HirSelectArmKind::StreamNext { stream } => {
+                        collect_general_closure_captures_walk(
+                            stream,
+                            outer_bindings,
+                            seen,
+                            captures,
+                        );
+                    }
+                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                        collect_general_closure_captures_walk(
+                            actor,
+                            outer_bindings,
+                            seen,
+                            captures,
+                        );
+                        for arg in args {
+                            collect_general_closure_captures_walk(
+                                arg,
+                                outer_bindings,
+                                seen,
+                                captures,
+                            );
+                        }
+                    }
+                    HirSelectArmKind::TaskAwait { task } => {
+                        collect_general_closure_captures_walk(task, outer_bindings, seen, captures);
+                    }
+                    HirSelectArmKind::AfterTimer { duration } => {
+                        collect_general_closure_captures_walk(
+                            duration,
+                            outer_bindings,
+                            seen,
+                            captures,
+                        );
+                    }
+                }
+                collect_general_closure_captures_walk(&arm.body, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::TupleIndex { tuple, .. } => {
+            collect_general_closure_captures_walk(tuple, outer_bindings, seen, captures);
+        }
+        HirExprKind::Index { container, index } => {
+            collect_general_closure_captures_walk(container, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(index, outer_bindings, seen, captures);
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            inclusive: _,
+        } => {
+            collect_general_closure_captures_walk(container, outer_bindings, seen, captures);
+            if let Some(s) = start {
+                collect_general_closure_captures_walk(s, outer_bindings, seen, captures);
+            }
+            if let Some(e) = end {
+                collect_general_closure_captures_walk(e, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
+        }
+        HirExprKind::CallDynMethod { receiver, args, .. } => {
+            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
+            for arg in args {
+                collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
+            }
+        }
+    }
+}
+
+fn collect_general_closure_captures_walk_block(
+    block: &HirBlock,
+    outer_bindings: &HashMap<BindingId, OuterClosureBinding>,
+    seen: &mut HashSet<BindingId>,
+    captures: &mut Vec<ClosureCaptureCandidate>,
+) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(_, Some(value)) => {
+                collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
+            }
+            HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
+                collect_general_closure_captures_walk(expr, outer_bindings, seen, captures);
+            }
+            HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_general_closure_captures_walk(tail, outer_bindings, seen, captures);
     }
 }
 

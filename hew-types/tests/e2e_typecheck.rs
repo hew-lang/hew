@@ -76,15 +76,6 @@ fn typecheck_all_examples() {
 }
 
 #[test]
-fn typecheck_all_codegen_examples() {
-    let dir = repo_root()
-        .join("hew-codegen")
-        .join("tests")
-        .join("examples");
-    test_directory(&dir, "hew-codegen/tests/examples");
-}
-
-#[test]
 fn typecheck_top_level_networking_demos() {
     for relative in ["examples/http_server.hew", "examples/static_server.hew"] {
         assert_typechecks(&repo_root().join(relative), relative);

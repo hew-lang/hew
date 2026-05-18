@@ -1,8 +1,0 @@
-import mylib;
-
-fn main() {
-    let msg = mylib.greet("world");
-    println(msg);
-    let sum = mylib.add(1, 2);
-    println(sum);
-}

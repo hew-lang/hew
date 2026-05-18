@@ -1,2 +1,0 @@
-import "diamond_base.hew";
-pub fn left_value() -> int { base_value() + 1 }

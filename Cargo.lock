@@ -1447,17 +1447,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hew-astgen"
-version = "0.5.0-pre"
-dependencies = [
- "hew-parser",
- "hew-serialize",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "hew-cabi"
 version = "0.5.0-pre"
 dependencies = [

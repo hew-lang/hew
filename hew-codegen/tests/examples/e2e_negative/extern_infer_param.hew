@@ -1,5 +1,0 @@
-extern "C" {
-    fn bad_param(x: _);
-}
-
-fn main() {}

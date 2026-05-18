@@ -48,8 +48,8 @@ three** of the following:
    registry's wrapper-shape coverage.
 
 3. The same defect is captured as a reproduction fixture under
-   `hew-codegen/tests/examples/` so the cutover branch can consume it as
-   both a target and a regression check.
+   `tests/hew/` or `hew-cli/tests/` so the cutover branch can consume it
+   as both a target and a regression check.
 
 Changes that do not satisfy all three criteria **pause** until the relevant
 cutover step on the cutover branch picks them up.

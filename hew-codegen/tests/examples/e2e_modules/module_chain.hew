@@ -1,6 +1,0 @@
-import "mid_lib.hew";
-
-fn main() {
-    let x = doubled();
-    println(x);
-}

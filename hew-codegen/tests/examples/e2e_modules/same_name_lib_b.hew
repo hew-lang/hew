@@ -1,1 +1,0 @@
-pub fn greet() -> string { "hello from B" }

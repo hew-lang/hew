@@ -14,7 +14,8 @@ permissions:
   security-events: write
 
 env:
-  # Pinned LLVM upstream release tag. Bumps must be reflected in
+  # Pinned LLVM upstream release tag, used by hew-codegen-rs (inkwell ->
+  # llvm-sys-221) build script. Bumps must be reflected in
   # .github/actions/setup-llvm/action.yml (asset SHA256 pins) too.
   LLVM_VERSION: "22.1.5"
   CARGO_TERM_COLOR: always
@@ -39,15 +40,10 @@ jobs:
           filters: |
             code:
               - '**/*.rs'
-              - '**/*.cpp'
-              - '**/*.h'
-              - '**/*.td'
               - 'scripts/**/*.py'
               - 'scripts/**/*.toml'
               - '**/Cargo.toml'
               - '**/Cargo.lock'
-              - '**/CMakeLists.txt'
-              - 'hew-codegen/**'
               - 'std/**'
               - 'examples/**'
               - 'Makefile'
@@ -111,12 +107,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Clippy
-        # hew-cli is excluded during the v0.5 spine pass — its build.rs
-        # invokes cmake on the hew-codegen subtree, which is queued for
-        # deletion.
         run: |
           set -o pipefail
-          cargo clippy --workspace --tests --exclude hew-cli --message-format=json -- -D warnings \
+          cargo clippy --workspace --tests --message-format=json -- -D warnings \
             | clippy-sarif \
             | tee clippy-results.sarif \
             | sarif-fmt
@@ -137,8 +130,7 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Browser/playground smoke — repo-local browser tooling coverage only.
-  # It checks manifest drift and hew-wasm build breakage; the curated WASI
-  # runtime proof runs in the heavier codegen-capable build-and-test lane.
+  # It checks manifest drift and hew-wasm build breakage.
   # ─────────────────────────────────────────────────────────────────────────
   playground-wasm-build:
     name: Playground WASM build
@@ -178,11 +170,11 @@ jobs:
         run: make playground-check
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Build & test — Rust workspace tests + hew-codegen E2E (single LLVM install)
+  # Build & test — Rust workspace
   # Produces JUnit XML for GitHub Actions test reporting.
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test:
-    name: Build & test (Rust + codegen E2E)
+    name: Build & test (Linux)
     needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -200,7 +192,7 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake ninja-build libssl-dev pkg-config
+          sudo apt-get install -y -qq libssl-dev pkg-config
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: env.RUN_CODE_PATH == 'true'
@@ -214,11 +206,6 @@ jobs:
       - uses: taiki-e/install-action@nextest
         if: env.RUN_CODE_PATH == 'true'
 
-      # Include hew-codegen C++ sources in the cache key so that a stale cmake
-      # build dir inside target/ is never reused when codegen source files change.
-      # Without this, build.rs restores a cached $OUT_DIR/hew-codegen-cmake whose
-      # CMakeCache.txt may contain stale LLVM paths, causing cmake re-configure to
-      # fail and hew-cli to link with missing symbols.
       - uses: actions/cache@v4
         if: env.RUN_CODE_PATH == 'true'
         with:
@@ -226,18 +213,10 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             target/
-          key: build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
+          key: build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
             build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
 
-      # C++ codegen build skipped during v0.5 spine pass; the hew-codegen
-      # subtree is queued for deletion. The Rust workspace (including
-      # hew-codegen-rs) is the active codegen path.
-
-      # hew-cli embeds the C++ codegen via cmake in its build.rs; while the
-      # subtree is in the spine-pass freeze, exclude it from build and test
-      # the same way the Windows lane does.
       - name: Build Rust runtime and frontend (release)
         if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-runtime -p hew-serialize -p hew-lsp --release
@@ -274,15 +253,13 @@ jobs:
       # Default features include "full" (encryption + profiler + quic),
       # so all 33 QUIC transport tests run without an explicit flag.
       # hew-wasm browser/tooling smoke stays isolated in playground-wasm-build.
-      # hew-cli and hew-cabi are excluded for the spine pass — hew-cli pulls
-      # the C++ codegen via cmake; hew-cabi has #[no_mangle] symbols that
-      # conflict with hew-runtime when both link into a test binary.
+      # hew-cabi is excluded — its #[no_mangle] symbols conflict with
+      # hew-runtime when both link into a test binary.
       - name: Run Rust workspace tests
         if: env.RUN_CODE_PATH == 'true'
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm
-          --exclude hew-cli
           --exclude hew-cabi
           --profile ci
 
@@ -335,8 +312,7 @@ jobs:
 
       # hew-codegen-rs depends on inkwell -> llvm-sys-221, whose build
       # script requires LLVM_SYS_221_PREFIX. `cargo llvm-cov nextest
-      # --workspace` resolves and compiles the full workspace, including
-      # hew-codegen-rs, even though hew-cli is excluded.
+      # --workspace` resolves and compiles the full workspace.
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-llvm
@@ -347,11 +323,9 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests are covered without an explicit flag.
-        # hew-cli is excluded because it requires LLVM/MLIR to link its
-        # embedded codegen; coverage focuses on the Rust frontend crates.
         run: >
           cargo llvm-cov nextest
-          --workspace --exclude hew-wasm --exclude hew-cli
+          --workspace --exclude hew-wasm
           --profile ci
           --lcov --output-path lcov.info
 
@@ -398,11 +372,6 @@ jobs:
       - uses: actions/checkout@v4
         if: env.RUN_CODE_PATH == 'true'
 
-      - name: Install build tools
-        if: env.RUN_CODE_PATH == 'true'
-        run: choco install ninja cmake -y
-        shell: pwsh
-
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-llvm
@@ -427,26 +396,21 @@ jobs:
 
       - name: Build Rust crates
         if: env.RUN_CODE_PATH == 'true'
-        # hew-cli is excluded during the v0.5 spine pass — its build.rs
-        # invokes cmake on the hew-codegen subtree, which is queued for
-        # deletion. hew-codegen-rs (inkwell -> llvm-sys-221) compiles
-        # end-to-end because the upstream LLVM tarball is provisioned above.
-        run: cargo build -p adze-cli -p hew-runtime -p hew-lsp --release
+        # hew-codegen-rs (inkwell -> llvm-sys-221) compiles end-to-end
+        # because the upstream LLVM tarball is provisioned above.
+        run: cargo build -p adze-cli -p hew-runtime -p hew-lsp -p hew-cli --release
 
-      - name: Run Rust workspace tests (no native codegen E2E)
+      - name: Run Rust workspace tests
         if: env.RUN_CODE_PATH == 'true'
         # hew-wasm requires wasmtime; hew-cabi has #[no_mangle] symbols
         # that conflict with hew-runtime when both are linked into a
         # test binary (duplicate symbol errors).
-        # hew-cli is excluded because the embedded C++ MLIR codegen
-        # cmake build is not exercised on this Windows lane yet.
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests run without an explicit flag.
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm
           --exclude hew-cabi
-          --exclude hew-cli
           --profile ci
 
       - name: Upload test reports
@@ -458,9 +422,6 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Build & test — macOS (Apple Silicon)
-  #
-  # Run Rust workspace tests and hew-codegen E2E on macOS arm64 against
-  # the upstream LLVM arm64 binary release.
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test-macos:
     name: Build & test (macOS arm64)
@@ -494,7 +455,7 @@ jobs:
         # lib dir to the linker search path via RUSTFLAGS (LIBRARY_PATH
         # is honoured by clang but not by every rustc link invocation).
         run: |
-          brew install ninja libffi zstd
+          brew install libffi zstd
           LIBFFI_PREFIX="$(brew --prefix libffi)"
           # Apple's bundled ld (Xcode 15.4) ships libLTO 15.0.0, which cannot
           # parse LLVM 22 bitcode attribute kinds embedded in llvm-sys-221's
@@ -532,18 +493,9 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             target/
-          # Include hew-codegen C++ sources in the cache key so that a stale cmake
-          # build dir inside target/ is never reused when codegen source files change.
-          key: build-test-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
+          key: build-test-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            build-test-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
             build-test-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-
-
-      # C++ codegen build skipped during v0.5 spine pass; the hew-codegen
-      # subtree is queued for deletion. The Rust workspace (including
-      # hew-codegen-rs) is the active codegen path. hew-cli embeds the
-      # C++ codegen via its build.rs, so it is excluded from build and
-      # test the same way the Windows lane does.
 
       - name: Build libhew.a (runtime + stdlib)
         if: env.RUN_CODE_PATH == 'true'
@@ -553,7 +505,7 @@ jobs:
 
       - name: Build frontend (release)
         if: env.RUN_CODE_PATH == 'true'
-        run: cargo build -p hew-serialize --release
+        run: cargo build -p hew-serialize -p hew-cli --release
 
       - name: Install WASI runner prerequisites
         if: env.RUN_CODE_PATH == 'true'
@@ -570,12 +522,10 @@ jobs:
 
       - name: Run Rust workspace tests
         if: env.RUN_CODE_PATH == 'true'
-        # hew-cli and hew-cabi are excluded for the spine pass — hew-cli
-        # pulls the C++ codegen via cmake; hew-cabi has #[no_mangle] symbols
-        # that conflict with hew-runtime when both link into a test binary.
+        # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
+        # when both link into a test binary.
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm
-          --exclude hew-cli
           --exclude hew-cabi
           --profile ci

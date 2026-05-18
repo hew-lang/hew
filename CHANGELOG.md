@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Removed
+
+- **`hew-codegen` C++/MLIR subtree retired.** The previous C++ MLIR-based
+  code generator has been deleted from the workspace. `hew-codegen-rs`
+  (LLVM via inkwell) is the sole compiler backend. The `hew-astgen`
+  helper crate, which existed only to generate the C++ msgpack reader,
+  was removed alongside it. `cfg(hew_embedded_codegen)` is now
+  permanently unset; the existing fail-closed stubs in `hew-cli` surface
+  an "embedded MLIR/LLVM codegen is unavailable" error on the paths that
+  used to dispatch into the C++ layer.
+
 ### Notice
 
 - **v0.5 compiler-foundation cutover in progress:** The workspace version has

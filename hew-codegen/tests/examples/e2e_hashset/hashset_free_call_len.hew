@@ -1,8 +1,0 @@
-fn main() {
-    let s: HashSet<int> = HashSet::new();
-    s.insert(1);
-    s.insert(2);
-    println(len(s));
-    s.remove(1);
-    println(len(s));
-}

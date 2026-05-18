@@ -1,29 +1,26 @@
 # Cross-Platform Build Guide
 
-The C++ MLIR code generator (`hew-codegen`) is **embedded inside the `hew`
-binary** via `build.rs`. It is not a separately shipped binary. The CMake
-build in the `hew-codegen/` directory exists only to produce the C++ object
-library that `build.rs` links into `hew`, and to build the C++ unit-test and
-E2E ctest harness. This document captures the platform-specific issues
-involved in building LLVM/MLIR and linking them into `hew`.
+The Hew compiler links against LLVM 22 via the `hew-codegen-rs` crate
+(inkwell → llvm-sys-221). The previous C++/MLIR codegen subtree
+(`hew-codegen/`) was retired; the Rust IR ladder is the sole compiler
+backend. The platform-specific complexity captured below is now about
+provisioning the LLVM development libraries that `llvm-sys` builds against.
 
 ## Overview
 
 The release build produces two binary artifacts per platform:
 
-- `hew` — compiler driver (Rust), with the MLIR/LLVM codegen backend
-  statically embedded (when built with `HEW_EMBED_STATIC=1` or `LLVM_PREFIX`
-  set)
+- `hew` — compiler driver (Rust), linking LLVM 22 statically through
+  `hew-codegen-rs` (inkwell)
 - `adze` — package manager (Rust)
 
-Both Rust binaries build straightforwardly with `cargo build --release` once
-LLVM/MLIR libraries are available. The embedded C++ codegen requires LLVM 22
-development libraries and a compatible compiler toolchain, and this is where
-the platform-specific complexity lives.
+Both Rust binaries build with `cargo build --release` once LLVM 22
+libraries and headers are available; set `LLVM_PREFIX` (or
+`LLVM_SYS_221_PREFIX`) to point at the install.
 
 Use `make` / `make release` from the repository root rather than invoking
-`cargo` or `cmake` directly — the Makefile wires up the detection and
-embedding steps correctly across platforms.
+`cargo` directly — the Makefile wires up symlinks and per-target lib
+layouts correctly.
 
 ## Linux x86_64
 
@@ -51,30 +48,9 @@ CMake to build the C++ object library, and then triggers `cargo build` which
 embeds that library into `hew`:
 
 ```bash
-make           # debug build with embedded codegen
-make release   # release build (sets HEW_EMBED_STATIC=1 automatically)
+make           # debug build
+make release   # release build
 ```
-
-To drive CMake manually (e.g. for C++ unit tests only):
-
-```bash
-cd hew-codegen
-cmake -B build -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_C_COMPILER=clang-22 \
-  -DCMAKE_CXX_COMPILER=clang++-22 \
-  -DHEW_STATIC_LINK=ON \
-  -DLLVM_DIR=/usr/lib/llvm-22/lib/cmake/llvm \
-  -DMLIR_DIR=/usr/lib/llvm-22/lib/cmake/mlir
-cmake --build build --config Release
-```
-
-### Critical: use clang, not GCC
-
-The `HandleLLVMOptions` CMake module (included from LLVM's cmake config)
-propagates Clang-specific warning flags like `-Wweak-vtables` to all consumers.
-GCC does not recognize these flags and will error. Always use `clang-22` /
-`clang++-22` as the C/C++ compiler, never `gcc`/`g++`.
 
 ## Linux aarch64
 
@@ -156,98 +132,14 @@ LLVM_PREFIX="$(brew --prefix llvm)" make
 LLVM_PREFIX="$(brew --prefix llvm)" make release
 ```
 
-To drive CMake manually (e.g. for C++ unit tests only):
-
-```bash
-LLVM_PREFIX="$(brew --prefix llvm)"
-cd hew-codegen
-cmake -B build -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_C_COMPILER="${LLVM_PREFIX}/bin/clang" \
-  -DCMAKE_CXX_COMPILER="${LLVM_PREFIX}/bin/clang++" \
-  -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)" \
-  -DCMAKE_EXE_LINKER_FLAGS="-L${LLVM_PREFIX}/lib/c++ -Wl,-rpath,${LLVM_PREFIX}/lib/c++" \
-  -DHEW_STATIC_LINK=ON \
-  -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
-  -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
-cmake --build build --config Release
-```
-
-### Why each flag is required
-
-There are three flags beyond the standard LLVM/MLIR paths that are all
-required. Removing any one of them causes a different build failure. Here is
-what each solves:
-
-**1. `CMAKE_C/CXX_COMPILER` = brew's clang (not Apple Clang)**
-
-When `HEW_STATIC_LINK=ON`, CMake merges MLIR static library objects into our
-archive. These MLIR objects were compiled by Homebrew's LLVM 22 and contain
-LLVM 22 bitcode (from thin LTO). Apple's system linker uses its own LTO
-implementation (based on LLVM 15-17 depending on Xcode version) and cannot
-parse LLVM 22 bitcode:
-
-```
-ld: could not parse bitcode object file:
-  'Unknown attribute kind (102) (Producer: 'LLVM22.1.0'
-   Reader: 'LLVM APPLE_1_1700.6.3.2_0')'
-```
-
-Using brew's clang as the compiler means brew's linker toolchain handles the
-bitcode, which is compatible with the MLIR objects.
-
-**2. `CMAKE_OSX_SYSROOT` = Apple SDK path**
-
-Brew's clang ships its own libc++ headers at
-`${LLVM_PREFIX}/include/c++/v1/`. These headers define `size_t` as
-`std::size_t` (with C++ namespacing). macOS SDK system headers (from Xcode)
-expect plain `size_t` without the namespace. This causes compilation errors in
-system headers like `malloc/_malloc_type.h`:
-
-```
-error: unknown type name 'size_t'; did you mean 'std::size_t'?
-```
-
-Setting `CMAKE_OSX_SYSROOT` tells brew's clang to resolve system headers from
-Apple's SDK, fixing the namespace conflict.
-
-**3. `CMAKE_EXE_LINKER_FLAGS` = brew's libc++ path**
-
-With brew's clang and Apple's SDK sysroot, the compiler uses brew's libc++
-headers (e.g. `std::__1::` ABI namespace) but the linker needs to find the
-matching libc++ shared library. Without the explicit library path, the linker
-finds Apple's system libc++ which has a different ABI:
-
-```
-ld: symbol(s) not found for architecture x86_64
-  std::__1::__hash_table<...>::__emplace_unique_key_args<...>
-```
-
-The `-L` flag provides the library search path, and `-Wl,-rpath` embeds the
-runtime search path so the binary can find libc++ when executed.
-
-### Strip flag
-
-On macOS, the `-s` linker flag is deprecated by Apple's `ld64`. The
-CMakeLists.txt uses a post-build `strip` command instead:
-
-```cmake
-if(APPLE)
-  add_custom_command(TARGET hew-codegen POST_BUILD
-    COMMAND strip $<TARGET_FILE:hew-codegen>)
-endif()
-```
-
 ## Windows
 
-**Status:** Supported for release builds when LLVM/MLIR 22 is installed locally
-and the build uses the embedded-codegen environment (`LLVM_PREFIX` +
-`HEW_EMBED_STATIC=1`). The runtime's low-level memory paths now have Windows
-implementations (`VirtualAlloc` / `VirtualFree`), so the old
-`mmap`/`munmap`-only limitation no longer applies. However, Windows is still
-fail-soft / Tier 2 in `release.yml` today: the tag-release Windows job remains
-`continue-on-error: true` until this validation path has proven itself through a
-full release cycle.
+**Status:** Supported for release builds when LLVM 22 is installed locally
+and `LLVM_PREFIX` is set. The runtime's low-level memory paths have Windows
+implementations (`VirtualAlloc` / `VirtualFree`). Windows is fail-soft /
+Tier 2 in `release.yml` today: the tag-release Windows job remains
+`continue-on-error: true` until this validation path has proven itself
+through a full release cycle.
 
 ### Prerequisites
 
@@ -311,17 +203,13 @@ compiler is on `PATH`):
 ```powershell
 $env:LLVM_PREFIX = 'C:\llvm-22'
 $env:Path = 'C:\llvm-22\bin;' + $env:Path
-$env:HEW_EMBED_STATIC = '1'
-$env:CC = 'cl'
-$env:CXX = 'cl'
 
 cargo build -p hew-cli -p adze-cli -p hew-lsp --release
 cargo build -p hew-lib --release
 ```
 
-The important invariant is fail-closed embedded codegen: do not validate a
-Windows release build without `LLVM_PREFIX` and `HEW_EMBED_STATIC=1`, or
-`hew-cli/build.rs` may legitimately fall back to a frontend-only binary.
+`LLVM_PREFIX` (or `LLVM_SYS_221_PREFIX`) must point at an LLVM 22 install
+so `llvm-sys` can locate `llvm-config` and the static libraries.
 
 ### Smoke test
 

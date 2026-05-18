@@ -1,8 +1,0 @@
-extern "C" {
-    fn abs(n: int) -> int;
-}
-
-fn main() {
-    let result = unsafe { abs(-42) };
-    println(result);
-}

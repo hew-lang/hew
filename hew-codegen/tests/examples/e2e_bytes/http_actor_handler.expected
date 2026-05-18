@@ -1,6 +1,0 @@
-drop /api/users
-handled: /api/users
-drop /api/items
-handled: /api/items
-drop /health
-handled: /health

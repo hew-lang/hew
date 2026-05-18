@@ -1,9 +1,0 @@
-=== Actor String Ownership ===
-get: initial
-set: hello
-get: hello
-append: hello world
-get: hello world
-set: replaced
-get: replaced
-PASS

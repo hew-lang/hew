@@ -97,9 +97,6 @@ jobs:
             export LLVM_PREFIX="${LLVM_PREFIX}"
             export CC=clang
             export CXX=clang++
-            # FreeBSD CI provisions LLVM/MLIR as static archives only.
-            export HEW_EMBED_STATIC=1
-
             # Build runtime (release + debug for E2E tests)
             cargo build -p hew-runtime --release
             cargo build -p hew-runtime
@@ -125,16 +122,6 @@ jobs:
               -p hew-std-text-regex -p hew-std-text-semver \
               -p hew-std-misc-uuid -p hew-std-misc-log
 
-            # ── hew-codegen (CMake + MLIR) ─────────────────────────────────
-            cd hew-codegen
-            cmake -B build -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DHEW_STATIC_LINK=ON \
-              -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
-              -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
-            cmake --build build -j$(sysctl -n hw.ncpu)
-            cd ..
-
             # ── Tests ──────────────────────────────────────────────────────
 
             # Install cargo-nextest for slow-timeout envelope (FreeBSD's pkg
@@ -147,13 +134,6 @@ jobs:
             # The ci profile applies the same slow-timeout = 3x60 s envelope
             # as all other platforms, replacing the previous bare cargo test.
             cargo nextest run --workspace --exclude hew-wasm --exclude hew-cabi --profile ci
-
-            # Codegen unit tests
-            cd hew-codegen/build
-            ctest --output-on-failure -R "^(mlir_dialect|translate)$"
-
-            # Codegen E2E tests (native only, no WASM)
-            ctest --output-on-failure -j$(sysctl -n hw.ncpu) -LE wasm -E "^(mlir_dialect|translate)$"
 
       - name: Save LLVM+MLIR cache (FreeBSD)
         if: steps.cache-llvm-freebsd.outputs.cache-hit != 'true'

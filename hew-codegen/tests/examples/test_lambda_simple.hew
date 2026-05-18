@@ -1,5 +1,0 @@
-fn main() {
-    let f = (x: int) => x * 2;
-    let r = f(21);
-    println(r);
-}

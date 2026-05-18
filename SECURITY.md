@@ -16,7 +16,7 @@ We will acknowledge receipt within 48 hours and aim to provide an initial assess
 
 This policy covers:
 
-- The Hew compiler (`hew`, `hew-codegen`)
+- The Hew compiler (`hew`, `hew-codegen-rs`)
 - The Hew runtime (`libhew_runtime`)
 - The package manager (`adze`)
 - The standard library (`std/`)

@@ -4,7 +4,7 @@
 # Triggers on tag push matching `v*` (e.g. v0.1.0).
 #
 # Artifacts per platform:
-#   bin/hew           — compiler driver (with embedded MLIR codegen)
+#   bin/hew           — compiler driver (Rust + LLVM via inkwell)
 #   bin/adze          — package manager
 #   bin/hew-lsp       — Language Server Protocol server
 #   lib/libhew.a      — combined runtime + stdlib static library
@@ -235,7 +235,6 @@ jobs:
 
       - name: Build hew, adze, and hew-lsp
         env:
-          HEW_EMBED_STATIC: "1"
         run: cargo build -p hew-cli -p adze-cli -p hew-lsp --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
@@ -603,7 +602,6 @@ jobs:
 
       - name: Build hew, adze, and hew-lsp
         env:
-          HEW_EMBED_STATIC: "1"
         run: cargo build -p hew-cli -p adze-cli -p hew-lsp --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
@@ -775,7 +773,7 @@ jobs:
             fi
 
             # ── Rust builds (release) ──────────────────────────────────────
-            HEW_EMBED_STATIC=1 cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize --release
+            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize --release
             cargo build -p hew-lib --release
 
             # ── Package archive ────────────────────────────────────────────

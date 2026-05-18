@@ -1,9 +1,0 @@
-// Tests to_string for floating-point primitives.
-// Uses %g formatting (compact, no trailing zeros).
-fn main() {
-    let f: f64 = 3.14;
-    println(to_string(f));
-
-    let g: f32 = 2.5;
-    println(to_string(g));
-}

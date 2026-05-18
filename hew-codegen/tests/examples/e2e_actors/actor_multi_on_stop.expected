@@ -1,5 +1,0 @@
-=== Multi On Stop ===
-[42] entry
-logger 42 flush
-logger 42 close
-=== End ===

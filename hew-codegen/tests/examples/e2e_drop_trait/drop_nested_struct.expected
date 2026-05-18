@@ -1,4 +1,0 @@
-before create
-after create
-drop Outer 1
-drop Inner 10

@@ -2,6 +2,13 @@
 
 Visual documentation of the Hew compilation pipeline, runtime architecture, and protocol formats using Mermaid diagrams. These diagrams reflect the actual codebase structure — function names, module names, constants, and data types are taken directly from source.
 
+> **Status (post-cutover):** The compilation-pipeline diagrams below predate the
+> retirement of the C++/MLIR `hew-codegen` subtree. They describe the historical
+> Rust-frontend → MessagePack → C++ MLIR backend path. Today the entire ladder
+> lives in Rust (`hew-hir`, `hew-mir`, `hew-codegen-rs`). The runtime, capability,
+> and stdlib sections are unaffected. A diagram refresh tracking the Rust IR
+> ladder is queued as follow-up work.
+
 > **Rendering:** These diagrams use [Mermaid](https://mermaid.js.org/) syntax. GitHub renders them natively in Markdown. For local viewing, use a Mermaid-compatible Markdown previewer or the [Mermaid Live Editor](https://mermaid.live/).
 
 ---

@@ -1,8 +1,0 @@
-fn add(a: int, b: int) -> int {
-    a + b
-}
-
-fn main() {
-    let x = add(1, b: 2);
-    println(x);
-}

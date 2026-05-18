@@ -42,7 +42,6 @@ Key boundary checks most contributors encounter:
 ## Code Style
 
 - **Rust:** Follow standard `rustfmt` conventions. Run `cargo clippy --workspace` before submitting.
-- **C++:** LLVM style (see `hew-codegen/.clang-format`). Use C++20 features where appropriate.
 - **Commit messages:** Use imperative mood ("Add feature" not "Added feature"). Keep the first line under 72 characters.
 - **Stdlib `int` surface:** Every `pub fn` parameter and return type in `std/**/*.hew` must use `int`, not `i32`/`i64`. Width-specific types are only allowed inside `extern "C" { ... }` blocks or on lines marked `// INTERNAL-ABI: <reason>`. See [`docs/stdlib-style-contract.md`](docs/stdlib-style-contract.md) for the full contract and examples. The rule is enforced by `scripts/lint-stdlib-int-surface.sh` and the `stdlib-lint` CI workflow.
 
@@ -62,7 +61,7 @@ If `cargo fmt --check` fails: run `cargo fmt --all` and re-push. There is no env
 
 ## Build System
 
-Always use `make` targets instead of running `cargo`, `cmake`, or `ctest` directly. See the [Makefile](Makefile) header for all available targets.
+Always use `make` targets instead of running `cargo` directly. See the [Makefile](Makefile) header for all available targets.
 
 ## Testing
 
@@ -70,17 +69,14 @@ Always use `make` targets instead of running `cargo`, `cmake`, or `ctest` direct
 
 | Suite | Command | Scope | Speed |
 |---|---|---|---|
-| Full (default) | `make test` | Rust workspace (via nextest) + native codegen E2E + C++ unit | slow |
-| Extended | `make test-all` | `make test` + stdlib type-check sweep + Hew test files + WASM E2E | slowest |
-| Rust only | `make test-rust` | All Rust workspace crates | fast |
+| Full (default) | `make test` | Rust workspace (via nextest) | medium |
+| Extended | `make test-all` | `make test` + stdlib type-check sweep + Hew test files | slow |
+| Rust only | `make test-rust` | All Rust workspace crates | medium |
 | Parser / lexer | `make test-parser` | `hew-parser` + `hew-lexer` | fast |
 | Type checker | `make test-types` | `hew-types` + `hew-parser` + `hew-lexer` | fast |
 | CLI | `make test-cli` | `hew-cli` + `adze-cli` | fast |
 | Runtime / net | `make test-runtime-net` | `hew-runtime` + `hew-analysis` + `hew-lsp` + `hew-std-net-*` | fast |
 | Runtime (no-net) | `make test-runtime-unit` | `hew-runtime` unit + integration tests, without QUIC/TLS/profiler stack (~3× faster compile) | fast |
-| Codegen E2E | `make test-codegen` | Native CMake/ctest suite (builds runtime first) | slow |
-| WASM E2E | `make test-wasm` | Same ctest suite, `wasm`-labelled tests only; requires `wasmtime` | slow |
-| C++ unit | `make test-cpp` | `mlir_dialect`, `mlirgen`, `translate`, `codegen_capi`, `msgpack_reader` | medium |
 | Hew test files | `make test-hew` | `tests/hew/` via `hew test` | medium |
 
 Use the fast narrow suites (`test-parser`, `test-types`, `test-cli`, `test-runtime-net`, `test-runtime-unit`) during inner-loop iteration and `make test` before opening a PR.
@@ -89,32 +85,13 @@ Use the fast narrow suites (`test-parser`, `test-types`, `test-cli`, `test-runti
 
 `make ci-preflight` dispatches a conservative local preflight from your current diff and is the recommended manual gate before opening a PR or tagging a release. Pass `ARGS="--dry-run"` to preview without running. CI runs this on every PR regardless.
 
-### AST codegen self-test
-
-`hew-astgen` generates `hew-codegen/src/msgpack_reader.cpp` from the Rust AST types. If you modify `hew-parser/src/ast.rs` or `hew-parser/src/module.rs`, regenerate the C++ reader and verify it matches:
-
-```bash
-make astgen                    # regenerate msgpack_reader.cpp
-cargo test -p hew-astgen       # verify checked-in file matches generator output
-```
-
-There is no `make test-astgen` target; the verification runs through `cargo test`.
-
 ### E2E test workflow
 
 When adding new language features, add an end-to-end test:
 
-1. Create a `.hew` source file under `hew-codegen/tests/examples/`.
-2. Register it in `hew-codegen/tests/CMakeLists.txt` using `add_e2e_test`:
-   ```cmake
-   add_e2e_test(my_feature e2e_my_feature/my_feature.hew "expected output\n")
-   ```
-3. **WASM parity** (see `native-wasm-parity` in LESSONS.md): if the feature is supported on WASM, also register it with `add_wasm_file_test` so the WASM suite exercises the same path:
-   ```cmake
-   add_wasm_file_test(my_feature e2e_my_feature my_feature)
-   ```
-   The `add_wasm_file_test` macro requires that you create the corresponding `examples/e2e_my_feature/my_feature.expected` file (read by the WASM CMake helpers) containing the expected output.
-   If WASM support is deferred, add a `// WASM-TODO(#NNN): <reason>` comment at the registration site, where `#NNN` is a GitHub issue tracking the gap (use [#1451](https://github.com/hew-lang/hew/issues/1451) for general WASM parity work).
+1. Create a `.hew` source file under `tests/hew/`.
+2. Run it via `make test-hew` (`hew test tests/hew/`).
+3. **WASM parity** (see `native-wasm-parity` in LESSONS.md): if the feature is supported on WASM, exercise it via the `wasi_run_e2e` integration tests under `hew-cli/tests/`. If WASM support is deferred, add a `// WASM-TODO(#NNN): <reason>` comment at the registration site, where `#NNN` is a GitHub issue tracking the gap (use [#1451](https://github.com/hew-lang/hew/issues/1451) for general WASM parity work).
 4. Add type-checker tests in `hew-types/src/check/tests.rs` for any new type rules.
 
 ### WASM / native parity
@@ -125,7 +102,6 @@ New runtime behaviour — channels, ask/reply, timers, schedulers, bounded execu
 - New `hew_*` runtime exports must be classified `jit: stable` or `jit: internal` in `scripts/jit-symbol-classification.toml` alongside their WASM disposition declaration; `scripts/verify-ffi-symbols.py --classify stable --validate` rejects unclassified exports.
 - Add contract tests for timeout, cancel, and budget edges.
 - Document intentional divergence where parity cannot land yet.
-- Register new E2E tests in `CMakeLists.txt` with both `add_e2e_test` and `add_wasm_file_test` where applicable.
 - Consult [`docs/wasm-capability-matrix.md`](docs/wasm-capability-matrix.md) for the canonical Tier 1 / Tier 2 split and the current disposition (pass / warn / reject) for each feature.  The checker enforces these dispositions automatically when `--target=wasm32-wasi` is used.
 
 ## License

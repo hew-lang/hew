@@ -1,7 +1,0 @@
-pub fn base_value() -> int {
-    42
-}
-
-pub fn doubled() -> int {
-    base_value() * 2
-}

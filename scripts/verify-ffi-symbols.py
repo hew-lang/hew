@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
-"""Verify runtime/codegen FFI coverage and classify the stable JIT host ABI.
+"""Classify and validate the stable JIT host ABI exported by hew-runtime.
 
-Scans all hew-runtime Rust source files for #[no_mangle] extern "C" fn exports,
-then extracts all `hew_*` function name string references from C++ codegen source.
-Reports any codegen reference that isn't covered by an actual runtime export.
+Scans all hew-runtime Rust source files for #[no_mangle] extern "C" fn
+exports and validates each one is classified (stable vs internal) in
+scripts/jit-symbol-classification.toml.
 
-Functions from separate stdlib packages (e.g. hew_http_*, hew_regex_*) are listed
-in STDLIB_PACKAGE_PREFIXES — these are expected to be missing from hew-runtime and
-are linked separately by the driver.
+The codegen-coverage mode (--strict) is retained as a no-op for backward
+compatibility now that the C++ codegen subtree has been retired; the
+Rust IR ladder validates its own symbol references through the type
+checker and inkwell.
 
 Usage:
-    python3 scripts/verify-ffi-symbols.py                        # check and report
-    python3 scripts/verify-ffi-symbols.py --strict               # exit 1 on uncovered refs
+    python3 scripts/verify-ffi-symbols.py --classify stable --validate
     python3 scripts/verify-ffi-symbols.py --classify stable      # print stable JIT symbols
     python3 scripts/verify-ffi-symbols.py --classify internal    # print internal JIT symbols
-    python3 scripts/verify-ffi-symbols.py --classify stable --validate
     python3 scripts/verify-ffi-symbols.py --emit-cpp-header path # generate stable-symbol header
 """
 
@@ -26,7 +25,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CODEGEN_SRC = ROOT / "hew-codegen" / "src"
 RUNTIME_SRC = ROOT / "hew-runtime" / "src"
 JIT_SYMBOL_CLASSIFICATION = ROOT / "scripts" / "jit-symbol-classification.toml"
 SOURCE_ENCODING = "utf-8"
@@ -114,16 +112,6 @@ def extract_runtime_exports() -> set[str]:
         for match in fn_pattern.finditer(source):
             exports.add(match.group(1))
     return exports
-
-
-def extract_codegen_refs() -> set[str]:
-    """Extract all hew_* function name strings from C++ codegen source."""
-    refs = set()
-    pattern = re.compile(r'"(hew_[a-zA-Z0-9_]+)"')
-    for src_file in CODEGEN_SRC.rglob("*.[ch]*"):
-        for match in pattern.finditer(src_file.read_text(encoding=SOURCE_ENCODING)):
-            refs.add(match.group(1))
-    return refs
 
 
 def is_stdlib_package(name: str) -> bool:
@@ -232,47 +220,22 @@ def run_classification_mode(args: argparse.Namespace, runtime_exports: set[str])
 
 
 def run_coverage_mode(strict: bool) -> int:
+    """Codegen-coverage mode is a no-op now that the C++ codegen subtree has been retired.
+
+    The historical behaviour walked `hew-codegen/src/**` for `hew_*` string
+    references and reported any that lacked a matching runtime export. With
+    the C++ tree gone, there are no codegen references to scan. Kept as a
+    permissive entry point so existing tooling (`make verify-ffi`, IDE
+    integrations) does not regress.
+    """
     runtime_exports = extract_runtime_exports()
-    codegen_refs = extract_codegen_refs()
-
-    uncovered = []
-    covered = 0
-    skipped_internal = 0
-    skipped_stdlib = 0
-    skipped_template = 0
-
-    for ref in sorted(codegen_refs):
-        reason = classify(ref, runtime_exports)
-        if not reason:
-            if ref in CODEGEN_INTERNAL:
-                skipped_internal += 1
-            elif ref in TEMPLATE_NAMES:
-                skipped_template += 1
-            elif is_stdlib_package(ref):
-                skipped_stdlib += 1
-            else:
-                covered += 1
-        else:
-            uncovered.append(ref)
-
     print(f"Runtime exports: {len(runtime_exports)}")
-    print(f"Codegen references: {len(codegen_refs)}")
-    print(f"  Covered by runtime exports: {covered}")
-    print(f"  Stdlib packages (linked separately): {skipped_stdlib}")
-    print(f"  Codegen-internal (intercepted): {skipped_internal}")
-    print(f"  Template names (suffixed at emit): {skipped_template}")
-    print(f"  Uncovered: {len(uncovered)}")
-
-    if uncovered:
-        print("\nUncovered functions (codegen references with no runtime export):")
-        for name in uncovered:
-            print(f"  - {name}")
-        if strict:
-            print("\nFAILED: uncovered symbols found (--strict mode)")
-            return 1
-    else:
-        print("\nAll codegen references are covered.")
-
+    print(
+        "Codegen-coverage mode is a no-op after the hew-codegen C++/MLIR "
+        "retirement. Use --classify stable --validate for runtime-export "
+        "classification checks."
+    )
+    _ = strict  # silence unused
     return 0
 
 

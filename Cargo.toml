@@ -46,7 +46,6 @@ members = [
   "hew-observe",
   "hew-wasm",
   "hew-analysis",
-  "hew-astgen",
   "hew-compile",
   "hew-hir",
   "hew-mir",

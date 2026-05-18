@@ -1,9 +1,0 @@
-fn main() {
-    let double = (x: int) => x * 2;
-    let result = double(21);
-    println(result);
-    let add_ten = (x: int) => x + 10;
-    println(add_ten(5));
-    let negate = (x: int) => 0 - x;
-    println(negate(7));
-}

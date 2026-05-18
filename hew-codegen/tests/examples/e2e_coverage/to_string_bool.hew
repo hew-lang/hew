@@ -1,5 +1,0 @@
-// Tests to_string for bool primitives.
-fn main() {
-    println(to_string(true));
-    println(to_string(false));
-}

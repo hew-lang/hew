@@ -54,26 +54,3 @@ fn lex_all_examples() {
         "More files should lex successfully than fail"
     );
 }
-
-#[test]
-fn lex_all_codegen_examples() {
-    let codegen_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("hew-codegen")
-        .join("tests")
-        .join("examples");
-    let (passed, failed, errors) = lex_directory(&codegen_dir);
-
-    println!(
-        "Lexer comparison (hew-codegen/tests/examples/): {passed} passed, {failed} failed out of {}",
-        passed + failed
-    );
-    for (file, count) in &errors {
-        println!("  FAIL: {file} ({count} error tokens)");
-    }
-    assert!(
-        passed > failed,
-        "More files should lex successfully than fail"
-    );
-}

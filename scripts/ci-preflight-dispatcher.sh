@@ -182,15 +182,6 @@ is_lsp_path() {
     return 1
 }
 
-is_codegen_path() {
-    case "$1" in
-        hew-codegen/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
 is_wasm_path() {
     case "$1" in
         hew-wasm/*)
@@ -206,37 +197,6 @@ is_scripts_config_path() {
             return 0
             ;;
     esac
-    return 1
-}
-
-path_changes_ctest_plumbing() {
-    local path="$1"
-    local diff_text=""
-    local file_content=""
-
-    if [[ -n "$BASE_REF" ]]; then
-        diff_text+=$(git diff --no-ext-diff --unified=0 "$BASE_REF...HEAD" -- "$path" || true)
-        diff_text+=$'\n'
-    fi
-
-    diff_text+=$(git diff --no-ext-diff --cached --unified=0 -- "$path" || true)
-    diff_text+=$'\n'
-    diff_text+=$(git diff --no-ext-diff --unified=0 -- "$path" || true)
-
-    if git ls-files --others --exclude-standard -- "$path" | grep -Fxq "$path" && [[ -f "$path" ]]; then
-        while IFS= read -r line; do
-            file_content+="+${line}"$'\n'
-        done <"$path"
-        diff_text+=$'\n'
-        diff_text+="$file_content"
-    fi
-
-    if printf '%s\n' "$diff_text" | grep -Eq \
-        '^[+-](test-codegen|test-wasm|test-cpp):|^[+-][[:space:]]*ctest([[:space:]]|$)|^[+-][[:space:]]*cd[[:space:]]+hew-codegen/build([[:space:]]|$)|^[+-].*CTEST_[A-Z_]+|^[+-][[:space:]]*\$\(MAKE\)[[:space:]]+(test-codegen|test-wasm|test-cpp)([[:space:]]|$)|^[+-][[:space:]]*run:[[:space:]].*(ctest([[:space:]]|$)|make[[:space:]]+test-codegen([[:space:]]|$)|make[[:space:]]+test-wasm([[:space:]]|$)|make[[:space:]]+test-cpp([[:space:]]|$))'
-    then
-        return 0
-    fi
-
     return 1
 }
 
@@ -319,10 +279,7 @@ has_types=0
 has_cli=0
 has_runtime_net=0
 has_scripts_config=0
-has_codegen=0
 has_wasm=0
-needs_scripts_config_codegen=0
-needs_codegen_lint=0
 needs_codegen_release_smoke=0
 needs_stdlib_lint=0
 
@@ -350,9 +307,6 @@ for path in "${CHANGED_FILES[@]}"; do
         continue
     elif is_scripts_config_path "$path"; then
         has_scripts_config=1
-        if path_changes_ctest_plumbing "$path"; then
-            needs_scripts_config_codegen=1
-        fi
     elif is_parser_path "$path"; then
         has_parser=1
     elif is_types_path "$path"; then
@@ -361,10 +315,6 @@ for path in "${CHANGED_FILES[@]}"; do
         has_cli=1
     elif is_runtime_path "$path" || is_stdlib_net_path "$path" || is_analysis_path "$path" || is_lsp_path "$path"; then
         has_runtime_net=1
-    elif is_codegen_path "$path"; then
-        has_codegen=1
-        needs_codegen_lint=1
-        needs_codegen_release_smoke=1
     elif is_wasm_path "$path"; then
         has_wasm=1
     else
@@ -372,7 +322,7 @@ for path in "${CHANGED_FILES[@]}"; do
     fi
 done
 
-bucket_count=$((has_grammar + has_parser + has_types + has_cli + has_runtime_net + has_scripts_config + has_codegen + has_wasm))
+bucket_count=$((has_grammar + has_parser + has_types + has_cli + has_runtime_net + has_scripts_config + has_wasm))
 
 if (( fallback_lane == 1 )); then
     LANE="fallback"
@@ -398,9 +348,6 @@ elif (( has_types == 1 )); then
 elif (( has_runtime_net == 1 )); then
     LANE="runtime-net"
     LANE_REASON="runtime / std/net / analysis / lsp surface changed"
-elif (( has_codegen == 1 )); then
-    LANE="codegen"
-    LANE_REASON="hew-codegen C++ / MLIR surface changed"
 elif (( has_wasm == 1 )); then
     LANE="wasm"
     LANE_REASON="hew-wasm browser WASM surface changed"
@@ -415,9 +362,6 @@ case "$LANE" in
     scripts-config)
         add_command "cargo fmt --all -- --check"
         add_command "make test-rust"
-        if (( needs_scripts_config_codegen == 1 )); then
-            add_command "make test-codegen"
-        fi
         ;;
     grammar)
         add_command "cargo fmt --all -- --check"
@@ -444,14 +388,6 @@ case "$LANE" in
         add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-runtime-net"
         ;;
-    codegen)
-        # hew-codegen/* changes: run test-codegen (ctest).
-        # codegen-lint and test-release-binary are appended below as add-ons
-        # (needs_codegen_lint and needs_codegen_release_smoke are already set).
-        add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy --workspace --tests -- -D warnings"
-        add_command "make test-codegen"
-        ;;
     wasm)
         # hew-wasm/* changes: run the WASM lib tests and the playground build
         # (which includes wasm-pack --release and the curated-manifest smoke test).
@@ -470,10 +406,6 @@ case "$LANE" in
         die "unhandled lane: $LANE"
         ;;
 esac
-
-if (( needs_codegen_lint == 1 )); then
-    add_command "make codegen-lint"
-fi
 
 if (( needs_codegen_release_smoke == 1 )); then
     # Build the release binary and run a hew run smoke test.  This specifically

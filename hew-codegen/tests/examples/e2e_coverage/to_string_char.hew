@@ -1,7 +1,0 @@
-// Tests to_string for char primitives.
-// Uses hew_char_to_string which produces a single-character string.
-fn main() {
-    println(to_string('x'));
-    println(to_string('A'));
-    println(to_string('0'));
-}

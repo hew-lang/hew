@@ -36,17 +36,11 @@ What to check:
 - Hew forwards raw linker output. Fix missing libraries, bad `--link-lib`
   flags, or target mismatches before chasing compiler internals.
 - For this repo, use `make`, `make release`, `make test`, and other Makefile
-  targets instead of calling Cargo/CMake/ctest directly.
-- Use the toolchain from the root README: Rust stable, LLVM/MLIR 22,
-  CMake >= 3.20, Ninja, and clang/clang++.
-- On Linux, build the embedded codegen with clang/clang++ rather than GCC
-  (see [`cross-platform-build-guide.md`](cross-platform-build-guide.md) for
-  the reason — LLVM CMake config propagates Clang-specific warning flags that
-  GCC does not accept).
-- On macOS, use Homebrew LLVM (`LLVM_PREFIX="$(brew --prefix llvm)"`) and
-  follow [`cross-platform-build-guide.md`](cross-platform-build-guide.md) for
-  bitcode, sysroot, and libc++ issues.
-- After switching LLVM installs, `CC` / `CXX`, or `HEW_STATIC`, run
+  targets instead of calling Cargo directly.
+- Use the toolchain from the root README: Rust stable and LLVM 22.
+- On macOS, use Homebrew LLVM (`LLVM_PREFIX="$(brew --prefix llvm)"`) so
+  `llvm-sys` can locate the static libraries.
+- After switching LLVM installs or `CC` / `CXX`, run
   `make clean` before rebuilding.
 - If the program builds but you need a debugger, use
   `hew debug <file.hew> [-- args...]`.

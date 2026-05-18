@@ -372,10 +372,10 @@ impl Checker {
             // Cooperate
             Expr::Cooperate => Ty::Unit,
 
-            // Actor self-reference handle — returns ActorRef<Self>, not the actor type itself
+            // Actor self-reference handle — returns LocalPid<Self>, not the actor type itself
             Expr::This => {
                 if let Some(actor_ty) = &self.current_actor_type {
-                    Ty::actor_ref(actor_ty.clone())
+                    Ty::local_pid(actor_ty.clone())
                 } else {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -3100,8 +3100,8 @@ impl Checker {
         let resolved = self.subst.resolve(&obj_ty);
         match &resolved {
             Ty::Named { name, args } => {
-                // Named supervisor child access: sup.child_name → ActorRef<ChildType>
-                // Accepts ActorRef<T>, Actor<T>, and LocalPid<T> via as_actor_handle().
+                // Named supervisor child access: sup.child_name → LocalPid<ChildType>
+                // Accepts local actor handles via as_actor_handle().
                 if let Some(Ty::Named { name: sup_name, .. }) = resolved.as_actor_handle() {
                     if let Some(sup_children) = self.supervisor_children.get(sup_name) {
                         // Check static children first, then pool children.
@@ -3153,14 +3153,14 @@ impl Checker {
                         if let Some((slot, child_type)) = resolved_slot {
                             self.supervisor_child_slots
                                 .insert(SpanKey::from(span), slot);
-                            return Ty::actor_ref(Ty::Named {
+                            return Ty::local_pid(Ty::Named {
                                 name: child_type,
                                 args: vec![],
                             });
                         }
                         // The supervisor is known but this child name is not declared.
                         // Emit a clear diagnostic and stop — the fallthrough branch
-                        // would silently return Ty::Error because ActorRef has no type
+                        // would silently return Ty::Error because the handle has no type
                         // definition in the checker's type_defs map.
                         let all_names: Vec<&str> = sup_children
                             .statics

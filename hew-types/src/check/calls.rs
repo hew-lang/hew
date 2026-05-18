@@ -567,14 +567,14 @@ impl Checker {
                 return self.make_vec_type(elem, span);
             }
             "supervisor_child" if args.len() == 2 => {
-                // supervisor_child(sup, index) → typed ActorRef based on supervisor decl
+                // supervisor_child(sup, index) → typed LocalPid based on supervisor decl
                 let (sup_expr, sup_sp) = args[0].expr();
                 let sup_ty = self.synthesize(sup_expr, sup_sp);
                 let sup_ty_resolved = self.subst.resolve(&sup_ty);
                 let (idx_expr, idx_sp) = args[1].expr();
                 self.check_against(idx_expr, idx_sp, &Ty::I64);
 
-                // Accept ActorRef<T>, Actor<T>, and LocalPid<T> as supervisor handles.
+                // Accept local actor handles as supervisor handles.
                 if let Some(Ty::Named { name: sup_name, .. }) = sup_ty_resolved.as_actor_handle() {
                     if let Some(sup_children) = self.supervisor_children.get(sup_name) {
                         // `supervisor_child` builtin indexes into the static slot space.
@@ -591,17 +591,17 @@ impl Checker {
                             let i = *idx as usize;
                             if i < statics.len() {
                                 let child_type = &statics[i].1;
-                                return Ty::actor_ref(Ty::Named {
+                                return Ty::local_pid(Ty::Named {
                                     name: child_type.clone(),
                                     args: vec![],
                                 });
                             }
                         }
                         // Non-constant index: fresh type var
-                        return Ty::actor_ref(Ty::Var(TypeVar::fresh()));
+                        return Ty::local_pid(Ty::Var(TypeVar::fresh()));
                     }
                 }
-                return Ty::actor_ref(Ty::Var(TypeVar::fresh()));
+                return Ty::local_pid(Ty::Var(TypeVar::fresh()));
             }
             _ => {}
         }

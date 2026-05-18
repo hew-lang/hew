@@ -292,8 +292,8 @@ impl Checker {
         let close_t = TypeVar::fresh();
         self.register_builtin_fn(
             "close",
-            vec![Ty::actor_ref(Ty::Var(close_t))],
-            Ty::actor_ref(Ty::Var(close_t)),
+            vec![Ty::local_pid(Ty::Var(close_t))],
+            Ty::local_pid(Ty::Var(close_t)),
         );
         self.register_builtin_fn("exit", vec![Ty::I64], Ty::Never);
         self.register_builtin_fn("panic", vec![Ty::String], Ty::Never);
@@ -305,15 +305,15 @@ impl Checker {
         let link_t = TypeVar::fresh();
         self.register_builtin_fn(
             "link",
-            vec![Ty::actor_ref(Ty::Var(link_t))],
+            vec![Ty::local_pid(Ty::Var(link_t))],
             Ty::result(Ty::Unit, Ty::link_error()),
         );
         let unlink_t = TypeVar::fresh();
-        self.register_builtin_fn("unlink", vec![Ty::actor_ref(Ty::Var(unlink_t))], Ty::Unit);
+        self.register_builtin_fn("unlink", vec![Ty::local_pid(Ty::Var(unlink_t))], Ty::Unit);
         let monitor_t = TypeVar::fresh();
         self.register_builtin_fn(
             "monitor",
-            vec![Ty::actor_ref(Ty::Var(monitor_t))],
+            vec![Ty::local_pid(Ty::Var(monitor_t))],
             Ty::monitor_ref(),
         );
 
@@ -322,13 +322,13 @@ impl Checker {
         let sup_child_ret = TypeVar::fresh();
         self.register_builtin_fn(
             "supervisor_child",
-            vec![Ty::actor_ref(Ty::Var(sup_child_t)), Ty::I64],
-            Ty::actor_ref(Ty::Var(sup_child_ret)),
+            vec![Ty::local_pid(Ty::Var(sup_child_t)), Ty::I64],
+            Ty::local_pid(Ty::Var(sup_child_ret)),
         );
         let sup_stop_t = TypeVar::fresh();
         self.register_builtin_fn(
             "supervisor_stop",
-            vec![Ty::actor_ref(Ty::Var(sup_stop_t))],
+            vec![Ty::local_pid(Ty::Var(sup_stop_t))],
             Ty::Unit,
         );
 
@@ -646,8 +646,9 @@ impl Checker {
         if !parsed.errors.is_empty() {
             return;
         }
-        // Pre-register the trait definitions from builtins.hew into
-        // `trait_defs` WITHOUT claiming `type_def_spans` for them.  The
+        // Pre-register the public trait/type definitions from builtins.hew
+        // into `trait_defs` / `type_defs` WITHOUT claiming `type_def_spans`
+        // for them.  The
         // checker output-boundary validator (admissibility.rs:491-505)
         // retains `MethodCallReceiverKind::PrimitiveTraitImpl` entries only
         // when their `trait_name` is present in `trait_defs`; without this
@@ -662,16 +663,19 @@ impl Checker {
         // `x.fmt()` dispatch continues to find the builtins-registered
         // impl regardless of which `trait_defs[Display]` shape is current.
         for (item, _) in &parsed.program.items {
-            if let Item::Trait(tr) = item {
-                if !tr.visibility.is_pub() {
-                    continue;
+            match item {
+                Item::Trait(tr) if tr.visibility.is_pub() => {
+                    let info = Self::trait_info_from_decl(tr);
+                    self.trait_defs
+                        .entry(tr.name.clone())
+                        .or_insert_with(|| info.clone());
+                    let qualified = format!("builtins.{}", tr.name);
+                    self.trait_defs.entry(qualified).or_insert(info);
                 }
-                let info = Self::trait_info_from_decl(tr);
-                self.trait_defs
-                    .entry(tr.name.clone())
-                    .or_insert_with(|| info.clone());
-                let qualified = format!("builtins.{}", tr.name);
-                self.trait_defs.entry(qualified).or_insert(info);
+                Item::TypeDecl(td) if td.visibility.is_pub() => {
+                    self.pre_register_type_decl(td);
+                }
+                _ => {}
             }
         }
         // Now feed only the `Item::Impl` blocks through the existing
@@ -2176,6 +2180,14 @@ impl Checker {
             return false;
         };
         let entries = self.build_impl_alias_entries(id);
+        let impl_bounds_map = self.collect_type_param_scope_with_bounds(
+            id.type_params.as_ref(),
+            id.where_clause.as_ref(),
+        );
+        let pushed_impl_bounds = !impl_bounds_map.is_empty();
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.push(impl_bounds_map);
+        }
         // Populate impl_assoc_type_bindings on every enter (not gated on
         // `enforce`) so projection collapse can find bindings during
         // call-site monomorphisation even when this scope was entered by
@@ -2248,6 +2260,9 @@ impl Checker {
                     );
                 }
             }
+        }
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.pop();
         }
         self.impl_alias_scopes.push(ImplAliasScope {
             span: span.clone(),
@@ -3001,6 +3016,12 @@ impl Checker {
             }
         }
 
+        let impl_bounds_map =
+            self.collect_type_param_scope_with_bounds(impl_type_params, impl_where_clause);
+        let pushed_impl_bounds = !impl_bounds_map.is_empty();
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.push(impl_bounds_map);
+        }
         let skip = usize::from(
             method
                 .params
@@ -3016,6 +3037,9 @@ impl Checker {
         let return_type = method.return_type.as_ref().map_or(Ty::Unit, |ret| {
             self.resolve_registered_annotation_ty_no_holes(ret)
         });
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.pop();
+        }
         let param_names: Vec<String> = method
             .params
             .iter()

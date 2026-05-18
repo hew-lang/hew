@@ -173,7 +173,7 @@ impl Checker {
 
                 // ── Type compatibility ──────────────────────────────────────
                 // The dependent child's actor init must have a param named `param_key`
-                // with type `ActorRef<sibling_type>`.
+                // with type `LocalPid<sibling_type>`.
                 self.check_supervisor_wired_to_type_compat(
                     &sd.name,
                     &child.name,
@@ -187,7 +187,7 @@ impl Checker {
     }
 
     /// Verify that `dependent_actor`'s init has a parameter `param_key` typed
-    /// `ActorRef<sibling_type>`. Emits `E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH` on failure.
+    /// `LocalPid<sibling_type>`. Emits `E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH` on failure.
     ///
     /// If the actor type is completely unknown (not registered at all), the check
     /// is skipped — a separate undefined-type diagnostic covers that case.
@@ -224,10 +224,10 @@ impl Checker {
 
         let (_, outer_type, first_inner_type) = param;
 
-        // Expected: outer = "ActorRef" | "LocalPid", inner = expected_sibling_type.
+        // Expected: outer = "LocalPid", inner = expected_sibling_type.
         // RemotePid is intentionally rejected here: supervisors are local, and a
         // wired_to child param typed `RemotePid<Sibling>` is semantically invalid.
-        let type_ok = (outer_type == "ActorRef" || outer_type == "LocalPid")
+        let type_ok = outer_type == "LocalPid"
             && first_inner_type
                 .as_deref()
                 .is_some_and(|t| t == expected_sibling_type);
@@ -249,7 +249,7 @@ impl Checker {
                     "E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: in supervisor `{supervisor_name}`, \
                      child `{dependent_child_name}` wires `{param_key}` to sibling of type \
                      `{expected_sibling_type}`, but `{dependent_actor_type}::init` parameter \
-                     `{param_key}` has type `{actual_type}` (expected `ActorRef<{expected_sibling_type}>` or `LocalPid<{expected_sibling_type}>`)"
+                     `{param_key}` has type `{actual_type}` (expected `LocalPid<{expected_sibling_type}>`)"
                 ),
             ));
         }

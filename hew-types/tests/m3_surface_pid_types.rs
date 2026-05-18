@@ -1,6 +1,5 @@
 mod common;
 
-use common::typecheck;
 use hew_types::Ty;
 
 // ── LocalPid: spawn returns LocalPid<T> ─────────────────────────────────────
@@ -110,28 +109,28 @@ fn remote_pid_is_send_sync_copy() {
     }
 }
 
-// ── Unification: LocalPid ↔ ActorRef bridge ──────────────────────────────────
+// ── Unification: LocalPid and ActorRef are distinct nominal types ─────────────
 
 #[test]
-fn local_pid_passes_to_actor_ref_param() {
-    // `close` takes ActorRef<T>; spawn now returns LocalPid<T>.
-    // The bridge in unify.rs must let this compile without type errors.
-    let output = typecheck(
-        r"
-        actor Worker {
-            let id: i32;
-            init() {}
-        }
-        fn main() {
-            let w = spawn Worker(id: 0);
-            close(w);
-        }
-    ",
-    );
+fn localpid_actorref_no_longer_unify() {
+    use hew_types::ty::Substitution;
+    use hew_types::unify::unify;
+    let actor = Ty::Named {
+        name: "Worker".into(),
+        args: vec![],
+    };
+    let local_pid = Ty::local_pid(actor.clone());
+    let actor_ref = Ty::actor_ref(actor);
+
+    let mut subst = Substitution::new();
     assert!(
-        output.errors.is_empty(),
-        "LocalPid<T> should unify with ActorRef<T> for close(): {:#?}",
-        output.errors
+        unify(&mut subst, &local_pid, &actor_ref).is_err(),
+        "LocalPid<T> must not unify with ActorRef<T>"
+    );
+    let mut subst = Substitution::new();
+    assert!(
+        unify(&mut subst, &actor_ref, &local_pid).is_err(),
+        "ActorRef<T> must not unify with LocalPid<T>"
     );
 }
 

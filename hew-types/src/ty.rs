@@ -1003,12 +1003,12 @@ impl Ty {
         }
     }
 
-    /// If this is an actor handle (`ActorRef<T>`, `Actor<T>`, or `LocalPid<T>`), return `Some(&T)`.
+    /// If this is a local actor handle (`ActorRef<T>`, `Actor<T>`, or `LocalPid<T>`), return `Some(&T)`.
     ///
-    /// `LocalPid<T>` is included because it is the v0.5 spawn-return type and is
-    /// accepted everywhere `ActorRef<T>` is accepted (built-in functions `close`,
-    /// `link`, `monitor`, etc.).  `RemotePid<T>` is intentionally excluded — it
-    /// is a distinct type that does not participate in the local actor graph.
+    /// `LocalPid<T>` is the default spawn-return type. `ActorRef<T>` remains
+    /// recognized for legacy local references. `RemotePid<T>` is intentionally
+    /// excluded — it is a distinct type that does not participate in the local
+    /// supervisor graph.
     #[must_use]
     pub fn as_actor_handle(&self) -> Option<&Ty> {
         match self {

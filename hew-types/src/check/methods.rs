@@ -2671,10 +2671,10 @@ impl Checker {
             // Own methods (e.g. `tell`, `to_remote_via`) are declared in
             // `impl LocalPid<T>` in std/builtins.hew and registered in type_defs /
             // fn_sigs as `"LocalPid::{method}"`.  Actor receive-fn dispatch
-            // (e.g. `pid.greet(arg)`) works the same as ActorRef<T>.
+            // (e.g. `pid.greet(arg)`) remains the local actor-dispatch path.
             (resolved, _) if resolved.as_local_pid().is_some() => {
-                // `.send(payload)` is the legacy fire-and-forget surface inherited
-                // from ActorRef; enforce the Send bound on the payload.
+                // `.send(payload)` is the legacy fire-and-forget surface; enforce
+                // the Send bound on the payload.
                 if method == "send" {
                     for arg in args {
                         let (expr, sp) = arg.expr();
@@ -2684,9 +2684,15 @@ impl Checker {
                     return Ty::Unit;
                 }
                 // Try LocalPid's own methods first.
-                if let Some(sig) = self.lookup_named_method_sig("LocalPid", &[], method) {
-                    return self
-                        .apply_instantiated_call_signature(
+                if let Ty::Named {
+                    args: receiver_args,
+                    ..
+                } = resolved
+                {
+                    if let Some(sig) =
+                        self.lookup_named_method_sig("LocalPid", receiver_args, method)
+                    {
+                        let applied_sig = self.apply_instantiated_call_signature(
                             &sig,
                             None,
                             args,
@@ -2695,8 +2701,12 @@ impl Checker {
                                 arity_context: format!("method '{method}'"),
                             },
                             true,
-                        )
-                        .return_type;
+                        );
+                        if method == "tell" {
+                            self.enforce_actor_method_send_args(args);
+                        }
+                        return applied_sig.return_type;
+                    }
                 }
                 // Fall through to actor receive-fn dispatch on the inner type.
                 let inner = resolved.as_local_pid().unwrap();
@@ -2735,9 +2745,15 @@ impl Checker {
             // RemotePid does NOT fall through to actor receive-fn dispatch; it is
             // a distinct remote type that cannot dispatch local actor methods.
             (resolved, _) if resolved.as_remote_pid().is_some() => {
-                if let Some(sig) = self.lookup_named_method_sig("RemotePid", &[], method) {
-                    return self
-                        .apply_instantiated_call_signature(
+                if let Ty::Named {
+                    args: receiver_args,
+                    ..
+                } = resolved
+                {
+                    if let Some(sig) =
+                        self.lookup_named_method_sig("RemotePid", receiver_args, method)
+                    {
+                        let applied_sig = self.apply_instantiated_call_signature(
                             &sig,
                             None,
                             args,
@@ -2746,8 +2762,12 @@ impl Checker {
                                 arity_context: format!("method '{method}'"),
                             },
                             true,
-                        )
-                        .return_type;
+                        );
+                        if method == "tell" {
+                            self.enforce_actor_method_send_args(args);
+                        }
+                        return applied_sig.return_type;
+                    }
                 }
                 for arg in args {
                     let (expr, sp) = arg.expr();

@@ -28,7 +28,7 @@ pub enum BuiltinLinkage {
     RuntimeFfiShim {
         symbol: &'static str,
     },
-    PrintShim {
+    PrintIntercept {
         runtime_symbol: &'static str,
         kind: PrintKind,
         newline: bool,
@@ -153,7 +153,7 @@ macro_rules! print_entry {
             $of,
             $params,
             BuiltinTy::Unit,
-            BuiltinLinkage::PrintShim {
+            BuiltinLinkage::PrintIntercept {
                 runtime_symbol: PRINT_RUNTIME,
                 kind: PrintKind::$kind,
                 newline: $newline,

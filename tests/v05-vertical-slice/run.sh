@@ -30,6 +30,13 @@ if [[ "${arith_status}" -ne 5 ]]; then
   exit 1
 fi
 
+"${HEW}" compile "${ROOT}/tests/v05-vertical-slice/accept/hello_println.hew" >"${accept_output}" 2>&1
+hello_println_bin="${ROOT}/.tmp/compile-out/hello_println"
+hello_stdout="${ROOT}/.tmp/hello_println.stdout"
+trap 'rm -f "${accept_output}" "${reject_output}" "${hello_stdout}"' EXIT
+"${hello_println_bin}" >"${hello_stdout}"
+diff -u "${ROOT}/tests/v05-vertical-slice/accept/hello_println.expected" "${hello_stdout}"
+
 if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unresolved_symbol.hew" >"${reject_output}" 2>&1; then
   echo "expected unresolved symbol fixture to fail" >&2
   exit 1

@@ -11,6 +11,7 @@ keywords = ["hew", "compiler", "llvm", "codegen", "wasm"]
 categories = ["compilers"]
 
 [dependencies]
+hew-hir = { path = "../hew-hir" }
 hew-mir = { path = "../hew-mir" }
 hew-types = { path = "../hew-types" }
 # Inkwell wraps LLVM. Pinned to llvm22-1 because the v0.5 backend probe
@@ -33,7 +34,6 @@ name = "hew-emit-v05"
 path = "src/bin/hew_emit_v05.rs"
 
 [dev-dependencies]
-hew-hir = { path = "../hew-hir" }
 hew-parser = { path = "../hew-parser" }
 # Required by jit_trap_bridge.rs: libc::c_int for the sigsetjmp/siglongjmp FFI
 # declarations used in the trap recorder (same pattern as hew-runtime/src/signal.rs).

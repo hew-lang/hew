@@ -58,6 +58,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
+use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy, PrintKind};
 use hew_mir::{
     validate_context_markers, CheckedMirFunction, CmpPred, CooperateKind, CooperateSite, ElabDrop,
     ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp,
@@ -70,8 +71,10 @@ use inkwell::context::Context;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
 use inkwell::targets::TargetMachine;
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, StructType};
-use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, FunctionType, StructType};
+use inkwell::values::{
+    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+};
 use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 
@@ -376,11 +379,16 @@ struct FnCtx<'a, 'ctx> {
     builder: Builder<'ctx>,
     return_slot: PointerValue<'ctx>,
     return_ty: BasicTypeEnum<'ctx>,
+    return_resolved_ty: ResolvedTy,
     execution_context: Option<PointerValue<'ctx>>,
     execution_context_is_actor_handler: bool,
     /// Local-register id → (stack slot, slot's LLVM type). Keyed by the
     /// `Place::Local(N)` index — an MIR identity, not a checker derivative.
     locals: HashMap<u32, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
+    /// Local-register id → resolved Hew type. Kept alongside `locals` for
+    /// ABI helpers that must encode a value from its source type, not only its
+    /// LLVM storage shape.
+    local_tys: HashMap<u32, ResolvedTy>,
     /// Block id → LLVM `BasicBlock`. Populated up front so terminators can
     /// name forward targets.
     blocks: HashMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
@@ -411,10 +419,37 @@ struct FnCtx<'a, 'ctx> {
 type FnSymbolMap<'ctx> = HashMap<String, FnSymbol<'ctx>>;
 
 #[derive(Clone, Copy)]
-struct FnSymbol<'ctx> {
-    value: FunctionValue<'ctx>,
-    return_ty: BasicTypeEnum<'ctx>,
-    returns_unit: bool,
+enum FnSymbol<'ctx> {
+    Real {
+        value: FunctionValue<'ctx>,
+        return_ty: BasicTypeEnum<'ctx>,
+        returns_unit: bool,
+    },
+    PrintIntercept {
+        runtime_symbol: &'static str,
+        kind: PrintKind,
+        newline: bool,
+    },
+}
+
+impl<'ctx> FnSymbol<'ctx> {
+    fn real(
+        self,
+        callee: &str,
+        context: &str,
+    ) -> CodegenResult<(FunctionValue<'ctx>, BasicTypeEnum<'ctx>, bool)> {
+        match self {
+            Self::Real {
+                value,
+                return_ty,
+                returns_unit,
+            } => Ok((value, return_ty, returns_unit)),
+            Self::PrintIntercept { .. } => Err(CodegenError::FailClosed(format!(
+                "{context} expected `{callee}` to be a callable LLVM function, \
+                 but it is a stdlib print intercept"
+            ))),
+        }
+    }
 }
 
 /// Lazily-interned C-ABI extern function declarations for runtime symbols
@@ -615,6 +650,136 @@ fn intern_runtime_decl<'ctx>(
     let fv = llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External));
     decls.insert(symbol.to_string(), fv);
     Ok(fv)
+}
+
+fn basic_metadata_type<'ctx>(ty: BasicTypeEnum<'ctx>) -> BasicMetadataTypeEnum<'ctx> {
+    match ty {
+        BasicTypeEnum::IntType(t) => t.into(),
+        BasicTypeEnum::PointerType(t) => t.into(),
+        BasicTypeEnum::FloatType(t) => t.into(),
+        BasicTypeEnum::StructType(t) => t.into(),
+        BasicTypeEnum::ArrayType(t) => t.into(),
+        BasicTypeEnum::VectorType(t) => t.into(),
+        BasicTypeEnum::ScalableVectorType(t) => t.into(),
+    }
+}
+
+fn fn_type_for_return<'ctx>(
+    ctx: &'ctx Context,
+    return_ty: Option<BasicTypeEnum<'ctx>>,
+    params: &[BasicMetadataTypeEnum<'ctx>],
+) -> FunctionType<'ctx> {
+    match return_ty {
+        Some(BasicTypeEnum::IntType(t)) => t.fn_type(params, false),
+        Some(BasicTypeEnum::FloatType(t)) => t.fn_type(params, false),
+        Some(BasicTypeEnum::StructType(t)) => t.fn_type(params, false),
+        Some(BasicTypeEnum::PointerType(t)) => t.fn_type(params, false),
+        Some(BasicTypeEnum::ArrayType(t)) => t.fn_type(params, false),
+        Some(BasicTypeEnum::VectorType(t)) => t.fn_type(params, false),
+        Some(BasicTypeEnum::ScalableVectorType(t)) => t.fn_type(params, false),
+        None => ctx.void_type().fn_type(params, false),
+    }
+}
+
+fn builtin_type_to_llvm<'ctx>(
+    ctx: &'ctx Context,
+    ty: BuiltinTy,
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<BasicTypeEnum<'ctx>> {
+    resolve_ty(ctx, &ty.to_resolved(), record_layouts)
+}
+
+fn builtin_return_to_llvm<'ctx>(
+    ctx: &'ctx Context,
+    ty: BuiltinTy,
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<Option<BasicTypeEnum<'ctx>>> {
+    match ty {
+        BuiltinTy::Unit | BuiltinTy::Never => Ok(None),
+        other => Ok(Some(builtin_type_to_llvm(ctx, other, record_layouts)?)),
+    }
+}
+
+fn declare_print_runtime<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    symbol: &str,
+) -> FunctionValue<'ctx> {
+    if let Some(fv) = llvm_mod.get_function(symbol) {
+        return fv;
+    }
+    let fn_ty = ctx.void_type().fn_type(
+        &[
+            ctx.i8_type().into(),
+            ctx.i64_type().into(),
+            ctx.bool_type().into(),
+        ],
+        false,
+    );
+    llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External))
+}
+
+fn declare_catalog_ffi<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    entry: &BuiltinEntry,
+    symbol: &str,
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<FnSymbol<'ctx>> {
+    let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(entry.params.len());
+    for param in entry.params {
+        param_tys.push(basic_metadata_type(builtin_type_to_llvm(
+            ctx,
+            *param,
+            record_layouts,
+        )?));
+    }
+    let return_ty = builtin_return_to_llvm(ctx, entry.return_ty, record_layouts)?;
+    let fn_ty = fn_type_for_return(ctx, return_ty, &param_tys);
+    let value = llvm_mod
+        .get_function(symbol)
+        .unwrap_or_else(|| llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External)));
+    Ok(FnSymbol::Real {
+        value,
+        return_ty: return_ty.unwrap_or_else(|| ctx.i8_type().into()),
+        returns_unit: return_ty.is_none(),
+    })
+}
+
+fn predeclare_stdlib_catalog<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    fn_symbols: &mut FnSymbolMap<'ctx>,
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<()> {
+    for entry in stdlib_catalog::entries() {
+        match entry.linkage {
+            BuiltinLinkage::RuntimeFfiShim { symbol }
+            | BuiltinLinkage::ToStringShim { symbol }
+            | BuiltinLinkage::StringCloneShim { symbol } => {
+                let symbol_entry =
+                    declare_catalog_ffi(ctx, llvm_mod, entry, symbol, record_layouts)?;
+                fn_symbols.insert(entry.name.to_string(), symbol_entry);
+            }
+            BuiltinLinkage::PrintIntercept {
+                runtime_symbol,
+                kind,
+                newline,
+            } => {
+                declare_print_runtime(ctx, llvm_mod, runtime_symbol);
+                fn_symbols.insert(
+                    entry.name.to_string(),
+                    FnSymbol::PrintIntercept {
+                        runtime_symbol,
+                        kind,
+                        newline,
+                    },
+                );
+            }
+            BuiltinLinkage::CompilerIntrinsic { .. } => {}
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -898,6 +1063,19 @@ fn place_pointer<'ctx>(
     }
 }
 
+fn place_resolved_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, place: Place) -> CodegenResult<&'a ResolvedTy> {
+    match place {
+        Place::Local(id)
+        | Place::DuplexHandle(id)
+        | Place::LambdaActorHandle(id)
+        | Place::SendHalf(id)
+        | Place::RecvHalf(id) => fn_ctx.local_tys.get(&id).ok_or_else(|| {
+            CodegenError::FailClosed(format!("local {id} has no resolved type before use"))
+        }),
+        Place::ReturnSlot => Ok(&fn_ctx.return_resolved_ty),
+    }
+}
+
 fn task_wrapper_name(callee_symbol: &str) -> String {
     let sanitized: String = callee_symbol
         .chars()
@@ -928,20 +1106,18 @@ fn get_or_create_task_wrapper<'ctx>(
             "SpawnTaskDirect callee `{callee_symbol}` was not declared"
         ))
     })?;
-    if !callee_symbol_entry.returns_unit
-        || !matches!(callee_symbol_entry.return_ty, BasicTypeEnum::IntType(_))
-    {
+    let (callee_value, callee_return_ty, callee_returns_unit) =
+        callee_symbol_entry.real(callee_symbol, "SpawnTaskDirect")?;
+    if !callee_returns_unit || !matches!(callee_return_ty, BasicTypeEnum::IntType(_)) {
         return Err(CodegenError::FailClosed(format!(
             "SpawnTaskDirect callee `{callee_symbol}` must be unit-lowered to the i8 \
              stand-in return type; got {:?}",
-            callee_symbol_entry.return_ty
+            callee_return_ty
         )));
     }
 
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    if callee_symbol_entry.value.get_nth_param(0).is_none()
-        || callee_symbol_entry.value.get_nth_param(1).is_some()
-    {
+    if callee_value.get_nth_param(0).is_none() || callee_value.get_nth_param(1).is_some() {
         return Err(CodegenError::FailClosed(format!(
             "SpawnTaskDirect callee `{callee_symbol}` must take a leading \
              HewExecutionContext* and no user parameters"
@@ -965,11 +1141,7 @@ fn get_or_create_task_wrapper<'ctx>(
         CodegenError::FailClosed("task wrapper missing HewTask* parameter".into())
     })?;
     builder
-        .build_call(
-            callee_symbol_entry.value,
-            &[ctx_param.into()],
-            "task_body_call",
-        )
+        .build_call(callee_value, &[ctx_param.into()], "task_body_call")
         .map_err(|e| CodegenError::Llvm(format!("task wrapper body call: {e:?}")))?;
 
     let complete = intern_runtime_decl(
@@ -1037,19 +1209,17 @@ fn get_or_create_task_closure_wrapper<'ctx>(
             "SpawnTaskClosure closure invoke shim `{fn_symbol}` was not declared"
         ))
     })?;
-    if !closure_symbol.returns_unit
-        || !matches!(closure_symbol.return_ty, BasicTypeEnum::IntType(_))
-    {
+    let (closure_value, closure_return_ty, closure_returns_unit) =
+        closure_symbol.real(fn_symbol, "SpawnTaskClosure")?;
+    if !closure_returns_unit || !matches!(closure_return_ty, BasicTypeEnum::IntType(_)) {
         return Err(CodegenError::FailClosed(format!(
             "SpawnTaskClosure shim `{fn_symbol}` must be unit-lowered to the i8 \
              stand-in return type; got {:?}",
-            closure_symbol.return_ty
+            closure_return_ty
         )));
     }
 
-    if closure_symbol.value.get_nth_param(0).is_none()
-        || closure_symbol.value.get_nth_param(1).is_none()
-    {
+    if closure_value.get_nth_param(0).is_none() || closure_value.get_nth_param(1).is_none() {
         return Err(CodegenError::FailClosed(format!(
             "SpawnTaskClosure shim `{fn_symbol}` must take leading \
              HewExecutionContext* and closure environment parameters"
@@ -1090,7 +1260,7 @@ fn get_or_create_task_closure_wrapper<'ctx>(
         .into_pointer_value();
     builder
         .build_call(
-            closure_symbol.value,
+            closure_value,
             &[ctx_param.into(), env_ptr.into()],
             "closure_task_body_call",
         )
@@ -2284,7 +2454,8 @@ fn lower_make_closure(
                 "MakeClosure references missing closure invoke shim `{fn_symbol}`"
             ))
         })?
-        .value;
+        .real(fn_symbol, "MakeClosure")?
+        .0;
     let (env_ptr, _) = place_pointer(fn_ctx, env)?;
     let fn_field = fn_ctx
         .builder
@@ -3602,6 +3773,131 @@ fn duplex_handle_out_addr<'ctx>(
     }
 }
 
+fn print_kind_for_resolved_ty(ty: &ResolvedTy) -> Option<PrintKind> {
+    match ty {
+        ResolvedTy::I32 => Some(PrintKind::I32),
+        ResolvedTy::I64 => Some(PrintKind::I64),
+        ResolvedTy::U32 => Some(PrintKind::U32),
+        ResolvedTy::U64 => Some(PrintKind::U64),
+        ResolvedTy::F64 => Some(PrintKind::F64),
+        ResolvedTy::Bool => Some(PrintKind::Bool),
+        ResolvedTy::String => Some(PrintKind::Str),
+        _ => None,
+    }
+}
+
+fn print_kind_tag(kind: PrintKind) -> u64 {
+    match kind {
+        PrintKind::I32 => 0,
+        PrintKind::I64 => 1,
+        PrintKind::F64 => 2,
+        PrintKind::Bool => 3,
+        PrintKind::Str => 4,
+        PrintKind::U32 => 5,
+        PrintKind::U64 => 6,
+    }
+}
+
+fn expect_int_value<'ctx>(
+    value: BasicValueEnum<'ctx>,
+    label: &str,
+) -> CodegenResult<IntValue<'ctx>> {
+    match value {
+        BasicValueEnum::IntValue(v) => Ok(v),
+        other => Err(CodegenError::FailClosed(format!(
+            "{label}: expected integer value, got {other:?}"
+        ))),
+    }
+}
+
+fn emit_print_value_call<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    runtime_symbol: &str,
+    arg: Place,
+    kind: PrintKind,
+    newline: bool,
+    callee: &str,
+) -> CodegenResult<()> {
+    let arg_resolved_ty = place_resolved_ty(fn_ctx, arg)?;
+    let actual_kind = print_kind_for_resolved_ty(arg_resolved_ty).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "print intercept `{callee}` received unsupported argument type {arg_resolved_ty:?}"
+        ))
+    })?;
+    if actual_kind != kind {
+        return Err(CodegenError::FailClosed(format!(
+            "print intercept `{callee}` expected {kind:?}, got {actual_kind:?} \
+             from argument type {arg_resolved_ty:?}"
+        )));
+    }
+
+    let (arg_ptr, arg_ty) = place_pointer(fn_ctx, arg)?;
+    let loaded = fn_ctx
+        .builder
+        .build_load(arg_ty, arg_ptr, "print_arg")
+        .map_err(|e| CodegenError::Llvm(format!("print arg load: {e:?}")))?;
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let bits = match kind {
+        PrintKind::I32 | PrintKind::U32 | PrintKind::Bool => {
+            let int_value = expect_int_value(loaded, "print integer/bool payload")?;
+            fn_ctx
+                .builder
+                .build_int_z_extend(int_value, i64_ty, "print_narrow_bits")
+                .map_err(|e| CodegenError::Llvm(format!("print payload zext: {e:?}")))?
+        }
+        PrintKind::I64 | PrintKind::U64 => {
+            let int_value = expect_int_value(loaded, "print i64/u64 payload")?;
+            if int_value.get_type().get_bit_width() != 64 {
+                return Err(CodegenError::FailClosed(format!(
+                    "print intercept `{callee}` expected a 64-bit integer payload, \
+                     got {} bits",
+                    int_value.get_type().get_bit_width()
+                )));
+            }
+            int_value
+        }
+        PrintKind::F64 => match loaded {
+            BasicValueEnum::FloatValue(v) => fn_ctx
+                .builder
+                .build_bit_cast(v, i64_ty, "print_f64_bits")
+                .map_err(|e| CodegenError::Llvm(format!("print f64 bitcast: {e:?}")))?
+                .into_int_value(),
+            other => {
+                return Err(CodegenError::FailClosed(format!(
+                    "print f64 payload must be a float value, got {other:?}"
+                )))
+            }
+        },
+        PrintKind::Str => match loaded {
+            BasicValueEnum::PointerValue(v) => fn_ctx
+                .builder
+                .build_ptr_to_int(v, i64_ty, "print_str_bits")
+                .map_err(|e| CodegenError::Llvm(format!("print str ptrtoint: {e:?}")))?,
+            other => {
+                return Err(CodegenError::FailClosed(format!(
+                    "print string payload must be a pointer value, got {other:?}"
+                )))
+            }
+        },
+    };
+
+    let print_fn = declare_print_runtime(fn_ctx.ctx, fn_ctx.llvm_mod, runtime_symbol);
+    let kind_tag = fn_ctx.ctx.i8_type().const_int(print_kind_tag(kind), false);
+    let newline_flag = fn_ctx
+        .ctx
+        .bool_type()
+        .const_int(if newline { 1 } else { 0 }, false);
+    fn_ctx
+        .builder
+        .build_call(
+            print_fn,
+            &[kind_tag.into(), bits.into(), newline_flag.into()],
+            "hew_print_value_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_print_value call: {e:?}")))?;
+    Ok(())
+}
+
 fn lower_terminator<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbols: &FnSymbolMap<'ctx>,
@@ -3675,54 +3971,81 @@ fn lower_terminator<'ctx>(
                     "Call to `{callee}` with no declared symbol (coroutine targets are not callable yet)"
                 ))
             })?;
-            let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
-                Vec::with_capacity(args.len());
-            for arg in args {
-                let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
-                let loaded = fn_ctx
-                    .builder
-                    .build_load(arg_ty, arg_ptr, "call_arg")
-                    .map_err(|e| CodegenError::Llvm(format!("call arg load: {e:?}")))?;
-                arg_vals.push(match loaded {
-                    BasicValueEnum::IntValue(v) => v.into(),
-                    BasicValueEnum::FloatValue(v) => v.into(),
-                    BasicValueEnum::PointerValue(v) => v.into(),
-                    BasicValueEnum::StructValue(v) => v.into(),
-                    BasicValueEnum::ArrayValue(v) => v.into(),
-                    BasicValueEnum::VectorValue(v) => v.into(),
-                    BasicValueEnum::ScalableVectorValue(v) => v.into(),
-                });
-            }
-            let call_site = fn_ctx
-                .builder
-                .build_call(callee_symbol_entry.value, &arg_vals, "call_result")
-                .map_err(|e| CodegenError::Llvm(format!("build_call: {e:?}")))?;
-            if let Some(dest_place) = dest {
-                if callee_symbol_entry.returns_unit {
-                    return Err(CodegenError::FailClosed(format!(
-                        "Call to unit-returning fn `{callee}` must not carry a Terminator::Call dest"
-                    )));
+            match callee_symbol_entry {
+                FnSymbol::PrintIntercept {
+                    runtime_symbol,
+                    kind,
+                    newline,
+                } => {
+                    if dest.is_some() {
+                        return Err(CodegenError::FailClosed(format!(
+                            "print intercept `{callee}` must not carry a Terminator::Call dest"
+                        )));
+                    }
+                    let [arg] = args.as_slice() else {
+                        return Err(CodegenError::FailClosed(format!(
+                            "print intercept `{callee}` expects exactly one argument, got {}",
+                            args.len()
+                        )));
+                    };
+                    emit_print_value_call(fn_ctx, runtime_symbol, *arg, kind, newline, callee)?;
                 }
-                let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
-                if dest_ty != callee_symbol_entry.return_ty {
-                    return Err(CodegenError::FailClosed(format!(
-                        "Call dest type {dest_ty:?} does not match callee return {:?}",
-                        callee_symbol_entry.return_ty
-                    )));
+                FnSymbol::Real {
+                    value,
+                    return_ty,
+                    returns_unit,
+                } => {
+                    let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
+                        Vec::with_capacity(args.len());
+                    for arg in args {
+                        let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
+                        let loaded = fn_ctx
+                            .builder
+                            .build_load(arg_ty, arg_ptr, "call_arg")
+                            .map_err(|e| CodegenError::Llvm(format!("call arg load: {e:?}")))?;
+                        arg_vals.push(match loaded {
+                            BasicValueEnum::IntValue(v) => v.into(),
+                            BasicValueEnum::FloatValue(v) => v.into(),
+                            BasicValueEnum::PointerValue(v) => v.into(),
+                            BasicValueEnum::StructValue(v) => v.into(),
+                            BasicValueEnum::ArrayValue(v) => v.into(),
+                            BasicValueEnum::VectorValue(v) => v.into(),
+                            BasicValueEnum::ScalableVectorValue(v) => v.into(),
+                        });
+                    }
+                    let call_site = fn_ctx
+                        .builder
+                        .build_call(value, &arg_vals, "call_result")
+                        .map_err(|e| CodegenError::Llvm(format!("build_call: {e:?}")))?;
+                    if let Some(dest_place) = dest {
+                        if returns_unit {
+                            return Err(CodegenError::FailClosed(format!(
+                                "Call to unit-returning fn `{callee}` must not carry a Terminator::Call dest"
+                            )));
+                        }
+                        let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+                        if dest_ty != return_ty {
+                            return Err(CodegenError::FailClosed(format!(
+                                "Call dest type {dest_ty:?} does not match callee return {:?}",
+                                return_ty
+                            )));
+                        }
+                        let ret_val = call_site.try_as_basic_value().basic().ok_or_else(|| {
+                            CodegenError::FailClosed(
+                                "Call to void-returning fn is not usable with Terminator::Call dest"
+                                    .into(),
+                            )
+                        })?;
+                        fn_ctx
+                            .builder
+                            .build_store(dest_ptr, ret_val)
+                            .map_err(|e| CodegenError::Llvm(format!("call store: {e:?}")))?;
+                    } else if !returns_unit {
+                        return Err(CodegenError::FailClosed(format!(
+                            "Call to value-returning fn `{callee}` must carry a Terminator::Call dest"
+                        )));
+                    }
                 }
-                let ret_val = call_site.try_as_basic_value().basic().ok_or_else(|| {
-                    CodegenError::FailClosed(
-                        "Call to void-returning fn is not usable with Terminator::Call dest".into(),
-                    )
-                })?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, ret_val)
-                    .map_err(|e| CodegenError::Llvm(format!("call store: {e:?}")))?;
-            } else if !callee_symbol_entry.returns_unit {
-                return Err(CodegenError::FailClosed(format!(
-                    "Call to value-returning fn `{callee}` must carry a Terminator::Call dest"
-                )));
             }
             let next_bb = *fn_ctx
                 .blocks
@@ -4139,7 +4462,7 @@ fn declare_function<'ctx>(
         BasicTypeEnum::ScalableVectorType(v) => v.fn_type(&param_tys, false),
     };
     let llvm_fn = llvm_mod.add_function(&func.name, fn_ty, linkage);
-    Ok(FnSymbol {
+    Ok(FnSymbol::Real {
         value: llvm_fn,
         return_ty: return_ty_llvm,
         returns_unit: matches!(func.return_ty, ResolvedTy::Unit),
@@ -4175,8 +4498,7 @@ fn lower_function<'ctx>(
             func.name
         ))
     })?;
-    let llvm_fn = symbol.value;
-    let return_ty_llvm = symbol.return_ty;
+    let (llvm_fn, return_ty_llvm, _returns_unit) = symbol.real(&func.name, "lower_function")?;
     let context_marker_findings = validate_context_markers(func);
     if !context_marker_findings.is_empty() {
         return Err(CodegenError::FailClosed(format!(
@@ -4222,6 +4544,7 @@ fn lower_function<'ctx>(
     };
 
     let mut locals: HashMap<u32, (PointerValue, BasicTypeEnum)> = HashMap::new();
+    let mut local_tys: HashMap<u32, ResolvedTy> = HashMap::new();
     for (idx, ty) in func.locals.iter().enumerate() {
         // Use `resolve_ty` (not bare `primitive_to_llvm`) so record-typed
         // locals materialise as struct allocas rather than tripping the
@@ -4236,6 +4559,7 @@ fn lower_function<'ctx>(
             .build_alloca(llvm_ty, &format!("local_{idx}"))
             .map_err(|e| CodegenError::Llvm(format!("alloca local {idx}: {e:?}")))?;
         locals.insert(idx_u32, (slot, llvm_ty));
+        local_tys.insert(idx_u32, ty.clone());
     }
 
     // Parameter prologue: store each LLVM function argument into the
@@ -4275,9 +4599,11 @@ fn lower_function<'ctx>(
         builder,
         return_slot,
         return_ty: return_ty_llvm,
+        return_resolved_ty: func.return_ty.clone(),
         execution_context,
         execution_context_is_actor_handler: func.call_conv == FunctionCallConv::ActorHandler,
         locals,
+        local_tys,
         blocks: blocks.clone(),
         runtime_decls: RefCell::new(HashMap::new()),
         record_layouts,
@@ -4368,6 +4694,7 @@ fn build_module<'ctx>(
     // produces an empty map and changes no behaviour for record-free code.
     let record_layouts = register_record_layouts(ctx, &pipeline.record_layouts)?;
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
+    predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;
     for func in &pipeline.raw_mir {
         let sym = declare_function(ctx, &llvm_mod, func, &record_layouts)?;
         fn_symbols.insert(func.name.clone(), sym);

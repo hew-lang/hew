@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use hew_hir::stdlib_catalog;
 use hew_hir::{
     named_type_names, BindingId, HirActorDecl, HirBlock, HirExpr, HirExprKind, HirFn, HirItem,
     HirLiteral, HirModule, HirStmtKind, IntentKind, ResolvedRef, ValueClass,
@@ -302,6 +303,14 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     // this set → `Terminator::Call`; otherwise the runtime-ABI/indirect
     // fail-closed paths apply.
     let mut module_fn_names: HashSet<String> = HashSet::new();
+    for entry in stdlib_catalog::entries() {
+        if !matches!(
+            entry.linkage,
+            stdlib_catalog::BuiltinLinkage::CompilerIntrinsic { .. }
+        ) {
+            module_fn_names.insert(entry.name.to_string());
+        }
+    }
     for item in &module.items {
         if let HirItem::Function(f) = item {
             if f.type_params.is_empty() {

@@ -1412,15 +1412,45 @@ pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 #[must_use]
 pub extern "C" fn hew_actor_cooperate() -> c_int {
-    let actor = crate::actor::hew_actor_self();
+    let ctx = crate::execution_context::require_current_context();
+    if ctx.is_null() {
+        return 0;
+    }
+
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary.
+    let (actor, cancel_token, scope) =
+        unsafe { ((*ctx).actor, (*ctx).cancel_token, (*ctx).task_scope) };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if !cancel_token.is_null() {
+            // SAFETY: cancel_token is owned by the installed task scope.
+            if unsafe { crate::task_scope::hew_cancel_token_is_requested(cancel_token) } != 0 {
+                return 2;
+            }
+        }
+
+        if !scope.is_null() {
+            // SAFETY: scope is valid per canonical context installation contract.
+            if unsafe { crate::task_scope::hew_task_scope_is_cancelled(scope) } != 0 {
+                return 2;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        // WASM-TODO(#1451): task-scope cancellation tokens are native-only until
+        // the Q83/R17 WASI task-scope follow-on lands.
+        let _ = (cancel_token, scope);
+    }
+
     if actor.is_null() {
         return 0;
     }
 
-    // SAFETY: hew_actor_self returned a valid, non-null actor pointer.
-    // The WASM HewActor and crate::actor::HewActor have identical layouts
-    // (verified by the compile-time offset_of! assertions above), so we
-    // can safely read the reductions field through the actor pointer.
+    // SAFETY: actor was read from the installed canonical context.
     let a = unsafe { &*actor };
 
     // Decrement reduction counter. If still positive, continue.

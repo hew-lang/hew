@@ -1144,6 +1144,11 @@ fn activate_actor(actor: *mut HewActor) {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn activate_actor_for_test(actor: *mut HewActor) {
+    activate_actor(actor);
+}
+
 // ── Cooperative yielding ────────────────────────────────────────────────
 
 /// Cooperatively yield if the actor's reduction budget is exhausted.

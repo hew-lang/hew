@@ -3,6 +3,11 @@
 //! Import `std::link_monitor` when you want to name `MonitorRef` or
 //! `LinkError` explicitly.  The `monitor(actor)` builtin returns `MonitorRef`;
 //! the `link(actor)` builtin returns `Result<(), LinkError>`.
+//!
+//! v0.5 link/monitor builtins return through the Cluster 2 composite-return
+//! spine, which lands in v0.6. The runtime symbols exist (`hew_actor_link`,
+//! `hew_actor_monitor`), but the user-source surface fails closed today. See
+//! commit `1698840f` for the explicit deferral.
 
 import std::io::closable;
 

@@ -1,5 +1,9 @@
-//! Failure-philosophy stdlib types for `#[on(crash)]` / `#[on(upgrade)]`
-//! lifecycle hooks.
+//! Failure-philosophy stdlib types for lifecycle hooks.
+//!
+//! `#[on(crash)]` is live in v0.5 as of `373b95ea`.
+//! `#[on(upgrade)]` is reserved for v0.6; hot-upgrade invocation and state
+//! migration are explicitly deferred, so v0.5 programs must not treat it as
+//! an available hook.
 //!
 //! Import `std::failure` to name `PanicInfo` or `CrashAction` explicitly
 //! in a `#[on(crash)]` hook's signature.  Both types are also pre-bound
@@ -31,16 +35,18 @@ pub type PanicInfo {
 
 /// Advisory return value of a `#[on(crash)]` hook.
 ///
-/// The supervisor consults the returned variant but honours its own
-/// restart-budget rules; if the budget is exhausted the supervisor
-/// escalates regardless of what the hook requested (per Q46 / A23 of
-/// the failure-philosophy plan).
+/// v0.5 honours each child's `restart_policy`; the crash handler is
+/// side-effects-only in this edition and the returned variant is ignored.
+/// The variants remain in the public type so the hook ABI can be spelled as
+/// `(PanicInfo) -> CrashAction`; using this return value as a supervisor
+/// control surface is deferred to v0.6 with the Cluster 2 composite-return
+/// spine.
 ///
-/// - `Restart`: re-spawn the actor under the same supervisor (default
-///   when no hook is registered).
-/// - `Escalate`: propagate the failure to the supervisor's supervisor
-///   instead of restarting locally.
-/// - `Kill`: terminate the actor permanently; no restart attempt.
+/// - `Restart`: v0.6 control intent to re-spawn the actor under the same
+///   supervisor.
+/// - `Escalate`: v0.6 control intent to propagate the failure to the
+///   supervisor's supervisor instead of restarting locally.
+/// - `Kill`: v0.6 control intent to terminate the actor permanently.
 pub enum CrashAction {
     Restart;
     Escalate;

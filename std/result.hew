@@ -4,6 +4,12 @@
 //! operations.  They use `match` on the built-in `Result` type and avoid
 //! FFI calls entirely for the supported element types.
 //!
+//! v0.5 ships the `Result<T, E>` type definition and pattern matching, but
+//! user functions returning `Result<T, E>` are deferred to v0.6 via the
+//! Cluster 2 composite-return spine. In v0.5, use out-parameter mutation,
+//! panic-on-error, or wrap a single handle when a function needs to report
+//! failure across a call boundary.
+//!
 //! # Examples
 //!
 //! ```

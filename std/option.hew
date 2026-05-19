@@ -4,6 +4,12 @@
 //! operations.  They use `match` on the built-in `Option` type and avoid
 //! FFI calls entirely for the supported element types.
 //!
+//! v0.5 ships the `Option<T>` type definition and pattern matching, but user
+//! functions returning `Option<T>` are deferred to v0.6 via the Cluster 2
+//! composite-return spine. In v0.5, use out-parameter mutation,
+//! panic-on-error, or wrap a single handle when a function needs to report
+//! absence across a call boundary.
+//!
 //! # Examples
 //!
 //! ```

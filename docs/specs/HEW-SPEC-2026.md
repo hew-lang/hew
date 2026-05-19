@@ -96,20 +96,20 @@ The token `ask` does not appear at actor call sites. Request-reply against a nam
 
 ```hew
 actor Counter {
-    var count: int = 0;
+    var count: i64 = 0;
 
     // Fire-and-forget: no return type, caller does not await
-    receive fn increment(n: int) {
+    receive fn increment(n: i64) {
         count += n;
     }
 
     // Request-response: has return type, caller must await
-    receive fn get() -> int {
+    receive fn get() -> i64 {
         count
     }
 
     // Internal method - not accessible to other actors
-    fn validate(n: int) -> bool {
+    fn validate(n: i64) -> bool {
         n >= 0
     }
 }
@@ -138,7 +138,7 @@ Lambda actors receive messages via call-syntax. Named actors expose typed receiv
 
 ```hew
 // Lambda actor: call the handle directly
-let worker = actor |msg: int| { println(msg * 2); };
+let worker = actor |msg: i64| { println(msg * 2); };
 worker.send(42);                // fire-and-forget
 
 // Named actor: use the receive method
@@ -183,7 +183,7 @@ Receive handlers can be annotated with `#[every(duration)]` to create periodic t
 ```hew
 actor HealthChecker {
     let endpoint: String;
-    let failures: int;
+    let failures: i64;
 
     #[every(5s)]
     receive fn check() {
@@ -191,7 +191,7 @@ actor HealthChecker {
         failures = failures + 1;
     }
 
-    receive fn get_failures() -> int {
+    receive fn get_failures() -> i64 {
         failures
     }
 }
@@ -212,13 +212,13 @@ Lambda actors provide lightweight, inline actor definitions:
 
 ```hew
 // Basic lambda actor
-let worker = actor |msg: int| {
+let worker = actor |msg: i64| {
     println(msg * 2);
 };
 
 // With state capture (move semantics)
 let factor = 2;
-let multiplier = actor move |x: int| {
+let multiplier = actor move |x: i64| {
     println(x * factor);
 };
 ```
@@ -244,7 +244,7 @@ Lambda actors return `ActorRef<Actor<M>>` for fire-and-forget or `ActorRef<Actor
 let counter: ActorRef<Counter> = spawn Counter(0);
 
 // Lambda actor expression returns ActorRef<Actor<M>>
-let worker: ActorRef<Actor<int>> = actor |msg: int| { println(msg); };
+let worker: ActorRef<Actor<i64>> = actor |msg: i64| { println(msg); };
 ```
 
 **Capture semantics:**
@@ -270,7 +270,7 @@ Lambda actors spawned within a `scope` block are **scope-owned** by that block, 
 
 ```hew
 scope {
-    let worker = actor |x: int| { ... };
+    let worker = actor |x: i64| { ... };
     worker.send(1);
 }  // worker stopped when the scope-block exits
 ```
@@ -386,7 +386,7 @@ A function can be marked `pure` to guarantee it is free of observable side effec
 The compiler statically verifies purity at type-check time.
 
 ```hew
-pure fn add(a: int, b: int) -> int {
+pure fn add(a: i64, b: i64) -> i64 {
     a + b
 }
 ```
@@ -407,7 +407,7 @@ trait Math {
 }
 
 actor Calculator {
-    pure receive fn add(a: int, b: int) -> int {
+    pure receive fn add(a: i64, b: i64) -> i64 {
         a + b
     }
 }
@@ -472,12 +472,12 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 
 ```hew
 let buf: bytes = bytes::new();
-buf.push(0x48);    // push a byte value (int)
+buf.push(0x48);    // push a byte value (i64)
 buf.push(72);      // same as 'H' in ASCII
-let n = buf.len(); // int
-let b = buf.get(0); // int — first byte
+let n = buf.len(); // i64
+let b = buf.get(0); // i64 — first byte
 buf.set(1, 0xFF);   // overwrite byte at index 1
-let last = buf.pop(); // int — removes and returns last byte
+let last = buf.pop(); // i64 — removes and returns last byte
 println(buf.is_empty()); // bool
 println(buf.contains(72)); // bool — linear scan
 ```
@@ -487,13 +487,13 @@ println(buf.contains(72)); // bool — linear scan
 | Method         | Signature          | Description                     |
 | -------------- | ------------------ | ------------------------------- |
 | `bytes::new()` | `() -> bytes`      | Create an empty byte buffer     |
-| `.push(b)`     | `(int) -> ()`      | Append a byte                   |
-| `.pop()`       | `() -> int`        | Remove and return the last byte |
-| `.get(i)`      | `(int) -> int`     | Get the byte at index `i`       |
-| `.set(i, b)`   | `(int, int) -> ()` | Overwrite the byte at index `i` |
-| `.len()`       | `() -> int`        | Number of bytes                 |
+| `.push(b)`     | `(i64) -> ()`      | Append a byte                   |
+| `.pop()`       | `() -> i64`        | Remove and return the last byte |
+| `.get(i)`      | `(i64) -> i64`     | Get the byte at index `i`       |
+| `.set(i, b)`   | `(i64, i64) -> ()` | Overwrite the byte at index `i` |
+| `.len()`       | `() -> i64`        | Number of bytes                 |
 | `.is_empty()`  | `() -> bool`       | True if len is 0                |
-| `.contains(b)` | `(int) -> bool`    | True if the buffer contains `b` |
+| `.contains(b)` | `(i64) -> bool`    | True if the buffer contains `b` |
 
 `bytes` is an owned heap type and follows the same ownership rules as `Vec<T>` — it is automatically freed when it goes out of scope. It satisfies `Send` (deep-copied across actor boundaries).
 
@@ -558,8 +558,8 @@ For type (struct) fields:
 
 ```hew
 type Point {
-    x: int;      // immutable field
-    y: int;      // immutable field
+    x: i64;      // immutable field
+    y: i64;      // immutable field
 }
 
 var p = Point { x: 0, y: 0 };
@@ -584,7 +584,7 @@ Actor fields require a `let` or `var` prefix and use semicolons as terminators:
 
 ```hew
 actor Counter {
-    var count: int = 0;     // mutable field with default
+    var count: i64 = 0;     // mutable field with default
     let name: String;        // immutable field, set by init
 }
 ```
@@ -683,7 +683,7 @@ This is enforced at compile time: any captured value in a `spawn` expression mus
 
 ```hew
 actor Example {
-    var data: Vec<int> = Vec::new();
+    var data: Vec<i64> = Vec::new();
 
     receive fn demo() {
         // Multiple mutable references - ALLOWED (single-threaded)
@@ -709,7 +709,7 @@ actor Example {
 
 ```hew
 actor Example {
-    var data: Vec<int> = Vec::new();
+    var data: Vec<i64> = Vec::new();
 
     receive fn bad_examples(other: ActorRef<Other>) {
         // Sending without move - ERROR (implicit move makes source invalid)
@@ -723,7 +723,7 @@ actor Example {
 
         // Capturing non-Send value - ERROR
         let local_handle: RawPointer = get_handle();
-        let worker = actor |x: int| {
+        let worker = actor |x: i64| {
             use(local_handle);  // compile error: RawPointer is not Send
         };
     }
@@ -755,7 +755,7 @@ Hew uses a file-based module system inspired by Rust:
 
 pub type Connection {
     address: String;       // public fields via pub keyword on type
-    internal_state: int;   // fields are named, terminated with semicolons
+    internal_state: i64;   // fields are named, terminated with semicolons
 }
 
 pub fn connect(addr: String) -> Result<Connection, Error> {
@@ -1019,7 +1019,7 @@ Actors do not use receivers at all. Actor handler methods access fields by their
 
 ```hew
 actor Counter {
-    var count: int = 0;
+    var count: i64 = 0;
     receive fn increment() {
         count += 1;  // bare field access — actor persists after handler returns
     }
@@ -1067,9 +1067,9 @@ Hew distinguishes three cases of variable shadowing:
 
   ```hew
   actor Example {
-      var count: int = 0;
+      var count: i64 = 0;
 
-      receive fn update(count: int) {
+      receive fn update(count: i64) {
           // compile error: variable `count` shadows a binding in an outer scope
       }
   }
@@ -1347,9 +1347,9 @@ descriptor, socket, allocator handle, GPU context, libc pointer) and
 ```hew
 @resource
 type File {
-    fd: int
+    fd: i64
     pub fn open(path: String) -> Result<File, IoError> { ... }
-    pub fn read(self: &File, buf: &mut [byte]) -> Result<int, IoError> { ... }
+    pub fn read(self: &File, buf: &mut [byte]) -> Result<i64, IoError> { ... }
     pub fn close(consuming self) -> Result<(), IoError> { ... }
 }
 ```
@@ -1711,7 +1711,7 @@ Hew employs **bidirectional type inference** to minimize explicit type annotatio
 The `-> _` annotation requests that the compiler infer the return type from the checked function body. When a trailing expression is present, that expression supplies the return type; otherwise Hew uses the checker-resolved signature for that body. This also applies to trait default methods with bodies. If the checker cannot resolve a concrete return type where one is required, `-> _` is rejected. This is distinct from omitting `->` entirely, which means the function returns void (unit):
 
 ```hew
-fn add(a: int, b: int) -> _ { a + b }  // inferred: -> int
+fn add(a: i64, b: i64) -> _ { a + b }  // inferred: -> i64
 fn greet(name: string) -> _ { "hello {name}" }  // inferred: -> string
 fn noop() { }  // no -> at all: returns void
 ```
@@ -1721,17 +1721,17 @@ fn noop() { }  // no -> at all: returns void
 **Lambda inference examples:**
 
 ```hew
-fn apply(f: fn(int, int) -> int, a: int, b: int) -> int { f(a, b) }
+fn apply(f: fn(i64, i64) -> i64, a: i64, b: i64) -> i64 { f(a, b) }
 
-// Closure parameters infer int from apply's signature
-let sum = apply(|x, y| x + y, 3, 4);      // x: int, y: int inferred
+// Closure parameters infer i64 from apply's signature
+let sum = apply(|x, y| x + y, 3, 4);      // x: i64, y: i64 inferred
 let product = apply(|x, y| x * y, 3, 4);  // types flow from apply's signature
 
 // Method chaining with inference
 numbers
-    .filter(|x| x > 0)              // x: int inferred from Vec<int>
-    .map(|x| x * 2)                 // x: int, result: int
-    .reduce(|a, b| a + b)           // a: int, b: int from reduce signature
+    .filter(|x| x > 0)              // x: i64 inferred from Vec<i64>
+    .map(|x| x * 2)                 // x: i64, result: i64
+    .reduce(|a, b| a + b)           // a: i64, b: i64 from reduce signature
 ```
 
 **Closure syntax:**
@@ -1741,7 +1741,7 @@ Hew uses pipe-delimited closure syntax for first-class function values:
 ```hew
 let doubled = transform(|x| x * 2, 21);
 let sum = numbers.reduce(|a, b| a + b);
-let checked = |x: int| -> int { x + 1 };
+let checked = |x: i64| -> i64 { x + 1 };
 ```
 
 **Untyped parameters when context provides types:**
@@ -1749,8 +1749,8 @@ let checked = |x: int| -> int { x + 1 };
 ```hew
 fn map<T, U>(items: Vec<T>, transform: fn(T) -> U) -> Vec<U> { /* ... */ }
 
-// T=int, U=String inferred from usage
-let strings = map([1, 2, 3], |x| x.to_string());  // x: int inferred
+// T=i64, U=String inferred from usage
+let strings = map([1, 2, 3], |x| x.to_string());  // x: i64 inferred
 ```
 
 **Actor message type inference:**
@@ -1759,17 +1759,17 @@ Actor message handlers provide rich typing context:
 
 ```hew
 actor Calculator {
-    var result: int = 0;
+    var result: i64 = 0;
 
     // receive fn signature provides context for message arguments
-    receive fn apply_operation(op: fn(int, int) -> int, value: int) {
+    receive fn apply_operation(op: fn(i64, i64) -> i64, value: i64) {
         result = op(result, value);
     }
 }
 
 let calc = spawn Calculator();
 // Lambda types inferred from receive fn signature
-calc.apply_operation(|a, b| a + b, 10);  // a: int, b: int inferred
+calc.apply_operation(|a, b| a + b, 10);  // a: i64, b: i64 inferred
 calc.apply_operation(|a, b| a * b, 5);   // also inferred
 ```
 
@@ -1782,7 +1782,7 @@ For standalone generic lambdas, explicit bounds are required:
 let generic_add = <T: Add>(x: T, y: T) => x + y;
 
 // Can then be called with different types
-generic_add(1, 2);        // int
+generic_add(1, 2);        // i64
 generic_add(1.0, 2.0);    // f64
 ```
 
@@ -1793,10 +1793,10 @@ generic_add(1.0, 2.0);    // f64
 let f = |x, y| x + y;  // No context to determine x, y types
 
 // Solution 1: Annotate the variable
-let f: fn(int, int) -> int = |x, y| x + y;
+let f: fn(i64, i64) -> i64 = |x, y| x + y;
 
 // Solution 2: Annotate parameters
-let f = |x: int, y: int| x + y;
+let f = |x: i64, y: i64| x + y;
 ```
 
 **Constraint solving for complex bounds:**
@@ -1812,7 +1812,7 @@ where
 }
 
 // All constraints automatically verified:
-// - int: Send ✓, Clone ✓, Display ✓
+// - i64: Send ✓, Clone ✓, Display ✓
 let results = process([1, 2, 3], |x| {
     print(f"Processing: {x}");  // Display bound allows this
     x * 2
@@ -1832,12 +1832,12 @@ error[E0282]: type annotations needed for lambda parameters
    |
 help: consider annotating the lambda variable type
    |
-5  |     let f: fn(int, int) -> int = |x, y| x + y;
+5  |     let f: fn(i64, i64) -> i64 = |x, y| x + y;
    |            ++++++++++++++++++
    |
 help: or annotate the lambda parameters directly
    |
-5  |     let f = |x: int, y: int| x + y;
+5  |     let f = |x: i64, y: i64| x + y;
    |                +++     +++
 ```
 
@@ -2064,10 +2064,10 @@ Any error type `E` may be used with `Result<T, E>`. The recommended pattern is f
 
 ```hew
 pub enum IoError {
-    NotFound(int);
-    PermissionDenied(int);
-    AlreadyExists(int);
-    Other(int);
+    NotFound(i64);
+    PermissionDenied(i64);
+    AlreadyExists(i64);
+    Other(i64);
 }
 
 pub fn io_error_from_message(message: String) -> IoError { ... }
@@ -2086,8 +2086,8 @@ impl<T> Vec<T> {
     fn new() -> Vec<T>;
     fn push(v: Vec<T>, item: T);
     fn pop(v: Vec<T>) -> Option<T>;
-    fn len(v: Vec<T>) -> int;
-    fn get(v: Vec<T>, index: int) -> T;
+    fn len(v: Vec<T>) -> i64;
+    fn get(v: Vec<T>, index: i64) -> T;
 }
 ```
 
@@ -2115,7 +2115,7 @@ brace-colon syntax.  The parser disambiguates `{` as a map literal when the
 first token after `{` is a `StringLit` followed by `:`:
 
 ```hew
-// Inferred: HashMap<String, int>
+// Inferred: HashMap<String, i64>
 let scores = {"alice": 10, "bob": 20};
 
 // Explicit type annotation drives checking; each value must match V
@@ -2128,7 +2128,7 @@ let env: HashMap<String, String> = {
 let flags = {"debug": true, "verbose": false,};
 
 // Empty block {} coerces to HashMap<K,V> when the expected type is known
-let empty: HashMap<String, int> = {};
+let empty: HashMap<String, i64> = {};
 ```
 
 Rules:
@@ -2151,7 +2151,7 @@ Available `HashMap` methods:
 | `m.insert(key, value)`    | `()`            | Insert or overwrite              |
 | `m.remove(key)`           | `bool`          | Remove a key; true if present    |
 | `m.contains_key(key)`     | `bool`          | Test membership                  |
-| `m.len()`                 | `int`           | Number of entries                |
+| `m.len()`                 | `i64`           | Number of entries                |
 | `m.is_empty()`            | `bool`          | True if no entries               |
 
 #### 3.10.4 Shipped Collections, I/O, and Utility Modules
@@ -2169,8 +2169,8 @@ import std::math;
 import std::sort;
 import std::testing;
 
-let ints: Vec<int> = Vec::new();
-let set: HashSet<int> = HashSet::new();
+let ints: Vec<i64> = Vec::new();
+let set: HashSet<i64> = HashSet::new();
 let dq = deque.new();
 
 println(math.abs(-5));
@@ -2185,13 +2185,13 @@ Important current details:
 - `std::io` currently provides plain functions (`read_line`, `write`,
   `write_err`, `read_all`), not `Read`/`Write`/`BufRead` traits
 - `std::collections::hashset` currently lowers the supported surface forms
-  `HashSet<int>` and `HashSet<String>` through type-specific runtime entry
+  `HashSet<i64>` and `HashSet<String>` through type-specific runtime entry
   points; unsupported `HashSet<T>` usages are rejected fail-closed during
   type checking, including nested annotations, function signatures, and
   `wire enum` payloads; collection element admissibility also requires the
   internal RcFree boundary, so `HashSet<Rc<T>>`, named wrappers that contain
   `Rc`, and `ActorRef<A>` handles to actors with `Rc` state are rejected
-- `std::iter` is presently specialised to `Vec<int>` helpers such as
+- `std::iter` is presently specialised to `Vec<i64>` helpers such as
   `map_int`, `filter_int`, `fold_int`, `any`, `all`, and `sum`
 - `std::sort` exposes concrete helpers like `sort_ints`, `sort_strings`,
   `sort_floats`, `reverse_ints`, `reverse_strings`, and `reverse_floats`
@@ -3694,16 +3694,16 @@ Hew wire types map to MessagePack formats as follows:
 | Hew Type     | MessagePack Format      | Format Marker(s)           | Notes                            |
 | ------------ | ----------------------- | -------------------------- | -------------------------------- |
 | `bool`       | boolean                 | `0xc3` (true), `0xc2` (false) | Single-byte primitives           |
-| `u8`–`u16`   | uint (up to 16-bit)     | `0xcc`, `0xcd`             | Variable-length uint encoding    |
-| `u32`–`u64`  | uint (up to 64-bit)     | `0xce`, `0xcf`             | Variable-length uint encoding    |
-| `i8`–`i16`   | int (signed, up to 16)  | `0xd0`, `0xd1`             | Variable-length signed encoding  |
-| `i32`–`i64`  | int (signed, up to 64)  | `0xd2`, `0xd3`             | Variable-length signed encoding  |
+| `u8`–`u16`   | u64 (up to 16-bit)     | `0xcc`, `0xcd`             | Variable-length u64 encoding    |
+| `u32`–`u64`  | u64 (up to 64-bit)     | `0xce`, `0xcf`             | Variable-length u64 encoding    |
+| `i8`–`i16`   | i64 (signed, up to 16)  | `0xd0`, `0xd1`             | Variable-length signed encoding  |
+| `i32`–`i64`  | i64 (signed, up to 64)  | `0xd2`, `0xd3`             | Variable-length signed encoding  |
 | `f32`        | float32                 | `0xca`                     | IEEE 754 single precision        |
 | `f64`        | float64                 | `0xcb`                     | IEEE 754 double precision        |
 | `string`     | string                  | `0xa0`–`0xbf`, `0xd9`, ... | Length-prefixed UTF-8 string     |
 | `bytes`      | binary                  | `0xc4`, `0xc5`, `0xc6`     | Length-prefixed raw bytes        |
 | wire struct  | map                     | `0x80`–`0x8f`, `0xde`, ... | Key–value pairs (field number keys) |
-| wire enum    | int + str (variant)     | Tag + variant index/name   | Encoded as MessagePack integer (variant index) or string (variant name) |
+| wire enum    | i64 + str (variant)     | Tag + variant index/name   | Encoded as MessagePack integer (variant index) or string (variant name) |
 | Optional     | nil or value            | `0xc0` or type of Some(v)  | `None` encodes as MessagePack nil |
 | List         | array                   | `0x90`–`0x9f`, `0xdc`, ... | Length-prefixed sequence         |
 
@@ -3720,15 +3720,15 @@ wire struct User {
 
 // User { id: 42, name: "alice", email: Some("alice@example.com") } encodes as:
 // MessagePack map: {
-//   1 (int): 42 (uint),
-//   2 (int): "alice" (string),
-//   3 (int): "alice@example.com" (string)
+//   1 (i64): 42 (u64),
+//   2 (i64): "alice" (string),
+//   3 (i64): "alice@example.com" (string)
 // }
 
 // User { id: 42, name: "alice", email: None } encodes as:
 // MessagePack map: {
-//   1 (int): 42 (uint),
-//   2 (int): "alice" (string)
+//   1 (i64): 42 (u64),
+//   2 (i64): "alice" (string)
 // }
 // (optional field 3 omitted)
 ```
@@ -3740,9 +3740,9 @@ Wire enums are encoded as MessagePack **integers** representing the 0-based vari
 ```hew
 wire enum Status { Pending; Active; Completed; }
 
-// Status::Pending  -> MessagePack: 0 (int)
-// Status::Active   -> MessagePack: 1 (int)
-// Status::Completed -> MessagePack: 2 (int)
+// Status::Pending  -> MessagePack: 0 (i64)
+// Status::Active   -> MessagePack: 1 (i64)
+// Status::Completed -> MessagePack: 2 (i64)
 ```
 
 ##### 7.3.1.4 Optional Field Handling
@@ -4180,13 +4180,13 @@ Supervisor observes actor terminal states `Stopped` or `Crashed`.
 The runtime invokes actor message handlers through a **dispatch function pointer** with the following normative signature:
 
 ```c
-void (*dispatch)(void* state, int msg_type, void* data, size_t data_size);
+void (*dispatch)(void* state, i64 msg_type, void* data, size_t data_size);
 ```
 
 | Parameter   | Type     | Description                                                                           |
 | ----------- | -------- | ------------------------------------------------------------------------------------- |
 | `state`     | `void*`  | Pointer to the actor's private state (heap-allocated)                                 |
-| `msg_type`  | `int`    | Integer discriminant identifying the message type (corresponds to `receive fn` index) |
+| `msg_type`  | `i64`    | Integer discriminant identifying the message type (corresponds to `receive fn` index) |
 | `data`      | `void*`  | Pointer to the serialized message payload                                             |
 | `data_size` | `size_t` | Size in bytes of the message payload                                                  |
 
@@ -4206,7 +4206,7 @@ For each actor, the compiler generates a dispatch function that switches on `msg
 
 ```c
 // Generated for: actor Counter { receive fn increment(n: i32) { ... } receive fn get() -> i32 { ... } }
-void Counter_dispatch(void* state, int msg_type, void* data, size_t data_size) {
+void Counter_dispatch(void* state, i64 msg_type, void* data, size_t data_size) {
     CounterState* self = (CounterState*)state;
     switch (msg_type) {
         case 0: Counter_increment(self, *(i32*)data); break;
@@ -4346,7 +4346,7 @@ When the grammar files and this specification disagree, the parser implementatio
 ### 12.1 Built-in Numeric Types
 
 > **v0.5 policy:** Primitive integer annotations must use explicit width (`i8`–`i64`, `u8`–`u64`) or
-> platform width (`isize`/`usize`). The `int` and `uint` aliases are removed in v0.5; the compiler
+> platform width (`isize`/`usize`). The `i64` and `u64` aliases are removed in v0.5; the compiler
 > will reject them once alias removal lands. Integer literals continue to default to `i64`; literal
 > defaulting is not a user-nameable alias and does not affect wire shape or ABI.
 
@@ -4354,8 +4354,8 @@ When the grammar files and this specification disagree, the parser implementatio
 | ------------------------- | ------------- | ----------------------- |
 | `i8`, `i16`, `i32`, `i64` | 1/2/4/8 bytes | Signed integers (fixed-width) |
 | `u8`, `u16`, `u32`, `u64` | 1/2/4/8 bytes | Unsigned integers (fixed-width) |
-| `isize`                   | platform      | Platform-sized signed integer: 32-bit on WASM32, 64-bit on native. **Distinct from `i64`/`int`.** |
-| `usize`                   | platform      | Platform-sized unsigned integer: 32-bit on WASM32, 64-bit on native. **Distinct from `u64`/`uint`.** |
+| `isize`                   | platform      | Platform-sized signed integer: 32-bit on WASM32, 64-bit on native. **Distinct from `i64`/`i64`.** |
+| `usize`                   | platform      | Platform-sized unsigned integer: 32-bit on WASM32, 64-bit on native. **Distinct from `u64`/`u64`.** |
 | `f32`, `f64`              | 4/8 bytes     | IEEE 754 floating point |
 | `bool`                    | 1 byte        | Boolean (true/false)    |
 | `char`                    | 4 bytes       | Unicode scalar value    |
@@ -4364,12 +4364,12 @@ When the grammar files and this specification disagree, the parser implementatio
 
 | Alias   | Resolves to | Description                                    |
 | ------- | ----------- | ---------------------------------------------- |
-| `int`   | `i64`       | Default integer type (fixed 64-bit)            |
-| `uint`  | `u64`       | Default unsigned integer type (fixed 64-bit)   |
+| `i64`   | `i64`       | Default integer type (fixed 64-bit)            |
+| `u64`  | `u64`       | Default unsigned integer type (fixed 64-bit)   |
 | `byte`  | `u8`        | Single byte                                    |
 | `float` | `f64`       | Default floating-point type                    |
 
-Integer literals default to `int` (`i64`). Float literals default to `float` (`f64`).
+Integer literals default to `i64` (`i64`). Float literals default to `float` (`f64`).
 
 **Mixed-width arithmetic requires an explicit cast.** The type checker rejects expressions
 that mix distinct integer widths without a cast. Example:
@@ -4452,11 +4452,11 @@ let precise = 500us;     // i64: 500_000 nanoseconds
 let d = 5s;
 let x = d + 100ms;        // OK: duration + duration → duration
 let y = d - 1s;            // OK: duration - duration → duration
-let z = d * 3;             // OK: duration * int → duration
-let w = d / 2;             // OK: duration / int → duration
+let z = d * 3;             // OK: duration * i64 → duration
+let w = d / 2;             // OK: duration / i64 → duration
 let r = d / 500ms;         // OK: duration / duration → i64 (ratio)
 let n = -d;                // OK: negation → duration
-let err1 = d + 42;         // COMPILE ERROR: duration + int
+let err1 = d + 42;         // COMPILE ERROR: duration + i64
 let err2 = d * 1.5;        // COMPILE ERROR: duration * float
 let err3 = d * d;          // COMPILE ERROR: duration * duration
 ```
@@ -4518,7 +4518,7 @@ Labels are scoped to the loop they annotate. Using an undefined label is a compi
 `break` may carry an expression whose value becomes the result of the loop when used in a value-producing position (e.g., the last statement in a block):
 
 ```hew
-var result: int = 0;
+var result: i64 = 0;
 loop {
     if found {
         break result;    // the loop "returns" result via the break value

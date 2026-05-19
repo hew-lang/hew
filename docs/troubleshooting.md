@@ -49,7 +49,7 @@ What to check:
 
 Common signs:
 
-- a `type mismatch` error such as `expected int, found String`
+- a `type mismatch` error such as `expected i64, found string`
 - `cannot infer type`
 - `return type mismatch: expected ..., found ...`
 
@@ -134,7 +134,7 @@ What to check:
 
 - Matches over enums, `Option<T>`, `Result<T, E>`, machine states, and `bool`
   are fail-closed: cover every case or add `_ => ...`.
-- For scalar or open-ended values such as `int`, a missing catch-all is only a
+- For scalar or open-ended values such as `i64`, a missing catch-all is only a
   warning.
 - When a new variant or state lands, update old match sites before chasing
   downstream type errors.

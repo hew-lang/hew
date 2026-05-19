@@ -2,10 +2,10 @@
 // Finds maximum in each sliding window of size k across an array.
 // Uses a deque of indices maintaining decreasing order of values.
 
-// Deque using Vec<int>: [front, back, capacity, data...]
+// Deque using Vec<i64>: [front, back, capacity, data...]
 // front points to first element, back points past last element
-fn deque_create(capacity: int) -> Vec<int> {
-    let d: Vec<int> = Vec::new();
+fn deque_create(capacity: i64) -> Vec<i64> {
+    let d: Vec<i64> = Vec::new();
     d.push(0); // index 0: front
     d.push(0); // index 1: back
     d.push(capacity); // index 2: capacity
@@ -15,18 +15,18 @@ fn deque_create(capacity: int) -> Vec<int> {
     d
 }
 
-fn deque_is_empty(d: Vec<int>) -> bool {
+fn deque_is_empty(d: Vec<i64>) -> bool {
     d.get(0) == d.get(1)
 }
 
-fn deque_size(d: Vec<int>) -> int {
+fn deque_size(d: Vec<i64>) -> i64 {
     let front = d.get(0);
     let back = d.get(1);
     let cap = d.get(2);
     (back - front + cap) % cap
 }
 
-fn deque_push_back(d: Vec<int>, val: int) -> int {
+fn deque_push_back(d: Vec<i64>, val: i64) -> i64 {
     let back = d.get(1);
     let cap = d.get(2);
     d.set(3 + back, val);
@@ -34,7 +34,7 @@ fn deque_push_back(d: Vec<int>, val: int) -> int {
     0
 }
 
-fn deque_pop_back(d: Vec<int>) -> int {
+fn deque_pop_back(d: Vec<i64>) -> i64 {
     let back = d.get(1);
     let cap = d.get(2);
     let new_back = (back - 1 + cap) % cap;
@@ -42,7 +42,7 @@ fn deque_pop_back(d: Vec<int>) -> int {
     d.get(3 + new_back)
 }
 
-fn deque_pop_front(d: Vec<int>) -> int {
+fn deque_pop_front(d: Vec<i64>) -> i64 {
     let front = d.get(0);
     let cap = d.get(2);
     let val = d.get(3 + front);
@@ -50,12 +50,12 @@ fn deque_pop_front(d: Vec<int>) -> int {
     val
 }
 
-fn deque_front(d: Vec<int>) -> int {
+fn deque_front(d: Vec<i64>) -> i64 {
     let front = d.get(0);
     d.get(3 + front)
 }
 
-fn deque_back(d: Vec<int>) -> int {
+fn deque_back(d: Vec<i64>) -> i64 {
     let back = d.get(1);
     let cap = d.get(2);
     let idx = (back - 1 + cap) % cap;
@@ -63,10 +63,10 @@ fn deque_back(d: Vec<int>) -> int {
 }
 
 // Sliding window maximum: for each window of size k, find the max
-// Returns Vec<int> with n-k+1 results
-fn sliding_window_max(arr: Vec<int>, k: int) -> Vec<int> {
+// Returns Vec<i64> with n-k+1 results
+fn sliding_window_max(arr: Vec<i64>, k: i64) -> Vec<i64> {
     let n = arr.len();
-    let result: Vec<int> = Vec::new();
+    let result: Vec<i64> = Vec::new();
     let dq = deque_create(n + 1);
     for i in 0 .. n {
         // Remove elements outside the window from front
@@ -102,7 +102,7 @@ fn main() {
     // But no negative literals, use positive values:
     // arr = [1, 3, 2, 0, 5, 3, 6, 7], k = 3
     // Windows: [1,3,2]->3, [3,2,0]->3, [2,0,5]->5, [0,5,3]->5, [5,3,6]->6, [3,6,7]->7
-    let arr: Vec<int> = Vec::new();
+    let arr: Vec<i64> = Vec::new();
     arr.push(1);
     arr.push(3);
     arr.push(2);
@@ -144,7 +144,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 2: Window size = 1 (each element is its own max)
-    let arr2: Vec<int> = Vec::new();
+    let arr2: Vec<i64> = Vec::new();
     arr2.push(5);
     arr2.push(2);
     arr2.push(8);
@@ -176,7 +176,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 3: Window size = array length (single result = global max)
-    let arr3: Vec<int> = Vec::new();
+    let arr3: Vec<i64> = Vec::new();
     arr3.push(3);
     arr3.push(7);
     arr3.push(2);
@@ -196,7 +196,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 4: All same elements
-    let arr4: Vec<int> = Vec::new();
+    let arr4: Vec<i64> = Vec::new();
     arr4.push(4);
     arr4.push(4);
     arr4.push(4);
@@ -223,7 +223,7 @@ fn main() {
     // Test 5: Increasing sequence
     // arr = [1, 2, 3, 4, 5], k=3
     // Windows: [1,2,3]->3, [2,3,4]->4, [3,4,5]->5
-    let arr5: Vec<int> = Vec::new();
+    let arr5: Vec<i64> = Vec::new();
     arr5.push(1);
     arr5.push(2);
     arr5.push(3);
@@ -255,7 +255,7 @@ fn main() {
     // Test 6: Decreasing sequence
     // arr = [5, 4, 3, 2, 1], k=3
     // Windows: [5,4,3]->5, [4,3,2]->4, [3,2,1]->3
-    let arr6: Vec<int> = Vec::new();
+    let arr6: Vec<i64> = Vec::new();
     arr6.push(5);
     arr6.push(4);
     arr6.push(3);
@@ -287,7 +287,7 @@ fn main() {
     // Test 7: Window size 2
     // arr = [10, 5, 2, 7, 8, 7], k=2
     // Windows: [10,5]->10, [5,2]->5, [2,7]->7, [7,8]->8, [8,7]->8
-    let arr7: Vec<int> = Vec::new();
+    let arr7: Vec<i64> = Vec::new();
     arr7.push(10);
     arr7.push(5);
     arr7.push(2);

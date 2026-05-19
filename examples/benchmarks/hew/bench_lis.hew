@@ -1,5 +1,5 @@
-fn lis(arr: Vec<int>, n: int) -> int {
-    let dp: Vec<int> = Vec::new();
+fn lis(arr: Vec<i64>, n: i64) -> i64 {
+    let dp: Vec<i64> = Vec::new();
     for idx in 0 .. n {
         dp.push(1);
     }
@@ -22,11 +22,11 @@ fn lis(arr: Vec<int>, n: int) -> int {
     return best;
 }
 
-const ITERS: int = 5000;
+const ITERS: i64 = 5000;
 
 fn main() {
     let n = 500;
-    let arr: Vec<int> = Vec::new();
+    let arr: Vec<i64> = Vec::new();
     for k in 0 .. n {
         arr.push((k * 37 + 13) % 100);
     }

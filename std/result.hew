@@ -10,11 +10,11 @@
 //! import std::result;
 //!
 //! fn main() {
-//!     let x: Result<int, int> = Ok(42);
+//!     let x: Result<i64, i64> = Ok(42);
 //!     println(result.is_ok_int(x));          // true
 //!     println(result.unwrap_or_int(x, 0));   // 42
 //!
-//!     let y: Result<int, int> = Err(1);
+//!     let y: Result<i64, i64> = Err(1);
 //!     println(result.is_err_int(y));          // true
 //!     println(result.unwrap_or_int(y, -1));   // -1
 //! }
@@ -22,7 +22,7 @@
 
 // ── Predicates ──────────────────────────────────────────────────────
 /// Returns `true` if the result contains an `Ok` value.
-pub fn is_ok_int(r: Result<int, int>) -> bool {
+pub fn is_ok_int(r: Result<i64, i64>) -> bool {
     match r {
         Ok(_) => true,
         Err(_) => false,
@@ -30,7 +30,7 @@ pub fn is_ok_int(r: Result<int, int>) -> bool {
 }
 
 /// Returns `true` if the result contains an `Err` value.
-pub fn is_err_int(r: Result<int, int>) -> bool {
+pub fn is_err_int(r: Result<i64, i64>) -> bool {
     match r {
         Ok(_) => false,
         Err(_) => true,
@@ -39,7 +39,7 @@ pub fn is_err_int(r: Result<int, int>) -> bool {
 
 // ── Unwrap ──────────────────────────────────────────────────────────
 /// Unwrap the `Ok` value.  Panics if the result is `Err`.
-pub fn unwrap_int(r: Result<int, int>) -> int {
+pub fn unwrap_int(r: Result<i64, i64>) -> i64 {
     match r {
         Ok(v) => v,
         Err(e) => {
@@ -50,7 +50,7 @@ pub fn unwrap_int(r: Result<int, int>) -> int {
 }
 
 /// Unwrap the `Err` value.  Panics if the result is `Ok`.
-pub fn unwrap_err_int(r: Result<int, int>) -> int {
+pub fn unwrap_err_int(r: Result<i64, i64>) -> i64 {
     match r {
         Ok(v) => {
             panic(f"result: unwrap_err called on Ok({v})");
@@ -61,7 +61,7 @@ pub fn unwrap_err_int(r: Result<int, int>) -> int {
 }
 
 /// Unwrap the `Ok` value, or return `fallback` if `Err`.
-pub fn unwrap_or_int(r: Result<int, int>, fallback: int) -> int {
+pub fn unwrap_or_int(r: Result<i64, i64>, fallback: i64) -> i64 {
     match r {
         Ok(v) => v,
         Err(_) => fallback,
@@ -70,7 +70,7 @@ pub fn unwrap_or_int(r: Result<int, int>, fallback: int) -> int {
 
 // ── Map ─────────────────────────────────────────────────────────────
 /// Apply `f` to the contained `Ok` value, or return `Err` unchanged.
-pub fn map_int(r: Result<int, int>, f: fn(int) -> int) -> Result<int, int> {
+pub fn map_int(r: Result<i64, i64>, f: fn(i64) -> i64) -> Result<i64, i64> {
     match r {
         Ok(v) => Ok(f(v)),
         Err(e) => Err(e),
@@ -78,7 +78,7 @@ pub fn map_int(r: Result<int, int>, f: fn(int) -> int) -> Result<int, int> {
 }
 
 /// Apply `f` to the contained `Err` value, or return `Ok` unchanged.
-pub fn map_err_int(r: Result<int, int>, f: fn(int) -> int) -> Result<int, int> {
+pub fn map_err_int(r: Result<i64, i64>, f: fn(i64) -> i64) -> Result<i64, i64> {
     match r {
         Ok(v) => Ok(v),
         Err(e) => Err(f(e)),
@@ -87,7 +87,7 @@ pub fn map_err_int(r: Result<int, int>, f: fn(int) -> int) -> Result<int, int> {
 
 // ── Contains ────────────────────────────────────────────────────────
 /// Returns `true` if the result is `Ok` and contains `needle`.
-pub fn contains_int(r: Result<int, int>, needle: int) -> bool {
+pub fn contains_int(r: Result<i64, i64>, needle: i64) -> bool {
     match r {
         Ok(v) => v == needle,
         Err(_) => false,

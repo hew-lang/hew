@@ -1,7 +1,7 @@
 // Consistent Hash Ring
 // Maps keys to nodes. Adding/removing nodes moves minimal keys.
-// Ring positions stored in sorted Vec<int>, node IDs in parallel Vec<int>.
-fn hash_pos(key: int, ring_size: int) -> int {
+// Ring positions stored in sorted Vec<i64>, node IDs in parallel Vec<i64>.
+fn hash_pos(key: i64, ring_size: i64) -> i64 {
     let h = key * 2654435761 % ring_size;
     if h < 0 {
         h + ring_size
@@ -10,13 +10,13 @@ fn hash_pos(key: int, ring_size: int) -> int {
     }
 }
 
-fn node_hash(node_id: int, replica: int, ring_size: int) -> int {
+fn node_hash(node_id: i64, replica: i64, ring_size: i64) -> i64 {
     let key = node_id * 1000 + replica;
     hash_pos(key, ring_size)
 }
 
 // Insert position into sorted arrays, maintaining sort order
-fn sorted_insert(positions: Vec<int>, nodes: Vec<int>, pos: int, node_id: int) {
+fn sorted_insert(positions: Vec<i64>, nodes: Vec<i64>, pos: i64, node_id: i64) {
     let len = positions.len();
     // Find insertion point
     var insert_at = len;
@@ -34,7 +34,7 @@ fn sorted_insert(positions: Vec<int>, nodes: Vec<int>, pos: int, node_id: int) {
     sorted_insert_at(positions, nodes, pos, node_id, insert_at);
 }
 
-fn sorted_insert_at(positions: Vec<int>, nodes: Vec<int>, pos: int, node_id: int, insert_at: int) {
+fn sorted_insert_at(positions: Vec<i64>, nodes: Vec<i64>, pos: i64, node_id: i64, insert_at: i64) {
     let len = positions.len();
     // Add placeholder at end
     positions.push(0);
@@ -50,14 +50,14 @@ fn sorted_insert_at(positions: Vec<int>, nodes: Vec<int>, pos: int, node_id: int
     nodes.set(insert_at, node_id);
 }
 
-fn add_node(positions: Vec<int>, nodes: Vec<int>, node_id: int, ring_size: int, replicas: int) {
+fn add_node(positions: Vec<i64>, nodes: Vec<i64>, node_id: i64, ring_size: i64, replicas: i64) {
     for r in 0 .. replicas {
         let pos = node_hash(node_id, r, ring_size);
         sorted_insert(positions, nodes, pos, node_id);
     }
 }
 
-fn remove_node(positions: Vec<int>, nodes: Vec<int>, node_id: int) {
+fn remove_node(positions: Vec<i64>, nodes: Vec<i64>, node_id: i64) {
     // Remove all entries for this node (compact in place)
     let len = positions.len();
     var write = 0;
@@ -77,7 +77,7 @@ fn remove_node(positions: Vec<int>, nodes: Vec<int>, node_id: int) {
     }
 }
 
-fn lookup(positions: Vec<int>, nodes: Vec<int>, key: int, ring_size: int) -> int {
+fn lookup(positions: Vec<i64>, nodes: Vec<i64>, key: i64, ring_size: i64) -> i64 {
     let len = positions.len();
     if len == 0 {
         return 0 - 1;
@@ -98,8 +98,8 @@ fn main() {
     var failed = 0;
     let ring_size = 10000;
     let replicas = 3;
-    let positions: Vec<int> = Vec::new();
-    let nodes: Vec<int> = Vec::new();
+    let positions: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec::new();
     // Test 1: Add nodes and verify lookup returns valid node
     add_node(positions, nodes, 1, ring_size, replicas);
     add_node(positions, nodes, 2, ring_size, replicas);
@@ -160,7 +160,7 @@ fn main() {
         failed = failed + 1;
     }
     // Record mappings before adding a node
-    let before: Vec<int> = Vec::new();
+    let before: Vec<i64> = Vec::new();
     var num_keys = 100;
     for k in 0 .. num_keys {
         let key = k * 37;
@@ -263,8 +263,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 8: Empty ring returns -1
-    let ep: Vec<int> = Vec::new();
-    let en: Vec<int> = Vec::new();
+    let ep: Vec<i64> = Vec::new();
+    let en: Vec<i64> = Vec::new();
     let empty_result = lookup(ep, en, 42, ring_size);
     if empty_result == 0 - 1 {
         println("PASS: empty ring lookup");

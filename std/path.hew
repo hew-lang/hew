@@ -29,10 +29,10 @@ type GlobResult {
 /// Methods available on a `GlobResult`.
 trait GlobResultMethods {
     /// Return the number of matched paths.
-    fn count(res: GlobResult) -> int;
+    fn count(res: GlobResult) -> i64;
 
     /// Return the matched path at the given index.
-    fn get(res: GlobResult, index: int) -> string;
+    fn get(res: GlobResult, index: i64) -> string;
 
     /// Release the glob result resources.
     fn free(res: GlobResult);
@@ -40,13 +40,13 @@ trait GlobResultMethods {
 
 impl GlobResultMethods for GlobResult {
     /// Return the number of matched paths.
-    fn count(res: GlobResult) -> int {
+    fn count(res: GlobResult) -> i64 {
         unsafe {
             hew_glob_count(res)
         }
     }
     /// Return the matched path at the given index.
-    fn get(res: GlobResult, index: int) -> string {
+    fn get(res: GlobResult, index: i64) -> string {
         unsafe {
             hew_glob_get(res, index as i32)
         }
@@ -200,7 +200,7 @@ fn strip_trailing_slash(p: string) -> string {
 }
 
 /// Return the index of the last `/` in `s`, or `-1` if none.
-fn last_slash_pos(s: string) -> int {
+fn last_slash_pos(s: string) -> i64 {
     let first = s.find("/");
     if first < 0 {
         return -1;
@@ -220,7 +220,7 @@ fn last_slash_pos(s: string) -> int {
 }
 
 /// Return the index of the last `.` in `s`, or `-1` if none.
-fn last_dot_pos(s: string) -> int {
+fn last_dot_pos(s: string) -> i64 {
     let first = s.find(".");
     if first < 0 {
         return -1;

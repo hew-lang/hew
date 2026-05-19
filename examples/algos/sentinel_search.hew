@@ -1,5 +1,5 @@
 // Sentinel Search - place target at end to eliminate bounds check in loop
-fn sentinel_search(arr: Vec<int>, target: int) -> int {
+fn sentinel_search(arr: Vec<i64>, target: i64) -> i64 {
     let n = arr.len();
     if n == 0 {
         return 0 - 1;
@@ -26,7 +26,7 @@ fn main() {
     var passed = 0;
     var failed = 0;
     // Test 1: find element in middle
-    let v1: Vec<int> = Vec::new();
+    let v1: Vec<i64> = Vec::new();
     v1.push(10);
     v1.push(20);
     v1.push(30);
@@ -43,7 +43,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 2: find first element
-    let v2: Vec<int> = Vec::new();
+    let v2: Vec<i64> = Vec::new();
     v2.push(10);
     v2.push(20);
     v2.push(30);
@@ -58,7 +58,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 3: find last element
-    let v3: Vec<int> = Vec::new();
+    let v3: Vec<i64> = Vec::new();
     v3.push(10);
     v3.push(20);
     v3.push(30);
@@ -73,7 +73,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 4: not found
-    let v4: Vec<int> = Vec::new();
+    let v4: Vec<i64> = Vec::new();
     v4.push(10);
     v4.push(20);
     v4.push(30);
@@ -88,7 +88,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 5: empty array
-    let v5: Vec<int> = Vec::new();
+    let v5: Vec<i64> = Vec::new();
     let r5 = sentinel_search(v5, 5);
     if r5 == 0 - 1 {
         println("Test 5 - empty array: PASS");
@@ -100,7 +100,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 6: single element found
-    let v6: Vec<int> = Vec::new();
+    let v6: Vec<i64> = Vec::new();
     v6.push(42);
     let r6 = sentinel_search(v6, 42);
     if r6 == 0 {
@@ -113,7 +113,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 7: single element not found
-    let v7: Vec<int> = Vec::new();
+    let v7: Vec<i64> = Vec::new();
     v7.push(42);
     let r7 = sentinel_search(v7, 99);
     if r7 == 0 - 1 {

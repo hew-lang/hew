@@ -26,7 +26,7 @@
 /// ```
 /// let s = string.from_int(42);  // "42"
 /// ```
-pub fn from_int(n: int) -> string {
+pub fn from_int(n: i64) -> string {
     f"{n}"
 }
 
@@ -51,7 +51,7 @@ pub fn from_bool(b: bool) -> string {
 /// ```
 /// let newline = string.from_char(10);
 /// ```
-pub fn from_char(code: int) -> string {
+pub fn from_char(code: i64) -> string {
     unsafe {
         hew_char_to_string(code as i32)
     }
@@ -73,7 +73,7 @@ pub fn from_char(code: int) -> string {
 /// let m = string.to_int("42abc");  // 0 — partial numbers return 0
 /// let z = string.to_int("");       // 0 — empty string returns 0
 /// ```
-pub fn to_int(s: string) -> int {
+pub fn to_int(s: string) -> i64 {
     match try_to_int(s) {
         Ok(value) => value,
         Err(_) => 0,
@@ -81,7 +81,7 @@ pub fn to_int(s: string) -> int {
 }
 
 /// Parse a string as an integer, returning a structured error on failure.
-pub fn try_to_int(s: string) -> Result<int, string> {
+pub fn try_to_int(s: string) -> Result<i64, string> {
     let slen = s.len();
     if slen == 0 {
         return Err("string.try_to_int: invalid integer literal");
@@ -185,7 +185,7 @@ fn is_valid_float_literal(s: string) -> bool {
     true
 }
 
-fn float_parse_start(s: string, slen: int) -> int {
+fn float_parse_start(s: string, slen: i64) -> i64 {
     var start = 0;
     if s.slice(0, 1) == "-" || s.slice(0, 1) == "+" {
         start = 1;
@@ -219,7 +219,7 @@ fn parse_valid_float_literal(s: string) -> f64 {
 }
 
 /// Return the numeric value of a single-character digit string, or `-1` if not a digit.
-fn digit_value(ch: string) -> int {
+fn digit_value(ch: string) -> i64 {
     match ch {
         "0" => 0,
         "1" => 1,
@@ -235,7 +235,7 @@ fn digit_value(ch: string) -> int {
     }
 }
 
-fn find_exponent_index(s: string, start: int, end: int) -> int {
+fn find_exponent_index(s: string, start: i64, end: i64) -> i64 {
     var exponent_index = -1;
     for i in start .. end {
         let ch = s.slice(i, i + 1);
@@ -249,7 +249,7 @@ fn find_exponent_index(s: string, start: int, end: int) -> int {
     exponent_index
 }
 
-fn is_valid_float_significand(s: string, start: int, end: int) -> bool {
+fn is_valid_float_significand(s: string, start: i64, end: i64) -> bool {
     if start >= end {
         return false;
     }
@@ -272,7 +272,7 @@ fn is_valid_float_significand(s: string, start: int, end: int) -> bool {
     saw_digit
 }
 
-fn is_valid_float_exponent(s: string, start: int, end: int) -> bool {
+fn is_valid_float_exponent(s: string, start: i64, end: i64) -> bool {
     if start >= end {
         return false;
     }
@@ -292,7 +292,7 @@ fn is_valid_float_exponent(s: string, start: int, end: int) -> bool {
     true
 }
 
-fn parse_float_significand(s: string, start: int, end: int) -> f64 {
+fn parse_float_significand(s: string, start: i64, end: i64) -> f64 {
     var whole = 0.0;
     var fraction = 0.0;
     var fraction_scale = 1.0;
@@ -314,7 +314,7 @@ fn parse_float_significand(s: string, start: int, end: int) -> f64 {
     whole + fraction / fraction_scale
 }
 
-fn parse_float_exponent(s: string, start: int, end: int) -> int {
+fn parse_float_exponent(s: string, start: i64, end: i64) -> i64 {
     var index = start;
     var negative = false;
     if s.slice(start, start + 1) == "-" {
@@ -334,7 +334,7 @@ fn parse_float_exponent(s: string, start: int, end: int) -> int {
     }
 }
 
-fn apply_float_exponent(value: f64, exponent: int) -> f64 {
+fn apply_float_exponent(value: f64, exponent: i64) -> f64 {
     var scale = 1.0;
     var remaining = if exponent < 0 {
         0 - exponent
@@ -352,7 +352,7 @@ fn apply_float_exponent(value: f64, exponent: int) -> f64 {
     }
 }
 
-fn digit_to_float(digit: int) -> f64 {
+fn digit_to_float(digit: i64) -> f64 {
     match digit {
         0 => 0.0,
         1 => 1.0,
@@ -388,7 +388,7 @@ pub fn is_empty(s: string) -> bool {
 /// ```
 /// let stars = string.repeat("*", 5);  // "*****"
 /// ```
-pub fn repeat(s: string, n: int) -> string {
+pub fn repeat(s: string, n: i64) -> string {
     s.repeat(n)
 }
 
@@ -402,7 +402,7 @@ pub fn repeat(s: string, n: int) -> string {
 /// string.pad_left("42", 5, " ")   // "   42"
 /// string.pad_left("42", 5, "0")   // "00042"
 /// ```
-pub fn pad_left(s: string, width: int, pad: string) -> string {
+pub fn pad_left(s: string, width: i64, pad: string) -> string {
     let slen = s.len();
     if slen >= width {
         return s;
@@ -419,7 +419,7 @@ pub fn pad_left(s: string, width: int, pad: string) -> string {
 /// ```
 /// string.pad_right("hi", 5, " ")  // "hi   "
 /// ```
-pub fn pad_right(s: string, width: int, pad: string) -> string {
+pub fn pad_right(s: string, width: i64, pad: string) -> string {
     let slen = s.len();
     if slen >= width {
         return s;
@@ -460,7 +460,7 @@ pub fn is_numeric(s: string) -> bool {
 /// string.count("abcabc", "abc")  // 2
 /// string.count("hello", "x")     // 0
 /// ```
-pub fn count(haystack: string, needle: string) -> int {
+pub fn count(haystack: string, needle: string) -> i64 {
     let nlen = needle.len();
     if nlen == 0 {
         return 0;

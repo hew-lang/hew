@@ -28,7 +28,7 @@
 /// fmt.to_hex(0)     // "0"
 /// fmt.to_hex(-16)   // "-10"
 /// ```
-pub fn to_hex(n: int) -> string {
+pub fn to_hex(n: i64) -> string {
     if n == 0 {
         return "0";
     }
@@ -56,7 +56,7 @@ pub fn to_hex(n: int) -> string {
 /// fmt.to_binary(0)    // "0"
 /// fmt.to_binary(-5)   // "-101"
 /// ```
-pub fn to_binary(n: int) -> string {
+pub fn to_binary(n: i64) -> string {
     if n == 0 {
         return "0";
     }
@@ -84,7 +84,7 @@ pub fn to_binary(n: int) -> string {
 /// fmt.to_octal(0)    // "0"
 /// fmt.to_octal(-9)   // "-11"
 /// ```
-pub fn to_octal(n: int) -> string {
+pub fn to_octal(n: i64) -> string {
     if n == 0 {
         return "0";
     }
@@ -102,7 +102,7 @@ pub fn to_octal(n: int) -> string {
 }
 
 /// Map a digit value (0–15) to its lowercase hex character.
-fn hex_digit(d: int) -> string {
+fn hex_digit(d: i64) -> string {
     match d {
         0 => "0",
         1 => "1",
@@ -135,7 +135,7 @@ fn hex_digit(d: int) -> string {
 /// fmt.pad_left("42", 5, " ")   // "   42"
 /// fmt.pad_left("42", 5, "0")   // "00042"
 /// ```
-pub fn pad_left(s: string, width: int, fill: string) -> string {
+pub fn pad_left(s: string, width: i64, fill: string) -> string {
     let slen = s.len();
     if slen >= width {
         return s;
@@ -152,7 +152,7 @@ pub fn pad_left(s: string, width: int, fill: string) -> string {
 /// ```
 /// fmt.pad_right("hi", 5, ".")   // "hi..."
 /// ```
-pub fn pad_right(s: string, width: int, fill: string) -> string {
+pub fn pad_right(s: string, width: i64, fill: string) -> string {
     let slen = s.len();
     if slen >= width {
         return s;
@@ -168,6 +168,6 @@ pub fn pad_right(s: string, width: int, fill: string) -> string {
 /// fmt.repeat("ab", 3)   // "ababab"
 /// fmt.repeat("*", 5)    // "*****"
 /// ```
-pub fn repeat(s: string, count: int) -> string {
+pub fn repeat(s: string, count: i64) -> string {
     s.repeat(count)
 }

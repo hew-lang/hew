@@ -3,7 +3,7 @@
 // 7-block CFG: entry-If1-branch, then1, else1, join1-If2-branch,
 // then2, else2, join2-Return. Both Ifs take their then arm
 // (conditions are `1 == 1`), so the binary computes `7 + 35 = 42`.
-fn main() -> int {
+fn main() -> i64 {
     let a = if 1 == 1 {
         7
     } else {

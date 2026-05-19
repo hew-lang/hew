@@ -1,4 +1,4 @@
-fn catalan(n: int) -> int {
+fn catalan(n: i64) -> i64 {
     let dp = Vec::new();
     dp.push(1);
     dp.push(1);
@@ -11,7 +11,7 @@ fn catalan(n: int) -> int {
     dp.get(n)
 }
 
-const ITERS: int = 500000;
+const ITERS: i64 = 500000;
 
 fn main() {
     var sum = 0;

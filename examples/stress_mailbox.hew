@@ -5,20 +5,20 @@
 // Sends many messages to a bounded mailbox and verifies backpressure
 // doesn't deadlock and all messages are eventually processed.
 actor Counter {
-    let count: int;
+    let count: i64;
 
     mailbox 4 overflow block;
-    receive fn increment() -> int {
+    receive fn increment() -> i64 {
         count = count + 1;
         count
     }
-    receive fn report() -> int {
+    receive fn report() -> i64 {
         println(f"Counter count: {count}");
         count
     }
 }
 
-fn drain_batch(counter: ActorRef<Counter>, remaining: int) -> int {
+fn drain_batch(counter: ActorRef<Counter>, remaining: i64) -> i64 {
     if remaining <= 1 {
         await counter.increment()
     } else {
@@ -35,7 +35,7 @@ fn main() {
     // Fill the bounded mailbox in deterministic batches without spelling out
     // ten separate awaits in the main loop.
     for batch in 0 .. 100 {
-        let batch_index: int = batch;
+        let batch_index: i64 = batch;
         let batch_count = drain_batch(c, 10);
         let expected_count = (batch_index + 1) * 10;
         if batch_count != expected_count {

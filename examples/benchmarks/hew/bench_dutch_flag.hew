@@ -1,4 +1,4 @@
-fn dutch_flag(arr: Vec<int>) -> int {
+fn dutch_flag(arr: Vec<i64>) -> i64 {
     let n = arr.len();
     var low = 0;
     var mid = 0;
@@ -25,12 +25,12 @@ fn dutch_flag(arr: Vec<int>) -> int {
     return arr.get(0) + arr.get(n / 2) + arr.get(n - 1);
 }
 
-const ITERS: int = 100000;
+const ITERS: i64 = 100000;
 
 fn main() {
     var checksum = 0;
     for i in 0 .. ITERS {
-        let arr: Vec<int> = Vec::new();
+        let arr: Vec<i64> = Vec::new();
         for k in 0 .. 1000 {
             arr.push(k % 3);
         }

@@ -1,4 +1,4 @@
-fn remove_dupes(arr: Vec<int>) -> int {
+fn remove_dupes(arr: Vec<i64>) -> i64 {
     let n = arr.len();
     if n == 0 {
         return 0;
@@ -15,12 +15,12 @@ fn remove_dupes(arr: Vec<int>) -> int {
     return write;
 }
 
-const ITERS: int = 200000;
+const ITERS: i64 = 200000;
 
 fn main() {
     var checksum = 0;
     for i in 0 .. ITERS {
-        let arr: Vec<int> = Vec::new();
+        let arr: Vec<i64> = Vec::new();
         for k in 0 .. 1000 {
             arr.push(k / 3);
         }

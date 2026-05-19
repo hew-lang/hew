@@ -20,7 +20,7 @@
 /// `flags` controls optional features (e.g., `1` for compression).
 ///
 /// Returns the 10-byte encoded header as a `bytes` value.
-pub fn encode_header(payload_len: int, flags: int) -> bytes {
+pub fn encode_header(payload_len: i64, flags: i64) -> bytes {
     let out: bytes = bytes::new();
     // Magic: "HEW1"
     out.push(72); // 'H'
@@ -42,7 +42,7 @@ pub fn encode_header(payload_len: int, flags: int) -> bytes {
 /// Decode a wire format header from a `bytes` buffer.
 ///
 /// Returns the payload length on success, or -1 if the header is invalid.
-pub fn decode_header(buffer: bytes) -> int {
+pub fn decode_header(buffer: bytes) -> i64 {
     if !validate_header(buffer) {
         return -1;
     }
@@ -50,7 +50,7 @@ pub fn decode_header(buffer: bytes) -> int {
     let b1 = buffer.get(7);
     let b2 = buffer.get(8);
     let b3 = buffer.get(9);
-    // Reconstruct little-endian u32 as int (widening from byte arithmetic is safe)
+    // Reconstruct little-endian u32 as i64 (widening from byte arithmetic is safe)
     b0 + b1 * 256 + b2 * 65536 + b3 * 16777216
 }
 

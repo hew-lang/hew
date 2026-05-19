@@ -1,7 +1,7 @@
 //! @name String Interpolation
 //! @description Format strings with embedded expressions
 
-fn greet(name: string, age: int) -> string {
+fn greet(name: string, age: i64) -> string {
     f"Hello, {name}! You are {age} years old."
 }
 

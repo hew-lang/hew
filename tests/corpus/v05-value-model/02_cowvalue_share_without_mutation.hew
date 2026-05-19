@@ -30,7 +30,7 @@ fn print_greeting(s: string) {
     let _ = s;
 }
 
-fn measure_len(s: string) -> int {
+fn measure_len(s: string) -> i64 {
     s.len()
 }
 

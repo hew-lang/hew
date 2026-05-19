@@ -1,7 +1,7 @@
 // Simple struct
 type Point {
-    x: int;
-    y: int;
+    x: i64;
+    y: i64;
 }
 
 fn main() {

@@ -37,7 +37,7 @@ pub fn to_json(data: bytes) -> string {
 }
 
 /// Encode an integer as a MessagePack varint.
-pub fn encode_int(val: int) -> bytes {
+pub fn encode_int(val: i64) -> bytes {
     unsafe {
         hew_msgpack_encode_int_hew(val as i64)
     } // INTERNAL-ABI: C ABI takes i64

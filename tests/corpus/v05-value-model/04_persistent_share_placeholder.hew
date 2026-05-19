@@ -26,7 +26,7 @@
 
 fn persistent_map_example() {
     // NOTE: PersistentMap syntax is illustrative; final API to be decided.
-    let m0: PersistentMap<string, int> = PersistentMap::empty();
+    let m0: PersistentMap<string, i64> = PersistentMap::empty();
     let m1 = m0.insert("alice", 10);   // produces new version; m0 is unchanged
     let m2 = m1.insert("bob", 20);     // produces new version; m1 is unchanged
 

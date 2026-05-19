@@ -18,12 +18,12 @@
 // Subscriber actor — receives messages on topics it cares about.
 actor Subscriber {
     let name: string;
-    let received: int;
+    let received: i64;
     receive fn on_message(topic: string, payload: string) {
         received = received + 1;
         println(f"  [{name}] #{received} topic={topic}: {payload}");
     }
-    receive fn count() -> int {
+    receive fn count() -> i64 {
         println(f"  [{name}] total received: {received}");
         received
     }
@@ -36,7 +36,7 @@ actor Subscriber {
 actor Broker {
     let sub_topics: Vec<string>;
     let sub_actors: Vec<ActorRef<Subscriber>>;
-    let published: int;
+    let published: i64;
 
     // Register a subscriber for a topic.
     receive fn subscribe(topic: string, subscriber: ActorRef<Subscriber>) {
@@ -58,7 +58,7 @@ actor Broker {
         }
         println(f"[broker] published #{published} → {delivered} subscribers");
     }
-    receive fn stats() -> int {
+    receive fn stats() -> i64 {
         println(f"[broker] total published: {published}, subscriptions: {sub_topics.len()}");
         published
     }

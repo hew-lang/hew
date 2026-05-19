@@ -5,10 +5,10 @@
 // contributes directly to the `shapes` module: callers never write
 // `shapes.circle.Circle`, they just use `Circle` after `import shapes;`.
 pub type Circle {
-    radius: int;
+    radius: i64;
 }
 
-pub fn make_circle(radius: int) -> Circle {
+pub fn make_circle(radius: i64) -> Circle {
     Circle { radius: radius }
 }
 

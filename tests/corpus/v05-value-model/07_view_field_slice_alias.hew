@@ -30,7 +30,7 @@ fn first_word(s: string) -> string {
 }
 
 fn iterate_keys() {
-    let map: Map<string, int> = {"alice": 1, "bob": 2};
+    let map: Map<string, i64> = {"alice": 1, "bob": 2};
     // map.keys() yields View<string> elements.  Each key is a read-only
     // window; no cow_share, no ensure_unique.
     for key in map.keys() {

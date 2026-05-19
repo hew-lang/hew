@@ -17,9 +17,9 @@
 //! ```
 
 /// Returns the number of command-line arguments.
-pub fn args_count() -> int {
+pub fn args_count() -> i64 {
     unsafe {
-        hew_args_count() as int
+        hew_args_count() as i64
     }
 }
 
@@ -33,7 +33,7 @@ pub fn args_count() -> int {
 /// let program = os.args(0);
 /// let first_arg = os.args(1);
 /// ```
-pub fn args(index: int) -> string {
+pub fn args(index: i64) -> string {
     unsafe {
         hew_args_get(index as i32)
     }
@@ -97,9 +97,9 @@ pub fn hostname() -> string {
 }
 
 /// Returns the current process ID.
-pub fn pid() -> int {
+pub fn pid() -> i64 {
     unsafe {
-        hew_pid() as int
+        hew_pid() as i64
     }
 }
 

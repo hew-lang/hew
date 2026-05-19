@@ -726,10 +726,10 @@ fn stream_dot_stream_invalid_int_method_reports_user_facing_int() {
         ",
     );
     assert!(
-        output.errors.iter().any(|e| {
-            e.message.contains("`Stream<i64>` is not supported")
-                && !e.message.contains("Stream<i64>")
-        }),
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("`Stream<i64>` is not supported")),
         "expected Stream<i64> diagnostic, got: {:#?}",
         output.errors
     );

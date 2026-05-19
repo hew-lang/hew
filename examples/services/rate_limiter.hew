@@ -13,15 +13,15 @@
 // Pattern: Ask/Reply — the caller blocks until the limiter replies with
 // a boolean (allowed or rejected). This is back-pressure by design.
 actor RateLimiter {
-    let tokens: int;
-    let max_tokens: int;
-    let refill_amount: int;
+    let tokens: i64;
+    let max_tokens: i64;
+    let refill_amount: i64;
     init() {
         println(f"[limiter] ready: {tokens}/{max_tokens} tokens, refill={refill_amount}");
     }
 
     // Try to acquire a token. Returns 1 if allowed, 0 if rejected.
-    receive fn acquire() -> int {
+    receive fn acquire() -> i64 {
         if tokens > 0 {
             tokens = tokens - 1;
             1
@@ -39,18 +39,18 @@ actor RateLimiter {
         }
         println(f"[limiter] refill: {prev} → {tokens}");
     }
-    receive fn available() -> int {
+    receive fn available() -> i64 {
         tokens
     }
 }
 
 // Simulated API worker that checks the limiter before processing.
 actor ApiWorker {
-    let id: int;
+    let id: i64;
     let limiter: ActorRef<RateLimiter>;
-    let accepted: int;
-    let rejected: int;
-    receive fn handle_request(request_id: int) {
+    let accepted: i64;
+    let rejected: i64;
+    receive fn handle_request(request_id: i64) {
         let allowed = await limiter.acquire();
         if allowed == 1 {
             accepted = accepted + 1;
@@ -60,7 +60,7 @@ actor ApiWorker {
             println(f"  [worker {id}] request {request_id} → REJECTED ({rejected} dropped)");
         }
     }
-    receive fn stats() -> int {
+    receive fn stats() -> i64 {
         println(f"  [worker {id}] accepted={accepted} rejected={rejected}");
         accepted
     }
@@ -69,8 +69,8 @@ actor ApiWorker {
 // Periodic refill timer — adds tokens at a fixed interval.
 actor RefillTimer {
     let limiter: ActorRef<RateLimiter>;
-    let interval_ms: int;
-    let cycles: int;
+    let interval_ms: i64;
+    let cycles: i64;
     receive fn start() {
         for i in 0 .. cycles {
             sleep_ms(interval_ms);

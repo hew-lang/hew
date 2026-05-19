@@ -1,4 +1,4 @@
-fn reverse_range(arr: Vec<int>, start: int, end: int) {
+fn reverse_range(arr: Vec<i64>, start: i64, end: i64) {
     var lo = start;
     var hi = end;
     while lo < hi {
@@ -10,7 +10,7 @@ fn reverse_range(arr: Vec<int>, start: int, end: int) {
     }
 }
 
-fn rotate_array(arr: Vec<int>, k: int) -> int {
+fn rotate_array(arr: Vec<i64>, k: i64) -> i64 {
     let n = arr.len();
     let rot = k % n;
     reverse_range(arr, 0, n - 1);
@@ -19,12 +19,12 @@ fn rotate_array(arr: Vec<int>, k: int) -> int {
     arr.get(0) + arr.get(n / 2) + arr.get(n - 1)
 }
 
-const ITERS: int = 100000;
+const ITERS: i64 = 100000;
 
 fn main() {
     var checksum = 0;
     for i in 0 .. ITERS {
-        let arr: Vec<int> = Vec::new();
+        let arr: Vec<i64> = Vec::new();
         for k in 0 .. 1000 {
             arr.push(k);
         }

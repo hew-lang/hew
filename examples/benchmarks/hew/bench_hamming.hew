@@ -1,4 +1,4 @@
-fn hamming_distance(a: string, b: string) -> int {
+fn hamming_distance(a: string, b: string) -> i64 {
     let n = a.len();
     var dist = 0;
     for i in 0 .. n {
@@ -9,7 +9,7 @@ fn hamming_distance(a: string, b: string) -> int {
     dist
 }
 
-const ITERS: int = 500000;
+const ITERS: i64 = 500000;
 
 fn main() {
     let a = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv";

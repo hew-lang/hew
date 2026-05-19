@@ -1,18 +1,18 @@
-// Deque - Double-ended queue using Vec<int>
+// Deque - Double-ended queue using Vec<i64>
 // Uses a Vec where index 0 = head pointer, rest is data
 // push_front shifts elements, push_back appends
-fn deque_new() -> Vec<int> {
-    let d: Vec<int> = Vec::new();
+fn deque_new() -> Vec<i64> {
+    let d: Vec<i64> = Vec::new();
     d.push(0); // head pointer
     d
 }
 
-fn deque_size(d: Vec<int>) -> int {
+fn deque_size(d: Vec<i64>) -> i64 {
     let head = d.get(0);
     d.len() - 1 - head
 }
 
-fn deque_is_empty(d: Vec<int>) -> int {
+fn deque_is_empty(d: Vec<i64>) -> i64 {
     if deque_size(d) == 0 {
         1
     } else {
@@ -20,11 +20,11 @@ fn deque_is_empty(d: Vec<int>) -> int {
     }
 }
 
-fn deque_push_back(d: Vec<int>, val: int) {
+fn deque_push_back(d: Vec<i64>, val: i64) {
     d.push(val);
 }
 
-fn deque_push_front(d: Vec<int>, val: int) {
+fn deque_push_front(d: Vec<i64>, val: i64) {
     // If there's space before head, use it
     let head = d.get(0);
     if head > 0 {
@@ -45,27 +45,27 @@ fn deque_push_front(d: Vec<int>, val: int) {
     }
 }
 
-fn deque_pop_back(d: Vec<int>) -> int {
+fn deque_pop_back(d: Vec<i64>) -> i64 {
     d.pop()
 }
 
-fn deque_pop_front(d: Vec<int>) -> int {
+fn deque_pop_front(d: Vec<i64>) -> i64 {
     let head = d.get(0);
     let val = d.get(head + 1);
     d.set(0, head + 1);
     val
 }
 
-fn deque_peek_front(d: Vec<int>) -> int {
+fn deque_peek_front(d: Vec<i64>) -> i64 {
     let head = d.get(0);
     d.get(head + 1)
 }
 
-fn deque_peek_back(d: Vec<int>) -> int {
+fn deque_peek_back(d: Vec<i64>) -> i64 {
     d.get(d.len() - 1)
 }
 
-fn run_test(name: string, passed: int) -> int {
+fn run_test(name: string, passed: i64) -> i64 {
     if passed == 1 {
         println(f"PASS: {name}");
     } else {

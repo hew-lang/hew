@@ -15,10 +15,10 @@
 //   - report shows CaptureIntoClosure: mutate
 
 fn main() {
-    var counter: Vec<int> = [];
+    var counter: Vec<i64> = [];
 
     // The closure mutates `counter`; capture mode is mutate.
-    let adder = fn(n: int) {
+    let adder = fn(n: i64) {
         counter.push(n);  // mutation: ensure_unique may fire
     };
 

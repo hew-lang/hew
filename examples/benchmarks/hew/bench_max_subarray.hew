@@ -1,4 +1,4 @@
-fn max_subarray(arr: Vec<int>) -> int {
+fn max_subarray(arr: Vec<i64>) -> i64 {
     let n = arr.len();
     var max_ending = arr.get(0);
     var max_so_far = arr.get(0);
@@ -16,10 +16,10 @@ fn max_subarray(arr: Vec<int>) -> int {
     return max_so_far;
 }
 
-const ITERS: int = 500000;
+const ITERS: i64 = 500000;
 
 fn main() {
-    let arr: Vec<int> = Vec::new();
+    let arr: Vec<i64> = Vec::new();
     for k in 0 .. 1000 {
         let rem = k % 3;
         if rem == 0 {

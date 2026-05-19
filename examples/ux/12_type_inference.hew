@@ -1,11 +1,11 @@
 // Can the compiler infer types?
-fn add(a: int, b: int) -> int {
+fn add(a: i64, b: i64) -> i64 {
     a + b
 }
 
 fn main() {
-    let x = 10; // infer int
-    let y = 20; // infer int
-    let result = add(x, y); // infer int
+    let x = 10; // infer i64
+    let y = 20; // infer i64
+    let result = add(x, y); // infer i64
     println(result);
 }

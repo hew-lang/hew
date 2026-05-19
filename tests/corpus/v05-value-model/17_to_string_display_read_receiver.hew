@@ -18,14 +18,14 @@
 //
 // Value-model rules exercised:
 //   - to_string on a CowValue<string> → borrow_read (not consume_call)
-//   - to_string on a Copy<int> → borrow_read (trivial)
+//   - to_string on a Copy<i64> → borrow_read (trivial)
 //   - Display::fmt equivalent (format string) → borrow_read
 //   - caller's value is still valid after the call
 //   - no hidden materialize at stringification sites
 
 struct User {
     name: string,
-    score: int,
+    score: i64,
 }
 
 impl Display for User {
@@ -40,7 +40,7 @@ fn demonstrate_read_receiver() {
     let as_str = name.to_string();   // read-only; name is still valid
     let _ = name;                    // valid: name was not consumed
 
-    let n: int = 42;
+    let n: i64 = 42;
     let n_str = n.to_string();       // Copy type; borrow_read, cost: Free
     let _ = n;
 

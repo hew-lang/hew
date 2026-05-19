@@ -2,7 +2,7 @@
 //! @description Actors processing messages independently
 
 actor Doubler {
-    receive fn process(n: int) -> int {
+    receive fn process(n: i64) -> i64 {
         let result = n * 2;
         print("Result: ");
         println(result);

@@ -93,7 +93,6 @@ fn trait_bound_violation_reports_error() {
         output.errors.iter().any(|err| {
             err.message
                 .contains("type `i64` does not implement trait `Describable` required by `T`")
-                && !err.message.contains("type `i64`")
         }),
         "expected user-facing i64 in bound error, got {:?}",
         output.errors

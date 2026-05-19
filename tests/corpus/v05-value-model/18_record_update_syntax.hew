@@ -25,7 +25,7 @@
 
 struct User {
     name: string,
-    score: int,
+    score: i64,
 }
 
 struct Point {

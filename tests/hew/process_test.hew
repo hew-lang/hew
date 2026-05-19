@@ -12,7 +12,7 @@ fn cleanup_file(file_path: string) {
     }
 }
 
-fn kill_zero_exit_code(pid: string) -> int {
+fn kill_zero_exit_code(pid: string) -> i64 {
     let args: Vec<string> = Vec::new();
     args.push("-0");
     args.push(pid);

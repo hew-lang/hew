@@ -3,7 +3,7 @@
 
 // stress_fanout.hew - Test fan-out pattern with multiple workers
 // Spawns multiple workers, sends computation to each, verifies all complete.
-fn fib(n: int) -> int {
+fn fib(n: i64) -> i64 {
     if n <= 1 {
         n
     } else {
@@ -11,12 +11,12 @@ fn fib(n: int) -> int {
     }
 }
 
-fn print_result(worker_id: int, x: int, result: int) {
+fn print_result(worker_id: i64, x: i64, result: i64) {
     println(f"Worker {worker_id}: fib({x}) = {result}");
 }
 
 actor Computer {
-    receive fn compute(x: int) -> int {
+    receive fn compute(x: i64) -> i64 {
         fib(x)
     }
 }
@@ -64,7 +64,7 @@ fn main() {
     var completed = 10;
     var checksum_total = r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + r9 + r10;
     for i in 0 .. 5 {
-        let round: int = i;
+        let round: i64 = i;
         let (b1, b2, b3, b4, b5, b6, b7, b8, b9, b10) = join {
             w1.compute(round + 3),
             w2.compute(round + 4),

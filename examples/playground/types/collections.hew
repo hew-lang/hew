@@ -3,7 +3,7 @@
 
 fn main() {
     // Vec
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(10);
     v.push(20);
     v.push(30);
@@ -16,7 +16,7 @@ fn main() {
     println(popped);
 
     // HashMap
-    let m: HashMap<string, int> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap::new();
     m.insert("one", 1);
     m.insert("two", 2);
     m.insert("three", 3);

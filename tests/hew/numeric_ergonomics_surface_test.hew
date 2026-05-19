@@ -1,4 +1,4 @@
-//! Proofs for int-facing stdlib numeric APIs.
+//! Proofs for i64-facing stdlib numeric APIs.
 
 import std::crypto::password;
 import std::misc::log;
@@ -6,11 +6,11 @@ import std::testing;
 
 #[test]
 fn test_log_level_and_format_use_int_surface() {
-    let original_level: int = log.get_level();
-    let original_format: int = log.get_format();
+    let original_level: i64 = log.get_level();
+    let original_format: i64 = log.get_format();
 
-    let level: int = 4;
-    let format: int = 1;
+    let level: i64 = 4;
+    let format: i64 = 1;
 
     log.set_level(level);
     log.set_format(format);
@@ -24,7 +24,7 @@ fn test_log_level_and_format_use_int_surface() {
 
 #[test]
 fn test_password_hash_custom_accepts_int_cost() {
-    let cost: int = 2;
+    let cost: i64 = 2;
     let hash = password.hash_custom("numeric-ergonomics", cost);
 
     testing.assert_true(password.verify("numeric-ergonomics", hash.clone()));

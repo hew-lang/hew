@@ -1,7 +1,7 @@
-// 2D Matrix using flat Vec<int>
+// 2D Matrix using flat Vec<i64>
 // Layout: [rows, cols, data...] where data[r*cols + c] = element at (r,c)
-fn mat_create(rows: int, cols: int) -> Vec<int> {
-    let m: Vec<int> = Vec::new();
+fn mat_create(rows: i64, cols: i64) -> Vec<i64> {
+    let m: Vec<i64> = Vec::new();
     m.push(rows);
     m.push(cols);
     let total = rows * cols;
@@ -11,26 +11,26 @@ fn mat_create(rows: int, cols: int) -> Vec<int> {
     m
 }
 
-fn mat_rows(m: Vec<int>) -> int {
+fn mat_rows(m: Vec<i64>) -> i64 {
     m.get(0)
 }
 
-fn mat_cols(m: Vec<int>) -> int {
+fn mat_cols(m: Vec<i64>) -> i64 {
     m.get(1)
 }
 
-fn mat_get(m: Vec<int>, r: int, c: int) -> int {
+fn mat_get(m: Vec<i64>, r: i64, c: i64) -> i64 {
     let cols = m.get(1);
     m.get(2 + r * cols + c)
 }
 
-fn mat_set(m: Vec<int>, r: int, c: int, val: int) -> int {
+fn mat_set(m: Vec<i64>, r: i64, c: i64, val: i64) -> i64 {
     let cols = m.get(1);
     m.set(2 + r * cols + c, val);
     0
 }
 
-fn mat_transpose(m: Vec<int>) -> Vec<int> {
+fn mat_transpose(m: Vec<i64>) -> Vec<i64> {
     let rows = m.get(0);
     let cols = m.get(1);
     let t = mat_create(cols, rows);
@@ -43,7 +43,7 @@ fn mat_transpose(m: Vec<int>) -> Vec<int> {
     t
 }
 
-fn mat_add(a: Vec<int>, b: Vec<int>) -> Vec<int> {
+fn mat_add(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
     let rows = mat_rows(a);
     let cols = mat_cols(a);
     let result = mat_create(rows, cols);
@@ -56,7 +56,7 @@ fn mat_add(a: Vec<int>, b: Vec<int>) -> Vec<int> {
     result
 }
 
-fn mat_multiply(a: Vec<int>, b: Vec<int>) -> Vec<int> {
+fn mat_multiply(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
     let a_rows = mat_rows(a);
     let a_cols = mat_cols(a);
     let b_cols = mat_cols(b);

@@ -46,39 +46,39 @@ import std::path;
 /// `http`, `tls`, `dns`, and `websocket` modules.
 pub enum IoError {
     /// The target path does not exist.
-    NotFound(int);
+    NotFound(i64);
     /// The process lacks permission for the operation.
-    PermissionDenied(int);
+    PermissionDenied(i64);
     /// A file or directory already exists at the target path.
-    AlreadyExists(int);
+    AlreadyExists(i64);
     /// The remote host actively refused the connection (ECONNREFUSED).
-    ConnectionRefused(int);
+    ConnectionRefused(i64);
     /// The local address is already in use (EADDRINUSE).
-    AddressInUse(int);
+    AddressInUse(i64);
     /// The connection attempt or I/O operation timed out (ETIMEDOUT).
-    TimedOut(int);
+    TimedOut(i64);
     /// Operation was cancelled (e.g., a deadline expired before the I/O could complete).
     ///
     /// Distinct from `TimedOut`: `TimedOut` means the deadline expired; `Cancelled`
     /// means the operation was abandoned for another reason (e.g. the blocking
     /// pool was shut down mid-call).
-    Cancelled(int);
+    Cancelled(i64);
     /// The address or hostname could not be resolved (EADDRNOTAVAIL).
-    AddressNotAvailable(int);
+    AddressNotAvailable(i64);
     /// Any other OS-level I/O failure.
-    Other(int);
+    Other(i64);
 }
 
 // WASM-TODO(#1451): WASI uses wasi_errno codes; needs a WASI branch or separate mapping
 /// Map an OS errno integer to a structured `IoError` variant.
 ///
-/// The int payload carried in each variant is the raw OS errno so callers
+/// The i64 payload carried in each variant is the raw OS errno so callers
 /// can inspect the platform value. errno=0 (no OS error) maps to `Other(0)`.
 ///
 /// Covers both file-system and network errno values so this function can be
 /// shared across `fs`, `net`, `stream`, `http`, `tls`, `quic`, `dns`, and
 /// `websocket` modules.
-pub fn io_error_from_errno(errno: int) -> IoError {
+pub fn io_error_from_errno(errno: i64) -> IoError {
     // ENOENT: Linux=2, macOS=2
     if errno == 2 {
         IoError::NotFound(errno)
@@ -232,8 +232,8 @@ pub fn try_read(file_path: string) -> Result<string, IoError> {
 /// Write a string to a file, creating or overwriting it.
 ///
 /// Returns 0 on success, non-zero on error.
-/// Use `try_write` for a structured `Result<int, IoError>` surface.
-pub fn write(path: string, content: string) -> int {
+/// Use `try_write` for a structured `Result<i64, IoError>` surface.
+pub fn write(path: string, content: string) -> i64 {
     unsafe {
         hew_file_write(path, content)
     }
@@ -241,8 +241,8 @@ pub fn write(path: string, content: string) -> int {
 
 /// Write a string to a file, creating or overwriting it.
 ///
-/// Lifts the native status code into `Result<int, IoError>`.
-pub fn try_write(file_path: string, content: string) -> Result<int, IoError> {
+/// Lifts the native status code into `Result<i64, IoError>`.
+pub fn try_write(file_path: string, content: string) -> Result<i64, IoError> {
     match unsafe {
         hew_file_write(file_path, content)
     } {
@@ -254,8 +254,8 @@ pub fn try_write(file_path: string, content: string) -> Result<int, IoError> {
 /// Append a string to the end of a file.
 ///
 /// Creates the file if it does not exist. Returns 0 on success.
-/// Use `try_append` for a structured `Result<int, IoError>` surface.
-pub fn append(path: string, content: string) -> int {
+/// Use `try_append` for a structured `Result<i64, IoError>` surface.
+pub fn append(path: string, content: string) -> i64 {
     unsafe {
         hew_file_append(path, content)
     }
@@ -263,8 +263,8 @@ pub fn append(path: string, content: string) -> int {
 
 /// Append a string to the end of a file.
 ///
-/// Lifts the native status code into `Result<int, IoError>`.
-pub fn try_append(file_path: string, content: string) -> Result<int, IoError> {
+/// Lifts the native status code into `Result<i64, IoError>`.
+pub fn try_append(file_path: string, content: string) -> Result<i64, IoError> {
     match unsafe {
         hew_file_append(file_path, content)
     } {
@@ -288,7 +288,7 @@ pub fn exists(path: string) -> bool {
 }
 
 /// Delete a file. Returns 0 on success.
-pub fn delete(path: string) -> int {
+pub fn delete(path: string) -> i64 {
     unsafe {
         hew_file_delete(path)
     }
@@ -297,7 +297,7 @@ pub fn delete(path: string) -> int {
 /// Delete a file.
 ///
 /// Returns `Err(IoError::NotFound(_))` when the path is missing.
-pub fn try_delete(file_path: string) -> Result<int, IoError> {
+pub fn try_delete(file_path: string) -> Result<i64, IoError> {
     match unsafe {
         hew_file_delete(file_path)
     } {
@@ -307,7 +307,7 @@ pub fn try_delete(file_path: string) -> Result<int, IoError> {
 }
 
 /// Returns the size of a file in bytes.
-pub fn size(path: string) -> int {
+pub fn size(path: string) -> i64 {
     unsafe {
         hew_file_size(path)
     }
@@ -348,8 +348,8 @@ pub fn try_read_bytes(file_path: string) -> Result<bytes, IoError> {
 /// Write a `bytes` value to a file, creating or overwriting it.
 ///
 /// Returns 0 on success, non-zero on error.
-/// Use `try_write_bytes` for a structured `Result<int, IoError>` surface.
-pub fn write_bytes(path: string, data: bytes) -> int {
+/// Use `try_write_bytes` for a structured `Result<i64, IoError>` surface.
+pub fn write_bytes(path: string, data: bytes) -> i64 {
     unsafe {
         hew_file_write_bytes(path, data)
     }
@@ -357,8 +357,8 @@ pub fn write_bytes(path: string, data: bytes) -> int {
 
 /// Write a `bytes` value to a file, creating or overwriting it.
 ///
-/// Lifts the native status code into `Result<int, IoError>`.
-pub fn try_write_bytes(file_path: string, data: bytes) -> Result<int, IoError> {
+/// Lifts the native status code into `Result<i64, IoError>`.
+pub fn try_write_bytes(file_path: string, data: bytes) -> Result<i64, IoError> {
     match unsafe {
         hew_file_write_bytes(file_path, data)
     } {
@@ -372,14 +372,14 @@ pub fn try_write_bytes(file_path: string, data: bytes) -> Result<int, IoError> {
 ///
 /// Fails if any parent directory does not exist. Use `mkdir_all` to create
 /// parent directories automatically.
-pub fn mkdir(path: string) -> int {
+pub fn mkdir(path: string) -> i64 {
     unsafe {
         hew_fs_mkdir(path)
     }
 }
 
 /// Create a directory with structured `IoError` results.
-pub fn try_mkdir(dir_path: string) -> Result<int, IoError> {
+pub fn try_mkdir(dir_path: string) -> Result<i64, IoError> {
     match unsafe {
         hew_fs_mkdir(dir_path)
     } {
@@ -391,7 +391,7 @@ pub fn try_mkdir(dir_path: string) -> Result<int, IoError> {
 /// Create a directory and all its parent components.
 ///
 /// Returns 0 on success, -1 on error.
-pub fn mkdir_all(path: string) -> int {
+pub fn mkdir_all(path: string) -> i64 {
     unsafe {
         hew_fs_mkdir_all(path)
     }
@@ -399,8 +399,8 @@ pub fn mkdir_all(path: string) -> int {
 
 /// Create a directory and all its parent components.
 ///
-/// Lifts the native status code into `Result<int, IoError>`.
-pub fn try_mkdir_all(dir_path: string) -> Result<int, IoError> {
+/// Lifts the native status code into `Result<i64, IoError>`.
+pub fn try_mkdir_all(dir_path: string) -> Result<i64, IoError> {
     match unsafe {
         hew_fs_mkdir_all(dir_path)
     } {
@@ -452,7 +452,7 @@ pub fn try_list_dir(dir_path: string) -> Result<Vec<string>, IoError> {
 /// Rename or move a file or directory.
 ///
 /// Returns 0 on success, -1 on error.
-pub fn rename(from: string, to: string) -> int {
+pub fn rename(from: string, to: string) -> i64 {
     unsafe {
         hew_fs_rename(from, to)
     }
@@ -460,8 +460,8 @@ pub fn rename(from: string, to: string) -> int {
 
 /// Rename or move a file or directory.
 ///
-/// Lifts the native status code into `Result<int, IoError>`.
-pub fn try_rename(from: string, to: string) -> Result<int, IoError> {
+/// Lifts the native status code into `Result<i64, IoError>`.
+pub fn try_rename(from: string, to: string) -> Result<i64, IoError> {
     match unsafe {
         hew_fs_rename(from, to)
     } {
@@ -473,7 +473,7 @@ pub fn try_rename(from: string, to: string) -> Result<int, IoError> {
 /// Copy a file.
 ///
 /// Returns 0 on success, -1 on error.
-pub fn copy(from: string, to: string) -> int {
+pub fn copy(from: string, to: string) -> i64 {
     unsafe {
         hew_fs_copy(from, to)
     }
@@ -481,8 +481,8 @@ pub fn copy(from: string, to: string) -> int {
 
 /// Copy a file.
 ///
-/// Lifts the native status code into `Result<int, IoError>`.
-pub fn try_copy(from: string, to: string) -> Result<int, IoError> {
+/// Lifts the native status code into `Result<i64, IoError>`.
+pub fn try_copy(from: string, to: string) -> Result<i64, IoError> {
     match unsafe {
         hew_fs_copy(from, to)
     } {

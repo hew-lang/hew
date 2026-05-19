@@ -1,4 +1,4 @@
-fn partition(v: Vec<int>, low: int, high: int) -> int {
+fn partition(v: Vec<i64>, low: i64, high: i64) -> i64 {
     let pivot = v.get(high);
     var i = low - 1;
     var j = low;
@@ -17,7 +17,7 @@ fn partition(v: Vec<int>, low: int, high: int) -> int {
     i + 1
 }
 
-fn quick_sort_range(v: Vec<int>, low: int, high: int) {
+fn quick_sort_range(v: Vec<i64>, low: i64, high: i64) {
     if low < high {
         let pi = partition(v, low, high);
         quick_sort_range(v, low, pi - 1);
@@ -25,7 +25,7 @@ fn quick_sort_range(v: Vec<int>, low: int, high: int) {
     }
 }
 
-fn quick_sort(v: Vec<int>) -> Vec<int> {
+fn quick_sort(v: Vec<i64>) -> Vec<i64> {
     let n = v.len();
     if n > 1 {
         quick_sort_range(v, 0, n - 1);
@@ -33,8 +33,8 @@ fn quick_sort(v: Vec<int>) -> Vec<int> {
     v
 }
 
-fn make_test_array() -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn make_test_array() -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     var i = 100;
     while i > 0 {
         v.push(i);
@@ -43,7 +43,7 @@ fn make_test_array() -> Vec<int> {
     v
 }
 
-const ITERS: int = 100000;
+const ITERS: i64 = 100000;
 
 fn main() {
     for i in 0 .. ITERS {

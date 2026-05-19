@@ -1,5 +1,5 @@
 // Exponentiation by squaring (fast power)
-fn fast_pow(base: int, exp: int) -> int {
+fn fast_pow(base: i64, exp: i64) -> i64 {
     var result = 1;
     var b = base;
     var e = exp;
@@ -13,7 +13,7 @@ fn fast_pow(base: int, exp: int) -> int {
     result
 }
 
-fn check(name: string, got: int, expected: int) -> int {
+fn check(name: string, got: i64, expected: i64) -> i64 {
     if got == expected {
         println("PASS: " + name);
         1

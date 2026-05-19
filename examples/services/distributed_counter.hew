@@ -24,9 +24,9 @@
 // Coordinator — merges replica counts into a global total.
 actor Coordinator {
     let replica_names: Vec<string>;
-    let replica_totals: Vec<int>;
-    let global_total: int;
-    let sync_count: int;
+    let replica_totals: Vec<i64>;
+    let global_total: i64;
+    let sync_count: i64;
     receive fn register_replica(name: string) {
         replica_names.push(name);
         replica_totals.push(0);
@@ -34,7 +34,7 @@ actor Coordinator {
     }
 
     // Replica reports its local count for merging.
-    receive fn sync(name: string, local_count: int) {
+    receive fn sync(name: string, local_count: i64) {
         sync_count = sync_count + 1;
         // Find the replica and update its known total
         for i in 0 .. replica_names.len() {
@@ -51,7 +51,7 @@ actor Coordinator {
         global_total = sum;
         println(f"[coordinator] sync #{sync_count}: {name} reported {local_count}, global={global_total}");
     }
-    receive fn get_global() -> int {
+    receive fn get_global() -> i64 {
         println(f"[coordinator] global total = {global_total}");
         global_total
     }
@@ -61,13 +61,13 @@ actor Coordinator {
 actor Replica {
     let name: string;
     let coordinator: ActorRef<Coordinator>;
-    let local_count: int;
+    let local_count: i64;
     init() {
         println(f"[{name}] replica started");
     }
 
     // Local increment — fast, no coordination needed.
-    receive fn increment(n: int) {
+    receive fn increment(n: i64) {
         local_count = local_count + n;
         println(f"  [{name}] +{n} → local={local_count}");
     }
@@ -76,7 +76,7 @@ actor Replica {
     receive fn sync_to_coordinator() {
         coordinator.sync(name, local_count);
     }
-    receive fn get_local() -> int {
+    receive fn get_local() -> i64 {
         local_count
     }
 }
@@ -87,7 +87,7 @@ fn main() {
 
     // Create coordinator
     let empty_names: Vec<string> = Vec::new();
-    let empty_totals: Vec<int> = Vec::new();
+    let empty_totals: Vec<i64> = Vec::new();
     let coord = spawn Coordinator(replica_names: empty_names, replica_totals: empty_totals, global_total: 0, sync_count: 0);
     // Create replicas (in production these would be on separate nodes)
     // Node::start("0.0.0.0:9000");

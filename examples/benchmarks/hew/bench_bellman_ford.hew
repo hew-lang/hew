@@ -1,6 +1,6 @@
-fn bellman_ford(edge_src: Vec<int>, edge_dst: Vec<int>, edge_wt: Vec<int>, num_edges: int, n: int, start_node: int) -> int {
+fn bellman_ford(edge_src: Vec<i64>, edge_dst: Vec<i64>, edge_wt: Vec<i64>, num_edges: i64, n: i64, start_node: i64) -> i64 {
     let INF = 999999;
-    let dist: Vec<int> = Vec::new();
+    let dist: Vec<i64> = Vec::new();
     for i in 0 .. n {
         dist.push(INF);
     }
@@ -25,13 +25,13 @@ fn bellman_ford(edge_src: Vec<int>, edge_dst: Vec<int>, edge_wt: Vec<int>, num_e
     return total;
 }
 
-const ITERS: int = 20000;
+const ITERS: i64 = 20000;
 
 fn main() {
     let n = 50;
-    let edge_src: Vec<int> = Vec::new();
-    let edge_dst: Vec<int> = Vec::new();
-    let edge_wt: Vec<int> = Vec::new();
+    let edge_src: Vec<i64> = Vec::new();
+    let edge_dst: Vec<i64> = Vec::new();
+    let edge_wt: Vec<i64> = Vec::new();
     for src in 0 .. n {
         for dst in 1 .. 4 {
             let neighbour = (src + dst) % n;

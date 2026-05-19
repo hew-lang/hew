@@ -1,7 +1,7 @@
-// Priority Queue - using sorted insertion into Vec<int>
+// Priority Queue - using sorted insertion into Vec<i64>
 // Smallest element is at the end (easy to pop)
 // Insert maintains descending order so extract_min is O(1) pop
-fn pq_insert(pq: Vec<int>, val: int) {
+fn pq_insert(pq: Vec<i64>, val: i64) {
     // Insert val maintaining descending order (largest first, smallest last)
     pq.push(val);
     var i = pq.len() - 1;
@@ -25,19 +25,19 @@ fn pq_insert(pq: Vec<int>, val: int) {
     }
 }
 
-fn pq_extract_min(pq: Vec<int>) -> int {
+fn pq_extract_min(pq: Vec<i64>) -> i64 {
     pq.pop()
 }
 
-fn pq_peek_min(pq: Vec<int>) -> int {
+fn pq_peek_min(pq: Vec<i64>) -> i64 {
     pq.get(pq.len() - 1)
 }
 
-fn pq_size(pq: Vec<int>) -> int {
+fn pq_size(pq: Vec<i64>) -> i64 {
     pq.len()
 }
 
-fn pq_is_empty(pq: Vec<int>) -> int {
+fn pq_is_empty(pq: Vec<i64>) -> i64 {
     if pq.len() == 0 {
         1
     } else {
@@ -45,7 +45,7 @@ fn pq_is_empty(pq: Vec<int>) -> int {
     }
 }
 
-fn run_test(name: string, passed: int) -> int {
+fn run_test(name: string, passed: i64) -> i64 {
     if passed == 1 {
         println(f"PASS: {name}");
     } else {
@@ -57,7 +57,7 @@ fn run_test(name: string, passed: int) -> int {
 fn main() {
     var total = 0;
     var passed = 0;
-    let pq: Vec<int> = Vec::new();
+    let pq: Vec<i64> = Vec::new();
     // Test 1: empty
     total = total + 1;
     let r1 = if pq_is_empty(pq) == 1 {
@@ -129,7 +129,7 @@ fn main() {
 
     // Test 7: ascending insert order
     total = total + 1;
-    let pq2: Vec<int> = Vec::new();
+    let pq2: Vec<i64> = Vec::new();
     pq_insert(pq2, 1);
     pq_insert(pq2, 2);
     pq_insert(pq2, 3);
@@ -148,7 +148,7 @@ fn main() {
 
     // Test 8: descending insert order
     total = total + 1;
-    let pq3: Vec<int> = Vec::new();
+    let pq3: Vec<i64> = Vec::new();
     pq_insert(pq3, 50);
     pq_insert(pq3, 40);
     pq_insert(pq3, 30);

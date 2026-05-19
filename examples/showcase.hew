@@ -32,7 +32,7 @@ fn describe_shape(s: Shape) {
     }
 }
 
-fn fib(n: int) -> int {
+fn fib(n: i64) -> i64 {
     if n <= 1 {
         n
     } else {
@@ -40,7 +40,7 @@ fn fib(n: int) -> int {
     }
 }
 
-fn divide(a: int, b: int) -> Result<int, string> {
+fn divide(a: i64, b: i64) -> Result<i64, string> {
     if b == 0 {
         Err("division by zero")
     } else {
@@ -49,11 +49,11 @@ fn divide(a: int, b: int) -> Result<int, string> {
 }
 
 actor Counter {
-    let count: int;
+    let count: i64;
     receive fn increment() {
         count = count + 1;
     }
-    receive fn get_count() -> int {
+    receive fn get_count() -> i64 {
         count
     }
 }
@@ -88,7 +88,7 @@ fn main() {
     }
     // 4. Lambdas
     println("4. Lambdas:");
-    let square = |n: int| n * n;
+    let square = |n: i64| n * n;
     println("  Lambda defined");
 
     // 5. Fibonacci

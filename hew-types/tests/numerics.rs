@@ -37,9 +37,13 @@ fn width_aliases_floats_admitted() {
 fn width_aliases_canonical_aliases_resolve_correctly() {
     // i64 = i64
     assert_eq!(Ty::from_name("i64"), Some(Ty::I64));
-    assert_eq!(Ty::from_name("Int"), Some(Ty::I64));
+    // `int`/`Int` are removed aliases; they must NOT resolve.
+    assert_eq!(Ty::from_name("int"), None);
+    assert_eq!(Ty::from_name("Int"), None);
     // u64 = u64
     assert_eq!(Ty::from_name("u64"), Some(Ty::U64));
+    // `uint` is a removed alias; it must NOT resolve.
+    assert_eq!(Ty::from_name("uint"), None);
     // byte = u8
     assert_eq!(Ty::from_name("byte"), Some(Ty::U8));
     // float = f64

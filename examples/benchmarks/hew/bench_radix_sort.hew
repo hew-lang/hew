@@ -1,4 +1,4 @@
-fn get_max(v: Vec<int>) -> int {
+fn get_max(v: Vec<i64>) -> i64 {
     let n = v.len();
     var max_val = v.get(0);
     var i = 1;
@@ -11,10 +11,10 @@ fn get_max(v: Vec<int>) -> int {
     max_val
 }
 
-fn count_sort_by_exp(v: Vec<int>, exp: int) {
+fn count_sort_by_exp(v: Vec<i64>, exp: i64) {
     let n = v.len();
-    let output: Vec<int> = Vec::new();
-    let count: Vec<int> = Vec::new();
+    let output: Vec<i64> = Vec::new();
+    let count: Vec<i64> = Vec::new();
     var i = 0;
     while i < 10 {
         count.push(0);
@@ -51,7 +51,7 @@ fn count_sort_by_exp(v: Vec<int>, exp: int) {
     }
 }
 
-fn radix_sort(v: Vec<int>) -> Vec<int> {
+fn radix_sort(v: Vec<i64>) -> Vec<i64> {
     let n = v.len();
     if n == 0 {
         return v;
@@ -65,8 +65,8 @@ fn radix_sort(v: Vec<int>) -> Vec<int> {
     v
 }
 
-fn make_test_array() -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn make_test_array() -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     var i = 100;
     while i > 0 {
         v.push(i);
@@ -75,7 +75,7 @@ fn make_test_array() -> Vec<int> {
     v
 }
 
-const ITERS: int = 100000;
+const ITERS: i64 = 100000;
 
 fn main() {
     for i in 0 .. ITERS {

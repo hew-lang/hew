@@ -1,8 +1,8 @@
 // Greedy Graph Colouring
 // Assign colours (ints starting from 0) so no two adjacent nodes share a colour
-fn build_undirected(num_nodes: int, esrc: Vec<int>, edst: Vec<int>, adj_nodes: Vec<int>, adj_offsets: Vec<int>) {
+fn build_undirected(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>, adj_nodes: Vec<i64>, adj_offsets: Vec<i64>) {
     let num_edges = esrc.len();
-    let degree: Vec<int> = Vec::new();
+    let degree: Vec<i64> = Vec::new();
     for i in 0 .. num_nodes {
         degree.push(0);
     }
@@ -20,7 +20,7 @@ fn build_undirected(num_nodes: int, esrc: Vec<int>, edst: Vec<int>, adj_nodes: V
     for i in 0 .. total {
         adj_nodes.push(0);
     }
-    let pos: Vec<int> = Vec::new();
+    let pos: Vec<i64> = Vec::new();
     for i in 0 .. num_nodes {
         pos.push(adj_offsets.get(i));
     }
@@ -34,13 +34,13 @@ fn build_undirected(num_nodes: int, esrc: Vec<int>, edst: Vec<int>, adj_nodes: V
     }
 }
 
-fn greedy_colour(adj_nodes: Vec<int>, adj_offsets: Vec<int>, num_nodes: int, colours: Vec<int>) {
+fn greedy_colour(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64, colours: Vec<i64>) {
     // Initialize all colours to -1 (uncoloured)
     for i in 0 .. num_nodes {
         colours.push(0 - 1);
     }
     // Track which colours are used by neighbours
-    let used: Vec<int> = Vec::new();
+    let used: Vec<i64> = Vec::new();
     for i in 0 .. num_nodes {
         used.push(0);
     }
@@ -84,7 +84,7 @@ fn greedy_colour(adj_nodes: Vec<int>, adj_offsets: Vec<int>, num_nodes: int, col
     }
 }
 
-fn is_valid_colouring(adj_nodes: Vec<int>, adj_offsets: Vec<int>, num_nodes: int, colours: Vec<int>) -> bool {
+fn is_valid_colouring(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64, colours: Vec<i64>) -> bool {
     for node in 0 .. num_nodes {
         let my_c = colours.get(node);
         let s = adj_offsets.get(node);
@@ -101,7 +101,7 @@ fn is_valid_colouring(adj_nodes: Vec<int>, adj_offsets: Vec<int>, num_nodes: int
     true
 }
 
-fn count_colours(colours: Vec<int>, num_nodes: int) -> int {
+fn count_colours(colours: Vec<i64>, num_nodes: i64) -> i64 {
     var max_c = 0;
     for i in 0 .. num_nodes {
         let c = colours.get(i);
@@ -118,8 +118,8 @@ fn main() {
     // Graph 1: Petersen-like structure, 6 nodes
     // 0-1, 0-2, 0-3, 1-2, 1-4, 2-5, 3-4, 3-5, 4-5
     let n1 = 6;
-    let s1: Vec<int> = Vec::new();
-    let d1: Vec<int> = Vec::new();
+    let s1: Vec<i64> = Vec::new();
+    let d1: Vec<i64> = Vec::new();
     s1.push(0);
     d1.push(1);
     s1.push(0);
@@ -138,10 +138,10 @@ fn main() {
     d1.push(5);
     s1.push(4);
     d1.push(5);
-    let an1: Vec<int> = Vec::new();
-    let ao1: Vec<int> = Vec::new();
+    let an1: Vec<i64> = Vec::new();
+    let ao1: Vec<i64> = Vec::new();
     build_undirected(n1, s1, d1, an1, ao1);
-    let colours1: Vec<int> = Vec::new();
+    let colours1: Vec<i64> = Vec::new();
     greedy_colour(an1, ao1, n1, colours1);
 
     // Test 1: Valid colouring
@@ -163,8 +163,8 @@ fn main() {
     }
     // Graph 2: Bipartite (4-cycle: 0-1-2-3-0), should need exactly 2 colours
     let n2 = 4;
-    let s2: Vec<int> = Vec::new();
-    let d2: Vec<int> = Vec::new();
+    let s2: Vec<i64> = Vec::new();
+    let d2: Vec<i64> = Vec::new();
     s2.push(0);
     d2.push(1);
     s2.push(1);
@@ -173,10 +173,10 @@ fn main() {
     d2.push(3);
     s2.push(3);
     d2.push(0);
-    let an2: Vec<int> = Vec::new();
-    let ao2: Vec<int> = Vec::new();
+    let an2: Vec<i64> = Vec::new();
+    let ao2: Vec<i64> = Vec::new();
     build_undirected(n2, s2, d2, an2, ao2);
-    let colours2: Vec<int> = Vec::new();
+    let colours2: Vec<i64> = Vec::new();
     greedy_colour(an2, ao2, n2, colours2);
 
     // Test 3: Valid colouring
@@ -198,18 +198,18 @@ fn main() {
     }
     // Graph 3: Triangle (K3), needs exactly 3 colours
     let n3 = 3;
-    let s3: Vec<int> = Vec::new();
-    let d3: Vec<int> = Vec::new();
+    let s3: Vec<i64> = Vec::new();
+    let d3: Vec<i64> = Vec::new();
     s3.push(0);
     d3.push(1);
     s3.push(1);
     d3.push(2);
     s3.push(2);
     d3.push(0);
-    let an3: Vec<int> = Vec::new();
-    let ao3: Vec<int> = Vec::new();
+    let an3: Vec<i64> = Vec::new();
+    let ao3: Vec<i64> = Vec::new();
     build_undirected(n3, s3, d3, an3, ao3);
-    let colours3: Vec<int> = Vec::new();
+    let colours3: Vec<i64> = Vec::new();
     greedy_colour(an3, ao3, n3, colours3);
 
     // Test 5: Valid colouring
@@ -231,8 +231,8 @@ fn main() {
     }
     // Graph 4: Star graph (0 connected to 1,2,3,4), needs 2 colours
     let n4 = 5;
-    let s4: Vec<int> = Vec::new();
-    let d4: Vec<int> = Vec::new();
+    let s4: Vec<i64> = Vec::new();
+    let d4: Vec<i64> = Vec::new();
     s4.push(0);
     d4.push(1);
     s4.push(0);
@@ -241,10 +241,10 @@ fn main() {
     d4.push(3);
     s4.push(0);
     d4.push(4);
-    let an4: Vec<int> = Vec::new();
-    let ao4: Vec<int> = Vec::new();
+    let an4: Vec<i64> = Vec::new();
+    let ao4: Vec<i64> = Vec::new();
     build_undirected(n4, s4, d4, an4, ao4);
-    let colours4: Vec<int> = Vec::new();
+    let colours4: Vec<i64> = Vec::new();
     greedy_colour(an4, ao4, n4, colours4);
 
     // Test 7: Valid colouring

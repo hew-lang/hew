@@ -27,8 +27,8 @@ fn main() {
 }
 
 // Factory helper that creates a lambda actor for multiplication
-fn run_multiplier(factor: int, value: int) {
-    let worker = actor |x: int| {
+fn run_multiplier(factor: i64, value: i64) {
+    let worker = actor |x: i64| {
         println(f"{factor} * {x} = {x * factor}");
     };
     worker.send(value);
@@ -37,8 +37,8 @@ fn run_multiplier(factor: int, value: int) {
 }
 
 // Factory helper for string-tagged number processing
-fn run_string_processor(tag: str, value: int) {
-    let worker = actor |x: int| {
+fn run_string_processor(tag: str, value: i64) {
+    let worker = actor |x: i64| {
         println(f"[{tag}] {x}");
     };
     worker.send(value);
@@ -47,8 +47,8 @@ fn run_string_processor(tag: str, value: int) {
 }
 
 // Factory helper for conditional processing (even/odd)
-fn run_conditional_processor(check_even: bool, first: int, second: int) {
-    let worker = actor |x: int| {
+fn run_conditional_processor(check_even: bool, first: i64, second: i64) {
+    let worker = actor |x: i64| {
         let is_even = x % 2 == 0;
         if check_even && is_even {
             println(f"{x} (even)");
@@ -64,8 +64,8 @@ fn run_conditional_processor(check_even: bool, first: int, second: int) {
 }
 
 // Advanced: factory helper with nested captured configuration
-fn run_factory_maker(base: int, offset: int) {
-    let worker = actor |value: int| {
+fn run_factory_maker(base: i64, offset: i64) {
+    let worker = actor |value: i64| {
         let total = base + value;
         println(f"Factory maker result: {total}");
         // In a real implementation, this might create and return another actor

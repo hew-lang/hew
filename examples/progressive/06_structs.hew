@@ -1,13 +1,13 @@
 // Test 6: Structs
 // Defining and using structures
 type Person {
-    age: int;
-    id: int;
+    age: i64;
+    id: i64;
 }
 
 type Point {
-    x: int;
-    y: int;
+    x: i64;
+    y: i64;
 }
 
 fn main() {

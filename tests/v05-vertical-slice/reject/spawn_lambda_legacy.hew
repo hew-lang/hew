@@ -3,7 +3,7 @@
 // Expected: parse error containing "E_LEGACY_SPAWN_LAMBDA_SYNTAX"
 // Use `actor |params| { body }` instead.
 fn main() {
-    let w = spawn (x: int) => {
+    let w = spawn (x: i64) => {
         println(x);
     };
     w.send(1);

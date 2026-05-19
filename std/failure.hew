@@ -7,7 +7,7 @@
 //! `register_builtin_failure_surface` so isolated fixtures can pin the
 //! hook signature without importing.
 //!
-//! ## `PanicInfo` is int-tag only for v0.5
+//! ## `PanicInfo` is i64-tag only for v0.5
 //!
 //! WHY: the codegen-rs spine does not yet accept `string` / `Function` /
 //! `Closure` types as struct fields (S9 in the spine-widening registry).
@@ -26,7 +26,7 @@
 /// real fault — the hook's job is to choose between Restart, Escalate,
 /// and Kill".  See `JOURNEY.md` for the per-code assignment plan.
 pub type PanicInfo {
-    code: int;
+    code: i64;
 }
 
 /// Advisory return value of a `#[on(crash)]` hook.

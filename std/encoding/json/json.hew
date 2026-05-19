@@ -48,12 +48,12 @@ trait ValueMethods: CanonicalValueMethods {
     /// Serialize the value back to a JSON string.
     fn stringify(val: Value) -> string;
 
-    /// Return the type tag (0=null, 1=bool, 2=int, 3=float, 4=string, 5=array, 6=object).
+    /// Return the type tag (0=null, 1=bool, 2=i64, 3=float, 4=string, 5=array, 6=object).
     fn type_of(val: Value) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
     /// Extract the boolean value (0 or 1).
     fn get_bool(val: Value) -> i32; // INTERNAL-ABI: C ABI returns bool as i32
     /// Extract the integer value.
-    fn get_int(val: Value) -> int;
+    fn get_int(val: Value) -> i64;
 
     /// Extract the floating-point value.
     fn get_float(val: Value) -> f64;
@@ -65,10 +65,10 @@ trait ValueMethods: CanonicalValueMethods {
     fn get_field(val: Value, key: string) -> Value;
 
     /// Return the number of elements in a JSON array.
-    fn array_len(val: Value) -> int;
+    fn array_len(val: Value) -> i64;
 
     /// Return the element at the given index in a JSON array.
-    fn array_get(val: Value, index: int) -> Value;
+    fn array_get(val: Value, index: i64) -> Value;
 
     /// Return a JSON array of the object's keys.
     fn keys(val: Value) -> Value;
@@ -84,7 +84,7 @@ trait ValueMethods: CanonicalValueMethods {
     fn with_string(obj: Value, key: string, val: string) -> Value;
 
     /// Set an integer field. Returns the object for chaining.
-    fn with_int(obj: Value, key: string, val: int) -> Value;
+    fn with_int(obj: Value, key: string, val: i64) -> Value;
 
     /// Set a float field. Returns the object for chaining.
     fn with_float(obj: Value, key: string, val: f64) -> Value;
@@ -102,7 +102,7 @@ trait ValueMethods: CanonicalValueMethods {
     fn push(arr: Value, child: Value) -> Value;
 
     /// Push an integer onto an array. Returns the array.
-    fn push_int(arr: Value, val: int) -> Value;
+    fn push_int(arr: Value, val: i64) -> Value;
 
     /// Push a string onto an array. Returns the array.
     fn push_string(arr: Value, val: string) -> Value;
@@ -133,7 +133,7 @@ impl CanonicalValueMethods for Value {
             hew_json_get_bool(val)
         }
     }
-    fn get_int(val: Value) -> int {
+    fn get_int(val: Value) -> i64 {
         unsafe {
             hew_json_get_int(val)
         }
@@ -153,12 +153,12 @@ impl CanonicalValueMethods for Value {
             hew_json_get_field(val, key)
         }
     }
-    fn array_len(val: Value) -> int {
+    fn array_len(val: Value) -> i64 {
         unsafe {
             hew_json_array_len(val)
         }
     }
-    fn array_get(val: Value, index: int) -> Value {
+    fn array_get(val: Value, index: i64) -> Value {
         unsafe {
             hew_json_array_get(val, index as i32)
         }
@@ -174,7 +174,7 @@ impl CanonicalValueMethods for Value {
         };
         obj
     }
-    fn with_int(obj: Value, key: string, val: int) -> Value {
+    fn with_int(obj: Value, key: string, val: i64) -> Value {
         unsafe {
             hew_json_object_set_int(obj, key, val as i64)
         };
@@ -204,7 +204,7 @@ impl CanonicalValueMethods for Value {
         };
         arr
     }
-    fn push_int(arr: Value, val: int) -> Value {
+    fn push_int(arr: Value, val: i64) -> Value {
         unsafe {
             hew_json_array_push_int(arr, val as i64)
         };
@@ -296,7 +296,7 @@ pub fn array() -> Value {
 }
 
 /// Create a JSON Value from an integer.
-pub fn from_int(val: int) -> Value {
+pub fn from_int(val: i64) -> Value {
     unsafe {
         hew_json_from_int(val as i64)
     }

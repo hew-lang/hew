@@ -4,8 +4,8 @@
 // callers awaiting a reply via `Result<Reply, AskError>`.
 // Expected: type error containing "E_LAMBDA_RETURN_TYPE_MISMATCH"
 fn main() {
-    // Declares `-> int` but body returns a string — mismatch.
-    let _bad = actor |n: int| -> int {
-        "not an int"
+    // Declares `-> i64` but body returns a string — mismatch.
+    let _bad = actor |n: i64| -> i64 {
+        "not an i64"
     };
 }

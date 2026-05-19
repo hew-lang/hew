@@ -262,7 +262,7 @@ fn test_sum_f64_single_element() {
 
 #[test]
 fn test_take_int_fewer_than_length() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(10); v.push(20); v.push(30);
     let result = iter.take_int(v, 2);
     testing.assert_eq(result.len(), 2);
@@ -272,7 +272,7 @@ fn test_take_int_fewer_than_length() {
 
 #[test]
 fn test_take_int_more_than_length_clamps() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(1); v.push(2);
     let result = iter.take_int(v, 10);
     testing.assert_eq(result.len(), 2);
@@ -280,7 +280,7 @@ fn test_take_int_more_than_length_clamps() {
 
 #[test]
 fn test_take_int_zero_returns_empty() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(1); v.push(2);
     let result = iter.take_int(v, 0);
     testing.assert_eq(result.len(), 0);
@@ -288,7 +288,7 @@ fn test_take_int_zero_returns_empty() {
 
 #[test]
 fn test_take_int_empty_vec() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     let result = iter.take_int(v, 3);
     testing.assert_eq(result.len(), 0);
 }
@@ -297,7 +297,7 @@ fn test_take_int_empty_vec() {
 
 #[test]
 fn test_skip_int_drops_first_n() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(10); v.push(20); v.push(30);
     let result = iter.skip_int(v, 1);
     testing.assert_eq(result.len(), 2);
@@ -307,7 +307,7 @@ fn test_skip_int_drops_first_n() {
 
 #[test]
 fn test_skip_int_more_than_length_returns_empty() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(1); v.push(2);
     let result = iter.skip_int(v, 5);
     testing.assert_eq(result.len(), 0);
@@ -315,7 +315,7 @@ fn test_skip_int_more_than_length_returns_empty() {
 
 #[test]
 fn test_skip_int_zero_returns_all() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(1); v.push(2); v.push(3);
     let result = iter.skip_int(v, 0);
     testing.assert_eq(result.len(), 3);
@@ -325,22 +325,22 @@ fn test_skip_int_zero_returns_all() {
 
 #[test]
 fn test_count_int_even_elements() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(1); v.push(2); v.push(3); v.push(4);
-    testing.assert_eq(iter.count_int(v, (x: int) => x % 2 == 0), 2);
+    testing.assert_eq(iter.count_int(v, (x: i64) => x % 2 == 0), 2);
 }
 
 #[test]
 fn test_count_int_none_match() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(1); v.push(3);
-    testing.assert_eq(iter.count_int(v, (x: int) => x % 2 == 0), 0);
+    testing.assert_eq(iter.count_int(v, (x: i64) => x % 2 == 0), 0);
 }
 
 #[test]
 fn test_count_int_empty_vec() {
-    let v: Vec<int> = Vec::new();
-    testing.assert_eq(iter.count_int(v, (x: int) => x > 0), 0);
+    let v: Vec<i64> = Vec::new();
+    testing.assert_eq(iter.count_int(v, (x: i64) => x > 0), 0);
 }
 
 // ── take_str ───────────────────────────────────────────────────────────────
@@ -503,20 +503,20 @@ fn test_count_f64_empty_vec() {
 
 #[test]
 fn test_product_three_elements() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(2); v.push(3); v.push(4);
     testing.assert_eq(iter.product(v), 24);
 }
 
 #[test]
 fn test_product_empty_vec_returns_one() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     testing.assert_eq(iter.product(v), 1);
 }
 
 #[test]
 fn test_product_single_element() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(7);
     testing.assert_eq(iter.product(v), 7);
 }
@@ -550,7 +550,7 @@ fn test_product_f64_single_element() {
 
 #[test]
 fn test_skip_int_negative_n_returns_all() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(1); v.push(2); v.push(3);
     let result = iter.skip_int(v, -1);
     testing.assert_eq(result.len(), 3);
@@ -581,7 +581,7 @@ fn test_skip_f64_negative_n_returns_all() {
 
 #[test]
 fn test_take_int_negative_n_returns_empty() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(1); v.push(2); v.push(3);
     let result = iter.take_int(v, -1);
     testing.assert_eq(result.len(), 0);
@@ -589,7 +589,7 @@ fn test_take_int_negative_n_returns_empty() {
 
 #[test]
 fn test_take_int_negative_large_returns_empty() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(10);
     let result = iter.take_int(v, -100);
     testing.assert_eq(result.len(), 0);

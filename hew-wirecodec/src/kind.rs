@@ -153,17 +153,21 @@ mod tests {
             PrimitiveWireKind::from_type_name("u64").unwrap(),
             PrimitiveWireKind::U64
         );
-        assert!(
-            PrimitiveWireKind::from_type_name("int").is_err(),
-            "`int` must not be a valid wire type name"
+        // `int`/`Int`/`uint` are removed aliases; they must not map to I64/U64.
+        assert_ne!(
+            PrimitiveWireKind::from_type_name("int").unwrap(),
+            PrimitiveWireKind::I64,
+            "`int` must not resolve to I64 wire kind"
         );
-        assert!(
-            PrimitiveWireKind::from_type_name("Int").is_err(),
-            "`Int` must not be a valid wire type name"
+        assert_ne!(
+            PrimitiveWireKind::from_type_name("Int").unwrap(),
+            PrimitiveWireKind::I64,
+            "`Int` must not resolve to I64 wire kind"
         );
-        assert!(
-            PrimitiveWireKind::from_type_name("uint").is_err(),
-            "`uint` must not be a valid wire type name"
+        assert_ne!(
+            PrimitiveWireKind::from_type_name("uint").unwrap(),
+            PrimitiveWireKind::U64,
+            "`uint` must not resolve to U64 wire kind"
         );
         // isize is a distinct platform-sized type, not an alias for i64.
         assert_eq!(

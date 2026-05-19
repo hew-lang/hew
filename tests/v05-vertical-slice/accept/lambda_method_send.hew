@@ -3,7 +3,7 @@
 // to the same runtime symbol (`hew_duplex_send`) as the canonical call-syntax
 // `handle(msg)`.  Both surfaces coexist per Q30=(a).
 fn main() {
-    let printer = actor |x: int| {
+    let printer = actor |x: i64| {
         println(x);
     };
     printer.send(42);

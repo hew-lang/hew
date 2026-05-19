@@ -1,10 +1,10 @@
-// Enum payload values with Option<int>
+// Enum payload values with Option<i64>
 import std::option;
 
 fn main() {
-    // Option<int> is the built-in "value or nothing" enum.
-    let val1: Option<int> = Some(42);
-    let val2: Option<int> = None;
+    // Option<i64> is the built-in "value or nothing" enum.
+    let val1: Option<i64> = Some(42);
+    let val2: Option<i64> = None;
     // match gives you full control over each case.
     match val1 {
         Some(x) => println(x),

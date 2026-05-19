@@ -29,15 +29,15 @@ type Deque {
 
 /// Methods available on a `Deque`.
 trait DequeMethods {
-    fn push_front(dq: Deque, value: int);
+    fn push_front(dq: Deque, value: i64);
 
-    fn push_back(dq: Deque, value: int);
+    fn push_back(dq: Deque, value: i64);
 
-    fn pop_front(dq: Deque) -> int;
+    fn pop_front(dq: Deque) -> i64;
 
-    fn pop_back(dq: Deque) -> int;
+    fn pop_back(dq: Deque) -> i64;
 
-    fn len(dq: Deque) -> int;
+    fn len(dq: Deque) -> i64;
 
     fn is_empty(dq: Deque) -> bool;
 
@@ -45,27 +45,27 @@ trait DequeMethods {
 }
 
 impl DequeMethods for Deque {
-    fn push_front(dq: Deque, value: int) {
+    fn push_front(dq: Deque, value: i64) {
         unsafe {
             hew_deque_push_front(dq, value as i64)
         };
     }
-    fn push_back(dq: Deque, value: int) {
+    fn push_back(dq: Deque, value: i64) {
         unsafe {
             hew_deque_push_back(dq, value as i64)
         };
     }
-    fn pop_front(dq: Deque) -> int {
+    fn pop_front(dq: Deque) -> i64 {
         unsafe {
             hew_deque_pop_front(dq)
         }
     }
-    fn pop_back(dq: Deque) -> int {
+    fn pop_back(dq: Deque) -> i64 {
         unsafe {
             hew_deque_pop_back(dq)
         }
     }
-    fn len(dq: Deque) -> int {
+    fn len(dq: Deque) -> i64 {
         unsafe {
             hew_deque_len(dq)
         }

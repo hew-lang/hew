@@ -1,6 +1,6 @@
 // Hash Multimap - One key maps to multiple values
 // Uses hash map for key->head_index, linked list nodes in parallel Vecs
-fn hash(key: int, capacity: int) -> int {
+fn hash(key: i64, capacity: i64) -> i64 {
     let h = key % capacity;
     if h < 0 {
         h + capacity
@@ -10,8 +10,8 @@ fn hash(key: int, capacity: int) -> int {
 }
 
 // Hash table: maps key -> index into node arrays (head of linked list)
-fn make_ht_keys(capacity: int) -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn make_ht_keys(capacity: i64) -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     let EMPTY = 0 - 1;
     for i in 0 .. capacity {
         v.push(EMPTY);
@@ -19,8 +19,8 @@ fn make_ht_keys(capacity: int) -> Vec<int> {
     v
 }
 
-fn make_ht_vals(capacity: int) -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn make_ht_vals(capacity: i64) -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     let NONE = 0 - 1;
     for i in 0 .. capacity {
         v.push(NONE);
@@ -29,7 +29,7 @@ fn make_ht_vals(capacity: int) -> Vec<int> {
 }
 
 // Find hash table slot for a key
-fn ht_find(ht_keys: Vec<int>, key: int) -> int {
+fn ht_find(ht_keys: Vec<i64>, key: i64) -> i64 {
     let capacity = ht_keys.len();
     let EMPTY = 0 - 1;
     var idx = hash(key, capacity);
@@ -50,7 +50,7 @@ fn ht_find(ht_keys: Vec<int>, key: int) -> int {
 
 // Insert a value for a key into the multimap
 // node_vals, node_next are the linked list storage
-fn mm_insert(ht_keys: Vec<int>, ht_heads: Vec<int>, node_vals: Vec<int>, node_next: Vec<int>, key: int, value: int) {
+fn mm_insert(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_vals: Vec<i64>, node_next: Vec<i64>, key: i64, value: i64) {
     let EMPTY = 0 - 1;
     let NONE = 0 - 1;
     let slot = ht_find(ht_keys, key);
@@ -75,7 +75,7 @@ fn mm_insert(ht_keys: Vec<int>, ht_heads: Vec<int>, node_vals: Vec<int>, node_ne
 }
 
 // Get all values for a key into result Vec, return count
-fn mm_get_all(ht_keys: Vec<int>, ht_heads: Vec<int>, node_vals: Vec<int>, node_next: Vec<int>, key: int, result: Vec<int>) -> int {
+fn mm_get_all(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_vals: Vec<i64>, node_next: Vec<i64>, key: i64, result: Vec<i64>) -> i64 {
     let EMPTY = 0 - 1;
     let NONE = 0 - 1;
     let slot = ht_find(ht_keys, key);
@@ -97,7 +97,7 @@ fn mm_get_all(ht_keys: Vec<int>, ht_heads: Vec<int>, node_vals: Vec<int>, node_n
 }
 
 // Remove one occurrence of value for key, return true if found
-fn mm_remove_one(ht_keys: Vec<int>, ht_heads: Vec<int>, node_vals: Vec<int>, node_next: Vec<int>, key: int, value: int) -> bool {
+fn mm_remove_one(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_vals: Vec<i64>, node_next: Vec<i64>, key: i64, value: i64) -> bool {
     let EMPTY = 0 - 1;
     let NONE = 0 - 1;
     let slot = ht_find(ht_keys, key);
@@ -133,7 +133,7 @@ fn mm_remove_one(ht_keys: Vec<int>, ht_heads: Vec<int>, node_vals: Vec<int>, nod
 }
 
 // Count values for a key
-fn mm_count(ht_keys: Vec<int>, ht_heads: Vec<int>, node_next: Vec<int>, key: int) -> int {
+fn mm_count(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_next: Vec<i64>, key: i64) -> i64 {
     let EMPTY = 0 - 1;
     let NONE = 0 - 1;
     let slot = ht_find(ht_keys, key);
@@ -153,7 +153,7 @@ fn mm_count(ht_keys: Vec<int>, ht_heads: Vec<int>, node_next: Vec<int>, key: int
     count
 }
 
-fn vec_contains(v: Vec<int>, val: int) -> bool {
+fn vec_contains(v: Vec<i64>, val: i64) -> bool {
     let len = v.len();
     for i in 0 .. len {
         if v.get(i) == val {
@@ -169,8 +169,8 @@ fn main() {
     let cap = 32;
     let ht_keys = make_ht_keys(cap);
     let ht_heads = make_ht_vals(cap);
-    let node_vals: Vec<int> = Vec::new();
-    let node_next: Vec<int> = Vec::new();
+    let node_vals: Vec<i64> = Vec::new();
+    let node_next: Vec<i64> = Vec::new();
     // Test 1: Insert multiple values for same key
     mm_insert(ht_keys, ht_heads, node_vals, node_next, 1, 10);
     mm_insert(ht_keys, ht_heads, node_vals, node_next, 1, 20);
@@ -184,7 +184,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 2: Get all values for a key
-    let r1: Vec<int> = Vec::new();
+    let r1: Vec<i64> = Vec::new();
     let gc1 = mm_get_all(ht_keys, ht_heads, node_vals, node_next, 1, r1);
     if gc1 == 3 {
         if vec_contains(r1, 10) {
@@ -242,7 +242,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 5: Removed value no longer in list
-    let r2: Vec<int> = Vec::new();
+    let r2: Vec<i64> = Vec::new();
     let _ = mm_get_all(ht_keys, ht_heads, node_vals, node_next, 1, r2);
     if vec_contains(r2, 20) {
         println("FAIL: removed value still present");

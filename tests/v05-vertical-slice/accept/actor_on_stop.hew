@@ -1,15 +1,15 @@
 actor Counter {
-    let count: int;
+    let count: i64;
 
-    init(initial: int) {
+    init(initial: i64) {
         count = initial;
     }
 
-    receive fn increment(n: int) {
+    receive fn increment(n: i64) {
         count = count + n;
     }
 
-    receive fn total() -> int {
+    receive fn total() -> i64 {
         count
     }
 
@@ -24,7 +24,7 @@ actor Counter {
     }
 }
 
-fn main() -> int {
+fn main() -> i64 {
     let counter = spawn Counter(initial: 9);
     counter.increment(32);
     counter.total()

@@ -1,7 +1,7 @@
 // Bipartite Check - 2-colouring BFS
 // Colour 0 = unvisited, 1 = colour A, 2 = colour B
-fn is_bipartite(adj_nodes: Vec<int>, adj_offsets: Vec<int>, num_nodes: int) -> bool {
-    let colour: Vec<int> = Vec::new();
+fn is_bipartite(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64) -> bool {
+    let colour: Vec<i64> = Vec::new();
     for i in 0 .. num_nodes {
         colour.push(0);
     }
@@ -11,7 +11,7 @@ fn is_bipartite(adj_nodes: Vec<int>, adj_offsets: Vec<int>, num_nodes: int) -> b
             // already coloured
         } else {
             colour.set(start, 1);
-            let queue: Vec<int> = Vec::new();
+            let queue: Vec<i64> = Vec::new();
             queue.push(start);
             var head = 0;
             while head < queue.len() {
@@ -41,9 +41,9 @@ fn is_bipartite(adj_nodes: Vec<int>, adj_offsets: Vec<int>, num_nodes: int) -> b
     true
 }
 
-fn build_undirected(num_nodes: int, esrc: Vec<int>, edst: Vec<int>, adj_nodes: Vec<int>, adj_offsets: Vec<int>) {
+fn build_undirected(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>, adj_nodes: Vec<i64>, adj_offsets: Vec<i64>) {
     let num_edges = esrc.len();
-    let degree: Vec<int> = Vec::new();
+    let degree: Vec<i64> = Vec::new();
     for i in 0 .. num_nodes {
         degree.push(0);
     }
@@ -61,7 +61,7 @@ fn build_undirected(num_nodes: int, esrc: Vec<int>, edst: Vec<int>, adj_nodes: V
     for i in 0 .. total {
         adj_nodes.push(0);
     }
-    let pos: Vec<int> = Vec::new();
+    let pos: Vec<i64> = Vec::new();
     for i in 0 .. num_nodes {
         pos.push(adj_offsets.get(i));
     }
@@ -81,8 +81,8 @@ fn main() {
     // Graph 1: Bipartite (even cycle: 0-1-2-3-0)
     // Partitions: {0,2} and {1,3}
     let n1 = 4;
-    let s1: Vec<int> = Vec::new();
-    let d1: Vec<int> = Vec::new();
+    let s1: Vec<i64> = Vec::new();
+    let d1: Vec<i64> = Vec::new();
     s1.push(0);
     d1.push(1);
     s1.push(1);
@@ -91,8 +91,8 @@ fn main() {
     d1.push(3);
     s1.push(3);
     d1.push(0);
-    let an1: Vec<int> = Vec::new();
-    let ao1: Vec<int> = Vec::new();
+    let an1: Vec<i64> = Vec::new();
+    let ao1: Vec<i64> = Vec::new();
     build_undirected(n1, s1, d1, an1, ao1);
 
     // Test 1: 4-cycle is bipartite
@@ -105,16 +105,16 @@ fn main() {
     }
     // Graph 2: Non-bipartite (triangle: 0-1-2-0)
     let n2 = 3;
-    let s2: Vec<int> = Vec::new();
-    let d2: Vec<int> = Vec::new();
+    let s2: Vec<i64> = Vec::new();
+    let d2: Vec<i64> = Vec::new();
     s2.push(0);
     d2.push(1);
     s2.push(1);
     d2.push(2);
     s2.push(2);
     d2.push(0);
-    let an2: Vec<int> = Vec::new();
-    let ao2: Vec<int> = Vec::new();
+    let an2: Vec<i64> = Vec::new();
+    let ao2: Vec<i64> = Vec::new();
     build_undirected(n2, s2, d2, an2, ao2);
 
     // Test 2: Triangle is not bipartite
@@ -127,8 +127,8 @@ fn main() {
     }
     // Graph 3: Bipartite tree: 0-1, 0-2, 1-3, 1-4
     let n3 = 5;
-    let s3: Vec<int> = Vec::new();
-    let d3: Vec<int> = Vec::new();
+    let s3: Vec<i64> = Vec::new();
+    let d3: Vec<i64> = Vec::new();
     s3.push(0);
     d3.push(1);
     s3.push(0);
@@ -137,8 +137,8 @@ fn main() {
     d3.push(3);
     s3.push(1);
     d3.push(4);
-    let an3: Vec<int> = Vec::new();
-    let ao3: Vec<int> = Vec::new();
+    let an3: Vec<i64> = Vec::new();
+    let ao3: Vec<i64> = Vec::new();
     build_undirected(n3, s3, d3, an3, ao3);
 
     // Test 3: Tree is always bipartite
@@ -151,8 +151,8 @@ fn main() {
     }
     // Graph 4: 5-cycle (odd cycle, not bipartite)
     let n4 = 5;
-    let s4: Vec<int> = Vec::new();
-    let d4: Vec<int> = Vec::new();
+    let s4: Vec<i64> = Vec::new();
+    let d4: Vec<i64> = Vec::new();
     s4.push(0);
     d4.push(1);
     s4.push(1);
@@ -163,8 +163,8 @@ fn main() {
     d4.push(4);
     s4.push(4);
     d4.push(0);
-    let an4: Vec<int> = Vec::new();
-    let ao4: Vec<int> = Vec::new();
+    let an4: Vec<i64> = Vec::new();
+    let ao4: Vec<i64> = Vec::new();
     build_undirected(n4, s4, d4, an4, ao4);
 
     // Test 4: 5-cycle is not bipartite
@@ -177,10 +177,10 @@ fn main() {
     }
     // Graph 5: Single node (trivially bipartite)
     let n5 = 1;
-    let s5: Vec<int> = Vec::new();
-    let d5: Vec<int> = Vec::new();
-    let an5: Vec<int> = Vec::new();
-    let ao5: Vec<int> = Vec::new();
+    let s5: Vec<i64> = Vec::new();
+    let d5: Vec<i64> = Vec::new();
+    let an5: Vec<i64> = Vec::new();
+    let ao5: Vec<i64> = Vec::new();
     build_undirected(n5, s5, d5, an5, ao5);
 
     // Test 5: Single node
@@ -193,8 +193,8 @@ fn main() {
     }
     // Graph 6: Complete bipartite K(2,3): {0,1} x {2,3,4}
     let n6 = 5;
-    let s6: Vec<int> = Vec::new();
-    let d6: Vec<int> = Vec::new();
+    let s6: Vec<i64> = Vec::new();
+    let d6: Vec<i64> = Vec::new();
     s6.push(0);
     d6.push(2);
     s6.push(0);
@@ -207,8 +207,8 @@ fn main() {
     d6.push(3);
     s6.push(1);
     d6.push(4);
-    let an6: Vec<int> = Vec::new();
-    let ao6: Vec<int> = Vec::new();
+    let an6: Vec<i64> = Vec::new();
+    let ao6: Vec<i64> = Vec::new();
     build_undirected(n6, s6, d6, an6, ao6);
 
     // Test 6: K(2,3) is bipartite
@@ -221,8 +221,8 @@ fn main() {
     }
     // Graph 7: 6-cycle (even, bipartite)
     let n7 = 6;
-    let s7: Vec<int> = Vec::new();
-    let d7: Vec<int> = Vec::new();
+    let s7: Vec<i64> = Vec::new();
+    let d7: Vec<i64> = Vec::new();
     s7.push(0);
     d7.push(1);
     s7.push(1);
@@ -235,8 +235,8 @@ fn main() {
     d7.push(5);
     s7.push(5);
     d7.push(0);
-    let an7: Vec<int> = Vec::new();
-    let ao7: Vec<int> = Vec::new();
+    let an7: Vec<i64> = Vec::new();
+    let ao7: Vec<i64> = Vec::new();
     build_undirected(n7, s7, d7, an7, ao7);
 
     // Test 7: 6-cycle is bipartite
@@ -250,8 +250,8 @@ fn main() {
     // Graph 8: 6-cycle + chord creating odd cycle (0-1-2-3-4-5-0 + 0-2)
     // The chord 0-2 creates triangle 0-1-2-0 (odd cycle)
     let n8 = 6;
-    let s8: Vec<int> = Vec::new();
-    let d8: Vec<int> = Vec::new();
+    let s8: Vec<i64> = Vec::new();
+    let d8: Vec<i64> = Vec::new();
     s8.push(0);
     d8.push(1);
     s8.push(1);
@@ -266,8 +266,8 @@ fn main() {
     d8.push(0);
     s8.push(0);
     d8.push(2);
-    let an8: Vec<int> = Vec::new();
-    let ao8: Vec<int> = Vec::new();
+    let an8: Vec<i64> = Vec::new();
+    let ao8: Vec<i64> = Vec::new();
     build_undirected(n8, s8, d8, an8, ao8);
 
     // Test 8: 6-cycle+chord has odd cycle, not bipartite

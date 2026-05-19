@@ -1,6 +1,6 @@
-fn merge(v: Vec<int>, left: int, mid: int, right: int) {
-    let left_arr: Vec<int> = Vec::new();
-    let right_arr: Vec<int> = Vec::new();
+fn merge(v: Vec<i64>, left: i64, mid: i64, right: i64) {
+    let left_arr: Vec<i64> = Vec::new();
+    let right_arr: Vec<i64> = Vec::new();
     var i = left;
     while i <= mid {
         left_arr.push(v.get(i));
@@ -38,7 +38,7 @@ fn merge(v: Vec<int>, left: int, mid: int, right: int) {
     }
 }
 
-fn merge_sort_range(v: Vec<int>, left: int, right: int) {
+fn merge_sort_range(v: Vec<i64>, left: i64, right: i64) {
     if left < right {
         let mid = left + (right - left) / 2;
         merge_sort_range(v, left, mid);
@@ -47,7 +47,7 @@ fn merge_sort_range(v: Vec<int>, left: int, right: int) {
     }
 }
 
-fn merge_sort(v: Vec<int>) -> Vec<int> {
+fn merge_sort(v: Vec<i64>) -> Vec<i64> {
     let n = v.len();
     if n > 1 {
         merge_sort_range(v, 0, n - 1);
@@ -55,8 +55,8 @@ fn merge_sort(v: Vec<int>) -> Vec<int> {
     v
 }
 
-fn make_test_array() -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn make_test_array() -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     var i = 100;
     while i > 0 {
         v.push(i);
@@ -65,7 +65,7 @@ fn make_test_array() -> Vec<int> {
     v
 }
 
-const ITERS: int = 100000;
+const ITERS: i64 = 100000;
 
 fn main() {
     for i in 0 .. ITERS {

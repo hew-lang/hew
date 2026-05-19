@@ -5,7 +5,7 @@
 // typecheck clean at slice 2.
 // WASM-PASS: type-check level only for slice 2; runtime landing is slice 4.
 fn main() {
-    let fib = actor |n: int| {
+    let fib = actor |n: i64| {
         if n > 1 {
             fib(n - 1);
         }

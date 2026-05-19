@@ -45,7 +45,7 @@ trait ServerMethods {
     fn accept(srv: Server) -> Request;
 
     /// Set the per-request body read deadline in milliseconds.
-    fn set_request_timeout_ms(srv: Server, timeout_ms: int) -> int;
+    fn set_request_timeout_ms(srv: Server, timeout_ms: i64) -> i64;
 
     /// Canonical release path for `Server`.
     ///
@@ -62,7 +62,7 @@ impl ServerMethods for Server {
         }
     }
     /// Set the per-request body read deadline in milliseconds.
-    fn set_request_timeout_ms(srv: Server, timeout_ms: int) -> int {
+    fn set_request_timeout_ms(srv: Server, timeout_ms: i64) -> i64 {
         unsafe {
             hew_http_server_set_request_timeout_ms(srv, timeout_ms as i64)
         } // INTERNAL-ABI: C ABI timeout is i64
@@ -105,7 +105,7 @@ trait RequestMethods {
     /// Send a full HTTP response with status, content-type, and body.
     ///
     /// The `Content-Length` header is derived from `body` automatically.
-    fn respond(req: Request, status: int, content_type: string, body: string) -> int;
+    fn respond(req: Request, status: i64, content_type: string, body: string) -> i64;
 
     /// Send a plain-text HTTP response.
     ///
@@ -115,10 +115,10 @@ trait RequestMethods {
     /// req.respond_text(200, "OK");
     /// req.respond_text(404, "Not Found");
     /// ```
-    fn respond_text(req: Request, status: int, body: string) -> int;
+    fn respond_text(req: Request, status: i64, body: string) -> i64;
 
     /// Send a JSON HTTP response with `Content-Type: application/json`.
-    fn respond_json(req: Request, status: int, json: string) -> int;
+    fn respond_json(req: Request, status: i64, json: string) -> i64;
 
     /// Begin a streaming response and return a `Sink` for chunked output.
     ///
@@ -133,19 +133,19 @@ trait RequestMethods {
     /// body.write("chunk 2");
     /// body.close();
     /// ```
-    fn respond_stream(req: Request, status: int, content_type: string) -> Sink<string>;
+    fn respond_stream(req: Request, status: i64, content_type: string) -> Sink<string>;
 
     /// Send a full HTTP response, returning `Err(fs.IoError)` on failure.
-    fn try_respond(req: Request, status: int, content_type: string, body: string) -> Result<int, fs.IoError>;
+    fn try_respond(req: Request, status: i64, content_type: string, body: string) -> Result<i64, fs.IoError>;
 
     /// Send a plain-text HTTP response, returning `Err(fs.IoError)` on failure.
-    fn try_respond_text(req: Request, status: int, body: string) -> Result<int, fs.IoError>;
+    fn try_respond_text(req: Request, status: i64, body: string) -> Result<i64, fs.IoError>;
 
     /// Send a JSON HTTP response, returning `Err(fs.IoError)` on failure.
-    fn try_respond_json(req: Request, status: int, json: string) -> Result<int, fs.IoError>;
+    fn try_respond_json(req: Request, status: i64, json: string) -> Result<i64, fs.IoError>;
 
     /// Begin a streaming response, returning `Err(fs.IoError)` on failure.
-    fn try_respond_stream(req: Request, status: int, content_type: string) -> Result<Sink<string>, fs.IoError>;
+    fn try_respond_stream(req: Request, status: i64, content_type: string) -> Result<Sink<string>, fs.IoError>;
 }
 
 impl RequestMethods for Request {
@@ -180,25 +180,25 @@ impl RequestMethods for Request {
         }
     }
     /// Send a full HTTP response with status, content-type, and body.
-    fn respond(req: Request, status: int, content_type: string, body: string) -> int {
+    fn respond(req: Request, status: i64, content_type: string, body: string) -> i64 {
         unsafe {
             hew_http_respond_bridge(req, status as i32, content_type, body)
         } // INTERNAL-ABI: C ABI status is i32
     }
     /// Send a plain-text HTTP response.
-    fn respond_text(req: Request, status: int, body: string) -> int {
+    fn respond_text(req: Request, status: i64, body: string) -> i64 {
         unsafe {
             hew_http_respond_text(req, status as i32, body)
         } // INTERNAL-ABI: C ABI status is i32
     }
     /// Send a JSON HTTP response with `Content-Type: application/json`.
-    fn respond_json(req: Request, status: int, json: string) -> int {
+    fn respond_json(req: Request, status: i64, json: string) -> i64 {
         unsafe {
             hew_http_respond_json(req, status as i32, json)
         } // INTERNAL-ABI: C ABI status is i32
     }
     /// Begin a streaming response and return a `Sink` for chunked output.
-    fn respond_stream(req: Request, status: int, content_type: string) -> Sink<string> {
+    fn respond_stream(req: Request, status: i64, content_type: string) -> Sink<string> {
         unsafe {
             hew_http_respond_stream(req, status as i32, content_type)
         } // INTERNAL-ABI: C ABI status is i32
@@ -213,14 +213,14 @@ impl RequestMethods for Request {
         };
     }
     /// Send a full HTTP response; returns Err(IoError::Other(0)) on failure.
-    fn try_respond(req: Request, status: int, content_type: string, body: string) -> Result<int, fs.IoError> {
+    fn try_respond(req: Request, status: i64, content_type: string, body: string) -> Result<i64, fs.IoError> {
         // SHIM: WHY — codegen drops the `as i32` cast when inlining through respond(); call FFI
         //   directly to preserve the arith.trunci that MLIR verification requires.
         // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
         // WHAT — restore to: let n = req.respond(status, content_type, body);
         let n = unsafe {
             hew_http_respond_bridge(req, status as i32, content_type, body)
-        } as int;
+        } as i64;
         if n < 0 {
             Err(fs.io_error_from_errno(0))
         } else {
@@ -228,14 +228,14 @@ impl RequestMethods for Request {
         } // HTTP has no OS errno channel
     }
     /// Send a plain-text HTTP response; returns Err(IoError::Other(0)) on failure.
-    fn try_respond_text(req: Request, status: int, body: string) -> Result<int, fs.IoError> {
+    fn try_respond_text(req: Request, status: i64, body: string) -> Result<i64, fs.IoError> {
         // SHIM: WHY — codegen drops the `as i32` cast when inlining through respond_text(); call FFI
         //   directly to preserve the arith.trunci that MLIR verification requires.
         // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
         // WHAT — restore to: let n = req.respond_text(status, body);
         let n = unsafe {
             hew_http_respond_text(req, status as i32, body)
-        } as int;
+        } as i64;
         if n < 0 {
             Err(fs.io_error_from_errno(0))
         } else {
@@ -243,14 +243,14 @@ impl RequestMethods for Request {
         } // HTTP has no OS errno channel
     }
     /// Send a JSON HTTP response; returns Err(IoError::Other(0)) on failure.
-    fn try_respond_json(req: Request, status: int, json: string) -> Result<int, fs.IoError> {
+    fn try_respond_json(req: Request, status: i64, json: string) -> Result<i64, fs.IoError> {
         // SHIM: WHY — codegen drops the `as i32` cast when inlining through respond_json(); call FFI
         //   directly to preserve the arith.trunci that MLIR verification requires.
         // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
         // WHAT — restore to: let n = req.respond_json(status, json);
         let n = unsafe {
             hew_http_respond_json(req, status as i32, json)
-        } as int;
+        } as i64;
         if n < 0 {
             Err(fs.io_error_from_errno(0))
         } else {
@@ -258,7 +258,7 @@ impl RequestMethods for Request {
         } // HTTP has no OS errno channel
     }
     /// Begin a streaming response; returns Err(IoError::Other(0)) on failure.
-    fn try_respond_stream(req: Request, status: int, content_type: string) -> Result<Sink<string>, fs.IoError> {
+    fn try_respond_stream(req: Request, status: i64, content_type: string) -> Result<Sink<string>, fs.IoError> {
         let sink = unsafe {
             hew_http_respond_stream(req, status as i32, content_type)
         };
@@ -299,22 +299,22 @@ pub fn listen(addr: string) -> Server {
 }
 
 /// Send a full HTTP response, returning `Err(fs.IoError)` on failure.
-pub fn try_respond(req: Request, status: int, content_type: string, body: string) -> Result<int, fs.IoError> {
+pub fn try_respond(req: Request, status: i64, content_type: string, body: string) -> Result<i64, fs.IoError> {
     req.try_respond(status, content_type, body)
 }
 
 /// Send a plain-text HTTP response, returning `Err(fs.IoError)` on failure.
-pub fn try_respond_text(req: Request, status: int, body: string) -> Result<int, fs.IoError> {
+pub fn try_respond_text(req: Request, status: i64, body: string) -> Result<i64, fs.IoError> {
     req.try_respond_text(status, body)
 }
 
 /// Send a JSON HTTP response, returning `Err(fs.IoError)` on failure.
-pub fn try_respond_json(req: Request, status: int, json: string) -> Result<int, fs.IoError> {
+pub fn try_respond_json(req: Request, status: i64, json: string) -> Result<i64, fs.IoError> {
     req.try_respond_json(status, json)
 }
 
 /// Begin a streaming HTTP response, returning `Err(fs.IoError)` on failure.
-pub fn try_respond_stream(req: Request, status: int, content_type: string) -> Result<Sink<string>, fs.IoError> {
+pub fn try_respond_stream(req: Request, status: i64, content_type: string) -> Result<Sink<string>, fs.IoError> {
     req.try_respond_stream(status, content_type)
 }
 

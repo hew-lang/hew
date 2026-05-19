@@ -47,14 +47,14 @@ type Value {
 /// `std::encoding::wire::value_trait`. Canonical methods are redeclared here
 /// with TOML-specific docstrings for documentation purposes.
 trait ValueMethods: CanonicalValueMethods {
-    /// Return the type tag (0=null reserved, 1=bool, 2=int, 3=float,
+    /// Return the type tag (0=null reserved, 1=bool, 2=i64, 3=float,
     /// 4=string, 5=array, 6=table, 7=datetime).
     fn type_of(val: Value) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
     /// Extract the string value.
     fn get_string(val: Value) -> string;
 
     /// Extract the integer value.
-    fn get_int(val: Value) -> int;
+    fn get_int(val: Value) -> i64;
 
     /// Extract the floating-point value.
     fn get_float(val: Value) -> f64;
@@ -65,10 +65,10 @@ trait ValueMethods: CanonicalValueMethods {
     fn get_field(val: Value, key: string) -> Value;
 
     /// Return the number of elements in a TOML array.
-    fn array_len(val: Value) -> int;
+    fn array_len(val: Value) -> i64;
 
     /// Return the element at the given index in a TOML array.
-    fn array_get(val: Value, index: int) -> Value;
+    fn array_get(val: Value, index: i64) -> Value;
 
     /// Serialize the value back to a TOML string.
     fn stringify(val: Value) -> string;
@@ -81,7 +81,7 @@ trait ValueMethods: CanonicalValueMethods {
     fn with_string(tbl: Value, key: string, val: string) -> Value;
 
     /// Set an integer field. Returns the table for chaining.
-    fn with_int(tbl: Value, key: string, val: int) -> Value;
+    fn with_int(tbl: Value, key: string, val: i64) -> Value;
 
     /// Set a float field. Returns the table for chaining.
     fn with_float(tbl: Value, key: string, val: f64) -> Value;
@@ -96,7 +96,7 @@ trait ValueMethods: CanonicalValueMethods {
     fn push(arr: Value, child: Value) -> Value;
 
     /// Push an integer onto an array. Returns the array.
-    fn push_int(arr: Value, val: int) -> Value;
+    fn push_int(arr: Value, val: i64) -> Value;
 
     /// Push a string onto an array. Returns the array.
     fn push_string(arr: Value, val: string) -> Value;
@@ -119,7 +119,7 @@ impl CanonicalValueMethods for Value {
             hew_toml_get_string(val)
         }
     }
-    fn get_int(val: Value) -> int {
+    fn get_int(val: Value) -> i64 {
         unsafe {
             hew_toml_get_int(val)
         }
@@ -139,12 +139,12 @@ impl CanonicalValueMethods for Value {
             hew_toml_get_field(val, key)
         }
     }
-    fn array_len(val: Value) -> int {
+    fn array_len(val: Value) -> i64 {
         unsafe {
             hew_toml_array_len(val)
         }
     }
-    fn array_get(val: Value, index: int) -> Value {
+    fn array_get(val: Value, index: i64) -> Value {
         unsafe {
             hew_toml_array_get(val, index as i32)
         }
@@ -165,7 +165,7 @@ impl CanonicalValueMethods for Value {
         };
         tbl
     }
-    fn with_int(tbl: Value, key: string, val: int) -> Value {
+    fn with_int(tbl: Value, key: string, val: i64) -> Value {
         unsafe {
             hew_toml_table_set_int(tbl, key, val as i64)
         };
@@ -195,7 +195,7 @@ impl CanonicalValueMethods for Value {
         };
         arr
     }
-    fn push_int(arr: Value, val: int) -> Value {
+    fn push_int(arr: Value, val: i64) -> Value {
         unsafe {
             hew_toml_array_push_int(arr, val as i64)
         };
@@ -270,7 +270,7 @@ pub fn array() -> Value {
 }
 
 /// Create a TOML Value from an integer.
-pub fn from_int(val: int) -> Value {
+pub fn from_int(val: i64) -> Value {
     unsafe {
         hew_toml_from_int(val as i64)
     }

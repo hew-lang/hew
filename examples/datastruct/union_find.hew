@@ -1,5 +1,5 @@
 // Union-Find (Disjoint Set) with path compression and union by rank
-fn find(parent: Vec<int>, x: int) -> int {
+fn find(parent: Vec<i64>, x: i64) -> i64 {
     var r = x;
     while parent.get(r) != r {
         r = parent.get(r);
@@ -14,7 +14,7 @@ fn find(parent: Vec<int>, x: int) -> int {
     r
 }
 
-fn union(parent: Vec<int>, rank: Vec<int>, a: int, b: int) -> bool {
+fn union(parent: Vec<i64>, rank: Vec<i64>, a: i64, b: i64) -> bool {
     let ra = find(parent, a);
     let rb = find(parent, b);
     if ra == rb {
@@ -33,11 +33,11 @@ fn union(parent: Vec<int>, rank: Vec<int>, a: int, b: int) -> bool {
     true
 }
 
-fn connected(parent: Vec<int>, a: int, b: int) -> bool {
+fn connected(parent: Vec<i64>, a: i64, b: i64) -> bool {
     find(parent, a) == find(parent, b)
 }
 
-fn count_components(parent: Vec<int>) -> int {
+fn count_components(parent: Vec<i64>) -> i64 {
     let n = parent.len();
     var count = 0;
     for i in 0 .. n {
@@ -53,8 +53,8 @@ fn main() {
     var failed = 0;
     let n = 8;
     // Initialize: each node is its own parent
-    let parent: Vec<int> = Vec::new();
-    let rank: Vec<int> = Vec::new();
+    let parent: Vec<i64> = Vec::new();
+    let rank: Vec<i64> = Vec::new();
     for i in 0 .. n {
         parent.push(i);
         rank.push(0);

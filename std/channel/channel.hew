@@ -8,7 +8,7 @@
 //! indicates the channel is closed (all senders dropped) or empty
 //! (for `try_recv` only).
 //!
-//! Supported element types: `string`, `int`.
+//! Supported element types: `string`, `i64`.
 //!
 //! # Examples
 //!
@@ -139,7 +139,7 @@ impl ReceiverMethods for Receiver {
 /// tx.send("hello");       // infers Sender<string>
 /// println(rx.recv());     // infers Receiver<string>
 /// ```
-pub fn new(capacity: int) -> (Sender, Receiver) {
+pub fn new(capacity: i64) -> (Sender, Receiver) {
     unsafe {
         let pair = hew_channel_new(capacity as i64); // INTERNAL-ABI: runtime ABI takes i64 capacity
         let tx = hew_channel_pair_sender(pair);
@@ -160,7 +160,7 @@ extern "C" {
     fn hew_channel_pair_receiver(pair: ChannelPair) -> Receiver;
     fn hew_channel_pair_free(pair: ChannelPair);
     fn hew_channel_send(tx: Sender, data: string);
-    fn hew_channel_send_int(tx: Sender, data: int);
+    fn hew_channel_send_int(tx: Sender, data: i64);
     // hew_channel_recv, hew_channel_recv_int, hew_channel_try_recv, and
     // hew_channel_try_recv_int use an out-parameter ABI for Option<T> and
     // are declared by codegen with the correct calling convention.

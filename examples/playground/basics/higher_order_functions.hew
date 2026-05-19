@@ -1,18 +1,18 @@
 //! @name Higher-Order Functions
 //! @description Lambdas and function passing
 
-fn apply(f: fn(int) -> int, x: int) -> int {
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
     f(x)
 }
 
 fn main() {
-    let double = |x: int| -> int {
+    let double = |x: i64| -> i64 {
         x * 2
     };
-    let square = |x: int| -> int {
+    let square = |x: i64| -> i64 {
         x * x
     };
-    let negate = |x: int| -> int {
+    let negate = |x: i64| -> i64 {
         0 - x
     };
     // Calculate and store the value for display

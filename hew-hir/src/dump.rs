@@ -46,6 +46,11 @@ pub fn dump_hir(module: &HirModule) -> String {
                                 dump_expr(&mut out, value, 4);
                             }
                         }
+                        HirStmtKind::Assign { target, value } => {
+                            writeln!(out, "  assign").expect("write to string");
+                            dump_expr(&mut out, target, 4);
+                            dump_expr(&mut out, value, 4);
+                        }
                         HirStmtKind::Expr(expr) => dump_expr(&mut out, expr, 2),
                         HirStmtKind::Return(Some(expr)) => {
                             writeln!(out, "  return").expect("write to string");
@@ -237,6 +242,11 @@ fn dump_block(out: &mut String, block: &HirBlock, indent: usize) {
                     dump_expr(out, value, indent + 2);
                 }
             }
+            HirStmtKind::Assign { target, value } => {
+                writeln!(out, "{pad}assign").expect("write to string");
+                dump_expr(out, target, indent + 2);
+                dump_expr(out, value, indent + 2);
+            }
             HirStmtKind::Expr(expr) => dump_expr(out, expr, indent),
             HirStmtKind::Return(Some(expr)) => {
                 writeln!(out, "{pad}return").expect("write to string");
@@ -372,6 +382,11 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                             dump_expr(out, value, indent + 6);
                         }
                     }
+                    HirStmtKind::Assign { target, value } => {
+                        writeln!(out, "{pad}    assign").expect("write to string");
+                        dump_expr(out, target, indent + 6);
+                        dump_expr(out, value, indent + 6);
+                    }
                     HirStmtKind::Expr(expr) => dump_expr(out, expr, indent + 4),
                     HirStmtKind::Return(Some(expr)) => {
                         writeln!(out, "{pad}    return").expect("write to string");
@@ -413,6 +428,11 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                             dump_expr(out, value, indent + 6);
                         }
                     }
+                    HirStmtKind::Assign { target, value } => {
+                        writeln!(out, "{pad}    assign").expect("write to string");
+                        dump_expr(out, target, indent + 6);
+                        dump_expr(out, value, indent + 6);
+                    }
                     HirStmtKind::Expr(expr) => dump_expr(out, expr, indent + 4),
                     HirStmtKind::Return(Some(expr)) => {
                         writeln!(out, "{pad}    return").expect("write to string");
@@ -441,6 +461,11 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                         if let Some(value) = value {
                             dump_expr(out, value, indent + 6);
                         }
+                    }
+                    HirStmtKind::Assign { target, value } => {
+                        writeln!(out, "{pad}    assign").expect("write to string");
+                        dump_expr(out, target, indent + 6);
+                        dump_expr(out, value, indent + 6);
                     }
                     HirStmtKind::Expr(expr) => dump_expr(out, expr, indent + 4),
                     HirStmtKind::Return(Some(expr)) => {

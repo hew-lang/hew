@@ -423,6 +423,10 @@ fn collect_call_sites_in_stmt(stmt: &HirStmt, out: &mut Vec<(String, SiteId)>) {
         HirStmtKind::Let(_, Some(e)) | HirStmtKind::Expr(e) | HirStmtKind::Return(Some(e)) => {
             collect_call_sites_in_expr(e, out);
         }
+        HirStmtKind::Assign { target, value } => {
+            collect_call_sites_in_expr(target, out);
+            collect_call_sites_in_expr(value, out);
+        }
         _ => {}
     }
 }
@@ -1854,14 +1858,15 @@ impl LowerCtx {
             .collect();
 
         let init = decl.init.as_ref().map(|init| {
-            let (params, body) = self.lower_actor_body(&init.params, &init.body, &ResolvedTy::Unit);
+            let (params, body) =
+                self.lower_actor_body(&state_fields, &init.params, &init.body, &ResolvedTy::Unit);
             HirActorInit { params, body }
         });
 
         let receive_handlers: Vec<HirActorReceiveFn> = decl
             .receive_fns
             .iter()
-            .map(|rf| self.lower_actor_receive_fn(rf))
+            .map(|rf| self.lower_actor_receive_fn(rf, &state_fields))
             .collect();
 
         let (methods, lifecycle_hooks) = self.partition_actor_methods(&decl.methods);
@@ -1886,6 +1891,7 @@ impl LowerCtx {
 
     fn lower_actor_body(
         &mut self,
+        state_fields: &[HirField],
         params: &[Param],
         body: &Block,
         expected_ty: &ResolvedTy,
@@ -1893,6 +1899,14 @@ impl LowerCtx {
         let saved_scope_depth = self.scope_depth;
         self.scope_depth = 0;
         self.push_scope();
+        for field in state_fields {
+            self.bind(
+                field.name.clone(),
+                field.ty.clone(),
+                true,
+                field.span.clone(),
+            );
+        }
         let params = params
             .iter()
             .map(|p| {
@@ -1906,7 +1920,11 @@ impl LowerCtx {
         (params, body)
     }
 
-    fn lower_actor_receive_fn(&mut self, rf: &ReceiveFnDecl) -> HirActorReceiveFn {
+    fn lower_actor_receive_fn(
+        &mut self,
+        rf: &ReceiveFnDecl,
+        state_fields: &[HirField],
+    ) -> HirActorReceiveFn {
         let return_ty = rf
             .return_type
             .as_ref()
@@ -1916,7 +1934,8 @@ impl LowerCtx {
         } else {
             return_ty.clone()
         };
-        let (params, body) = self.lower_actor_body(&rf.params, &rf.body, &body_expected_ty);
+        let (params, body) =
+            self.lower_actor_body(state_fields, &rf.params, &rf.body, &body_expected_ty);
         let state_guard = match self
             .actor_handler_state_guards
             .get(&SpanKey::from(&rf.span))
@@ -1969,7 +1988,8 @@ impl LowerCtx {
                 .return_type
                 .as_ref()
                 .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
-            let (params, body) = self.lower_actor_body(&method.params, &method.body, &return_ty);
+            let (params, body) =
+                self.lower_actor_body(&[], &method.params, &method.body, &return_ty);
             let hook_attr = method.attributes.iter().find(|a| a.name == "on");
             let hook_kind = hook_attr
                 .and_then(|a| a.args.first())
@@ -2316,6 +2336,18 @@ impl LowerCtx {
                 );
                 let binding = self.bind(name.clone(), binding_ty, true, span.clone());
                 HirStmtKind::Let(binding, value)
+            }
+            Stmt::Assign { target, op, value } => {
+                if op.is_some() {
+                    self.unsupported(span.clone(), "compound assignment", "actor-body-slice4");
+                    HirStmtKind::Expr(
+                        self.unsupported_expr(span.clone(), "unsupported compound assignment"),
+                    )
+                } else {
+                    let target = self.lower_expr(target, IntentKind::Modify);
+                    let value = self.lower_expr(value, IntentKind::Consume);
+                    HirStmtKind::Assign { target, value }
+                }
             }
             Stmt::Expression(expr) => {
                 // Inside a scope{} body, statement-expression calls are child-task
@@ -4781,6 +4813,10 @@ fn collect_general_closure_captures_walk_block(
             HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
                 collect_general_closure_captures_walk(expr, outer_bindings, seen, captures);
             }
+            HirStmtKind::Assign { target, value } => {
+                collect_general_closure_captures_walk(target, outer_bindings, seen, captures);
+                collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
+            }
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
         }
     }
@@ -4803,6 +4839,10 @@ fn collect_captures_walk_block(
             }
             HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
                 collect_captures_walk(expr, param_ids, seen, captures, self_id);
+            }
+            HirStmtKind::Assign { target, value } => {
+                collect_captures_walk(target, param_ids, seen, captures, self_id);
+                collect_captures_walk(value, param_ids, seen, captures, self_id);
             }
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
         }

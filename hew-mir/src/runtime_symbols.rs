@@ -54,6 +54,7 @@
 // invariant is over the flat ordering.
 const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // --- Actor cooperate/link/monitor surface -------------------------------
+    "hew_actor_ask",
     // `hew_actor_cooperate() -> c_int` — reduction-budget safepoint injected
     // by codegen at Checked MIR cooperate sites. Implemented by both native
     // and WASM schedulers.
@@ -68,6 +69,8 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // targets return immediately with a DOWN signal; ref_id is still non-zero.
     // Codegen struct-wrapping (MonitorRef { ref_id }) requires Cluster 2 spine.
     "hew_actor_monitor",
+    "hew_actor_send_by_id",
+    "hew_actor_spawn",
     // --- Duplex<S, R> dual-queue substrate ----------------------
     "hew_duplex_clone",
     "hew_duplex_close",

@@ -445,6 +445,7 @@ pub struct HirStmt {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirStmtKind {
     Let(HirBinding, Option<HirExpr>),
+    Assign { target: HirExpr, value: HirExpr },
     Expr(HirExpr),
     Return(Option<HirExpr>),
 }

@@ -60,9 +60,10 @@ use std::process::Command;
 
 use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy, PrintKind};
 use hew_mir::{
-    validate_context_markers, CheckedMirFunction, CmpPred, CooperateKind, CooperateSite, ElabDrop,
-    ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp,
-    IntSignedness, IrPipeline, Place, RawMirFunction, RecordLayout, Terminator, TrapKind,
+    validate_context_markers, ActorLayout, CheckedMirFunction, CmpPred, CooperateKind,
+    CooperateSite, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth,
+    FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, Place, RawMirFunction,
+    RecordLayout, Terminator, TrapKind,
 };
 use hew_types::ResolvedTy;
 
@@ -71,7 +72,7 @@ use inkwell::context::Context;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
 use inkwell::targets::TargetMachine;
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, FunctionType, StructType};
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
 };
@@ -92,6 +93,8 @@ const HEW_CTX_OFFSET_ARENA: usize = 48;
 const HEW_CTX_OFFSET_TRACE: usize = 56;
 const HEW_TRACE_OFFSET_SPAN_ID: usize = 16;
 const HEW_CTX_OFFSET_TRACE_SPAN: usize = HEW_CTX_OFFSET_TRACE + HEW_TRACE_OFFSET_SPAN_ID;
+const HEW_ACTOR_OFFSET_ID: usize = 8;
+const HEW_ACTOR_OFFSET_STATE: usize = 24;
 const HEW_CTX_OFFSET_PARTITION_POLICY: usize = 96;
 const HEW_CTX_OFFSET_PREV_CONTEXT: usize = 104;
 const HEW_CTX_OFFSET_LOCK_SEAT: usize = 112;
@@ -382,6 +385,7 @@ struct FnCtx<'a, 'ctx> {
     return_resolved_ty: ResolvedTy,
     execution_context: Option<PointerValue<'ctx>>,
     execution_context_is_actor_handler: bool,
+    actor_state_ty: Option<StructType<'ctx>>,
     /// Local-register id → (stack slot, slot's LLVM type). Keyed by the
     /// `Place::Local(N)` index — an MIR identity, not a checker derivative.
     locals: HashMap<u32, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
@@ -501,6 +505,10 @@ fn intern_runtime_decl<'ctx>(
         // the current actor's reductions budget and yields when exhausted.
         // The return value is a scheduler signal; cooperate-site injection
         // discards it.
+        "hew_actor_ask" => ptr_ty.fn_type(
+            &[ptr_ty.into(), i32_ty.into(), ptr_ty.into(), i64_ty.into()],
+            false,
+        ),
         "hew_actor_cooperate" => i32_ty.fn_type(&[], false),
         // hew_actor_link(a: *mut HewActor, b: *mut HewActor) -> void
         // (`hew-runtime/src/link.rs:80`). Establishes a bidirectional link.
@@ -514,6 +522,16 @@ fn intern_runtime_decl<'ctx>(
         // null inputs. Actor handles are opaque ptrs. The u64 is wrapped into
         // MonitorRef { ref_id } in Cluster 2.
         "hew_actor_monitor" => i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_actor_send_by_id" => i32_ty.fn_type(
+            &[i64_ty.into(), i32_ty.into(), ptr_ty.into(), i64_ty.into()],
+            false,
+        ),
+        "hew_actor_spawn" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
+        "hew_get_reply_channel" => ptr_ty.fn_type(&[], false),
+        "hew_reply" => ctx
+            .bool_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false),
+        "hew_sched_init" => i32_ty.fn_type(&[], false),
         // hew_duplex_pair(s_cap: usize, r_cap: usize,
         //                 out_a: *mut *mut HewDuplexHandle,
         //                 out_b: *mut *mut HewDuplexHandle) -> i32
@@ -951,7 +969,9 @@ fn primitive_to_llvm<'ctx>(
         ResolvedTy::Slice(_) => Err(CodegenError::Unsupported(
             "Slice type — composite lowering is Cluster 2",
         )),
-        ResolvedTy::Named { name, .. } if name == "Duplex" => {
+        ResolvedTy::Named { name, .. }
+            if matches!(name.as_str(), "Duplex" | "LocalPid" | "ActorRef" | "Actor") =>
+        {
             // M2 substrate duplex handle. The producer (`hew-mir/src/lower.rs`
             // `lower_duplex_pair` + `lower_duplex_send`) allocates a
             // `ResolvedTy::Named { name: "Duplex", .. }` local for every
@@ -1039,13 +1059,15 @@ fn place_pointer<'ctx>(
         // second alloca. The alloca's LLVM type is `ptr` (opaque) per
         // `primitive_to_llvm`'s Duplex arm. LESSONS:
         // exhaustive-traversal-and-lowering, dedup-semantic-boundary.
-        Place::DuplexHandle(id) => fn_ctx.locals.get(&id).copied().ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "Place::DuplexHandle({id}) references local {id} which was not allocated; \
+        Place::DuplexHandle(id) | Place::ActorHandle(id) => {
+            fn_ctx.locals.get(&id).copied().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "Place::DuplexHandle({id}) references local {id} which was not allocated; \
                  the producer must allocate a ResolvedTy::Named{{name:\"Duplex\",..}} local before \
                  re-tagging it as a DuplexHandle"
-            ))
-        }),
+                ))
+            })
+        }
         // The remaining M2 substrate Place variants are declared in
         // the model but have no construction surface in this lane.
         // Wiring lands in follow-on slices (Duplex::recv vertebra for
@@ -1068,6 +1090,7 @@ fn place_resolved_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, place: Place) -> CodegenResu
         Place::Local(id)
         | Place::DuplexHandle(id)
         | Place::LambdaActorHandle(id)
+        | Place::ActorHandle(id)
         | Place::SendHalf(id)
         | Place::RecvHalf(id) => fn_ctx.local_tys.get(&id).ok_or_else(|| {
             CodegenError::FailClosed(format!("local {id} has no resolved type before use"))
@@ -1192,6 +1215,87 @@ fn emit_spawn_task_direct(
                 "hew_task_spawn_thread_with_inherited_context call: {e:?}"
             ))
         })?;
+    Ok(())
+}
+
+fn emit_spawn_actor(
+    fn_ctx: &FnCtx<'_, '_>,
+    actor_name: &str,
+    state: Option<Place>,
+    dest: Place,
+) -> CodegenResult<()> {
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let (state_ptr, state_size) = if let Some(state_place) = state {
+        let (slot, slot_ty) = place_pointer(fn_ctx, state_place)?;
+        let size = slot_ty.size_of().ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "spawn `{actor_name}` state type has no statically known size: {slot_ty:?}"
+            ))
+        })?;
+        let size = if size.get_type() == i64_ty {
+            size
+        } else {
+            fn_ctx
+                .builder
+                .build_int_z_extend(size, i64_ty, "actor_state_size")
+                .map_err(|e| CodegenError::Llvm(format!("actor state size zext: {e:?}")))?
+        };
+        (slot, size)
+    } else {
+        (ptr_ty.const_null(), i64_ty.const_zero())
+    };
+    let dispatch_name = format!("__hew_actor_dispatch_{actor_name}");
+    let dispatch = fn_ctx
+        .llvm_mod
+        .get_function(&dispatch_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "spawn `{actor_name}` requires dispatch trampoline `{dispatch_name}`"
+            ))
+        })?;
+    let sched_init = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_sched_init",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(sched_init, &[], "hew_sched_init_call")
+        .map_err(|e| CodegenError::Llvm(format!("hew_sched_init call: {e:?}")))?;
+    let spawn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_spawn",
+    )?;
+    let spawned = fn_ctx
+        .builder
+        .build_call(
+            spawn,
+            &[
+                state_ptr.into(),
+                state_size.into(),
+                dispatch.as_global_value().as_pointer_value().into(),
+            ],
+            "hew_actor_spawn_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_actor_spawn call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_actor_spawn returned void".into()))?
+        .into_pointer_value();
+    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+    if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
+        return Err(CodegenError::FailClosed(format!(
+            "SpawnActor destination is not pointer-typed: {dest_ty:?}"
+        )));
+    }
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, spawned)
+        .map_err(|e| CodegenError::Llvm(format!("SpawnActor store: {e:?}")))?;
     Ok(())
 }
 
@@ -2041,6 +2145,14 @@ fn lower_instruction(
             lower_record_field_load(fn_ctx, *record, *field_offset, *dest)?;
             let _ = ctx;
         }
+        Instr::ActorStateFieldLoad { field_offset, dest } => {
+            lower_actor_state_field_load(fn_ctx, *field_offset, *dest)?;
+            let _ = ctx;
+        }
+        Instr::ActorStateFieldStore { field_offset, src } => {
+            lower_actor_state_field_store(fn_ctx, *field_offset, *src)?;
+            let _ = ctx;
+        }
         Instr::TupleFieldLoad {
             tuple,
             field_index,
@@ -2242,6 +2354,14 @@ fn lower_instruction(
             emit_spawn_task_closure(fn_ctx, *task, fn_symbol, *env, env_ty)?;
             let _ = ctx;
         }
+        Instr::SpawnActor {
+            actor_name,
+            state,
+            dest,
+        } => {
+            emit_spawn_actor(fn_ctx, actor_name, *state, *dest)?;
+            let _ = ctx;
+        }
         // TO-3 lands the MIR shape (`Instr::CoerceToDynTrait`,
         // `Instr::CallTraitMethod`); TO-4 (runtime-trait-object-abi.md
         // §D-3 / §D-4) adds the LLVM emission (vtable static + GEP /
@@ -2428,6 +2548,137 @@ fn lower_record_field_load(
         .builder
         .build_store(dest_ptr, field_val)
         .map_err(|e| CodegenError::Llvm(format!("RecordFieldLoad field {idx} store: {e:?}")))?;
+    Ok(())
+}
+
+fn current_actor_state_ptr<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<PointerValue<'ctx>> {
+    let ctx_ptr = fn_ctx.execution_context.ok_or_else(|| {
+        CodegenError::FailClosed("actor state access requires an execution context".into())
+    })?;
+    if !fn_ctx.execution_context_is_actor_handler {
+        return Err(CodegenError::FailClosed(
+            "actor state access is only legal in ActorHandler functions".into(),
+        ));
+    }
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let actor_ptr_slot = unsafe {
+        fn_ctx
+            .builder
+            .build_gep(
+                fn_ctx.ctx.i8_type(),
+                ctx_ptr,
+                &[i64_ty.const_int(HEW_CTX_OFFSET_ACTOR as u64, false)],
+                "ctx_actor_ptr_slot",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("actor state ctx actor gep: {e:?}")))?
+    };
+    let actor_ptr = fn_ctx
+        .builder
+        .build_load(ptr_ty, actor_ptr_slot, "ctx_actor_ptr")
+        .map_err(|e| CodegenError::Llvm(format!("actor state actor load: {e:?}")))?
+        .into_pointer_value();
+    let state_slot = unsafe {
+        fn_ctx
+            .builder
+            .build_gep(
+                fn_ctx.ctx.i8_type(),
+                actor_ptr,
+                &[i64_ty.const_int(HEW_ACTOR_OFFSET_STATE as u64, false)],
+                "actor_state_slot",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("actor state gep: {e:?}")))?
+    };
+    Ok(fn_ctx
+        .builder
+        .build_load(ptr_ty, state_slot, "actor_state_ptr")
+        .map_err(|e| CodegenError::Llvm(format!("actor state ptr load: {e:?}")))?
+        .into_pointer_value())
+}
+
+fn lower_actor_state_field_load(
+    fn_ctx: &FnCtx<'_, '_>,
+    field_offset: FieldOffset,
+    dest: Place,
+) -> CodegenResult<()> {
+    let state_ty = fn_ctx.actor_state_ty.ok_or_else(|| {
+        CodegenError::FailClosed("ActorStateFieldLoad has no registered actor state type".into())
+    })?;
+    let state_ptr = current_actor_state_ptr(fn_ctx)?;
+    let idx = field_offset.0;
+    let element_tys = state_ty.get_field_types();
+    let field_ty = *element_tys.get(idx as usize).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "ActorStateFieldLoad field offset {idx} is out of bounds for state with {} fields",
+            element_tys.len()
+        ))
+    })?;
+    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+    if dest_ty != field_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "ActorStateFieldLoad dest type mismatch: dest={dest_ty:?}, field={field_ty:?}"
+        )));
+    }
+    let field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(
+            state_ty,
+            state_ptr,
+            idx,
+            &format!("actor_state_field_{idx}_ptr"),
+        )
+        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldLoad gep: {e:?}")))?;
+    let field_val = fn_ctx
+        .builder
+        .build_load(field_ty, field_ptr, &format!("actor_state_field_{idx}"))
+        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldLoad load: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, field_val)
+        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldLoad store: {e:?}")))?;
+    Ok(())
+}
+
+fn lower_actor_state_field_store(
+    fn_ctx: &FnCtx<'_, '_>,
+    field_offset: FieldOffset,
+    src: Place,
+) -> CodegenResult<()> {
+    let state_ty = fn_ctx.actor_state_ty.ok_or_else(|| {
+        CodegenError::FailClosed("ActorStateFieldStore has no registered actor state type".into())
+    })?;
+    let state_ptr = current_actor_state_ptr(fn_ctx)?;
+    let idx = field_offset.0;
+    let element_tys = state_ty.get_field_types();
+    let field_ty = *element_tys.get(idx as usize).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "ActorStateFieldStore field offset {idx} is out of bounds for state with {} fields",
+            element_tys.len()
+        ))
+    })?;
+    let (src_ptr, src_ty) = place_pointer(fn_ctx, src)?;
+    if src_ty != field_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "ActorStateFieldStore src type mismatch: src={src_ty:?}, field={field_ty:?}"
+        )));
+    }
+    let field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(
+            state_ty,
+            state_ptr,
+            idx,
+            &format!("actor_state_field_{idx}_ptr"),
+        )
+        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldStore gep: {e:?}")))?;
+    let src_val = fn_ctx
+        .builder
+        .build_load(field_ty, src_ptr, &format!("actor_state_field_{idx}_src"))
+        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldStore load: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(field_ptr, src_val)
+        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldStore store: {e:?}")))?;
     Ok(())
 }
 
@@ -3898,6 +4149,70 @@ fn emit_print_value_call<'ctx>(
     Ok(())
 }
 
+fn actor_payload_ptr_size<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: Place,
+    label: &str,
+) -> CodegenResult<(PointerValue<'ctx>, IntValue<'ctx>)> {
+    if matches!(place_resolved_ty(fn_ctx, value)?, ResolvedTy::Unit) {
+        return Ok((
+            fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null(),
+            fn_ctx.ctx.i64_type().const_zero(),
+        ));
+    }
+    let (ptr, ty) = place_pointer(fn_ctx, value)?;
+    let size = ty.size_of().ok_or_else(|| {
+        CodegenError::FailClosed(format!("{label}: payload type has no static size: {ty:?}"))
+    })?;
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let size = if size.get_type() == i64_ty {
+        size
+    } else {
+        fn_ctx
+            .builder
+            .build_int_z_extend(size, i64_ty, &format!("{label}_size"))
+            .map_err(|e| CodegenError::Llvm(format!("{label} size zext: {e:?}")))?
+    };
+    Ok((ptr, size))
+}
+
+fn load_actor_id<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    actor_ptr: PointerValue<'ctx>,
+) -> CodegenResult<IntValue<'ctx>> {
+    let id_slot = unsafe {
+        fn_ctx
+            .builder
+            .build_gep(
+                fn_ctx.ctx.i8_type(),
+                actor_ptr,
+                &[fn_ctx
+                    .ctx
+                    .i64_type()
+                    .const_int(HEW_ACTOR_OFFSET_ID as u64, false)],
+                "actor_id_slot",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("actor id gep: {e:?}")))?
+    };
+    Ok(fn_ctx
+        .builder
+        .build_load(fn_ctx.ctx.i64_type(), id_slot, "actor_id")
+        .map_err(|e| CodegenError::Llvm(format!("actor id load: {e:?}")))?
+        .into_int_value())
+}
+
+fn get_or_declare_free<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> FunctionValue<'ctx> {
+    if let Some(fv) = fn_ctx.llvm_mod.get_function("free") {
+        return fv;
+    }
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    fn_ctx.llvm_mod.add_function(
+        "free",
+        fn_ctx.ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::External),
+    )
+}
+
 fn lower_terminator<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbols: &FnSymbolMap<'ctx>,
@@ -4150,29 +4465,141 @@ fn lower_terminator<'ctx>(
                 "Terminator::Yield — generator lowering not yet implemented",
             ));
         }
-        Terminator::Send { .. } => {
-            // Same shape as Yield: declared for the legality check, no
-            // construction surface in the v0.5 spine.
-            return Err(CodegenError::Unsupported(
-                "Terminator::Send — actor lowering not yet implemented",
-            ));
+        Terminator::Send {
+            actor,
+            msg_type,
+            value,
+            next,
+        } => {
+            let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_send receiver")?;
+            let actor_id = load_actor_id(fn_ctx, actor_ptr)?;
+            let (payload_ptr, payload_size) =
+                actor_payload_ptr_size(fn_ctx, *value, "actor_send_payload")?;
+            let send = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_actor_send_by_id",
+            )?;
+            let msg_type = fn_ctx.ctx.i32_type().const_int(*msg_type as u64, false);
+            fn_ctx
+                .builder
+                .build_call(
+                    send,
+                    &[
+                        actor_id.into(),
+                        msg_type.into(),
+                        payload_ptr.into(),
+                        payload_size.into(),
+                    ],
+                    "hew_actor_send_by_id_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_actor_send_by_id call: {e:?}")))?;
+            let next_bb = *fn_ctx
+                .blocks
+                .get(next)
+                .ok_or_else(|| CodegenError::FailClosed(format!("Send next bb{next} missing")))?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(next_bb)
+                .map_err(|e| CodegenError::Llvm(format!("send br: {e:?}")))?;
         }
-        Terminator::Ask { .. } => {
-            // Reserved for the non-select actor-ask path. HIR-to-MIR
-            // lowers `select{}` ask arms into `Terminator::Select` with
-            // `SelectArmKind::ActorAsk`, so this arm is currently
-            // unreachable (non-select `actor.method()` is rejected
-            // upstream as `CutoverUnsupported`). When the construction
-            // surface lands, this arm emits the runtime ABI sequence:
-            //   hew_reply_channel_new → hew_actor_ask_with_channel
-            //   → hew_reply_wait
-            // On the loser / cancel leg:
-            //   hew_reply_channel_cancel + hew_reply_channel_free
-            // Late replies to a cancelled channel are silently dropped
-            // by the receiver.
-            return Err(CodegenError::Unsupported(
-                "Terminator::Ask — actor-ask lowering not yet implemented",
-            ));
+        Terminator::Ask {
+            actor,
+            msg_type,
+            value,
+            reply_dest,
+            next,
+        } => {
+            let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_ask receiver")?;
+            let (payload_ptr, payload_size) =
+                actor_payload_ptr_size(fn_ctx, *value, "actor_ask_payload")?;
+            let ask = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_actor_ask",
+            )?;
+            let msg_type = fn_ctx.ctx.i32_type().const_int(*msg_type as u64, false);
+            let reply_ptr = fn_ctx
+                .builder
+                .build_call(
+                    ask,
+                    &[
+                        actor_ptr.into(),
+                        msg_type.into(),
+                        payload_ptr.into(),
+                        payload_size.into(),
+                    ],
+                    "hew_actor_ask_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_actor_ask call: {e:?}")))?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_actor_ask returned void".into()))?
+                .into_pointer_value();
+            let ok_bb = fn_ctx.ctx.append_basic_block(
+                fn_ctx
+                    .builder
+                    .get_insert_block()
+                    .and_then(|bb| bb.get_parent())
+                    .ok_or_else(|| CodegenError::Llvm("ask block has no parent function".into()))?,
+                "actor_ask_reply_ok",
+            );
+            let null_bb = fn_ctx.ctx.append_basic_block(
+                ok_bb
+                    .get_parent()
+                    .ok_or_else(|| CodegenError::Llvm("ask ok block has no parent".into()))?,
+                "actor_ask_reply_null",
+            );
+            let is_null = fn_ctx
+                .builder
+                .build_is_null(reply_ptr, "actor_ask_reply_is_null")
+                .map_err(|e| CodegenError::Llvm(format!("ask null compare: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(is_null, null_bb, ok_bb)
+                .map_err(|e| CodegenError::Llvm(format!("ask null branch: {e:?}")))?;
+
+            fn_ctx.builder.position_at_end(null_bb);
+            let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
+                CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into())
+            })?;
+            let trap_fn = trap_intrinsic
+                .get_declaration(fn_ctx.llvm_mod, &[])
+                .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+            fn_ctx
+                .builder
+                .build_call(trap_fn, &[], "actor_ask_null_trap")
+                .map_err(|e| CodegenError::Llvm(format!("ask null trap: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::Llvm(format!("ask null unreachable: {e:?}")))?;
+
+            fn_ctx.builder.position_at_end(ok_bb);
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *reply_dest)?;
+            let reply_val = fn_ctx
+                .builder
+                .build_load(dest_ty, reply_ptr, "actor_ask_reply_value")
+                .map_err(|e| CodegenError::Llvm(format!("ask reply load: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, reply_val)
+                .map_err(|e| CodegenError::Llvm(format!("ask reply store: {e:?}")))?;
+            let free = get_or_declare_free(fn_ctx);
+            fn_ctx
+                .builder
+                .build_call(free, &[reply_ptr.into()], "actor_ask_reply_free")
+                .map_err(|e| CodegenError::Llvm(format!("free ask reply: {e:?}")))?;
+            let next_bb = *fn_ctx
+                .blocks
+                .get(next)
+                .ok_or_else(|| CodegenError::FailClosed(format!("Ask next bb{next} missing")))?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(next_bb)
+                .map_err(|e| CodegenError::Llvm(format!("ask br: {e:?}")))?;
         }
         Terminator::Select { arms, .. } => {
             // Sealed `select{}` construct. The MIR terminator's shape is
@@ -4593,6 +5020,14 @@ fn lower_function<'ctx>(
             .map_err(|e| CodegenError::Llvm(format!("param store {param_idx}: {e:?}")))?;
     }
 
+    let actor_state_ty = if func.call_conv == FunctionCallConv::ActorHandler {
+        func.name
+            .split_once("__recv__")
+            .and_then(|(actor_name, _)| record_layouts.get(actor_name).copied())
+    } else {
+        None
+    };
+
     let fn_ctx = FnCtx {
         ctx,
         llvm_mod,
@@ -4602,6 +5037,7 @@ fn lower_function<'ctx>(
         return_resolved_ty: func.return_ty.clone(),
         execution_context,
         execution_context_is_actor_handler: func.call_conv == FunctionCallConv::ActorHandler,
+        actor_state_ty,
         locals,
         local_tys,
         blocks: blocks.clone(),
@@ -4671,6 +5107,162 @@ fn lower_function<'ctx>(
     Ok(())
 }
 
+fn emit_actor_dispatch_trampoline<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    layout: &ActorLayout,
+    fn_symbols: &FnSymbolMap<'ctx>,
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let dispatch_name = format!("__hew_actor_dispatch_{}", layout.name);
+    let fn_ty = ctx.void_type().fn_type(
+        &[
+            ptr_ty.into(),
+            ptr_ty.into(),
+            i32_ty.into(),
+            ptr_ty.into(),
+            i64_ty.into(),
+        ],
+        false,
+    );
+    let dispatch_fn = llvm_mod.add_function(&dispatch_name, fn_ty, Some(Linkage::Internal));
+    let builder = ctx.create_builder();
+    let entry = ctx.append_basic_block(dispatch_fn, "entry");
+    let default_bb = ctx.append_basic_block(dispatch_fn, "unknown_msg_type");
+    let after_bb = ctx.append_basic_block(dispatch_fn, "dispatch_done");
+    builder.position_at_end(entry);
+    let msg_type = dispatch_fn
+        .get_nth_param(2)
+        .ok_or_else(|| {
+            CodegenError::FailClosed("dispatch trampoline missing msg_type param".into())
+        })?
+        .into_int_value();
+    let mut cases = Vec::with_capacity(layout.handlers.len());
+    for handler in &layout.handlers {
+        let bb = ctx.append_basic_block(dispatch_fn, &format!("msg_{}", handler.msg_type));
+        cases.push((i32_ty.const_int(handler.msg_type as u64, false), bb));
+    }
+    builder
+        .build_switch(msg_type, default_bb, &cases)
+        .map_err(|e| CodegenError::Llvm(format!("actor dispatch switch: {e:?}")))?;
+
+    for (handler, (_, bb)) in layout.handlers.iter().zip(cases.iter()) {
+        builder.position_at_end(*bb);
+        let symbol = fn_symbols.get(&handler.symbol).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "actor dispatch `{dispatch_name}` references undeclared handler `{}`",
+                handler.symbol
+            ))
+        })?;
+        let (handler_fn, return_ty, returns_unit) =
+            symbol.real(&handler.symbol, "actor dispatch handler")?;
+        let ctx_arg = dispatch_fn
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::FailClosed("dispatch missing ctx param".into()))?;
+        let data_ptr = dispatch_fn
+            .get_nth_param(3)
+            .ok_or_else(|| CodegenError::FailClosed("dispatch missing data param".into()))?
+            .into_pointer_value();
+        let mut args: Vec<BasicMetadataValueEnum> = Vec::with_capacity(1 + handler.param_tys.len());
+        args.push(ctx_arg.into());
+        for (idx, param_ty) in handler.param_tys.iter().enumerate() {
+            let llvm_ty = resolve_ty(ctx, param_ty, record_layouts)?;
+            let loaded = builder
+                .build_load(llvm_ty, data_ptr, &format!("msg_arg_{idx}"))
+                .map_err(|e| CodegenError::Llvm(format!("actor dispatch arg load: {e:?}")))?;
+            args.push(match loaded {
+                BasicValueEnum::IntValue(v) => v.into(),
+                BasicValueEnum::FloatValue(v) => v.into(),
+                BasicValueEnum::PointerValue(v) => v.into(),
+                BasicValueEnum::StructValue(v) => v.into(),
+                BasicValueEnum::ArrayValue(v) => v.into(),
+                BasicValueEnum::VectorValue(v) => v.into(),
+                BasicValueEnum::ScalableVectorValue(v) => v.into(),
+            });
+        }
+        let call = builder
+            .build_call(handler_fn, &args, &format!("call_{}", handler.name))
+            .map_err(|e| CodegenError::Llvm(format!("actor dispatch handler call: {e:?}")))?;
+        if !returns_unit {
+            let ret_val = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "actor handler `{}` has non-unit MIR return but LLVM call returned void",
+                    handler.symbol
+                ))
+            })?;
+            if ret_val.get_type() != return_ty {
+                return Err(CodegenError::FailClosed(format!(
+                    "actor handler `{}` return type mismatch: call={:?}, declared={return_ty:?}",
+                    handler.symbol,
+                    ret_val.get_type()
+                )));
+            }
+            let mut runtime_decls = RuntimeDeclMap::new();
+            let reply_channel =
+                intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_get_reply_channel")?;
+            let reply = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_reply")?;
+            let ch = builder
+                .build_call(reply_channel, &[], "hew_get_reply_channel_call")
+                .map_err(|e| CodegenError::Llvm(format!("get reply channel call: {e:?}")))?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_get_reply_channel returned void".into())
+                })?
+                .into_pointer_value();
+            let ret_slot = builder
+                .build_alloca(return_ty, "actor_reply_slot")
+                .map_err(|e| CodegenError::Llvm(format!("actor reply alloca: {e:?}")))?;
+            builder
+                .build_store(ret_slot, ret_val)
+                .map_err(|e| CodegenError::Llvm(format!("actor reply store: {e:?}")))?;
+            let size = return_ty.size_of().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "actor handler `{}` reply type has no static size: {return_ty:?}",
+                    handler.symbol
+                ))
+            })?;
+            let size = if size.get_type() == i64_ty {
+                size
+            } else {
+                builder
+                    .build_int_z_extend(size, i64_ty, "actor_reply_size")
+                    .map_err(|e| CodegenError::Llvm(format!("reply size zext: {e:?}")))?
+            };
+            builder
+                .build_call(
+                    reply,
+                    &[ch.into(), ret_slot.into(), size.into()],
+                    "hew_reply_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_reply call: {e:?}")))?;
+        }
+        builder
+            .build_unconditional_branch(after_bb)
+            .map_err(|e| CodegenError::Llvm(format!("actor dispatch branch: {e:?}")))?;
+    }
+
+    builder.position_at_end(default_bb);
+    let trap = Intrinsic::find("llvm.trap")
+        .and_then(|intrinsic| intrinsic.get_declaration(llvm_mod, &[]))
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    builder
+        .build_call(trap, &[], "actor_dispatch_unknown_msg_trap")
+        .map_err(|e| CodegenError::Llvm(format!("actor dispatch trap: {e:?}")))?;
+    builder
+        .build_unreachable()
+        .map_err(|e| CodegenError::Llvm(format!("actor dispatch unreachable: {e:?}")))?;
+
+    builder.position_at_end(after_bb);
+    builder
+        .build_return(None)
+        .map_err(|e| CodegenError::Llvm(format!("actor dispatch return: {e:?}")))?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Module-level orchestration
 // ---------------------------------------------------------------------------
@@ -4698,6 +5290,9 @@ fn build_module<'ctx>(
     for func in &pipeline.raw_mir {
         let sym = declare_function(ctx, &llvm_mod, func, &record_layouts)?;
         fn_symbols.insert(func.name.clone(), sym);
+    }
+    for actor in &pipeline.actor_layouts {
+        emit_actor_dispatch_trampoline(ctx, &llvm_mod, actor, &fn_symbols, &record_layouts)?;
     }
     for func in &pipeline.raw_mir {
         // Match by name: elaborated_mir is parallel to raw_mir when the

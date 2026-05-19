@@ -109,6 +109,10 @@ fn visit_block<'a>(block: &'a hew_hir::HirBlock, out: &mut Vec<&'a HirExpr>) {
             HirStmtKind::Let(_, Some(expr))
             | HirStmtKind::Expr(expr)
             | HirStmtKind::Return(Some(expr)) => visit_expr(expr, out),
+            HirStmtKind::Assign { target, value } => {
+                visit_expr(target, out);
+                visit_expr(value, out);
+            }
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
         }
     }

@@ -67,11 +67,24 @@ pub struct RecordLayout {
 pub struct ActorLayout {
     /// Actor type name.
     pub name: String,
+    /// Actor state field names in declaration order.
+    pub state_field_names: Vec<String>,
     /// Actor state field types in declaration order.
     pub state_field_tys: Vec<ResolvedTy>,
     /// Actor init parameter types in declaration order. Empty when the actor
     /// has no explicit init block.
     pub init_param_tys: Vec<ResolvedTy>,
+    /// Receive handlers in message-type order.
+    pub handlers: Vec<ActorHandlerLayout>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActorHandlerLayout {
+    pub name: String,
+    pub symbol: String,
+    pub msg_type: i32,
+    pub param_tys: Vec<ResolvedTy>,
+    pub return_ty: ResolvedTy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -279,7 +292,10 @@ pub fn validate_context_markers(func: &RawMirFunction) -> Vec<MirCheck> {
                         state = ContextState::Invalid;
                     }
                 }
-                Instr::CheckCancellation | Instr::ContextField { .. }
+                Instr::CheckCancellation
+                | Instr::ContextField { .. }
+                | Instr::ActorStateFieldLoad { .. }
+                | Instr::ActorStateFieldStore { .. }
                     if state != ContextState::Inside =>
                 {
                     push(
@@ -440,6 +456,7 @@ pub enum Terminator {
     /// the v0.5 integer spine never constructs it.
     Send {
         actor: Place,
+        msg_type: i32,
         value: Place,
         next: u32,
     },
@@ -469,8 +486,8 @@ pub enum Terminator {
     /// lands.
     Ask {
         actor: Place,
+        msg_type: i32,
         value: Place,
-        channel: Place,
         reply_dest: Place,
         next: u32,
     },
@@ -568,6 +585,9 @@ pub enum Place {
     /// Drop semantics: stop-on-last-handle-drop with weak-ref body
     /// capture (§5.9 ratification 2).
     LambdaActorHandle(u32),
+    /// A named actor handle returned by `spawn Actor(...)`. The carried `u32`
+    /// is the backing local whose resolved type is `LocalPid<Actor>`.
+    ActorHandle(u32),
     /// Write-only end of a `Duplex<S, R>`'s S-direction queue. The
     /// carried `u32` is the parent Duplex's `Local(N)` id (the same
     /// local that a `DuplexHandle` would address). Drop closes the
@@ -928,6 +948,19 @@ pub enum Instr {
         /// Capture field index in first-use order.
         field_offset: FieldOffset,
         /// Destination place receiving the field value.
+        dest: Place,
+    },
+    ActorStateFieldLoad {
+        field_offset: FieldOffset,
+        dest: Place,
+    },
+    ActorStateFieldStore {
+        field_offset: FieldOffset,
+        src: Place,
+    },
+    SpawnActor {
+        actor_name: String,
+        state: Option<Place>,
         dest: Place,
     },
     /// Call a first-class callable pair. Codegen loads the function pointer and
@@ -1616,7 +1649,6 @@ pub enum ExitPath {
     Ask {
         block: u32,
         actor: Place,
-        channel: Place,
         next: u32,
     },
     /// Sealed `select{}` exit. Mirrors `Terminator::Select`; declared

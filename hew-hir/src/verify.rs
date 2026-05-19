@@ -100,6 +100,10 @@ impl Verifier {
                         self.expr(value);
                     }
                 }
+                HirStmtKind::Assign { target, value } => {
+                    self.expr(target);
+                    self.expr(value);
+                }
                 HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => self.expr(expr),
                 HirStmtKind::Return(None) => {}
             }

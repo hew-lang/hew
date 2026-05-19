@@ -10,11 +10,11 @@ use hew_types::{ExecutionContextReader, ResolvedTy};
 
 use crate::dataflow;
 use crate::model::{
-    BasicBlock, BlockKind, CheckedMirFunction, CmpPred, DecisionFact, DropKind, DropPlan,
-    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, Instr,
-    IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MirCheck, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy, Terminator, ThirFunction,
-    TrapKind,
+    ActorHandlerLayout, ActorLayout, BasicBlock, BlockKind, CheckedMirFunction, CmpPred,
+    DecisionFact, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath,
+    FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MirCheck,
+    MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy, Terminator,
+    ThirFunction, TrapKind,
 };
 
 const HEW_CTX_OFFSET_ACTOR_ID: usize = 8;
@@ -22,6 +22,13 @@ const HEW_CTX_OFFSET_PARENT_SUPERVISOR: usize = 16;
 const HEW_CTX_OFFSET_TRACE: usize = 56;
 const HEW_TRACE_OFFSET_SPAN_ID: usize = 16;
 const HEW_CTX_OFFSET_TRACE_SPAN: usize = HEW_CTX_OFFSET_TRACE + HEW_TRACE_OFFSET_SPAN_ID;
+
+#[derive(Debug, Clone)]
+struct ActorMethodInfo {
+    msg_type: i32,
+    param_tys: Vec<ResolvedTy>,
+    return_ty: ResolvedTy,
+}
 
 fn context_reader_offset(reader: ExecutionContextReader) -> usize {
     match reader {
@@ -113,6 +120,34 @@ fn signed_min_value(ty: &ResolvedTy) -> Option<i64> {
         // Unsigned types: no MIN check needed.
         _ => None,
     }
+}
+
+fn actor_name_from_handle_ty(ty: &ResolvedTy) -> Option<&str> {
+    match ty {
+        ResolvedTy::Named { name, args }
+            if matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor") && args.len() == 1 =>
+        {
+            match &args[0] {
+                ResolvedTy::Named { name, args } if args.is_empty() => Some(name.as_str()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn method_name_from_id(method_id: &str) -> &str {
+    method_id.rsplit("::").next().unwrap_or(method_id)
+}
+
+fn is_self_expr(expr: &HirExpr) -> bool {
+    matches!(
+        &expr.kind,
+        HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Unresolved | ResolvedRef::Binding(_) | ResolvedRef::Item(_)
+        } if name == "self"
+    )
 }
 
 /// Run Checked MIR's legality passes over a function's statement
@@ -258,8 +293,23 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 }
             }
             HirItem::Actor(actor) => {
+                if !actor.state_fields.is_empty() {
+                    record_layouts.push(crate::model::RecordLayout {
+                        name: actor.name.clone(),
+                        field_tys: actor
+                            .state_fields
+                            .iter()
+                            .map(|field| field.ty.clone())
+                            .collect(),
+                    });
+                }
                 actor_layouts.push(crate::model::ActorLayout {
                     name: actor.name.clone(),
+                    state_field_names: actor
+                        .state_fields
+                        .iter()
+                        .map(|field| field.name.clone())
+                        .collect(),
                     state_field_tys: actor
                         .state_fields
                         .iter()
@@ -270,6 +320,22 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         .as_ref()
                         .map(|init| init.params.iter().map(|param| param.ty.clone()).collect())
                         .unwrap_or_default(),
+                    handlers: actor
+                        .receive_handlers
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, handler)| ActorHandlerLayout {
+                            name: handler.name.clone(),
+                            symbol: mangle_actor_receive_handler(&actor.name, &handler.name),
+                            msg_type: i32::try_from(idx).unwrap_or(i32::MAX),
+                            param_tys: handler
+                                .params
+                                .iter()
+                                .map(|param| param.ty.clone())
+                                .collect(),
+                            return_ty: handler.return_ty.clone(),
+                        })
+                        .collect(),
                 });
             }
             _ => {}
@@ -291,6 +357,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         });
         record_field_orders.insert(layout.mangled_name.clone(), fields);
     }
+    let actor_layout_map: HashMap<String, ActorLayout> = actor_layouts
+        .iter()
+        .cloned()
+        .map(|layout| (layout.name.clone(), layout))
+        .collect();
 
     // Collect the names every user-defined function will use as its
     // emitted MIR symbol. For non-generic functions this is the
@@ -351,6 +422,8 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     HashMap::new(),
                     &module.type_classes,
                     &record_field_orders,
+                    &actor_layout_map,
+                    None,
                     &module_fn_names,
                     &module.call_site_type_args,
                     crate::model::FunctionCallConv::Default,
@@ -375,6 +448,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     actor,
                     &module.type_classes,
                     &record_field_orders,
+                    &actor_layout_map,
                     &module_fn_names,
                     &module.call_site_type_args,
                     &mut emitted_actor_handler_symbols,
@@ -445,6 +519,8 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             subst,
             &module.type_classes,
             &record_field_orders,
+            &actor_layout_map,
+            None,
             &module_fn_names,
             &module.call_site_type_args,
             crate::model::FunctionCallConv::Default,
@@ -484,6 +560,7 @@ fn lower_actor_receive_handlers(
     actor: &HirActorDecl,
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     emitted_symbols: &mut HashMap<String, String>,
@@ -561,6 +638,8 @@ fn lower_actor_receive_handlers(
             HashMap::new(),
             type_classes,
             record_field_orders,
+            actor_layouts,
+            Some(&actor.name),
             module_fn_names,
             call_site_type_args,
             crate::model::FunctionCallConv::ActorHandler,
@@ -598,6 +677,10 @@ fn collect_unknown_self_fields_in_block(
             | HirStmtKind::Expr(expr)
             | HirStmtKind::Return(Some(expr)) => {
                 collect_unknown_self_fields_in_expr(expr, state_fields, seen, unknown);
+            }
+            HirStmtKind::Assign { target, value } => {
+                collect_unknown_self_fields_in_expr(target, state_fields, seen, unknown);
+                collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
             }
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
         }
@@ -778,6 +861,7 @@ pub fn bracket_actor_handler_blocks(blocks: &mut [BasicBlock]) {
 
 #[allow(
     clippy::too_many_arguments,
+    clippy::too_many_lines,
     reason = "lowering threads shared module tables plus the call-convention discriminator"
 )]
 fn lower_function(
@@ -786,6 +870,8 @@ fn lower_function(
     subst: HashMap<String, ResolvedTy>,
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    current_actor_name: Option<&str>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     call_conv: crate::model::FunctionCallConv,
@@ -793,6 +879,30 @@ fn lower_function(
     let mut builder = Builder {
         type_classes: type_classes.clone(),
         record_field_orders: record_field_orders.clone(),
+        actor_layouts: actor_layouts.clone(),
+        current_actor_state_fields: current_actor_name
+            .and_then(|name| actor_layouts.get(name))
+            .map(|layout| {
+                layout
+                    .state_field_names
+                    .iter()
+                    .cloned()
+                    .zip(layout.state_field_tys.iter().cloned())
+                    .enumerate()
+                    .map(|(idx, (name, ty))| {
+                        (
+                            name,
+                            (
+                                FieldOffset(
+                                    u32::try_from(idx).expect("actor field count exceeds u32::MAX"),
+                                ),
+                                ty,
+                            ),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         module_fn_names: module_fn_names.clone(),
         subst,
         call_site_type_args: call_site_type_args.clone(),
@@ -948,22 +1058,12 @@ fn collect_unknown_type_diagnostics(
     let mut reported = HashSet::new();
 
     for param in &func.params {
-        push_unknown_type_diagnostics(&param.ty, &builder.type_classes, &mut reported, diagnostics);
+        push_unknown_type_diagnostics(&param.ty, builder, &mut reported, diagnostics);
     }
-    push_unknown_type_diagnostics(
-        &func.return_ty,
-        &builder.type_classes,
-        &mut reported,
-        diagnostics,
-    );
+    push_unknown_type_diagnostics(&func.return_ty, builder, &mut reported, diagnostics);
 
     for decision in &builder.decisions {
-        push_unknown_type_diagnostics(
-            &decision.ty,
-            &builder.type_classes,
-            &mut reported,
-            diagnostics,
-        );
+        push_unknown_type_diagnostics(&decision.ty, builder, &mut reported, diagnostics);
         if decision.strategy == Strategy::UnknownBlocked
             && named_type_names(&decision.ty).is_empty()
         {
@@ -978,12 +1078,7 @@ fn collect_unknown_type_diagnostics(
             | MirStatement::Use { ty, .. }
             | MirStatement::Return { ty, .. }
             | MirStatement::Drop { ty, .. } => {
-                push_unknown_type_diagnostics(
-                    ty,
-                    &builder.type_classes,
-                    &mut reported,
-                    diagnostics,
-                );
+                push_unknown_type_diagnostics(ty, builder, &mut reported, diagnostics);
             }
         }
     }
@@ -997,12 +1092,15 @@ fn collect_unknown_type_diagnostics(
 /// Named-type knownness independently.
 fn push_unknown_type_diagnostics(
     ty: &ResolvedTy,
-    type_classes: &hew_hir::TypeClassTable,
+    builder: &Builder,
     reported: &mut HashSet<String>,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) {
     for name in named_type_names(ty) {
-        if type_classes.contains_key(&name) {
+        if builder.type_classes.contains_key(&name)
+            || matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor")
+            || builder.actor_layouts.contains_key(&name)
+        {
             continue;
         }
         push_unknown_type_diagnostic(name, reported, diagnostics);
@@ -1122,6 +1220,8 @@ struct Builder {
     /// is empty for tuple records — their constructor is a `Call`, not a
     /// `StructInit`). They will never be looked up here.
     record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: HashMap<String, ActorLayout>,
+    current_actor_state_fields: HashMap<String, (FieldOffset, ResolvedTy)>,
     /// Names of every user-defined function declared in the module. Used by
     /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
     /// (→ `Terminator::Call`) from runtime-ABI callees (→
@@ -1395,7 +1495,8 @@ impl Builder {
                         Place::DuplexHandle(_)
                         | Place::SendHalf(_)
                         | Place::RecvHalf(_)
-                        | Place::LambdaActorHandle(_) => {
+                        | Place::LambdaActorHandle(_)
+                        | Place::ActorHandle(_) => {
                             self.binding_locals.insert(binding.id, src);
                         }
                         Place::Local(n) if self.tuple_decomp.contains_key(&n) => {
@@ -1421,6 +1522,13 @@ impl Builder {
                     ty: self.subst_ty(&expr.ty),
                 });
             }
+            HirStmtKind::Assign { target, value } => {
+                self.assign(target, value);
+                self.statements.push(MirStatement::Evaluate {
+                    site: value.site,
+                    ty: ResolvedTy::Unit,
+                });
+            }
             HirStmtKind::Return(Some(expr)) => {
                 let value_place = self.lower_value(expr);
                 self.decide(expr);
@@ -1442,6 +1550,57 @@ impl Builder {
                     ty: ResolvedTy::Unit,
                 });
             }
+        }
+    }
+
+    fn assign(&mut self, target: &HirExpr, value: &HirExpr) {
+        let Some(src) = self.lower_value(value) else {
+            return;
+        };
+        if let Some((field_offset, _)) = self.actor_state_field_for_target(target) {
+            self.instructions
+                .push(Instr::ActorStateFieldStore { field_offset, src });
+            return;
+        }
+        match &target.kind {
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(binding),
+                name,
+                ..
+            } => {
+                if let Some(dest) = self.binding_locals.get(binding).copied() {
+                    self.instructions.push(Instr::Move { dest, src });
+                } else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnresolvedPlace {
+                            binding: *binding,
+                            name: name.clone(),
+                            site: target.site,
+                        },
+                        note: format!("assignment target binding {binding:?} has no MIR place"),
+                    });
+                }
+            }
+            _ => self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnsupportedNode {
+                    reason:
+                        "only local bindings and actor state fields are assignable in MIR slice 4"
+                            .to_string(),
+                },
+                note: "assignment target did not lower to a writable place".to_string(),
+            }),
+        }
+    }
+
+    fn actor_state_field_for_target(&self, expr: &HirExpr) -> Option<(FieldOffset, ResolvedTy)> {
+        match &expr.kind {
+            HirExprKind::BindingRef { name, .. } => {
+                self.current_actor_state_fields.get(name).cloned()
+            }
+            HirExprKind::FieldAccess { object, field } if is_self_expr(object) => {
+                self.current_actor_state_fields.get(field).cloned()
+            }
+            _ => None,
         }
     }
 
@@ -1470,6 +1629,16 @@ impl Builder {
                 name,
                 resolved: ResolvedRef::Binding(id),
             } => {
+                if !self.binding_locals.contains_key(id) {
+                    if let Some((field_offset, ty)) =
+                        self.current_actor_state_fields.get(name).cloned()
+                    {
+                        let dest = self.alloc_local(ty);
+                        self.instructions
+                            .push(Instr::ActorStateFieldLoad { field_offset, dest });
+                        return Some(dest);
+                    }
+                }
                 let use_ty = self.subst_ty(&expr.ty);
                 self.statements.push(MirStatement::Use {
                     binding: *id,
@@ -1786,6 +1955,16 @@ impl Builder {
                 Some(dest)
             }
             HirExprKind::FieldAccess { object, field } => {
+                if is_self_expr(object) {
+                    if let Some((field_offset, ty)) =
+                        self.current_actor_state_fields.get(field).cloned()
+                    {
+                        let dest = self.alloc_local(ty);
+                        self.instructions
+                            .push(Instr::ActorStateFieldLoad { field_offset, dest });
+                        return Some(dest);
+                    }
+                }
                 // Resolve the record type key from the object's type so we
                 // can look up the field offset in the field-order table.
                 // For a generic record instantiation (`b: Box<int>` reading
@@ -1930,19 +2109,20 @@ impl Builder {
                 // Place::LambdaActorHandle today).
                 Some(self.lower_spawn_lambda_actor(expr))
             }
-            HirExprKind::Spawn { .. }
-            | HirExprKind::ActorSend { .. }
-            | HirExprKind::ActorAsk { .. } => {
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::UnsupportedNode {
-                        reason: "named actor spawn/send/ask MIR lowering lands in actor slice 4"
-                            .to_string(),
-                    },
-                    note: "HIR actor call surface reached MIR before the slice-4 runtime lowering"
-                        .to_string(),
-                });
-                None
+            HirExprKind::Spawn { actor_name, args } => {
+                self.lower_spawn_actor(actor_name, args, expr)
             }
+            HirExprKind::ActorSend {
+                receiver,
+                method_id,
+                args,
+            } => self.lower_actor_send(receiver, method_id, args, expr.site),
+            HirExprKind::ActorAsk {
+                receiver,
+                method_id,
+                args,
+                reply_ty,
+            } => self.lower_actor_ask(receiver, method_id, args, reply_ty, expr.site),
             HirExprKind::Closure {
                 params,
                 ret_ty,
@@ -3948,6 +4128,252 @@ impl Builder {
         None // send result (i32 error code) is discarded
     }
 
+    fn lower_actor_payload(
+        &mut self,
+        args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        match args {
+            [] => Some(self.alloc_local(ResolvedTy::Unit)),
+            [arg] => self.lower_value(arg),
+            _ => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: "actor receive call with more than one argument".to_string(),
+                        site,
+                    },
+                    note: "slice-4 actor payload packing supports unit or one scalar argument"
+                        .to_string(),
+                });
+                None
+            }
+        }
+    }
+
+    fn actor_method_info(
+        &mut self,
+        receiver_ty: &ResolvedTy,
+        method_id: &str,
+        site: hew_hir::SiteId,
+    ) -> Option<ActorMethodInfo> {
+        let actor_name = actor_name_from_handle_ty(receiver_ty)?;
+        let method_name = method_name_from_id(method_id);
+        let Some(layout) = self.actor_layouts.get(actor_name) else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("actor call on unknown actor `{actor_name}`"),
+                    site,
+                },
+                note: "receiver type named an actor with no MIR actor layout".to_string(),
+            });
+            return None;
+        };
+        let Some(handler) = layout
+            .handlers
+            .iter()
+            .find(|handler| handler.name == method_name)
+        else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("unknown actor handler `{method_id}` on `{actor_name}`"),
+                    site,
+                },
+                note:
+                    "actor method dispatch side table named a handler absent from the actor layout"
+                        .to_string(),
+            });
+            return None;
+        };
+        Some(ActorMethodInfo {
+            msg_type: handler.msg_type,
+            param_tys: handler.param_tys.clone(),
+            return_ty: handler.return_ty.clone(),
+        })
+    }
+
+    fn lower_actor_send(
+        &mut self,
+        receiver: &HirExpr,
+        method_id: &str,
+        args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let info = self.actor_method_info(&receiver.ty, method_id, site)?;
+        if info.return_ty != ResolvedTy::Unit {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!(
+                        "fire-and-forget actor send to non-unit handler `{method_id}`"
+                    ),
+                    site,
+                },
+                note: "ActorSend requires a unit-returning receive handler".to_string(),
+            });
+            return None;
+        }
+        if info.param_tys.len() != args.len() {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("actor send arity mismatch for `{method_id}`"),
+                    site,
+                },
+                note: format!(
+                    "handler expects {} argument(s), call supplied {}",
+                    info.param_tys.len(),
+                    args.len()
+                ),
+            });
+            return None;
+        }
+        let actor = self.lower_value(receiver)?;
+        let value = self.lower_actor_payload(args, site)?;
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Send {
+            actor,
+            msg_type: info.msg_type,
+            value,
+            next,
+        });
+        self.start_block(next);
+        None
+    }
+
+    fn lower_actor_ask(
+        &mut self,
+        receiver: &HirExpr,
+        method_id: &str,
+        args: &[hew_hir::HirExpr],
+        reply_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let info = self.actor_method_info(&receiver.ty, method_id, site)?;
+        if info.return_ty != *reply_ty {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("actor ask reply type mismatch for `{method_id}`"),
+                    site,
+                },
+                note: format!(
+                    "handler returns {}, ask expression expects {}",
+                    info.return_ty.user_facing(),
+                    reply_ty.user_facing()
+                ),
+            });
+            return None;
+        }
+        if info.param_tys.len() != args.len() {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("actor ask arity mismatch for `{method_id}`"),
+                    site,
+                },
+                note: format!(
+                    "handler expects {} argument(s), call supplied {}",
+                    info.param_tys.len(),
+                    args.len()
+                ),
+            });
+            return None;
+        }
+        let actor = self.lower_value(receiver)?;
+        let value = self.lower_actor_payload(args, site)?;
+        let reply_dest = self.alloc_local(reply_ty.clone());
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Ask {
+            actor,
+            msg_type: info.msg_type,
+            value,
+            reply_dest,
+            next,
+        });
+        self.start_block(next);
+        Some(reply_dest)
+    }
+
+    fn lower_spawn_actor(
+        &mut self,
+        actor_name: &str,
+        args: &[(String, HirExpr)],
+        expr: &HirExpr,
+    ) -> Option<Place> {
+        let Some(layout) = self.actor_layouts.get(actor_name).cloned() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("spawn of unknown actor `{actor_name}`"),
+                    site: expr.site,
+                },
+                note: "named actor spawn requires a MIR actor layout".to_string(),
+            });
+            return None;
+        };
+        if args.len() != layout.state_field_names.len() {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("spawn `{actor_name}` state arity mismatch"),
+                    site: expr.site,
+                },
+                note: format!(
+                    "actor has {} state field(s), spawn supplied {} initializer(s)",
+                    layout.state_field_names.len(),
+                    args.len()
+                ),
+            });
+            return None;
+        }
+        let mut explicit: HashMap<&str, &HirExpr> = HashMap::new();
+        for (name, arg) in args {
+            explicit.insert(name.as_str(), arg);
+        }
+        let state = if layout.state_field_names.is_empty() {
+            None
+        } else {
+            let state_ty = ResolvedTy::Named {
+                name: actor_name.to_string(),
+                args: Vec::new(),
+            };
+            let dest = self.alloc_local(state_ty.clone());
+            let mut fields = Vec::new();
+            for (idx, field_name) in layout.state_field_names.iter().enumerate() {
+                let Some(arg) = explicit.get(field_name.as_str()) else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::CutoverUnsupported {
+                            construct: format!("spawn `{actor_name}` missing field `{field_name}`"),
+                            site: expr.site,
+                        },
+                        note: "actor spawn requires every state field by declaration name"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                let src = self.lower_value(arg)?;
+                fields.push((
+                    FieldOffset(
+                        u32::try_from(idx)
+                            .expect("actor state field count exceeds u32::MAX — impossible"),
+                    ),
+                    src,
+                ));
+            }
+            self.instructions.push(Instr::RecordInit {
+                ty: state_ty,
+                fields,
+                dest,
+            });
+            Some(dest)
+        };
+        let slot = self.alloc_local(expr.ty.clone());
+        let Place::Local(local_id) = slot else {
+            unreachable!("alloc_local returns Place::Local");
+        };
+        let dest = Place::ActorHandle(local_id);
+        self.instructions.push(Instr::SpawnActor {
+            actor_name: actor_name.to_string(),
+            state,
+            dest,
+        });
+        Some(dest)
+    }
+
     fn sanitize_symbol_component(input: &str) -> String {
         input
             .chars()
@@ -4263,7 +4689,19 @@ impl Builder {
         {
             return;
         }
-        let strategy = match expr.value_class {
+        let value_class = if expr.value_class == ValueClass::Unknown {
+            let inferred = ValueClass::of_ty(&expr.ty, &self.type_classes);
+            if inferred != ValueClass::Unknown {
+                inferred
+            } else if self.is_known_actor_runtime_ty(&expr.ty) {
+                ValueClass::BitCopy
+            } else {
+                ValueClass::Unknown
+            }
+        } else {
+            expr.value_class
+        };
+        let strategy = match value_class {
             ValueClass::CowValue => Strategy::CowShare,
             // `@linear` and `@resource` (AffineResource) both move by default;
             // `MirCheck::MustConsume` rejects unconsumed `@linear` exits.
@@ -4273,7 +4711,7 @@ impl Builder {
                 Strategy::BorrowRead
             }
         };
-        let strategy = match (expr.value_class, expr.intent) {
+        let strategy = match (value_class, expr.intent) {
             (ValueClass::CowValue, IntentKind::Modify) => Strategy::EnsureUnique,
             (ValueClass::CowValue, IntentKind::Read | IntentKind::Capture) => Strategy::CowShare,
             (ValueClass::AffineResource, IntentKind::Read) => Strategy::BorrowRead,
@@ -4295,11 +4733,25 @@ impl Builder {
         self.decisions.push(DecisionFact {
             site: expr.site,
             ty: self.subst_ty(&expr.ty),
-            value_class: expr.value_class,
+            value_class,
             intent: expr.intent,
             strategy,
             why: "first vertical-slice classifier".to_string(),
         });
+    }
+
+    fn is_known_actor_runtime_ty(&self, ty: &ResolvedTy) -> bool {
+        match ty {
+            ResolvedTy::Named { name, .. }
+                if matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor") =>
+            {
+                true
+            }
+            ResolvedTy::Named { name, args } if args.is_empty() => {
+                self.actor_layouts.contains_key(name)
+            }
+            _ => actor_name_from_handle_ty(ty).is_some(),
+        }
     }
 
     fn mark_returned_binding_moved(&mut self, expr: &HirExpr) {
@@ -4748,7 +5200,10 @@ fn validate_lambda_captures(captures: &[LambdaCapture], findings: &mut Vec<MirCh
 fn duplex_parent_local(place: Place) -> Option<u32> {
     match place {
         Place::DuplexHandle(n) | Place::SendHalf(n) | Place::RecvHalf(n) => Some(n),
-        Place::LambdaActorHandle(_) | Place::Local(_) | Place::ReturnSlot => None,
+        Place::LambdaActorHandle(_)
+        | Place::ActorHandle(_)
+        | Place::Local(_)
+        | Place::ReturnSlot => None,
     }
 }
 
@@ -5239,6 +5694,8 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             places
         }
         Instr::RecordFieldLoad { record, dest, .. } => vec![*record, *dest],
+        Instr::ActorStateFieldLoad { dest, .. } => vec![*dest],
+        Instr::ActorStateFieldStore { src, .. } => vec![*src],
         Instr::TupleFieldLoad { tuple, dest, .. } => vec![*tuple, *dest],
         Instr::FloatLit { dest, .. } => vec![*dest],
         Instr::FloatAdd { dest, lhs, rhs, .. }
@@ -5271,6 +5728,14 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         }
         Instr::SpawnTaskDirect { task, .. } => vec![*task],
         Instr::SpawnTaskClosure { task, env, .. } => vec![*task, *env],
+        Instr::SpawnActor { state, dest, .. } => {
+            let mut places = Vec::new();
+            if let Some(state) = state {
+                places.push(*state);
+            }
+            places.push(*dest);
+            places
+        }
         Instr::CoerceToDynTrait { value, dest, .. } => vec![*value, *dest],
         Instr::CallTraitMethod {
             fat_pointer,
@@ -5333,7 +5798,7 @@ fn drop_kind_for(place: Place, ty: &ResolvedTy) -> DropKind {
         Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::TraitObject { .. }) => {
             DropKind::TraitObject
         }
-        Place::Local(_) | Place::ReturnSlot => DropKind::Resource,
+        Place::ActorHandle(_) | Place::Local(_) | Place::ReturnSlot => DropKind::Resource,
     }
 }
 
@@ -5573,6 +6038,7 @@ fn enumerate_exits(
             ),
             Terminator::Send {
                 actor: _,
+                msg_type: _,
                 value: _,
                 next,
             } => (
@@ -5589,24 +6055,14 @@ fn enumerate_exits(
             ),
             Terminator::Ask {
                 actor,
+                msg_type: _,
                 value: _,
-                channel,
                 reply_dest: _,
                 next,
             } => (
-                // Declared-only. Spine has no Ask construction surface;
-                // HIR-to-MIR lowers select arms into `Terminator::Select`,
-                // and non-select actor calls remain rejected as
-                // `CutoverUnsupported`. The `ExitPath::Ask` slot carries
-                // the `channel` Place because the loser-cleanup sequence
-                // (`hew_reply_channel_cancel` + `hew_reply_channel_free`)
-                // is what the cleanup CFG needs when the construction
-                // surface lands. Empty drop plan is a placeholder until
-                // the cleanup CFG wires per-arm loser-cleanup blocks.
                 ExitPath::Ask {
                     block: block_id,
                     actor: *actor,
-                    channel: *channel,
                     next: *next,
                 },
                 DropPlan::default(),
@@ -5738,6 +6194,8 @@ mod slice3_invariants {
                 HashMap::new(),
                 &hew_hir::TypeClassTable::default(),
                 &HashMap::new(),
+                &HashMap::new(),
+                None,
                 &HashSet::new(),
                 &HashMap::new(),
                 crate::model::FunctionCallConv::ActorHandler,

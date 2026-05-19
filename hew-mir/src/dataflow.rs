@@ -330,7 +330,8 @@ fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         | Instr::FloatLit { dest, .. }
         | Instr::CharLit { dest, .. }
         | Instr::UnitLit { dest }
-        | Instr::DurationLit { dest, .. } => (vec![], vec![*dest]),
+        | Instr::DurationLit { dest, .. }
+        | Instr::ActorStateFieldLoad { dest, .. } => (vec![], vec![*dest]),
         Instr::IntAdd { dest, lhs, rhs }
         | Instr::IntSub { dest, lhs, rhs }
         | Instr::IntMul { dest, lhs, rhs }
@@ -380,7 +381,12 @@ fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             (reads, vec![*dest])
         }
         Instr::RecordFieldLoad { record, dest, .. } => (vec![*record], vec![*dest]),
+        Instr::ActorStateFieldStore { src, .. } => (vec![*src], vec![]),
         Instr::TupleFieldLoad { tuple, dest, .. } => (vec![*tuple], vec![*dest]),
+        Instr::SpawnActor { state, dest, .. } => {
+            let reads = state.iter().copied().collect();
+            (reads, vec![*dest])
+        }
         Instr::CoerceToDynTrait { value, dest, .. } => (vec![*value], vec![*dest]),
         Instr::CallTraitMethod {
             fat_pointer,

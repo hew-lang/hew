@@ -38,10 +38,46 @@ type ClosureCaptureCandidate = (BindingId, String, std::ops::Range<usize>);
 #[derive(Debug, Clone, Default)]
 pub struct ResolutionCtx;
 
+/// Output of [`lower_program`].
+///
+/// The `diagnostics` field is checked by all production pipelines before the
+/// `module` is passed downstream.  The [`LowerOutput::into_result`] method
+/// provides a fail-closed boundary: it returns `Err(diagnostics)` when any
+/// `CheckerBoundaryViolation` is present, making it impossible to silently
+/// continue past checker-boundary failures.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LowerOutput {
     pub module: HirModule,
     pub diagnostics: Vec<HirDiagnostic>,
+}
+
+impl LowerOutput {
+    /// Converts `self` into `Ok(module)` when no checker-boundary violations
+    /// are present, or `Err(diagnostics)` when at least one
+    /// [`HirDiagnosticKind::CheckerBoundaryViolation`] exists.
+    ///
+    /// Callers that want to continue despite non-fatal diagnostics should
+    /// check `.diagnostics` directly.  This method is the recommended
+    /// entry-point for production pipelines because it makes the fail-closed
+    /// contract impossible to accidentally bypass.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(diagnostics)` when the output contains at least one
+    /// [`HirDiagnosticKind::CheckerBoundaryViolation`] diagnostic.
+    pub fn into_result(self) -> Result<HirModule, Vec<HirDiagnostic>> {
+        let has_boundary_violation = self.diagnostics.iter().any(|d| {
+            matches!(
+                d.kind,
+                crate::HirDiagnosticKind::CheckerBoundaryViolation { .. }
+            )
+        });
+        if has_boundary_violation {
+            Err(self.diagnostics)
+        } else {
+            Ok(self.module)
+        }
+    }
 }
 
 /// Pre-collected signature of a top-level function item.
@@ -5413,6 +5449,32 @@ mod tests {
             )),
             "missing closure_capture_facts entry must emit root-cause boundary diagnostic; got {:#?}",
             lowered.diagnostics
+        );
+    }
+
+    /// When `closure_capture_facts` are missing, `into_result()` must return
+    /// `Err` — not `Ok` with empty captures.  This pins the fail-closed
+    /// contract at the public API boundary.
+    #[test]
+    fn missing_closure_capture_facts_into_result_is_err() {
+        let (program, mut tco, _) = parse_typecheck_and_lower(
+            r"
+            fn main() {
+                let k: i32 = 2;
+                let f = |n: i32| n + k;
+            }
+            ",
+        );
+        assert!(
+            !tco.closure_capture_facts.is_empty(),
+            "test setup requires checker-produced closure capture facts"
+        );
+        tco.closure_capture_facts.clear();
+
+        let lowered = lower_program(&program, &tco, &ResolutionCtx);
+        assert!(
+            lowered.into_result().is_err(),
+            "into_result() must return Err when closure capture facts are missing"
         );
     }
 

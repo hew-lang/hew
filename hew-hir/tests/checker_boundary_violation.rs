@@ -13,11 +13,12 @@
 //! This test pins that fail-closed contract.  It constructs a
 //! `TypeCheckOutput` whose `expr_types` entry at the call-expression span
 //! holds a poisoned `Ty::Var(TypeVar(0))` — an unresolved inference variable —
-//! and verifies the diagnostic fires.
+//! and verifies the diagnostic fires AND that `into_result()` returns `Err`.
 //!
 //! LESSONS: checker-output-boundary (P0) — the boundary conversion is
 //! fail-closed; a poisoned side-table must never silently resolve to `Unit`.
-//! This test (line 60) pins the path through `lower.rs:1027-1045`.
+//! This test pins the path through `lower.rs:1027-1045` and the
+//! `LowerOutput::into_result` boundary at the public API.
 
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx};
 use hew_parser::ast::{Expr, Item, Stmt};
@@ -91,5 +92,13 @@ fn poisoned_expr_types_emits_checker_boundary_violation() {
     assert!(
         reason.to_lowercase().contains("inference") || reason.to_lowercase().contains("unresolved"),
         "reason must mention inference or unresolved; got: {reason:?}"
+    );
+
+    // into_result() must return Err: a CheckerBoundaryViolation must not be
+    // silently swallowed at the public boundary.
+    let lower_output2 = lower_program(&parsed.program, &tc, &ResolutionCtx);
+    assert!(
+        lower_output2.into_result().is_err(),
+        "into_result() must return Err when CheckerBoundaryViolation is present"
     );
 }

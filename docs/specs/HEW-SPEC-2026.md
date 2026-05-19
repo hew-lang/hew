@@ -1851,9 +1851,21 @@ help: or annotate the lambda parameters directly
 
 ### 3.9 Foreign Function Interface (FFI)
 
+> **In-planning — deferred to v0.6+.** The full FFI surface described in this
+> section (`extern "C"` blocks, `#[repr(C)]`, `#[export]`, C-string helpers,
+> and safe-wrapper patterns) is not lowered in v0.5. The v0.5 compiler lowers
+> only the fixed `hew_*` runtime allowlist (§8.4); any other foreign-call
+> declaration reaches a cutover diagnostic during HIR lowering. This section
+> documents the intended v0.6+ design so implementers and embedders can plan
+> for it. No v0.5 code should rely on the constructs below.
+
 Hew provides FFI capabilities for interoperating with C libraries and system calls.
 
 #### 3.9.1 Extern Function Declaration
+
+> **v0.6+.** `extern "C"` blocks with arbitrary foreign symbols are not lowered
+> in v0.5. Declarations of foreign functions other than the runtime's own
+> `hew_*` symbols produce a cutover diagnostic.
 
 External C functions are declared in `extern` blocks:
 
@@ -1875,6 +1887,10 @@ extern "C" {
 - Future: `extern "stdcall"`, `extern "fastcall"` for platform-specific conventions
 
 #### 3.9.2 C-Compatible Struct Layout
+
+> **v0.6+.** `#[repr(C)]` is not recognised by the v0.5 HIR lowering pass.
+> Annotating a type with `#[repr(C)]` produces a cutover diagnostic; layout
+> is controlled by the compiler for all v0.5 types.
 
 Use `#[repr(C)]` to ensure C-compatible memory layout:
 
@@ -1902,6 +1918,11 @@ type FileInfo {
 
 #### 3.9.3 Type Mapping: Hew ↔ C
 
+> **v0.6+.** This mapping becomes relevant when `extern "C"` blocks and
+> `#[repr(C)]` land. In v0.5, raw pointer types (`*T`, `*var T`) are only
+> usable within the runtime allowlist; the cross-language mapping below is
+> informational for v0.6+ planning.
+
 | Hew Type                  | C Type                      | Notes                      |
 | ------------------------- | --------------------------- | -------------------------- |
 | `i8`, `i16`, `i32`, `i64` | `int8_t`, `int16_t`, etc.   | Exact size match           |
@@ -1916,6 +1937,10 @@ type FileInfo {
 | `fn(...) -> T`            | Function pointer            | C function pointer         |
 
 #### 3.9.4 Exporting Functions to C
+
+> **v0.6+.** `#[export]` is not recognised by the v0.5 compiler. Annotating
+> a function with `#[export]` produces a cutover diagnostic. Hew functions
+> are not linkable from C in v0.5.
 
 Use `#[export]` to make Hew functions callable from C:
 
@@ -1932,6 +1957,11 @@ extern "C" fn my_callback(value: i32) -> i32 {
 ```
 
 #### 3.9.5 Safety Rules
+
+> **v0.6+.** The `unsafe` block, C string helper (`to_c_string`), safe-wrapper
+> pattern, and `Drop` integration shown below are the intended v0.6+ surface.
+> In v0.5, `unsafe {}` blocks are parsed but produce a cutover diagnostic
+> during HIR lowering; there is no user-accessible unsafe escape hatch.
 
 **All FFI calls are `unsafe`:**
 

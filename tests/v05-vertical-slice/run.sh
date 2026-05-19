@@ -110,7 +110,7 @@ if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unresolved_symbol.h
   echo "expected unresolved symbol fixture to fail" >&2
   exit 1
 fi
-grep -q 'UndefinedVariable' "${reject_output}"
+grep -q 'undefined variable' "${reject_output}"
 
 if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/use_after_consume.hew" >"${reject_output}" 2>&1; then
   echo "expected use-after-consume fixture to fail" >&2

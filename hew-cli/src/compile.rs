@@ -86,7 +86,7 @@ pub struct CompileOptions {
     pub project_dir: Option<PathBuf>,
 }
 
-fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOptions {
+pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOptions {
     FrontendOptions {
         no_typecheck: options.no_typecheck,
         warnings_as_errors: options.werror,

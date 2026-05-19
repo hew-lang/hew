@@ -138,39 +138,37 @@ fn resolve_compile_emit_target(requested: Option<&str>) -> CompileEmitTarget {
     }
 }
 
-fn lower_file_to_mir(input_path: &Path) -> Result<hew_mir::IrPipeline, ()> {
+fn lower_file_to_mir(
+    input_path: &Path,
+    requested_target: Option<&str>,
+) -> Result<hew_mir::IrPipeline, ()> {
     let input = input_path.display().to_string();
-    let source = std::fs::read_to_string(input_path).map_err(|e| {
-        eprintln!("Error: cannot read {input}: {e}");
+    let target = target::TargetSpec::from_requested(requested_target).map_err(|e| {
+        eprintln!("Error: {e}");
+    })?;
+    let fopts = compile::frontend_options(&target, &compile::CompileOptions::default());
+
+    let state = hew_compile::run_file_frontend_to_typecheck(&input, &fopts).map_err(|failure| {
+        compile::render_frontend_diagnostics(&failure.diagnostics);
+        if failure.diagnostics.is_empty() {
+            eprintln!("Error: {}", failure.message);
+        }
     })?;
 
-    let parsed = hew_parser::parse(&source);
-    if !parsed.errors.is_empty() {
-        for error in parsed.errors {
-            eprintln!("{error:?}");
-        }
-        return Err(());
-    }
+    compile::render_frontend_diagnostics(&state.diagnostics);
 
-    // Type-check the program and collect the side-table before HIR lowering.
-    // `method_call_rewrites` and other checker-produced metadata flow into the
-    // HIR bridge via `TypeCheckOutput`; without this call the bridge is empty
-    // and every method call fails closed in `lower_program`.
-    let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
-    let mut checker = hew_types::Checker::new(registry);
-    let tc_output = checker.check_program(&parsed.program);
-    if !tc_output.errors.is_empty() {
-        for error in &tc_output.errors {
-            eprintln!("E_TYPE: {error:?}");
-        }
-        return Err(());
-    }
+    let tco = state.typecheck_result.tco.ok_or_else(|| {
+        eprintln!(
+            "error: hew compile requires a type-checked program; \
+             this path should be unreachable (no_typecheck = false)"
+        );
+    })?;
 
-    let lower_output = hew_hir::lower_program(&parsed.program, &tc_output, &hew_hir::ResolutionCtx);
-    let mut diagnostics = lower_output.diagnostics;
-    diagnostics.extend(hew_hir::verify_hir(&lower_output.module));
-    if !diagnostics.is_empty() {
-        for diagnostic in diagnostics {
+    let lower_output = hew_hir::lower_program(&state.program, &tco, &hew_hir::ResolutionCtx);
+    let mut hir_diagnostics = lower_output.diagnostics;
+    hir_diagnostics.extend(hew_hir::verify_hir(&lower_output.module));
+    if !hir_diagnostics.is_empty() {
+        for diagnostic in hir_diagnostics {
             eprintln!("{diagnostic:?}");
         }
         return Err(());
@@ -237,7 +235,7 @@ fn link_native_object(obj: &Path, bin_path: &Path) -> Result<(), ()> {
 }
 
 pub(crate) fn compile_native_binary(input: &Path, bin_path: &Path) -> Result<(), ()> {
-    let pipeline = lower_file_to_mir(input)?;
+    let pipeline = lower_file_to_mir(input, None)?;
     let emit_dir = bin_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = bin_path
         .file_stem()
@@ -251,7 +249,7 @@ pub(crate) fn compile_native_binary(input: &Path, bin_path: &Path) -> Result<(),
 }
 
 fn cmd_compile(a: &args::CompileArgs) {
-    let pipeline = lower_file_to_mir(&a.input).unwrap_or_else(|()| {
+    let pipeline = lower_file_to_mir(&a.input, a.target.as_deref()).unwrap_or_else(|()| {
         std::process::exit(1);
     });
 

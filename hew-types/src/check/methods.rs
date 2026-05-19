@@ -613,6 +613,30 @@ impl Checker {
         }
     }
 
+    /// Record a direct-call rewrite for a `module.fn(args)` invocation
+    /// against a user-defined module.
+    ///
+    /// Mirrors `record_module_qualified_stdlib_call_rewrite_if_any` but for
+    /// user modules: the qualified `module.fn` key is the rewrite target, no
+    /// receiver is injected (per LESSONS `module-qualified-rewrite-authority`
+    /// — argument list preserved). HIR's `RewriteModuleQualifiedToFunction`
+    /// arm consumes the rewrite to emit a direct function call against the
+    /// qualified symbol.
+    fn record_module_qualified_user_call_rewrite_if_any(
+        &mut self,
+        module_name: &str,
+        method: &str,
+        span: &Span,
+    ) {
+        if !self.user_modules.contains(module_name) {
+            return;
+        }
+        let key = format!("{module_name}.{method}");
+        if self.fn_sigs.contains_key(&key) {
+            self.record_module_qualified_method_call_rewrite(span, key);
+        }
+    }
+
     fn reject_if_wasm_native_only_network_module_call(&mut self, module_name: &str, span: &Span) {
         if self.user_modules.contains(module_name) {
             return;
@@ -2197,6 +2221,7 @@ impl Checker {
                             .insert(key.clone());
                     }
                     self.record_module_qualified_stdlib_call_rewrite_if_any(name, method, span);
+                    self.record_module_qualified_user_call_rewrite_if_any(name, method, span);
                     let applied_sig = self.apply_instantiated_call_signature(
                         &sig,
                         None,

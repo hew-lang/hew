@@ -276,6 +276,15 @@ pub fn lower_program_with_mono_cap(
                     ctx.lower_supervisor(decl, span.clone()),
                 ));
             }
+            Item::Import(_) => {
+                // Imports are frontend-resolved: `flatten_import_items`
+                // materialises the imported items into `program.items`
+                // before HIR ingest, so the residual `Item::Import` stub is
+                // a no-op here.  Removing the stub from `program.items` at
+                // the frontend would require auditing every diagnostic
+                // source-map consumer (see `multifile-compile-lowering` plan
+                // §12); slice 1 keeps the stub and ignores it here.
+            }
             _ => ctx.unsupported(span.clone(), "top-level-item", "slice-2"),
         }
     }
@@ -4269,12 +4278,60 @@ impl LowerCtx {
                     ResolvedTy::Unit,
                 )
             }
-            Some(
-                MethodCallRewrite::RewriteModuleQualifiedToFunction { .. }
-                | MethodCallRewrite::DeferToLowering,
-            ) => {
-                // These rewrite variants target the C++/MLIR pipeline and are
-                // not consumed by the Rust MIR pipeline.  Fail-closed.
+            Some(MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol }) => {
+                // Module-qualified direct call: the receiver expression is the
+                // module identifier, not a value.  Lower the args only — do
+                // NOT prepend the receiver (LESSONS
+                // `module-qualified-rewrite-authority`).
+                //
+                // The `c_symbol` is the qualified key chosen by the checker
+                // (stdlib path: a `hew_*` runtime C symbol; user-module path:
+                // `module.fn`).  Look it up in `fn_registry` so the callee
+                // `BindingRef` carries a resolved `ResolvedRef::Item`; missing
+                // entries fail closed via the verifier's `UnresolvedSymbol`
+                // diagnostic (slice 2 populates `fn_registry` with qualified
+                // user-module keys from `program.module_graph`).
+                let lowered_args: Vec<HirExpr> = args
+                    .iter()
+                    .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                    .collect();
+                let ret_ty = self
+                    .expr_types
+                    .get(&key)
+                    .cloned()
+                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
+                    .unwrap_or(ResolvedTy::Unit);
+                let resolved_ref = self
+                    .fn_registry
+                    .get(&c_symbol)
+                    .map_or(ResolvedRef::Unresolved, |entry| ResolvedRef::Item(entry.id));
+                let callee_ty = ResolvedTy::Function {
+                    params: Vec::new(),
+                    ret: Box::new(ret_ty.clone()),
+                };
+                let callee = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::PersistentShare,
+                    ty: callee_ty,
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::BindingRef {
+                        name: c_symbol,
+                        resolved: resolved_ref,
+                    },
+                    span: span.clone(),
+                };
+                (
+                    HirExprKind::Call {
+                        callee: Box::new(callee),
+                        args: lowered_args,
+                    },
+                    ret_ty,
+                )
+            }
+            Some(MethodCallRewrite::DeferToLowering) => {
+                // `DeferToLowering` targets the C++/MLIR pipeline and is not
+                // consumed by the Rust MIR pipeline.  Fail-closed.
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CutoverUnsupported {
                         construct: format!("method-call rewrite variant for `.{method}`"),

@@ -4333,6 +4333,11 @@ When the grammar files and this specification disagree, the parser implementatio
 
 ### 12.1 Built-in Numeric Types
 
+> **v0.5 policy:** Primitive integer annotations must use explicit width (`i8`–`i64`, `u8`–`u64`) or
+> platform width (`isize`/`usize`). The `int` and `uint` aliases are removed in v0.5; the compiler
+> will reject them once alias removal lands. Integer literals continue to default to `i64`; literal
+> defaulting is not a user-nameable alias and does not affect wire shape or ABI.
+
 | Type                      | Size          | Description             |
 | ------------------------- | ------------- | ----------------------- |
 | `i8`, `i16`, `i32`, `i64` | 1/2/4/8 bytes | Signed integers (fixed-width) |

@@ -752,6 +752,7 @@ internal = [
   "hew_actor_state_lock_poison_after_panic",
   "hew_actor_state_lock_release",
   "hew_actor_state_lock_release_after_panic",
+  "hew_require_execution_context",
   "hew_actor_register_type",
   "hew_actor_send_aliased",
   "hew_deterministic_get_seed",

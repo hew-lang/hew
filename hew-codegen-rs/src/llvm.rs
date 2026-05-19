@@ -692,20 +692,28 @@ fn intern_runtime_decl<'ctx>(
         // for slot `key`, or a tagged Transient/Dead result when the slot is
         // unavailable (mid-restart, circuit-open, budget-exhausted, or the
         // supervisor is shut down). The 16-byte `ChildLookupResult` C-ABI struct
-        // is `#[repr(C)] { tag: u8, reason: u8, _pad: [u8; 6], handle: *mut
-        // HewActor }`. The LLVM struct type `{ i8, i8, [6 x i8], ptr }` matches
-        // this layout field-for-field. `key` is `u32` (i32 in LLVM) — the slot
-        // index is a compile-time constant fitting in 32 bits.
+        // On aarch64 (SysV/AAPCS), structs ≤ 16 bytes are returned in x0:x1
+        // as a `[2 x i64]` aggregate — NOT via an x8 sret pointer.  The Rust
+        // runtime emits `define [2 x i64] @hew_supervisor_child_get(...)`.
+        // Declaring the return type as `{ i8, i8, [6 x i8], ptr }` causes LLVM
+        // to choose the indirect-return (sret) path, so the caller reads the tag
+        // byte from a stale x8 stack slot → spurious non-zero tag → trap 206.
+        //
+        // Fix: declare the return type as `{ i64, i64 }`.  Field 0 is the
+        // packed `(tag: u8, reason: u8, _pad: [u8; 6])` word (tag lives in the
+        // low byte); field 1 is the handle integer.  The extractvalue block
+        // below truncates field 0 to i8 for the tag check.
+        //
+        // `key` is `u32` (i32 in LLVM) — the slot index fits in 32 bits.
+        //
+        // NOTE: `hew_supervisor_nested_get` (hew-runtime/src/supervisor.rs)
+        // also returns `ChildLookupResult` by value and will need the same
+        // `{ i64, i64 }` ABI declaration when wired into codegen.
         //
         // WASM: supervisor child access requires the native scheduler; see
         // `uses_wasm_excluded_symbol` which gates this symbol at WASM emit time.
         "hew_supervisor_child_get" => {
-            let i8_ty = ctx.i8_type();
-            let pad_ty = i8_ty.array_type(6);
-            let result_ty = ctx.struct_type(
-                &[i8_ty.into(), i8_ty.into(), pad_ty.into(), ptr_ty.into()],
-                false,
-            );
+            let result_ty = ctx.struct_type(&[i64_ty.into(), i64_ty.into()], false);
             result_ty.fn_type(&[ptr_ty.into(), i32_ty.into()], false)
         }
         // hew_task_new() -> *mut HewTask
@@ -1556,6 +1564,20 @@ fn emit_supervisor_bootstrap_body<'ctx>(
     };
 
     let mut runtime_decls = RuntimeDeclMap::new();
+
+    // ── hew_sched_init() ────────────────────────────────────────────────────
+    // The plain-actor spawn path calls hew_sched_init before hew_actor_spawn
+    // (llvm.rs `emit_spawn_actor`).  The supervisor bootstrap must do the same
+    // before hew_supervisor_new, or the runtime panics "scheduler not
+    // initialized" (exit 134).
+    let sched_init = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_sched_init")?;
+    builder
+        .build_call(sched_init, &[], "hew_sched_init_call")
+        .map_err(|e| {
+            CodegenError::Llvm(format!(
+                "hew_sched_init call in supervisor bootstrap: {e:?}"
+            ))
+        })?;
 
     // ── %sup = call hew_supervisor_new(strategy, max_restarts, window_secs)
     let sup_new = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_supervisor_new")?;
@@ -4535,30 +4557,30 @@ fn lower_call_runtime_abi(
                 })?
                 .into_struct_value();
 
-            // Wire struct layout (for reference): { i8 tag, i8 reason, [6 x i8] pad, ptr handle }.
-            // Field indices: tag=0, reason=1, pad=2, handle=3.
-
-            // field 0: i8 tag — zext to i64 → store into dest alloca field 0.
+            // Return type is `{ i64, i64 }` (aarch64 reg-return ABI).
+            // Field 0: packed word — tag lives in the low byte; truncate to i8,
+            //          then zext to i64 for the dest alloca's i64-typed slot.
+            // Field 1: handle integer — already i64; use directly.
+            let word0_i64 = fn_ctx
+                .builder
+                .build_extract_value(struct_val, 0, "child_word0_i64")
+                .map_err(|e| CodegenError::Llvm(format!("extractvalue word0: {e:?}")))?
+                .into_int_value();
             let tag_i8 = fn_ctx
                 .builder
-                .build_extract_value(struct_val, 0, "child_tag_i8")
-                .map_err(|e| CodegenError::Llvm(format!("extractvalue tag: {e:?}")))?
-                .into_int_value();
+                .build_int_truncate(word0_i64, fn_ctx.ctx.i8_type(), "child_tag_i8")
+                .map_err(|e| CodegenError::Llvm(format!("trunc tag: {e:?}")))?;
             let tag_i64 = fn_ctx
                 .builder
                 .build_int_z_extend(tag_i8, i64_ty, "child_tag_i64")
                 .map_err(|e| CodegenError::Llvm(format!("zext tag: {e:?}")))?;
 
-            // field 3: ptr handle — ptrtoint i64 → store into dest alloca field 1.
-            let handle_ptr = fn_ctx
-                .builder
-                .build_extract_value(struct_val, 3, "child_handle_ptr")
-                .map_err(|e| CodegenError::Llvm(format!("extractvalue handle: {e:?}")))?
-                .into_pointer_value();
+            // field 1: handle integer — already i64.
             let handle_i64 = fn_ctx
                 .builder
-                .build_ptr_to_int(handle_ptr, i64_ty, "child_handle_i64")
-                .map_err(|e| CodegenError::Llvm(format!("ptrtoint handle: {e:?}")))?;
+                .build_extract_value(struct_val, 1, "child_handle_i64")
+                .map_err(|e| CodegenError::Llvm(format!("extractvalue handle: {e:?}")))?
+                .into_int_value();
 
             // The dest alloca has struct type { i64, i64 } (the MIR 2-field
             // flattening of ChildLookupResult registered in lower.rs:412).

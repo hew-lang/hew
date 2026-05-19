@@ -5,7 +5,7 @@
 //! asserts on the emitted textual LLVM IR that:
 //!
 //! - `@hew_supervisor_child_get` is declared with the correct ABI:
-//!   `{ i8, i8, [6 x i8], ptr } (ptr, i32)`.
+//!   `{ i64, i64 } (ptr, i32)` — the aarch64 reg-return shape.
 //! - A call to `@hew_supervisor_child_get` is present in the emitted
 //!   `get_worker` function body.
 //! - The WASM classification guard (`uses_wasm_excluded_symbol`) correctly
@@ -86,12 +86,14 @@ fn emit_child_access_ir(slug: &str) -> String {
 }
 
 /// The emitted IR must declare `@hew_supervisor_child_get` with the correct
-/// LLVM type: returns `{ i8, i8, [6 x i8], ptr }`, takes `(ptr, i32)`.
+/// LLVM type: returns `{ i64, i64 }`, takes `(ptr, i32)`.
 ///
 /// ABI cross-check:
 ///   Runtime:  `hew_supervisor_child_get(sup: *mut HewSupervisor, key: u32) -> ChildLookupResult`
-///   where `ChildLookupResult = #[repr(C)] { tag: u8, reason: u8, _pad: [u8; 6], handle: *mut HewActor }`
-///   LLVM:     `{ i8, i8, [6 x i8], ptr } (ptr, i32)`
+///   Rust emits: `define [2 x i64] @hew_supervisor_child_get(...)` (aarch64 SysV/AAPCS
+///   reg-return: structs ≤ 16 bytes returned in x0:x1, not via sret pointer).
+///   LLVM decl:  `{ i64, i64 } (ptr, i32)` — matches the reg-return aggregate shape.
+///   Field 0: packed word (tag in low byte); field 1: handle integer.
 #[test]
 fn supervisor_child_get_declares_correct_abi() {
     let ir = emit_child_access_ir("declares-abi");
@@ -100,12 +102,12 @@ fn supervisor_child_get_declares_correct_abi() {
         ir.contains("@hew_supervisor_child_get"),
         "expected @hew_supervisor_child_get declaration in emitted IR;\ngot:\n{ir}"
     );
-    // The return type must be the 4-field C-ABI struct.
+    // The return type must be the { i64, i64 } reg-return aggregate.
     // LLVM textual IR writes the type inline in the declaration:
-    //   declare { i8, i8, [6 x i8], ptr } @hew_supervisor_child_get(ptr, i32)
+    //   declare { i64, i64 } @hew_supervisor_child_get(ptr, i32)
     assert!(
-        ir.contains("{ i8, i8, [6 x i8], ptr } @hew_supervisor_child_get"),
-        "expected return type `{{ i8, i8, [6 x i8], ptr }}` in hew_supervisor_child_get declaration;\ngot:\n{ir}"
+        ir.contains("{ i64, i64 } @hew_supervisor_child_get"),
+        "expected return type `{{ i64, i64 }}` in hew_supervisor_child_get declaration;\ngot:\n{ir}"
     );
 }
 

@@ -111,6 +111,11 @@ run_accept_expect_status "actor_ask_race" 42
 # main returns 42 after bootstrap completes successfully.
 run_accept_expect_status "supervisor_basic" 42
 
+# Supervisor child-accessor round-trip: spawn App → hew_supervisor_child_get
+# returns a Live handle (tag=0) → ask child worker → echo 42 back as exit code.
+# Exercises the { i64, i64 } ABI fix for hew_supervisor_child_get.
+run_accept_expect_status "supervised_ingest_race" 42
+
 # on(crash) handler attachment: Crasher actor declares #[on(crash)]; codegen emits
 # a non-null on_crash fn-pointer in HewChildSpec; supervisor boots and main returns 42.
 # The crash path is not triggered at runtime — handler-fire observability is covered

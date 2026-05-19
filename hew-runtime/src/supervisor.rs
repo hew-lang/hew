@@ -355,6 +355,13 @@ pub const HEW_TRAP_SHIFT_OUT_OF_RANGE: i32 = 204;
 /// Error code recorded for `Terminator::Trap { kind: IndexOutOfBounds }`.
 pub const HEW_TRAP_INDEX_OUT_OF_BOUNDS: i32 = 205;
 
+/// Error code recorded when codegen checks the i32 return value of
+/// `hew_actor_send_by_id` and finds it nonzero — the recipient was gone, the
+/// queue was full, or the actor ID routed to a remote partition that rejected
+/// the message. Codegen routes through `hew_trap_with_code(206)` before
+/// `llvm.trap` so the supervisor can distinguish this case from a raw signal.
+pub const HEW_TRAP_ACTOR_SEND_FAILED: i32 = 206;
+
 /// Named exit reason for a crashed actor.
 ///
 /// Interprets the i32 `error_code` stored on a `HewActor` after a crash.
@@ -388,6 +395,11 @@ pub enum ExitReason {
     /// Actor crashed on an out-of-bounds index into a `Vec<T>` or array
     /// (error code 205).
     IndexOutOfBounds,
+    /// Actor crashed because `hew_actor_send_by_id` returned a nonzero status
+    /// (error code 206). The recipient was gone, the mailbox was full, or the
+    /// remote partition rejected the message. Codegen's fail-closed path
+    /// triggers `hew_trap_with_code(206)` rather than silently proceeding.
+    ActorSendFailed,
     /// Actor crashed with a hardware signal (SIGSEGV, SIGBUS, SIGFPE, SIGILL)
     /// or via `hew_panic()` / `hew_panic_msg()`. The raw signal number is
     /// preserved.
@@ -409,6 +421,7 @@ impl ExitReason {
             HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE => ExitReason::SignedMinDivNegOne,
             HEW_TRAP_SHIFT_OUT_OF_RANGE => ExitReason::ShiftOutOfRange,
             HEW_TRAP_INDEX_OUT_OF_BOUNDS => ExitReason::IndexOutOfBounds,
+            HEW_TRAP_ACTOR_SEND_FAILED => ExitReason::ActorSendFailed,
             sig => ExitReason::Signal(sig),
         }
     }

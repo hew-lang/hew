@@ -4680,7 +4680,12 @@ fn lower_terminator<'ctx>(
                 "hew_actor_send_by_id",
             )?;
             let msg_type = fn_ctx.ctx.i32_type().const_int(*msg_type as u64, false);
-            fn_ctx
+            // Bind the i32 return value. A nonzero status means the recipient
+            // was gone, the mailbox was full, or the remote partition rejected
+            // the message. We must not silently proceed — that could leave the
+            // caller operating on stale state or attempting a follow-up ask
+            // on a dead actor.
+            let send_status = fn_ctx
                 .builder
                 .build_call(
                     send,
@@ -4692,15 +4697,88 @@ fn lower_terminator<'ctx>(
                     ],
                     "hew_actor_send_by_id_call",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_actor_send_by_id call: {e:?}")))?;
+                .map_err(|e| CodegenError::Llvm(format!("hew_actor_send_by_id call: {e:?}")))?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_actor_send_by_id returned void".into())
+                })?
+                .into_int_value();
+
+            // Branch: status == 0 → next_bb; status != 0 → send_fail_bb.
+            let send_fail_bb = fn_ctx
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .map(|f| fn_ctx.ctx.append_basic_block(f, "actor_send_fail"))
+                .ok_or_else(|| CodegenError::Llvm("send block has no parent function".into()))?;
+            let zero = fn_ctx.ctx.i32_type().const_zero();
+            let send_failed = fn_ctx
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    send_status,
+                    zero,
+                    "actor_send_failed",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("send status cmp: {e:?}")))?;
+
             let next_bb = *fn_ctx
                 .blocks
                 .get(next)
                 .ok_or_else(|| CodegenError::FailClosed(format!("Send next bb{next} missing")))?;
             fn_ctx
                 .builder
-                .build_unconditional_branch(next_bb)
-                .map_err(|e| CodegenError::Llvm(format!("send br: {e:?}")))?;
+                .build_conditional_branch(send_failed, send_fail_bb, next_bb)
+                .map_err(|e| CodegenError::Llvm(format!("send status branch: {e:?}")))?;
+
+            // Emit the fail-closed trap block. Routes through
+            // `hew_trap_with_code(206)` so the supervisor sees
+            // `ExitReason::ActorSendFailed` rather than a raw signal.
+            // `llvm.trap` + `unreachable` follow as the non-actor fallback
+            // (same pattern as `Terminator::Trap` lowering above).
+            fn_ctx.builder.position_at_end(send_fail_bb);
+            const HEW_TRAP_ACTOR_SEND_FAILED: u64 = 206;
+            let trap_with_code_fn = match fn_ctx.llvm_mod.get_function("hew_trap_with_code") {
+                Some(fv) => fv,
+                None => {
+                    let i32_ty = fn_ctx.ctx.i32_type();
+                    let fn_ty = fn_ctx.ctx.void_type().fn_type(&[i32_ty.into()], false);
+                    fn_ctx.llvm_mod.add_function(
+                        "hew_trap_with_code",
+                        fn_ty,
+                        Some(Linkage::External),
+                    )
+                }
+            };
+            let fail_code = fn_ctx
+                .ctx
+                .i32_type()
+                .const_int(HEW_TRAP_ACTOR_SEND_FAILED, false);
+            fn_ctx
+                .builder
+                .build_call(
+                    trap_with_code_fn,
+                    &[fail_code.into()],
+                    "actor_send_fail_trap_with_code",
+                )
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("actor send fail hew_trap_with_code: {e:?}"))
+                })?;
+            let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
+                CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into())
+            })?;
+            let trap_fn = trap_intrinsic
+                .get_declaration(fn_ctx.llvm_mod, &[])
+                .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+            fn_ctx
+                .builder
+                .build_call(trap_fn, &[], "actor_send_fail_trap")
+                .map_err(|e| CodegenError::Llvm(format!("actor send fail llvm.trap: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::Llvm(format!("actor send fail unreachable: {e:?}")))?;
         }
         Terminator::Ask {
             actor,

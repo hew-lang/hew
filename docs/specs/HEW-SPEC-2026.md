@@ -819,6 +819,13 @@ Predicate functions (`fs.exists`, `path.exists`, `regex.is_match`, `os.has_env`,
 - `pub(super)` - public to parent module only
 - (no modifier) - private to this module
 
+> **v0.5 implementation note:** `pub(package)` and `pub(super)` are parsed and
+> accepted by the compiler but are currently treated as fully public — they
+> behave identically to bare `pub` at runtime.  Enforcement of the restricted
+> forms is planned for v0.6.  Code written with restricted visibility today will
+> keep compiling after the restriction is applied, because callers within the
+> allowed scope are unaffected.
+
 #### 3.5.1 Directory-form modules (peer-file composition)
 
 A module may span multiple files inside a dedicated directory. When the
@@ -906,6 +913,11 @@ list and uses the first matching module root. The search order is:
 
 `HEWPATH` and `HEW_STD` are the supported user overrides. `hew.toml` does not
 configure module search paths.
+
+> **v0.5 scope note:** `HEWPATH` affects stdlib module resolution today.
+> User-module file-import paths use `HEW_STD` and `.adze/packages` instead;
+> they are not governed by `HEWPATH`.  Unification of `HEWPATH` across both
+> stdlib and user-module file imports is a v0.6 lane.
 
 For stdlib discovery, the recommended workflow is to generate docs for the
 stdlib tree itself:

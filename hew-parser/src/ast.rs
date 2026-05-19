@@ -680,6 +680,14 @@ pub enum Visibility {
 
 impl Visibility {
     /// Returns `true` when the item has any public visibility (`pub`, `pub(package)`, or `pub(super)`).
+    ///
+    /// **v0.5 note:** `pub(package)` and `pub(super)` are parsed but treated as
+    /// fully public — they resolve to the same visibility as bare `pub` at this
+    /// call site and everywhere the compiler inspects item visibility.  Stricter
+    /// enforcement of the restricted forms is forward-compatible: code that
+    /// compiles today will keep compiling when the restriction is applied, because
+    /// callers that are already within the allowed scope won't be affected.
+    /// Planned for v0.6.
     #[must_use]
     pub fn is_pub(self) -> bool {
         self != Self::Private

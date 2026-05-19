@@ -514,6 +514,21 @@ pub enum TypeErrorKind {
         /// The 32-bit `msg_id` both handlers hashed to.
         msg_id: u32,
     },
+    /// An `extern "rt"` function declaration names a symbol that is not in
+    /// the `stable` section of `scripts/jit-symbol-classification.toml`.
+    ///
+    /// `extern "rt"` is the user-facing surface for JIT-runtime functions that
+    /// the Hew compiler validates at check time. Only symbols in the `stable`
+    /// classification are legal `extern "rt"` targets; `internal` symbols are
+    /// scheduler/lifecycle-only and must not be named in user code.
+    ///
+    /// Envelope code: `E_EXTERN_RT_SYMBOL_UNCLASSIFIED`.
+    ExternRtSymbolUnclassified {
+        /// The symbol name from the `extern "rt"` declaration.
+        symbol_name: String,
+        /// Actionable hint for the user.
+        hint: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -568,6 +583,7 @@ impl TypeErrorKind {
             Self::RecursiveClosureUnsupported { .. } => "RecursiveClosureUnsupported",
             Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",
             Self::ActorProtocolCollision { .. } => "ActorProtocolCollision",
+            Self::ExternRtSymbolUnclassified { .. } => "ExternRtSymbolUnclassified",
         }
     }
 }

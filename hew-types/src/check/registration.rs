@@ -77,6 +77,49 @@ pub enum CrashAction {
 }
 ";
 
+/// Raw TOML text of `scripts/jit-symbol-classification.toml`, embedded at
+/// compile time so `extern "rt"` validation does not require a runtime file
+/// read and works in test environments without a workspace checkout.
+const JIT_CLASSIFICATION_TOML: &str =
+    include_str!("../../../scripts/jit-symbol-classification.toml");
+
+/// Parse the `stable = [ ... ]` block from `JIT_CLASSIFICATION_TOML`.
+///
+/// Returns a `HashSet<&'static str>` so membership checks are O(1).
+/// The parsing is line-based (no full TOML dep): each quoted string inside
+/// `stable = [` ... `]` is extracted. The `internal` block is excluded.
+///
+/// WHY no dep: the block format is simple and has been stable since the file
+/// was introduced; adding a toml dep to hew-types for a single string-list
+/// parse is unjustified overhead.
+fn jit_stable_symbols() -> &'static std::collections::HashSet<&'static str> {
+    static SET: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| {
+        let mut set = std::collections::HashSet::new();
+        let mut inside = false;
+        for line in JIT_CLASSIFICATION_TOML.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("stable = [") {
+                inside = true;
+                continue;
+            }
+            if inside && trimmed == "]" {
+                break;
+            }
+            if inside {
+                if let Some(rest) = trimmed.strip_prefix('"') {
+                    if let Some(sym) = rest.split('"').next() {
+                        if !sym.is_empty() {
+                            set.insert(sym);
+                        }
+                    }
+                }
+            }
+        }
+        set
+    })
+}
+
 impl Checker {
     fn refresh_handle_bearing_structs(&mut self) {
         // Tracked for testing: callers can assert this stays O(1) after the
@@ -3257,6 +3300,57 @@ impl Checker {
     }
 
     pub(super) fn register_extern_block(&mut self, eb: &ExternBlock) {
+        // `extern "rt"` is the Hew-side declaration surface for JIT-visible
+        // runtime functions. Validate each declared symbol against the `stable`
+        // section of scripts/jit-symbol-classification.toml. Fail-closed: an
+        // unclassified symbol is a hard error so the failure surfaces at check
+        // time rather than at link time or (worse) silently routing to a wrong
+        // runtime entry.
+        //
+        // `extern "C"` remains the raw user FFI surface (unsafe, no
+        // validation). Other ABI strings are not yet defined by the language
+        // and fall through to fn_sigs registration unchanged.
+        if eb.abi == "rt" {
+            let stable = jit_stable_symbols();
+            for f in &eb.functions {
+                if !stable.contains(f.name.as_str()) {
+                    self.errors.push(TypeError {
+                        severity: crate::error::Severity::Error,
+                        kind: TypeErrorKind::ExternRtSymbolUnclassified {
+                            symbol_name: f.name.clone(),
+                            hint: format!(
+                                "add `\"{}\"` to the `stable` list in \
+                                 scripts/jit-symbol-classification.toml, \
+                                 or use `extern \"C\"` for raw FFI symbols \
+                                 that are not part of the Hew JIT runtime ABI",
+                                f.name
+                            ),
+                        },
+                        span: f.span.clone(),
+                        message: format!(
+                            "`extern \"rt\" fn {}` names a symbol not in the JIT \
+                             runtime stable ABI — only symbols classified as `stable` \
+                             in scripts/jit-symbol-classification.toml may appear in \
+                             `extern \"rt\"` blocks",
+                            f.name
+                        ),
+                        notes: vec![(
+                            f.span.clone(),
+                            "The `internal` classification covers scheduler/lifecycle \
+                             symbols that must not be named by user code."
+                                .to_string(),
+                        )],
+                        suggestions: vec![format!(
+                            "add `\"{}\"` to the `stable` list in \
+                             scripts/jit-symbol-classification.toml",
+                            f.name
+                        )],
+                        source_module: self.current_module.clone(),
+                    });
+                }
+            }
+        }
+
         for f in &eb.functions {
             let mut hole_vars = Vec::new();
             let param_names = f.params.iter().map(|p| p.name.clone()).collect();

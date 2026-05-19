@@ -17419,4 +17419,126 @@ mod assoc_types_slice2 {
             output.errors
         );
     }
+
+    // ── extern "rt" validation ─────────────────────────────────────────────────
+    //
+    // `extern "rt"` declares JIT-visible runtime functions. Every symbol must
+    // appear in the `stable` section of scripts/jit-symbol-classification.toml.
+    // Unclassified symbols produce `ExternRtSymbolUnclassified`; classified
+    // symbols are accepted. `extern "C"` is unchanged by this validation.
+
+    fn make_extern_rt_block(symbols: &[&str]) -> Item {
+        Item::ExternBlock(ExternBlock {
+            abi: "rt".to_string(),
+            functions: symbols
+                .iter()
+                .map(|name| ExternFnDecl {
+                    name: name.to_string(),
+                    params: vec![],
+                    return_type: None,
+                    is_variadic: false,
+                    span: 0..name.len(),
+                })
+                .collect(),
+        })
+    }
+
+    /// A classified `extern "rt"` symbol must not produce an error.
+    #[test]
+    fn extern_rt_classified_symbol_accepted() {
+        // hew_sleep_ms is in the stable list.
+        let extern_item = make_extern_rt_block(&["hew_sleep_ms"]);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&Program {
+            items: vec![(extern_item, 0..30)],
+            module_doc: None,
+            module_graph: None,
+        });
+        let rt_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::ExternRtSymbolUnclassified { .. }))
+            .collect();
+        assert!(
+            rt_errors.is_empty(),
+            "classified symbol hew_sleep_ms must not produce ExternRtSymbolUnclassified; \
+             got: {rt_errors:?}"
+        );
+    }
+
+    /// An unclassified `extern "rt"` symbol must produce `ExternRtSymbolUnclassified`.
+    #[test]
+    fn extern_rt_unclassified_symbol_rejected() {
+        let extern_item = make_extern_rt_block(&["fake_unclassified_symbol"]);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&Program {
+            items: vec![(extern_item, 0..40)],
+            module_doc: None,
+            module_graph: None,
+        });
+        assert!(
+            output.errors.iter().any(|e| matches!(&e.kind,
+                TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
+                if symbol_name == "fake_unclassified_symbol"
+            )),
+            "unclassified symbol must produce ExternRtSymbolUnclassified; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// `extern "C"` blocks with any symbol name must NOT be validated against
+    /// the stable list — that is raw user FFI surface.
+    #[test]
+    fn extern_c_bypasses_rt_validation() {
+        let extern_item = Item::ExternBlock(ExternBlock {
+            abi: "C".to_string(),
+            functions: vec![ExternFnDecl {
+                name: "totally_made_up_ffi_symbol".to_string(),
+                params: vec![],
+                return_type: None,
+                is_variadic: false,
+                span: 0..0,
+            }],
+        });
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&Program {
+            items: vec![(extern_item, 0..50)],
+            module_doc: None,
+            module_graph: None,
+        });
+        let rt_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::ExternRtSymbolUnclassified { .. }))
+            .collect();
+        assert!(
+            rt_errors.is_empty(),
+            "extern \"C\" must not trigger ExternRtSymbolUnclassified; got: {rt_errors:?}"
+        );
+    }
+
+    /// The hint in the diagnostic must direct the user to add the symbol to
+    /// the classification toml.
+    #[test]
+    fn extern_rt_unclassified_hint_mentions_toml() {
+        let extern_item = make_extern_rt_block(&["my_custom_symbol"]);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&Program {
+            items: vec![(extern_item, 0..30)],
+            module_doc: None,
+            module_graph: None,
+        });
+        let err = output
+            .errors
+            .iter()
+            .find(|e| matches!(e.kind, TypeErrorKind::ExternRtSymbolUnclassified { .. }))
+            .expect("expected ExternRtSymbolUnclassified error");
+        assert!(
+            err.suggestions
+                .iter()
+                .any(|s| s.contains("jit-symbol-classification.toml")),
+            "suggestion must mention jit-symbol-classification.toml; got: {:?}",
+            err.suggestions
+        );
+    }
 }

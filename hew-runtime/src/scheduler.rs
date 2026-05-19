@@ -111,46 +111,14 @@ fn run_activate_pre_reenqueue_hook(actor: *mut HewActor) {
 // [`HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED`]. Nested dispatch (worker A asks
 // worker B mid-select) restores the outer arm's reply channel via the
 // existing `prev_context` chain — no thread-local backing store survives.
-
-/// Get the reply channel for the currently-dispatched message.
-///
-/// Returns null if no reply channel is set (fire-and-forget send) or if no
-/// execution context is installed; the latter records a fail-closed
-/// diagnostic via [`crate::execution_context::require_current_context`].
-/// Called from codegen-emitted dispatch functions.
-#[no_mangle]
-pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
-    let ctx = crate::execution_context::require_current_context();
-    if ctx.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: scheduler-installed contexts remain valid for the lifetime of
-    // the dispatch; `require_current_context` returned non-null.
-    unsafe { (*ctx).reply_channel }
-}
-
-/// Mark the current dispatch's reply channel as consumed if it matches `ch`.
-///
-/// The guard mirrors the legacy TLS shape: an inner-ctx dispatch consuming
-/// its own channel cannot flip the outer ctx's consumed bit because we only
-/// flip the bit on the currently-installed ctx and only when the channels
-/// match.
-pub(crate) fn mark_current_reply_channel_consumed(ch: *mut c_void) {
-    if ch.is_null() {
-        return;
-    }
-    let ctx = crate::execution_context::current_context();
-    if ctx.is_null() {
-        return;
-    }
-    // SAFETY: scheduler-installed contexts remain valid for the lifetime of
-    // the dispatch; the current-context pointer is non-null per the guard.
-    unsafe {
-        if (*ctx).reply_channel == ch {
-            (*ctx).flags |= crate::execution_context::HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
-        }
-    }
-}
+//
+// The reader/marker pair `hew_get_reply_channel` /
+// `mark_current_reply_channel_consumed` lives in [`crate::execution_context`]
+// because it is purely ctx-backed and target-neutral (native and WASM share
+// one definition). It is re-exported here so existing call sites that import
+// from `crate::scheduler::*` keep compiling.
+pub use crate::execution_context::hew_get_reply_channel;
+pub(crate) use crate::execution_context::mark_current_reply_channel_consumed;
 
 fn current_reply_channel_consumed_on(
     ctx: *mut crate::execution_context::HewExecutionContext,

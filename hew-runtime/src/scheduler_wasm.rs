@@ -307,47 +307,19 @@ const MAX_COOPERATIVE_TICK_DEPTH: u32 = 16;
 /// Saved arena pointer during activation.
 static mut PREV_ARENA: *mut c_void = std::ptr::null_mut();
 
-/// Reply channel for the message currently being dispatched (WASM
-/// equivalent of the native thread-local `CURRENT_REPLY_CHANNEL`).
-static mut CURRENT_REPLY_CHANNEL: *mut c_void = std::ptr::null_mut();
-/// Whether the current dispatch consumed the reply channel's sender-side
-/// reference by calling `hew_reply`.
-static mut CURRENT_REPLY_CHANNEL_CONSUMED: bool = false;
-
-fn set_current_reply_channel(ch: *mut c_void) {
-    // SAFETY: Single-threaded on WASM; no concurrent access.
-    unsafe {
-        CURRENT_REPLY_CHANNEL = ch;
-        CURRENT_REPLY_CHANNEL_CONSUMED = false;
-    }
-}
-
-fn clear_current_reply_channel() -> *mut c_void {
-    // SAFETY: Single-threaded on WASM; no concurrent access.
-    unsafe {
-        let ch = CURRENT_REPLY_CHANNEL;
-        CURRENT_REPLY_CHANNEL = std::ptr::null_mut();
-        CURRENT_REPLY_CHANNEL_CONSUMED = false;
-        ch
-    }
-}
-
-pub(crate) fn mark_current_reply_channel_consumed(ch: *mut c_void) {
-    if ch.is_null() {
-        return;
-    }
-    // SAFETY: Single-threaded on WASM; no concurrent access.
-    unsafe {
-        if CURRENT_REPLY_CHANNEL == ch {
-            CURRENT_REPLY_CHANNEL_CONSUMED = true;
-        }
-    }
-}
-
-fn current_reply_channel_consumed() -> bool {
-    // SAFETY: Single-threaded on WASM; no concurrent access.
-    unsafe { CURRENT_REPLY_CHANNEL_CONSUMED }
-}
+// Reply-channel readers (`hew_get_reply_channel`) and the consume marker
+// (`mark_current_reply_channel_consumed`) live in [`crate::execution_context`]
+// and are shared by native + WASM. The per-dispatch carrier (the canonical
+// `HewExecutionContext` installed at the top of `activate_actor_wasm`) owns
+// both the channel pointer and the `HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED` flag.
+// Nested activations (worker A's ask → activate B mid-handler) get a fresh
+// `HewExecutionContext` stack frame and therefore cannot clobber the outer
+// arm's reply channel — the chain is restored automatically when the inner
+// activation pops its ctx via `set_current_context(prev_context)`.
+//
+// Re-export the target-neutral mark function so existing `crate::scheduler_wasm::*`
+// callers (e.g. `reply_channel_wasm::hew_reply`) keep compiling.
+pub(crate) use crate::execution_context::mark_current_reply_channel_consumed;
 
 // ── Metrics counters (plain u64, no atomics needed) ─────────────────────
 
@@ -547,10 +519,11 @@ unsafe fn drain_run_queue_for_shutdown() {
 /// drain and again after, so any actor that calls `sleep_ms` during the
 /// shutdown drain cannot prolong teardown.
 ///
-/// Resetting every static (including `ACTIVATING`, `PREV_ARENA`,
-/// `CURRENT_REPLY_CHANNEL`, `CURRENT_REPLY_CHANNEL_CONSUMED`, and the
+/// Resetting every static (including `ACTIVATING`, `PREV_ARENA`, and the
 /// metrics counters) ensures that a subsequent [`hew_sched_init`] starts
 /// from a genuinely clean slate even after hot-reload or test-harness reuse.
+/// Reply-channel state is no longer a scheduler static; it lives on the
+/// per-activation `HewExecutionContext` and naturally clears with the frame.
 #[cfg_attr(not(test), no_mangle)]
 pub extern "C" fn hew_sched_shutdown() {
     // Cancel all sleeping actors before draining.  This prevents
@@ -603,8 +576,6 @@ pub extern "C" fn hew_sched_shutdown() {
         ACTIVATING = false;
         COOPERATIVE_TICK_DEPTH = 0;
         PREV_ARENA = std::ptr::null_mut();
-        CURRENT_REPLY_CHANNEL = std::ptr::null_mut();
-        CURRENT_REPLY_CHANNEL_CONSUMED = false;
         // Reset metrics so a re-init cycle starts from zero.
         TASKS_SPAWNED = 0;
         TASKS_COMPLETED = 0;
@@ -938,14 +909,16 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     // Save outer activation state so that nested activations (e.g. a dispatch
     // handler calling hew_actor_ask → hew_sched_run → activate_actor_wasm) do
     // not destroy the outer actor's view of the world (Bug #2: reentrancy fix).
+    //
+    // Reply-channel state is *not* saved here: it lives on the per-activation
+    // `HewExecutionContext` constructed below. Nested activations install
+    // their own ctx and therefore cannot clobber the outer arm's reply channel
+    // — the outer ctx is automatically restored when the inner activation
+    // pops its frame via `set_current_context(prev_context)`.
     // SAFETY: Single-threaded; no data races possible.
     let saved_activating: bool = unsafe { ACTIVATING };
     // SAFETY: Single-threaded; no data races possible.
     let saved_prev_arena: *mut c_void = unsafe { PREV_ARENA };
-    // SAFETY: Single-threaded; no data races possible.
-    let saved_reply_channel: *mut c_void = unsafe { CURRENT_REPLY_CHANNEL };
-    // SAFETY: Single-threaded; no data races possible.
-    let saved_reply_channel_consumed: bool = unsafe { CURRENT_REPLY_CHANNEL_CONSUMED };
 
     // Install the canonical execution context that actor.rs self APIs and arena
     // routing read during this activation.
@@ -1020,7 +993,13 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
 
                 // SAFETY: `msg` is exclusively owned by this scheduler tick.
                 let msg_ref = unsafe { &*msg };
-                set_current_reply_channel(msg_ref.reply_channel);
+                // Install the per-message reply channel directly on the
+                // activation's canonical context. The consumed flag is reset
+                // before every dispatch so a previous handler's `hew_reply`
+                // cannot bleed forward.
+                execution_context.reply_channel = msg_ref.reply_channel;
+                execution_context.flags &=
+                    !crate::execution_context::HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
 
                 // SAFETY: `execution_context` is the scheduler-owned activation
                 // context, and lock acquisition fails closed if its seat is absent
@@ -1033,7 +1012,9 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                 if !lock_acquired {
                     a.actor_state
                         .store(HewActorState::Crashed as i32, Ordering::Release);
-                    let _ = clear_current_reply_channel();
+                    execution_context.reply_channel = std::ptr::null_mut();
+                    execution_context.flags &=
+                        !crate::execution_context::HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
                     // SAFETY: msg is exclusively owned by this scheduler tick.
                     unsafe {
                         (*msg).reply_channel = std::ptr::null_mut();
@@ -1064,7 +1045,9 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                 if release_result != crate::actor::HEW_ACTOR_STATE_LOCK_OK {
                     a.actor_state
                         .store(HewActorState::Crashed as i32, Ordering::Release);
-                    let _ = clear_current_reply_channel();
+                    execution_context.reply_channel = std::ptr::null_mut();
+                    execution_context.flags &=
+                        !crate::execution_context::HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
                     // SAFETY: msg is exclusively owned by this scheduler tick.
                     unsafe {
                         (*msg).reply_channel = std::ptr::null_mut();
@@ -1077,9 +1060,13 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     crate::set_last_error("actor dispatch panicked");
                 }
 
-                let reply_consumed = current_reply_channel_consumed();
+                let reply_consumed = (execution_context.flags
+                    & crate::execution_context::HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED)
+                    != 0;
                 let actor_state = a.actor_state.load(Ordering::Acquire);
-                let _ = clear_current_reply_channel();
+                execution_context.reply_channel = std::ptr::null_mut();
+                execution_context.flags &=
+                    !crate::execution_context::HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
                 if reply_consumed
                     || (actor_state != HewActorState::Stopping as i32
                         && actor_state != HewActorState::Stopped as i32)
@@ -1177,8 +1164,6 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     // SAFETY: Single-threaded global state access.
     unsafe {
         PREV_ARENA = saved_prev_arena;
-        CURRENT_REPLY_CHANNEL = saved_reply_channel;
-        CURRENT_REPLY_CHANNEL_CONSUMED = saved_reply_channel_consumed;
         ACTIVATING = saved_activating;
         // Restore the outer actor's pending sleep deadline so that a nested
         // activation (ask/await from dispatch) cannot erase it.  The inner
@@ -1371,16 +1356,9 @@ pub extern "C" fn hew_sched_metrics_global_queue_len() -> u64 {
     }
 }
 
-/// Get the reply channel for the currently-dispatched message (WASM).
-///
-/// Returns null if no reply channel was set (fire-and-forget send).
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(target_arch = "wasm32", no_mangle)]
-#[must_use]
-pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
-    // SAFETY: Single-threaded on WASM; no concurrent access.
-    unsafe { CURRENT_REPLY_CHANNEL }
-}
+// `hew_get_reply_channel` lives in [`crate::execution_context`]; re-export so
+// `crate::scheduler_wasm::hew_get_reply_channel` resolves at WASM call sites.
+pub use crate::execution_context::hew_get_reply_channel;
 
 // ── Cooperative yielding (WASM) ─────────────────────────────────────────
 
@@ -1698,8 +1676,10 @@ mod tests {
             ptr::addr_of_mut!(COOPERATIVE_TICK_DEPTH).write(0);
             // The canonical execution context is restored by each activation.
             ptr::addr_of_mut!(PREV_ARENA).write(ptr::null_mut());
-            ptr::addr_of_mut!(CURRENT_REPLY_CHANNEL).write(ptr::null_mut());
-            ptr::addr_of_mut!(CURRENT_REPLY_CHANNEL_CONSUMED).write(false);
+            // Reply-channel state is per-activation ctx now; no scheduler
+            // static to reset. Clear any lingering canonical context so the
+            // next test starts from a null current_context.
+            let _ = crate::execution_context::set_current_context(ptr::null_mut());
             ptr::addr_of_mut!(TASKS_SPAWNED).write(0);
             ptr::addr_of_mut!(TASKS_COMPLETED).write(0);
             ptr::addr_of_mut!(MESSAGES_SENT).write(0);
@@ -1813,8 +1793,6 @@ mod tests {
             ptr::addr_of_mut!(ACTIVATING).write(true);
             ptr::addr_of_mut!(COOPERATIVE_TICK_DEPTH).write(5);
             ptr::addr_of_mut!(PREV_ARENA).write(sentinel_ptr);
-            ptr::addr_of_mut!(CURRENT_REPLY_CHANNEL).write(sentinel_ptr);
-            ptr::addr_of_mut!(CURRENT_REPLY_CHANNEL_CONSUMED).write(true);
             ptr::addr_of_mut!(MESSAGES_SENT).write(99);
             ptr::addr_of_mut!(MESSAGES_RECEIVED).write(99);
             // Simulate a stale sleep queue entry.
@@ -1877,14 +1855,10 @@ mod tests {
                 ptr::addr_of!(PREV_ARENA).read().is_null(),
                 "PREV_ARENA must be null after shutdown"
             );
-            assert!(
-                ptr::addr_of!(CURRENT_REPLY_CHANNEL).read().is_null(),
-                "CURRENT_REPLY_CHANNEL must be null after shutdown"
-            );
-            assert!(
-                !ptr::addr_of!(CURRENT_REPLY_CHANNEL_CONSUMED).read(),
-                "CURRENT_REPLY_CHANNEL_CONSUMED must be false after shutdown"
-            );
+            // Reply-channel state is per-activation ctx now (lives on
+            // `HewExecutionContext`); there is no scheduler static to assert
+            // here. The activation entry/exit handshake clears it
+            // automatically when the ctx frame pops.
             assert_eq!(
                 read_tasks_spawned(),
                 0,
@@ -2724,19 +2698,26 @@ mod tests {
         // SAFETY: mailbox belongs to this test, and the returned node is exclusively owned.
         let msg = unsafe { crate::mailbox_wasm::hew_mailbox_try_recv(actor.mailbox.cast()) };
         assert!(!msg.is_null());
-        // SAFETY: simulate the scheduler's reply-channel plumbing for a single message.
+        // SAFETY: simulate the scheduler's reply-channel plumbing for a single
+        // message. Install a fresh canonical context with the per-message reply
+        // channel pre-populated, then run dispatch against it. The
+        // `TestExecutionContext` guard pops the ctx on drop.
         unsafe {
             let dispatch = actor.dispatch.expect("test actor must have a dispatch");
             let msg_ref = &*msg;
-            set_current_reply_channel(msg_ref.reply_channel);
+            let mut sim_ctx = HewExecutionContext {
+                reply_channel: msg_ref.reply_channel,
+                ..HewExecutionContext::default()
+            };
+            let prev_ctx = crate::execution_context::set_current_context(&raw mut sim_ctx);
             dispatch(
-                ptr::null_mut(),
+                &raw mut sim_ctx,
                 actor.state,
                 msg_ref.msg_type,
                 msg_ref.data,
                 msg_ref.data_size,
             );
-            let _ = clear_current_reply_channel();
+            let _ = crate::execution_context::set_current_context(prev_ctx);
             (*msg).reply_channel = ptr::null_mut();
             crate::mailbox_wasm::hew_msg_node_free(msg);
         }

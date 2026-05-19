@@ -395,21 +395,13 @@ fn supervisor_child_with_on_crash_hook_surfaces_symbol_on_layout() {
         ",
     );
 
-    // `PanicInfo` and `CrashAction` are pre-registered by the type checker
-    // but are not yet emittable as MIR value types (UnknownType). Those
-    // diagnostics are expected and do not prevent the symbol from being
-    // surfaced on the layout.
-    let unexpected_diags: Vec<_> = pipeline
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            !matches!(
-                &d.kind,
-                hew_mir::MirDiagnosticKind::UnknownType { name }
-                    if name == "PanicInfo" || name == "CrashAction"
-            )
-        })
-        .collect();
+    // `PanicInfo` and `CrashAction` are seeded into the HIR TypeClassTable by
+    // `seed_builtin_type_classes`, so `push_unknown_type_diagnostics` no longer
+    // fires for them. The hook body uses `CrashAction::Restart`, which HIR
+    // lowers as `UnresolvedSymbol` (enum-variant paths are v0.5 out-of-scope),
+    // but that diagnostic is filtered by the `lower_module_from_source_with_enum_variants`
+    // helper above. No MIR diagnostics are expected here.
+    let unexpected_diags: Vec<_> = pipeline.diagnostics.iter().collect();
     assert!(
         unexpected_diags.is_empty(),
         "unexpected MIR diagnostics: {unexpected_diags:#?}"

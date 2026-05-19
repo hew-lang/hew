@@ -951,13 +951,74 @@ fn lower_actor_lifecycle_handlers(
                 }
                 emitted_symbols.insert(emit_name.clone(), duplicate_label);
 
+                // ABI COERCION — return type and PanicInfo parameter:
+                //
+                // The synthesised MIR function uses `i32` for both the
+                // return type and any `PanicInfo`-typed parameter, aligning
+                // with the runtime ABI:
+                //
+                //   unsafe extern "C" fn(*mut HewExecutionContext, c_int, *mut c_void)
+                //   (hew-runtime/src/internal/types.rs:25, `HewOnCrashFn`)
+                //
+                // RETURN coercion: the runtime supervisor ignores the handler's
+                // return value in v0.5 and applies its own restart-policy enum
+                // — see commit 373b95ea, runtime/supervisor.rs:1496-1504.
+                // Passing `ResolvedTy::Named { "CrashAction" }` through to
+                // codegen trips the D10 fail-closed gate at llvm.rs:1097
+                // because CrashAction has no codegen shape yet.
+                //
+                // PARAM coercion: `PanicInfo` is the user-facing type for the
+                // crash-info argument but has no codegen shape either (it is
+                // seeded into the TypeClassTable only; see
+                // hew-hir/src/builtin_type_classes.rs).  The runtime passes
+                // `crash_code: c_int` (i32) in the second argument register,
+                // which is what the ABI slot the user's `info: PanicInfo`
+                // parameter occupies.  Codegen accesses `PanicInfo.code` via
+                // a record-field GEP, but that record layout does not exist
+                // in `IrPipeline.record_layouts` yet (std/failure.hew is not
+                // loaded through the module graph).  We coerce to `I32` so
+                // codegen can allocate the parameter slot without tripping D10.
+                // Field accesses to `info.code` in the body are NOT YET wired
+                // (the record-field GEP would reference a missing layout);
+                // document any body use of `info` as pending.
+                //
+                // HIR/checker: unchanged.  User sources still type-check with
+                // `info: PanicInfo` and `-> CrashAction` in their signatures.
+                //
+                // WHEN obsolete: when std/failure.hew is loaded through the
+                // module graph (populating PanicInfo into record_layouts) and
+                // v0.6 wires CrashAction return-shape consult, remove both
+                // coercions and let the HIR types flow through.
+                //
+                // BODY-RETURN NOTE: enum-variant construction
+                // (`CrashAction::Restart`) is not yet wired in HIR lowering
+                // (CutoverUnsupported gate).  Today only `panic()`-diverging
+                // bodies compile, so no actual CrashAction value can appear
+                // in the MIR return slot.
+                let abi_params: Vec<HirBinding> = hook
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let abi_ty =
+                            if matches!(&p.ty, ResolvedTy::Named { name, .. } if name == "PanicInfo")
+                            {
+                                ResolvedTy::I32
+                            } else {
+                                p.ty.clone()
+                            };
+                        HirBinding {
+                            ty: abi_ty,
+                            ..p.clone()
+                        }
+                    })
+                    .collect();
                 let synthetic_fn = HirFn {
                     id: actor.id,
                     node: actor.node,
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
-                    params: hook.params.clone(),
-                    return_ty: hook.return_ty.clone(),
+                    params: abi_params,
+                    return_ty: ResolvedTy::I32,
                     body: hook.body.clone(),
                     span: hook.span.clone(),
                 };

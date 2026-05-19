@@ -4554,15 +4554,7 @@ fn lower_terminator<'ctx>(
                             .builder
                             .build_load(arg_ty, arg_ptr, "call_arg")
                             .map_err(|e| CodegenError::Llvm(format!("call arg load: {e:?}")))?;
-                        arg_vals.push(match loaded {
-                            BasicValueEnum::IntValue(v) => v.into(),
-                            BasicValueEnum::FloatValue(v) => v.into(),
-                            BasicValueEnum::PointerValue(v) => v.into(),
-                            BasicValueEnum::StructValue(v) => v.into(),
-                            BasicValueEnum::ArrayValue(v) => v.into(),
-                            BasicValueEnum::VectorValue(v) => v.into(),
-                            BasicValueEnum::ScalableVectorValue(v) => v.into(),
-                        });
+                        arg_vals.push(metadata_value_from_basic(loaded));
                     }
                     let call_site = fn_ctx
                         .builder
@@ -6094,15 +6086,7 @@ fn emit_actor_dispatch_trampoline<'ctx>(
             let loaded = builder
                 .build_load(llvm_ty, data_ptr, &format!("msg_arg_{idx}"))
                 .map_err(|e| CodegenError::Llvm(format!("actor dispatch arg load: {e:?}")))?;
-            args.push(match loaded {
-                BasicValueEnum::IntValue(v) => v.into(),
-                BasicValueEnum::FloatValue(v) => v.into(),
-                BasicValueEnum::PointerValue(v) => v.into(),
-                BasicValueEnum::StructValue(v) => v.into(),
-                BasicValueEnum::ArrayValue(v) => v.into(),
-                BasicValueEnum::VectorValue(v) => v.into(),
-                BasicValueEnum::ScalableVectorValue(v) => v.into(),
-            });
+            args.push(metadata_value_from_basic(loaded));
         }
         let call = builder
             .build_call(handler_fn, &args, &format!("call_{}", handler.name))

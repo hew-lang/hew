@@ -95,11 +95,10 @@ fn supervisor_three_children_with_wired_to_dep_emits_topo_ordered_spawn_sequence
         .iter()
         .find(|f| f.name == "App__bootstrap")
         .expect("App__bootstrap emitted into raw_mir");
-    assert_eq!(
-        bootstrap.call_conv,
-        FunctionCallConv::ActorHandler,
-        "supervisors are actor-likes: their bootstrap carries an execution context"
-    );
+    // Default: the synthesised body is overridden by codegen (S-D.3), so the
+    // bootstrap doesn't need to carry an execution-context arg. ActorHandler
+    // would push one, breaking the 0-arg `Terminator::Call` from lower_spawn.
+    assert_eq!(bootstrap.call_conv, FunctionCallConv::Default);
     assert_eq!(
         bootstrap.return_ty,
         hew_types::ResolvedTy::Named {

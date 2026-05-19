@@ -977,11 +977,13 @@ fn mangle_actor_stop_handler(actor_name: &str) -> String {
 /// Deterministic supervisor-bootstrap symbol mangling.
 ///
 /// Scheme: `<Supervisor>__bootstrap`. The bootstrap function carries
-/// `FunctionCallConv::ActorHandler` — supervisors ARE actor-likes that
-/// hold an execution context and a parent/child tree position — and its
-/// body is a topologically ordered sequence of `Instr::SpawnActor`
-/// instructions, one per declared child, wiring `wired_to:` siblings as
-/// init args.
+/// `FunctionCallConv::Default` — the synthetic MIR body is a stub that
+/// codegen overrides wholesale with the `hew_supervisor_*` call sequence
+/// in S-D.3, so the bootstrap function itself does not need to carry an
+/// execution-context parameter. Supervisors are still actor-likes at the
+/// runtime level (the supervisor's own actor is spawned inside
+/// `hew_supervisor_start`); the `call_conv` applies only to the bootstrap
+/// function's LLVM signature.
 fn mangle_supervisor_bootstrap(name: &str) -> String {
     format!("{name}__bootstrap")
 }
@@ -1400,7 +1402,17 @@ fn lower_supervisor_bootstrap(
         None,
         module_fn_names,
         call_site_type_args,
-        crate::model::FunctionCallConv::ActorHandler,
+        // `FunctionCallConv::Default`: codegen replaces the bootstrap body
+        // wholesale with the `hew_supervisor_*` call sequence (S-D.3), so
+        // the body never reads an execution context. The synthetic call
+        // site at `lower_spawn` emits `Terminator::Call { args: [] }`; an
+        // `ActorHandler` declaration would add a leading ctx LLVM parameter
+        // that the caller does not supply, tripping `llvm.verify`. The
+        // doc-comment on `mangle_supervisor_bootstrap` describing the
+        // supervisor as actor-like still applies at the runtime level — the
+        // supervisor's own actor is spawned by `hew_supervisor_start`, not
+        // by the bootstrap's call_conv.
+        crate::model::FunctionCallConv::Default,
     ))
 }
 

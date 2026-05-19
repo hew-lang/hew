@@ -59,11 +59,12 @@ use std::path::Path;
 use std::process::Command;
 
 use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy, PrintKind};
+use hew_hir::{HirRestartPolicy, HirSupervisorStrategy};
 use hew_mir::{
     validate_context_markers, ActorLayout, CheckedMirFunction, CmpPred, CooperateKind,
     CooperateSite, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth,
     FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, Place, RawMirFunction,
-    RecordLayout, Terminator, TrapKind,
+    RecordLayout, SupervisorChildLayout, SupervisorLayout, Terminator, TrapKind,
 };
 use hew_types::ResolvedTy;
 
@@ -650,6 +651,26 @@ fn intern_runtime_decl<'ctx>(
         // runtime-internal signal — MIR producers discard it (dest: None).
         "hew_scope_spawn" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         "hew_rc_new" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
+        // hew_supervisor_new(strategy: c_int, max_restarts: c_int, window_secs: c_int)
+        //                    -> *mut HewSupervisor
+        // (`hew-runtime/src/supervisor.rs:1608`). Box-allocates an empty
+        // supervisor. Codegen calls this from the synthesised bootstrap body.
+        "hew_supervisor_new" => {
+            ptr_ty.fn_type(&[i32_ty.into(), i32_ty.into(), i32_ty.into()], false)
+        }
+        // hew_supervisor_add_child_spec(sup: *mut HewSupervisor,
+        //                               spec: *const HewChildSpec) -> c_int
+        // (`hew-runtime/src/supervisor.rs:1655`). Registers one child spec on
+        // the supervisor; the runtime deep-copies `name` and `init_state` so
+        // the stack-allocated literal is safe to discard after the call.
+        // Returns 0 on success or -1 on null/OOM; the bootstrap currently
+        // discards the result — restart/diagnostic wiring lands in a follow-on.
+        "hew_supervisor_add_child_spec" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_supervisor_start(sup: *mut HewSupervisor) -> c_int
+        // (`hew-runtime/src/supervisor.rs:1726`). Marks the supervisor running
+        // and spawns its self-actor. Returns 0 on success. The bootstrap
+        // traps on non-zero (fail-closed) before returning the supervisor ptr.
+        "hew_supervisor_start" => i32_ty.fn_type(&[ptr_ty.into()], false),
         // hew_task_new() -> *mut HewTask
         // (`hew-runtime/src/task_scope.rs:214`). Box-allocates a HewTask
         // in the Ready state. Producer calls this to obtain a task handle
@@ -1350,6 +1371,321 @@ fn emit_spawn_actor(
         .builder
         .build_store(dest_ptr, spawned)
         .map_err(|e| CodegenError::Llvm(format!("SpawnActor store: {e:?}")))?;
+    Ok(())
+}
+
+/// Map a `HirSupervisorStrategy` to the runtime `STRATEGY_*` integer.
+///
+/// Mirrors the `pub const STRATEGY_*` constants at
+/// `hew-runtime/src/supervisor.rs:315-324`. The values are part of the ABI:
+/// changing them requires a coordinated runtime + codegen edit.
+fn supervisor_strategy_to_int(strategy: HirSupervisorStrategy) -> i32 {
+    match strategy {
+        HirSupervisorStrategy::OneForOne => 0,
+        HirSupervisorStrategy::OneForAll => 1,
+        HirSupervisorStrategy::RestForOne => 2,
+        HirSupervisorStrategy::SimpleOneForOne => 3,
+    }
+}
+
+/// Map a `HirRestartPolicy` to the runtime `RESTART_*` integer.
+///
+/// Mirrors the `pub const RESTART_*` constants at
+/// `hew-runtime/src/supervisor.rs:329-331`.
+fn restart_policy_to_int(policy: HirRestartPolicy) -> i32 {
+    match policy {
+        HirRestartPolicy::Permanent => 0,
+        HirRestartPolicy::Transient => 1,
+        HirRestartPolicy::Temporary => 2,
+    }
+}
+
+/// Build the LLVM struct type for `HewChildSpec`.
+///
+/// The struct mirrors the `#[repr(C)]` Rust layout at
+/// `hew-runtime/src/supervisor.rs:409-422` exactly. Field order MUST match;
+/// drift here is wrong-code at the FFI boundary.
+///
+/// Field map (Rust → LLVM):
+/// - `name: *const c_char`                  → `ptr`
+/// - `init_state: *mut c_void`              → `ptr`
+/// - `init_state_size: usize`               → `i64`  (64-bit spine only)
+/// - `dispatch: Option<HewDispatchFn>`      → `ptr`  (opaque-pointer mode)
+/// - `restart_policy: c_int`                → `i32`
+/// - `mailbox_capacity: c_int`              → `i32`
+/// - `overflow: c_int`                      → `i32`
+/// - `arena_cap_bytes: usize`               → `i64`
+///
+/// The three consecutive `i32` fields followed by `i64` produce 4 bytes of
+/// natural padding before `arena_cap_bytes` under `#[repr(C)]`; LLVM's
+/// default (non-packed) struct alignment generates the same padding.
+fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    ctx.struct_type(
+        &[
+            ptr_ty.into(), // name
+            ptr_ty.into(), // init_state
+            i64_ty.into(), // init_state_size
+            ptr_ty.into(), // dispatch
+            i32_ty.into(), // restart_policy
+            i32_ty.into(), // mailbox_capacity
+            i32_ty.into(), // overflow
+            i64_ty.into(), // arena_cap_bytes (alignment introduces 4B pad after `overflow`)
+        ],
+        false,
+    )
+}
+
+/// Emit the body of a supervisor bootstrap function.
+///
+/// The bootstrap symbol is declared by `declare_function` like any other
+/// `FunctionCallConv::ActorHandler` function (one leading
+/// `*mut HewExecutionContext` param the body ignores). This helper substitutes
+/// the MIR-side synthesised body wholesale with the canonical
+/// `hew_supervisor_*` call sequence:
+///
+/// 1. `%sup = call hew_supervisor_new(strategy, max_restarts, window_secs)`
+/// 2. for each child: alloca `HewChildSpec`, populate fields, call
+///    `hew_supervisor_add_child_spec(%sup, &spec)`
+/// 3. `%rc = call hew_supervisor_start(%sup)`; trap on non-zero (fail-closed)
+/// 4. `ret %sup`
+///
+/// Fail-closed posture:
+/// - Missing per-child dispatch trampoline → `FailClosed` (must be emitted by
+///   `emit_actor_dispatch_trampoline` ahead of this helper).
+/// - Non-integer `window` literal → `FailClosed`. The fixture uses
+///   `window: 60`; the `"60s"` form is deferred to a follow-on slice.
+/// - `hew_supervisor_start` non-zero return → `llvm.trap; unreachable`. The
+///   supervisor surface is one of Hew's fail-closed boundaries (LESSONS
+///   boundary-fail-closed); a start that the runtime rejected is wrong-code
+///   territory, not a recoverable error.
+fn emit_supervisor_bootstrap_body<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    layout: &SupervisorLayout,
+    fn_symbols: &FnSymbolMap<'ctx>,
+) -> CodegenResult<()> {
+    let symbol = *fn_symbols.get(&layout.bootstrap_symbol).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "supervisor `{}` bootstrap symbol `{}` was not declared before body emission",
+            layout.name, layout.bootstrap_symbol
+        ))
+    })?;
+    let (llvm_fn, return_ty_llvm, _returns_unit) =
+        symbol.real(&layout.bootstrap_symbol, "emit_supervisor_bootstrap_body")?;
+    if !matches!(return_ty_llvm, BasicTypeEnum::PointerType(_)) {
+        return Err(CodegenError::FailClosed(format!(
+            "supervisor `{}` bootstrap return type must be a pointer (LocalPid<Sup>); got {return_ty_llvm:?}",
+            layout.name
+        )));
+    }
+
+    let builder = ctx.create_builder();
+    let entry_bb = ctx.append_basic_block(llvm_fn, "entry");
+    builder.position_at_end(entry_bb);
+
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+
+    // ── Strategy / max_restarts / window literals ───────────────────────
+    //
+    // `None` falls back to `0`; the runtime treats `0` for max_restarts as
+    // "no automatic restarts" and `0` for window_secs as "policy clamps to a
+    // safe minimum". The fixture sets explicit values so the runtime path
+    // exercises real numbers.
+    let strategy_int = layout.strategy.map(supervisor_strategy_to_int).unwrap_or(0);
+    let max_restarts_int: i32 = layout
+        .max_restarts
+        .and_then(|n| i32::try_from(n).ok())
+        .unwrap_or(0);
+    // Window parsing: this slice accepts only an integer-seconds literal
+    // (e.g. `window: 60`). The `"60s"` duration-literal form is deferred per
+    // plan §S-D.3 "Out of scope". If a non-integer string reaches this point
+    // codegen fails closed — silently coercing to 0 would hide a parser/MIR
+    // drift bug.
+    let window_secs_int: i32 = match layout.window.as_deref() {
+        None => 0,
+        Some(s) => s.trim().parse::<i32>().map_err(|_| {
+            CodegenError::FailClosed(format!(
+                "supervisor `{}` window literal `{s:?}` is not an integer-seconds value; \
+                 the `\"60s\"` duration form is deferred to a follow-on slice",
+                layout.name
+            ))
+        })?,
+    };
+
+    let mut runtime_decls = RuntimeDeclMap::new();
+
+    // ── %sup = call hew_supervisor_new(strategy, max_restarts, window_secs)
+    let sup_new = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_supervisor_new")?;
+    let sup = builder
+        .build_call(
+            sup_new,
+            &[
+                i32_ty.const_int(strategy_int as u64, true).into(),
+                i32_ty.const_int(max_restarts_int as u64, true).into(),
+                i32_ty.const_int(window_secs_int as u64, true).into(),
+            ],
+            "hew_supervisor_new_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_new call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_supervisor_new returned void".into()))?
+        .into_pointer_value();
+
+    // ── For each child: alloca HewChildSpec, populate, register ─────────
+    let child_spec_ty = hew_child_spec_struct_type(ctx);
+    let add_child_spec = intern_runtime_decl(
+        ctx,
+        llvm_mod,
+        &mut runtime_decls,
+        "hew_supervisor_add_child_spec",
+    )?;
+    for (idx, child) in layout.children.iter().enumerate() {
+        emit_supervisor_child_spec_and_register(
+            ctx,
+            llvm_mod,
+            &builder,
+            &child_spec_ty,
+            sup,
+            add_child_spec,
+            idx,
+            child,
+            &layout.name,
+        )?;
+    }
+
+    // ── %rc = call hew_supervisor_start(%sup); trap on non-zero ─────────
+    let sup_start = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_supervisor_start")?;
+    let rc = builder
+        .build_call(sup_start, &[sup.into()], "hew_supervisor_start_call")
+        .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_start call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_supervisor_start returned void".into()))?
+        .into_int_value();
+    let zero = i32_ty.const_zero();
+    let is_ok = builder
+        .build_int_compare(IntPredicate::EQ, rc, zero, "sup_start_ok")
+        .map_err(|e| CodegenError::Llvm(format!("sup start cmp: {e:?}")))?;
+    let ok_bb = ctx.append_basic_block(llvm_fn, "sup_start_ok");
+    let trap_bb = ctx.append_basic_block(llvm_fn, "sup_start_trap");
+    builder
+        .build_conditional_branch(is_ok, ok_bb, trap_bb)
+        .map_err(|e| CodegenError::Llvm(format!("sup start cond br: {e:?}")))?;
+    builder.position_at_end(trap_bb);
+    // llvm.trap; unreachable — fail-closed on supervisor start failure.
+    let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
+        CodegenError::FailClosed("llvm.trap intrinsic not available in this LLVM build".into())
+    })?;
+    let trap_fn = trap_intrinsic
+        .get_declaration(llvm_mod, &[])
+        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration missing".into()))?;
+    builder
+        .build_call(trap_fn, &[], "sup_start_trap_call")
+        .map_err(|e| CodegenError::Llvm(format!("sup start trap call: {e:?}")))?;
+    builder
+        .build_unreachable()
+        .map_err(|e| CodegenError::Llvm(format!("sup start unreachable: {e:?}")))?;
+
+    // ── ret sup ─────────────────────────────────────────────────────────
+    builder.position_at_end(ok_bb);
+    let _ = ptr_ty;
+    let _ = i64_ty;
+    builder
+        .build_return(Some(&sup))
+        .map_err(|e| CodegenError::Llvm(format!("sup bootstrap ret: {e:?}")))?;
+    Ok(())
+}
+
+/// Emit one `HewChildSpec` literal + `hew_supervisor_add_child_spec` call.
+///
+/// Per-field semantics:
+/// - `name` — global C-string `@.str.child.<sup>.<idx>` set to `child.name`
+///   (the slot name, not the actor type; matches the surface name visible
+///   to user-level `sup.<name>` access).
+/// - `init_state` / `init_state_size` — `null` / `0`. The fixture has no
+///   per-child init args; richer init lowering is deferred.
+/// - `dispatch` — pointer to `__hew_actor_dispatch_<actor_name>`, declared
+///   by `emit_actor_dispatch_trampoline` in `build_module` ahead of this
+///   helper. Fail-closed if missing.
+/// - `restart_policy` — child's policy via `restart_policy_to_int`; `None`
+///   defaults to `RESTART_PERMANENT` (`0`) to match runtime defaults.
+/// - `mailbox_capacity` / `overflow` / `arena_cap_bytes` — `0` for all,
+///   which the runtime maps to its bounded defaults. Richer per-child
+///   overrides are deferred.
+#[allow(clippy::too_many_arguments)]
+fn emit_supervisor_child_spec_and_register<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    child_spec_ty: &StructType<'ctx>,
+    sup: PointerValue<'ctx>,
+    add_child_spec: FunctionValue<'ctx>,
+    idx: usize,
+    child: &SupervisorChildLayout,
+    sup_name: &str,
+) -> CodegenResult<()> {
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+
+    let dispatch_name = format!("__hew_actor_dispatch_{}", child.actor_name);
+    let dispatch_fn = llvm_mod.get_function(&dispatch_name).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "supervisor `{sup_name}` child `{}` requires dispatch trampoline `{dispatch_name}`",
+            child.name
+        ))
+    })?;
+
+    // Per-child stack alloca for the spec struct.
+    let spec_slot = builder
+        .build_alloca(*child_spec_ty, &format!("child_spec_{idx}"))
+        .map_err(|e| CodegenError::Llvm(format!("child spec alloca: {e:?}")))?;
+
+    // name → @.str.child.<sup>.<idx>
+    let name_global = builder
+        .build_global_string_ptr(&child.name, &format!("str_child_name_{sup_name}_{idx}"))
+        .map_err(|e| CodegenError::Llvm(format!("child name global: {e:?}")))?;
+    let name_ptr = name_global.as_pointer_value();
+
+    let restart_int = child.restart_policy.map(restart_policy_to_int).unwrap_or(0);
+
+    let field_values: [(u32, BasicValueEnum<'ctx>); 8] = [
+        (0, name_ptr.into()),
+        (1, ptr_ty.const_null().into()),
+        (2, i64_ty.const_zero().into()),
+        (3, dispatch_fn.as_global_value().as_pointer_value().into()),
+        (4, i32_ty.const_int(restart_int as u64, true).into()),
+        (5, i32_ty.const_zero().into()),
+        (6, i32_ty.const_zero().into()),
+        (7, i64_ty.const_zero().into()),
+    ];
+    for (field_idx, value) in field_values {
+        let gep = builder
+            .build_struct_gep(
+                *child_spec_ty,
+                spec_slot,
+                field_idx,
+                &format!("child_spec_{idx}_f{field_idx}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("child spec gep: {e:?}")))?;
+        builder
+            .build_store(gep, value)
+            .map_err(|e| CodegenError::Llvm(format!("child spec store: {e:?}")))?;
+    }
+
+    builder
+        .build_call(
+            add_child_spec,
+            &[sup.into(), spec_slot.into()],
+            &format!("hew_supervisor_add_child_spec_call_{idx}"),
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_add_child_spec call: {e:?}")))?;
     Ok(())
 }
 
@@ -6290,7 +6626,27 @@ fn build_module<'ctx>(
             emit_actor_terminate_trampoline(ctx, &llvm_mod, actor, &fn_symbols)?;
         }
     }
+    // Supervisor bootstraps replace the MIR-side synthesised body wholesale
+    // with the canonical `hew_supervisor_new` → `add_child_spec` × N →
+    // `start` call sequence (S-D.3). The set of bootstrap symbols is
+    // collected so the body-lowering loop below skips them — the MIR-side
+    // body exists only to carry the declaration signature.
+    let supervisor_bootstrap_symbols: std::collections::HashSet<String> = pipeline
+        .supervisor_layouts
+        .iter()
+        .map(|s| s.bootstrap_symbol.clone())
+        .collect();
+    for sup in &pipeline.supervisor_layouts {
+        emit_supervisor_bootstrap_body(ctx, &llvm_mod, sup, &fn_symbols)?;
+    }
     for func in &pipeline.raw_mir {
+        if supervisor_bootstrap_symbols.contains(&func.name) {
+            // Body already emitted by `emit_supervisor_bootstrap_body`. Skip
+            // the normal MIR lowering — the MIR-side synthesised body is a
+            // stub kept only to carry the bootstrap function's signature
+            // through `declare_function`.
+            continue;
+        }
         // Match by name: elaborated_mir is parallel to raw_mir when the
         // full pipeline runs. Hand-built test pipelines may leave
         // elaborated_mir empty; `find` returns `None` in that case and

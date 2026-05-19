@@ -54,7 +54,7 @@ fn supervisor_pipeline() -> IrPipeline {
         init_param_tys: vec![],
         init_symbol: None,
         on_start_symbol: None,
-        on_stop_symbol: None,
+        on_stop_symbols: vec![],
         on_crash_symbol: None,
         handlers: vec![],
     };
@@ -244,7 +244,7 @@ fn on_crash_pipeline() -> IrPipeline {
         init_param_tys: vec![],
         init_symbol: None,
         on_start_symbol: None,
-        on_stop_symbol: None,
+        on_stop_symbols: vec![],
         on_crash_symbol: Some(on_crash_symbol.clone()),
         handlers: vec![],
     };

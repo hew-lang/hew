@@ -348,11 +348,13 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         .iter()
                         .find(|hook| hook.kind == HirLifecycleHookKind::Start)
                         .map(|_| mangle_actor_start_handler(&actor.name)),
-                    on_stop_symbol: actor
+                    on_stop_symbols: actor
                         .lifecycle_hooks
                         .iter()
-                        .find(|hook| hook.kind == HirLifecycleHookKind::Stop)
-                        .map(|_| mangle_actor_stop_handler(&actor.name)),
+                        .enumerate()
+                        .filter(|(_, hook)| hook.kind == HirLifecycleHookKind::Stop)
+                        .map(|(idx, _)| mangle_actor_stop_handler_indexed(&actor.name, idx))
+                        .collect(),
                     on_crash_symbol: actor
                         .lifecycle_hooks
                         .iter()
@@ -902,7 +904,7 @@ fn lower_actor_lifecycle_handlers(
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Vec<LoweredFunction> {
     let mut lowered = Vec::new();
-    for hook in &actor.lifecycle_hooks {
+    for (hook_idx, hook) in actor.lifecycle_hooks.iter().enumerate() {
         match hook.kind {
             HirLifecycleHookKind::Start => {
                 let emit_name = mangle_actor_start_handler(&actor.name);
@@ -948,22 +950,15 @@ fn lower_actor_lifecycle_handlers(
                 ));
             }
             HirLifecycleHookKind::Stop => {
-                let emit_name = mangle_actor_stop_handler(&actor.name);
-                let duplicate_label =
-                    format!("actor `{}` #[on(stop)] hook `{}`", actor.name, hook.name);
-                if let Some(existing) = emitted_symbols.get(&emit_name) {
-                    diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::ActorHandlerSymbolCollision {
-                            symbol: emit_name,
-                            existing: existing.clone(),
-                            duplicate: duplicate_label,
-                        },
-                        note: "actor #[on(stop)] handler symbol mangling must be one-to-one before MIR emission"
-                            .to_string(),
-                    });
-                    continue;
-                }
-                emitted_symbols.insert(emit_name.clone(), duplicate_label);
+                // Per-hook unique symbol: <Actor>__on_stop__<hook_idx>.
+                // hook_idx is the position of this hook in the actor's full
+                // lifecycle_hooks vec (not a stop-specific counter), matching
+                // the index used when populating ActorLayout.on_stop_symbols.
+                // This guarantees no collisions even when multiple #[on(stop)]
+                // hooks are declared on the same actor.
+                let emit_name = mangle_actor_stop_handler_indexed(&actor.name, hook_idx);
+                let label = format!("actor `{}` #[on(stop)] hook `{}`", actor.name, hook.name);
+                emitted_symbols.insert(emit_name.clone(), label);
 
                 let synthetic_fn = HirFn {
                     id: actor.id,
@@ -1142,8 +1137,15 @@ fn mangle_actor_start_handler(actor_name: &str) -> String {
     format!("{actor_name}__on_start")
 }
 
-fn mangle_actor_stop_handler(actor_name: &str) -> String {
-    format!("{actor_name}__on_stop")
+/// Per-hook stop-handler symbol: `<Actor>__on_stop__<hook_idx>`.
+///
+/// `hook_idx` is the position of this hook in the actor's full
+/// `lifecycle_hooks` vec, matching the index used when populating
+/// `ActorLayout.on_stop_symbols`. Multiple `#[on(stop)]` hooks on the
+/// same actor each get a unique symbol; codegen synthesises a fan-out
+/// trampoline that calls them all in this lexical order.
+fn mangle_actor_stop_handler_indexed(actor_name: &str, hook_idx: usize) -> String {
+    format!("{actor_name}__on_stop__{hook_idx}")
 }
 
 fn mangle_actor_crash_handler(actor_name: &str) -> String {

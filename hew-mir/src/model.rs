@@ -89,8 +89,10 @@ pub struct ActorLayout {
     pub init_symbol: Option<String>,
     /// `#[on(start)]` handler symbol. `None` when the actor has no start hook.
     pub on_start_symbol: Option<String>,
-    /// `#[on(stop)]` handler symbol. `None` when the actor has no stop hook.
-    pub on_stop_symbol: Option<String>,
+    /// `#[on(stop)]` handler symbols in lexical declaration order.
+    /// Empty when the actor has no stop hooks. Multiple hooks are all run
+    /// at terminate time in this order via a synthesised fan-out trampoline.
+    pub on_stop_symbols: Vec<String>,
     /// `#[on(crash)]` handler symbol. `None` when the actor has no crash hook.
     pub on_crash_symbol: Option<String>,
     /// Receive handlers in message-type order.

@@ -101,6 +101,11 @@ run_accept_expect_status "actor_counter_init" 42
 # Exit code 42 proves the actor ran its full lifecycle (spawn → start → messages → stop).
 run_accept_expect_status "actor_on_stop" 42
 
+# Multiple #[on(stop)] hooks on the same actor must compile and run without
+# ActorHandlerSymbolCollision. Previously the second hook would collide with
+# the first at MIR lowering. Exit 0 = Sequencer(start: 0).value() = 0.
+run_accept_expect_status "actor_multi_on_stop" 0
+
 # select{} with two actor-ask arms + after-timer: FastWorker replies with 42
 # immediately; SlowWorker sleeps 50 ms; after-arm deadline is 100 ms.
 # FastWorker always wins under normal CI load. Exit code 42 proves the winner

@@ -376,22 +376,75 @@ fn actor_lifecycle_stop_lowers_to_actor_handler_function() {
 
     let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
 
-    // on_stop_symbol populated in the actor layout.
+    // on_stop_symbols populated in the actor layout (one hook → one entry at index 0).
     assert_eq!(
-        pipeline.actor_layouts[0].on_stop_symbol.as_deref(),
-        Some("Counter__on_stop")
+        pipeline.actor_layouts[0].on_stop_symbols.as_slice(),
+        &["Counter__on_stop__0"]
     );
     // MIR function emitted with ActorHandler calling convention.
     let stop = pipeline
         .raw_mir
         .iter()
-        .find(|func| func.name == "Counter__on_stop")
+        .find(|func| func.name == "Counter__on_stop__0")
         .expect("on(stop) hook must produce a MIR function");
     assert_eq!(stop.call_conv, FunctionCallConv::ActorHandler);
     // No fail-closed diagnostic emitted.
     assert!(
         pipeline.diagnostics.is_empty(),
         "on(stop) lowering must not emit diagnostics; got: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn actor_multiple_stop_hooks_lower_to_distinct_indexed_symbols_without_collision() {
+    let mut ids = IdGen::default();
+    let stop_return_a = return_none_stmt(&mut ids);
+    let stop_return_b = return_none_stmt(&mut ids);
+    let actor = {
+        let mut actor = actor(&mut ids, "Counter", vec![]);
+        actor.lifecycle_hooks = vec![
+            HirLifecycleHook {
+                kind: HirLifecycleHookKind::Stop,
+                name: "cleanup_a".to_string(),
+                params: vec![],
+                return_ty: ResolvedTy::Unit,
+                body: block(&mut ids, vec![stop_return_a], None, ResolvedTy::Unit),
+                span: 0..0,
+            },
+            HirLifecycleHook {
+                kind: HirLifecycleHookKind::Stop,
+                name: "cleanup_b".to_string(),
+                params: vec![],
+                return_ty: ResolvedTy::Unit,
+                body: block(&mut ids, vec![stop_return_b], None, ResolvedTy::Unit),
+                span: 0..0,
+            },
+        ];
+        actor
+    };
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
+
+    // Both stop hooks must yield distinct indexed symbols in declaration order.
+    assert_eq!(
+        pipeline.actor_layouts[0].on_stop_symbols.as_slice(),
+        &["Counter__on_stop__0", "Counter__on_stop__1"],
+        "two on(stop) hooks must produce two indexed symbols in lexical order"
+    );
+    // Both MIR functions must be emitted with ActorHandler calling convention.
+    for sym in &["Counter__on_stop__0", "Counter__on_stop__1"] {
+        let func = pipeline
+            .raw_mir
+            .iter()
+            .find(|f| &f.name == sym)
+            .unwrap_or_else(|| panic!("on(stop) hook `{sym}` must produce a MIR function"));
+        assert_eq!(func.call_conv, FunctionCallConv::ActorHandler);
+    }
+    // No diagnostics — specifically no ActorHandlerSymbolCollision.
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "multiple on(stop) hooks must not emit diagnostics; got: {:?}",
         pipeline.diagnostics
     );
 }

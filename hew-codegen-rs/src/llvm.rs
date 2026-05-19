@@ -6618,24 +6618,26 @@ fn lower_function<'ctx>(
     Ok(())
 }
 
-/// Emit a C-ABI terminate trampoline for an actor's `#[on(stop)]` hook.
+/// Emit a C-ABI terminate trampoline for an actor's `#[on(stop)]` hooks.
 ///
 /// The runtime's `terminate_fn` slot has ABI `fn(*mut c_void state) -> void`.
-/// The ActorHandler-lowered `__on_stop` function has ABI
-/// `fn(*mut HewExecutionContext) -> void`. This trampoline bridges the two:
+/// Each ActorHandler-lowered `__on_stop__<i>` function has ABI
+/// `fn(*mut HewExecutionContext) -> void`. This trampoline bridges the two
+/// and fans out to all stop hooks in lexical declaration order:
 ///
-/// 1. Acquire the actor-state lock via `hew_actor_state_lock_acquire` (using
-///    the actor pointer from the installed execution context, offset 0).
-/// 2. Call `hew_require_execution_context()` to get the context already
+/// 1. Call `hew_require_execution_context()` to get the context already
 ///    installed by `call_terminate_fn` before this trampoline is entered.
-/// 3. Call `<Actor>__on_stop(ctx)` with the ActorHandler ABI.
-/// 4. Release the lock via `hew_actor_state_lock_release`.
+/// 2. Load the actor pointer from context offset 0 (HEW_CTX_OFFSET_ACTOR).
+/// 3. Acquire the actor-state lock via `hew_actor_state_lock_acquire`.
+/// 4. For each `<Actor>__on_stop__<i>` in declaration order, call it with
+///    the ActorHandler ABI (ctx as first arg).
+/// 5. Release the lock via `hew_actor_state_lock_release`.
 ///
 /// The `state` parameter is unused — the execution context carries the actor
 /// pointer (offset 0) and all other dispatch-substrate state. `state` is
 /// present only to satisfy the `terminate_fn: fn(*mut c_void) -> void` ABI.
 ///
-/// Panic safety: if the on(stop) body panics, `call_terminate_fn`'s
+/// Panic safety: if any on(stop) body panics, `call_terminate_fn`'s
 /// `catch_unwind` catches it and releases the lock via
 /// `hew_actor_state_lock_release_after_panic` (LESSONS: cleanup-all-exits P0).
 fn emit_actor_terminate_trampoline<'ctx>(
@@ -6644,16 +6646,19 @@ fn emit_actor_terminate_trampoline<'ctx>(
     layout: &ActorLayout,
     fn_symbols: &FnSymbolMap<'ctx>,
 ) -> CodegenResult<()> {
-    let on_stop_symbol = layout.on_stop_symbol.as_deref().ok_or_else(|| {
-        CodegenError::FailClosed("emit_actor_terminate_trampoline: no on_stop_symbol".into())
-    })?;
-    let on_stop_fn = fn_symbols.get(on_stop_symbol).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "terminate trampoline for `{}` references undeclared on_stop handler `{on_stop_symbol}`",
-            layout.name
-        ))
-    })?;
-    let (on_stop_fn, _, _) = on_stop_fn.real(on_stop_symbol, "terminate trampoline")?;
+    // Resolve all per-hook LLVM functions up front so we fail-closed before
+    // emitting any IR.
+    let mut on_stop_fns = Vec::with_capacity(layout.on_stop_symbols.len());
+    for sym in &layout.on_stop_symbols {
+        let entry = fn_symbols.get(sym).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "terminate trampoline for `{}` references undeclared on_stop handler `{sym}`",
+                layout.name
+            ))
+        })?;
+        let (fn_val, _, _) = entry.real(sym, "terminate trampoline")?;
+        on_stop_fns.push(fn_val);
+    }
 
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let trampoline_name = format!("__terminate_{}", layout.name);
@@ -6719,10 +6724,20 @@ fn emit_actor_terminate_trampoline<'ctx>(
         )
         .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: lock acquire: {e:?}")))?;
 
-    // Call the on(stop) handler with the ActorHandler ABI (ctx as first arg).
-    builder
-        .build_call(on_stop_fn, &[ctx_ptr.into()], "terminate_on_stop_call")
-        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: on_stop call: {e:?}")))?;
+    // Call each on(stop) handler in lexical declaration order with the
+    // ActorHandler ABI (ctx as first arg). All hooks share the single
+    // acquire/release pair above.
+    for (i, on_stop_fn) in on_stop_fns.iter().enumerate() {
+        builder
+            .build_call(
+                *on_stop_fn,
+                &[ctx_ptr.into()],
+                &format!("terminate_on_stop_call_{i}"),
+            )
+            .map_err(|e| {
+                CodegenError::Llvm(format!("terminate trampoline: on_stop[{i}] call: {e:?}"))
+            })?;
+    }
 
     // Release the actor-state lock.
     builder
@@ -6894,7 +6909,14 @@ fn actor_name_from_handler_symbol(symbol: &str) -> Option<&str> {
         .map(|(actor_name, _)| actor_name)
         .or_else(|| symbol.strip_suffix("__init"))
         .or_else(|| symbol.strip_suffix("__on_start"))
-        .or_else(|| symbol.strip_suffix("__on_stop"))
+        // Indexed stop-hook symbols: `<Actor>__on_stop__<N>`.
+        // Strip the numeric suffix first, then the `__on_stop` infix.
+        .or_else(|| {
+            let after_on_stop = symbol.split_once("__on_stop__")?;
+            // Verify the suffix is a decimal index (no empty or non-numeric).
+            after_on_stop.1.parse::<usize>().ok()?;
+            Some(after_on_stop.0)
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -6927,7 +6949,7 @@ fn build_module<'ctx>(
     }
     for actor in &pipeline.actor_layouts {
         emit_actor_dispatch_trampoline(ctx, &llvm_mod, actor, &fn_symbols, &record_layouts)?;
-        if actor.on_stop_symbol.is_some() {
+        if !actor.on_stop_symbols.is_empty() {
             emit_actor_terminate_trampoline(ctx, &llvm_mod, actor, &fn_symbols)?;
         }
     }

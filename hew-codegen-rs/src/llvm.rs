@@ -1139,20 +1139,18 @@ fn place_resolved_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, place: Place) -> CodegenResu
     }
 }
 
-fn task_wrapper_name(callee_symbol: &str) -> String {
-    let sanitized: String = callee_symbol
-        .chars()
+fn sanitize_symbol(s: &str) -> String {
+    s.chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-        .collect();
-    format!("__hew_task_wrapper_{sanitized}")
+        .collect()
+}
+
+fn task_wrapper_name(callee_symbol: &str) -> String {
+    format!("__hew_task_wrapper_{}", sanitize_symbol(callee_symbol))
 }
 
 fn task_closure_wrapper_name(fn_symbol: &str) -> String {
-    let sanitized: String = fn_symbol
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-        .collect();
-    format!("__hew_task_closure_wrapper_{sanitized}")
+    format!("__hew_task_closure_wrapper_{}", sanitize_symbol(fn_symbol))
 }
 
 fn get_or_create_task_wrapper<'ctx>(

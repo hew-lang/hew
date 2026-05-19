@@ -46,6 +46,10 @@ pub enum HirDiagnosticKind {
     UnresolvedSymbol {
         name: String,
     },
+    ImportMissing {
+        module: String,
+        name: String,
+    },
     UnresolvedBuiltinOverload {
         name: String,
         arg_ty: ResolvedTy,

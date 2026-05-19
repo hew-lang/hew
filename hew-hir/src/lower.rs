@@ -1244,6 +1244,21 @@ impl LowerCtx {
         }
     }
 
+    fn unresolved_module_object(&mut self, name: &str, span: Span) -> HirExpr {
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::BitCopy,
+            ty: ResolvedTy::Unit,
+            intent: IntentKind::Read,
+            kind: HirExprKind::BindingRef {
+                name: name.to_string(),
+                resolved: ResolvedRef::Unresolved,
+            },
+            span,
+        }
+    }
+
     fn lower_regular_call(
         &mut self,
         function: &Spanned<Expr>,
@@ -2946,47 +2961,74 @@ impl LowerCtx {
                 )
             }
             Expr::FieldAccess { object, field } => {
-                // Named-field read on a record or struct type. The checker has
-                // already resolved the field and recorded the result type in
-                // `expr_types`. LESSONS: `checker-authority` P0 — the type of
-                // the field read comes exclusively from the checker side-table,
-                // never re-derived here.
-                let hir_object = self.lower_expr(object, IntentKind::Read);
-                let checker_key = SpanKey::from(&span);
-                let field_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
-                    match ResolvedTy::from_ty(&ty) {
-                        Ok(resolved) => resolved,
-                        Err(err) => {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: field.clone(),
-                                    reason: err.to_string(),
-                                },
-                                span.clone(),
-                                "field-access result type failed checker-boundary conversion",
-                            ));
-                            ResolvedTy::Unit
-                        }
-                    }
+                let missing_import = if let Expr::Identifier(module_name) = &object.0 {
+                    self.missing_stdlib_module_import(module_name)
+                        .map(|module| (module_name, module))
                 } else {
-                    // No checker entry: malformed checker output. Fail-closed.
+                    None
+                };
+                if let Some((module_name, module)) = missing_import {
+                    let name = format!("{module_name}.{field}");
                     self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: field.clone(),
-                            reason: "expr_types has no entry for field-access site".into(),
+                        HirDiagnosticKind::ImportMissing {
+                            module: module.to_string(),
+                            name,
                         },
                         span.clone(),
-                        "field-access result type missing from checker side-table",
+                        stdlib_catalog::missing_import_hint(module),
                     ));
-                    ResolvedTy::Unit
-                };
-                (
-                    HirExprKind::FieldAccess {
-                        object: Box::new(hir_object),
-                        field: field.clone(),
-                    },
-                    field_ty,
-                )
+                    (
+                        HirExprKind::FieldAccess {
+                            object: Box::new(
+                                self.unresolved_module_object(module_name, object.1.clone()),
+                            ),
+                            field: field.clone(),
+                        },
+                        ResolvedTy::Unit,
+                    )
+                } else {
+                    // Named-field read on a record or struct type. The checker has
+                    // already resolved the field and recorded the result type in
+                    // `expr_types`. LESSONS: `checker-authority` P0 — the type of
+                    // the field read comes exclusively from the checker side-table,
+                    // never re-derived here.
+                    let hir_object = self.lower_expr(object, IntentKind::Read);
+                    let checker_key = SpanKey::from(&span);
+                    let field_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+                        match ResolvedTy::from_ty(&ty) {
+                            Ok(resolved) => resolved,
+                            Err(err) => {
+                                self.diagnostics.push(HirDiagnostic::new(
+                                    HirDiagnosticKind::CheckerBoundaryViolation {
+                                        name: field.clone(),
+                                        reason: err.to_string(),
+                                    },
+                                    span.clone(),
+                                    "field-access result type failed checker-boundary conversion",
+                                ));
+                                ResolvedTy::Unit
+                            }
+                        }
+                    } else {
+                        // No checker entry: malformed checker output. Fail-closed.
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: field.clone(),
+                                reason: "expr_types has no entry for field-access site".into(),
+                            },
+                            span.clone(),
+                            "field-access result type missing from checker side-table",
+                        ));
+                        ResolvedTy::Unit
+                    };
+                    (
+                        HirExprKind::FieldAccess {
+                            object: Box::new(hir_object),
+                            field: field.clone(),
+                        },
+                        field_ty,
+                    )
+                }
             }
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
@@ -3812,13 +3854,24 @@ impl LowerCtx {
                 fn_ty,
             )
         } else {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::UnresolvedSymbol {
-                    name: name.to_string(),
-                },
-                span,
-                "identifier has no binding in resolved HIR",
-            ));
+            if let Some(module) = self.missing_stdlib_module_import(name) {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::ImportMissing {
+                        module: module.to_string(),
+                        name: name.to_string(),
+                    },
+                    span,
+                    stdlib_catalog::missing_import_hint(module),
+                ));
+            } else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::UnresolvedSymbol {
+                        name: name.to_string(),
+                    },
+                    span,
+                    "identifier has no binding in resolved HIR",
+                ));
+            }
             (
                 HirExprKind::BindingRef {
                     name: name.to_string(),
@@ -4139,6 +4192,30 @@ impl LowerCtx {
                 )
             }
             None => {
+                if let Expr::Identifier(module_name) = &receiver.0 {
+                    if let Some(module) = self.missing_stdlib_module_import(module_name) {
+                        let lowered_args: Vec<HirExpr> = args
+                            .iter()
+                            .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                            .collect();
+                        let name = format!("{module_name}.{method}");
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::ImportMissing {
+                                module: module.to_string(),
+                                name: name.clone(),
+                            },
+                            span.clone(),
+                            stdlib_catalog::missing_import_hint(module),
+                        ));
+                        return (
+                            HirExprKind::Call {
+                                callee: Box::new(self.unresolved_module_object(&name, span)),
+                                args: lowered_args,
+                            },
+                            ResolvedTy::Unit,
+                        );
+                    }
+                }
                 // No rewrite entry — fail closed.  Do not re-infer from the receiver type.
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::MethodCallNoRewrite {
@@ -4192,6 +4269,14 @@ impl LowerCtx {
             .iter()
             .rev()
             .find_map(|scope| scope.get(name).map(|(id, ty, _)| (*id, ty.clone())))
+    }
+
+    fn missing_stdlib_module_import(&self, name: &str) -> Option<&'static str> {
+        if self.lookup(name).is_none() && !self.fn_registry.contains_key(name) {
+            stdlib_catalog::missing_import_module(name)
+        } else {
+            None
+        }
     }
 
     fn push_scope(&mut self) {
@@ -5147,6 +5232,80 @@ mod tests {
                 HirDiagnosticKind::UnresolvedSymbol { name } if name == "println"
             )),
             "unsupported println overload must not fall through to UnresolvedSymbol: {:#?}",
+            lowered.diagnostics
+        );
+    }
+
+    #[test]
+    fn missing_stdlib_module_field_emits_import_missing() {
+        let parsed = hew_parser::parse(
+            r"
+            fn main() {
+                let _ = fs.read;
+            }
+            ",
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+
+        let lowered = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::ImportMissing { module, name }
+                    if module == "std::fs"
+                        && name == "fs.read"
+                        && diagnostic.note == "add 'import std::fs;' at the top of the file"
+            )),
+            "expected missing import diagnostic for fs.read, got {:#?}",
+            lowered.diagnostics
+        );
+        assert!(
+            !lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::UnresolvedSymbol { name } if name == "fs"
+            )),
+            "fs.read must not fall through to UnresolvedSymbol: {:#?}",
+            lowered.diagnostics
+        );
+    }
+
+    #[test]
+    fn missing_stdlib_module_call_emits_import_missing() {
+        let parsed = hew_parser::parse(
+            r#"
+            fn main() {
+                let _ = fs.read("test.txt");
+            }
+            "#,
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+
+        let lowered = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::ImportMissing { module, name }
+                    if module == "std::fs"
+                        && name == "fs.read"
+                        && diagnostic.note == "add 'import std::fs;' at the top of the file"
+            )),
+            "expected missing import diagnostic for fs.read call, got {:#?}",
+            lowered.diagnostics
+        );
+        assert!(
+            !lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::MethodCallNoRewrite { method } if method == "read"
+            )),
+            "fs.read call must not fall through to MethodCallNoRewrite: {:#?}",
             lowered.diagnostics
         );
     }

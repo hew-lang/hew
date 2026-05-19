@@ -554,6 +554,20 @@ pub fn entries() -> &'static [BuiltinEntry] {
 }
 
 #[must_use]
+pub fn missing_import_module(short_name: &str) -> Option<&'static str> {
+    match short_name {
+        "fs" => Some("std::fs"),
+        "json" => Some("std::encoding::json"),
+        _ => None,
+    }
+}
+
+#[must_use]
+pub fn missing_import_hint(module: &str) -> String {
+    format!("add 'import {module};' at the top of the file")
+}
+
+#[must_use]
 pub fn is_overloaded_builtin(name: &str) -> bool {
     matches!(
         name,

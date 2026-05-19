@@ -708,6 +708,20 @@ fn intern_runtime_decl<'ctx>(
         // HewTask and its result buffer. Called by the scope teardown path
         // after all tasks have been awaited.
         "hew_task_free" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_require_execution_context() -> *mut HewExecutionContext
+        // (`hew-runtime/src/execution_context.rs`). Returns the current
+        // per-dispatch execution context. Used by codegen-emitted terminate
+        // trampolines to bridge the terminate-fn ABI (`fn(*mut c_void)`) to
+        // the ActorHandler ABI (`fn(*mut HewExecutionContext)`).
+        "hew_require_execution_context" => ptr_ty.fn_type(&[], false),
+        // hew_actor_set_terminate(actor: *mut HewActor,
+        //                         terminate_fn: unsafe extern "C" fn(*mut c_void)) -> void
+        // (`hew-runtime/src/actor.rs`). Registers the codegen-emitted
+        // terminate trampoline on the actor so the runtime calls it at normal
+        // actor teardown. Called once at spawn time, after hew_actor_spawn.
+        "hew_actor_set_terminate" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "intern_runtime_decl: codegen has no LLVM signature for runtime \
@@ -1347,14 +1361,16 @@ fn emit_actor_spawn_lifecycle<'ctx>(
 ) -> CodegenResult<()> {
     let init_name = format!("{actor_name}__init");
     let start_name = format!("{actor_name}__on_start");
+    let terminate_name = format!("__terminate_{actor_name}");
     let init_fn = fn_ctx.llvm_mod.get_function(&init_name);
     let start_fn = fn_ctx.llvm_mod.get_function(&start_name);
+    let terminate_fn = fn_ctx.llvm_mod.get_function(&terminate_name);
     if init_fn.is_none() && !init_args.is_empty() {
         return Err(CodegenError::FailClosed(format!(
             "spawn `{actor_name}` carried init args but `{init_name}` was not declared"
         )));
     }
-    if init_fn.is_none() && start_fn.is_none() {
+    if init_fn.is_none() && start_fn.is_none() && terminate_fn.is_none() {
         return Ok(());
     }
 
@@ -1384,6 +1400,30 @@ fn emit_actor_spawn_lifecycle<'ctx>(
             .map_err(|e| CodegenError::Llvm(format!("actor on(start) call: {e:?}")))?;
     }
     emit_actor_state_lock_call(fn_ctx, spawned, "hew_actor_state_lock_release")?;
+
+    // Register the terminate trampoline on the actor so the runtime fires it
+    // at normal teardown. Done after the init/on(start) block (outside the
+    // lock) so that the registration write is not ordered before any state
+    // initialisation performed by init.
+    if let Some(terminate_fn) = terminate_fn {
+        let mut runtime_decls = RuntimeDeclMap::new();
+        let set_terminate = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut runtime_decls,
+            "hew_actor_set_terminate",
+        )?;
+        let fn_ptr = terminate_fn.as_global_value().as_pointer_value();
+        fn_ctx
+            .builder
+            .build_call(
+                set_terminate,
+                &[spawned.into(), fn_ptr.into()],
+                "hew_actor_set_terminate_call",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("hew_actor_set_terminate call: {e:?}")))?;
+    }
+
     Ok(())
 }
 
@@ -5937,6 +5977,128 @@ fn lower_function<'ctx>(
     Ok(())
 }
 
+/// Emit a C-ABI terminate trampoline for an actor's `#[on(stop)]` hook.
+///
+/// The runtime's `terminate_fn` slot has ABI `fn(*mut c_void state) -> void`.
+/// The ActorHandler-lowered `__on_stop` function has ABI
+/// `fn(*mut HewExecutionContext) -> void`. This trampoline bridges the two:
+///
+/// 1. Acquire the actor-state lock via `hew_actor_state_lock_acquire` (using
+///    the actor pointer from the installed execution context, offset 0).
+/// 2. Call `hew_require_execution_context()` to get the context already
+///    installed by `call_terminate_fn` before this trampoline is entered.
+/// 3. Call `<Actor>__on_stop(ctx)` with the ActorHandler ABI.
+/// 4. Release the lock via `hew_actor_state_lock_release`.
+///
+/// The `state` parameter is unused — the execution context carries the actor
+/// pointer (offset 0) and all other dispatch-substrate state. `state` is
+/// present only to satisfy the `terminate_fn: fn(*mut c_void) -> void` ABI.
+///
+/// Panic safety: if the on(stop) body panics, `call_terminate_fn`'s
+/// `catch_unwind` catches it and releases the lock via
+/// `hew_actor_state_lock_release_after_panic` (LESSONS: cleanup-all-exits P0).
+fn emit_actor_terminate_trampoline<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    layout: &ActorLayout,
+    fn_symbols: &FnSymbolMap<'ctx>,
+) -> CodegenResult<()> {
+    let on_stop_symbol = layout.on_stop_symbol.as_deref().ok_or_else(|| {
+        CodegenError::FailClosed("emit_actor_terminate_trampoline: no on_stop_symbol".into())
+    })?;
+    let on_stop_fn = fn_symbols.get(on_stop_symbol).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "terminate trampoline for `{}` references undeclared on_stop handler `{on_stop_symbol}`",
+            layout.name
+        ))
+    })?;
+    let (on_stop_fn, _, _) = on_stop_fn.real(on_stop_symbol, "terminate trampoline")?;
+
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let trampoline_name = format!("__terminate_{}", layout.name);
+    let fn_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
+    let trampoline_fn = llvm_mod.add_function(&trampoline_name, fn_ty, Some(Linkage::Internal));
+    let builder = ctx.create_builder();
+    let entry = ctx.append_basic_block(trampoline_fn, "entry");
+    builder.position_at_end(entry);
+
+    // Declare required runtime functions inline (the trampoline has no FnCtx).
+    let require_ctx_ty = ptr_ty.fn_type(&[], false);
+    let require_ctx_fn = llvm_mod
+        .get_function("hew_require_execution_context")
+        .unwrap_or_else(|| {
+            llvm_mod.add_function("hew_require_execution_context", require_ctx_ty, None)
+        });
+    let lock_acquire_ty = ctx.i32_type().fn_type(&[ptr_ty.into()], false);
+    let lock_acquire_fn = llvm_mod
+        .get_function("hew_actor_state_lock_acquire")
+        .unwrap_or_else(|| {
+            llvm_mod.add_function("hew_actor_state_lock_acquire", lock_acquire_ty, None)
+        });
+    let lock_release_ty = ctx.i32_type().fn_type(&[ptr_ty.into()], false);
+    let lock_release_fn = llvm_mod
+        .get_function("hew_actor_state_lock_release")
+        .unwrap_or_else(|| {
+            llvm_mod.add_function("hew_actor_state_lock_release", lock_release_ty, None)
+        });
+
+    // Get the current execution context (installed by call_terminate_fn).
+    let ctx_ptr = builder
+        .build_call(require_ctx_fn, &[], "terminate_ctx")
+        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: require_ctx call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_require_execution_context returned void".into())
+        })?
+        .into_pointer_value();
+
+    // Load the actor pointer from context offset 0 (HEW_CTX_OFFSET_ACTOR).
+    let actor_ptr = unsafe {
+        builder
+            .build_gep(
+                ctx.i8_type(),
+                ctx_ptr,
+                &[ctx.i64_type().const_int(HEW_CTX_OFFSET_ACTOR as u64, false)],
+                "terminate_actor_slot",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: actor gep: {e:?}")))?
+    };
+    let actor_val = builder
+        .build_load(ptr_ty, actor_ptr, "terminate_actor")
+        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: actor load: {e:?}")))?
+        .into_pointer_value();
+
+    // Acquire the actor-state lock (same protocol as dispatch trampolines).
+    builder
+        .build_call(
+            lock_acquire_fn,
+            &[actor_val.into()],
+            "terminate_lock_acquire",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: lock acquire: {e:?}")))?;
+
+    // Call the on(stop) handler with the ActorHandler ABI (ctx as first arg).
+    builder
+        .build_call(on_stop_fn, &[ctx_ptr.into()], "terminate_on_stop_call")
+        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: on_stop call: {e:?}")))?;
+
+    // Release the actor-state lock.
+    builder
+        .build_call(
+            lock_release_fn,
+            &[actor_val.into()],
+            "terminate_lock_release",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: lock release: {e:?}")))?;
+
+    builder
+        .build_return(None)
+        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: return: {e:?}")))?;
+
+    Ok(())
+}
+
 fn emit_actor_dispatch_trampoline<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -6091,6 +6253,7 @@ fn actor_name_from_handler_symbol(symbol: &str) -> Option<&str> {
         .map(|(actor_name, _)| actor_name)
         .or_else(|| symbol.strip_suffix("__init"))
         .or_else(|| symbol.strip_suffix("__on_start"))
+        .or_else(|| symbol.strip_suffix("__on_stop"))
 }
 
 // ---------------------------------------------------------------------------
@@ -6123,6 +6286,9 @@ fn build_module<'ctx>(
     }
     for actor in &pipeline.actor_layouts {
         emit_actor_dispatch_trampoline(ctx, &llvm_mod, actor, &fn_symbols, &record_layouts)?;
+        if actor.on_stop_symbol.is_some() {
+            emit_actor_terminate_trampoline(ctx, &llvm_mod, actor, &fn_symbols)?;
+        }
     }
     for func in &pipeline.raw_mir {
         // Match by name: elaborated_mir is parallel to raw_mir when the

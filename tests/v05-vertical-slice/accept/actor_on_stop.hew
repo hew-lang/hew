@@ -1,0 +1,31 @@
+actor Counter {
+    let count: int;
+
+    init(initial: int) {
+        count = initial;
+    }
+
+    receive fn increment(n: int) {
+        count = count + n;
+    }
+
+    receive fn total() -> int {
+        count
+    }
+
+    #[on(start)]
+    fn boot() {
+        count += 1;
+    }
+
+    #[on(stop)]
+    fn shutdown() {
+        count = 0;
+    }
+}
+
+fn main() -> int {
+    let counter = spawn Counter(initial: 9);
+    counter.increment(32);
+    counter.total()
+}

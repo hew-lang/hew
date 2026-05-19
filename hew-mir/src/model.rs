@@ -81,6 +81,8 @@ pub struct ActorLayout {
     pub init_symbol: Option<String>,
     /// `#[on(start)]` handler symbol. `None` when the actor has no start hook.
     pub on_start_symbol: Option<String>,
+    /// `#[on(stop)]` handler symbol. `None` when the actor has no stop hook.
+    pub on_stop_symbol: Option<String>,
     /// Receive handlers in message-type order.
     pub handlers: Vec<ActorHandlerLayout>,
 }

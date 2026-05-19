@@ -335,6 +335,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         .iter()
                         .find(|hook| hook.kind == HirLifecycleHookKind::Start)
                         .map(|_| mangle_actor_start_handler(&actor.name)),
+                    on_stop_symbol: actor
+                        .lifecycle_hooks
+                        .iter()
+                        .find(|hook| hook.kind == HirLifecycleHookKind::Stop)
+                        .map(|_| mangle_actor_stop_handler(&actor.name)),
                     handlers: actor
                         .receive_handlers
                         .iter()
@@ -776,6 +781,10 @@ fn lower_actor_init_handler(
     clippy::too_many_arguments,
     reason = "actor lifecycle lowering threads the same module tables as regular function lowering"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each lifecycle hook kind (Start, Stop, Crash, Upgrade) needs its own arm; extracting would not reduce conceptual complexity"
+)]
 fn lower_actor_lifecycle_handlers(
     actor: &HirActorDecl,
     type_classes: &hew_hir::TypeClassTable,
@@ -830,14 +839,47 @@ fn lower_actor_lifecycle_handlers(
                     crate::model::FunctionCallConv::ActorHandler,
                 ));
             }
-            HirLifecycleHookKind::Stop => push_lifecycle_not_wired_diagnostic(
-                diagnostics,
-                &actor.name,
-                &hook.name,
-                "OnStopNotYetWired",
-                "stop",
-                "actor shutdown lifecycle invocation is not wired yet",
-            ),
+            HirLifecycleHookKind::Stop => {
+                let emit_name = mangle_actor_stop_handler(&actor.name);
+                let duplicate_label =
+                    format!("actor `{}` #[on(stop)] hook `{}`", actor.name, hook.name);
+                if let Some(existing) = emitted_symbols.get(&emit_name) {
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::ActorHandlerSymbolCollision {
+                            symbol: emit_name,
+                            existing: existing.clone(),
+                            duplicate: duplicate_label,
+                        },
+                        note: "actor #[on(stop)] handler symbol mangling must be one-to-one before MIR emission"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                emitted_symbols.insert(emit_name.clone(), duplicate_label);
+
+                let synthetic_fn = HirFn {
+                    id: actor.id,
+                    node: actor.node,
+                    name: format!("{}::{}", actor.name, hook.name),
+                    type_params: Vec::new(),
+                    params: hook.params.clone(),
+                    return_ty: hook.return_ty.clone(),
+                    body: hook.body.clone(),
+                    span: hook.span.clone(),
+                };
+                lowered.push(lower_function(
+                    &synthetic_fn,
+                    emit_name,
+                    HashMap::new(),
+                    type_classes,
+                    record_field_orders,
+                    actor_layouts,
+                    Some(&actor.name),
+                    module_fn_names,
+                    call_site_type_args,
+                    crate::model::FunctionCallConv::ActorHandler,
+                ));
+            }
             HirLifecycleHookKind::Crash => push_lifecycle_not_wired_diagnostic(
                 diagnostics,
                 &actor.name,
@@ -892,6 +934,10 @@ fn mangle_actor_init_handler(actor_name: &str) -> String {
 
 fn mangle_actor_start_handler(actor_name: &str) -> String {
     format!("{actor_name}__on_start")
+}
+
+fn mangle_actor_stop_handler(actor_name: &str) -> String {
+    format!("{actor_name}__on_stop")
 }
 
 fn unknown_self_fields_in_block(block: &HirBlock, state_fields: &HashSet<String>) -> Vec<String> {

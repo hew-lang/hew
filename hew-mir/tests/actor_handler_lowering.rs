@@ -244,7 +244,6 @@ fn actor_handler_generator_receive_fn_emits_unsupported_diagnostic_and_no_body()
 fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
     let mut ids = IdGen::default();
     let start_return = return_none_stmt(&mut ids);
-    let stop_return = return_none_stmt(&mut ids);
     let crash_return = return_none_stmt(&mut ids);
     let upgrade_return = return_none_stmt(&mut ids);
     let actor = {
@@ -256,14 +255,6 @@ fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
                 params: vec![],
                 return_ty: ResolvedTy::Unit,
                 body: block(&mut ids, vec![start_return], None, ResolvedTy::Unit),
-                span: 0..0,
-            },
-            HirLifecycleHook {
-                kind: HirLifecycleHookKind::Stop,
-                name: "shutdown".to_string(),
-                params: vec![],
-                return_ty: ResolvedTy::Unit,
-                body: block(&mut ids, vec![stop_return], None, ResolvedTy::Unit),
                 span: 0..0,
             },
             HirLifecycleHook {
@@ -298,18 +289,67 @@ fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
         .find(|func| func.name == "Counter__on_start")
         .expect("start hook MIR");
     assert_eq!(start.call_conv, FunctionCallConv::ActorHandler);
-    for diagnostic_name in [
-        "OnStopNotYetWired",
-        "OnCrashNotYetWired",
-        "OnUpgradeNotYetWired",
-    ] {
-        assert!(pipeline.diagnostics.iter().any(|diag| {
+    // on(crash) and on(upgrade) remain fail-closed until their runtime wiring lands.
+    for diagnostic_name in ["OnCrashNotYetWired", "OnUpgradeNotYetWired"] {
+        assert!(
+            pipeline.diagnostics.iter().any(|diag| {
+                matches!(
+                    &diag.kind,
+                    MirDiagnosticKind::UnsupportedNode { reason } if reason.contains(diagnostic_name)
+                )
+            }),
+            "{diagnostic_name} must still be fail-closed"
+        );
+    }
+    // on(stop) is now wired — no fail-closed diagnostic for it.
+    assert!(
+        !pipeline.diagnostics.iter().any(|diag| {
             matches!(
                 &diag.kind,
-                MirDiagnosticKind::UnsupportedNode { reason } if reason.contains(diagnostic_name)
+                MirDiagnosticKind::UnsupportedNode { reason } if reason.contains("OnStop")
             )
-        }));
-    }
+        }),
+        "on(stop) must not emit a fail-closed diagnostic after wiring"
+    );
+}
+
+#[test]
+fn actor_lifecycle_stop_lowers_to_actor_handler_function() {
+    let mut ids = IdGen::default();
+    let stop_return = return_none_stmt(&mut ids);
+    let actor = {
+        let mut actor = actor(&mut ids, "Counter", vec![]);
+        actor.lifecycle_hooks = vec![HirLifecycleHook {
+            kind: HirLifecycleHookKind::Stop,
+            name: "shutdown".to_string(),
+            params: vec![],
+            return_ty: ResolvedTy::Unit,
+            body: block(&mut ids, vec![stop_return], None, ResolvedTy::Unit),
+            span: 0..0,
+        }];
+        actor
+    };
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
+
+    // on_stop_symbol populated in the actor layout.
+    assert_eq!(
+        pipeline.actor_layouts[0].on_stop_symbol.as_deref(),
+        Some("Counter__on_stop")
+    );
+    // MIR function emitted with ActorHandler calling convention.
+    let stop = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Counter__on_stop")
+        .expect("on(stop) hook must produce a MIR function");
+    assert_eq!(stop.call_conv, FunctionCallConv::ActorHandler);
+    // No fail-closed diagnostic emitted.
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "on(stop) lowering must not emit diagnostics; got: {:?}",
+        pipeline.diagnostics
+    );
 }
 
 #[test]

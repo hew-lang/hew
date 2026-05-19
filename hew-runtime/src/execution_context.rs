@@ -144,6 +144,23 @@ pub(crate) fn require_current_context() -> *mut HewExecutionContext {
     ctx
 }
 
+/// Return the current execution context pointer for use in codegen-emitted
+/// terminate trampolines. Called from `__terminate_<Actor>` C-ABI functions
+/// that bridge from the runtime's `fn(*mut c_void)` terminate-fn ABI to the
+/// `fn(*mut HewExecutionContext)` `ActorHandler` ABI. The context is guaranteed
+/// non-null when called from within `call_terminate_fn`, which installs it
+/// before invoking the terminate callback.
+///
+/// # Safety
+///
+/// Must be called from a codegen-emitted terminate trampoline invoked by
+/// `call_terminate_fn`. The returned pointer is valid for the duration of
+/// the terminate callback and must not be stored beyond that scope.
+#[no_mangle]
+pub unsafe extern "C" fn hew_require_execution_context() -> *mut HewExecutionContext {
+    require_current_context()
+}
+
 #[cfg(test)]
 pub(crate) struct TestExecutionContext {
     ctx: *mut HewExecutionContext,

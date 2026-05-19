@@ -11,6 +11,11 @@ fn actor_init_on_start_compile_and_exit_code() {
     compile_and_run_actor_fixture("actor_counter_init", 42);
 }
 
+#[test]
+fn actor_on_stop_compile_and_exit_code() {
+    compile_and_run_actor_fixture("actor_on_stop", 42);
+}
+
 fn compile_and_run_actor_fixture(fixture_name: &str, expected_exit_code: i32) {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo = manifest_dir.parent().expect("workspace root");

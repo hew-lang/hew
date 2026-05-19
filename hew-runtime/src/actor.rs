@@ -1327,11 +1327,28 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     if is_normal_path {
         // catch_unwind guards against Rust panics; the sigsetjmp frame
         // (when present) guards against Hew panics and signals.
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        //
+        // The terminate callback (emitted by codegen) acquires the actor-state
+        // lock before calling the user's on(stop) body, mirroring the
+        // dispatch-handler lock protocol (LESSONS: cleanup-all-exits P0).
+        // If the user body panics, catch_unwind returns Err and the lock is
+        // still held — release it here on the panic path so teardown can
+        // proceed (state_drop_fn and arena free both run unconditionally).
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // SAFETY: terminate_fn and state are valid; actor is not
             // being dispatched.
             unsafe { terminate_fn(state) };
         }));
+        if result.is_err() {
+            // Release a lock the trampoline may have acquired before the panic.
+            // This is a no-op when no terminate_fn was set or the lock was
+            // already released normally.
+            // SAFETY: actor is valid; the lock registry tolerates an unheld
+            // or unregistered lock (same invariant as the scheduler panic path).
+            unsafe {
+                let _ = hew_actor_state_lock_release_after_panic(actor);
+            }
+        }
         if !jmp_buf_ptr.is_null() {
             crate::signal::clear_dispatch_recovery();
         }
@@ -1340,6 +1357,12 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
         // already in a terminal state so hew_actor_trap is a no-op for
         // the state transition, but handle_crash_recovery properly
         // clears in_recovery and logs a crash report.
+        // Release any lock the trampoline acquired before the crash (same
+        // invariant as the scheduler signal-recovery path at scheduler.rs:991).
+        // SAFETY: actor is valid; the release helper tolerates an unheld lock.
+        unsafe {
+            let _ = hew_actor_state_lock_release_after_panic(actor);
+        }
         // SAFETY: called immediately after sigsetjmp returned non-zero.
         unsafe { crate::signal::handle_crash_recovery() };
     }
@@ -1376,9 +1399,16 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     }
 
     let state = a.state;
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         unsafe { terminate_fn(state) };
     }));
+    if result.is_err() {
+        // Release any lock the trampoline acquired before the panic.
+        // SAFETY: actor is valid; the release helper tolerates an unheld lock.
+        unsafe {
+            let _ = hew_actor_state_lock_release_after_panic(actor);
+        }
+    }
     a.terminate_finished.store(true, Ordering::Release);
 }
 
@@ -6513,6 +6543,78 @@ mod tests {
         assert!(
             msg.contains("OOM"),
             "error message should mention OOM, got: {msg}"
+        );
+    }
+
+    static TERMINATE_CALL_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    unsafe extern "C" fn counting_terminate_callback(_state: *mut c_void) {
+        TERMINATE_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn terminate_fires_on_normal_stop_and_not_on_crash() {
+        // LESSONS: cleanup-all-exits (P0) — on(stop) must run at normal actor
+        // teardown (finalize_quiescent_actor_cleanup_with_options) but must NOT
+        // run when the actor is in the Crashed state (same path guards
+        // state_drop_fn). Pins the crash-skip invariant and the normal-stop
+        // fire invariant with a minimal in-process test.
+        //
+        // Both actors spawn with a non-null state (8-byte malloc) so
+        // call_terminate_fn does not bail out at the null-state early-return.
+        let _guard = crate::runtime_test_guard();
+        TERMINATE_CALL_COUNT.store(0, Ordering::SeqCst);
+
+        // --- normal-stop path: terminate_fn must fire ---
+        // SAFETY: malloc returns a valid 8-byte allocation or null; freed below.
+        let src = unsafe { libc::malloc(8) };
+        assert!(!src.is_null());
+        // SAFETY: spawn deep-copies the 8 bytes.
+        let stopped_actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
+        assert!(!stopped_actor.is_null());
+        // SAFETY: spawn copied the bytes; release the source.
+        unsafe { libc::free(src) };
+
+        // SAFETY: actor is valid; terminate not yet called.
+        unsafe {
+            hew_actor_set_terminate(stopped_actor, counting_terminate_callback);
+            let a = &*stopped_actor;
+            a.actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            let rc = hew_actor_free(stopped_actor);
+            assert_eq!(rc, 0, "hew_actor_free on stopped actor must succeed");
+        }
+        assert_eq!(
+            TERMINATE_CALL_COUNT.load(Ordering::SeqCst),
+            1,
+            "terminate callback must fire exactly once for a Stopped actor"
+        );
+
+        // --- crash path: terminate_fn must NOT fire ---
+        TERMINATE_CALL_COUNT.store(0, Ordering::SeqCst);
+        // SAFETY: malloc returns a valid 8-byte allocation or null; freed below.
+        let src = unsafe { libc::malloc(8) };
+        assert!(!src.is_null());
+        // SAFETY: spawn deep-copies the bytes.
+        let crashed_actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
+        assert!(!crashed_actor.is_null());
+        // SAFETY: spawn copied the bytes; release the source.
+        unsafe { libc::free(src) };
+
+        // SAFETY: actor is valid; terminate registered but must not run on crash.
+        unsafe {
+            hew_actor_set_terminate(crashed_actor, counting_terminate_callback);
+            let a = &*crashed_actor;
+            a.actor_state
+                .store(HewActorState::Crashed as i32, Ordering::Release);
+            let rc = hew_actor_free(crashed_actor);
+            assert_eq!(rc, 0, "hew_actor_free on crashed actor must succeed");
+        }
+        assert_eq!(
+            TERMINATE_CALL_COUNT.load(Ordering::SeqCst),
+            0,
+            "terminate callback must NOT fire for a Crashed actor"
         );
     }
 

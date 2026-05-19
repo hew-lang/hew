@@ -321,111 +321,16 @@ const RESTART_TEMPORARY: c_int = 2;
 
 // ── Exit reasons ─────────────────────────────────────────────────────────
 //
-// Trap error codes used by `hew_actor_trap` to distinguish named exit kinds
-// from raw OS signal numbers. OS signal numbers are < 32 on all supported
-// platforms. Hew-specific codes start at 200 to leave room for POSIX signals
-// and any future OS-specific ranges.
-
-/// Error code stored in `actor.error_code` when an actor's arena cap is
-/// exhausted. Produced by `hew_arena_malloc` routing through the longjmp
-/// crash seam when `cap > 0` and an allocation would exceed it.
-///
-/// Distinct from any POSIX signal number (which are < 32 on all supported
-/// platforms). Code 200 is reserved for this purpose and must not be reused
-/// for any other exit kind.
-pub const HEW_TRAP_HEAP_EXCEEDED: i32 = 200;
-
-/// Error code recorded when a MIR `Terminator::Trap { kind: IntegerOverflow }`
-/// fires inside an actor dispatch. Routed through the longjmp crash seam by
-/// `hew_trap_with_code` so the supervisor can distinguish overflow from a
-/// raw SIGILL (the LLVM `llvm.trap` fallback on non-actor contexts).
-pub const HEW_TRAP_INTEGER_OVERFLOW: i32 = 201;
-
-/// Error code recorded for `Terminator::Trap { kind: DivideByZero }`.
-pub const HEW_TRAP_DIVIDE_BY_ZERO: i32 = 202;
-
-/// Error code recorded for `Terminator::Trap { kind: SignedMinDivNegOne }`
-/// — signed integer division of the minimum value by `-1`, whose mathematical
-/// result is not representable in the operand width.
-pub const HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE: i32 = 203;
-
-/// Error code recorded for `Terminator::Trap { kind: ShiftOutOfRange }`.
-pub const HEW_TRAP_SHIFT_OUT_OF_RANGE: i32 = 204;
-
-/// Error code recorded for `Terminator::Trap { kind: IndexOutOfBounds }`.
-pub const HEW_TRAP_INDEX_OUT_OF_BOUNDS: i32 = 205;
-
-/// Error code recorded when codegen checks the i32 return value of
-/// `hew_actor_send_by_id` and finds it nonzero — the recipient was gone, the
-/// queue was full, or the actor ID routed to a remote partition that rejected
-/// the message. Codegen routes through `hew_trap_with_code(206)` before
-/// `llvm.trap` so the supervisor can distinguish this case from a raw signal.
-pub const HEW_TRAP_ACTOR_SEND_FAILED: i32 = 206;
-
-/// Named exit reason for a crashed actor.
-///
-/// Interprets the i32 `error_code` stored on a `HewActor` after a crash.
-/// The supervisor sees a raw `HewActorState::Crashed`; callers can call
-/// `ExitReason::from_error_code(hew_actor_get_error(actor))` to get a named
-/// reason.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExitReason {
-    /// Actor's per-dispatch arena cap was exceeded (error code 200).
-    ///
-    /// The arena returned null from `hew_arena_malloc` because allocating the
-    /// requested bytes would push `used` above `cap`. The actor crashed via
-    /// the normal longjmp/supervisor seam with this code stored as its
-    /// `error_code`, so teardown (timers, links, monitors, arena) runs as
-    /// for any other crash (`cleanup-all-exits` LESSON).
-    HeapExceeded,
-    /// Actor crashed because a `Terminator::Trap { kind: IntegerOverflow }`
-    /// fired during dispatch (error code 201). The MIR producer attaches
-    /// this kind to `+`, `-`, `*` overflow on the default (non-wrapping)
-    /// operators; codegen routes through `hew_trap_with_code(201)` before
-    /// emitting `llvm.trap` as the non-actor fallback.
-    IntegerOverflow,
-    /// Actor crashed on `/` or `%` with a zero divisor (error code 202).
-    DivideByZero,
-    /// Actor crashed on signed `i{N}::MIN / -1` (error code 203), whose
-    /// mathematical result overflows the operand width.
-    SignedMinDivNegOne,
-    /// Actor crashed on `<<` or `>>` with a shift count outside `[0, width)`
-    /// (error code 204).
-    ShiftOutOfRange,
-    /// Actor crashed on an out-of-bounds index into a `Vec<T>` or array
-    /// (error code 205).
-    IndexOutOfBounds,
-    /// Actor crashed because `hew_actor_send_by_id` returned a nonzero status
-    /// (error code 206). The recipient was gone, the mailbox was full, or the
-    /// remote partition rejected the message. Codegen's fail-closed path
-    /// triggers `hew_trap_with_code(206)` rather than silently proceeding.
-    ActorSendFailed,
-    /// Actor crashed with a hardware signal (SIGSEGV, SIGBUS, SIGFPE, SIGILL)
-    /// or via `hew_panic()` / `hew_panic_msg()`. The raw signal number is
-    /// preserved.
-    Signal(i32),
-    /// Actor stopped normally (`error_code` == 0).
-    Normal,
-}
-
-impl ExitReason {
-    /// Convert a raw `error_code` from `hew_actor_get_error` into a named
-    /// `ExitReason`.
-    #[must_use]
-    pub fn from_error_code(code: i32) -> Self {
-        match code {
-            0 => ExitReason::Normal,
-            HEW_TRAP_HEAP_EXCEEDED => ExitReason::HeapExceeded,
-            HEW_TRAP_INTEGER_OVERFLOW => ExitReason::IntegerOverflow,
-            HEW_TRAP_DIVIDE_BY_ZERO => ExitReason::DivideByZero,
-            HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE => ExitReason::SignedMinDivNegOne,
-            HEW_TRAP_SHIFT_OUT_OF_RANGE => ExitReason::ShiftOutOfRange,
-            HEW_TRAP_INDEX_OUT_OF_BOUNDS => ExitReason::IndexOutOfBounds,
-            HEW_TRAP_ACTOR_SEND_FAILED => ExitReason::ActorSendFailed,
-            sig => ExitReason::Signal(sig),
-        }
-    }
-}
+// Trap error codes and the typed `ExitReason` live in
+// [`crate::internal::types`] because both native and WASM arena/dispatch
+// paths must stamp the canonical code on an actor crash, and the supervisor
+// module is `cfg(not(target_arch = "wasm32"))`. They are re-exported here so
+// existing `crate::supervisor::*` call sites keep resolving.
+pub use crate::internal::types::{
+    ExitReason, HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_HEAP_EXCEEDED,
+    HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_SHIFT_OUT_OF_RANGE,
+    HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+};
 
 /// C-ABI trap entry-point invoked by codegen-emitted IR before the
 /// `llvm.trap` terminator on a `Terminator::Trap { kind }` block.

@@ -885,3 +885,127 @@ fn wasm_bridge_send_failure_does_not_wake_actor() {
 
     crate::scheduler_wasm::hew_sched_shutdown();
 }
+
+// ── HeapExceeded parity ─────────────────────────────────────────────────────
+//
+// Native arena cap exhaustion routes through the longjmp seam, stamping
+// `HEW_TRAP_HEAP_EXCEEDED` on `actor.error_code` so the supervisor sees
+// `ExitReason::HeapExceeded`. WASM has no longjmp; the arena now stamps the
+// same code on the current actor and panics, and the activation's
+// catch_unwind boundary transitions the actor to `Crashed`. The two paths
+// surface the same `ExitReason`.
+//
+// This test exercises the WASM-only branch of `arena_wasm::hew_arena_malloc`
+// directly: under the native-test build of the `arena_wasm` module the cap
+// branch is `#[cfg(target_arch = "wasm32")]`-gated, but the substrate move
+// of `HEW_TRAP_HEAP_EXCEEDED` + `ExitReason` into `internal::types` ensures
+// that whichever target the runtime is built for, the named exit reason is
+// reachable through one symbol path. The runtime-side WASM panic path is
+// covered by:
+//   - `arena_wasm::hew_arena_malloc` returning null on cap-overflow when no
+//     ctx-actor is installed (existing test in `arena_wasm.rs`), and
+//   - the scheduler-loop change in `scheduler_wasm::activate_actor_wasm`
+//     that transitions to Crashed when `error_code` is non-zero after a
+//     dispatch unwind (covered by the dispatch-level wiring; ungated on
+//     wasm32 builds and exercised by the WASM end-to-end runs in `hew-cli`).
+
+/// Native test that confirms the substrate invariant: a `HEW_TRAP_*` code
+/// stamped on `actor.error_code` survives a `from_error_code` round-trip
+/// to `ExitReason::HeapExceeded` regardless of whether the lookup happens
+/// from native or WASM code paths.
+#[test]
+fn heap_exceeded_exit_reason_round_trips_through_internal_types() {
+    use crate::internal::types::{ExitReason, HEW_TRAP_HEAP_EXCEEDED};
+    assert_eq!(HEW_TRAP_HEAP_EXCEEDED, 200);
+    assert_eq!(
+        ExitReason::from_error_code(HEW_TRAP_HEAP_EXCEEDED),
+        ExitReason::HeapExceeded,
+    );
+    // Cross-check the re-export from the native-only supervisor module.
+    assert_eq!(
+        crate::supervisor::HEW_TRAP_HEAP_EXCEEDED,
+        HEW_TRAP_HEAP_EXCEEDED,
+        "supervisor::HEW_TRAP_HEAP_EXCEEDED must re-export the canonical \
+         constant in internal::types"
+    );
+}
+
+/// Native test that exercises the WASM activation crash-transition logic:
+/// when a dispatch panics with `actor.error_code != 0`, the scheduler must
+/// observe the code and transition the actor to `Crashed`. The WASM-only
+/// `arena_wasm::hew_arena_malloc` cap branch installs both the code and
+/// the panic; this test verifies the *scheduler half* of the seam directly
+/// by stamping the code from a dispatch handler that panics on its own.
+unsafe extern "C-unwind" fn stamp_then_panic_dispatch(
+    ctx: *mut crate::execution_context::HewExecutionContext,
+    _state: *mut c_void,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _data_size: usize,
+) {
+    // SAFETY: scheduler installs a non-null canonical context before dispatch.
+    unsafe {
+        let actor = (*ctx).actor;
+        if !actor.is_null() {
+            (*actor).error_code.store(
+                crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+                Ordering::Release,
+            );
+        }
+    }
+    // Simulate the panic that `arena_wasm::hew_arena_malloc` raises on cap
+    // exhaustion under wasm32.
+    panic!("simulated HEW_TRAP_HEAP_EXCEEDED panic");
+}
+
+#[test]
+fn wasm_activation_transitions_actor_to_crashed_when_dispatch_stamps_error_code() {
+    let _guard = crate::runtime_test_guard();
+    crate::scheduler_wasm::hew_sched_shutdown();
+    crate::scheduler_wasm::hew_sched_init();
+
+    // SAFETY: test owns the mailbox and actor for the full scenario.
+    unsafe {
+        let mailbox = crate::mailbox_wasm::hew_mailbox_new();
+        assert!(!mailbox.is_null());
+
+        let actor = stub_dispatch_actor(mailbox.cast(), stamp_then_panic_dispatch);
+        let actor_ptr: *mut HewActor = Box::into_raw(actor);
+
+        let payload: i32 = 0;
+        let rc = crate::mailbox_wasm::hew_mailbox_send(
+            mailbox.cast(),
+            1,
+            (&raw const payload).cast_mut().cast(),
+            std::mem::size_of::<i32>(),
+        );
+        assert_eq!(rc, HewError::Ok as i32);
+
+        crate::scheduler_wasm::sched_enqueue(actor_ptr.cast());
+        crate::scheduler_wasm::hew_sched_run();
+
+        let error = (*actor_ptr).error_code.load(Ordering::Acquire);
+        let state = (*actor_ptr).actor_state.load(Ordering::Acquire);
+
+        assert_eq!(
+            error,
+            crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+            "dispatch must have stamped HEW_TRAP_HEAP_EXCEEDED"
+        );
+        assert_eq!(
+            crate::internal::types::ExitReason::from_error_code(error),
+            crate::internal::types::ExitReason::HeapExceeded,
+        );
+        assert_eq!(
+            state,
+            HewActorState::Crashed as i32,
+            "WASM activation must transition the actor to Crashed when \
+             the dispatch unwind comes with a non-zero error_code"
+        );
+
+        let _ = Box::from_raw(actor_ptr);
+        crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
+    }
+
+    crate::scheduler_wasm::hew_sched_shutdown();
+}

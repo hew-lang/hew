@@ -1058,6 +1058,19 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
 
                 if dispatch_result.is_err() {
                     crate::set_last_error("actor dispatch panicked");
+                    // Tagged-crash surfacing: if the dispatch (or anything
+                    // it called, e.g. `hew_arena_malloc` on cap exhaustion)
+                    // stamped a HEW_TRAP_* code onto the actor before the
+                    // panic, transition the actor to Crashed so
+                    // ExitReason::from_error_code(actor.error_code) surfaces
+                    // the named reason at the supervisor boundary. This is
+                    // the WASM counterpart of the native longjmp seam,
+                    // which jumps directly out of dispatch with the code
+                    // already installed.
+                    if a.error_code.load(Ordering::Acquire) != 0 {
+                        a.actor_state
+                            .store(HewActorState::Crashed as i32, Ordering::Release);
+                    }
                 }
 
                 let reply_consumed = (execution_context.flags

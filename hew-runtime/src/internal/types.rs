@@ -184,3 +184,97 @@ pub enum AskError {
     /// expired, but the scheduler is idle and cannot advance the ask.
     NoRunnableWork = 12,
 }
+
+// ── Trap error codes ─────────────────────────────────────────────────────
+//
+// Codes stored in `actor.error_code` to distinguish named exit kinds from
+// raw OS signal numbers. OS signal numbers are < 32 on all supported
+// platforms. Hew-specific codes start at 200 to leave room for POSIX signals
+// and any future OS-specific ranges.
+//
+// Defined here (rather than in the native-only `supervisor` module) so that
+// both native and WASM arena/dispatch paths can stamp the canonical code on
+// an actor crash. The native supervisor module re-exports each constant for
+// callers that import from `crate::supervisor::*`.
+
+/// Error code stored in `actor.error_code` when an actor's arena cap is
+/// exhausted. Produced by `hew_arena_malloc` routing through the longjmp
+/// crash seam (native) or the unwind crash seam (WASM) when `cap > 0` and
+/// an allocation would exceed it.
+///
+/// Distinct from any POSIX signal number (which are < 32 on all supported
+/// platforms). Code 200 is reserved for this purpose and must not be reused
+/// for any other exit kind.
+pub const HEW_TRAP_HEAP_EXCEEDED: i32 = 200;
+
+/// Error code recorded when a MIR `Terminator::Trap { kind: IntegerOverflow }`
+/// fires inside an actor dispatch.
+pub const HEW_TRAP_INTEGER_OVERFLOW: i32 = 201;
+
+/// Error code recorded for `Terminator::Trap { kind: DivideByZero }`.
+pub const HEW_TRAP_DIVIDE_BY_ZERO: i32 = 202;
+
+/// Error code recorded for `Terminator::Trap { kind: SignedMinDivNegOne }`
+/// — signed integer division of the minimum value by `-1`, whose mathematical
+/// result is not representable in the operand width.
+pub const HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE: i32 = 203;
+
+/// Error code recorded for `Terminator::Trap { kind: ShiftOutOfRange }`.
+pub const HEW_TRAP_SHIFT_OUT_OF_RANGE: i32 = 204;
+
+/// Error code recorded for `Terminator::Trap { kind: IndexOutOfBounds }`.
+pub const HEW_TRAP_INDEX_OUT_OF_BOUNDS: i32 = 205;
+
+/// Error code recorded when codegen checks the i32 return value of
+/// `hew_actor_send_by_id` and finds it nonzero — the recipient was gone, the
+/// queue was full, or the actor ID routed to a remote partition that rejected
+/// the message.
+pub const HEW_TRAP_ACTOR_SEND_FAILED: i32 = 206;
+
+/// Named exit reason for a crashed actor.
+///
+/// Interprets the i32 `error_code` stored on a `HewActor` after a crash.
+/// Callers can use `ExitReason::from_error_code(hew_actor_get_error(actor))`
+/// to get a named reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitReason {
+    /// Actor's per-dispatch arena cap was exceeded (error code 200).
+    HeapExceeded,
+    /// Actor crashed on integer overflow (error code 201).
+    IntegerOverflow,
+    /// Actor crashed on `/` or `%` with a zero divisor (error code 202).
+    DivideByZero,
+    /// Actor crashed on signed `i{N}::MIN / -1` (error code 203).
+    SignedMinDivNegOne,
+    /// Actor crashed on a shift count outside `[0, width)` (error code 204).
+    ShiftOutOfRange,
+    /// Actor crashed on an out-of-bounds index (error code 205).
+    IndexOutOfBounds,
+    /// Actor crashed because `hew_actor_send_by_id` returned a nonzero status
+    /// (error code 206).
+    ActorSendFailed,
+    /// Actor crashed with a hardware signal or via `hew_panic`. The raw
+    /// signal number is preserved.
+    Signal(i32),
+    /// Actor stopped normally (`error_code` == 0).
+    Normal,
+}
+
+impl ExitReason {
+    /// Convert a raw `error_code` from `hew_actor_get_error` into a named
+    /// `ExitReason`.
+    #[must_use]
+    pub fn from_error_code(code: i32) -> Self {
+        match code {
+            0 => ExitReason::Normal,
+            HEW_TRAP_HEAP_EXCEEDED => ExitReason::HeapExceeded,
+            HEW_TRAP_INTEGER_OVERFLOW => ExitReason::IntegerOverflow,
+            HEW_TRAP_DIVIDE_BY_ZERO => ExitReason::DivideByZero,
+            HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE => ExitReason::SignedMinDivNegOne,
+            HEW_TRAP_SHIFT_OUT_OF_RANGE => ExitReason::ShiftOutOfRange,
+            HEW_TRAP_INDEX_OUT_OF_BOUNDS => ExitReason::IndexOutOfBounds,
+            HEW_TRAP_ACTOR_SEND_FAILED => ExitReason::ActorSendFailed,
+            sig => ExitReason::Signal(sig),
+        }
+    }
+}

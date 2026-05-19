@@ -220,6 +220,7 @@ fn vec_slice_i64_pipeline() -> IrPipeline {
         diagnostics: vec![],
         record_layouts: vec![],
         actor_layouts: vec![],
+        supervisor_layouts: vec![],
     }
 }
 

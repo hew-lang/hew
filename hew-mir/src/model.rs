@@ -43,6 +43,14 @@ pub struct IrPipeline {
     /// order. Codegen/runtime dispatch slices consume this to materialise actor
     /// state storage and init-call signatures without re-reading HIR.
     pub actor_layouts: Vec<ActorLayout>,
+    /// Layout descriptors for every supervisor declaration in the module.
+    /// Populated by `lower_hir_module` from `HirItem::Supervisor` declarations
+    /// in source order. Each entry pairs the user-declared supervisor metadata
+    /// (strategy, restart budget, window, children) with the synthesized
+    /// bootstrap-function symbol whose body spawns and wires the children.
+    /// Codegen (S-D) consumes this to emit the per-supervisor registration
+    /// table that the runtime supervisor substrate dispatches against.
+    pub supervisor_layouts: Vec<SupervisorLayout>,
 }
 
 /// Layout descriptor for a named-form `record` declaration. The codegen
@@ -94,6 +102,94 @@ pub struct ActorHandlerLayout {
     pub msg_type: i32,
     pub param_tys: Vec<ResolvedTy>,
     pub return_ty: ResolvedTy,
+}
+
+/// Layout descriptor for a `supervisor` declaration.
+///
+/// Supervisors are spawn-only actor-likes: they carry an execution context
+/// (their bootstrap body lowers under `FunctionCallConv::ActorHandler`) and
+/// occupy a position in the parent/child tree, but they do not accept open
+/// messages. They therefore deliberately have NO `ActorProtocolDescriptor`
+/// (Q87) and no per-handler `msg_type` mapping — there are no receive
+/// handlers to address. If a future iteration introduces user-facing
+/// supervisor messages (for example, programmatic restart APIs that route
+/// through a supervisor mailbox), the descriptor must be added at that
+/// point; until then, the absence is load-bearing — codegen knows a
+/// `SupervisorLayout` carries spawn structure and nothing else.
+///
+/// The `children` vector is ordered by topological spawn order
+/// (`wired_to:` dependencies spawn first), assigned during MIR lowering
+/// from the S-A/S-B-validated DAG. Each `SupervisorChildLayout.spawn_order`
+/// records the position within this same vector so codegen and the runtime
+/// reconstruction can re-derive ordering without re-running Kahn's
+/// algorithm.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SupervisorLayout {
+    /// Supervisor type name (e.g. `App`). Matches the `name` field on the
+    /// `HirSupervisorDecl` lifted from the parser.
+    pub name: String,
+    /// Restart strategy (`one_for_one`, `one_for_all`, `rest_for_one`,
+    /// `simple_one_for_one`). `None` when the supervisor declaration
+    /// omitted an explicit `strategy:` clause — runtime defaults apply at
+    /// codegen.
+    pub strategy: Option<hew_hir::HirSupervisorStrategy>,
+    /// Maximum number of restarts allowed inside `window`. `None` when the
+    /// supervisor declaration omitted `max_restarts:` — runtime defaults
+    /// apply at codegen.
+    pub max_restarts: Option<i64>,
+    /// Restart-budget window, retained as the raw parser literal (e.g.
+    /// `"60s"`). Codegen parses this to a concrete `Duration` so the
+    /// duration-literal lexer remains the single source of truth for
+    /// unit interpretation.
+    pub window: Option<String>,
+    /// Mangled symbol of the bootstrap function whose body spawns and
+    /// wires the declared children in topological order. The function
+    /// itself is emitted into `IrPipeline.{thir,raw_mir,checked_mir,
+    /// elaborated_mir}` like any other `FunctionCallConv::ActorHandler`
+    /// function. See `mangle_supervisor_bootstrap`.
+    pub bootstrap_symbol: String,
+    /// Children in topological spawn order. Dependencies spawn before
+    /// dependents; siblings with no dependency relationship preserve
+    /// declaration order (Kahn's algorithm queue is FIFO).
+    pub children: Vec<SupervisorChildLayout>,
+}
+
+/// One child or pool entry on a `SupervisorLayout`. Lifted from
+/// `HirSupervisorChild` with the wired-to map preserved verbatim; codegen
+/// reads the `actor_name` to resolve the per-child `ActorLayout` for
+/// init-arg shape validation and runtime registration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SupervisorChildLayout {
+    /// Child slot name (e.g. `cache`). Matches the field name used at
+    /// `sup.<name>` access sites.
+    pub name: String,
+    /// Actor type spawned at this slot. `HirSupervisorChild.ty` is a raw
+    /// String (no `ResolvedTy` round-trip) so this mirrors the field
+    /// verbatim. The bootstrap function's spawn instructions name this
+    /// type for the `Instr::SpawnActor.actor_name` field.
+    pub actor_name: String,
+    /// `with restart: <policy>` clause. `None` when the child declaration
+    /// omitted the clause — runtime defaults apply at codegen.
+    pub restart_policy: Option<hew_hir::HirRestartPolicy>,
+    /// `true` for `pool name: Type`; `false` for `child name: Type`.
+    pub is_pool: bool,
+    /// Compile-time-assigned slot index within the child's own slot
+    /// space. Static children index into the supervisor's static slot
+    /// table; pool children index into the dynamic pool slot table.
+    /// Both spaces start at 0 and are disjoint.
+    pub slot_index: u32,
+    /// `wired_to:` declarations preserved verbatim. Each entry maps an
+    /// init-param name on this child's actor type to the sibling-child
+    /// name whose handle is passed at spawn time. S-A/S-B have validated
+    /// key existence, sibling existence, and type compatibility before
+    /// this layout is built.
+    pub wired_to: std::collections::HashMap<String, String>,
+    /// Zero-based topological-spawn-order position within
+    /// `SupervisorLayout.children`. Equals the index of this entry in
+    /// that vector — duplicated here for codegen sites that pattern-
+    /// match on a single child without re-correlating against the
+    /// parent layout.
+    pub spawn_order: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]

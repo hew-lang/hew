@@ -2,9 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use hew_hir::stdlib_catalog;
 use hew_hir::{
-    named_type_names, BindingId, HirActorDecl, HirBlock, HirExpr, HirExprKind, HirFn, HirItem,
-    HirLifecycleHookKind, HirLiteral, HirModule, HirSelect, HirSelectArmKind, HirStmtKind,
-    IntentKind, ResolvedRef, ValueClass,
+    named_type_names, BindingId, HirActorDecl, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn,
+    HirItem, HirLifecycleHookKind, HirLiteral, HirModule, HirNodeId, HirSelect, HirSelectArmKind,
+    HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, IntentKind, ResolvedRef, ScopeId,
+    SiteId, ValueClass,
 };
 use hew_parser::ast::BinaryOp;
 use hew_types::{ExecutionContextReader, ResolvedTy};
@@ -238,6 +239,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
     let mut record_layouts: Vec<crate::model::RecordLayout> = Vec::new();
     let mut actor_layouts: Vec<crate::model::ActorLayout> = Vec::new();
+    let mut supervisor_layouts: Vec<crate::model::SupervisorLayout> = Vec::new();
     for item in &module.items {
         match item {
             HirItem::Record(decl) => {
@@ -343,6 +345,17 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     handlers: lower_actor_handler_layouts(actor),
                 });
             }
+            HirItem::Supervisor(sup) => {
+                // Supervisors compile to a layout (consumed by codegen for
+                // the per-supervisor restart/registration table) plus a
+                // bootstrap function (emitted in the second-pass loop below).
+                // The layout's `children` vector is ordered by topological
+                // spawn order so dependents observe their `wired_to:` deps
+                // already spawned.
+                if let Some(layout) = build_supervisor_layout(sup, &mut diagnostics) {
+                    supervisor_layouts.push(layout);
+                }
+            }
             _ => {}
         }
     }
@@ -363,6 +376,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         record_field_orders.insert(layout.mangled_name.clone(), fields);
     }
     let actor_layout_map: HashMap<String, ActorLayout> = actor_layouts
+        .iter()
+        .cloned()
+        .map(|layout| (layout.name.clone(), layout))
+        .collect();
+    let supervisor_layout_map: HashMap<String, crate::model::SupervisorLayout> = supervisor_layouts
         .iter()
         .cloned()
         .map(|layout| (layout.name.clone(), layout))
@@ -476,14 +494,38 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     diagnostics.extend(lowered.diagnostics);
                 }
             }
-            HirItem::Record(_)
-            | HirItem::TypeDecl(_)
-            | HirItem::Machine(_)
-            | HirItem::Supervisor(_) => {
-                // Neither type declarations nor Lane A machine / supervisor
-                // declarations have executable MIR bodies in S-A. TypeDecl
-                // markers are consumed via `HirModule.type_classes`; machine
-                // codegen is Lane B; supervisor lowering is S-C.
+            HirItem::Supervisor(sup) => {
+                if let Some(lowered) = lower_supervisor_bootstrap(
+                    sup,
+                    &supervisor_layout_map,
+                    &module.type_classes,
+                    &record_field_orders,
+                    &actor_layout_map,
+                    &module_fn_names,
+                    &module.call_site_type_args,
+                    &mut emitted_actor_handler_symbols,
+                    &mut diagnostics,
+                ) {
+                    thir.push(lowered.thir);
+                    raw_mir.push(lowered.raw);
+                    checked_mir.push(lowered.checked);
+                    elaborated_mir.push(lowered.elaborated);
+                    record_layouts.extend(lowered.record_layouts);
+                    for generated in lowered.generated {
+                        thir.push(generated.thir);
+                        raw_mir.push(generated.raw);
+                        checked_mir.push(generated.checked);
+                        elaborated_mir.push(generated.elaborated);
+                        diagnostics.extend(generated.diagnostics);
+                        record_layouts.extend(generated.record_layouts);
+                    }
+                    diagnostics.extend(lowered.diagnostics);
+                }
+            }
+            HirItem::Record(_) | HirItem::TypeDecl(_) | HirItem::Machine(_) => {
+                // Type declarations and Lane A machine declarations have no
+                // executable MIR bodies in S-A. TypeDecl markers are consumed
+                // via `HirModule.type_classes`; machine codegen is Lane B.
             }
         }
     }
@@ -554,6 +596,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         diagnostics,
         record_layouts,
         actor_layouts,
+        supervisor_layouts,
     }
 }
 
@@ -923,6 +966,422 @@ fn mangle_actor_start_handler(actor_name: &str) -> String {
 
 fn mangle_actor_stop_handler(actor_name: &str) -> String {
     format!("{actor_name}__on_stop")
+}
+
+/// Deterministic supervisor-bootstrap symbol mangling.
+///
+/// Scheme: `<Supervisor>__bootstrap`. The bootstrap function carries
+/// `FunctionCallConv::ActorHandler` — supervisors ARE actor-likes that
+/// hold an execution context and a parent/child tree position — and its
+/// body is a topologically ordered sequence of `Instr::SpawnActor`
+/// instructions, one per declared child, wiring `wired_to:` siblings as
+/// init args.
+fn mangle_supervisor_bootstrap(name: &str) -> String {
+    format!("{name}__bootstrap")
+}
+
+/// Topologically sort supervisor children by `wired_to:` dependencies via
+/// Kahn's algorithm.
+///
+/// Returns child references in spawn order — dependencies first, dependents
+/// after. Siblings that share no dependency relationship preserve source
+/// declaration order, courtesy of the FIFO queue.
+///
+/// Returns `None` if a cycle is detected. This is the MIR-side fail-closed
+/// backstop; the primary cycle gate is S-B's
+/// `check_supervisor_wired_to_cycles` in `hew-types`, which emits the
+/// user-facing `E_SUPERVISOR_WIRED_CYCLE` diagnostic. A cycle reaching
+/// MIR means either the checker was bypassed or has a bug; MIR refuses
+/// to emit a bootstrap function in that case rather than infinite-loop
+/// on the dep graph.
+fn supervisor_children_in_spawn_order(sup: &HirSupervisorDecl) -> Option<Vec<&HirSupervisorChild>> {
+    use std::collections::VecDeque;
+
+    let child_names: HashSet<&str> = sup.children.iter().map(|c| c.name.as_str()).collect();
+
+    // Build dep list: child_name -> list of sibling names it depends on.
+    // Filter out unknown sibling names (S-B reports those; we treat them
+    // as no-dep edges so the topo sort still produces a deterministic
+    // order over the children that DO exist).
+    let mut in_degree: HashMap<&str, usize> = sup
+        .children
+        .iter()
+        .map(|c| (c.name.as_str(), 0usize))
+        .collect();
+    let mut dependents_of: HashMap<&str, Vec<&str>> = sup
+        .children
+        .iter()
+        .map(|c| (c.name.as_str(), vec![]))
+        .collect();
+
+    for child in &sup.children {
+        let Some(wired) = &child.wired_to else {
+            continue;
+        };
+        for sibling in wired.values() {
+            let sibling_str = sibling.as_str();
+            if !child_names.contains(sibling_str) {
+                continue;
+            }
+            // `child` depends on `sibling` -> edge sibling -> child.
+            if let Some(deps) = dependents_of.get_mut(sibling_str) {
+                deps.push(child.name.as_str());
+            }
+            if let Some(d) = in_degree.get_mut(child.name.as_str()) {
+                *d += 1;
+            }
+        }
+    }
+
+    // FIFO queue preserves declaration order for in-degree-zero siblings.
+    let mut queue: VecDeque<&str> = sup
+        .children
+        .iter()
+        .filter(|c| in_degree.get(c.name.as_str()).copied().unwrap_or(0) == 0)
+        .map(|c| c.name.as_str())
+        .collect();
+
+    // Look up child by name for the result vector.
+    let by_name: HashMap<&str, &HirSupervisorChild> =
+        sup.children.iter().map(|c| (c.name.as_str(), c)).collect();
+
+    let mut ordered: Vec<&HirSupervisorChild> = Vec::with_capacity(sup.children.len());
+    while let Some(name) = queue.pop_front() {
+        if let Some(child) = by_name.get(name).copied() {
+            ordered.push(child);
+        }
+        let dependents = dependents_of.get(name).cloned().unwrap_or_default();
+        for dep in dependents {
+            if let Some(d) = in_degree.get_mut(dep) {
+                *d -= 1;
+                if *d == 0 {
+                    queue.push_back(dep);
+                }
+            }
+        }
+    }
+
+    if ordered.len() != sup.children.len() {
+        // Cycle. S-B should have caught this; MIR refuses to emit.
+        return None;
+    }
+    Some(ordered)
+}
+
+/// Build a `SupervisorLayout` from an `HirSupervisorDecl`. Returns `None`
+/// if the child dependency graph is cyclic — the MIR fail-closed backstop
+/// to S-B's `E_SUPERVISOR_WIRED_CYCLE` diagnostic.
+fn build_supervisor_layout(
+    sup: &HirSupervisorDecl,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) -> Option<crate::model::SupervisorLayout> {
+    let Some(ordered) = supervisor_children_in_spawn_order(sup) else {
+        diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::UnsupportedNode {
+                reason: format!(
+                    "supervisor `{}` has a cyclic `wired_to` dependency graph",
+                    sup.name
+                ),
+            },
+            note: "the type checker's E_SUPERVISOR_WIRED_CYCLE diagnostic is the \
+                   primary gate; MIR is refusing to emit a bootstrap function as \
+                   the structural backstop"
+                .to_string(),
+        });
+        return None;
+    };
+
+    let children: Vec<crate::model::SupervisorChildLayout> = ordered
+        .iter()
+        .enumerate()
+        .map(|(spawn_order, child)| crate::model::SupervisorChildLayout {
+            name: child.name.clone(),
+            actor_name: child.ty.clone(),
+            restart_policy: child.restart_policy,
+            is_pool: child.is_pool,
+            slot_index: child.slot_index,
+            wired_to: child.wired_to.clone().unwrap_or_default(),
+            spawn_order: u32::try_from(spawn_order)
+                .expect("supervisor child count exceeds u32::MAX — impossible in Hew"),
+        })
+        .collect();
+
+    Some(crate::model::SupervisorLayout {
+        name: sup.name.clone(),
+        strategy: sup.strategy,
+        max_restarts: sup.max_restarts,
+        window: sup.window.clone(),
+        bootstrap_symbol: mangle_supervisor_bootstrap(&sup.name),
+        children,
+    })
+}
+
+/// Build the `ResolvedTy` for a `LocalPid<ChildActorName>` handle — the
+/// type the checker assigns to `spawn ChildActor(...)` results
+/// (`hew-types/src/check/expressions.rs::check_spawn`). The supervisor
+/// bootstrap's synthetic HIR uses this type for the let-binding that
+/// captures each spawned child's handle and for the `BindingRef`s that
+/// pass sibling handles to dependents' `wired_to:` init params.
+fn local_pid_of(actor_name: &str) -> ResolvedTy {
+    ResolvedTy::Named {
+        name: "LocalPid".to_string(),
+        args: vec![ResolvedTy::Named {
+            name: actor_name.to_string(),
+            args: vec![],
+        }],
+    }
+}
+
+/// Lower an `HirItem::Supervisor` to a `FunctionCallConv::ActorHandler`
+/// bootstrap function. The body is a topologically ordered sequence of
+/// `spawn <ChildActor>(...)` statements; siblings referenced by
+/// `wired_to:` resolve to the earlier-spawned binding's handle and ride
+/// the existing `lower_spawn_actor` substrate as `init_args`.
+///
+/// Substrate reuse: this synthesises a `HirFn` and dispatches through the
+/// same `lower_function` pipeline that emits every other function. The
+/// fail-closed dataflow checker, the per-block topology builder, and
+/// `bracket_actor_handler_blocks` all fire from the `call_conv` discriminator
+/// — no per-supervisor variant of any of that machinery exists.
+///
+/// Q87 note: supervisors have no `receive fn` and no
+/// `ActorProtocolDescriptor`. The bootstrap function itself is plain
+/// MIR; the `SupervisorLayout` documents the deliberate descriptor
+/// absence at its type docstring. This is the load-bearing call: future
+/// supervisor-facing message protocols (programmatic restart, drain
+/// APIs) would require introducing a descriptor at THAT point — not
+/// retrofitting one here for hypothetical use.
+///
+/// Synthetic HIR IDs (`BindingId`, `SiteId`, `HirNodeId`, `ScopeId`) are
+/// per-function counters scoped to the helper. The downstream MIR
+/// builder consumes them as opaque tags — `Builder.binding_locals` and
+/// the dataflow analyzer key on per-function uniqueness, which the
+/// monotonic counter guarantees.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mirrors lower_actor_init_handler's threading of module-wide tables"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "single coherent helper: synthetic-HIR construction + per-child wiring + \
+              dispatch through lower_function. Splitting would obscure that the entire \
+              function exists to materialize a single bootstrap HirFn whose statements \
+              must be built in topological order with stable per-function ids."
+)]
+fn lower_supervisor_bootstrap(
+    sup: &HirSupervisorDecl,
+    _supervisor_layouts: &HashMap<String, crate::model::SupervisorLayout>,
+    type_classes: &hew_hir::TypeClassTable,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    module_fn_names: &HashSet<String>,
+    call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    emitted_symbols: &mut HashMap<String, String>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) -> Option<LoweredFunction> {
+    let emit_name = mangle_supervisor_bootstrap(&sup.name);
+    let duplicate_label = format!("supervisor `{}` bootstrap", sup.name);
+    if let Some(existing) = emitted_symbols.get(&emit_name) {
+        diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::ActorHandlerSymbolCollision {
+                symbol: emit_name,
+                existing: existing.clone(),
+                duplicate: duplicate_label,
+            },
+            note: "supervisor bootstrap symbol mangling must be one-to-one before MIR emission"
+                .to_string(),
+        });
+        return None;
+    }
+    emitted_symbols.insert(emit_name.clone(), duplicate_label);
+
+    // Topo-ordered child list. None means cycle (S-B should have caught
+    // first; build_supervisor_layout already pushed the structural
+    // diagnostic if so).
+    let ordered = supervisor_children_in_spawn_order(sup)?;
+
+    // Verify every child names an actor we know about. Unknown actor
+    // -> CutoverUnsupported, skip emission. The checker validates child
+    // types but a stale stdlib/registry could in principle desync; this
+    // is the MIR-side fail-closed boundary.
+    for child in &ordered {
+        if !actor_layouts.contains_key(&child.ty) {
+            diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!(
+                        "supervisor `{}` child `{}` references unknown actor `{}`",
+                        sup.name, child.name, child.ty
+                    ),
+                    // No real SiteId — use a synthetic 0; the user-facing
+                    // gate is the checker, which already names the spans.
+                    site: SiteId(0),
+                },
+                note: "MIR could not resolve the child's actor type in the actor-layout \
+                       table; the type checker should have rejected this supervisor"
+                    .to_string(),
+            });
+            return None;
+        }
+    }
+
+    // ── Synthesize the bootstrap HirFn. ──────────────────────────────
+    //
+    // Body shape (in topo order, one statement per child):
+    //
+    //     let <child_name>: LocalPid<ChildActor> = spawn ChildActor(
+    //         <init_param_1>: <expr_1>,
+    //         ...
+    //     );
+    //
+    // For a `wired_to:` mapping `{ init_param: sibling_name }`, the
+    // value expression is `BindingRef { name: sibling_name, resolved:
+    // Binding(<sibling's id>) }` — the dataflow analyzer sees a Bind +
+    // Use chain that rubber-stamps because no Consume intent appears.
+    //
+    // Non-`wired_to:` init params are NOT lowered here. The current
+    // surface only accepts `wired_to:`-driven init params; any other
+    // shape is checker-rejected. If/when supervisors gain literal init
+    // args, this is the site that grows them.
+
+    let mut next_binding: u32 = 0;
+    let mut next_site: u32 = 0;
+    let mut next_node: u32 = 0;
+    let mut fresh_binding = || {
+        let id = BindingId(next_binding);
+        next_binding += 1;
+        id
+    };
+    let mut fresh_site = || {
+        let id = SiteId(next_site);
+        next_site += 1;
+        id
+    };
+    let mut fresh_node = || {
+        let id = HirNodeId(next_node);
+        next_node += 1;
+        id
+    };
+
+    // Map: child name -> (binding id of the let, handle type) so wired_to
+    // arg expressions can resolve to the earlier spawn's binding.
+    let mut child_bindings: HashMap<String, (BindingId, ResolvedTy)> = HashMap::new();
+
+    let mut statements: Vec<HirStmt> = Vec::with_capacity(ordered.len());
+    for child in &ordered {
+        let handle_ty = local_pid_of(&child.ty);
+
+        // Build the spawn's args vec from the wired_to map. We iterate
+        // the child's wired_to map in a deterministic (sorted) order so
+        // the emitted MIR is stable across runs.
+        let mut spawn_args: Vec<(String, HirExpr)> = Vec::new();
+        if let Some(wired) = &child.wired_to {
+            let mut entries: Vec<(&String, &String)> = wired.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            for (init_param, sibling_name) in entries {
+                let Some((sibling_binding, sibling_ty)) = child_bindings.get(sibling_name).cloned()
+                else {
+                    // S-B should have rejected an unknown sibling; if we
+                    // reach this branch the sibling either wasn't in the
+                    // supervisor or appears after the dependent (which
+                    // the topo sort just forbade). Either way, refuse to
+                    // emit.
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::CutoverUnsupported {
+                            construct: format!(
+                                "supervisor `{}` child `{}` wired_to refers to sibling \
+                                 `{sibling_name}` which is unresolved at spawn time",
+                                sup.name, child.name
+                            ),
+                            site: SiteId(0),
+                        },
+                        note: "topological spawn order should make every wired sibling \
+                               available before its dependent; if this fires the checker \
+                               wired_to validation was bypassed"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                let arg_expr = HirExpr {
+                    node: fresh_node(),
+                    site: fresh_site(),
+                    ty: sibling_ty,
+                    value_class: ValueClass::BitCopy,
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::BindingRef {
+                        name: sibling_name.clone(),
+                        resolved: ResolvedRef::Binding(sibling_binding),
+                    },
+                    span: sup.span.clone(),
+                };
+                spawn_args.push((init_param.clone(), arg_expr));
+            }
+        }
+
+        let spawn_expr = HirExpr {
+            node: fresh_node(),
+            site: fresh_site(),
+            ty: handle_ty.clone(),
+            value_class: ValueClass::BitCopy,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Spawn {
+                actor_name: child.ty.clone(),
+                args: spawn_args,
+            },
+            span: sup.span.clone(),
+        };
+
+        let binding = HirBinding {
+            id: fresh_binding(),
+            name: child.name.clone(),
+            ty: handle_ty.clone(),
+            mutable: false,
+            span: sup.span.clone(),
+        };
+        child_bindings.insert(child.name.clone(), (binding.id, handle_ty));
+
+        statements.push(HirStmt {
+            node: fresh_node(),
+            kind: HirStmtKind::Let(binding, Some(spawn_expr)),
+            span: sup.span.clone(),
+        });
+    }
+
+    let body = HirBlock {
+        node: fresh_node(),
+        scope: ScopeId(0),
+        statements,
+        tail: None,
+        ty: ResolvedTy::Unit,
+        span: sup.span.clone(),
+    };
+
+    let synthetic_fn = HirFn {
+        id: sup.id,
+        node: sup.node,
+        name: format!("{}::__bootstrap", sup.name),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_ty: ResolvedTy::Unit,
+        body,
+        span: sup.span.clone(),
+    };
+
+    Some(lower_function(
+        &synthetic_fn,
+        emit_name,
+        HashMap::new(),
+        type_classes,
+        record_field_orders,
+        actor_layouts,
+        // Supervisors have no actor state. `lower_actor_init_handler`
+        // passes `Some(&actor.name)` for the same role; here we pass
+        // `None` because there's no state-field table to lift into the
+        // Builder.
+        None,
+        module_fn_names,
+        call_site_type_args,
+        crate::model::FunctionCallConv::ActorHandler,
+    ))
 }
 
 /// Build the MIR `ActorHandlerLayout` row for every `receive fn` on this
@@ -6824,7 +7283,6 @@ fn enumerate_exits(
 mod slice3_invariants {
     use super::*;
     use crate::model::{CaptureKind, Direction};
-    use hew_hir::HirStmt;
 
     fn reader_ty(reader: ExecutionContextReader) -> ResolvedTy {
         ResolvedTy::from_ty(&reader.ty()).expect("context reader type resolves")
@@ -7845,7 +8303,6 @@ mod slice3_invariants {
 mod slice3_narrowing_proptests {
     use super::*;
     use crate::dataflow::BindingState;
-    use hew_hir::SiteId;
     use proptest::prelude::*;
     use std::collections::BTreeMap;
 

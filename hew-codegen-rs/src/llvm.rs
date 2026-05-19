@@ -6430,6 +6430,7 @@ mod tests {
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
         }
     }
 
@@ -6472,6 +6473,7 @@ mod tests {
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -6532,6 +6534,7 @@ mod tests {
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -6586,6 +6589,7 @@ mod tests {
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m =
@@ -6625,6 +6629,7 @@ mod tests {
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let err =
@@ -6680,6 +6685,7 @@ mod tests {
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
         }
     }
 
@@ -6809,6 +6815,7 @@ mod tests {
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
         }
     }
 

@@ -1354,6 +1354,50 @@ fn typecheck_error_undefined_var() {
 }
 
 #[test]
+fn removed_alias_int_emits_suggestion_for_i64_or_isize() {
+    let result = hew_parser::parse("fn main() { let x: int = 5; }");
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let err = output
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::UndefinedType && e.message.contains("int"))
+        .expect("expected UndefinedType error for removed alias `int`");
+    assert!(
+        err.message.contains("i64") || err.message.contains("isize"),
+        "diagnostic should suggest i64 or isize; got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn removed_alias_uint_emits_suggestion_for_u64_or_usize() {
+    let result = hew_parser::parse("fn main() { let x: uint = 5; }");
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let err = output
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::UndefinedType && e.message.contains("uint"))
+        .expect("expected UndefinedType error for removed alias `uint`");
+    assert!(
+        err.message.contains("u64") || err.message.contains("usize"),
+        "diagnostic should suggest u64 or usize; got: {}",
+        err.message
+    );
+}
+
+#[test]
 fn typecheck_error_type_mismatch() {
     let source = concat!(
         "fn add(a: i32, b: i32) -> i32 {\n",

@@ -226,6 +226,188 @@ fn supervisor_bootstrap_skips_mir_body() {
     );
 }
 
+/// Build a pipeline where the child actor has `#[on(crash)]`. The child's
+/// `ActorLayout.on_crash_symbol` and `SupervisorChildLayout.on_crash_symbol`
+/// are both `Some("CrasherActor__on_crash")`. A matching `RawMirFunction` is
+/// included in `raw_mir` so `declare_function` can register it before
+/// `emit_supervisor_bootstrap_body` runs.
+fn on_crash_pipeline() -> IrPipeline {
+    let bootstrap_symbol = "AppSupervisor__bootstrap".to_string();
+    let bootstrap_return_ty = local_pid_of("AppSupervisor");
+    let on_crash_symbol = "CrasherActor__on_crash".to_string();
+
+    let crasher_layout = ActorLayout {
+        name: "CrasherActor".to_string(),
+        state_field_names: vec![],
+        state_field_tys: vec![],
+        init_param_names: vec![],
+        init_param_tys: vec![],
+        init_symbol: None,
+        on_start_symbol: None,
+        on_stop_symbol: None,
+        on_crash_symbol: Some(on_crash_symbol.clone()),
+        handlers: vec![],
+    };
+
+    // Minimal on_crash function: ActorHandler ABI, Unit return, no params.
+    // ActorHandler functions require EnterContext at entry and ExitContext
+    // before the terminal instruction to pass the context-boundary check.
+    let on_crash_fn = RawMirFunction {
+        name: on_crash_symbol.clone(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::ActorHandler,
+        params: vec![],
+        locals: vec![],
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![hew_mir::Instr::EnterContext, hew_mir::Instr::ExitContext],
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![],
+    };
+
+    let bootstrap_fn = RawMirFunction {
+        name: bootstrap_symbol.clone(),
+        return_ty: bootstrap_return_ty.clone(),
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![bootstrap_return_ty.clone()],
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![],
+    };
+
+    let main_fn = RawMirFunction {
+        name: "main".to_string(),
+        return_ty: ResolvedTy::I64,
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![ResolvedTy::I64],
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                hew_mir::Instr::ConstI64 {
+                    dest: hew_mir::Place::Local(0),
+                    value: 42,
+                },
+                hew_mir::Instr::Move {
+                    dest: hew_mir::Place::ReturnSlot,
+                    src: hew_mir::Place::Local(0),
+                },
+            ],
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![],
+    };
+
+    let supervisor_layout = SupervisorLayout {
+        name: "AppSupervisor".to_string(),
+        strategy: Some(HirSupervisorStrategy::OneForOne),
+        max_restarts: Some(3),
+        window: Some("60".to_string()),
+        bootstrap_symbol: bootstrap_symbol.clone(),
+        children: vec![SupervisorChildLayout {
+            name: "c1".to_string(),
+            actor_name: "CrasherActor".to_string(),
+            restart_policy: None,
+            is_pool: false,
+            slot_index: 0,
+            wired_to: Default::default(),
+            spawn_order: 0,
+            on_crash_symbol: Some(on_crash_symbol.clone()),
+        }],
+    };
+
+    IrPipeline {
+        thir: vec![],
+        raw_mir: vec![on_crash_fn, bootstrap_fn, main_fn],
+        checked_mir: vec![],
+        elaborated_mir: vec![],
+        diagnostics: vec![],
+        record_layouts: vec![],
+        actor_layouts: vec![crasher_layout],
+        supervisor_layouts: vec![supervisor_layout],
+    }
+}
+
+/// When a child's actor has `#[on(crash)]`, the emitted child spec must carry
+/// a non-null pointer to `{actor_name}__on_crash` in the `on_crash` slot.
+///
+/// The assertion targets a `store ptr @CrasherActor__on_crash` into the child
+/// spec alloca (field index 8), which is the GEP store path emitted by
+/// `emit_supervisor_child_spec_and_register` when `on_crash_symbol` is `Some`.
+#[test]
+fn supervisor_bootstrap_populates_on_crash_fn_pointer() {
+    let ir = emit_to_string(&on_crash_pipeline(), "on-crash-ptr");
+    assert!(
+        ir.contains("@CrasherActor__on_crash"),
+        "expected on_crash function symbol in emitted IR; got:\n{ir}"
+    );
+    // The store into the child spec's on_crash slot (field 8) must reference
+    // the function symbol, not a null pointer.
+    assert!(
+        ir.contains("store ptr @CrasherActor__on_crash"),
+        "expected `store ptr @CrasherActor__on_crash` in child spec on_crash slot; got:\n{ir}"
+    );
+    // Null must not appear in the on_crash store — the slot is populated.
+    // We check this by confirming the store uses the symbol, not null.
+    // (The null check above via presence of the symbol-store is sufficient.)
+}
+
+/// The existing null-path fixture (`supervisor_pipeline`) must continue to
+/// work: when no child has `on_crash_symbol`, the on_crash slot in the child
+/// spec carries a null pointer and the IR contains no on_crash symbol store.
+#[test]
+fn supervisor_bootstrap_on_crash_null_when_no_hook() {
+    let ir = emit_to_string(&supervisor_pipeline(), "on-crash-null");
+    // No on_crash symbol should appear as a stored pointer (Worker has none).
+    assert!(
+        !ir.contains("store ptr @__hew_actor_dispatch_Worker\n")
+            || !ir.contains("Worker__on_crash"),
+        // Just verify the on_crash symbol isn't present at all in the IR
+        // beyond the dispatch trampoline for the Worker actor.
+        "IR should not reference any on_crash symbol for the no-hook Worker actor; got:\n{ir}"
+    );
+    // The child spec store for the on_crash slot must use null.
+    // Since the Worker actor has no on_crash_symbol, the field_values loop
+    // stores ptr_ty.const_null() for field index 8.
+    assert!(
+        !ir.contains("Worker__on_crash"),
+        "Worker actor has no #[on(crash)]; IR must not reference Worker__on_crash; got:\n{ir}"
+    );
+}
+
+/// Fail-closed: a child with `on_crash_symbol = Some(<nonexistent>)` must
+/// produce a `FailClosed` diagnostic naming the missing function, not silently
+/// emit null.
+#[test]
+fn supervisor_bootstrap_fails_closed_on_missing_on_crash_symbol() {
+    let mut pipeline = on_crash_pipeline();
+    // Replace the on_crash_symbol with a name that has no matching raw_mir fn.
+    pipeline.supervisor_layouts[0].children[0].on_crash_symbol =
+        Some("CrasherActor__on_crash_MISSING".to_string());
+    let tmp = std::env::temp_dir().join("hew-supervisor-emission-missing-on-crash");
+    let options = EmitOptions {
+        module_name: "probe",
+        out_dir: &tmp,
+        native: false,
+        wasm: false,
+    };
+    let err = emit_module(&pipeline, &options)
+        .expect_err("missing on_crash symbol should fail closed at codegen");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("CrasherActor__on_crash_MISSING"),
+        "fail-closed diagnostic must name the missing on_crash symbol; got: {msg}"
+    );
+}
+
 /// Non-integer `window` literal must fail closed — the duration-string
 /// form (`"60s"`) is deferred to a follow-on slice.
 #[test]

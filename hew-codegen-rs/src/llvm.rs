@@ -1433,7 +1433,7 @@ fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
             i32_ty.into(), // mailbox_capacity
             i32_ty.into(), // overflow
             i64_ty.into(), // arena_cap_bytes (alignment introduces 4B pad after `overflow`)
-            ptr_ty.into(), // on_crash fn-pointer (null; populated when codegen lowers on_crash symbols)
+            ptr_ty.into(), // on_crash fn-pointer: null when child's actor has no #[on(crash)]; otherwise pointer to `{actor_name}__on_crash`
         ],
         false,
     )
@@ -1643,6 +1643,30 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         ))
     })?;
 
+    // Resolve on_crash fn-pointer: Some(symbol) → pointer to the declared
+    // function; None → null. The on_crash function is produced by MIR
+    // lowering (as `{actor_name}__on_crash`) and declared by `declare_function`
+    // over `raw_mir` before `emit_supervisor_bootstrap_body` runs, so
+    // `get_function` must find it if the symbol is populated.
+    //
+    // Fail-closed: a missing symbol means Slice 2 didn't produce the
+    // function body, which is wrong-code territory — diagnose clearly rather
+    // than silently falling back to null.
+    let on_crash_ptr: BasicValueEnum<'ctx> = match &child.on_crash_symbol {
+        Some(symbol) => {
+            let on_crash_fn = llvm_mod.get_function(symbol).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "supervisor `{sup_name}` child `{}` has on_crash_symbol `{symbol}` \
+                     but no function with that name was declared in the module; \
+                     the MIR lowering pass must emit the on_crash function before codegen",
+                    child.name
+                ))
+            })?;
+            on_crash_fn.as_global_value().as_pointer_value().into()
+        }
+        None => ptr_ty.const_null().into(),
+    };
+
     // Per-child stack alloca for the spec struct.
     let spec_slot = builder
         .build_alloca(*child_spec_ty, &format!("child_spec_{idx}"))
@@ -1665,7 +1689,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         (5, i32_ty.const_zero().into()),
         (6, i32_ty.const_zero().into()),
         (7, i64_ty.const_zero().into()),
-        (8, ptr_ty.const_null().into()), // on_crash: null pointer until codegen lowers on_crash symbols
+        (8, on_crash_ptr), // on_crash: fn-pointer when child's actor has #[on(crash)], null otherwise
     ];
     for (field_idx, value) in field_values {
         let gep = builder

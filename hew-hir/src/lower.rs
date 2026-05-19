@@ -7,9 +7,9 @@ use hew_parser::ast::{
     SupervisorStrategy, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
 };
 use hew_types::{
-    ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ClosureCaptureFact,
-    ExecutionContextReader, LoweringFact, MethodCallReceiverKind, MethodCallRewrite, ResolvedTy,
-    SpanKey, Ty, TypeCheckOutput,
+    ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildSlot,
+    ClosureCaptureFact, ExecutionContextReader, LoweringFact, MethodCallReceiverKind,
+    MethodCallRewrite, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -416,6 +416,7 @@ pub fn lower_program_with_mono_cap(
     let mut monomorphisations = ctx.mono_registry.into_vec();
     let call_site_type_args = ctx.call_site_type_args;
     let record_layouts = ctx.record_layout_registry.into_vec();
+    let supervisor_child_slots = ctx.supervisor_child_slots;
 
     // Closure under substitution: walk every monomorphisation's origin
     // body, find inner generic-fn call sites, substitute their recorded
@@ -437,6 +438,7 @@ pub fn lower_program_with_mono_cap(
             monomorphisations,
             call_site_type_args,
             record_layouts,
+            supervisor_child_slots,
         },
         diagnostics: ctx.diagnostics,
     }
@@ -929,6 +931,18 @@ struct LowerCtx {
     /// their bodies skipped during lowering (the body is a placeholder).
     /// Fail-closed: an unknown key emits `UnknownIntrinsic`.
     intrinsic_declarations: HashMap<String, String>,
+    /// Checker-side supervisor child-slot table, keyed by the `SpanKey` of
+    /// each `FieldAccess` expression that the checker resolved as a supervisor
+    /// child accessor. Cloned from `tc_output.supervisor_child_slots` at
+    /// construction. Read-only during lowering; lookups translate the span key
+    /// to the pre-allocated `SiteId` and accumulate into `supervisor_child_slots`.
+    supervisor_child_slots_checker: HashMap<SpanKey, ChildSlot>,
+    /// Per-field-access `SiteId` → `ChildSlot` accumulator. Populated during
+    /// `HirExprKind::FieldAccess` lowering whenever
+    /// `supervisor_child_slots_checker` contains an entry for the expression
+    /// span. Drained into `HirModule.supervisor_child_slots` at the end of
+    /// `lower_program` (mirrors the `call_site_type_args` pattern).
+    supervisor_child_slots: HashMap<SiteId, ChildSlot>,
 }
 
 impl LowerCtx {
@@ -969,6 +983,8 @@ impl LowerCtx {
             record_layout_registry: RecordLayoutRegistry::with_cap(mono_cap),
             record_layout_cap_diag_emitted: false,
             intrinsic_declarations: tc_output.intrinsic_declarations.clone(),
+            supervisor_child_slots_checker: tc_output.supervisor_child_slots.clone(),
+            supervisor_child_slots: HashMap::new(),
         }
     }
 
@@ -3258,6 +3274,15 @@ impl LowerCtx {
                         ));
                         ResolvedTy::Unit
                     };
+                    // Checker-authority: if the checker recorded a supervisor
+                    // child-slot for this field-access span, propagate it into
+                    // the accumulator keyed by the pre-allocated SiteId. MIR
+                    // (S2) reads `HirModule.supervisor_child_slots` to intercept
+                    // these sites before the `record_field_orders` path.
+                    // Mirrors the `call_site_type_args` pattern (lower.rs line 1127).
+                    if let Some(slot) = self.supervisor_child_slots_checker.get(&checker_key) {
+                        self.supervisor_child_slots.insert(site, slot.clone());
+                    }
                     (
                         HirExprKind::FieldAccess {
                             object: Box::new(hir_object),

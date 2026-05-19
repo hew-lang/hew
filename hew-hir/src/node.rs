@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{BinaryOp, OverflowPolicy, ResourceMarker, Span};
-use hew_types::{ExecutionContextReader, ResolvedTy};
+use hew_types::{ChildSlot, ExecutionContextReader, ResolvedTy};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::monomorph::{MonomorphizedFn, RecordLayout};
@@ -72,6 +72,19 @@ pub struct HirModule {
     /// LESSONS: `producer-bridge-before-codegen` (P1),
     /// `checker-authority` (P0).
     pub record_layouts: Vec<RecordLayout>,
+    /// Per-field-access `SiteId` → `ChildSlot` for supervisor child accessor
+    /// expressions. Populated during HIR lowering from the checker's
+    /// `supervisor_child_slots` side-table (keyed by span) by translating each
+    /// `SpanKey` lookup to the pre-allocated `SiteId` of the lowered
+    /// `HirExprKind::FieldAccess` node.
+    ///
+    /// MIR lowering (S2) reads this map before the `record_field_orders` path
+    /// to intercept supervisor-typed LHS and emit the correct
+    /// `hew_supervisor_child_get` (Static) or `hew_supervisor_pool_route`
+    /// (Pool) ABI call.
+    ///
+    /// LESSONS: `checker-authority` (P0), `producer-bridge-before-codegen` (P1).
+    pub supervisor_child_slots: HashMap<SiteId, ChildSlot>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

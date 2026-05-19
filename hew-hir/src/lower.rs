@@ -3165,6 +3165,41 @@ impl LowerCtx {
         inner
     }
 
+    /// Derive the HIR binding type for a select arm's named pattern.
+    ///
+    /// For `ActorAsk` arms the reply type comes from the checker-authoritative
+    /// `actor_method_dispatch` table keyed on the arm source expression's span.
+    /// For `StreamNext` and `TaskAwait` arms `Unit` is returned as a placeholder
+    /// — these arm kinds remain unsupported through MIR (slice 2+) and the real
+    /// element type is recoverable from the lowered source expression's `.ty`
+    /// field when those slices land. WHY placeholder: HIR has no type-inference
+    /// machinery; keeping a real element type here would require either duplicating
+    /// the checker's unification or adding a side table entry. WHEN obsolete: when
+    /// `StreamNext` and `TaskAwait` arm lowering lands in slice 2+.
+    fn select_arm_binding_ty(
+        &self,
+        kind: &HirSelectArmKind,
+        source_span: &std::ops::Range<usize>,
+    ) -> ResolvedTy {
+        match kind {
+            HirSelectArmKind::ActorAsk { .. } => {
+                match self
+                    .actor_method_dispatch
+                    .get(&SpanKey::from(source_span))
+                    .cloned()
+                {
+                    Some(ActorMethodKind::Ask(_, reply_ty)) => {
+                        ResolvedTy::from_ty(&reply_ty).unwrap_or(ResolvedTy::Unit)
+                    }
+                    Some(ActorMethodKind::Fire(_)) | None => ResolvedTy::Unit,
+                }
+            }
+            HirSelectArmKind::StreamNext { .. }
+            | HirSelectArmKind::TaskAwait { .. }
+            | HirSelectArmKind::AfterTimer { .. } => ResolvedTy::Unit,
+        }
+    }
+
     /// Lower a parsed `select { ... }` expression to HIR.
     ///
     /// Per HEW-SPEC-2026 §4.11.1 the four arm forms are exhaustive:
@@ -3221,7 +3256,16 @@ impl LowerCtx {
                     first_after_span = Some(arm.source.1.clone());
                 }
             }
+            // Each arm body lowers inside its own scope so `binding_name`
+            // resolves to this arm's reply value within the body, and is
+            // invisible to sibling arms and the surrounding scope.
+            self.push_scope();
+            if let Some(ref name) = binding_name {
+                let binding_ty = self.select_arm_binding_ty(&kind, &arm.source.1);
+                self.bind(name.clone(), binding_ty, false, arm.binding.1.clone());
+            }
             let body = self.lower_expr(&arm.body, IntentKind::Read);
+            self.pop_scope();
             if let Some(expected) = expected_ty.as_ref() {
                 if &body.ty != expected {
                     self.diagnostics.push(HirDiagnostic::new(
@@ -5350,6 +5394,210 @@ mod tests {
             )),
             "fs.read call must not fall through to MethodCallNoRewrite: {:#?}",
             lowered.diagnostics
+        );
+    }
+
+    // ── Select arm-binding scoping ──────────────────────────────────────────
+    //
+    // Source shared by several tests below: two actors both returning `int`.
+    // Both arm bodies return the bound name so the arm body types agree (the
+    // type checker requires all arm bodies to have the same type).  Distinct
+    // binding names (`reply` vs `verdict`) let us prove each arm has its own
+    // BindingId.
+
+    const SELECT_SCOPE_SOURCE: &str = r"
+        actor Pinger {
+            receive fn ping() -> int { 1 }
+        }
+        actor Counter {
+            receive fn count() -> int { 2 }
+        }
+        fn main() {
+            let p = spawn Pinger;
+            let c = spawn Counter;
+            let result = select {
+                reply from p.ping() => reply,
+                verdict from c.count() => verdict,
+            };
+        }
+    ";
+
+    /// Helper: walk a lowered HIR expression looking for the first
+    /// `BindingRef` whose `name` matches `target`. Returns `Some(resolved)`.
+    fn find_binding_ref_named<'a>(expr: &'a HirExpr, target: &str) -> Option<&'a ResolvedRef> {
+        if let HirExprKind::BindingRef { name, resolved } = &expr.kind {
+            if name == target {
+                return Some(resolved);
+            }
+        }
+        // Recurse into children where an arm body might live.
+        if let HirExprKind::Select(sel) = &expr.kind {
+            for arm in &sel.arms {
+                if let Some(r) = find_binding_ref_named(&arm.body, target) {
+                    return Some(r);
+                }
+            }
+        }
+        None
+    }
+
+    /// Walk each arm's body separately and return the resolved ref for
+    /// `target` found only within `arm_index`.
+    fn find_binding_ref_in_arm<'a>(
+        select_expr: &'a HirExpr,
+        arm_index: usize,
+        target: &str,
+    ) -> Option<&'a ResolvedRef> {
+        let HirExprKind::Select(sel) = &select_expr.kind else {
+            return None;
+        };
+        let arm = sel.arms.get(arm_index)?;
+        find_binding_ref_named(&arm.body, target)
+    }
+
+    /// Return the select expression from `main`'s first statement's let
+    /// initialiser.
+    fn main_select_expr(output: &LowerOutput) -> &HirExpr {
+        let body = main_function_body(output);
+        // The select is the initialiser of the third let (`let _ = select{..}`).
+        // Statements: 0=let p, 1=let c, 2=let _ = select.
+        let HirStmtKind::Let(_, Some(init)) = &body.statements[2].kind else {
+            panic!(
+                "expected third statement to be `let _ = select{{..}}`, got {:#?}",
+                body.statements
+            );
+        };
+        init
+    }
+
+    #[test]
+    fn select_actor_ask_arm_body_resolves_own_binding() {
+        // Arm body reference to `reply` must resolve to a Binding, not
+        // Unresolved — confirming the arm's scope registration works.
+        let (_, _, lowered) = parse_typecheck_and_lower(SELECT_SCOPE_SOURCE);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "unexpected lower diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+
+        let select_expr = main_select_expr(&lowered);
+        let resolved = find_binding_ref_in_arm(select_expr, 0, "reply")
+            .unwrap_or_else(|| panic!("expected BindingRef 'reply' in arm 0"));
+
+        assert!(
+            matches!(resolved, ResolvedRef::Binding(_)),
+            "arm 0 body 'reply' must resolve to Binding, got {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn select_sibling_arm_binding_is_not_visible() {
+        // Arm 1's body references `reply` (arm 0's binding name). Since
+        // there is no outer `reply` binding, it must produce UnresolvedSymbol.
+        let source = r"
+            actor Pinger {
+                receive fn ping() -> int { 1 }
+            }
+            actor Checker {
+                receive fn check() -> int { 2 }
+            }
+            fn main() {
+                let p = spawn Pinger;
+                let c = spawn Checker;
+                let result = select {
+                    reply from p.ping() => reply,
+                    _verdict from c.check() => reply,
+                };
+            }
+        ";
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        // Type errors are expected (reply is unresolved in arm 1 context);
+        // we proceed to HIR lowering regardless.
+        let tco = checker.check_program(&parsed.program);
+        let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx);
+
+        assert!(
+            lowered.diagnostics.iter().any(|d| matches!(
+                &d.kind,
+                HirDiagnosticKind::UnresolvedSymbol { name } if name == "reply"
+            )),
+            "arm 1 body referencing arm 0's 'reply' must emit UnresolvedSymbol; got {:#?}",
+            lowered.diagnostics
+        );
+    }
+
+    #[test]
+    fn select_arm_binding_not_visible_after_select() {
+        // A reference to `reply` after the select (outside the select body)
+        // must produce UnresolvedSymbol — the scope is popped on arm exit.
+        let source = r"
+            actor Pinger {
+                receive fn ping() -> int { 1 }
+            }
+            fn main() {
+                let p = spawn Pinger;
+                let result = select {
+                    reply from p.ping() => reply,
+                };
+                let late = reply;
+            }
+        ";
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&parsed.program);
+        let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx);
+
+        assert!(
+            lowered.diagnostics.iter().any(|d| matches!(
+                &d.kind,
+                HirDiagnosticKind::UnresolvedSymbol { name } if name == "reply"
+            )),
+            "reference to arm binding outside select must emit UnresolvedSymbol; got {:#?}",
+            lowered.diagnostics
+        );
+    }
+
+    #[test]
+    fn select_multiple_arms_have_independent_binding_ids() {
+        // Two arms with distinct binding names must each resolve to their own
+        // BindingId in their respective bodies.
+        let (_, _, lowered) = parse_typecheck_and_lower(SELECT_SCOPE_SOURCE);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "unexpected lower diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+
+        let select_expr = main_select_expr(&lowered);
+        let reply_ref = find_binding_ref_in_arm(select_expr, 0, "reply")
+            .unwrap_or_else(|| panic!("expected BindingRef 'reply' in arm 0"));
+        let verdict_ref = find_binding_ref_in_arm(select_expr, 1, "verdict")
+            .unwrap_or_else(|| panic!("expected BindingRef 'verdict' in arm 1"));
+
+        let ResolvedRef::Binding(reply_id) = reply_ref else {
+            panic!("arm 0 'reply' must be Binding, got {reply_ref:?}");
+        };
+        let ResolvedRef::Binding(verdict_id) = verdict_ref else {
+            panic!("arm 1 'verdict' must be Binding, got {verdict_ref:?}");
+        };
+
+        assert_ne!(
+            reply_id, verdict_id,
+            "distinct arm bindings must have distinct BindingIds"
         );
     }
 }

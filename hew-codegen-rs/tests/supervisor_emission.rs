@@ -55,6 +55,7 @@ fn supervisor_pipeline() -> IrPipeline {
         init_symbol: None,
         on_start_symbol: None,
         on_stop_symbol: None,
+        on_crash_symbol: None,
         handlers: vec![],
     };
 
@@ -125,6 +126,7 @@ fn supervisor_pipeline() -> IrPipeline {
             slot_index: 0,
             wired_to: Default::default(),
             spawn_order: 0,
+            on_crash_symbol: None,
         }],
     };
 

@@ -91,6 +91,8 @@ pub struct ActorLayout {
     pub on_start_symbol: Option<String>,
     /// `#[on(stop)]` handler symbol. `None` when the actor has no stop hook.
     pub on_stop_symbol: Option<String>,
+    /// `#[on(crash)]` handler symbol. `None` when the actor has no crash hook.
+    pub on_crash_symbol: Option<String>,
     /// Receive handlers in message-type order.
     pub handlers: Vec<ActorHandlerLayout>,
 }
@@ -190,6 +192,11 @@ pub struct SupervisorChildLayout {
     /// match on a single child without re-correlating against the
     /// parent layout.
     pub spawn_order: u32,
+    /// Mangled symbol of the `#[on(crash)]` handler on this child's actor
+    /// type. `None` when the child's actor declares no crash hook. Codegen
+    /// (Slice 3) reads this to populate the `on_crash_fn` pointer in the
+    /// emitted `HewChildSpec` literal; if `None`, the field is left null.
+    pub on_crash_symbol: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

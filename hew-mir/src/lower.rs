@@ -342,6 +342,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         .iter()
                         .find(|hook| hook.kind == HirLifecycleHookKind::Stop)
                         .map(|_| mangle_actor_stop_handler(&actor.name)),
+                    on_crash_symbol: actor
+                        .lifecycle_hooks
+                        .iter()
+                        .find(|hook| hook.kind == HirLifecycleHookKind::Crash)
+                        .map(|_| mangle_actor_crash_handler(&actor.name)),
                     handlers: lower_actor_handler_layouts(actor),
                 });
             }
@@ -380,6 +385,20 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         .cloned()
         .map(|layout| (layout.name.clone(), layout))
         .collect();
+
+    // Post-loop pass: populate on_crash_symbol on each SupervisorChildLayout
+    // using the now-complete actor_layout_map. build_supervisor_layout runs
+    // inside the single-pass item loop, so actor declarations that follow a
+    // supervisor in source order would not have been visible yet. Deferring
+    // the lookup here makes ordering irrelevant.
+    for sup_layout in &mut supervisor_layouts {
+        for child in &mut sup_layout.children {
+            child.on_crash_symbol = actor_layout_map
+                .get(&child.actor_name)
+                .and_then(|al| al.on_crash_symbol.clone());
+        }
+    }
+
     let supervisor_layout_map: HashMap<String, crate::model::SupervisorLayout> = supervisor_layouts
         .iter()
         .cloned()
@@ -914,14 +933,48 @@ fn lower_actor_lifecycle_handlers(
                     crate::model::FunctionCallConv::ActorHandler,
                 ));
             }
-            HirLifecycleHookKind::Crash => push_lifecycle_not_wired_diagnostic(
-                diagnostics,
-                &actor.name,
-                &hook.name,
-                "OnCrashNotYetWired",
-                "crash",
-                "supervisor crash lifecycle invocation is pending on S-C",
-            ),
+            HirLifecycleHookKind::Crash => {
+                let emit_name = mangle_actor_crash_handler(&actor.name);
+                let duplicate_label =
+                    format!("actor `{}` #[on(crash)] hook `{}`", actor.name, hook.name);
+                if let Some(existing) = emitted_symbols.get(&emit_name) {
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::ActorHandlerSymbolCollision {
+                            symbol: emit_name,
+                            existing: existing.clone(),
+                            duplicate: duplicate_label,
+                        },
+                        note: "actor #[on(crash)] handler symbol mangling must be one-to-one before MIR emission"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                emitted_symbols.insert(emit_name.clone(), duplicate_label);
+
+                let synthetic_fn = HirFn {
+                    id: actor.id,
+                    node: actor.node,
+                    name: format!("{}::{}", actor.name, hook.name),
+                    type_params: Vec::new(),
+                    params: hook.params.clone(),
+                    return_ty: hook.return_ty.clone(),
+                    body: hook.body.clone(),
+                    span: hook.span.clone(),
+                };
+                lowered.push(lower_function(
+                    &synthetic_fn,
+                    emit_name,
+                    HashMap::new(),
+                    type_classes,
+                    record_field_orders,
+                    actor_layouts,
+                    &HashMap::new(),
+                    Some(&actor.name),
+                    module_fn_names,
+                    call_site_type_args,
+                    crate::model::FunctionCallConv::ActorHandler,
+                ));
+            }
             HirLifecycleHookKind::Upgrade => push_lifecycle_not_wired_diagnostic(
                 diagnostics,
                 &actor.name,
@@ -972,6 +1025,10 @@ fn mangle_actor_start_handler(actor_name: &str) -> String {
 
 fn mangle_actor_stop_handler(actor_name: &str) -> String {
     format!("{actor_name}__on_stop")
+}
+
+fn mangle_actor_crash_handler(actor_name: &str) -> String {
+    format!("{actor_name}__on_crash")
 }
 
 /// Deterministic supervisor-bootstrap symbol mangling.
@@ -1111,6 +1168,10 @@ fn build_supervisor_layout(
             wired_to: child.wired_to.clone().unwrap_or_default(),
             spawn_order: u32::try_from(spawn_order)
                 .expect("supervisor child count exceeds u32::MAX — impossible in Hew"),
+            // Populated after actor_layout_map is built (post-loop pass in
+            // lower_hir_module) to handle any declaration order. Left None
+            // here so build_supervisor_layout needs no actor-layout parameter.
+            on_crash_symbol: None,
         })
         .collect();
 

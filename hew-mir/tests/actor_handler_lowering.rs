@@ -312,19 +312,29 @@ fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
         .find(|func| func.name == "Counter__on_start")
         .expect("start hook MIR");
     assert_eq!(start.call_conv, FunctionCallConv::ActorHandler);
-    // on(crash) and on(upgrade) remain fail-closed until their runtime wiring lands.
-    for diagnostic_name in ["OnCrashNotYetWired", "OnUpgradeNotYetWired"] {
-        assert!(
-            pipeline.diagnostics.iter().any(|diag| {
-                matches!(
-                    &diag.kind,
-                    MirDiagnosticKind::UnsupportedNode { reason } if reason.contains(diagnostic_name)
-                )
-            }),
-            "{diagnostic_name} must still be fail-closed"
-        );
-    }
-    // on(stop) is now wired — no fail-closed diagnostic for it.
+    // on(crash) is now wired — it must lower to a MIR function.
+    assert_eq!(
+        pipeline.actor_layouts[0].on_crash_symbol.as_deref(),
+        Some("Counter__on_crash"),
+        "on(crash) hook must surface on_crash_symbol in ActorLayout"
+    );
+    let crash_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Counter__on_crash")
+        .expect("on(crash) hook must produce a MIR function");
+    assert_eq!(crash_fn.call_conv, FunctionCallConv::ActorHandler);
+    // on(upgrade) remains fail-closed — no MIR function, a diagnostic.
+    assert!(
+        pipeline.diagnostics.iter().any(|diag| {
+            matches!(
+                &diag.kind,
+                MirDiagnosticKind::UnsupportedNode { reason } if reason.contains("OnUpgradeNotYetWired")
+            )
+        }),
+        "OnUpgradeNotYetWired must still be fail-closed"
+    );
+    // on(stop) is wired — no fail-closed diagnostic for it.
     assert!(
         !pipeline.diagnostics.iter().any(|diag| {
             matches!(
@@ -333,6 +343,16 @@ fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
             )
         }),
         "on(stop) must not emit a fail-closed diagnostic after wiring"
+    );
+    // on(crash) is wired — no fail-closed diagnostic for it.
+    assert!(
+        !pipeline.diagnostics.iter().any(|diag| {
+            matches!(
+                &diag.kind,
+                MirDiagnosticKind::UnsupportedNode { reason } if reason.contains("OnCrashNotYetWired")
+            )
+        }),
+        "on(crash) must not emit a fail-closed diagnostic after wiring"
     );
 }
 
@@ -453,4 +473,44 @@ fn actor_handler_symbol_collision_emits_typed_diagnostic_and_skips_handler() {
                 if symbol == "Counter__recv__ping"
         )
     }));
+}
+
+#[test]
+fn actor_lifecycle_crash_lowers_to_actor_handler_function() {
+    let mut ids = IdGen::default();
+    let crash_return = return_none_stmt(&mut ids);
+    let actor = {
+        let mut actor = actor(&mut ids, "Worker", vec![]);
+        actor.lifecycle_hooks = vec![HirLifecycleHook {
+            kind: HirLifecycleHookKind::Crash,
+            name: "handle_crash".to_string(),
+            params: vec![],
+            return_ty: ResolvedTy::Unit,
+            body: block(&mut ids, vec![crash_return], None, ResolvedTy::Unit),
+            span: 0..0,
+        }];
+        actor
+    };
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
+
+    // on_crash_symbol populated in the actor layout.
+    assert_eq!(
+        pipeline.actor_layouts[0].on_crash_symbol.as_deref(),
+        Some("Worker__on_crash"),
+        "on(crash) hook must surface as on_crash_symbol in ActorLayout"
+    );
+    // MIR function emitted with ActorHandler calling convention.
+    let crash_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Worker__on_crash")
+        .expect("on(crash) hook must produce a MIR function");
+    assert_eq!(crash_fn.call_conv, FunctionCallConv::ActorHandler);
+    // No fail-closed diagnostic emitted.
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "on(crash) lowering must not emit diagnostics; got: {:?}",
+        pipeline.diagnostics
+    );
 }

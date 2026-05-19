@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use hew_hir::{lower_program, ResolutionCtx};
+use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx};
 use hew_mir::{lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, Place, Terminator};
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -35,6 +35,46 @@ fn lower_module_from_source(source: &str) -> hew_mir::IrPipeline {
         hir.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",
         hir.diagnostics
+    );
+    lower_hir_module(&hir.module)
+}
+
+/// Lower a Hew source program to MIR, permitting HIR diagnostics for
+/// unresolved enum-variant paths (e.g. `CrashAction::Restart`).
+///
+/// Enum variants are v0.5 HIR-out-of-scope (`TypeBodyItem::Variant` is
+/// not lowered into HIR items); the type checker pre-registers them via
+/// `register_builtin_failure_surface` so type-checking succeeds, but HIR
+/// lowering emits `UnresolvedSymbol` for any `A::B` path expression in
+/// the body. Tests that only care about symbol/layout propagation — not
+/// about the hook body's evaluation — use this helper.
+fn lower_module_from_source_with_enum_variants(source: &str) -> hew_mir::IrPipeline {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    let hir = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    // Filter out known v0.5 HIR limitation: enum-variant path expressions
+    // (e.g. `CrashAction::Restart`) are not resolvable in HIR lowering
+    // because `TypeBodyItem::Variant` is out of slice scope. Other
+    // diagnostics still fail the test.
+    let non_enum_diags: Vec<_> = hir
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            !matches!(
+                &d.kind,
+                HirDiagnosticKind::UnresolvedSymbol { name } if name.contains("::")
+            )
+        })
+        .collect();
+    assert!(
+        non_enum_diags.is_empty(),
+        "unexpected HIR diagnostics (non-enum-variant): {non_enum_diags:#?}"
     );
     lower_hir_module(&hir.module)
 }
@@ -325,5 +365,92 @@ fn spawn_supervisor_with_init_args_emits_cutover_unsupported() {
         "expected CutoverUnsupported for supervisor spawn with init args; \
          got diagnostics: {:#?}",
         pipeline.diagnostics
+    );
+}
+
+/// Supervisor child whose actor declares `#[on(crash)]` surfaces a
+/// non-`None` `on_crash_symbol` on the matching `SupervisorChildLayout`.
+/// A sibling child whose actor has no crash hook stays `None`.
+#[test]
+fn supervisor_child_with_on_crash_hook_surfaces_symbol_on_layout() {
+    // Use the enum-variant-tolerating helper: `CrashAction::Restart` in the
+    // hook body is unresolvable in HIR lowering (enum variants are v0.5
+    // out-of-scope) but the type checker accepts it. The test only cares
+    // that the MIR layout propagation is correct.
+    let pipeline = lower_module_from_source_with_enum_variants(
+        r"
+        actor Crashable {
+            receive fn ping() {}
+            #[on(crash)]
+            fn handle_crash(info: PanicInfo) -> CrashAction { CrashAction::Restart }
+        }
+        actor Stable {
+            receive fn ping() {}
+        }
+
+        supervisor App {
+            child crashable: Crashable
+            child stable: Stable
+        }
+        ",
+    );
+
+    // `PanicInfo` and `CrashAction` are pre-registered by the type checker
+    // but are not yet emittable as MIR value types (UnknownType). Those
+    // diagnostics are expected and do not prevent the symbol from being
+    // surfaced on the layout.
+    let unexpected_diags: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            !matches!(
+                &d.kind,
+                hew_mir::MirDiagnosticKind::UnknownType { name }
+                    if name == "PanicInfo" || name == "CrashAction"
+            )
+        })
+        .collect();
+    assert!(
+        unexpected_diags.is_empty(),
+        "unexpected MIR diagnostics: {unexpected_diags:#?}"
+    );
+
+    let app_layout = pipeline
+        .supervisor_layouts
+        .iter()
+        .find(|s| s.name == "App")
+        .expect("App supervisor layout must be present");
+
+    let crashable_child = app_layout
+        .children
+        .iter()
+        .find(|c| c.name == "crashable")
+        .expect("crashable child in supervisor layout");
+    assert_eq!(
+        crashable_child.on_crash_symbol.as_deref(),
+        Some("Crashable__on_crash"),
+        "child whose actor has #[on(crash)] must carry the mangled symbol"
+    );
+
+    let stable_child = app_layout
+        .children
+        .iter()
+        .find(|c| c.name == "stable")
+        .expect("stable child in supervisor layout");
+    assert_eq!(
+        stable_child.on_crash_symbol, None,
+        "child whose actor has no #[on(crash)] must have on_crash_symbol = None"
+    );
+
+    // Verify the MIR function for Crashable__on_crash was emitted.
+    let crash_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "Crashable__on_crash")
+        .expect("Crashable__on_crash must be emitted into raw_mir");
+    assert_eq!(
+        crash_fn.call_conv,
+        hew_mir::FunctionCallConv::ActorHandler,
+        "on(crash) MIR function must use ActorHandler calling convention"
     );
 }

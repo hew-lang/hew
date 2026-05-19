@@ -17516,6 +17516,29 @@ mod assoc_types_slice2 {
         );
     }
 
+    /// A `codegen-stable` symbol must be rejected in `extern "rt"` — it is
+    /// compiler-emitted, not user-callable. The checker only accepts `stable`.
+    #[test]
+    fn extern_rt_codegen_stable_symbol_rejected() {
+        // hew_actor_cooperate is in the codegen-stable tier, not stable.
+        let extern_item = make_extern_rt_block(&["hew_actor_cooperate"]);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&Program {
+            items: vec![(extern_item, 0..40)],
+            module_doc: None,
+            module_graph: None,
+        });
+        assert!(
+            output.errors.iter().any(|e| matches!(&e.kind,
+                TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
+                if symbol_name == "hew_actor_cooperate"
+            )),
+            "codegen-stable symbol hew_actor_cooperate must be rejected in \
+             extern \"rt\"; got: {:?}",
+            output.errors
+        );
+    }
+
     /// `extern "C"` blocks with any symbol name must NOT be validated against
     /// the stable list — that is raw user FFI surface.
     #[test]

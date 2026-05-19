@@ -2,8 +2,15 @@
 """Classify and validate the stable JIT host ABI exported by hew-runtime.
 
 Scans all hew-runtime Rust source files for #[no_mangle] extern "C" fn
-exports and validates each one is classified (stable vs internal) in
-scripts/jit-symbol-classification.toml.
+exports and validates each one is classified (stable, codegen-stable, or
+internal) in scripts/jit-symbol-classification.toml.
+
+Three-tier model:
+  stable         -- user-visible runtime surface; user `extern "rt"` blocks
+                    and JIT hosts.
+  codegen-stable -- compiler-emitted; JIT hosts must provide these alongside
+                    stable, but users cannot name them in `extern "rt"`.
+  internal       -- lifecycle/bootstrap; AOT-only, never JIT-reachable.
 
 The codegen-coverage mode (--strict) is retained as a no-op for backward
 compatibility now that the C++ codegen subtree has been retired; the
@@ -12,9 +19,10 @@ checker and inkwell.
 
 Usage:
     python3 scripts/verify-ffi-symbols.py --classify stable --validate
-    python3 scripts/verify-ffi-symbols.py --classify stable      # print stable JIT symbols
-    python3 scripts/verify-ffi-symbols.py --classify internal    # print internal JIT symbols
-    python3 scripts/verify-ffi-symbols.py --emit-cpp-header path # generate stable-symbol header
+    python3 scripts/verify-ffi-symbols.py --classify stable         # print stable JIT symbols
+    python3 scripts/verify-ffi-symbols.py --classify codegen-stable # print codegen-stable symbols
+    python3 scripts/verify-ffi-symbols.py --classify internal       # print internal JIT symbols
+    python3 scripts/verify-ffi-symbols.py --emit-cpp-header path    # generate stable-symbol header
 """
 
 from __future__ import annotations
@@ -80,7 +88,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--classify",
-        choices=("stable", "internal"),
+        choices=("stable", "codegen-stable", "internal"),
         help="print the sorted JIT host ABI symbols for the requested class",
     )
     parser.add_argument(
@@ -139,8 +147,8 @@ def classify(name: str, runtime_exports: set[str]) -> str:
 def load_jit_symbol_classification() -> dict[str, set[str]]:
     text = JIT_SYMBOL_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
     classification: dict[str, set[str]] = {}
-    for key in ("stable", "internal"):
-        match = re.search(rf"(?ms)^{key}\s*=\s*\[(.*?)^\]", text)
+    for key in ("stable", "codegen-stable", "internal"):
+        match = re.search(rf"(?ms)^{re.escape(key)}\s*=\s*\[(.*?)^\]", text)
         if match is None:
             raise ValueError(f"{JIT_SYMBOL_CLASSIFICATION}: missing {key} list")
         symbols = re.findall(r'"([^"\n]+)"', match.group(1))
@@ -155,15 +163,22 @@ def validate_jit_symbol_classification(
 ) -> list[str]:
     errors: list[str] = []
     stable = classification["stable"]
+    codegen_stable = classification["codegen-stable"]
     internal = classification["internal"]
-    overlap = sorted(stable & internal)
-    if overlap:
-        errors.append(
-            "symbols classified more than once: "
-            + ", ".join(overlap)
-            + f" (update {JIT_SYMBOL_CLASSIFICATION})"
-        )
-    classified = stable | internal
+    # Pairwise overlap checks across all three tiers.
+    for tier_a, set_a, tier_b, set_b in [
+        ("stable", stable, "codegen-stable", codegen_stable),
+        ("stable", stable, "internal", internal),
+        ("codegen-stable", codegen_stable, "internal", internal),
+    ]:
+        overlap = sorted(set_a & set_b)
+        if overlap:
+            errors.append(
+                f"symbols classified in both {tier_a} and {tier_b}: "
+                + ", ".join(overlap)
+                + f" (update {JIT_SYMBOL_CLASSIFICATION})"
+            )
+    classified = stable | codegen_stable | internal
     missing = sorted(runtime_exports - classified)
     extra = sorted(classified - runtime_exports)
     if missing:

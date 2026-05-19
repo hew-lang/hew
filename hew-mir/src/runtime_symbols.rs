@@ -12,11 +12,13 @@
 //! lands at MIR construction, not at codegen link-time.
 //!
 //! Source of truth: `scripts/jit-symbol-classification.toml`'s
-//! `stable` list. The full toml is parsed by `hew-runtime`'s build
-//! script — `hew-mir` carries the M2-substrate subset inline so
-//! the allowlist check does not require a build-time fixture or
-//! parsing step. When a new runtime-ABI symbol becomes producer-
-//! emittable from MIR, add it to both lists in the same change.
+//! `stable` and `codegen-stable` lists. The full toml is parsed by
+//! `hew-runtime`'s build script — `hew-mir` carries the M2-substrate
+//! subset inline so the allowlist check does not require a build-time
+//! fixture or parsing step. When a new runtime-ABI symbol becomes
+//! producer-emittable from MIR, add it to both lists in the same change
+//! (`stable` if user-callable via `extern "rt"`, `codegen-stable` if
+//! emitted only by the compiler).
 //! The drift-test in `tests/runtime_symbols_classification.rs` —
 //! TODO when a producer for a non-substrate symbol lands — would
 //! cross-verify the two lists; for now the substrate list is

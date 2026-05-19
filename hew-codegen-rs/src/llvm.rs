@@ -2718,6 +2718,7 @@ fn lower_instruction(
                 use inkwell::types::BasicTypeEnum;
                 if matches!(src_ty, BasicTypeEnum::IntType(t) if t.get_bit_width() == 64)
                     && matches!(dest_ty, BasicTypeEnum::PointerType(_))
+                    && matches!(*dest, Place::ActorHandle(_))
                 {
                     let i64_val = fn_ctx
                         .builder

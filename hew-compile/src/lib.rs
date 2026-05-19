@@ -1307,14 +1307,14 @@ fn resolve_file_imports_internal(
                     let entry_file =
                         format!("{}.hew", decl.path.last().expect("path is non-empty"));
                     let versioned_rel = module_dir.join(version).join(entry_file);
-                    candidates.push(cwd.join(".adze/packages").join(&versioned_rel));
+                    candidates.push(ctx.project_dir.join(".adze/packages").join(&versioned_rel));
                     if let Some(pkg) = ctx.extra_pkg_path {
                         candidates.push(pkg.join(&versioned_rel));
                     }
                 }
 
-                candidates.push(cwd.join(".adze/packages").join(&rel_path));
-                candidates.push(cwd.join(".adze/packages").join(&dir_path));
+                candidates.push(ctx.project_dir.join(".adze/packages").join(&rel_path));
+                candidates.push(ctx.project_dir.join(".adze/packages").join(&dir_path));
 
                 if let Some(pkg) = ctx.extra_pkg_path {
                     candidates.push(pkg.join(&dir_path));

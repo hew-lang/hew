@@ -124,7 +124,6 @@ pub fn clamp_f(x: f64, lo: f64, hi: f64) -> f64 {
     x
 }
 
-/// Return the square root of a float.
 // WHY: `#[intrinsic("math.sqrt")]` is the typed-declaration substrate introduced
 // in the stdlib-refactor early-substrate lane. The attribute names the catalog key
 // so HIR can skip body lowering and route to the existing CompilerIntrinsic entry.
@@ -133,8 +132,10 @@ pub fn clamp_f(x: f64, lo: f64, hi: f64) -> f64 {
 // can be dropped in favour of a plain doc-comment.
 // WHAT: slices 4-7 remove the parallel catalog entry and make this declaration the
 // sole source of truth; codegen emits the MLIR math-dialect op by intrinsic key.
+/// Return the square root of a float.
 #[intrinsic("math.sqrt")]
-pub fn sqrt(x: f64) -> f64;
+pub fn sqrt(x: f64) -> f64 {
+}
 
 /// Raise `base` to the power `exp`.
 pub fn pow(base: f64, exp: f64) -> f64 {

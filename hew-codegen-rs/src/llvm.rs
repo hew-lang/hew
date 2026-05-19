@@ -722,18 +722,6 @@ fn intern_runtime_decl<'ctx>(
     Ok(fv)
 }
 
-fn basic_metadata_type<'ctx>(ty: BasicTypeEnum<'ctx>) -> BasicMetadataTypeEnum<'ctx> {
-    match ty {
-        BasicTypeEnum::IntType(t) => t.into(),
-        BasicTypeEnum::PointerType(t) => t.into(),
-        BasicTypeEnum::FloatType(t) => t.into(),
-        BasicTypeEnum::StructType(t) => t.into(),
-        BasicTypeEnum::ArrayType(t) => t.into(),
-        BasicTypeEnum::VectorType(t) => t.into(),
-        BasicTypeEnum::ScalableVectorType(t) => t.into(),
-    }
-}
-
 fn fn_type_for_return<'ctx>(
     ctx: &'ctx Context,
     return_ty: Option<BasicTypeEnum<'ctx>>,
@@ -798,7 +786,7 @@ fn declare_catalog_ffi<'ctx>(
 ) -> CodegenResult<FnSymbol<'ctx>> {
     let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(entry.params.len());
     for param in entry.params {
-        param_tys.push(basic_metadata_type(builtin_type_to_llvm(
+        param_tys.push(metadata_type_from_basic(builtin_type_to_llvm(
             ctx,
             *param,
             record_layouts,
@@ -5808,15 +5796,7 @@ fn declare_function<'ctx>(
     }
     for param_ty in &func.params {
         let llvm_ty = resolve_ty(ctx, param_ty, record_layouts)?;
-        param_tys.push(match llvm_ty {
-            BasicTypeEnum::IntType(t) => t.into(),
-            BasicTypeEnum::PointerType(t) => t.into(),
-            BasicTypeEnum::FloatType(t) => t.into(),
-            BasicTypeEnum::StructType(t) => t.into(),
-            BasicTypeEnum::ArrayType(t) => t.into(),
-            BasicTypeEnum::VectorType(t) => t.into(),
-            BasicTypeEnum::ScalableVectorType(t) => t.into(),
-        });
+        param_tys.push(metadata_type_from_basic(llvm_ty));
     }
     let fn_ty = match return_ty_llvm {
         BasicTypeEnum::IntType(i) => i.fn_type(&param_tys, false),

@@ -886,6 +886,93 @@ fn wasm_bridge_send_failure_does_not_wake_actor() {
     crate::scheduler_wasm::hew_sched_shutdown();
 }
 
+// ── Cooperate cancellation parity ───────────────────────────────────────────
+//
+// Native `hew_actor_cooperate` returns `2` when the active task scope or
+// cancel token is requested; codegen lowers that into a `cancel_exit` branch
+// that runs drop glue and exits the actor. WASM has no task scopes today,
+// but actor-state terminal transitions (Stopping / Stopped / Crashed) are an
+// equally real cancel source within a handler — and ignoring them silently
+// is the parity gap the matrix flags.
+//
+// This test confirms the WASM cooperate path returns `2` when the actor's
+// own state has gone terminal mid-handler. The codegen-emitted
+// `cooperate == 2 → cancel_exit` branch is target-neutral, so the named
+// exit reason flows through unchanged.
+
+#[test]
+fn wasm_cooperate_returns_cancel_when_actor_state_is_terminal() {
+    use crate::execution_context::{HewExecutionContext, TestExecutionContext};
+    let _guard = crate::runtime_test_guard();
+
+    let actor = stub_wasm_actor(std::ptr::null_mut());
+    let actor_ptr: *mut HewActor = Box::into_raw(actor);
+
+    // SAFETY: test owns `actor_ptr` for the duration of the scenario.
+    unsafe {
+        // Each terminal transition must propagate as a cooperate-cancel.
+        for terminal in [
+            HewActorState::Stopping,
+            HewActorState::Stopped,
+            HewActorState::Crashed,
+        ] {
+            (*actor_ptr)
+                .actor_state
+                .store(terminal as i32, Ordering::Release);
+            // Reset reductions so the function would otherwise return 0 (continue).
+            (*actor_ptr)
+                .reductions
+                .store(crate::actor::HEW_DEFAULT_REDUCTIONS, Ordering::Release);
+
+            let ctx = HewExecutionContext {
+                actor: actor_ptr.cast::<crate::actor::HewActor>(),
+                actor_id: (*actor_ptr).id,
+                ..HewExecutionContext::default()
+            };
+            let _ctx_guard = TestExecutionContext::install(ctx);
+
+            assert_eq!(
+                crate::scheduler_wasm::hew_actor_cooperate(),
+                2,
+                "WASM cooperate must return 2 (cancel) when actor state is {terminal:?}"
+            );
+        }
+
+        let _ = Box::from_raw(actor_ptr);
+    }
+}
+
+#[test]
+fn wasm_cooperate_returns_zero_when_actor_state_is_running() {
+    use crate::execution_context::{HewExecutionContext, TestExecutionContext};
+    let _guard = crate::runtime_test_guard();
+
+    let actor = stub_wasm_actor(std::ptr::null_mut());
+    let actor_ptr: *mut HewActor = Box::into_raw(actor);
+
+    // SAFETY: test owns `actor_ptr` for the duration of the scenario.
+    unsafe {
+        (*actor_ptr)
+            .actor_state
+            .store(HewActorState::Running as i32, Ordering::Release);
+        (*actor_ptr)
+            .reductions
+            .store(crate::actor::HEW_DEFAULT_REDUCTIONS, Ordering::Release);
+
+        let ctx = HewExecutionContext {
+            actor: actor_ptr.cast::<crate::actor::HewActor>(),
+            actor_id: (*actor_ptr).id,
+            ..HewExecutionContext::default()
+        };
+        let _ctx_guard = TestExecutionContext::install(ctx);
+
+        // Running actor with budget remaining must return 0 (continue).
+        assert_eq!(crate::scheduler_wasm::hew_actor_cooperate(), 0);
+
+        let _ = Box::from_raw(actor_ptr);
+    }
+}
+
 // ── HeapExceeded parity ─────────────────────────────────────────────────────
 //
 // Native arena cap exhaustion routes through the longjmp seam, stamping

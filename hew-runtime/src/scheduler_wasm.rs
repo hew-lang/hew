@@ -1432,8 +1432,11 @@ pub extern "C" fn hew_actor_cooperate() -> c_int {
 
     #[cfg(target_arch = "wasm32")]
     {
-        // WASM-TODO(#1451): task-scope cancellation tokens are native-only until
-        // the Q83/R17 WASI task-scope follow-on lands.
+        // WASM-TODO(#1451): cross-task cancel_token / task_scope are
+        // native-only until the WASI task-scope follow-on lands. The actor
+        // task-state observation below covers the in-handler cancel source
+        // that does exist on WASM (handler calls `hew_actor_stop_self`,
+        // supervisor injects terminal state, etc.).
         let _ = (cancel_token, scope);
     }
 
@@ -1443,6 +1446,24 @@ pub extern "C" fn hew_actor_cooperate() -> c_int {
 
     // SAFETY: actor was read from the installed canonical context.
     let a = unsafe { &*actor };
+
+    // Observe actor-state cancellation: any terminal transition (Stopping,
+    // Stopped, Crashed) that happened mid-handler must propagate to the
+    // codegen-emitted `cooperate == 2 → cancel_exit` branch, matching the
+    // native behaviour. On native this signal travels via task-scope cancel
+    // tokens; on WASM (single-threaded, no task scopes) the only observable
+    // cancel source within a handler is the actor's own state, which an
+    // earlier statement in the same handler (or a supervisor stop pre-empted
+    // by a host tick) may have already transitioned. Reading it here turns
+    // a previously-silent divergence into the same fail-closed cancel exit
+    // that native produces.
+    let actor_state = a.actor_state.load(Ordering::Acquire);
+    if actor_state == HewActorState::Stopping as i32
+        || actor_state == HewActorState::Stopped as i32
+        || actor_state == HewActorState::Crashed as i32
+    {
+        return 2;
+    }
 
     // Decrement reduction counter. If still positive, continue.
     let prev = a.reductions.fetch_sub(1, Ordering::Relaxed);

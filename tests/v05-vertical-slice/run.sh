@@ -111,6 +111,12 @@ run_accept_expect_status "actor_ask_race" 42
 # main returns 42 after bootstrap completes successfully.
 run_accept_expect_status "supervisor_basic" 42
 
+# on(crash) handler attachment: Crasher actor declares #[on(crash)]; codegen emits
+# a non-null on_crash fn-pointer in HewChildSpec; supervisor boots and main returns 42.
+# The crash path is not triggered at runtime — handler-fire observability is covered
+# by hew-runtime/tests/on_crash_invocation.rs.
+run_accept_expect_status "on_crash_basic" 42
+
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"
 run_accept_expect_stdout "print_f64"

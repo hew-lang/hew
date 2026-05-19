@@ -5039,12 +5039,14 @@ fn lower_terminator<'ctx>(
             const HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE: u64 = 203;
             const HEW_TRAP_SHIFT_OUT_OF_RANGE: u64 = 204;
             const HEW_TRAP_INDEX_OUT_OF_BOUNDS: u64 = 205;
+            const HEW_TRAP_SUPERVISOR_CHILD_UNAVAILABLE: u64 = 206;
             let code: u64 = match *kind {
                 TrapKind::IntegerOverflow => HEW_TRAP_INTEGER_OVERFLOW,
                 TrapKind::DivideByZero => HEW_TRAP_DIVIDE_BY_ZERO,
                 TrapKind::SignedMinDivNegOne => HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
                 TrapKind::ShiftOutOfRange => HEW_TRAP_SHIFT_OUT_OF_RANGE,
                 TrapKind::IndexOutOfBounds => HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+                TrapKind::SupervisorChildUnavailable => HEW_TRAP_SUPERVISOR_CHILD_UNAVAILABLE,
             };
             emit_trap_with_code(fn_ctx, code, "trap")?;
         }

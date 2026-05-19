@@ -520,6 +520,12 @@ pub enum TrapKind {
     /// shift amount that is negative or ≥ the operand's bit-width.
     /// Producer: B-5.
     ShiftOutOfRange,
+    /// Supervisor child slot is not live (tag 1 = Transient or tag 2 = Dead)
+    /// at the time of the field-access lookup. Per LESSONS `fail-closed-not-pretend`
+    /// (P0), MIR traps rather than fabricating a null PID. The LLVM exit code
+    /// must stay in lock-step with `HEW_TRAP_SUPERVISOR_CHILD_UNAVAILABLE` in
+    /// `hew-runtime/src/supervisor.rs`. Producer: S2 (`FieldAccess` intercept).
+    SupervisorChildUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq)]

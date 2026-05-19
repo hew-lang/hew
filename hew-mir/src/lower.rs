@@ -8,7 +8,7 @@ use hew_hir::{
     SiteId, ValueClass,
 };
 use hew_parser::ast::BinaryOp;
-use hew_types::{ExecutionContextReader, ResolvedTy};
+use hew_types::{ChildKind, ChildSlot, ExecutionContextReader, ResolvedTy};
 
 use crate::dataflow;
 use crate::model::{
@@ -24,6 +24,17 @@ const HEW_CTX_OFFSET_PARENT_SUPERVISOR: usize = 16;
 const HEW_CTX_OFFSET_TRACE: usize = 56;
 const HEW_TRACE_OFFSET_SPAN_ID: usize = 16;
 const HEW_CTX_OFFSET_TRACE_SPAN: usize = HEW_CTX_OFFSET_TRACE + HEW_TRACE_OFFSET_SPAN_ID;
+
+/// Synthetic MIR record type name for the `ChildLookupResult` C-ABI struct
+/// returned by `hew_supervisor_child_get`. Registered unconditionally in every
+/// module so the `FieldAccess` intercept arm can use `RecordFieldLoad` on the
+/// struct-return place. S3 codegen recognises this name and emits the correct
+/// LLVM struct ABI (`{ i8, i8, [6 x i8], ptr }` at the wire level).
+///
+/// WHY a synthetic name rather than a user-visible record: `ChildLookupResult`
+/// is a runtime-internal type; user programs never name or construct it directly.
+/// The double-underscore prefix (`__`) is outside the user-identifier namespace.
+const CHILD_LOOKUP_RESULT_TY_NAME: &str = "__HewChildLookupResult";
 
 #[derive(Debug, Clone)]
 struct ActorMethodInfo {
@@ -380,6 +391,37 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         });
         record_field_orders.insert(layout.mangled_name.clone(), fields);
     }
+    // Register the synthetic `__HewChildLookupResult` record layout used by the
+    // `FieldAccess` supervisor intercept arm (S2). The runtime struct is:
+    //   { u8 tag, u8 reason, [u8;6] _pad, *mut HewActor handle }  (16 bytes, C ABI)
+    // For MIR purposes we flatten this to two fields that S3 codegen maps to
+    // `extractvalue` indices on the struct-return LLVM value:
+    //   field 0 "tag"    : i64  (zero-extended from u8; tag 0=Live, 1=Transient, 2=Dead)
+    //   field 1 "handle" : i64  (pointer-width integer; cast to actor pointer at codegen)
+    // Using i64 for both avoids introducing a pointer-or-u8 type into MIR.
+    // S3 emits the correct LLVM ABI types (i8 and ptr) when it lowers the
+    // `CallRuntimeAbi`+`RecordFieldLoad` sequence into LLVM IR.
+    //
+    // Decision: option (b) from the plan — scratch-alloca + RecordFieldLoad.
+    // WHY: reusing existing `CallRuntimeAbi` (dest = struct local) and
+    //   `RecordFieldLoad` avoids any new `Instr` variant and keeps the S3
+    //   match-arm cascade at zero lines for S2.
+    // WHEN obsolete: when S3 wires LLVM emission for `hew_supervisor_child_get`.
+    // WHAT: S3 interprets `CallRuntimeAbi` whose `dest` local is typed
+    //   `__HewChildLookupResult` as a struct-return call and emits `extractvalue`.
+    let child_lookup_fields: Vec<(String, ResolvedTy)> = vec![
+        ("tag".to_string(), ResolvedTy::I64),
+        ("handle".to_string(), ResolvedTy::I64),
+    ];
+    record_layouts.push(crate::model::RecordLayout {
+        name: CHILD_LOOKUP_RESULT_TY_NAME.to_string(),
+        field_tys: child_lookup_fields
+            .iter()
+            .map(|(_, ty)| ty.clone())
+            .collect(),
+    });
+    record_field_orders.insert(CHILD_LOOKUP_RESULT_TY_NAME.to_string(), child_lookup_fields);
+
     let actor_layout_map: HashMap<String, ActorLayout> = actor_layouts
         .iter()
         .cloned()
@@ -469,6 +511,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     None,
                     &module_fn_names,
                     &module.call_site_type_args,
+                    &module.supervisor_child_slots,
                     crate::model::FunctionCallConv::Default,
                 );
                 thir.push(lowered.thir);
@@ -494,6 +537,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &actor_layout_map,
                     &module_fn_names,
                     &module.call_site_type_args,
+                    &module.supervisor_child_slots,
                     &mut emitted_actor_handler_symbols,
                     &mut diagnostics,
                 );
@@ -523,6 +567,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &actor_layout_map,
                     &module_fn_names,
                     &module.call_site_type_args,
+                    &module.supervisor_child_slots,
                     &mut emitted_actor_handler_symbols,
                     &mut diagnostics,
                 ) {
@@ -591,6 +636,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             None,
             &module_fn_names,
             &module.call_site_type_args,
+            &module.supervisor_child_slots,
             crate::model::FunctionCallConv::Default,
         );
         thir.push(lowered.thir);
@@ -632,6 +678,7 @@ fn lower_actor_receive_handlers(
     actor_layouts: &HashMap<String, ActorLayout>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     emitted_symbols: &mut HashMap<String, String>,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Vec<LoweredFunction> {
@@ -712,6 +759,7 @@ fn lower_actor_receive_handlers(
             Some(&actor.name),
             module_fn_names,
             call_site_type_args,
+            supervisor_child_slots,
             crate::model::FunctionCallConv::ActorHandler,
         ));
     }
@@ -730,6 +778,7 @@ fn lower_actor_body_handlers(
     actor_layouts: &HashMap<String, ActorLayout>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     emitted_symbols: &mut HashMap<String, String>,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Vec<LoweredFunction> {
@@ -743,6 +792,7 @@ fn lower_actor_body_handlers(
             actor_layouts,
             module_fn_names,
             call_site_type_args,
+            supervisor_child_slots,
             emitted_symbols,
             diagnostics,
         ) {
@@ -756,6 +806,7 @@ fn lower_actor_body_handlers(
         actor_layouts,
         module_fn_names,
         call_site_type_args,
+        supervisor_child_slots,
         emitted_symbols,
         diagnostics,
     ));
@@ -766,6 +817,7 @@ fn lower_actor_body_handlers(
         actor_layouts,
         module_fn_names,
         call_site_type_args,
+        supervisor_child_slots,
         emitted_symbols,
         diagnostics,
     ));
@@ -784,6 +836,7 @@ fn lower_actor_init_handler(
     actor_layouts: &HashMap<String, ActorLayout>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     emitted_symbols: &mut HashMap<String, String>,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Option<LoweredFunction> {
@@ -824,6 +877,7 @@ fn lower_actor_init_handler(
         Some(&actor.name),
         module_fn_names,
         call_site_type_args,
+        supervisor_child_slots,
         crate::model::FunctionCallConv::ActorHandler,
     ))
 }
@@ -843,6 +897,7 @@ fn lower_actor_lifecycle_handlers(
     actor_layouts: &HashMap<String, ActorLayout>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     emitted_symbols: &mut HashMap<String, String>,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Vec<LoweredFunction> {
@@ -888,6 +943,7 @@ fn lower_actor_lifecycle_handlers(
                     Some(&actor.name),
                     module_fn_names,
                     call_site_type_args,
+                    supervisor_child_slots,
                     crate::model::FunctionCallConv::ActorHandler,
                 ));
             }
@@ -930,6 +986,7 @@ fn lower_actor_lifecycle_handlers(
                     Some(&actor.name),
                     module_fn_names,
                     call_site_type_args,
+                    supervisor_child_slots,
                     crate::model::FunctionCallConv::ActorHandler,
                 ));
             }
@@ -1033,6 +1090,7 @@ fn lower_actor_lifecycle_handlers(
                     Some(&actor.name),
                     module_fn_names,
                     call_site_type_args,
+                    supervisor_child_slots,
                     crate::model::FunctionCallConv::ActorHandler,
                 ));
             }
@@ -1306,6 +1364,7 @@ fn lower_supervisor_bootstrap(
     actor_layouts: &HashMap<String, ActorLayout>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     emitted_symbols: &mut HashMap<String, String>,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Option<LoweredFunction> {
@@ -1524,6 +1583,7 @@ fn lower_supervisor_bootstrap(
         None,
         module_fn_names,
         call_site_type_args,
+        supervisor_child_slots,
         // `FunctionCallConv::Default`: codegen replaces the bootstrap body
         // wholesale with the `hew_supervisor_*` call sequence (S-D.3), so
         // the body never reads an execution context. The synthetic call
@@ -1797,6 +1857,7 @@ fn lower_function(
     current_actor_name: Option<&str>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     call_conv: crate::model::FunctionCallConv,
 ) -> LoweredFunction {
     let mut builder = Builder {
@@ -1830,6 +1891,7 @@ fn lower_function(
         module_fn_names: module_fn_names.clone(),
         subst,
         call_site_type_args: call_site_type_args.clone(),
+        supervisor_child_slots: supervisor_child_slots.clone(),
         current_function_symbol: emit_name.clone(),
         ..Builder::default()
     };
@@ -2181,6 +2243,17 @@ struct Builder {
     /// substitutes these via `subst_ty` and dispatches to the
     /// per-monomorphisation mangled symbol.
     call_site_type_args: HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    /// Per-`FieldAccess` site-id → `ChildSlot` side-table, populated by HIR
+    /// lowering from the checker's `supervisor_child_slots`. The `FieldAccess`
+    /// arm checks this map BEFORE the `record_field_orders` lookup so that
+    /// supervisor-typed LHS is intercepted and routed to
+    /// `hew_supervisor_child_get` rather than a record-field load.
+    ///
+    /// Cloned from `HirModule.supervisor_child_slots`. Empty for functions
+    /// (actor-handler shims, closure shims) whose bodies cannot contain
+    /// supervisor field accesses — the empty map causes the intercept arm to
+    /// skip immediately, adding zero overhead for the common case.
+    supervisor_child_slots: HashMap<hew_hir::SiteId, hew_types::ChildSlot>,
     current_task_scope: Option<Place>,
     current_function_symbol: String,
     next_closure_id: u32,
@@ -2897,6 +2970,85 @@ impl Builder {
                         return Some(dest);
                     }
                 }
+
+                // ── Supervisor child-accessor intercept (S2) ────────────────
+                // Before falling through to the record-field path, check whether
+                // this `FieldAccess` site was tagged by the checker as a
+                // supervisor child accessor. The checker populates
+                // `HirModule.supervisor_child_slots` (keyed by SiteId) for every
+                // expression of the form `supervisor_expr.child_name`.
+                //
+                // Decision: option (b) — scratch-alloca + RecordFieldLoad.
+                // A `CallRuntimeAbi` with a struct-typed dest (typed
+                // `__HewChildLookupResult`) carries the 16-byte return value.
+                // Two `RecordFieldLoad` instructions then extract `tag` (field 0)
+                // and `handle` (field 1). Tag 0 (Live) → success path; tag != 0
+                // → `Terminator::Trap { kind: TrapKind::SupervisorChildUnavailable }`.
+                // No new `Instr` variant is required; the match-arm cascade cost
+                // for S2 is zero lines.
+                //
+                // LESSONS P0 `boundary-fail-closed`: no path through this arm
+                // reaches the `record_field_orders` lookup for supervisor-typed LHS.
+                if let Some(slot) = self.supervisor_child_slots.get(&expr.site).cloned() {
+                    match slot.kind {
+                        ChildKind::Pool => {
+                            // Pool children are not supported in v0.5; the
+                            // dedicated `hew_supervisor_pool_route` ABI call
+                            // lands in v0.6 when pool routing is fully designed.
+                            // Discard the object expression to avoid misleading
+                            // "unused value" diagnostics further up the chain.
+                            let _ = self.lower_value(object);
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::CutoverUnsupported {
+                                    construct: "pool child accessor (v0.6)".to_string(),
+                                    site: expr.site,
+                                },
+                                note: "pool child slot routing is not yet implemented; \
+                                       use a static child or wait for v0.6"
+                                    .to_string(),
+                            });
+                            return None;
+                        }
+                        ChildKind::Static => {
+                            // Nested-supervisor result: when the RESULT of the
+                            // field access (`expr.ty`) is `LocalPid<T>` where T
+                            // is itself a supervisor with declared children, we
+                            // would need `hew_supervisor_nested_get` (v0.6).
+                            // This is distinct from the common case where the
+                            // LHS is a supervisor and the result is an actor PID.
+                            // We detect nesting on `expr.ty`, not `object.ty`
+                            // (which is always `LocalPid<ParentSupervisor>`).
+                            let is_nested = matches!(&expr.ty,
+                                ResolvedTy::Named { name, args }
+                                if name == "LocalPid"
+                                    && args.len() == 1
+                                    && matches!(&args[0],
+                                        ResolvedTy::Named { name: inner, .. }
+                                        if self.supervisor_layout_map.contains_key(inner.as_str()))
+                            );
+                            if is_nested {
+                                let _ = self.lower_value(object);
+                                self.diagnostics.push(MirDiagnostic {
+                                    kind: MirDiagnosticKind::CutoverUnsupported {
+                                        construct: "nested supervisor child accessor (v0.6)"
+                                            .to_string(),
+                                        site: expr.site,
+                                    },
+                                    note: "multi-segment supervisor dotted access requires \
+                                           `hew_supervisor_nested_get`, which lands in v0.6"
+                                        .to_string(),
+                                });
+                                return None;
+                            }
+
+                            return self.lower_supervisor_child_get(
+                                object, slot.index, &expr.ty, expr.site,
+                            );
+                        }
+                    }
+                }
+                // ── End supervisor intercept ─────────────────────────────────
+
                 // Resolve the record type key from the object's type so we
                 // can look up the field offset in the field-order table.
                 // For a generic record instantiation (`b: Box<i64>` reading
@@ -4944,6 +5096,146 @@ impl Builder {
         Some(proxy)
     }
 
+    /// Emit the MIR sequence for a static supervisor child-slot access.
+    ///
+    /// Called from the `HirExprKind::FieldAccess` intercept arm after the
+    /// checker has confirmed the LHS is a supervisor with a static child at
+    /// `slot_index`. Produces the following CFG shape:
+    ///
+    /// ```text
+    /// entry_bb (current)
+    ///   [lower object → sup_place]
+    ///   ConstI64 { dest: idx_place, value: slot_index }
+    ///   CallRuntimeAbi { "hew_supervisor_child_get",
+    ///                    args: [sup_place, idx_place],
+    ///                    dest: result_place }
+    ///   RecordFieldLoad { record: result_place, field_offset: 0, dest: tag_place }   -- tag (i64)
+    ///   IntCmp { pred: Eq, lhs: tag_place, rhs: zero_place, dest: is_live_flag }
+    ///   Branch { cond: is_live_flag, then: success_bb, else: trap_bb }
+    ///
+    /// trap_bb
+    ///   Trap { kind: SupervisorChildUnavailable }
+    ///
+    /// success_bb  [cursor here after call]
+    ///   RecordFieldLoad { record: result_place, field_offset: 1, dest: raw_handle }  -- i64 handle
+    ///   Move { dest: handle_place (ActorHandle(N)), src: raw_handle }
+    ///   [cursor stays here for subsequent lowering]
+    /// ```
+    ///
+    /// Returns `Some(handle_place)` on the success path. `handle_place` is
+    /// `Place::ActorHandle(N)` where N is the backing local index of a freshly
+    /// allocated `LocalPid<ChildActor>` local (typed as `result_ty` from the
+    /// checker — the checker is the authority on the child actor type).
+    ///
+    /// S3 codegen interprets `CallRuntimeAbi` with a `__HewChildLookupResult`-typed
+    /// dest as a struct-return call, emitting `{ i64, ptr }` in LLVM IR and storing
+    /// the struct into the alloca slot. `RecordFieldLoad` at index 0 extracts `tag`
+    /// and at index 1 extracts the handle pointer (reinterpreted as i64 at the MIR
+    /// layer; S3 emits `ptrtoint` when writing to the handle alloca).
+    fn lower_supervisor_child_get(
+        &mut self,
+        object: &HirExpr,
+        slot_index: u32,
+        result_ty: &ResolvedTy,
+        _site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // Lower the supervisor object expression to get the supervisor PID place.
+        let sup_place = self.lower_value(object)?;
+
+        // Emit a constant for the static slot index.
+        let idx_place = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: idx_place,
+            value: i64::from(slot_index),
+        });
+
+        // Allocate a local typed as the opaque `__HewChildLookupResult` record.
+        // S3 codegen recognises this type name and emits a struct-return LLVM call.
+        let result_place = self.alloc_local(ResolvedTy::Named {
+            name: CHILD_LOOKUP_RESULT_TY_NAME.to_string(),
+            args: vec![],
+        });
+
+        // Emit the runtime call. The dest carries the 16-byte struct return value.
+        self.instructions.push(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(
+                "hew_supervisor_child_get",
+                vec![sup_place, idx_place],
+                Some(result_place),
+            )
+            .expect("hew_supervisor_child_get is an allowlisted runtime symbol"),
+        ));
+
+        // Extract tag (field 0, type i64 — zero-extended from the u8 wire byte).
+        let tag_place = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::RecordFieldLoad {
+            record: result_place,
+            field_offset: FieldOffset(0),
+            dest: tag_place,
+        });
+
+        // Emit `zero_place = 0i64` for the comparison.
+        let zero_place = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: zero_place,
+            value: 0,
+        });
+
+        // Branch: tag == 0 (Live) → success_bb; tag != 0 → trap_bb.
+        let is_live_flag = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            pred: CmpPred::Eq,
+            lhs: tag_place,
+            rhs: zero_place,
+            dest: is_live_flag,
+        });
+
+        let trap_bb = self.alloc_block();
+        let success_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: is_live_flag,
+            then_target: success_bb,
+            else_target: trap_bb,
+        });
+
+        // Trap block: child is Transient (1) or Dead (2) at observation time.
+        self.start_block(trap_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::SupervisorChildUnavailable,
+        });
+
+        // Success block: extract the handle pointer (field 1, i64 at MIR level).
+        // S3 emits a `ptrtoint`/`inttoptr` as needed for the wire representation.
+        self.start_block(success_bb);
+        let raw_handle = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::RecordFieldLoad {
+            record: result_place,
+            field_offset: FieldOffset(1),
+            dest: raw_handle,
+        });
+
+        // Allocate the final ActorHandle place typed as `result_ty`
+        // (the checker-authority `LocalPid<ChildActor>` type for this site).
+        let handle_local = self.alloc_local(result_ty.clone());
+        let Place::Local(handle_id) = handle_local else {
+            unreachable!("alloc_local always returns Place::Local");
+        };
+        let handle_place = Place::ActorHandle(handle_id);
+
+        // Move the i64 wire value into the typed ActorHandle slot.
+        // S3 emits the appropriate cast; at MIR level they are the same storage.
+        self.instructions.push(Instr::Move {
+            dest: handle_place,
+            src: raw_handle,
+        });
+
+        // The `instr_places` function in lower.rs surfaces `handle_place` to the
+        // dataflow seed pass, maintaining the same bookkeeping invariant as
+        // `lower_spawn_actor`.
+
+        Some(handle_place)
+    }
+
     /// Emit `Instr::CallRuntimeAbi` for `hew_duplex_send`.
     ///
     /// HIR shape (from E1 bridge): `Call { callee: BindingRef("hew_duplex_send"),
@@ -5843,6 +6135,12 @@ impl Builder {
             module_fn_names: self.module_fn_names.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
+            // A closure may capture a supervisor PID and access a child slot
+            // field on it — the HIR checker registers those accesses in
+            // `supervisor_child_slots` by site regardless of nesting context.
+            // Propagate the parent module's map so the FieldAccess intercept arm
+            // fires correctly for any closure body that contains such an access.
+            supervisor_child_slots: self.supervisor_child_slots.clone(),
             current_function_symbol: shim_name.to_string(),
             ..Builder::default()
         };
@@ -7541,6 +7839,7 @@ mod slice3_invariants {
                 &HashMap::new(),
                 None,
                 &HashSet::new(),
+                &HashMap::new(),
                 &HashMap::new(),
                 crate::model::FunctionCallConv::ActorHandler,
             );

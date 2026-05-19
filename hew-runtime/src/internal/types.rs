@@ -1,5 +1,7 @@
 //! Internal type definitions shared across runtime modules.
 
+use std::ffi::c_int;
+
 use crate::execution_context::HewExecutionContext;
 
 /// Actor dispatch function signature (context-leading canonical).
@@ -11,6 +13,19 @@ pub type HewDispatchFn = unsafe extern "C-unwind" fn(
     msg_type: i32,
     data: *mut std::ffi::c_void,
     data_size: usize,
+);
+
+/// Crash handler function signature for supervised actors.
+///
+/// Called by the supervisor when a child actor crashes, before the restart
+/// policy is applied. Receives the execution context, the crash code
+/// (trap kind integer), and the actor's current state pointer.
+///
+/// `void (*on_crash)(HewExecutionContext *ctx, int crash_code, void *actor_state_ptr)`
+pub type HewOnCrashFn = unsafe extern "C" fn(
+    ctx: *mut HewExecutionContext,
+    crash_code: c_int,
+    actor_state_ptr: *mut std::ffi::c_void,
 );
 
 /// Overflow policy for bounded mailboxes.

@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::actor::{self, HewActor, HewActorOpts};
-use crate::internal::types::{HewActorState, HewDispatchFn, HewOverflowPolicy};
+use crate::internal::types::{HewActorState, HewDispatchFn, HewOnCrashFn, HewOverflowPolicy};
 use crate::io_time::hew_now_ms;
 use crate::mailbox;
 use crate::pool::{HewActorPool, PoolStrategy};
@@ -419,6 +419,12 @@ pub struct HewChildSpec {
     /// re-applies this cap to every restarted child so `#[max_heap(N)]`
     /// actors retain their cap across crashes.
     pub arena_cap_bytes: usize,
+    /// Optional crash handler invoked before the restart policy is applied.
+    /// Called with the execution context, trap-kind code, and actor state
+    /// pointer when the child exits with `HewActorState::Crashed`.
+    /// `None` / null means no handler. Not read by the runtime in this change;
+    /// the invocation path is added in a follow-on change.
+    pub on_crash: Option<HewOnCrashFn>,
 }
 
 /// Child lifecycle event (sent as system message payload).
@@ -562,6 +568,16 @@ struct InternalChildSpec {
     /// applied by every restart path so restarted actors keep the cap
     /// originally set by `#[max_heap(N)]`.
     arena_cap_bytes: usize,
+    /// Crash handler copied from `HewChildSpec::on_crash`. Invoked before
+    /// the restart policy when the child exits with `HewActorState::Crashed`.
+    // WHY: field is stored so the ABI copy path is complete; the read path
+    // is added by the crash-handler invocation change.
+    // WHEN: remove `allow` when `apply_restart` reads this field.
+    #[allow(
+        dead_code,
+        reason = "read path is added by the crash-handler invocation change"
+    )]
+    on_crash: Option<HewOnCrashFn>,
     /// Codegen-emitted drop callback for owned state fields (e.g. `Vec`, `String`).
     /// Registered via [`hew_supervisor_set_child_state_drop`] after the child spec
     /// is added. Every restart path calls this on the newly spawned actor so that
@@ -601,6 +617,7 @@ impl Default for InternalChildSpec {
             next_restart_time_ns: 0,
             circuit_breaker: CircuitBreakerState::default(),
             arena_cap_bytes: 0,
+            on_crash: None,
             state_drop_fn: None,
         }
     }
@@ -1705,6 +1722,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         next_restart_time_ns: 0,
         circuit_breaker: CircuitBreakerState::default(),
         arena_cap_bytes: sp.arena_cap_bytes,
+        on_crash: sp.on_crash,
         // Registered by hew_supervisor_set_child_state_drop after this call.
         state_drop_fn: None,
     });
@@ -1945,6 +1963,7 @@ mod tests {
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
+                on_crash: None,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             assert_eq!(hew_supervisor_start(sup), 0);
@@ -2988,6 +3007,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         next_restart_time_ns: 0,
         circuit_breaker: CircuitBreakerState::default(),
         arena_cap_bytes: sp.arena_cap_bytes,
+        on_crash: sp.on_crash,
         // Registered by the caller via hew_supervisor_set_child_state_drop
         // immediately after this call returns. See the function doc comment
         // for the race-window analysis and calling contract.

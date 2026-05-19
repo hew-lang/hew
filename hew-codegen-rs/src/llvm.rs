@@ -1433,6 +1433,7 @@ fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
             i32_ty.into(), // mailbox_capacity
             i32_ty.into(), // overflow
             i64_ty.into(), // arena_cap_bytes (alignment introduces 4B pad after `overflow`)
+            ptr_ty.into(), // on_crash fn-pointer (null; populated when codegen lowers on_crash symbols)
         ],
         false,
     )
@@ -1655,7 +1656,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
 
     let restart_int = child.restart_policy.map(restart_policy_to_int).unwrap_or(0);
 
-    let field_values: [(u32, BasicValueEnum<'ctx>); 8] = [
+    let field_values: [(u32, BasicValueEnum<'ctx>); 9] = [
         (0, name_ptr.into()),
         (1, ptr_ty.const_null().into()),
         (2, i64_ty.const_zero().into()),
@@ -1664,6 +1665,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         (5, i32_ty.const_zero().into()),
         (6, i32_ty.const_zero().into()),
         (7, i64_ty.const_zero().into()),
+        (8, ptr_ty.const_null().into()), // on_crash: null pointer until codegen lowers on_crash symbols
     ];
     for (field_idx, value) in field_values {
         let gep = builder

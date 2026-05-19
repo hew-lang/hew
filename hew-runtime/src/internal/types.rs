@@ -1,7 +1,5 @@
 //! Internal type definitions shared across runtime modules.
 
-use std::ffi::c_int;
-
 use crate::execution_context::HewExecutionContext;
 
 /// Actor dispatch function signature (context-leading canonical).
@@ -21,10 +19,16 @@ pub type HewDispatchFn = unsafe extern "C-unwind" fn(
 /// policy is applied. Receives the execution context, the crash code
 /// (trap kind integer), and the actor's current state pointer.
 ///
-/// `void (*on_crash)(HewExecutionContext *ctx, int crash_code, void *actor_state_ptr)`
+/// `crash_code` is i64 to match the `code: i64` field of `PanicInfo` in
+/// `std/failure.hew`. The supervisor's internal plumbing tracks the code as
+/// `c_int` and widens it to `i64` at the call site so the internal event
+/// struct and the public C ABI (`hew_supervisor_notify_child_event`) stay
+/// unchanged.
+///
+/// `void (*on_crash)(HewExecutionContext *ctx, int64_t crash_code, void *actor_state_ptr)`
 pub type HewOnCrashFn = unsafe extern "C" fn(
     ctx: *mut HewExecutionContext,
-    crash_code: c_int,
+    crash_code: i64,
     actor_state_ptr: *mut std::ffi::c_void,
 );
 

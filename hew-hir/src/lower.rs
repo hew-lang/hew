@@ -194,12 +194,45 @@ pub fn lower_program_with_mono_cap(
             let module_short = mod_id.path.last().map_or("", String::as_str);
             if let Some(module) = mg.modules.get(mod_id) {
                 for (item, _) in &module.items {
-                    if let Item::Function(func) = item {
-                        if func.visibility.is_pub() {
+                    match item {
+                        Item::Function(func) if func.visibility.is_pub() => {
                             let qualified =
                                 crate::mangle_dotted_name(&format!("{module_short}.{}", func.name));
                             ctx.register_fn_entry(&qualified, func);
                         }
+                        // Register pub type declarations from imported modules
+                        // into `record_registry` so `Expr::StructInit` and
+                        // `Expr::FieldAccess` lowering can resolve their field
+                        // layouts. Without this, `PanicInfo.code` in an
+                        // `#[on(crash)]` body fails with `CutoverUnsupported`
+                        // because the layout is missing from `record_field_orders`
+                        // at MIR time.
+                        //
+                        // All pub TypeDecls from non-root modules are registered,
+                        // not just monomorphic ones; the generic case is filtered
+                        // at MIR layout-emission time (same rule as root items).
+                        Item::TypeDecl(decl) if decl.visibility.is_pub() => {
+                            let id = ctx.ids.item();
+                            let type_params: Vec<String> = decl
+                                .type_params
+                                .as_ref()
+                                .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
+                            let mut fields: Vec<(String, ResolvedTy)> = Vec::new();
+                            for body_item in &decl.body {
+                                if let TypeBodyItem::Field { name, ty, .. } = body_item {
+                                    fields.push((name.clone(), ctx.lower_type(ty)));
+                                }
+                            }
+                            ctx.record_registry.insert(
+                                decl.name.clone(),
+                                RecordEntry {
+                                    id,
+                                    type_params,
+                                    fields,
+                                },
+                            );
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -389,16 +422,23 @@ pub fn lower_program_with_mono_cap(
     // emitted `HirModule`.  Walking `module_graph` here ensures each
     // imported user module contributes exactly one `HirFn` per pub fn,
     // keyed by the same mangled name registered in the pre-pass above.
+    //
+    // Pub TypeDecls are emitted here for the same reason: `PanicInfo` (and any
+    // other pub type from an imported module) must appear as `HirItem::TypeDecl`
+    // so that `hew-mir`'s layout pass (which walks `module.items`) can populate
+    // `record_field_orders` and emit a `RecordLayout`.  Without this, field
+    // accesses like `info.code` in `#[on(crash)]` bodies fail at MIR time
+    // because `PanicInfo` is absent from `record_field_orders`.
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root {
                 continue;
             }
-            let module_short = mod_id.path.last().map_or("", String::as_str);
             if let Some(module) = mg.modules.get(mod_id) {
                 for (item, span) in &module.items {
-                    if let Item::Function(func) = item {
-                        if func.visibility.is_pub() {
+                    match item {
+                        Item::Function(func) if func.visibility.is_pub() => {
+                            let module_short = mod_id.path.last().map_or("", String::as_str);
                             let qualified =
                                 crate::mangle_dotted_name(&format!("{module_short}.{}", func.name));
                             items.push(HirItem::Function(ctx.lower_fn_with_name(
@@ -407,6 +447,10 @@ pub fn lower_program_with_mono_cap(
                                 span.clone(),
                             )));
                         }
+                        Item::TypeDecl(decl) if decl.visibility.is_pub() => {
+                            items.push(HirItem::TypeDecl(ctx.lower_type_decl(decl, span.clone())));
+                        }
+                        _ => {}
                     }
                 }
             }

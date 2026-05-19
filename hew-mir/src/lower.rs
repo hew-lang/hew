@@ -36,6 +36,17 @@ const HEW_CTX_OFFSET_TRACE_SPAN: usize = HEW_CTX_OFFSET_TRACE + HEW_TRACE_OFFSET
 /// The double-underscore prefix (`__`) is outside the user-identifier namespace.
 const CHILD_LOOKUP_RESULT_TY_NAME: &str = "__HewChildLookupResult";
 
+/// Sentinel HIR IDs for the synthetic `__crash_code: i64` ABI binding injected
+/// into `#[on(crash)]` handler prologues.
+///
+/// Checker-allocated IDs count upward from 0; these live at `u32::MAX` to avoid
+/// collision with any real binding, site, or node emitted during type-checking.
+/// One sentinel value per kind suffices because the injected binding is local to
+/// the synthetic function scope and is never referenced outside it.
+const SENTINEL_CRASH_CODE_BINDING: BindingId = BindingId(u32::MAX);
+const SENTINEL_CRASH_CODE_SITE: SiteId = SiteId(u32::MAX);
+const SENTINEL_CRASH_CODE_NODE: HirNodeId = HirNodeId(u32::MAX);
+
 #[derive(Debug, Clone)]
 struct ActorMethodInfo {
     msg_type: i32,
@@ -423,6 +434,37 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             .collect(),
     });
     record_field_orders.insert(CHILD_LOOKUP_RESULT_TY_NAME.to_string(), child_lookup_fields);
+
+    // `PanicInfo` — the argument type of `#[on(crash)]` hooks in std/failure.hew.
+    //
+    // WHY registered here unconditionally: user programs do not `import std.failure`
+    // explicitly; `PanicInfo` is seeded into the HIR TypeClassTable via
+    // `builtin_type_classes` and into the checker's `known_types` via
+    // `register_builtin_failure_surface`. Neither path inserts a `HirItem::TypeDecl`
+    // into `module.items`, so the normal item-loop above never sees it.
+    //
+    // The on_crash MIR prologue injector (in `lower_lifecycle_hooks`) synthesises a
+    // `HirExprKind::StructInit { name: "PanicInfo", fields: [("code", __crash_code)] }`
+    // expression and prepends it to the handler body. That StructInit lowering looks up
+    // "PanicInfo" in `record_field_orders`; without this unconditional registration the
+    // lookup fails for any program that does not import std.failure explicitly.
+    //
+    // WHEN-OBSOLETE: when std/failure.hew is loaded through the module graph and emits
+    // a `HirItem::TypeDecl` that the item-loop above already handles; at that point
+    // this sentinel insert produces a harmless duplicate that the later module-graph
+    // path overwrites with the same value.
+    //
+    // WHAT-REAL-SOLUTION: module-graph loading of std/*.hew so all stdlib types enter
+    // the HIR item stream naturally.
+    if !record_field_orders.contains_key("PanicInfo") {
+        let panic_info_fields: Vec<(String, ResolvedTy)> =
+            vec![("code".to_string(), ResolvedTy::I64)];
+        record_layouts.push(crate::model::RecordLayout {
+            name: "PanicInfo".to_string(),
+            field_tys: vec![ResolvedTy::I64],
+        });
+        record_field_orders.insert("PanicInfo".to_string(), panic_info_fields);
+    }
 
     let actor_layout_map: HashMap<String, ActorLayout> = actor_layouts
         .iter()
@@ -1003,67 +1045,138 @@ fn lower_actor_lifecycle_handlers(
                 }
                 emitted_symbols.insert(emit_name.clone(), duplicate_label);
 
-                // ABI COERCION — return type and PanicInfo parameter:
+                // ABI PROLOGUE — PanicInfo parameter injection:
                 //
-                // The synthesised MIR function uses `i32` for both the
-                // return type and any `PanicInfo`-typed parameter, aligning
-                // with the runtime ABI:
+                // The runtime ABI for `HewOnCrashFn` passes the crash code as
+                // `i64` in the second argument register (updated from `c_int`
+                // in this slice; see hew-runtime/src/internal/types.rs).
                 //
-                //   unsafe extern "C" fn(*mut HewExecutionContext, c_int, *mut c_void)
-                //   (hew-runtime/src/internal/types.rs:25, `HewOnCrashFn`)
+                // User sources declare `info: PanicInfo` and access `info.code`.
+                // To bridge the raw `i64` wire value to the user-visible struct,
+                // we inject a synthetic prologue into the function body:
+                //
+                //   let __crash_code: i64 = <ABI param>;   // sentinel BindingId
+                //   let info: PanicInfo = PanicInfo { code: __crash_code };
+                //
+                // The original user-visible `info: PanicInfo` param is replaced
+                // with `__crash_code: I64` in `abi_params`; the original binding
+                // ID for `info` is preserved in the `Let` statement so that every
+                // `BindingRef { resolved: Binding(info_id) }` in the user body
+                // continues to resolve correctly through `binding_locals`.
                 //
                 // RETURN coercion: the runtime supervisor ignores the handler's
-                // return value in v0.5 and applies its own restart-policy enum
-                // — see commit 373b95ea, runtime/supervisor.rs:1496-1504.
-                // Passing `ResolvedTy::Named { "CrashAction" }` through to
-                // codegen trips the D10 fail-closed gate at llvm.rs:1097
-                // because CrashAction has no codegen shape yet.
+                // return value in v0.5 and applies its own restart-policy enum.
+                // Passing `ResolvedTy::Named { "CrashAction" }` through to codegen
+                // trips the D10 fail-closed gate; we use I32 until v0.6 wires
+                // CrashAction enum-variant construction.
                 //
-                // PARAM coercion: `PanicInfo` is the user-facing type for the
-                // crash-info argument but has no codegen shape either (it is
-                // seeded into the TypeClassTable only; see
-                // hew-hir/src/builtin_type_classes.rs).  The runtime passes
-                // `crash_code: c_int` (i32) in the second argument register,
-                // which is what the ABI slot the user's `info: PanicInfo`
-                // parameter occupies.  Codegen accesses `PanicInfo.code` via
-                // a record-field GEP, but that record layout does not exist
-                // in `IrPipeline.record_layouts` yet (std/failure.hew is not
-                // loaded through the module graph).  We coerce to `I32` so
-                // codegen can allocate the parameter slot without tripping D10.
-                // Field accesses to `info.code` in the body are NOT YET wired
-                // (the record-field GEP would reference a missing layout);
-                // document any body use of `info` as pending.
+                // BODY-RETURN NOTE: enum-variant construction (`CrashAction::Restart`)
+                // is not yet wired in HIR lowering (CutoverUnsupported gate). Today
+                // only `panic()`-diverging bodies compile, so no actual CrashAction
+                // value can appear in the MIR return slot.
                 //
-                // HIR/checker: unchanged.  User sources still type-check with
-                // `info: PanicInfo` and `-> CrashAction` in their signatures.
-                //
-                // WHEN obsolete: when std/failure.hew is loaded through the
-                // module graph (populating PanicInfo into record_layouts) and
-                // v0.6 wires CrashAction return-shape consult, remove both
-                // coercions and let the HIR types flow through.
-                //
-                // BODY-RETURN NOTE: enum-variant construction
-                // (`CrashAction::Restart`) is not yet wired in HIR lowering
-                // (CutoverUnsupported gate).  Today only `panic()`-diverging
-                // bodies compile, so no actual CrashAction value can appear
-                // in the MIR return slot.
+                // WHEN obsolete: when v0.6 wires CrashAction return-shape consult,
+                // remove the I32 return coercion and let the HIR type flow through.
+                // The prologue injection itself stays (the ABI wire remains i64).
+
+                // Find the `info: PanicInfo` param (if present) and build ABI params.
+                // The PanicInfo param is replaced with `__crash_code: I64`; every
+                // other param passes through unchanged.
+                let panic_info_param: Option<HirBinding> = hook
+                    .params
+                    .iter()
+                    .find(
+                        |p| matches!(&p.ty, ResolvedTy::Named { name, .. } if name == "PanicInfo"),
+                    )
+                    .cloned();
+
                 let abi_params: Vec<HirBinding> = hook
                     .params
                     .iter()
                     .map(|p| {
-                        let abi_ty =
-                            if matches!(&p.ty, ResolvedTy::Named { name, .. } if name == "PanicInfo")
-                            {
-                                ResolvedTy::I32
-                            } else {
-                                p.ty.clone()
-                            };
-                        HirBinding {
-                            ty: abi_ty,
-                            ..p.clone()
+                        if matches!(&p.ty, ResolvedTy::Named { name, .. } if name == "PanicInfo") {
+                            HirBinding {
+                                id: SENTINEL_CRASH_CODE_BINDING,
+                                name: "__crash_code".to_string(),
+                                ty: ResolvedTy::I64,
+                                mutable: false,
+                                span: p.span.clone(),
+                            }
+                        } else {
+                            p.clone()
                         }
                     })
                     .collect();
+
+                // Inject a synthetic `let info = PanicInfo { code: __crash_code }`
+                // at the front of the body when the original signature had a
+                // `PanicInfo` param (which is always the case for `on(crash)`).
+                let body = if let Some(info_param) = panic_info_param {
+                    // Build the `__crash_code` BindingRef expression.
+                    let crash_code_ref = HirExpr {
+                        node: SENTINEL_CRASH_CODE_NODE,
+                        site: SENTINEL_CRASH_CODE_SITE,
+                        ty: ResolvedTy::I64,
+                        value_class: ValueClass::BitCopy,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::BindingRef {
+                            name: "__crash_code".to_string(),
+                            resolved: ResolvedRef::Binding(SENTINEL_CRASH_CODE_BINDING),
+                        },
+                        span: info_param.span.clone(),
+                    };
+
+                    // Build `PanicInfo { code: __crash_code }` StructInit expression.
+                    let struct_init = HirExpr {
+                        node: SENTINEL_CRASH_CODE_NODE,
+                        site: SENTINEL_CRASH_CODE_SITE,
+                        ty: ResolvedTy::Named {
+                            name: "PanicInfo".to_string(),
+                            args: Vec::new(),
+                        },
+                        value_class: ValueClass::BitCopy,
+                        intent: IntentKind::Unknown,
+                        kind: HirExprKind::StructInit {
+                            name: "PanicInfo".to_string(),
+                            type_args: Vec::new(),
+                            fields: vec![("code".to_string(), crash_code_ref)],
+                            base: None,
+                        },
+                        span: info_param.span.clone(),
+                    };
+
+                    // Build `let info: PanicInfo = PanicInfo { code: __crash_code }`.
+                    // Preserve `info_param.id` so user `BindingRef { resolved: Binding(id) }` resolves.
+                    let let_info_stmt = HirStmt {
+                        node: SENTINEL_CRASH_CODE_NODE,
+                        kind: HirStmtKind::Let(
+                            HirBinding {
+                                id: info_param.id,
+                                name: info_param.name.clone(),
+                                ty: ResolvedTy::Named {
+                                    name: "PanicInfo".to_string(),
+                                    args: Vec::new(),
+                                },
+                                mutable: false,
+                                span: info_param.span.clone(),
+                            },
+                            Some(struct_init),
+                        ),
+                        span: info_param.span.clone(),
+                    };
+
+                    // Prepend the synthetic let before the original body statements.
+                    let mut stmts = Vec::with_capacity(hook.body.statements.len() + 1);
+                    stmts.push(let_info_stmt);
+                    stmts.extend(hook.body.statements.iter().cloned());
+                    HirBlock {
+                        statements: stmts,
+                        ..hook.body.clone()
+                    }
+                } else {
+                    hook.body.clone()
+                };
+
                 let synthetic_fn = HirFn {
                     id: actor.id,
                     node: actor.node,
@@ -1071,7 +1184,7 @@ fn lower_actor_lifecycle_handlers(
                     type_params: Vec::new(),
                     params: abi_params,
                     return_ty: ResolvedTy::I32,
-                    body: hook.body.clone(),
+                    body,
                     span: hook.span.clone(),
                 };
                 lowered.push(lower_function(
@@ -6421,7 +6534,19 @@ impl Builder {
     fn is_known_actor_runtime_ty(&self, ty: &ResolvedTy) -> bool {
         match ty {
             ResolvedTy::Named { name, .. }
-                if matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor") =>
+                // SHIM: "PanicInfo" is added here to classify it as BitCopy so
+                // the MIR decision map does not block on ValueClass::Unknown.
+                // WHY: PanicInfo is registered in builtin_type_classes with
+                // ResourceMarker::None → Unknown, but the injected prologue and
+                // field-access lowering require it to be treated as a plain
+                // value type (one i64 field, stack-allocated).
+                // WHEN OBSOLETE: when PanicInfo is assigned a proper BitCopy
+                // ResourceMarker in builtin_type_classes (or when that
+                // classification mechanism is replaced by a richer type system
+                // that infers value-semantics from struct shape).
+                // REAL SOLUTION: ResourceMarker::BitCopy for PanicInfo in the
+                // type-class registry, or a type-system query on struct shape.
+                if matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor" | "PanicInfo") =>
             {
                 true
             }

@@ -257,17 +257,23 @@ pub fn emit_module(
     Ok(artefacts)
 }
 
-/// Return the first duplex substrate symbol found in `pipeline`'s instruction
-/// stream, or `None` if no such symbol is present.
+/// Return the first WASM-excluded substrate symbol found in `pipeline`'s
+/// instruction stream, or `None` if none is present.
 ///
-/// Duplex symbols (`hew_duplex_*`) are excluded from wasm32 builds via
-/// `hew-runtime/src/duplex.rs:54` (`#![cfg(not(target_arch = "wasm32"))]`).
+/// Excluded symbols:
+/// - `hew_duplex_*` — excluded from wasm32 builds via
+///   `hew-runtime/src/duplex.rs:54` (`#![cfg(not(target_arch = "wasm32"))]`).
+///   WASM-TODO(#1451).
+/// - `hew_supervisor_child_get` — requires the native preemptive scheduler's
+///   supervisor restart machinery; WASM builds use a cooperative executor that
+///   does not support it.  WASM-TODO(#1475).
+///
 /// This scan detects them in the MIR before the `wasm-ld` step so the caller
 /// can return `CodegenError::WasmUnsupportedSubstrate` instead of a confusing
-/// linker error.  WASM-TODO(#1451).
+/// linker error.
 ///
 /// The scan covers:
-/// - `Instr::CallRuntimeAbi` with a symbol that starts with `"hew_duplex_"`.
+/// - `Instr::CallRuntimeAbi` with an excluded symbol.
 /// - `Instr::Drop { drop_fn: Some(fn_name), .. }` in raw_mir where `fn_name`
 ///   starts with `"hew_duplex_"` (e.g. `hew_duplex_close`).
 /// - `ElabDrop { drop_fn: Some(name), .. }` in `elaborated_mir.drop_plans`
@@ -281,7 +287,16 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
                 let excluded = match instr {
                     Instr::CallRuntimeAbi(call) => {
                         let sym = call.symbol();
-                        sym.starts_with("hew_duplex_").then(|| sym.to_string())
+                        // hew_duplex_* — excluded via hew-runtime/src/duplex.rs:54
+                        //   `#![cfg(not(target_arch = "wasm32"))]`.
+                        //   WASM-TODO(#1451).
+                        // hew_supervisor_child_get — excluded because the supervisor
+                        //   tree requires the native preemptive scheduler; WASM builds
+                        //   use a cooperative single-threaded executor that does not
+                        //   support supervisor restart machinery.
+                        //   WASM-TODO(#1475): supervisor WASM parity is tracked there.
+                        (sym.starts_with("hew_duplex_") || sym == "hew_supervisor_child_get")
+                            .then(|| sym.to_string())
                     }
                     Instr::Drop {
                         drop_fn: Some(fn_name),
@@ -671,6 +686,28 @@ fn intern_runtime_decl<'ctx>(
         // and spawns its self-actor. Returns 0 on success. The bootstrap
         // traps on non-zero (fail-closed) before returning the supervisor ptr.
         "hew_supervisor_start" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_supervisor_child_get(sup: *mut HewSupervisor, key: u32)
+        //     -> ChildLookupResult
+        // (`hew-runtime/src/supervisor.rs:2795`). Returns the live actor handle
+        // for slot `key`, or a tagged Transient/Dead result when the slot is
+        // unavailable (mid-restart, circuit-open, budget-exhausted, or the
+        // supervisor is shut down). The 16-byte `ChildLookupResult` C-ABI struct
+        // is `#[repr(C)] { tag: u8, reason: u8, _pad: [u8; 6], handle: *mut
+        // HewActor }`. The LLVM struct type `{ i8, i8, [6 x i8], ptr }` matches
+        // this layout field-for-field. `key` is `u32` (i32 in LLVM) — the slot
+        // index is a compile-time constant fitting in 32 bits.
+        //
+        // WASM: supervisor child access requires the native scheduler; see
+        // `uses_wasm_excluded_symbol` which gates this symbol at WASM emit time.
+        "hew_supervisor_child_get" => {
+            let i8_ty = ctx.i8_type();
+            let pad_ty = i8_ty.array_type(6);
+            let result_ty = ctx.struct_type(
+                &[i8_ty.into(), i8_ty.into(), pad_ty.into(), ptr_ty.into()],
+                false,
+            );
+            result_ty.fn_type(&[ptr_ty.into(), i32_ty.into()], false)
+        }
         // hew_task_new() -> *mut HewTask
         // (`hew-runtime/src/task_scope.rs:214`). Box-allocates a HewTask
         // in the Ready state. Producer calls this to obtain a task handle
@@ -2663,18 +2700,56 @@ fn lower_instruction(
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let (src_ptr, src_ty) = place_pointer(fn_ctx, *src)?;
             if dest_ty != src_ty {
-                return Err(CodegenError::FailClosed(format!(
-                    "Move type mismatch: src={src_ty:?} dest={dest_ty:?}"
-                )));
+                // Special case: i64 → ptr is the handle-pointer promotion path
+                // emitted by `lower_supervisor_child_get`. The MIR stores the
+                // runtime handle as a raw `i64` in the `__HewChildLookupResult`
+                // struct (field 1); after extraction via `RecordFieldLoad`, the
+                // value must be reinterpreted as a `ptr` before being stored
+                // into an `ActorHandle`-typed place (which is `LocalPid<T>`,
+                // lowered to `ptr`). Emit `inttoptr` instead of failing.
+                //
+                // WHY this shape: `lower_supervisor_child_get` in hew-mir uses
+                // `ResolvedTy::I64` for both struct fields so a single MIR type
+                // covers the wire representation; S3 is the responsible layer for
+                // the `i64 → ptr` promotion (S2 doc comment, lower.rs:5225–5226).
+                //
+                // WHEN obsolete: when the supervisor accessor MIR is redesigned
+                // to carry a ptr-typed handle field directly.
+                use inkwell::types::BasicTypeEnum;
+                if matches!(src_ty, BasicTypeEnum::IntType(t) if t.get_bit_width() == 64)
+                    && matches!(dest_ty, BasicTypeEnum::PointerType(_))
+                {
+                    let i64_val = fn_ctx
+                        .builder
+                        .build_load(src_ty, src_ptr, "move_i64_load")
+                        .map_err(|e| CodegenError::Llvm(format!("move i64 load: {e:?}")))?
+                        .into_int_value();
+                    let ptr_ty = dest_ty.into_pointer_type();
+                    let ptr_val = fn_ctx
+                        .builder
+                        .build_int_to_ptr(i64_val, ptr_ty, "move_inttoptr")
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("move inttoptr (handle promotion): {e:?}"))
+                        })?;
+                    fn_ctx
+                        .builder
+                        .build_store(dest_ptr, ptr_val)
+                        .map_err(|e| CodegenError::Llvm(format!("move ptr store: {e:?}")))?;
+                } else {
+                    return Err(CodegenError::FailClosed(format!(
+                        "Move type mismatch: src={src_ty:?} dest={dest_ty:?}"
+                    )));
+                }
+            } else {
+                let loaded = fn_ctx
+                    .builder
+                    .build_load(src_ty, src_ptr, "move_load")
+                    .map_err(|e| CodegenError::Llvm(format!("move load: {e:?}")))?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, loaded)
+                    .map_err(|e| CodegenError::Llvm(format!("move store: {e:?}")))?;
             }
-            let loaded = fn_ctx
-                .builder
-                .build_load(src_ty, src_ptr, "move_load")
-                .map_err(|e| CodegenError::Llvm(format!("move load: {e:?}")))?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, loaded)
-                .map_err(|e| CodegenError::Llvm(format!("move store: {e:?}")))?;
         }
         Instr::CallRuntimeAbi(call) => {
             // Per-symbol C-ABI lowering. The `RuntimeCall::new`
@@ -4380,6 +4455,148 @@ fn lower_call_runtime_abi(
                     "hew_task_free returns void; producer must not supply dest={d:?}"
                 )));
             }
+            let _ = (i32_ty, ptr_ty);
+        }
+        // ── supervisor child-slot lookup (S3) ────────────────────────────────
+        //
+        // hew_supervisor_child_get(sup: *mut HewSupervisor, key: u32)
+        //     -> ChildLookupResult  (16-byte #[repr(C)] struct)
+        //
+        // MIR shape (from `lower_supervisor_child_get`):
+        //   args[0]: Place::ActorHandle(N) — supervisor PID (ptr-typed alloca).
+        //   args[1]: Place::Local(M)       — i64 slot index (ConstI64 from MIR).
+        //   dest:    Place::Local(K)       — __HewChildLookupResult (struct alloca).
+        //
+        // ABI bridge:
+        //   The runtime returns `{ i8, i8, [6 x i8], ptr }` by value (SysV
+        //   amd64: two-register return, rdx:rax, 16 bytes total).  The MIR
+        //   dest alloca is typed `{ i64, i64 }` (MIR's 2-field flattening of
+        //   the C struct — see `CHILD_LOOKUP_RESULT_TY_NAME` in lower.rs:394).
+        //   This arm bridges the two shapes:
+        //     field 0 (i8 tag)    → zext to i64 → store into dest struct field 0
+        //     field 3 (ptr handle)→ ptrtoint i64 → store into dest struct field 1
+        //   Fields 1 (reason u8) and 2 ([6 x i8] padding) are discarded; the
+        //   MIR branch-on-tag + Trap(SupervisorChildUnavailable) makes
+        //   per-reason discrimination unnecessary at this layer.
+        //
+        //   `key` is `u32` in the runtime (i32 in LLVM); MIR emits i64 for the
+        //   slot index (ConstI64). Truncate to i32 before the call.
+        //
+        // WASM: `uses_wasm_excluded_symbol` gates this symbol before WASM
+        //   emission; supervisor tree requires the native scheduler runtime.
+        "hew_supervisor_child_get" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_supervisor_child_get): expected 2 args \
+                     (sup, key), got {}",
+                    args.len()
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_supervisor_child_get: producer must supply a dest place \
+                     (the __HewChildLookupResult alloca)"
+                        .to_string(),
+                )
+            })?;
+
+            // arg0: supervisor handle — ptr-typed (ActorHandle or actor-derived ptr).
+            let sup_ptr = load_duplex_handle(fn_ctx, args[0], "supervisor_child_get sup")?;
+
+            // arg1: slot index — i64 in MIR (ConstI64); truncate to i32 for the ABI.
+            let key_i64 = load_int_arg(fn_ctx, args[1], i64_ty, "supervisor_child_get key_i64")?;
+            let key_i32 = fn_ctx
+                .builder
+                .build_int_truncate(key_i64, i32_ty, "supervisor_child_get key_i32")
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("supervisor_child_get key truncate: {e:?}"))
+                })?;
+
+            // Call hew_supervisor_child_get — returns { i8, i8, [6 x i8], ptr }.
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let llvm_args: [BasicMetadataValueEnum; 2] = [sup_ptr.into(), key_i32.into()];
+            let call_site = fn_ctx
+                .builder
+                .build_call(fv, &llvm_args, "hew_supervisor_child_get_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_child_get call: {e:?}")))?;
+            let struct_val = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "hew_supervisor_child_get returned void unexpectedly".into(),
+                    )
+                })?
+                .into_struct_value();
+
+            // Wire struct layout (for reference): { i8 tag, i8 reason, [6 x i8] pad, ptr handle }.
+            // Field indices: tag=0, reason=1, pad=2, handle=3.
+
+            // field 0: i8 tag — zext to i64 → store into dest alloca field 0.
+            let tag_i8 = fn_ctx
+                .builder
+                .build_extract_value(struct_val, 0, "child_tag_i8")
+                .map_err(|e| CodegenError::Llvm(format!("extractvalue tag: {e:?}")))?
+                .into_int_value();
+            let tag_i64 = fn_ctx
+                .builder
+                .build_int_z_extend(tag_i8, i64_ty, "child_tag_i64")
+                .map_err(|e| CodegenError::Llvm(format!("zext tag: {e:?}")))?;
+
+            // field 3: ptr handle — ptrtoint i64 → store into dest alloca field 1.
+            let handle_ptr = fn_ctx
+                .builder
+                .build_extract_value(struct_val, 3, "child_handle_ptr")
+                .map_err(|e| CodegenError::Llvm(format!("extractvalue handle: {e:?}")))?
+                .into_pointer_value();
+            let handle_i64 = fn_ctx
+                .builder
+                .build_ptr_to_int(handle_ptr, i64_ty, "child_handle_i64")
+                .map_err(|e| CodegenError::Llvm(format!("ptrtoint handle: {e:?}")))?;
+
+            // The dest alloca has struct type { i64, i64 } (the MIR 2-field
+            // flattening of ChildLookupResult registered in lower.rs:412).
+            let (dest_ptr, dest_slot_ty) = place_pointer(fn_ctx, dest_place)?;
+            let dest_struct_ty = match dest_slot_ty {
+                BasicTypeEnum::StructType(st) => st,
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "hew_supervisor_child_get: dest Place must be a struct \
+                         ({{i64, i64}} for __HewChildLookupResult), got {other:?}"
+                    )));
+                }
+            };
+            // Store tag into field 0 of the dest alloca.
+            let tag_field_ptr = fn_ctx
+                .builder
+                .build_struct_gep(dest_struct_ty, dest_ptr, 0, "dest_tag_field_ptr")
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("supervisor_child_get dest tag GEP: {e:?}"))
+                })?;
+            fn_ctx
+                .builder
+                .build_store(tag_field_ptr, tag_i64)
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("supervisor_child_get tag store: {e:?}"))
+                })?;
+            // Store handle into field 1 of the dest alloca.
+            let handle_field_ptr = fn_ctx
+                .builder
+                .build_struct_gep(dest_struct_ty, dest_ptr, 1, "dest_handle_field_ptr")
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("supervisor_child_get dest handle GEP: {e:?}"))
+                })?;
+            fn_ctx
+                .builder
+                .build_store(handle_field_ptr, handle_i64)
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("supervisor_child_get handle store: {e:?}"))
+                })?;
             let _ = (i32_ty, ptr_ty);
         }
         other => {

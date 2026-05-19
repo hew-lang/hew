@@ -107,6 +107,10 @@ run_accept_expect_status "actor_on_stop" 42
 # value is returned and the loser channel is cancelled without leaking.
 run_accept_expect_status "actor_ask_race" 42
 
+# Supervisor bootstrap: spawn AppSupervisor → hew_supervisor_new + add_child_spec + start;
+# main returns 42 after bootstrap completes successfully.
+run_accept_expect_status "supervisor_basic" 42
+
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"
 run_accept_expect_stdout "print_f64"

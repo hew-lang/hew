@@ -6845,17 +6845,27 @@ mod slice3_invariants {
         }
     }
 
-    fn make_elab_with_drops(drops: Vec<ElabDrop>) -> ElaboratedMirFunction {
+    fn make_elab(
+        drop_plans: Vec<(ExitPath, DropPlan)>,
+        lambda_captures: Vec<LambdaCapture>,
+    ) -> ElaboratedMirFunction {
         ElaboratedMirFunction {
             name: "synthetic".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
             decisions: vec![],
             blocks: vec![],
-            drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan { drops })],
+            drop_plans,
             coroutine: None,
-            lambda_captures: vec![],
+            lambda_captures,
         }
+    }
+
+    fn make_elab_with_drops(drops: Vec<ElabDrop>) -> ElaboratedMirFunction {
+        make_elab(
+            vec![(ExitPath::Return { block: 0 }, DropPlan { drops })],
+            vec![],
+        )
     }
 
     // ---------- drop_kind_for: Place -> DropKind mapping ----------
@@ -7218,16 +7228,7 @@ mod slice3_invariants {
         exit: ExitPath,
         drops: Vec<ElabDrop>,
     ) -> ElaboratedMirFunction {
-        ElaboratedMirFunction {
-            name: "synthetic".to_string(),
-            return_ty: ResolvedTy::Unit,
-            statements: vec![],
-            decisions: vec![],
-            blocks: vec![],
-            drop_plans: vec![(exit, DropPlan { drops })],
-            coroutine: None,
-            lambda_captures: vec![],
-        }
+        make_elab(vec![(exit, DropPlan { drops })], vec![])
     }
 
     #[test]
@@ -7489,16 +7490,7 @@ mod slice3_invariants {
     // ---------- weak-ref capture invariants ----------
 
     fn make_elab_with_captures(captures: Vec<LambdaCapture>) -> ElaboratedMirFunction {
-        ElaboratedMirFunction {
-            name: "synthetic".to_string(),
-            return_ty: ResolvedTy::Unit,
-            statements: vec![],
-            decisions: vec![],
-            blocks: vec![],
-            drop_plans: vec![],
-            coroutine: None,
-            lambda_captures: captures,
-        }
+        make_elab(vec![], captures)
     }
 
     #[test]

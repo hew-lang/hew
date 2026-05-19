@@ -83,6 +83,14 @@ run_accept_expect_status "exit_42" 42
 # Actor body: increment(10) + increment(32) = 42.
 run_accept_expect_status "actor_counter" 42
 
+# Q87 slice 1 regression: same actor body as `actor_counter`, but the two
+# `receive fn`s appear in reversed source order. Pre-Q87 the source-order
+# `.enumerate()` msg_id derivation would have re-numbered the protocol and
+# (in a multi-actor / multi-version setting) flipped the wire ABI. After
+# slice 1 msg_ids are derived from the fully-qualified handler name, so this
+# fixture must still exit 42.
+run_accept_expect_status "actor_counter_reorder" 42
+
 # Actor body with init + on(start): initial=9, boot increments to 10, increment(32) = 42.
 # The exit code being 42 (not 41) proves on(start) fired before the first message.
 run_accept_expect_status "actor_counter_init" 42

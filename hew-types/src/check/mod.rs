@@ -363,6 +363,16 @@ impl Checker {
         self.report_unresolved_inference_holes(program);
         self.report_unresolved_monomorphic_sites();
 
+        // Q87 slice 1: build the actor protocol descriptor side-table once
+        // all handler signatures are resolved. Collisions (two `receive fn`s
+        // hashing to the same msg_id) emit `ActorProtocolCollision`
+        // diagnostics and the offending actor is **absent** from the map —
+        // MIR/codegen treat a missing entry for an actor with handlers as
+        // fail-closed. There is no fallback `enumerate()` path: the
+        // descriptor is the only msg_id authority downstream.
+        let actor_protocol_descriptors =
+            build_actor_protocol_descriptors(program, &resolved_fn_sigs, &mut self.errors);
+
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
@@ -394,6 +404,7 @@ impl Checker {
             dyn_trait_coercions: std::mem::take(&mut self.dyn_trait_coercions),
             dyn_trait_method_calls: std::mem::take(&mut self.dyn_trait_method_calls),
             closure_capture_facts: resolved_closure_capture_facts,
+            actor_protocol_descriptors,
         };
 
         // Detect actor reference cycles and emit warnings.
@@ -413,4 +424,146 @@ impl Checker {
 
         output
     }
+}
+
+/// Collect every `actor` declaration in the program (root items + each
+/// module-graph module). The walk is read-only so it can run after the
+/// checker has frozen its mutable state.
+fn collect_program_actors(program: &Program) -> Vec<&ActorDecl> {
+    let mut actors: Vec<&ActorDecl> = Vec::new();
+    for (item, _) in &program.items {
+        if let Item::Actor(ad) = item {
+            actors.push(ad);
+        }
+    }
+    if let Some(mg) = &program.module_graph {
+        for module in mg.modules.values() {
+            for (item, _) in &module.items {
+                if let Item::Actor(ad) = item {
+                    actors.push(ad);
+                }
+            }
+        }
+    }
+    actors
+}
+
+/// Build [`ActorProtocolDescriptor`]s for every actor in the program, using
+/// each `receive fn`'s resolved type signature (param types + return type)
+/// drawn from `fn_sigs` keyed `"Actor::handler"`.
+///
+/// On collision: emits a `TypeErrorKind::ActorProtocolCollision` diagnostic
+/// against the second-colliding handler's span and **omits** the actor from
+/// the returned map. Downstream consumers must treat a missing entry
+/// fail-closed.
+///
+/// On unresolved signatures (e.g. an upstream type error left a handler
+/// param without a concrete `ResolvedTy`): silently skips the actor. The
+/// surfacing diagnostic is already emitted elsewhere; piling on with a
+/// derivative error here would be noise.
+fn build_actor_protocol_descriptors(
+    program: &Program,
+    fn_sigs: &HashMap<String, crate::check::types::FnSig>,
+    errors: &mut Vec<TypeError>,
+) -> HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> {
+    let mut descriptors: HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> =
+        HashMap::new();
+    for ad in collect_program_actors(program) {
+        if ad.receive_fns.is_empty() {
+            continue;
+        }
+        let mut specs: Vec<crate::actor_protocol::ActorHandlerSpec> =
+            Vec::with_capacity(ad.receive_fns.len());
+        let mut all_signatures_resolved = true;
+        for rf in &ad.receive_fns {
+            let key = format!("{}::{}", ad.name, rf.name);
+            let Some(sig) = fn_sigs.get(&key) else {
+                all_signatures_resolved = false;
+                break;
+            };
+            let mut param_tys: Vec<crate::ResolvedTy> = Vec::with_capacity(sig.params.len());
+            let mut any_unresolved = false;
+            for p in &sig.params {
+                if let Ok(rt) = crate::ResolvedTy::from_ty(p) {
+                    param_tys.push(rt);
+                } else {
+                    any_unresolved = true;
+                    break;
+                }
+            }
+            if any_unresolved {
+                all_signatures_resolved = false;
+                break;
+            }
+            let Ok(return_ty) = crate::ResolvedTy::from_ty(&sig.return_type) else {
+                all_signatures_resolved = false;
+                break;
+            };
+            // Symbol mangling is owned by MIR/codegen; for slice 1 we record
+            // a stable surface-derived symbol string so the descriptor row
+            // is self-describing. Downstream consumers may continue to
+            // derive their own emit name today; subsequent Q87 slices route
+            // codegen through this `symbol` field.
+            let symbol = format!("{}__{}", ad.name, rf.name);
+            specs.push(crate::actor_protocol::ActorHandlerSpec {
+                name: rf.name.clone(),
+                param_tys,
+                return_ty,
+                symbol,
+            });
+        }
+        if !all_signatures_resolved {
+            // A handler signature failed to resolve; the underlying type
+            // error is already in `errors`. Skip publishing a partial
+            // descriptor — fail-closed downstream is preferable to a
+            // half-populated protocol.
+            continue;
+        }
+
+        match crate::actor_protocol::ActorProtocolDescriptor::from_handlers(ad.name.clone(), &specs)
+        {
+            Ok(descriptor) => {
+                descriptors.insert(ad.name.clone(), descriptor);
+            }
+            Err(collision) => {
+                // Pin the diagnostic to the second-colliding handler's span
+                // so the user can jump straight to one of the two offenders.
+                // The diagnostic message names both, and the hint mentions
+                // the (not-yet-parseable) `#[msg_id(N)]` opt-in attribute
+                // so the wording stays accurate when the later Q87 slice
+                // lands the attribute.
+                let span = ad
+                    .receive_fns
+                    .iter()
+                    .find(|rf| rf.name == collision.handler_b)
+                    .map_or(0..0, |rf| rf.span.clone());
+                let message = format!(
+                    "actor `{}` has two `receive fn`s with the same msg_id 0x{:08x}: `{}` and `{}`",
+                    collision.actor_name,
+                    collision.msg_id,
+                    collision.handler_a,
+                    collision.handler_b,
+                );
+                let mut err = TypeError::new(
+                    TypeErrorKind::ActorProtocolCollision {
+                        actor_name: collision.actor_name.clone(),
+                        handler_a: collision.handler_a.clone(),
+                        handler_b: collision.handler_b.clone(),
+                        msg_id: collision.msg_id,
+                    },
+                    span,
+                    message,
+                );
+                err = err.with_suggestion(format!(
+                    "rename `{}` or `{}` so their fully-qualified names hash to distinct \
+                     msg_ids; explicit `#[msg_id(N)]` pinning is reserved for a future \
+                     release (not yet supported)",
+                    collision.handler_a, collision.handler_b
+                ));
+                errors.push(err);
+                // Fail-closed: descriptor is absent from the map.
+            }
+        }
+    }
+    descriptors
 }

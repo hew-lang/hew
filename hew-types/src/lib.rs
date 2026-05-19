@@ -4,6 +4,7 @@
 //! automatic marker trait derivation (Send, Frozen, Copy),
 //! and exhaustive pattern match checking.
 
+pub mod actor_protocol;
 pub mod builtin_names;
 pub mod check;
 pub mod cycle;
@@ -20,6 +21,10 @@ pub mod ty;
 pub mod type_descriptor;
 pub mod unify;
 
+pub use actor_protocol::{
+    compute_default_msg_id, qualified_handler_name, ActorHandlerDescriptor, ActorHandlerSpec,
+    ActorProtocolCollision, ActorProtocolDescriptor,
+};
 pub use check::{
     builtin_function_names, ActorMethodKind, ActorSendAliasing, ActorSendCopyReason,
     ActorStateGuard, AssignTargetKind, AssignTargetShape, Checker, ChildKind, ChildSlot,

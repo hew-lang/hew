@@ -223,6 +223,7 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
         }
     }
 
@@ -375,6 +376,7 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());
@@ -451,6 +453,7 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());

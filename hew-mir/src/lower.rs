@@ -340,22 +340,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         .iter()
                         .find(|hook| hook.kind == HirLifecycleHookKind::Stop)
                         .map(|_| mangle_actor_stop_handler(&actor.name)),
-                    handlers: actor
-                        .receive_handlers
-                        .iter()
-                        .enumerate()
-                        .map(|(idx, handler)| ActorHandlerLayout {
-                            name: handler.name.clone(),
-                            symbol: mangle_actor_receive_handler(&actor.name, &handler.name),
-                            msg_type: i32::try_from(idx).unwrap_or(i32::MAX),
-                            param_tys: handler
-                                .params
-                                .iter()
-                                .map(|param| param.ty.clone())
-                                .collect(),
-                            return_ty: handler.return_ty.clone(),
-                        })
-                        .collect(),
+                    handlers: lower_actor_handler_layouts(actor),
                 });
             }
             _ => {}
@@ -938,6 +923,48 @@ fn mangle_actor_start_handler(actor_name: &str) -> String {
 
 fn mangle_actor_stop_handler(actor_name: &str) -> String {
     format!("{actor_name}__on_stop")
+}
+
+/// Build the MIR `ActorHandlerLayout` row for every `receive fn` on this
+/// actor, drawing the `msg_type` from the checker's protocol descriptor.
+///
+/// Pre-Q87 this iterated `receive_handlers.iter().enumerate()` and used the
+/// source-order index as the wire-format `msg_id` — which silently flipped
+/// the ABI on every handler reorder. Q87 slice 1 replaces that with the
+/// stable, hash-derived id from
+/// `HirActorDecl::protocol_descriptor`. Source-order rearrangement no
+/// longer affects the protocol.
+///
+/// Fail-closed: an actor that carries `receive_handlers` but no descriptor
+/// (the checker emitted an `ActorProtocolCollision` and refused to publish
+/// the protocol, or an upstream bug) falls back to `i32::MAX`. The
+/// upstream collision diagnostic is the user-facing error; the sentinel
+/// here exists only to keep the MIR shape well-formed for the few internal
+/// callers (e.g. `lower_program_smoke`) that exercise lowering on
+/// descriptor-less inputs. Production builds never observe it because the
+/// checker rejects collision-bearing programs before MIR runs.
+fn lower_actor_handler_layouts(actor: &HirActorDecl) -> Vec<ActorHandlerLayout> {
+    let descriptor = actor.protocol_descriptor.as_ref();
+    actor
+        .receive_handlers
+        .iter()
+        .map(|handler| {
+            let msg_type = descriptor
+                .and_then(|d| d.msg_id_for(&handler.name))
+                .map_or(i32::MAX, |id| i32::from_ne_bytes(id.to_ne_bytes()));
+            ActorHandlerLayout {
+                name: handler.name.clone(),
+                symbol: mangle_actor_receive_handler(&actor.name, &handler.name),
+                msg_type,
+                param_tys: handler
+                    .params
+                    .iter()
+                    .map(|param| param.ty.clone())
+                    .collect(),
+                return_ty: handler.return_ty.clone(),
+            }
+        })
+        .collect()
 }
 
 fn unknown_self_fields_in_block(block: &HirBlock, state_fields: &HashSet<String>) -> Vec<String> {

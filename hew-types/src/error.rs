@@ -494,6 +494,26 @@ pub enum TypeErrorKind {
         /// Associated type name that failed to project.
         assoc_name: String,
     },
+    /// Two `receive fn`s in the same actor hash to the same `msg_id`.
+    ///
+    /// Emitted by [`crate::actor_protocol::ActorProtocolDescriptor::from_handlers`]
+    /// when the default `SipHash-1-3` → low-32-bits derivation produces the
+    /// same `msg_id` for two distinct fully-qualified handler names. The
+    /// checker refuses to publish a descriptor for the offending actor,
+    /// MIR/codegen never see a collided protocol, and the user is told to
+    /// rename one of the handlers. `#[msg_id(N)]` pinning is mentioned in
+    /// the hint but is not yet parseable surface — the later Q87 slice
+    /// introduces the attribute.
+    ActorProtocolCollision {
+        /// Actor whose protocol could not be published.
+        actor_name: String,
+        /// One of the colliding handler names.
+        handler_a: String,
+        /// The other colliding handler name.
+        handler_b: String,
+        /// The 32-bit `msg_id` both handlers hashed to.
+        msg_id: u32,
+    },
 }
 
 impl TypeErrorKind {
@@ -547,6 +567,7 @@ impl TypeErrorKind {
             Self::ClosureExplicitMoveRequired { .. } => "ClosureExplicitMoveRequired",
             Self::RecursiveClosureUnsupported { .. } => "RecursiveClosureUnsupported",
             Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",
+            Self::ActorProtocolCollision { .. } => "ActorProtocolCollision",
         }
     }
 }

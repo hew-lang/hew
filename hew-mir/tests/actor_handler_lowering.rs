@@ -6,7 +6,7 @@ use hew_hir::{
     HirModule, HirStmt, HirStmtKind, IntentKind, ResolvedRef, ScopeId, ValueClass,
 };
 use hew_mir::{lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, Terminator};
-use hew_types::ResolvedTy;
+use hew_types::{ActorHandlerSpec, ActorProtocolDescriptor, ResolvedTy};
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
@@ -117,6 +117,28 @@ fn actor(ids: &mut IdGen, name: &str, receive_handlers: Vec<HirActorReceiveFn>) 
     let init_return = return_none_stmt(ids);
     let init_body = block(ids, vec![init_return], None, ResolvedTy::Unit);
     let init_param = binding(ids, "initial", ResolvedTy::I64);
+    // Q87 slice 1: synthesise a descriptor from the receive-handler list so
+    // MIR's `msg_type` derivation succeeds with the default hash contract
+    // instead of falling back to the sentinel. Tests in this file do not
+    // assert on `msg_type` values, but a hand-built actor with multiple
+    // handlers must not all collide on `i32::MAX`.
+    let protocol_descriptor = if receive_handlers.is_empty() {
+        None
+    } else {
+        let specs: Vec<ActorHandlerSpec> = receive_handlers
+            .iter()
+            .map(|h| ActorHandlerSpec {
+                name: h.name.clone(),
+                param_tys: h.params.iter().map(|p| p.ty.clone()).collect(),
+                return_ty: h.return_ty.clone(),
+                symbol: format!("{name}__{}", h.name),
+            })
+            .collect();
+        Some(
+            ActorProtocolDescriptor::from_handlers(name.to_string(), &specs)
+                .expect("test-built actor handler names must not collide"),
+        )
+    };
     HirActorDecl {
         id: ids.item(),
         node: ids.node(),
@@ -138,6 +160,7 @@ fn actor(ids: &mut IdGen, name: &str, receive_handlers: Vec<HirActorReceiveFn>) 
         mailbox_capacity: None,
         overflow_policy: None,
         cycle_capable: false,
+        protocol_descriptor,
         span: 0..0,
     }
 }

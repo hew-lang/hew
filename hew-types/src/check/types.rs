@@ -240,6 +240,22 @@ pub struct TypeCheckOutput {
     /// HIR/MIR lowering. Downstream stages must consume this ledger rather than
     /// rediscovering capture legality from expression shape.
     pub closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+    /// Per-actor protocol descriptor — the stable name → `msg_id` mapping
+    /// for every `receive fn`. Keyed by actor type name.
+    ///
+    /// Populated after handler signatures resolve. An actor whose handler
+    /// names collide under the default `SipHash-1-3` → low-32-bits hash
+    /// gets a `TypeErrorKind::ActorProtocolCollision` diagnostic and is
+    /// **absent** from this map: HIR/MIR/codegen must treat a missing
+    /// entry for an actor that declared `receive fn`s as fail-closed (the
+    /// program does not compile when collisions are present, but the
+    /// side-table itself also refuses to advertise a broken protocol).
+    ///
+    /// This is the canonical source of truth: there is no fallback
+    /// `enumerate()` path. Downstream stages route `msg_id` derivation
+    /// through this side-table — see `hew_mir::lower` where the actor
+    /// layout is constructed.
+    pub actor_protocol_descriptors: HashMap<String, crate::actor_protocol::ActorProtocolDescriptor>,
 }
 
 /// By-value capture mode selected for one closure environment field.
@@ -455,6 +471,7 @@ impl Default for TypeCheckOutput {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
         }
     }
 }

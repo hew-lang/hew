@@ -2127,6 +2127,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            actor_protocol_descriptors: std::collections::HashMap::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);
@@ -2219,6 +2220,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            actor_protocol_descriptors: std::collections::HashMap::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);
@@ -2339,6 +2341,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Test fixture body builds a hand-rolled program and TypeCheckOutput inline; \
+                  splitting into helpers would obscure the wire-emission scenario being verified."
+    )]
     fn build_method_call_receiver_kind_entries_only_emits_surviving_method_calls() {
         let program = Program {
             items: vec![(
@@ -2430,6 +2437,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            actor_protocol_descriptors: std::collections::HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -2523,6 +2531,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            actor_protocol_descriptors: std::collections::HashMap::new(),
         };
 
         let entries = build_assign_target_kind_entries(&program, &tco);
@@ -2611,6 +2620,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            actor_protocol_descriptors: std::collections::HashMap::new(),
         };
 
         let entries = build_lowering_fact_entries(&program, &tco);
@@ -2729,6 +2739,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            actor_protocol_descriptors: std::collections::HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3066,6 +3077,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            actor_protocol_descriptors: std::collections::HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3164,6 +3176,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            actor_protocol_descriptors: std::collections::HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3255,6 +3268,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            actor_protocol_descriptors: std::collections::HashMap::new(),
         };
 
         let entries = build_assign_target_shape_entries(&program, &tco);
@@ -3345,6 +3359,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            actor_protocol_descriptors: std::collections::HashMap::new(),
         };
 
         let entries = build_assign_target_shape_entries(&program, &tco);

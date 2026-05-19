@@ -803,6 +803,14 @@ struct LowerCtx {
     /// (refcount-cycle-breaking strategy selection).
     /// (LESSONS: producer-bridge-before-codegen P1)
     cycle_capable_actors: HashSet<String>,
+    /// Per-actor protocol descriptors lifted from the checker
+    /// (`TypeCheckOutput.actor_protocol_descriptors`). Consumed by
+    /// `lower_actor` to populate `HirActorDecl.protocol_descriptor`. An
+    /// actor missing from this map either declares no receive handlers or
+    /// the checker emitted an `ActorProtocolCollision` for it; either way
+    /// the lowered HIR carries `protocol_descriptor: None` and downstream
+    /// MIR fails closed when it tries to derive a `msg_id`.
+    actor_protocol_descriptors: HashMap<String, hew_types::ActorProtocolDescriptor>,
     /// Distinct concrete instantiations of generic top-level user fns,
     /// accumulated as `Expr::Call` lowering walks the program. Drained
     /// into `HirModule.monomorphisations` at the end of `lower_program`.
@@ -885,6 +893,7 @@ impl LowerCtx {
             assign_target_shapes: tc_output.assign_target_shapes.clone(),
             actor_handler_state_guards: tc_output.actor_handler_state_guards.clone(),
             cycle_capable_actors: tc_output.cycle_capable_actors.clone(),
+            actor_protocol_descriptors: tc_output.actor_protocol_descriptors.clone(),
             mono_registry: MonoRegistry::with_cap(mono_cap),
             mono_cap_diag_emitted: false,
             call_site_type_args: HashMap::new(),
@@ -1972,6 +1981,7 @@ impl LowerCtx {
             mailbox_capacity: decl.mailbox_capacity,
             overflow_policy: decl.overflow_policy.clone(),
             cycle_capable: self.cycle_capable_actors.contains(&decl.name),
+            protocol_descriptor: self.actor_protocol_descriptors.get(&decl.name).cloned(),
             span,
         }
     }

@@ -1530,22 +1530,45 @@ fn check_duplicate_pub_names(items: &[Spanned<Item>], module_name: &str) -> Resu
 
 /// Intermediate state produced by the shared file-frontend driver after
 /// loading, parsing, import resolution, and type-checking have all succeeded.
-/// Consumed by either `check_file` (phase stop here) or `compile_file`
-/// (continues into enrichment and codegen-metadata assembly).
-struct FileFrontendState {
-    program: Program,
-    diagnostics: Vec<FrontendDiagnostic>,
-    typecheck_result: TypeCheckResult,
-    source: String,
+///
+/// Current consumers:
+/// - [`check_file`] — stops here; does not continue into enrichment.
+/// - [`compile_file`] — continues into enrichment and codegen-metadata assembly.
+/// - `lower_file_to_mir` (slice 2, v0.5 compile path) — will route through
+///   [`run_file_frontend_to_typecheck`] instead of duplicating the frontend.
+///
+/// **Do not construct a divergent wrapper.** If you need to call the frontend
+/// with different options, extend [`FrontendOptions`] and route through
+/// [`run_file_frontend_to_typecheck`]. A parallel frontend driver that
+/// duplicates load → parse → import-resolution → type-check is always wrong.
+#[allow(
+    missing_debug_implementations,
+    reason = "transient pipeline value; Debug not required by any current consumer"
+)]
+pub struct FileFrontendState {
+    pub program: Program,
+    pub diagnostics: Vec<FrontendDiagnostic>,
+    pub typecheck_result: TypeCheckResult,
+    pub source: String,
 }
 
 /// Shared frontend driver for on-disk source files.
 ///
 /// Runs load → parse → import-resolution → type-check and returns the
-/// intermediate [`FileFrontendState`].  Both `check_file` and `compile_file`
-/// call this helper; `check_file` stops here while `compile_file` continues
-/// into enrichment and codegen-metadata assembly via `finish_compile`.
-fn run_file_frontend_to_typecheck(
+/// intermediate [`FileFrontendState`]. Current consumers are [`check_file`]
+/// (stops here) and [`compile_file`] (continues into enrichment and
+/// codegen-metadata assembly via `finish_compile`).
+///
+/// **Do not construct a divergent wrapper.** If you need to call the frontend
+/// with different options, extend [`FrontendOptions`] and route through here.
+/// A parallel driver that duplicates load → parse → import-resolution →
+/// type-check is always wrong.
+///
+/// # Errors
+///
+/// Returns [`FrontendFailure`] when project loading, parsing, import
+/// resolution, or type-checking fails.
+pub fn run_file_frontend_to_typecheck(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<FileFrontendState, FrontendFailure> {

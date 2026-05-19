@@ -1045,6 +1045,20 @@ unsafe extern "C-unwind" fn stamp_then_panic_dispatch(
     panic!("simulated HEW_TRAP_HEAP_EXCEEDED panic");
 }
 
+unsafe extern "C-unwind" fn hew_trap_with_code_dispatch(
+    _ctx: *mut crate::execution_context::HewExecutionContext,
+    _state: *mut c_void,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _data_size: usize,
+) {
+    if crate::trap_code::stamp_current_actor_error_code(
+        crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+    ) {
+        panic!("simulated wasm hew_trap_with_code panic");
+    }
+}
+
 #[test]
 fn wasm_activation_transitions_actor_to_crashed_when_dispatch_stamps_error_code() {
     let _guard = crate::runtime_test_guard();
@@ -1089,6 +1103,53 @@ fn wasm_activation_transitions_actor_to_crashed_when_dispatch_stamps_error_code(
             "WASM activation must transition the actor to Crashed when \
              the dispatch unwind comes with a non-zero error_code"
         );
+
+        let _ = Box::from_raw(actor_ptr);
+        crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
+    }
+
+    crate::scheduler_wasm::hew_sched_shutdown();
+}
+
+#[test]
+fn wasm_heaps_exceeded_uses_trap_with_code_bridge_to_crash_actor() {
+    let _guard = crate::runtime_test_guard();
+    crate::scheduler_wasm::hew_sched_shutdown();
+    crate::scheduler_wasm::hew_sched_init();
+
+    // SAFETY: test owns the mailbox and actor for the full scenario.
+    unsafe {
+        let mailbox = crate::mailbox_wasm::hew_mailbox_new();
+        assert!(!mailbox.is_null());
+
+        let actor = stub_dispatch_actor(mailbox.cast(), hew_trap_with_code_dispatch);
+        let actor_ptr: *mut HewActor = Box::into_raw(actor);
+
+        let payload: i32 = 0;
+        let rc = crate::mailbox_wasm::hew_mailbox_send(
+            mailbox.cast(),
+            1,
+            (&raw const payload).cast_mut().cast(),
+            std::mem::size_of::<i32>(),
+        );
+        assert_eq!(rc, HewError::Ok as i32);
+
+        crate::scheduler_wasm::sched_enqueue(actor_ptr.cast());
+        crate::scheduler_wasm::hew_sched_run();
+
+        let error = (*actor_ptr).error_code.load(Ordering::Acquire);
+        let state = (*actor_ptr).actor_state.load(Ordering::Acquire);
+
+        assert_eq!(
+            error,
+            crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+            "hew_trap_with_code must stamp the HeapExceeded discriminator"
+        );
+        assert_eq!(
+            crate::internal::types::ExitReason::from_error_code(error),
+            crate::internal::types::ExitReason::HeapExceeded,
+        );
+        assert_eq!(state, HewActorState::Crashed as i32);
 
         let _ = Box::from_raw(actor_ptr);
         crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());

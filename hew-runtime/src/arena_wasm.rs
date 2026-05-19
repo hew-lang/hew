@@ -415,25 +415,18 @@ pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
         #[cfg(target_arch = "wasm32")]
         if ptr.is_null() && arena.cap > 0 {
             // SAFETY: WASM activate_actor_wasm installs the canonical ctx
-            // before dispatch; `current_context()->actor` is the actor that
-            // requested this allocation. Stamping the error_code before the
-            // panic lets the catch_unwind boundary observe a typed crash
-            // rather than a generic "actor dispatch panicked" diagnostic.
+            // before dispatch; hew_trap_with_code stamps the current actor's
+            // error_code and panics so the catch_unwind activation boundary
+            // observes HeapExceeded instead of a generic null/abort.
             unsafe {
-                let ctx = crate::execution_context::current_context();
-                if !ctx.is_null() {
-                    let actor = (*ctx).actor;
-                    if !actor.is_null() {
-                        (*actor).error_code.store(
-                            crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
-                            std::sync::atomic::Ordering::Release,
-                        );
-                    }
-                }
+                crate::trap_code::hew_trap_with_code(
+                    crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+                );
             }
-            // Fail-closed: do NOT return null here on WASM. Returning null
-            // would let dispatch continue and dereference it. Panic so the
-            // activation frame's catch_unwind sees the crash.
+            // If allocation happened outside actor dispatch, hew_trap_with_code
+            // returns so the caller's usual `llvm.trap` fallback can fire. The
+            // arena has no such caller, so fail closed here rather than returning
+            // null to generated code.
             panic!("hew_arena: cap exceeded (HEW_TRAP_HEAP_EXCEEDED)");
         }
 

@@ -239,11 +239,12 @@ pub mod vecdeque;
 
 pub mod bytes;
 mod channel_common;
+pub mod duration;
 pub mod parse_error_slot;
 
 pub mod internal;
 mod tagged_union;
-
+mod trap_code;
 // On WASM, provide shims for runtime functions used by codegen but not
 // applicable to WASM (no threads, no native timer support).
 // Arena functions (hew_arena_malloc / hew_arena_free / etc.) are now
@@ -273,7 +274,7 @@ pub mod wasm_stubs {
     //!   `hew_channel_recv*` remains an explicit trap until cooperative
     //!   scheduler yield/resume parity exists.
 
-    use std::ffi::{c_char, c_int, c_void};
+    use std::ffi::{c_char, c_void};
 
     // ── Sleep ────────────────────────────────────────────────────────────────
 

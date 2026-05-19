@@ -106,6 +106,8 @@ run_accept_expect_stdout "print_f64"
 run_accept_expect_status "panic" 101
 grep -q 'panic fixture' "${stderr_output}"
 
+run_accept_expect_status "directory_module_call" 7
+
 if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unresolved_symbol.hew" >"${reject_output}" 2>&1; then
   echo "expected unresolved symbol fixture to fail" >&2
   exit 1

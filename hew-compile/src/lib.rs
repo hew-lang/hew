@@ -1054,7 +1054,37 @@ fn build_module_graph_with_diagnostics(
         return Err(FrontendFailure::message_only(cycle_err.to_string()));
     }
 
+    // Reject programs where two different module imports share the same short
+    // name (the last path segment).  HIR keys all cross-module fn registrations
+    // by `module_short.fn_name`; two modules with the same short name would
+    // silently collide in the fn-registry.  Fail closed here so HIR never sees
+    // the ambiguity.  The richer "did you mean foo::util or bar::util?"
+    // suggestion is deferred to a v0.6 diagnostic-quality lane.
+    if let Err(msg) = check_duplicate_short_module_names(&graph) {
+        return Err(FrontendFailure::message_only(msg));
+    }
+
     Ok(graph)
+}
+
+fn check_duplicate_short_module_names(
+    graph: &hew_parser::module::ModuleGraph,
+) -> Result<(), String> {
+    let mut seen: HashMap<&str, &hew_parser::module::ModuleId> = HashMap::new();
+    for mod_id in &graph.topo_order {
+        if *mod_id == graph.root {
+            continue;
+        }
+        let short = mod_id.path.last().map_or("", String::as_str);
+        if let Some(existing) = seen.insert(short, mod_id) {
+            return Err(format!(
+                "Error: two imported modules share the short name `{short}`: \
+                 `{existing}` and `{mod_id}`. \
+                 Rename one of the imports or use file-path import syntax."
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Resolve imports and build a module graph rooted at `source_file`.
@@ -1151,6 +1181,22 @@ fn flatten_import_items(program: &mut Program) -> Vec<(hew_parser::ast::Span, Op
     let mut imported_item_sources = Vec::new();
     for (item, _) in &mut program.items {
         if let Item::Import(decl) = item {
+            // Module-path imports (`import greeting;`) are NOT flattened here.
+            // Their pub fn bodies are lowered directly from `program.module_graph`
+            // by HIR under the qualified mangled symbol (e.g. `greeting$hello`).
+            // Flattening them would produce double-registration: once as bare
+            // `hello` (from the flattened item) and once as `greeting$hello`
+            // (from the HIR module-graph walk) — the HIR would then emit two
+            // `HirFn` items for the same body, and `module_fn_names` in MIR
+            // would contain both, causing a duplicate symbol in codegen.
+            //
+            // File-path imports (`import "util.hew";`) continue to be flattened
+            // because they produce anonymous, unqualified items with no
+            // `module_graph` entry to walk.
+            if !decl.path.is_empty() && decl.file_path.is_none() {
+                // Module-path import: leave resolved_items untouched; HIR owns it.
+                continue;
+            }
             if let Some(resolved) = decl.resolved_items.take() {
                 let mut item_source_paths =
                     std::mem::take(&mut decl.resolved_item_source_paths).into_iter();

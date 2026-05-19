@@ -141,6 +141,35 @@ pub fn lower_program_with_mono_cap(
             _ => {}
         }
     }
+    // Pre-pass: register user-module pub fn signatures under their qualified,
+    // native-symbol-safe key (e.g. `greeting$hello`) so that HIR's
+    // `RewriteModuleQualifiedToFunction` arm can resolve the callee `ItemId`
+    // at the call site.  Only `pub` functions are callable across module
+    // boundaries; private functions are invisible to importers.
+    //
+    // This walk runs AFTER the root-item pre-pass above so that any name
+    // clash between a qualified key and a root-level function is caught by
+    // the duplicate-short-module diagnostic in the frontend before HIR ingest.
+    if let Some(ref mg) = program.module_graph {
+        for mod_id in &mg.topo_order {
+            if *mod_id == mg.root {
+                continue;
+            }
+            let module_short = mod_id.path.last().map_or("", String::as_str);
+            if let Some(module) = mg.modules.get(mod_id) {
+                for (item, _) in &module.items {
+                    if let Item::Function(func) = item {
+                        if func.visibility.is_pub() {
+                            let qualified =
+                                crate::mangle_dotted_name(&format!("{module_short}.{}", func.name));
+                            ctx.register_fn_entry(&qualified, func);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Pre-pass: collect record/type-decl shapes so `Expr::StructInit`
     // lowering in the source-order pass can answer "is this a generic
     // user record?" regardless of declaration order relative to the
@@ -277,15 +306,49 @@ pub fn lower_program_with_mono_cap(
                 ));
             }
             Item::Import(_) => {
-                // Imports are frontend-resolved: `flatten_import_items`
-                // materialises the imported items into `program.items`
-                // before HIR ingest, so the residual `Item::Import` stub is
-                // a no-op here.  Removing the stub from `program.items` at
-                // the frontend would require auditing every diagnostic
-                // source-map consumer (see `multifile-compile-lowering` plan
-                // §12); slice 1 keeps the stub and ignores it here.
+                // Imports are frontend-resolved: module-path imports
+                // (`import greeting;`) are lowered from `program.module_graph`
+                // below under their qualified mangled name (e.g. `greeting$hello`).
+                // File-path imports (`import "util.hew";`) are still flattened
+                // into `program.items` by `flatten_import_items` and lowered in
+                // the loop above.  The residual `Item::Import` stub is kept in
+                // `program.items` for diagnostic source-map attribution (removing
+                // it would require auditing every span consumer — out of scope).
             }
             _ => ctx.unsupported(span.clone(), "top-level-item", "slice-2"),
+        }
+    }
+
+    // Fourth pass: lower pub fn bodies from non-root modules under their
+    // qualified, native-symbol-safe names (e.g. `greeting$hello`).
+    //
+    // Module-path imports (`import greeting;`) are NOT flattened into
+    // `program.items` (see `flatten_import_items` restriction in
+    // `hew-compile`), so the bodies would otherwise be absent from the
+    // emitted `HirModule`.  Walking `module_graph` here ensures each
+    // imported user module contributes exactly one `HirFn` per pub fn,
+    // keyed by the same mangled name registered in the pre-pass above.
+    if let Some(ref mg) = program.module_graph {
+        for mod_id in &mg.topo_order {
+            if *mod_id == mg.root {
+                continue;
+            }
+            let module_short = mod_id.path.last().map_or("", String::as_str);
+            if let Some(module) = mg.modules.get(mod_id) {
+                for (item, span) in &module.items {
+                    if let Item::Function(func) = item {
+                        if func.visibility.is_pub() {
+                            let qualified =
+                                crate::mangle_dotted_name(&format!("{module_short}.{}", func.name));
+                            items.push(HirItem::Function(ctx.lower_fn_with_name(
+                                func,
+                                &qualified,
+                                span.clone(),
+                            )));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -4284,13 +4347,16 @@ impl LowerCtx {
                 // NOT prepend the receiver (LESSONS
                 // `module-qualified-rewrite-authority`).
                 //
-                // The `c_symbol` is the qualified key chosen by the checker
-                // (stdlib path: a `hew_*` runtime C symbol; user-module path:
-                // `module.fn`).  Look it up in `fn_registry` so the callee
-                // `BindingRef` carries a resolved `ResolvedRef::Item`; missing
-                // entries fail closed via the verifier's `UnresolvedSymbol`
-                // diagnostic (slice 2 populates `fn_registry` with qualified
-                // user-module keys from `program.module_graph`).
+                // The `c_symbol` from the checker uses dotted notation for
+                // user-module calls (`module.fn`) and `hew_*` for stdlib calls.
+                // User-module keys are stored in `fn_registry` under the mangled
+                // form (`module$fn`) so they are safe as native object-file
+                // symbols on all targets.  Apply `mangle_dotted_name` before
+                // the registry lookup AND in the emitted `BindingRef.name` so
+                // all three consumers (HIR verifier, MIR `module_fn_names`,
+                // codegen `add_function`) see the same mangled key.  Stdlib
+                // `hew_*` symbols contain no dots, so mangling is identity.
+                let symbol = crate::mangle_dotted_name(&c_symbol);
                 let lowered_args: Vec<HirExpr> = args
                     .iter()
                     .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
@@ -4303,7 +4369,7 @@ impl LowerCtx {
                     .unwrap_or(ResolvedTy::Unit);
                 let resolved_ref = self
                     .fn_registry
-                    .get(&c_symbol)
+                    .get(&symbol)
                     .map_or(ResolvedRef::Unresolved, |entry| ResolvedRef::Item(entry.id));
                 let callee_ty = ResolvedTy::Function {
                     params: Vec::new(),
@@ -4316,7 +4382,7 @@ impl LowerCtx {
                     ty: callee_ty,
                     intent: IntentKind::Read,
                     kind: HirExprKind::BindingRef {
-                        name: c_symbol,
+                        name: symbol,
                         resolved: resolved_ref,
                     },
                     span: span.clone(),

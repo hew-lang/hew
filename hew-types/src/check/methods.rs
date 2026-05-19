@@ -351,7 +351,7 @@ impl Checker {
                     span_key.start..span_key.end,
                     format!(
                         "Channel<{resolved}> is not supported; \
-                         only Channel<string> and Channel<int> are currently supported"
+                         only Channel<string> and Channel<i64> are currently supported"
                     ),
                 );
                 if let Some(module) = &entry.source_module {
@@ -3133,7 +3133,7 @@ impl Checker {
                                 span,
                                 format!(
                                     "Channel<{resolved_inner}> is not supported; \
-                                     only Channel<string> and Channel<int> are currently supported"
+                                     only Channel<string> and Channel<i64> are currently supported"
                                 ),
                             );
                             return Ty::Error;
@@ -3219,7 +3219,7 @@ impl Checker {
                         span,
                         format!(
                             "Channel<{resolved_inner}> is not supported; \
-                             only Channel<string> and Channel<int> are currently supported"
+                             only Channel<string> and Channel<i64> are currently supported"
                         ),
                     );
                     return Ty::Error;

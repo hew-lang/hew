@@ -230,7 +230,7 @@ fn from_name_all_aliases() {
     assert_eq!(Ty::from_name("i16"), Some(Ty::I16));
     assert_eq!(Ty::from_name("i32"), Some(Ty::I32));
     assert_eq!(Ty::from_name("i64"), Some(Ty::I64));
-    assert_eq!(Ty::from_name("int"), Some(Ty::I64));
+    assert_eq!(Ty::from_name("i64"), Some(Ty::I64));
     assert_eq!(Ty::from_name("Int"), Some(Ty::I64));
     // isize is now a distinct platform-sized type (not an alias for i64)
     assert_eq!(Ty::from_name("isize"), Some(Ty::Isize));
@@ -241,7 +241,7 @@ fn from_name_all_aliases() {
     assert_eq!(Ty::from_name("u16"), Some(Ty::U16));
     assert_eq!(Ty::from_name("u32"), Some(Ty::U32));
     assert_eq!(Ty::from_name("u64"), Some(Ty::U64));
-    assert_eq!(Ty::from_name("uint"), Some(Ty::U64));
+    assert_eq!(Ty::from_name("u64"), Some(Ty::U64));
     // usize is now a distinct platform-sized type (not an alias for u64)
     assert_eq!(Ty::from_name("usize"), Some(Ty::Usize));
 

@@ -664,14 +664,14 @@ mod tests {
     }
 
     #[test]
-    fn test_mismatch_display_uses_int_alias() {
+    fn test_mismatch_display_uses_explicit_width() {
         let err = TypeError::mismatch(0..10, &Ty::I64, &Ty::option(Ty::I64));
-        assert_eq!(err.to_string(), "expected `int`, found `Option<int>`");
+        assert_eq!(err.to_string(), "expected `i64`, found `Option<i64>`");
         assert_eq!(
             err.kind,
             TypeErrorKind::Mismatch {
-                expected: "int".to_string(),
-                actual: "Option<int>".to_string(),
+                expected: "i64".to_string(),
+                actual: "Option<i64>".to_string(),
             }
         );
     }
@@ -880,11 +880,11 @@ mod tests {
     }
 
     #[test]
-    fn test_return_type_mismatch_display_uses_int_alias() {
+    fn test_return_type_mismatch_display_uses_explicit_width() {
         let err = TypeError::return_type_mismatch(0..10, &Ty::I64, &Ty::option(Ty::I64));
         assert_eq!(
             err.to_string(),
-            "return type mismatch: expected `int`, found `Option<int>`"
+            "return type mismatch: expected `i64`, found `Option<i64>`"
         );
     }
 

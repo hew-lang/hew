@@ -2651,7 +2651,7 @@ impl LowerCtx {
             Expr::StructInit {
                 name,
                 fields,
-                // Surface-level explicit type arguments (`Box<int> { ... }`).
+                // Surface-level explicit type arguments (`Box<i64> { ... }`).
                 // The HIR-recorded `type_args` below comes from the checker's
                 // `record_init_type_args` side-table (which already reconciled
                 // inferred-vs-explicit and substituted enclosing-fn type-params
@@ -4064,20 +4064,13 @@ impl LowerCtx {
                     "i8" => ResolvedTy::I8,
                     "i16" => ResolvedTy::I16,
                     "i32" => ResolvedTy::I32,
-                    // `int` is the user-facing alias for `i64` across the
-                    // type checker (hew-types::stdlib_loader maps `int` to
-                    // Ty::I64; ty.rs's alias table lists `int` as a synonym
-                    // for `i64`). The HIR lowering must match — otherwise
-                    // integer literals (which lower to I64) cannot be
-                    // returned through a function typed `int` without an
-                    // explicit cast. Aligns with hew-types ground truth.
-                    "i64" | "int" => ResolvedTy::I64,
+                    "i64" => ResolvedTy::I64,
                     "u8" => ResolvedTy::U8,
                     "u16" => ResolvedTy::U16,
                     "u32" => ResolvedTy::U32,
                     "u64" => ResolvedTy::U64,
                     // Platform-sized integers: distinct from fixed-width
-                    // int/uint. Codegen branches on target: 32-bit for
+                    // i64/u64. Codegen branches on target: 32-bit for
                     // wasm32, 64-bit for native (B-D1 / Q42 ratification).
                     "isize" => ResolvedTy::Isize,
                     "usize" => ResolvedTy::Usize,
@@ -5534,7 +5527,7 @@ mod tests {
 
     // ── Select arm-binding scoping ──────────────────────────────────────────
     //
-    // Source shared by several tests below: two actors both returning `int`.
+    // Source shared by several tests below: two actors both returning `i64`.
     // Both arm bodies return the bound name so the arm body types agree (the
     // type checker requires all arm bodies to have the same type).  Distinct
     // binding names (`reply` vs `verdict`) let us prove each arm has its own
@@ -5542,10 +5535,10 @@ mod tests {
 
     const SELECT_SCOPE_SOURCE: &str = r"
         actor Pinger {
-            receive fn ping() -> int { 1 }
+            receive fn ping() -> i64 { 1 }
         }
         actor Counter {
-            receive fn count() -> int { 2 }
+            receive fn count() -> i64 { 2 }
         }
         fn main() {
             let p = spawn Pinger;
@@ -5632,10 +5625,10 @@ mod tests {
         // there is no outer `reply` binding, it must produce UnresolvedSymbol.
         let source = r"
             actor Pinger {
-                receive fn ping() -> int { 1 }
+                receive fn ping() -> i64 { 1 }
             }
             actor Checker {
-                receive fn check() -> int { 2 }
+                receive fn check() -> i64 { 2 }
             }
             fn main() {
                 let p = spawn Pinger;
@@ -5675,7 +5668,7 @@ mod tests {
         // must produce UnresolvedSymbol — the scope is popped on arm exit.
         let source = r"
             actor Pinger {
-                receive fn ping() -> int { 1 }
+                receive fn ping() -> i64 { 1 }
             }
             fn main() {
                 let p = spawn Pinger;

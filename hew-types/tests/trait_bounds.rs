@@ -92,10 +92,10 @@ fn trait_bound_violation_reports_error() {
     assert!(
         output.errors.iter().any(|err| {
             err.message
-                .contains("type `int` does not implement trait `Describable` required by `T`")
+                .contains("type `i64` does not implement trait `Describable` required by `T`")
                 && !err.message.contains("type `i64`")
         }),
-        "expected user-facing int in bound error, got {:?}",
+        "expected user-facing i64 in bound error, got {:?}",
         output.errors
     );
 }

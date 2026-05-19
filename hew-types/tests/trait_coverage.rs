@@ -749,7 +749,7 @@ fn duplex_is_resource() {
     let duplex = named_with("Duplex", vec![Ty::I64, Ty::I64]);
     assert!(
         reg.implements_marker(&duplex, MarkerTrait::Resource),
-        "Duplex<int, int> must implement Resource (@resource D3 marker)"
+        "Duplex<i64, i64> must implement Resource (@resource D3 marker)"
     );
 }
 
@@ -771,7 +771,7 @@ fn duplex_is_not_copy_or_clone() {
 fn primitives_are_not_resource() {
     let reg = TraitRegistry::new();
     for (ty, name) in [
-        (Ty::I64, "int"),
+        (Ty::I64, "i64"),
         (Ty::Bool, "bool"),
         (Ty::F32, "f32"),
         (Ty::F64, "f64"),

@@ -19,7 +19,7 @@ const CLOSABLE_HEW: &str = include_str!("../../../std/io/closable.hew");
 /// `Closable` / `CloseError` surface directly before parsing this snippet.
 const MONITOR_REF_HEW: &str = r#"
 pub type MonitorRef {
-    ref_id: int;
+    ref_id: i64;
 }
 
 /// Error returned by `link(handle)`.
@@ -50,7 +50,7 @@ impl Drop for MonitorRef {
 }
 
 extern "C" {
-    fn hew_actor_demonitor(ref_id: int);
+    fn hew_actor_demonitor(ref_id: i64);
 }
 "#;
 
@@ -67,7 +67,7 @@ extern "C" {
 /// any top-of-file imports the file itself does not need (none today).
 const FAILURE_HEW: &str = r"
 pub type PanicInfo {
-    code: int;
+    code: i64;
 }
 
 pub enum CrashAction {

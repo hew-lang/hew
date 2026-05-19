@@ -126,17 +126,17 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
     let output = lower_checked(
         r"
         actor Counter {
-            let count: int;
+            let count: i64;
 
-            receive fn increment(n: int) {
+            receive fn increment(n: i64) {
             }
 
-            receive fn print_total() -> int {
+            receive fn print_total() -> i64 {
                 return 1;
             }
         }
 
-        fn main() -> int {
+        fn main() -> i64 {
             let c = spawn Counter(count: 0);
             c.increment(10);
             await c.print_total();

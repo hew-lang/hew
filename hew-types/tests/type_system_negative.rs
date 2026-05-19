@@ -129,7 +129,7 @@ fn mutability_error_assign_to_let_binding() {
 fn if_let_bound_name_is_immutable() {
     let output = typecheck(
         r"
-        fn main(opt: Option<int>) {
+        fn main(opt: Option<i64>) {
             if let Some(x) = opt {
                 x = 5;
             }
@@ -152,7 +152,7 @@ fn if_let_bound_name_is_immutable() {
 fn while_let_bound_name_is_immutable() {
     let output = typecheck(
         r"
-        fn main(opt: Option<int>) {
+        fn main(opt: Option<i64>) {
             while let Some(x) = opt {
                 x = 5;
             }
@@ -175,7 +175,7 @@ fn while_let_bound_name_is_immutable() {
 fn mutable_param_can_be_reassigned_no_error() {
     let output = typecheck(
         r"
-        fn bump(var x: int) -> int {
+        fn bump(var x: i64) -> i64 {
             x = x + 1;
             x
         }
@@ -232,7 +232,7 @@ fn var_never_reassigned_emits_unusedmut_warning() {
 fn let_field_assign_immutable_root_is_rejected() {
     let output = typecheck(
         r"
-        type Point { x: int; }
+        type Point { x: i64; }
 
         fn main() {
             let p = Point { x: 1 };
@@ -280,7 +280,7 @@ fn let_index_assign_immutable_root_is_rejected() {
 fn arity_mismatch_too_few_arguments() {
     let output = typecheck(
         r"
-        fn add(a: int, b: int) -> int { a + b }
+        fn add(a: i64, b: i64) -> i64 { a + b }
         fn main() { add(1); }
     ",
     );
@@ -323,7 +323,7 @@ fn return_type_mismatch_empty_return_in_non_unit_fn() {
 fn undefined_field_on_struct() {
     let output = typecheck(
         r"
-        type Point { x: int; y: int; }
+        type Point { x: i64; y: i64; }
         fn main() {
             let p = Point { x: 1, y: 2 };
             let z = p.z;
@@ -346,7 +346,7 @@ fn undefined_field_on_struct() {
 fn undefined_method_on_struct() {
     let output = typecheck(
         r"
-        type Foo { x: int; }
+        type Foo { x: i64; }
         fn main() {
             let f = Foo { x: 1 };
             f.bar();
@@ -390,8 +390,8 @@ fn duplicate_definition_same_function() {
 fn duplicate_definition_same_struct() {
     let output = typecheck(
         r"
-        type Foo { x: int; }
-        type Foo { y: int; }
+        type Foo { x: i64; }
+        type Foo { y: i64; }
         fn main() {}
     ",
     );
@@ -432,8 +432,8 @@ fn duplicate_definition_same_enum() {
 fn duplicate_definition_same_trait() {
     let output = typecheck(
         r"
-        trait Printable { fn render(val: Self) -> int; }
-        trait Printable { fn print(val: Self) -> int; }
+        trait Printable { fn render(val: Self) -> i64; }
+        trait Printable { fn print(val: Self) -> i64; }
         fn main() {}
     ",
     );
@@ -453,8 +453,8 @@ fn duplicate_definition_same_trait() {
 fn duplicate_definition_same_actor() {
     let output = typecheck(
         r"
-        actor Worker { let id: int; }
-        actor Worker { let count: int; }
+        actor Worker { let id: i64; }
+        actor Worker { let count: i64; }
         fn main() {}
     ",
     );
@@ -514,7 +514,7 @@ fn duplicate_definition_machine_companion_event_same_type() {
             on Toggle: Off -> On;
             on Toggle: On -> Off;
         }
-        type LightEvent { code: int; }
+        type LightEvent { code: i64; }
         fn main() {}
     ",
     );
@@ -532,7 +532,7 @@ fn duplicate_definition_machine_companion_event_same_type() {
 fn duplicate_definition_machine_companion_event_type_before_machine() {
     let output = typecheck(
         r"
-        type LightEvent { code: int; }
+        type LightEvent { code: i64; }
         machine Light {
             state Off;
             state On;
@@ -566,7 +566,7 @@ fn duplicate_definition_machine_companion_event_same_trait() {
             on Toggle: Off -> On;
             on Toggle: On -> Off;
         }
-        trait LightEvent { fn render(val: Self) -> int; }
+        trait LightEvent { fn render(val: Self) -> i64; }
         fn main() {}
     ",
     );
@@ -584,7 +584,7 @@ fn duplicate_definition_machine_companion_event_same_trait() {
 fn duplicate_definition_machine_companion_event_trait_before_machine() {
     let output = typecheck(
         r"
-        trait LightEvent { fn render(val: Self) -> int; }
+        trait LightEvent { fn render(val: Self) -> i64; }
         machine Light {
             state Off;
             state On;
@@ -636,8 +636,8 @@ fn duplicate_definition_same_wire_type() {
 fn duplicate_definition_same_type_alias() {
     let output = typecheck(
         r"
-        type Foo = int;
-        type Foo = int;
+        type Foo = i64;
+        type Foo = i64;
         fn main() {}
     ",
     );
@@ -657,8 +657,8 @@ fn duplicate_definition_same_type_alias() {
 fn duplicate_definition_type_alias_collides_with_struct() {
     let output = typecheck(
         r"
-        type Foo { x: int; }
-        type Foo = int;
+        type Foo { x: i64; }
+        type Foo = i64;
         fn main() {}
     ",
     );
@@ -678,8 +678,8 @@ fn duplicate_definition_type_alias_collides_with_struct() {
 fn duplicate_definition_type_alias_collides_with_trait() {
     let output = typecheck(
         r"
-        trait Foo { fn render(val: Self) -> int; }
-        type Foo = int;
+        trait Foo { fn render(val: Self) -> i64; }
+        type Foo = i64;
         fn main() {}
     ",
     );
@@ -721,7 +721,7 @@ fn inference_failed_unresolved_type_alias_hole() {
 fn nested_type_alias_hole_does_not_fail_closed() {
     let output = typecheck(
         r"
-        type Pair = (int, _);
+        type Pair = (i64, _);
         fn main() {}
     ",
     );
@@ -826,7 +826,7 @@ fn use_after_move_send_to_actor_twice() {
         r#"
         type Payload { data: string; }
         actor Sink {
-            let val: int;
+            let val: i64;
             receive fn consume(h: Payload) {}
         }
         fn main() {
@@ -895,7 +895,7 @@ fn unused_variable_warning_for_unread_binding() {
 fn nonexhaustive_match_option_missing_none() {
     let output = typecheck(
         r"
-        fn check(x: Option<int>) -> int {
+        fn check(x: Option<i64>) -> i64 {
             match x {
                 Some(v) => v,
             }
@@ -929,7 +929,7 @@ fn nonexhaustive_match_option_missing_none() {
 fn nonexhaustive_match_result_missing_err() {
     let output = typecheck(
         r"
-        fn check(r: Result<int, string>) -> int {
+        fn check(r: Result<i64, string>) -> i64 {
             match r {
                 Ok(v) => v,
             }
@@ -1533,7 +1533,7 @@ fn explicit_hole_nonitem_local_var_annotation_is_rejected() {
 fn explicit_hole_nonitem_local_let_annotation_is_resolved_from_later_use() {
     let output = typecheck(
         r"
-        fn takes(value: Option<int>) {}
+        fn takes(value: Option<i64>) {}
 
         fn main() {
             let value: _ = None;
@@ -1575,7 +1575,7 @@ fn explicit_hole_nonitem_const_annotation_is_resolved_from_later_use() {
         r"
         const MAYBE: _ = None;
 
-        fn takes(value: Option<int>) {}
+        fn takes(value: Option<i64>) {}
 
         fn main() {
             takes(MAYBE);
@@ -1616,7 +1616,7 @@ fn explicit_hole_nonitem_lambda_param_annotation_is_inferred_from_expected_type(
     let output = typecheck(
         r"
         fn main() {
-            let _f: fn(int) -> int = (x: _) => 1;
+            let _f: fn(i64) -> i64 = (x: _) => 1;
         }
     ",
     );
@@ -1942,7 +1942,7 @@ fn bounds_not_satisfied_missing_trait_impl() {
         impl Printable for Dog {
             fn describe(d: Dog) -> string { d.name }
         }
-        type Rock { weight: int; }
+        type Rock { weight: i64; }
         fn show<T: Printable>(val: T) -> string {
             val.describe()
         }
@@ -2056,7 +2056,7 @@ fn let_propagate_sugar_on_non_result_rejected() {
     // same diagnostic as a bare `expr?` on a non-Result expression.
     let output = typecheck(
         r"
-        fn plain() -> int {
+        fn plain() -> i64 {
             let r? = 42;
             r
         }
@@ -2080,10 +2080,10 @@ fn let_propagate_sugar_in_non_result_fn_rejected() {
     // Result or Option must be rejected — same rule as bare `?`.
     let output = typecheck(
         r"
-        fn make_result(x: int) -> Result<int, string> {
+        fn make_result(x: i64) -> Result<i64, string> {
             Ok(x)
         }
-        fn plain(x: int) -> int {
+        fn plain(x: i64) -> i64 {
             let r? = make_result(x);
             r
         }

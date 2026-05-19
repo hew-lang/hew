@@ -4,7 +4,7 @@
 //!
 //! * Allowed: machines, actors/actor refs, `Vec`/`HashMap`/`HashSet`, `bytes`,
 //!   user `type Foo { ... }` declarations.
-//! * Rejected with `E_IS_VALUE_TYPE`: scalars (`int`, `bool`, `char`, floats),
+//! * Rejected with `E_IS_VALUE_TYPE`: scalars (`i64`, `bool`, `char`, floats),
 //!   `string`, `record` instances, tuples.
 //! * Cross-type mismatches collapse into `TypeErrorKind::Mismatch`.
 //! * Move/consumed-self follows the existing use-after-move rule (plan §D-D4).
@@ -62,7 +62,7 @@ fn actor_ref_is_actor_ref_accepted() {
     assert_clean(
         r"
             actor Worker {
-                let _id: int;
+                let _id: i64;
                 receive fn ping() {}
             }
 
@@ -80,8 +80,8 @@ fn vec_is_vec_accepted() {
     assert_clean(
         r"
             fn main() {
-                let v1: Vec<int> = Vec::new();
-                let v2: Vec<int> = Vec::new();
+                let v1: Vec<i64> = Vec::new();
+                let v2: Vec<i64> = Vec::new();
                 let _eq: bool = v1 is v2;
             }
         ",
@@ -93,8 +93,8 @@ fn hashmap_is_hashmap_accepted() {
     assert_clean(
         r"
             fn main() {
-                let m1: HashMap<string, int> = HashMap::new();
-                let m2: HashMap<string, int> = HashMap::new();
+                let m1: HashMap<string, i64> = HashMap::new();
+                let m2: HashMap<string, i64> = HashMap::new();
                 let _eq: bool = m1 is m2;
             }
         ",
@@ -106,8 +106,8 @@ fn hashset_is_hashset_accepted() {
     assert_clean(
         r"
             fn main() {
-                let s1: HashSet<int> = HashSet::new();
-                let s2: HashSet<int> = HashSet::new();
+                let s1: HashSet<i64> = HashSet::new();
+                let s2: HashSet<i64> = HashSet::new();
                 let _eq: bool = s1 is s2;
             }
         ",
@@ -134,7 +134,7 @@ fn user_type_decl_is_user_type_decl_accepted() {
     assert_clean(
         r"
             type Holder {
-                v: int;
+                v: i64;
             }
 
             fn main() {
@@ -157,10 +157,10 @@ fn is_result_typed_as_bool() {
     assert_clean(
         r"
             fn main() {
-                let v1: Vec<int> = Vec::new();
-                let v2: Vec<int> = Vec::new();
+                let v1: Vec<i64> = Vec::new();
+                let v2: Vec<i64> = Vec::new();
                 if v1 is v2 {
-                    let _x: int = 1;
+                    let _x: i64 = 1;
                 }
             }
         ",
@@ -176,8 +176,8 @@ fn int_is_int_rejected() {
     assert_has_e_is_value_type(
         r"
             fn main() {
-                let a: int = 1;
-                let b: int = 1;
+                let a: i64 = 1;
+                let b: i64 = 1;
                 let _eq: bool = a is b;
             }
         ",
@@ -214,7 +214,7 @@ fn string_is_string_rejected() {
 fn record_is_record_rejected() {
     assert_has_e_is_value_type(
         r"
-            record Point { x: int, y: int }
+            record Point { x: i64, y: i64 }
 
             fn main() {
                 let p = Point { x: 1, y: 2 };
@@ -230,8 +230,8 @@ fn tuple_is_tuple_rejected() {
     assert_has_e_is_value_type(
         r"
             fn main() {
-                let a: (int, int) = (1, 2);
-                let b: (int, int) = (1, 2);
+                let a: (i64, i64) = (1, 2);
+                let b: (i64, i64) = (1, 2);
                 let _eq: bool = a is b;
             }
         ",
@@ -248,13 +248,13 @@ fn actor_ref_is_vec_rejected_as_mismatch() {
     assert_has_mismatch(
         r"
             actor Worker {
-                let _id: int;
+                let _id: i64;
                 receive fn ping() {}
             }
 
             fn main() {
                 let a = spawn Worker(_id: 1);
-                let v: Vec<int> = Vec::new();
+                let v: Vec<i64> = Vec::new();
                 let _eq: bool = a is v;
             }
         ",
@@ -267,7 +267,7 @@ fn vec_int_is_vec_string_rejected_as_mismatch() {
     assert_has_mismatch(
         r"
             fn main() {
-                let a: Vec<int> = Vec::new();
+                let a: Vec<i64> = Vec::new();
                 let b: Vec<string> = Vec::new();
                 let _eq: bool = a is b;
             }
@@ -289,7 +289,7 @@ fn is_after_actor_send_emits_use_after_move() {
         type Payload { data: string; }
 
         actor Sink {
-            let _id: int;
+            let _id: i64;
             receive fn consume(p: Payload) {}
         }
 

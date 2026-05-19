@@ -22,10 +22,10 @@ fn simple_function_lowers_with_stable_sites() {
     assert!(verify.is_empty(), "{verify:?}");
 
     let dump = dump_hir(&output.module);
-    assert!(dump.contains("fn i0 main -> int"));
-    assert!(dump.contains("let b0 x: int"));
+    assert!(dump.contains("fn i0 main -> i64"));
+    assert!(dump.contains("let b0 x: i64"));
     assert!(dump.contains("expr h"));
-    assert!(dump.contains("Read BitCopy: int"));
+    assert!(dump.contains("Read BitCopy: i64"));
 }
 
 #[test]
@@ -352,7 +352,7 @@ fn select_non_empty_does_not_trigger_no_arms() {
 
 #[test]
 fn select_arm_body_type_mismatch_rejected() {
-    // First arm body is `1` (int); second arm body is `true` (bool).
+    // First arm body is `1` (i64); second arm body is `true` (bool).
     let output = lower(
         "fn main() { \
              let r = select { \
@@ -476,7 +476,7 @@ fn task_handle_ti1_statement_call_inside_fork_becomes_spawned_call() {
     );
     // The spawned call's type is Task<i64> — dump shows the user_facing form.
     assert!(
-        dump.contains("<task<int>>"),
+        dump.contains("<task<i64>>"),
         "spawned-call should have Task<i64> type in dump: {dump}"
     );
 }
@@ -501,9 +501,9 @@ fn task_handle_ti2_named_fork_child_binds_task_type() {
     );
 
     let dump = dump_hir(&output.module);
-    // The binding `t` should appear with Task<int> type.
+    // The binding `t` should appear with Task<i64> type.
     assert!(
-        dump.contains("let") && dump.contains("t:") && dump.contains("<task<int>>"),
+        dump.contains("let") && dump.contains("t:") && dump.contains("<task<i64>>"),
         "named fork binding should have Task<i64> type: {dump}"
     );
 }
@@ -646,9 +646,9 @@ fn scope_deadline_derives_cancellation_token() {
 /// the name "Task"). This test exercises the type-annotation wall.
 #[test]
 fn task_handle_ti5_task_annotation_in_let_rejects_task_not_nameable() {
-    // The parser accepts `let t: Task<int> = 0;` as a named type annotation;
+    // The parser accepts `let t: Task<i64> = 0;` as a named type annotation;
     // HIR lowering must reject it with TaskNotNameable.
-    let output = lower("fn f() { let t: Task<int> = 0; }");
+    let output = lower("fn f() { let t: Task<i64> = 0; }");
     assert!(
         output
             .diagnostics

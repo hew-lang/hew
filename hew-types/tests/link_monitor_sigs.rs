@@ -99,11 +99,11 @@ fn monitor_actor_ref_returns_monitor_ref() {
 
 #[test]
 fn monitor_ref_not_assignable_to_int() {
-    // `MonitorRef` must not unify with `int` — the type system must reject this.
+    // `MonitorRef` must not unify with `i64` — the type system must reject this.
     let src = with_actor(
         r"
         let w = spawn Worker;
-        let _x: int = monitor(w);
+        let _x: i64 = monitor(w);
     ",
     );
     let out = typecheck(&src);
@@ -111,7 +111,7 @@ fn monitor_ref_not_assignable_to_int() {
         out.errors
             .iter()
             .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })),
-        "monitor(actor_ref) assigned to int should produce a Mismatch error; got: {:?}",
+        "monitor(actor_ref) assigned to i64 should produce a Mismatch error; got: {:?}",
         out.errors
     );
 }
@@ -120,10 +120,10 @@ fn monitor_ref_not_assignable_to_int() {
 
 #[test]
 fn link_non_actor_produces_mismatch() {
-    // `link` requires `ActorRef<_>`; passing a plain `int` must be rejected.
+    // `link` requires `ActorRef<_>`; passing a plain `i64` must be rejected.
     let src = r"
 fn main() {
-    let x: int = 42;
+    let x: i64 = 42;
     let _ = link(x);
 }
 ";

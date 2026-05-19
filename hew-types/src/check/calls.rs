@@ -933,7 +933,7 @@ impl Checker {
                 span,
                 format!(
                     "Channel<{resolved}> is not supported in `for await`; \
-                     only Channel<string> and Channel<int> are currently supported"
+                     only Channel<string> and Channel<i64> are currently supported"
                 ),
             );
             return;

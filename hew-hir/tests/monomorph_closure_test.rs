@@ -30,8 +30,8 @@ fn inner_generic_call_inside_generic_body_closes_under_substitution() {
             id(y)
         }
 
-        fn main() -> int {
-            let a: int = outer(42);
+        fn main() -> i64 {
+            let a: i64 = outer(42);
             0
         }
     ";
@@ -73,8 +73,8 @@ fn call_site_type_args_records_symbolic_inner_calls() {
             id(y)
         }
 
-        fn main() -> int {
-            let a: int = outer(42);
+        fn main() -> i64 {
+            let a: i64 = outer(42);
             0
         }
     ";

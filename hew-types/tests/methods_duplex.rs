@@ -31,19 +31,19 @@ fn has_rewrite(output: &hew_types::TypeCheckOutput, symbol: &str) -> bool {
 // Accept fixtures — Duplex<S, R> methods
 // ---------------------------------------------------------------------------
 
-/// `d.send(42)` on tell-shaped `Duplex<int, ()>` returns `Result<(), SendError>`.
+/// `d.send(42)` on tell-shaped `Duplex<i64, ()>` returns `Result<(), SendError>`.
 #[test]
 fn duplex_send_tell_shaped_resolves() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, ()>(16);
+            let (d, _) = duplex_pair<i64, ()>(16);
             let _: Result<(), SendError> = d.send(42);
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "d.send(42) on tell-shaped Duplex<int,()> should typecheck; got: {:#?}",
+        "d.send(42) on tell-shaped Duplex<i64,()> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(
@@ -53,19 +53,19 @@ fn duplex_send_tell_shaped_resolves() {
     );
 }
 
-/// `d.send(42)` on ask-shaped `Duplex<int, bool>` returns `Result<bool, AskError>`.
+/// `d.send(42)` on ask-shaped `Duplex<i64, bool>` returns `Result<bool, AskError>`.
 #[test]
 fn duplex_send_ask_shaped_resolves() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, bool>(16);
+            let (d, _) = duplex_pair<i64, bool>(16);
             let _: Result<bool, AskError> = d.send(42);
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "d.send(42) on ask-shaped Duplex<int,bool> should typecheck; got: {:#?}",
+        "d.send(42) on ask-shaped Duplex<i64,bool> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(
@@ -75,20 +75,20 @@ fn duplex_send_ask_shaped_resolves() {
     );
 }
 
-/// `d.send(42)` on `Duplex<int, int>` (ask-shaped) typechecks and records
+/// `d.send(42)` on `Duplex<i64, i64>` (ask-shaped) typechecks and records
 /// `hew_duplex_send` in the rewrite table. Kept for rewrite-table coverage.
 #[test]
 fn duplex_send_int_resolves() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
-            let _: Result<int, AskError> = d.send(42);
+            let (d, _) = duplex_pair<i64, i64>(16);
+            let _: Result<i64, AskError> = d.send(42);
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "d.send(42) on Duplex<int,int> should typecheck (ask-shaped); got: {:#?}",
+        "d.send(42) on Duplex<i64,i64> should typecheck (ask-shaped); got: {:#?}",
         output.errors
     );
     assert!(
@@ -98,19 +98,19 @@ fn duplex_send_int_resolves() {
     );
 }
 
-/// `d.recv()` on `Duplex<int, int>` returns `Result<int, RecvError>`.
+/// `d.recv()` on `Duplex<i64, i64>` returns `Result<i64, RecvError>`.
 #[test]
 fn duplex_recv_resolves() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
-            let _: Result<int, RecvError> = d.recv();
+            let (d, _) = duplex_pair<i64, i64>(16);
+            let _: Result<i64, RecvError> = d.recv();
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "d.recv() on Duplex<int,int> should typecheck; got: {:#?}",
+        "d.recv() on Duplex<i64,i64> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(
@@ -120,20 +120,20 @@ fn duplex_recv_resolves() {
     );
 }
 
-/// `d.send_half()` on `Duplex<int, bool>` returns `SendHalf<int>` and the
+/// `d.send_half()` on `Duplex<i64, bool>` returns `SendHalf<i64>` and the
 /// call site is flagged as consuming.
 #[test]
 fn duplex_send_half_resolves_and_consumes() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, bool>(16);
-            let _: SendHalf<int> = d.send_half();
+            let (d, _) = duplex_pair<i64, bool>(16);
+            let _: SendHalf<i64> = d.send_half();
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "d.send_half() on Duplex<int,bool> should typecheck; got: {:#?}",
+        "d.send_half() on Duplex<i64,bool> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(
@@ -147,20 +147,20 @@ fn duplex_send_half_resolves_and_consumes() {
     );
 }
 
-/// `d.recv_half()` on `Duplex<int, bool>` returns `RecvHalf<bool>` and
+/// `d.recv_half()` on `Duplex<i64, bool>` returns `RecvHalf<bool>` and
 /// the call site is flagged as consuming.
 #[test]
 fn duplex_recv_half_resolves_and_consumes() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, bool>(16);
+            let (d, _) = duplex_pair<i64, bool>(16);
             let _: RecvHalf<bool> = d.recv_half();
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "d.recv_half() on Duplex<int,bool> should typecheck; got: {:#?}",
+        "d.recv_half() on Duplex<i64,bool> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(
@@ -174,19 +174,19 @@ fn duplex_recv_half_resolves_and_consumes() {
     );
 }
 
-/// `d.close()` on `Duplex<int, int>` returns `Result<(), CloseError>` and is consuming.
+/// `d.close()` on `Duplex<i64, i64>` returns `Result<(), CloseError>` and is consuming.
 #[test]
 fn duplex_close_resolves_and_consumes() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
+            let (d, _) = duplex_pair<i64, i64>(16);
             let _: Result<(), CloseError> = d.close();
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "d.close() on Duplex<int,int> should typecheck; got: {:#?}",
+        "d.close() on Duplex<i64,i64> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(
@@ -204,20 +204,20 @@ fn duplex_close_resolves_and_consumes() {
 // Accept fixtures — SendHalf<S> methods
 // ---------------------------------------------------------------------------
 
-/// `h.send(42)` on `SendHalf<int>` typechecks and records `hew_send_half_send`.
+/// `h.send(42)` on `SendHalf<i64>` typechecks and records `hew_send_half_send`.
 #[test]
 fn send_half_send_resolves() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
-            let h: SendHalf<int> = d.send_half();
+            let (d, _) = duplex_pair<i64, i64>(16);
+            let h: SendHalf<i64> = d.send_half();
             let _: Result<(), SendError> = h.send(42);
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "h.send(42) on SendHalf<int> should typecheck; got: {:#?}",
+        "h.send(42) on SendHalf<i64> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(
@@ -227,20 +227,20 @@ fn send_half_send_resolves() {
     );
 }
 
-/// `h.close()` on `SendHalf<int>` typechecks and is consuming.
+/// `h.close()` on `SendHalf<i64>` typechecks and is consuming.
 #[test]
 fn send_half_close_resolves_and_consumes() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
-            let h: SendHalf<int> = d.send_half();
+            let (d, _) = duplex_pair<i64, i64>(16);
+            let h: SendHalf<i64> = d.send_half();
             let _: Result<(), CloseError> = h.close();
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "h.close() on SendHalf<int> should typecheck; got: {:#?}",
+        "h.close() on SendHalf<i64> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(
@@ -259,20 +259,20 @@ fn send_half_close_resolves_and_consumes() {
 // Accept fixtures — RecvHalf<R> methods
 // ---------------------------------------------------------------------------
 
-/// `h.recv()` on `RecvHalf<int>` returns `Result<int, RecvError>`.
+/// `h.recv()` on `RecvHalf<i64>` returns `Result<i64, RecvError>`.
 #[test]
 fn recv_half_recv_resolves() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
-            let h: RecvHalf<int> = d.recv_half();
-            let _: Result<int, RecvError> = h.recv();
+            let (d, _) = duplex_pair<i64, i64>(16);
+            let h: RecvHalf<i64> = d.recv_half();
+            let _: Result<i64, RecvError> = h.recv();
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "h.recv() on RecvHalf<int> should typecheck; got: {:#?}",
+        "h.recv() on RecvHalf<i64> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(
@@ -282,20 +282,20 @@ fn recv_half_recv_resolves() {
     );
 }
 
-/// `h.close()` on `RecvHalf<int>` returns `Result<(), CloseError>` and is consuming.
+/// `h.close()` on `RecvHalf<i64>` returns `Result<(), CloseError>` and is consuming.
 #[test]
 fn recv_half_close_resolves_and_consumes() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
-            let h: RecvHalf<int> = d.recv_half();
+            let (d, _) = duplex_pair<i64, i64>(16);
+            let h: RecvHalf<i64> = d.recv_half();
             let _: Result<(), CloseError> = h.close();
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "h.close() on RecvHalf<int> should typecheck; got: {:#?}",
+        "h.close() on RecvHalf<i64> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(
@@ -313,20 +313,20 @@ fn recv_half_close_resolves_and_consumes() {
 // Accept fixtures — try_send / try_recv on Duplex
 // ---------------------------------------------------------------------------
 
-/// `d.try_send(42)` on tell-shaped `Duplex<int, ()>` typechecks and records
+/// `d.try_send(42)` on tell-shaped `Duplex<i64, ()>` typechecks and records
 /// `hew_duplex_try_send` in the rewrite table.
 #[test]
 fn duplex_try_send_resolves() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, ()>(16);
+            let (d, _) = duplex_pair<i64, ()>(16);
             let _: Result<(), SendError> = d.try_send(42);
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "d.try_send(42) on Duplex<int,int> should typecheck; got: {:#?}",
+        "d.try_send(42) on Duplex<i64,i64> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(
@@ -336,20 +336,20 @@ fn duplex_try_send_resolves() {
     );
 }
 
-/// `d.try_recv()` on `Duplex<int, int>` returns `Result<int, RecvError>` and
+/// `d.try_recv()` on `Duplex<i64, i64>` returns `Result<i64, RecvError>` and
 /// records `hew_duplex_try_recv`.
 #[test]
 fn duplex_try_recv_resolves() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
-            let _: Result<int, RecvError> = d.try_recv();
+            let (d, _) = duplex_pair<i64, i64>(16);
+            let _: Result<i64, RecvError> = d.try_recv();
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "d.try_recv() on Duplex<int,int> should typecheck; got: {:#?}",
+        "d.try_recv() on Duplex<i64,i64> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(
@@ -363,21 +363,21 @@ fn duplex_try_recv_resolves() {
 // Accept fixtures — try_send on SendHalf / try_recv on RecvHalf
 // ---------------------------------------------------------------------------
 
-/// `h.try_send(42)` on `SendHalf<int>` typechecks and records
+/// `h.try_send(42)` on `SendHalf<i64>` typechecks and records
 /// `hew_send_half_try_send` in the rewrite table.
 #[test]
 fn send_half_try_send_resolves() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
-            let h: SendHalf<int> = d.send_half();
+            let (d, _) = duplex_pair<i64, i64>(16);
+            let h: SendHalf<i64> = d.send_half();
             let _: Result<(), SendError> = h.try_send(42);
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "h.try_send(42) on SendHalf<int> should typecheck; got: {:#?}",
+        "h.try_send(42) on SendHalf<i64> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(
@@ -387,21 +387,21 @@ fn send_half_try_send_resolves() {
     );
 }
 
-/// `h.try_recv()` on `RecvHalf<int>` typechecks and records
+/// `h.try_recv()` on `RecvHalf<i64>` typechecks and records
 /// `hew_recv_half_try_recv` in the rewrite table.
 #[test]
 fn recv_half_try_recv_resolves() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
-            let h: RecvHalf<int> = d.recv_half();
-            let _: Result<int, RecvError> = h.try_recv();
+            let (d, _) = duplex_pair<i64, i64>(16);
+            let h: RecvHalf<i64> = d.recv_half();
+            let _: Result<i64, RecvError> = h.try_recv();
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "h.try_recv() on RecvHalf<int> should typecheck; got: {:#?}",
+        "h.try_recv() on RecvHalf<i64> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(
@@ -463,17 +463,17 @@ fn sink_try_send_resolves() {
 // Reject fixtures
 // ---------------------------------------------------------------------------
 
-/// `.send()` with a non-Send payload on `Duplex<Rc<int>, int>` must fire
+/// `.send()` with a non-Send payload on `Duplex<Rc<i64>, i64>` must fire
 /// an actor-boundary send error (`InvalidSend`).
 ///
-/// Note: the constructor (`duplex_pair<Rc<int>, int>`) itself also fails
+/// Note: the constructor (`duplex_pair<Rc<i64>, i64>`) itself also fails
 /// with `BoundsNotSatisfied`, so we test with a type annotation bypass to
 /// isolate the `.send()` rejection.  Both errors are expected.
 #[test]
 fn duplex_send_non_send_payload_rejected() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<Rc<int>, int>(16);
+            let (d, _) = duplex_pair<Rc<i64>, i64>(16);
             d.send(Rc::new(1));
         }
     ";
@@ -491,18 +491,18 @@ fn duplex_send_non_send_payload_rejected() {
     });
     assert!(
         has_error,
-        "Duplex<Rc<int>, int>.send() must produce an error; got: {:#?}",
+        "Duplex<Rc<i64>, i64>.send() must produce an error; got: {:#?}",
         output.errors
     );
 }
 
-/// `.send()` is not defined on `RecvHalf<int>` — must fire `UndefinedMethod`.
+/// `.send()` is not defined on `RecvHalf<i64>` — must fire `UndefinedMethod`.
 #[test]
 fn recv_half_send_rejected() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
-            let h: RecvHalf<int> = d.recv_half();
+            let (d, _) = duplex_pair<i64, i64>(16);
+            let h: RecvHalf<i64> = d.recv_half();
             h.send(42);
         }
     ";
@@ -518,13 +518,13 @@ fn recv_half_send_rejected() {
     );
 }
 
-/// `.recv()` is not defined on `SendHalf<int>` — must fire `UndefinedMethod`.
+/// `.recv()` is not defined on `SendHalf<i64>` — must fire `UndefinedMethod`.
 #[test]
 fn send_half_recv_rejected() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
-            let h: SendHalf<int> = d.send_half();
+            let (d, _) = duplex_pair<i64, i64>(16);
+            let h: SendHalf<i64> = d.send_half();
             h.recv();
         }
     ";
@@ -546,7 +546,7 @@ fn send_half_recv_rejected() {
 fn duplex_send_half_twice_fires_use_after_move() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
+            let (d, _) = duplex_pair<i64, i64>(16);
             let _h1 = d.send_half();
             let _h2 = d.send_half();
         }
@@ -568,7 +568,7 @@ fn duplex_send_half_twice_fires_use_after_move() {
 fn duplex_recv_half_twice_fires_use_after_move() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
+            let (d, _) = duplex_pair<i64, i64>(16);
             let _h1 = d.recv_half();
             let _h2 = d.recv_half();
         }
@@ -598,7 +598,7 @@ fn duplex_recv_half_twice_fires_use_after_move() {
 fn lambda_actor_call_syntax_typechecks() {
     let source = r"
         fn main() {
-            let worker = actor |msg: int| {
+            let worker = actor |msg: i64| {
                 println(msg);
             };
             worker(42);
@@ -621,7 +621,7 @@ fn lambda_actor_call_syntax_typechecks() {
 fn lambda_actor_dot_send_routes_through_duplex_arm() {
     let source = r"
         fn main() {
-            let worker = actor |msg: int| {
+            let worker = actor |msg: i64| {
                 println(msg);
             };
             worker.send(42);
@@ -646,7 +646,7 @@ fn lambda_actor_dot_send_routes_through_duplex_arm() {
 fn duplex_use_after_close_fires_use_after_move() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
+            let (d, _) = duplex_pair<i64, i64>(16);
             let _ = d.close();
             let _ = d.send(1);
         }
@@ -670,7 +670,7 @@ fn duplex_use_after_close_fires_use_after_move() {
 fn duplex_use_after_move_includes_consumed_here_note() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
+            let (d, _) = duplex_pair<i64, i64>(16);
             let _ = d.close();
             let _ = d.send(1);
         }
@@ -701,7 +701,7 @@ fn duplex_use_after_move_includes_consumed_here_note() {
 fn duplex_use_after_move_includes_substrate_handle_suggestion() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
+            let (d, _) = duplex_pair<i64, i64>(16);
             let _h = d.send_half();
             let _h2 = d.send_half();
         }
@@ -759,8 +759,8 @@ fn recv_match_exhaustive_partition() {
     // RecvError has no registered TypeDef variants.
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
-            let result: Result<int, RecvError> = d.recv();
+            let (d, _) = duplex_pair<i64, i64>(16);
+            let result: Result<i64, RecvError> = d.recv();
             match result {
                 Ok(_) => println(0),
                 Err(_) => println(1),
@@ -778,8 +778,8 @@ fn recv_match_exhaustive_partition() {
     // by binding-identifier rule.
     let source_binding = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
-            let result: Result<int, RecvError> = d.recv();
+            let (d, _) = duplex_pair<i64, i64>(16);
+            let result: Result<i64, RecvError> = d.recv();
             match result {
                 Ok(_) => println(0),
                 Err(e) => println(1),

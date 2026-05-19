@@ -8,7 +8,7 @@ fn test_non_exhaustive_match() {
     let output = typecheck(
         r"
         enum Colour { Red; Green; Blue; }
-        fn check(c: Colour) -> int {
+        fn check(c: Colour) -> i64 {
             match c {
                 Red => 1,
                 Green => 2,
@@ -73,7 +73,7 @@ fn test_non_exhaustive_match_stmt() {
 fn test_exhaustive_or_option_match() {
     let output = typecheck(
         r"
-        fn check(opt: Option<int>) -> int {
+        fn check(opt: Option<i64>) -> i64 {
             match opt {
                 Option::Some(x) => x,
                 Option::None => 1,
@@ -110,7 +110,7 @@ fn test_exhaustive_or_option_match() {
 fn test_non_exhaustive_option_match() {
     let output = typecheck(
         r"
-        fn check(opt: Option<int>) -> int {
+        fn check(opt: Option<i64>) -> i64 {
             match opt {
                 Some(x) => x,
             }
@@ -152,11 +152,11 @@ fn test_non_exhaustive_match_suggestions_include_arm_patterns() {
         r"
         enum Packet {
             Empty;
-            Value(int);
-            Named { count: int };
+            Value(i64);
+            Named { count: i64 };
         }
 
-        fn label(packet: Packet) -> int {
+        fn label(packet: Packet) -> i64 {
             match packet {
                 Empty => 0,
             }
@@ -178,7 +178,7 @@ fn test_non_exhaustive_match_suggestions_include_arm_patterns() {
 fn test_exhaustive_or_result_match() {
     let output = typecheck(
         r"
-        fn check(res: Result<int, int>) -> int {
+        fn check(res: Result<i64, i64>) -> i64 {
             match res {
                 Result::Ok(x) => x,
                 Result::Err(e) => e,
@@ -215,7 +215,7 @@ fn test_exhaustive_or_enum_match() {
     let output = typecheck(
         r"
         enum Colour { Red; Green; Blue; }
-        fn check(c: Colour) -> int {
+        fn check(c: Colour) -> i64 {
             match c {
                 Red | Green | Blue => 1,
             }
@@ -244,7 +244,7 @@ fn test_exhaustive_or_enum_match() {
 fn test_scalar_missing_catchall_is_warning() {
     let output = typecheck(
         r"
-        fn check(n: int) -> int {
+        fn check(n: i64) -> i64 {
             match n {
                 1 => 10,
                 2 => 20,
@@ -309,7 +309,7 @@ fn test_mutability_error() {
 fn test_arity_mismatch() {
     let output = typecheck(
         r"
-        fn add(a: int, b: int) -> int {
+        fn add(a: i64, b: i64) -> i64 {
             a + b
         }
         fn main() {
@@ -363,7 +363,7 @@ fn test_lambda_arity_mismatch() {
     let output = typecheck(
         r"
         fn main() {
-            let f: fn(int, int) -> int = (x: int) => x + 1; // Error: lambda has 1 param, expected 2
+            let f: fn(i64, i64) -> i64 = (x: i64) => x + 1; // Error: lambda has 1 param, expected 2
         }
     ",
     );
@@ -377,14 +377,14 @@ fn test_lambda_arity_mismatch() {
 }
 
 /// Receiver detection must compare generic arguments, not just the type name.
-/// `impl Box<int>` should reject `b: Box<string>` as a receiver parameter.
+/// `impl Box<i64>` should reject `b: Box<string>` as a receiver parameter.
 #[test]
 fn test_receiver_param_rejects_mismatched_generics() {
     let output = typecheck(
         r"
         type Box<T> { value: T; }
-        impl Box<int> {
-            fn bad(b: Box<string>) -> int { 0 }
+        impl Box<i64> {
+            fn bad(b: Box<string>) -> i64 { 0 }
         }
         fn main() {
             let b = Box { value: 42 };
@@ -396,7 +396,7 @@ fn test_receiver_param_rejects_mismatched_generics() {
         !output.errors.is_empty(),
         "Expected a type error when receiver generic arguments don't match the impl target, \
          but type-checking succeeded. `Box<string>` should not be treated as a receiver \
-         for `impl Box<int>`."
+         for `impl Box<i64>`."
     );
 }
 
@@ -406,9 +406,9 @@ fn test_receiver_param_rejects_mismatched_generics() {
 fn test_non_receiver_param_same_type_not_flagged() {
     let output = typecheck(
         r"
-        type Box { value: int; }
+        type Box { value: i64; }
         impl Box {
-            fn combine(b: Box, var other: Box) -> int { b.value + other.value }
+            fn combine(b: Box, var other: Box) -> i64 { b.value + other.value }
         }
         fn main() {
             let b1 = Box { value: 1 };

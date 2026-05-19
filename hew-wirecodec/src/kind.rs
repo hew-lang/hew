@@ -29,7 +29,7 @@ pub enum PrimitiveWireKind {
     I16,
     /// 32-bit signed integer (`i32`).
     I32,
-    /// 64-bit signed integer (`i64` / `int` / `Int`).
+    /// 64-bit signed integer (`i64`).
     I64,
     /// 8-bit unsigned integer (`u8` / `byte`).
     U8,
@@ -37,7 +37,7 @@ pub enum PrimitiveWireKind {
     U16,
     /// 32-bit unsigned integer (`u32`).
     U32,
-    /// 64-bit unsigned integer (`u64` / `uint`).
+    /// 64-bit unsigned integer (`u64`).
     U64,
     /// Platform-sized signed integer: wire-serialised as `i64` (no WASM32
     /// actor wire path exists today; the runtime gates wasm32 duplex out).
@@ -143,16 +143,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn from_type_name_maps_int_alias_to_i64() {
+    fn from_type_name_maps_explicit_width_integers() {
+        // `int`/`Int`/`uint` are removed aliases; only explicit widths accepted.
         assert_eq!(
-            PrimitiveWireKind::from_type_name("int").unwrap(),
+            PrimitiveWireKind::from_type_name("i64").unwrap(),
             PrimitiveWireKind::I64
         );
         assert_eq!(
-            PrimitiveWireKind::from_type_name("Int").unwrap(),
-            PrimitiveWireKind::I64
+            PrimitiveWireKind::from_type_name("u64").unwrap(),
+            PrimitiveWireKind::U64
         );
-        // isize is now a distinct platform-sized type, not an alias for i64.
+        assert!(
+            PrimitiveWireKind::from_type_name("int").is_err(),
+            "`int` must not be a valid wire type name"
+        );
+        assert!(
+            PrimitiveWireKind::from_type_name("Int").is_err(),
+            "`Int` must not be a valid wire type name"
+        );
+        assert!(
+            PrimitiveWireKind::from_type_name("uint").is_err(),
+            "`uint` must not be a valid wire type name"
+        );
+        // isize is a distinct platform-sized type, not an alias for i64.
         assert_eq!(
             PrimitiveWireKind::from_type_name("isize").unwrap(),
             PrimitiveWireKind::Isize

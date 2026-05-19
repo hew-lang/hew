@@ -20,8 +20,8 @@ fn probe_inner_generic_call_type_args_recorded() {
             id(y)
         }
 
-        fn main() -> int {
-            let a: int = outer(42);
+        fn main() -> i64 {
+            let a: i64 = outer(42);
             0
         }
     ";
@@ -39,7 +39,7 @@ fn probe_inner_generic_call_type_args_recorded() {
                 }
             }
             if fd.name == "main" {
-                // The statement `let a: int = outer(42);`
+                // The statement `let a: i64 = outer(42);`
                 for st in &fd.body.stmts {
                     if let hew_parser::ast::Stmt::Let {
                         value: Some((_, sp)),

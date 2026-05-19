@@ -32,7 +32,7 @@ use hew_types::{SpanKey, Ty, TypeCheckOutput};
 fn poisoned_expr_types_emits_checker_boundary_violation() {
     // Source: a single call expression statement so there's exactly one
     // Expr::Call span to locate.
-    let source = "fn main() -> int { foo(); return 0; }";
+    let source = "fn main() -> i64 { foo(); return 0; }";
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),

@@ -13,7 +13,7 @@ fn impl_requires_associated_type_definition() {
         }
 
         type Counter {
-            value: int;
+            value: i64;
         }
 
         impl Iterator for Counter {
@@ -43,17 +43,17 @@ fn impl_type_aliases_resolve_in_methods() {
         }
 
         type Counter {
-            value: int;
+            value: i64;
         }
 
         impl Iterator for Counter {
-            type Item = int;
+            type Item = i64;
             fn next(c: Counter) -> Self::Item {
                 c.value
             }
         }
 
-        fn takes_int(value: int) {}
+        fn takes_int(value: i64) {}
 
         fn main() {
             let counter = Counter { value: 1 };
@@ -73,12 +73,12 @@ fn trait_default_associated_type_used_in_impl() {
     let output = typecheck(
         r"
         trait Identity {
-            type Output = int;
+            type Output = i64;
             fn value(val: Self) -> Self::Output;
         }
 
         type Answer {
-            x: int;
+            x: i64;
         }
 
         impl Identity for Answer {
@@ -87,7 +87,7 @@ fn trait_default_associated_type_used_in_impl() {
             }
         }
 
-        fn accepts_int(value: int) {}
+        fn accepts_int(value: i64) {}
 
         fn main() {
             let a = Answer { x: 1 };

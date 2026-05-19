@@ -51,7 +51,7 @@ fn checker_accepts_explicit_type_arg_at_struct_init() {
         r"
         pub type Box<T> { value: T }
         fn main() {
-            let b = Box<int> { value: 42 };
+            let b = Box<i64> { value: 42 };
         }
     ",
     );
@@ -88,7 +88,7 @@ fn checker_accepts_two_param_type_at_init() {
         r#"
         pub type Pair<A, B> { first: A; second: B }
         fn main() {
-            let p = Pair<int, string> { first: 1, second: "hello" };
+            let p = Pair<i64, string> { first: 1, second: "hello" };
         }
     "#,
     );
@@ -105,7 +105,7 @@ fn checker_accepts_generic_enum_variant_construction() {
         r"
         pub enum Either<A, B> { Left(A); Right(B) }
         fn main() {
-            let x: Either<int, string> = Either::Left(42);
+            let x: Either<i64, string> = Either::Left(42);
         }
     ",
     );
@@ -120,7 +120,7 @@ fn checker_accepts_generic_enum_variant_construction() {
 
 #[test]
 fn checker_accepts_monomorphic_type_without_type_params() {
-    let tco = check("pub type Point { x: int; y: int }");
+    let tco = check("pub type Point { x: i64; y: i64 }");
     assert!(
         tco.errors.is_empty(),
         "monomorphic type should check cleanly: {:?}",
@@ -167,12 +167,12 @@ fn checker_rejects_duplicate_type_params_in_enum() {
 
 #[test]
 fn checker_rejects_wrong_type_arg_at_init_site() {
-    // `Box<int> { value: "hello" }` — explicit `int` but field value is string
+    // `Box<i64> { value: "hello" }` — explicit `i64` but field value is string
     let tco = check(
         r#"
         pub type Box<T> { value: T }
         fn main() {
-            let b = Box<int> { value: "hello" };
+            let b = Box<i64> { value: "hello" };
         }
     "#,
     );

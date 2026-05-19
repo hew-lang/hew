@@ -290,12 +290,12 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
                         // hew_duplex_* — excluded via hew-runtime/src/duplex.rs:54
                         //   `#![cfg(not(target_arch = "wasm32"))]`.
                         //   WASM-TODO(#1451).
-                        // hew_supervisor_child_get — excluded because the supervisor
-                        //   tree requires the native preemptive scheduler; WASM builds
-                        //   use a cooperative single-threaded executor that does not
-                        //   support supervisor restart machinery.
+                        // hew_supervisor_* — the supervisor family requires the native
+                        //   preemptive scheduler; WASM builds use a cooperative
+                        //   single-threaded executor that does not support supervisor
+                        //   restart machinery.
                         //   WASM-TODO(#1475): supervisor WASM parity is tracked there.
-                        (sym.starts_with("hew_duplex_") || sym == "hew_supervisor_child_get")
+                        (sym.starts_with("hew_duplex_") || sym.starts_with("hew_supervisor_"))
                             .then(|| sym.to_string())
                     }
                     Instr::Drop {
@@ -686,6 +686,11 @@ fn intern_runtime_decl<'ctx>(
         // and spawns its self-actor. Returns 0 on success. The bootstrap
         // traps on non-zero (fail-closed) before returning the supervisor ptr.
         "hew_supervisor_start" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_supervisor_stop(sup: *mut HewSupervisor) -> void
+        // (`hew-runtime/src/supervisor.rs:1944`). Requests graceful shutdown of
+        // the supervisor and all its children. Void return; the Hew builtin
+        // `supervisor_stop(sup)` discards the result.
+        "hew_supervisor_stop" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         // hew_supervisor_child_get(sup: *mut HewSupervisor, key: u32)
         //     -> ChildLookupResult
         // (`hew-runtime/src/supervisor.rs:2795`). Returns the live actor handle
@@ -3982,6 +3987,38 @@ fn lower_call_runtime_abi(
                 )));
             }
             let _ = (i32_ty, ptr_ty);
+        }
+        // hew_supervisor_stop(sup: *mut HewSupervisor) -> void
+        // (`hew-runtime/src/supervisor.rs:1944`). Graceful shutdown: void return.
+        // The `supervisor_stop(sup)` builtin passes a single supervisor handle;
+        // the producer always supplies `dest: None`.
+        "hew_supervisor_stop" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_supervisor_stop): expected 1 arg \
+                     (sup), got {}",
+                    args.len()
+                )));
+            }
+            let sup_ptr = load_duplex_handle(fn_ctx, args[0], "supervisor_stop_arg0")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(fv, &[sup_ptr.into()], "hew_supervisor_stop_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_stop call: {e:?}")))?;
+            // Void return — producer supplies dest: None; fail-closed if not.
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_supervisor_stop is void; producer must not supply \
+                     dest={d:?}"
+                )));
+            }
+            let _ = (i32_ty, i64_ty);
         }
         // `hew_duplex_close` is only called from the Drop ritual
         // (`lower_drop`); reaching it via `Instr::CallRuntimeAbi`

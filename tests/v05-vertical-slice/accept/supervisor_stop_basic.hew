@@ -1,0 +1,27 @@
+// Exercises `supervisor_stop(sup)` end-to-end.
+//
+// Verifies:
+//   - `spawn AppSupervisor` routes through the synthesised bootstrap body
+//     (hew_supervisor_new + add_child_spec + hew_supervisor_start).
+//   - `supervisor_stop(sup)` lowers to `hew_supervisor_stop` via the
+//     user-name bridge and emits a CallRuntimeAbi with dest: None.
+//   - main returns 0 after the stop call.
+actor Worker {
+    receive fn ping(_n: i64) {
+        _n;
+    }
+}
+
+supervisor AppSupervisor {
+    strategy: one_for_one;
+    max_restarts: 3;
+    window: 60;
+
+    child w1: Worker;
+}
+
+fn main() -> i64 {
+    let sup = spawn AppSupervisor;
+    supervisor_stop(sup);
+    0
+}

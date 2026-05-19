@@ -1338,6 +1338,41 @@ impl LowerCtx {
                 },
             );
         }
+        // Checker-registered runtime-builtin functions that have no stdlib_catalog
+        // entry and no AST `fn` item.  The HIR verifier rejects `Unresolved`
+        // callee refs, so these builtins need a synthetic `Item(id)` in
+        // `fn_registry` for `lower_identifier` to resolve.  IDs live in the
+        // `u32::MAX / 2` range — below the stdlib IDs (`u32::MAX - N`) and
+        // above the source-item sequence (which starts from 0).
+        //
+        // MIR: the callee `BindingRef { name: "supervisor_stop", resolved: Item(_) }`
+        // routes through `user_name_to_c_symbol("supervisor_stop")` →
+        // `lower_runtime_call("hew_supervisor_stop", …)` before the Item-resolved
+        // fail-closed arm at `lower.rs:2774` is reached.
+        //
+        // WHEN obsolete: when HIR gains `ResolvedRef::Builtin { c_symbol }` and the
+        // verifier exempts it from the Unresolved check, at which point this seeding
+        // and `user_name_to_c_symbol` become the bridge between the two.
+        // WHAT: add `ResolvedRef::Builtin { c_symbol: String }` to `hew-hir`;
+        // populate in `lower_identifier`; match in MIR.
+        // `supervisor_stop(sup: LocalPid<S>) -> ()`.  The param type is a
+        // `LocalPid<S>` (named "LocalPid" in resolved form), which is what
+        // the checker registers.  The exact inner type does not matter here
+        // because MIR lowering consults `user_name_to_c_symbol` on the
+        // callee name and passes the sup place opaquely.
+        self.fn_registry.insert(
+            "supervisor_stop".to_string(),
+            FnEntry {
+                id: ItemId(u32::MAX / 2),
+                return_ty: ResolvedTy::Unit,
+                param_tys: vec![ResolvedTy::Named {
+                    name: "LocalPid".to_string(),
+                    args: vec![ResolvedTy::Unit],
+                }],
+                linkage: None,
+                type_params: Vec::new(),
+            },
+        );
     }
 
     fn register_fn_entry(&mut self, name: &str, func: &FnDecl) {

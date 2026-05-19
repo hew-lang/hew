@@ -4973,6 +4973,7 @@ impl Builder {
         match symbol {
             "hew_duplex_pair" => self.lower_duplex_pair(hir_args, site),
             "hew_duplex_send" => self.lower_duplex_send(hir_args, site),
+            "hew_supervisor_stop" => self.lower_supervisor_stop(hir_args, site),
             _ => {
                 // Known-allowlisted symbol but no producer arm yet.  Fail closed
                 // so the pipeline rejects the program before codegen runs.
@@ -5094,6 +5095,45 @@ impl Builder {
         self.tuple_decomp.insert(proxy_idx, vec![dh0, dh1]);
 
         Some(proxy)
+    }
+
+    /// Emit `Instr::CallRuntimeAbi` for `hew_supervisor_stop`.
+    ///
+    /// HIR shape: `Call { callee: BindingRef("supervisor_stop"), args: [sup_expr] }`.
+    /// The checker registers `supervisor_stop(sup)` returning `Ty::Unit`, so
+    /// this producer returns `None` — Unit is zero-sized and callers handle
+    /// `None` as "no destination place" (see `CallClosure` and `CallTraitMethod`
+    /// patterns in `lower_value`).
+    ///
+    /// MIR emission:
+    ///   1. Lower `sup_expr` → `sup_place` (a `LocalPid<S>` — opaque ptr).
+    ///   2. Emit `CallRuntimeAbi { "hew_supervisor_stop", args: [sup_place], dest: None }`.
+    ///   3. Return `None` (Unit result).
+    fn lower_supervisor_stop(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        if hir_args.len() != 1 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "supervisor_stop".to_string(),
+                    site,
+                },
+                note: format!(
+                    "supervisor_stop expects 1 argument (sup), got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+        let sup_place = self.lower_value(&hir_args[0])?;
+        self.instructions.push(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new("hew_supervisor_stop", vec![sup_place], None)
+                .expect("hew_supervisor_stop is an allowlisted runtime symbol"),
+        ));
+        // Unit return — no destination place.
+        None
     }
 
     /// Emit the MIR sequence for a static supervisor child-slot access.

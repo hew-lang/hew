@@ -116,6 +116,11 @@ run_accept_expect_status "supervisor_basic" 42
 # Exercises the { i64, i64 } ABI fix for hew_supervisor_child_get.
 run_accept_expect_status "supervised_ingest_race" 42
 
+# Supervisor graceful stop: spawn AppSupervisor → supervisor_stop(sup) lowers to
+# hew_supervisor_stop; main returns 0. Exercises the user-name → C-ABI bridge and
+# the void-return (dest: None) MIR + codegen path.
+run_accept_expect_status "supervisor_stop_basic" 0
+
 # on(crash) handler attachment: Crasher actor declares #[on(crash)]; codegen emits
 # a non-null on_crash fn-pointer in HewChildSpec; supervisor boots and main returns 42.
 # The crash path is not triggered at runtime — handler-fire observability is covered

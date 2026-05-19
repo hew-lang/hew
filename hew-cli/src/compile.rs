@@ -1046,7 +1046,7 @@ fn main() {
 
     #[test]
     fn option_constructor_expected_context_serializes_after_literal_coercion() {
-        let source = "fn make() -> Option<int> { Some(42) }\n";
+        let source = "fn make() -> Option<i64> { Some(42) }\n";
         let mut program = parse_source(source, "main.hew").expect("source should parse");
 
         let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
@@ -1157,14 +1157,14 @@ fn main() {
 }
 "#,
                 ),
-                ("diamond_base.hew", "pub fn base_value() -> int { 100 }\n"),
+                ("diamond_base.hew", "pub fn base_value() -> i64 { 100 }\n"),
                 (
                     "diamond_left.hew",
-                    "import \"diamond_base.hew\";\npub fn left_value() -> int { base_value() + 1 }\n",
+                    "import \"diamond_base.hew\";\npub fn left_value() -> i64 { base_value() + 1 }\n",
                 ),
                 (
                     "diamond_right.hew",
-                    "import \"diamond_base.hew\";\npub fn right_value() -> int { base_value() + 2 }\n",
+                    "import \"diamond_base.hew\";\npub fn right_value() -> i64 { base_value() + 2 }\n",
                 ),
             ],
         );
@@ -1250,9 +1250,9 @@ fn main() {
                 ),
                 (
                     "trans_mid.hew",
-                    "import \"trans_base.hew\";\npub fn mid_fn() -> int { base_fn() + 1 }\n",
+                    "import \"trans_base.hew\";\npub fn mid_fn() -> i64 { base_fn() + 1 }\n",
                 ),
-                ("trans_base.hew", "pub fn base_fn() -> int { 42 }\n"),
+                ("trans_base.hew", "pub fn base_fn() -> i64 { 42 }\n"),
             ],
         );
         let root_path = fixture.join("module_transitive.hew");
@@ -1307,9 +1307,9 @@ fn main() {
                 ),
                 (
                     "dep.hew",
-                    r"pub fn dep_value() -> int { helper() }
+                    r"pub fn dep_value() -> i64 { helper() }
 
-fn helper() -> int { 41 }
+fn helper() -> i64 { 41 }
 ",
                 ),
             ],

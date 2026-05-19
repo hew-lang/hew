@@ -30,7 +30,7 @@ pub struct IrPipeline {
     /// `ResolvedTy::Named { name, .. }` of record-typed locals to the
     /// corresponding struct layout for alloca / GEP emission.
     ///
-    /// Tuple-form records (`record Pair(int, int)`) are NOT included here:
+    /// Tuple-form records (`record Pair(i64, i64)`) are NOT included here:
     /// their `HirRecordDecl.fields` is empty (the parser keeps positional
     /// fields on the `RecordKind::Tuple` discriminator, which the HIR lowerer
     /// does not promote into `HirField`s). Tuple records construct via
@@ -622,7 +622,7 @@ pub enum Place {
 }
 
 /// Integer comparison predicate. Maps 1:1 to LLVM `IntPredicate`. The
-/// signed-ness selector is intentional: Hew's spine treats `int` as a
+/// signed-ness selector is intentional: Hew's spine treats `i64` as a
 /// signed 64-bit integer, so the default cmp lowerings are signed
 /// comparisons. Once unsigned types reach value-bearing positions in
 /// the spine, the lowering picks the unsigned variant from the same
@@ -1314,13 +1314,13 @@ pub enum Instr {
 
 /// 0-based declaration-order index of a field within a `record` type.
 ///
-/// For named records (`record Point { x: int, y: int }`) the offset of
+/// For named records (`record Point { x: i64, y: i64 }`) the offset of
 /// `x` is `0` and the offset of `y` is `1`, matching the order in which
 /// fields were declared. This ordinal is the number codegen passes to the
 /// LLVM GEP `struct_gep` call to address the field's alloca slot.
 ///
 /// For tuple records the field order matches the positional declaration
-/// (`record Pair(int, int)` → field 0 and field 1), but tuple records
+/// (`record Pair(i64, i64)` → field 0 and field 1), but tuple records
 /// use the function-call constructor and are NOT reachable via
 /// `HirExprKind::StructInit` — they never produce `RecordInit` or
 /// `RecordFieldLoad` instructions. The offset type is shared for

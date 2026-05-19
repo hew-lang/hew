@@ -39,10 +39,10 @@ fn linear_unconsumed_single_exit_fires_must_consume() {
     let src = r"
         #[linear]
         type Txn {
-            id: int
-            fn commit(consuming self) -> int { 0 }
+            id: i64
+            fn commit(consuming self) -> i64 { 0 }
         }
-        fn main() -> int {
+        fn main() -> i64 {
             let t = Txn { id: 0 };
             42
         }
@@ -104,7 +104,7 @@ fn linear_no_consuming_methods_declared_fires_hir_diagnostic() {
     let src = r"
         #[linear]
         type Bad {
-            x: int
+            x: i64
         }
     ";
     let parsed = hew_parser::parse(src);
@@ -131,8 +131,8 @@ fn linear_with_consuming_method_emits_no_diagnostic() {
     let src = r"
         #[linear]
         type Token {
-            id: int
-            fn consume(consuming self) -> int { 0 }
+            id: i64
+            fn consume(consuming self) -> i64 { 0 }
         }
     ";
     let parsed = hew_parser::parse(src);
@@ -160,7 +160,7 @@ fn resource_missing_close_method_fires_hir_diagnostic() {
     let src = r"
         #[resource]
         type Sock {
-            fd: int
+            fd: i64
         }
     ";
     let parsed = hew_parser::parse(src);
@@ -187,8 +187,8 @@ fn resource_with_close_method_emits_no_diagnostic() {
     let src = r"
         #[resource]
         type File {
-            fd: int
-            fn close(consuming self) -> int { 0 }
+            fd: i64
+            fn close(consuming self) -> i64 { 0 }
         }
     ";
     let parsed = hew_parser::parse(src);
@@ -986,10 +986,10 @@ fn linear_consumed_in_both_branches_accepted() {
     let src = r"
         #[linear]
         type Txn {
-            id: int
-            fn commit(consuming self) -> int { 0 }
+            id: i64
+            fn commit(consuming self) -> i64 { 0 }
         }
-        fn main() -> int {
+        fn main() -> i64 {
             let t = Txn { id: 0 };
             let _r = if 1 == 1 { let _a = t; 7 } else { let _b = t; 8 };
             42
@@ -1035,10 +1035,10 @@ fn linear_consumed_only_in_then_branch_rejects() {
     let src = r"
         #[linear]
         type Txn {
-            id: int
-            fn commit(consuming self) -> int { 0 }
+            id: i64
+            fn commit(consuming self) -> i64 { 0 }
         }
-        fn main() -> int {
+        fn main() -> i64 {
             let t = Txn { id: 0 };
             let _r = if 1 == 1 { let _a = t; 7 } else { 8 };
             42

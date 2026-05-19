@@ -78,12 +78,12 @@ fn two_ask_one_after_select_emits_three_arms_three_bodies_one_join() {
     let pipeline = lower_checked(
         r"
         actor Pinger {
-            receive fn ping() -> int { 1 }
+            receive fn ping() -> i64 { 1 }
         }
         actor Counter {
-            receive fn count() -> int { 2 }
+            receive fn count() -> i64 { 2 }
         }
-        fn main() -> int {
+        fn main() -> i64 {
             let p = spawn Pinger;
             let c = spawn Counter;
             let result = select {
@@ -173,9 +173,9 @@ fn select_arm_binding_is_some_for_ask_none_for_after() {
     let pipeline = lower_checked(
         r"
         actor Pinger {
-            receive fn ping() -> int { 1 }
+            receive fn ping() -> i64 { 1 }
         }
-        fn main() -> int {
+        fn main() -> i64 {
             let p = spawn Pinger;
             let r = select {
                 reply from p.ping() => reply,
@@ -224,12 +224,12 @@ fn every_arm_body_moves_into_same_result_local() {
     let pipeline = lower_checked(
         r"
         actor Pinger {
-            receive fn ping() -> int { 1 }
+            receive fn ping() -> i64 { 1 }
         }
         actor Counter {
-            receive fn count() -> int { 2 }
+            receive fn count() -> i64 { 2 }
         }
-        fn main() -> int {
+        fn main() -> i64 {
             let p = spawn Pinger;
             let c = spawn Counter;
             let r = select {
@@ -315,9 +315,9 @@ fn select_terminator_wires_exitpath_select_in_drop_plans() {
     let pipeline = lower_checked(
         r"
         actor Pinger {
-            receive fn ping() -> int { 1 }
+            receive fn ping() -> i64 { 1 }
         }
-        fn main() -> int {
+        fn main() -> i64 {
             let p = spawn Pinger;
             let r = select {
                 reply from p.ping() => reply,
@@ -362,7 +362,7 @@ fn select_terminator_wires_exitpath_select_in_drop_plans() {
 // Reject (fail-closed) any select containing a `StreamNext` arm with a
 // diagnostic that names both the arm kind and the future lane that
 // closes the restriction. We bypass the type-checker (which has no
-// `Stream<int>` literal surface today) by driving HIR lowering with an
+// `Stream<i64>` literal surface today) by driving HIR lowering with an
 // empty `TypeCheckOutput`; HIR diagnostics about unresolved symbols
 // are expected, but the HIR module still carries the `Select` node
 // with a `StreamNext` arm — which is exactly what MIR must reject.
@@ -370,7 +370,7 @@ fn select_terminator_wires_exitpath_select_in_drop_plans() {
 fn stream_next_arm_rejected_with_lane_pointer_diagnostic() {
     let parsed = hew_parser::parse(
         r"
-        fn main() -> int {
+        fn main() -> i64 {
             let r = select {
                 item from next(s) => 0,
                 after 10ms => 0,
@@ -415,7 +415,7 @@ fn stream_next_arm_rejected_with_lane_pointer_diagnostic() {
 fn task_await_arm_rejected_with_lane_pointer_diagnostic() {
     let parsed = hew_parser::parse(
         r"
-        fn main() -> int {
+        fn main() -> i64 {
             let r = select {
                 v from await t => 0,
                 after 10ms => 0,
@@ -457,9 +457,9 @@ fn single_ask_arm_no_after_emits_one_arm_select() {
     let pipeline = lower_checked(
         r"
         actor Pinger {
-            receive fn ping() -> int { 1 }
+            receive fn ping() -> i64 { 1 }
         }
-        fn main() -> int {
+        fn main() -> i64 {
             let p = spawn Pinger;
             let r = select {
                 reply from p.ping() => reply,
@@ -489,9 +489,9 @@ fn arm_body_binding_reads_resolve_to_per_arm_reply_slot() {
     let pipeline = lower_checked(
         r"
         actor Pinger {
-            receive fn ping() -> int { 1 }
+            receive fn ping() -> i64 { 1 }
         }
-        fn main() -> int {
+        fn main() -> i64 {
             let p = spawn Pinger;
             let r = select {
                 reply from p.ping() => reply,

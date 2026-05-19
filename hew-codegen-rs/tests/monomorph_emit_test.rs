@@ -87,12 +87,12 @@ fn emit_ll(source: &str, module_name: &str) -> String {
     std::fs::read_to_string(ll_path).expect("read emitted .ll")
 }
 
-/// `fn id<T>(x: T) -> T` called with `T=int` and `T=string` must produce two
+/// `fn id<T>(x: T) -> T` called with `T=i64` and `T=string` must produce two
 /// distinct LLVM function definitions with mangled names and concrete types.
 ///
 /// The dual-T identity test verifies:
 /// 1. `id$$i64` is defined with an `i64` return type and an `i64` parameter —
-///    confirming the `T=int` instantiation uses integer LLVM types end-to-end.
+///    confirming the `T=i64` instantiation uses integer LLVM types end-to-end.
 /// 2. `id$$string` is defined with a `ptr` return type and a `ptr` parameter —
 ///    confirming the `T=string` instantiation uses pointer LLVM types.
 /// 3. No unmangled `@id(` definition exists — the unspecialised generic origin
@@ -107,8 +107,8 @@ fn dual_t_identity_produces_two_distinct_llvm_functions() {
             x
         }
 
-        fn main() -> int {
-            let a: int = id(42);
+        fn main() -> i64 {
+            let a: i64 = id(42);
             let b: string = id("hello");
             return 0;
         }
@@ -129,7 +129,7 @@ fn dual_t_identity_produces_two_distinct_llvm_functions() {
         "LLVM IR must define the string monomorphisation;\n--- IR ---\n{ll}"
     );
 
-    // The int instantiation must have i64 in its define line.
+    // The i64 instantiation must have i64 in its define line.
     // Match any line containing both the mangled name and the i64 return type.
     let has_i64_define = ll.lines().any(|line| {
         (line.contains("id$$i64") && line.contains("i64") && line.contains("define"))
@@ -174,8 +174,8 @@ fn main_callsites_use_mangled_symbols() {
             x
         }
 
-        fn main() -> int {
-            let a: int = id(42);
+        fn main() -> i64 {
+            let a: i64 = id(42);
             let b: string = id("hello");
             return 0;
         }
@@ -206,9 +206,9 @@ fn same_type_dedupes_to_one_llvm_function() {
             x
         }
 
-        fn main() -> int {
-            let a: int = id(1);
-            let b: int = id(2);
+        fn main() -> i64 {
+            let a: i64 = id(1);
+            let b: i64 = id(2);
             return 0;
         }
     ";

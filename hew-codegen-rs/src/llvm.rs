@@ -1787,14 +1787,14 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(i) => i,
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
-                        "ConstI64 dest is not an int: dest_ty={dest_ty:?}"
+                        "ConstI64 dest is not an i64: dest_ty={dest_ty:?}"
                     )))
                 }
             };
             // `value` is i64 in MIR. Truncate/extend at the LLVM level to
             // whatever the dest local actually is — Cluster 1's lowering
-            // currently always sizes locals to the front-half's int type
-            // (`i64` for `int`), so this is a no-op for the spine.
+            // currently always sizes locals to the front-half's i64 type
+            // (`i64` for `i64`), so this is a no-op for the spine.
             #[allow(clippy::cast_sign_loss)]
             let v = int_ty.const_int(*value as u64, true);
             fn_ctx
@@ -1810,11 +1810,11 @@ fn lower_instruction(
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let lhs_int = match lhs_ty {
                 BasicTypeEnum::IntType(t) => t,
-                _ => return Err(CodegenError::FailClosed("IntAdd lhs is not an int".into())),
+                _ => return Err(CodegenError::FailClosed("IntAdd lhs is not an i64".into())),
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
                 return Err(CodegenError::FailClosed(
-                    "Int arithmetic operands and dest must share the same int type".into(),
+                    "Int arithmetic operands and dest must share the same i64 type".into(),
                 ));
             }
             let lhs_v = fn_ctx
@@ -1831,9 +1831,9 @@ fn lower_instruction(
                 Instr::IntAdd { .. } => fn_ctx.builder.build_int_add(lhs_v, rhs_v, "arith_add"),
                 Instr::IntSub { .. } => fn_ctx.builder.build_int_sub(lhs_v, rhs_v, "arith_sub"),
                 Instr::IntMul { .. } => fn_ctx.builder.build_int_mul(lhs_v, rhs_v, "arith_mul"),
-                _ => unreachable!("matched on three int-arith variants above"),
+                _ => unreachable!("matched on three i64-arith variants above"),
             }
-            .map_err(|e| CodegenError::Llvm(format!("int arith: {e:?}")))?;
+            .map_err(|e| CodegenError::Llvm(format!("i64 arith: {e:?}")))?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, result)
@@ -1862,13 +1862,13 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(t) => t,
                 _ => {
                     return Err(CodegenError::FailClosed(
-                        "IntDiv/IntRem lhs is not an int".into(),
+                        "IntDiv/IntRem lhs is not an i64".into(),
                     ))
                 }
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
                 return Err(CodegenError::FailClosed(
-                    "IntDiv/IntRem operands and dest must share the same int type".into(),
+                    "IntDiv/IntRem operands and dest must share the same i64 type".into(),
                 ));
             }
             let lhs_v = fn_ctx
@@ -1911,11 +1911,11 @@ fn lower_instruction(
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let lhs_int = match lhs_ty {
                 BasicTypeEnum::IntType(t) => t,
-                _ => return Err(CodegenError::FailClosed("IntShl lhs is not an int".into())),
+                _ => return Err(CodegenError::FailClosed("IntShl lhs is not an i64".into())),
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
                 return Err(CodegenError::FailClosed(
-                    "IntShl operands and dest must share the same int type".into(),
+                    "IntShl operands and dest must share the same i64 type".into(),
                 ));
             }
             let lhs_v = fn_ctx
@@ -1948,11 +1948,11 @@ fn lower_instruction(
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let lhs_int = match lhs_ty {
                 BasicTypeEnum::IntType(t) => t,
-                _ => return Err(CodegenError::FailClosed("IntShr lhs is not an int".into())),
+                _ => return Err(CodegenError::FailClosed("IntShr lhs is not an i64".into())),
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
                 return Err(CodegenError::FailClosed(
-                    "IntShr operands and dest must share the same int type".into(),
+                    "IntShr operands and dest must share the same i64 type".into(),
                 ));
             }
             let lhs_v = fn_ctx
@@ -1982,7 +1982,7 @@ fn lower_instruction(
                 .map_err(|e| CodegenError::Llvm(format!("shr store: {e:?}")))?;
         }
         // Bitwise &, |, ^. Well-defined for all integer widths/signednesses;
-        // no traps, no overflow checks. Operands and dest share the same int
+        // no traps, no overflow checks. Operands and dest share the same i64
         // type (enforced upstream by the checker).
         Instr::IntBitAnd { dest, lhs, rhs }
         | Instr::IntBitOr { dest, lhs, rhs }
@@ -1994,13 +1994,13 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(t) => t,
                 _ => {
                     return Err(CodegenError::FailClosed(
-                        "IntBitwise lhs is not an int".into(),
+                        "IntBitwise lhs is not an i64".into(),
                     ))
                 }
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
                 return Err(CodegenError::FailClosed(
-                    "IntBitwise operands and dest must share the same int type".into(),
+                    "IntBitwise operands and dest must share the same i64 type".into(),
                 ));
             }
             let lhs_v = fn_ctx
@@ -2054,27 +2054,27 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(t) => t,
                 _ => {
                     return Err(CodegenError::FailClosed(
-                        "IntArithChecked lhs is not an int".into(),
+                        "IntArithChecked lhs is not an i64".into(),
                     ))
                 }
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
                 return Err(CodegenError::FailClosed(
-                    "IntArithChecked operands and dest must share the same int type".into(),
+                    "IntArithChecked operands and dest must share the same i64 type".into(),
                 ));
             }
             let flag_int = match flag_ty {
                 BasicTypeEnum::IntType(t) => t,
                 _ => {
                     return Err(CodegenError::FailClosed(
-                        "IntArithChecked overflow_flag is not an int".into(),
+                        "IntArithChecked overflow_flag is not an i64".into(),
                     ))
                 }
             };
             // Choose the intrinsic family by op + signedness. Six
             // intrinsics total — three ops × two signednesses. The
             // overload is per integer width, so `get_declaration`
-            // receives the operand int type.
+            // receives the operand i64 type.
             let intrinsic_name = match (op, signed) {
                 (IntArithOp::Add, IntSignedness::Signed) => "llvm.sadd.with.overflow",
                 (IntArithOp::Add, IntSignedness::Unsigned) => "llvm.uadd.with.overflow",
@@ -2152,7 +2152,7 @@ fn lower_instruction(
             lhs,
             rhs,
         } => {
-            // Load both operands at their declared int type, compare with
+            // Load both operands at their declared i64 type, compare with
             // the predicate, zero-extend the i1 result to the dest's
             // stored width. The dest's type is whatever HIR resolved for
             // the comparison expression (today `ResolvedTy::Bool` -> i8
@@ -2163,16 +2163,16 @@ fn lower_instruction(
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let lhs_int = match lhs_ty {
                 BasicTypeEnum::IntType(t) => t,
-                _ => return Err(CodegenError::FailClosed("IntCmp lhs is not an int".into())),
+                _ => return Err(CodegenError::FailClosed("IntCmp lhs is not an i64".into())),
             };
             if rhs_ty != lhs_ty {
                 return Err(CodegenError::FailClosed(
-                    "IntCmp operands must share the same int type".into(),
+                    "IntCmp operands must share the same i64 type".into(),
                 ));
             }
             let dest_int = match dest_ty {
                 BasicTypeEnum::IntType(t) => t,
-                _ => return Err(CodegenError::FailClosed("IntCmp dest is not an int".into())),
+                _ => return Err(CodegenError::FailClosed("IntCmp dest is not an i64".into())),
             };
             let lhs_v = fn_ctx
                 .builder
@@ -2232,7 +2232,7 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(t) => t,
                 _ => {
                     return Err(CodegenError::FailClosed(
-                        "IdentityCompare dest is not an int".into(),
+                        "IdentityCompare dest is not an i64".into(),
                     ))
                 }
             };
@@ -2533,7 +2533,7 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(i) => i,
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
-                        "CharLit dest is not an int: dest_ty={dest_ty:?}"
+                        "CharLit dest is not an i64: dest_ty={dest_ty:?}"
                     )))
                 }
             };
@@ -2554,7 +2554,7 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(i) => i,
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
-                        "UnitLit dest is not an int (expected i8 stand-in): dest_ty={dest_ty:?}"
+                        "UnitLit dest is not an i64 (expected i8 stand-in): dest_ty={dest_ty:?}"
                     )))
                 }
             };
@@ -2573,7 +2573,7 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(i) => i,
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
-                        "DurationLit dest is not an int: dest_ty={dest_ty:?}"
+                        "DurationLit dest is not an i64: dest_ty={dest_ty:?}"
                     )))
                 }
             };
@@ -3433,7 +3433,7 @@ fn lower_call_runtime_abi(
         // Actor link/monitor builtins.
         //
         // SHIM(B3→Cluster2): `link()` returns `Result<(), LinkError>` and
-        // `monitor()` returns `MonitorRef { ref_id: int }`. Both require
+        // `monitor()` returns `MonitorRef { ref_id: i64 }`. Both require
         // composite-type construction (enum variant / struct literal) in the
         // LLVM IR, which the Cluster 1 spine does not yet support.
         //
@@ -3511,7 +3511,7 @@ fn lower_call_runtime_abi(
                 .builder
                 .build_call(fv, &llvm_args, "hew_actor_monitor_call")
                 .map_err(|e| CodegenError::Llvm(format!("hew_actor_monitor call: {e:?}")))?;
-            // SHIM(B3→Cluster2): `monitor()` returns MonitorRef { ref_id: int }.
+            // SHIM(B3→Cluster2): `monitor()` returns MonitorRef { ref_id: i64 }.
             // Struct-literal construction requires the Cluster 2 spine.
             // Producers must not wire a dest until that lands.
             if let Some(d) = dest {
@@ -4183,7 +4183,7 @@ fn emit_one_elab_drop(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> CodegenResult<
 }
 
 /// Load an integer-typed `Place` and return its value coerced to the
-/// requested `expected` int type. Today every M2 substrate integer arg
+/// requested `expected` i64 type. Today every M2 substrate integer arg
 /// is i64 at the C-ABI; this helper rejects type mismatches loudly.
 fn load_int_arg<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
@@ -4196,7 +4196,7 @@ fn load_int_arg<'ctx>(
         BasicTypeEnum::IntType(i) => i,
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "{label}: Place {place:?} resolves to non-int type {other:?}; \
+                "{label}: Place {place:?} resolves to non-i64 type {other:?}; \
                  expected i64-shaped runtime ABI arg"
             )));
         }

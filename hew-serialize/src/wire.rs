@@ -38,7 +38,7 @@ mod tests {
             fields: vec![
                 WireFieldDecl {
                     name: "x".into(),
-                    ty: "int".into(),
+                    ty: "i64".into(),
                     field_number: 1,
                     is_optional: false,
                     is_repeated: false,
@@ -50,7 +50,7 @@ mod tests {
                 },
                 WireFieldDecl {
                     name: "y".into(),
-                    ty: "int".into(),
+                    ty: "i64".into(),
                     field_number: 2,
                     is_optional: false,
                     is_repeated: false,

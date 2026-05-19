@@ -1825,12 +1825,12 @@ mod tests {
         let root_diagnostic = hew_types::TypeError::new(
             hew_types::error::TypeErrorKind::InvalidOperation,
             12..19,
-            "cannot apply `+` to `int` and `String`",
+            "cannot apply `+` to `i64` and `String`",
         );
         let dep_diagnostic = hew_types::TypeError::new(
             hew_types::error::TypeErrorKind::ReturnTypeMismatch,
             0..4,
-            "return type mismatch: expected `int`, found `bool`",
+            "return type mismatch: expected `i64`, found `bool`",
         )
         .with_source_module("dep");
 

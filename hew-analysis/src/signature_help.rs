@@ -299,7 +299,7 @@ mod tests {
         let source = "sum(";
         let tc = make_tc_with_fn("sum", vec!["value"], vec![Ty::I64], Ty::I64);
         let result = build_signature_help(source, &tc, source.len()).unwrap();
-        assert_eq!(result.signatures[0].label, "fn sum(value: int) -> int");
+        assert_eq!(result.signatures[0].label, "fn sum(value: i64) -> i64");
     }
 
     #[test]
@@ -384,7 +384,7 @@ mod tests {
         );
         let sh = result.unwrap();
         assert_eq!(sh.active_parameter, Some(0));
-        assert_eq!(sh.signatures[0].label, "fn new(capacity: int)");
+        assert_eq!(sh.signatures[0].label, "fn new(capacity: i64)");
     }
 
     #[test]

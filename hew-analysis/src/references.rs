@@ -1036,7 +1036,7 @@ mod tests {
 
     #[test]
     fn local_shadowing_global_stays_local() {
-        let source = "fn foo() -> int { 1 }\nfn main() {\n    let foo = 2;\n    foo\n}";
+        let source = "fn foo() -> i64 { 1 }\nfn main() {\n    let foo = 2;\n    foo\n}";
         let pr = parse(source);
         let local_offset = source.find("let foo").unwrap() + 4;
         let (_name, spans) =

@@ -2249,7 +2249,7 @@ impl Builder {
                 }
                 // Resolve the record type key from the object's type so we
                 // can look up the field offset in the field-order table.
-                // For a generic record instantiation (`b: Box<int>` reading
+                // For a generic record instantiation (`b: Box<i64>` reading
                 // `b.value`) the key is the mangled name `Box$$i64`; for a
                 // monomorphic record the key is the bare name.
                 let type_name = match &object.ty {
@@ -2643,7 +2643,7 @@ impl Builder {
     #[allow(
         clippy::too_many_lines,
         reason = "lower_binary is a flat dispatch over the BinaryOp enum; line count grows \
-                  with the operator set (int + float arms). Splitting would obscure the \
+                  with the operator set (i64 + float arms). Splitting would obscure the \
                   per-operator codegen path each reader expects to find here."
     )]
     fn lower_binary(
@@ -4215,7 +4215,7 @@ impl Builder {
         hir_args: &[hew_hir::HirExpr],
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        // E1 registers duplex_pair<S, R>(int) — one symmetric capacity arg.
+        // E1 registers duplex_pair<S, R>(i64) — one symmetric capacity arg.
         // If E1 ever expands to two args (s_cap, r_cap), skip the duplication.
         let cap_place = if hir_args.len() == 1 {
             self.lower_value(&hir_args[0])
@@ -6298,7 +6298,7 @@ fn transfer_block_split(
 /// locals participate in the dataflow.
 #[allow(
     clippy::match_same_arms,
-    reason = "int and float arithmetic arms share the same place-extraction shape but \
+    reason = "i64 and float arithmetic arms share the same place-extraction shape but \
               represent semantically distinct ops; consolidating would force a later \
               re-split when codegen needs per-op dispatch"
 )]

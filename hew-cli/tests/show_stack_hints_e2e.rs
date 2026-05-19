@@ -43,14 +43,14 @@ fn write_fixture(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
 #[test]
 fn show_stack_hints_flag_emits_perf_001_on_known_allocations() {
     // Two known-heap-class bindings:
-    //   - `v` resolves to `Vec<int>`        -> AllocationClass::Vec
+    //   - `v` resolves to `Vec<i64>`        -> AllocationClass::Vec
     //   - `f` is a closure literal           -> AllocationClass::ClosureEnv
     // Plus one stack-shaped binding (`r`) that must NOT produce a hint —
-    // a primitive int return does not allocate on the heap.
+    // a primitive i64 return does not allocate on the heap.
     let source = "fn main() {\n\
-        \x20\x20\x20\x20let v: Vec<int> = Vec::new();\n\
-        \x20\x20\x20\x20let f = (x: int) -> int => x * 2;\n\
-        \x20\x20\x20\x20let r: int = f(3);\n\
+        \x20\x20\x20\x20let v: Vec<i64> = Vec::new();\n\
+        \x20\x20\x20\x20let f = (x: i64) -> i64 => x * 2;\n\
+        \x20\x20\x20\x20let r: i64 = f(3);\n\
         \x20\x20\x20\x20println(f\"v.len = {v.len()}, r = {r}\");\n\
         }\n";
 
@@ -129,11 +129,11 @@ fn show_stack_hints_flag_emits_perf_001_on_known_allocations() {
 /// `failure.message`, so the user never saw which line caused the error.
 #[test]
 fn show_stack_hints_check_failure_renders_span_diagnostics() {
-    // A program with a deliberate type error: the Vec<[int; 2]> element type
+    // A program with a deliberate type error: the Vec<[i64; 2]> element type
     // is unsupported, producing a type error with a source span. The span
     // underline (`^^^`) must appear in stderr when --show-stack-hints is set.
     let source = "fn main() {\n\
-        \x20\x20\x20\x20let v: Vec<[int; 2]> = Vec::new();\n\
+        \x20\x20\x20\x20let v: Vec<[i64; 2]> = Vec::new();\n\
         \x20\x20\x20\x20println(v.len());\n\
         }\n";
 
@@ -189,10 +189,10 @@ fn show_stack_hints_check_failure_renders_span_diagnostics() {
 fn show_stack_hints_run_emits_hints_and_executes_program() {
     require_codegen();
 
-    // A program with a known heap-class binding (`v: Vec<int>`) that also
+    // A program with a known heap-class binding (`v: Vec<i64>`) that also
     // prints a sentinel value so we can verify execution succeeded.
     let source = "fn main() {\n\
-        \x20\x20\x20\x20let v: Vec<int> = Vec::new();\n\
+        \x20\x20\x20\x20let v: Vec<i64> = Vec::new();\n\
         \x20\x20\x20\x20println(f\"len={v.len()}\");\n\
         }\n";
 

@@ -1059,7 +1059,7 @@ mod tests {
 
     #[test]
     fn walk_parse_result_tracks_shadowing_order() {
-        let source = "fn main(x: int) { let y = x; let x = y; x + y }";
+        let source = "fn main(x: i64) { let y = x; let x = y; x + y }";
         let parse_result = hew_parser::parse(source);
         let mut visitor = RecordingVisitor::default();
         walk_parse_result(Some(source), &parse_result, &mut visitor);
@@ -1089,7 +1089,7 @@ mod tests {
 
     #[test]
     fn walk_named_body_limits_traversal_to_requested_body() {
-        let source = "actor Worker { receive fn handle(msg: int) { msg } fn helper() { ping() } }";
+        let source = "actor Worker { receive fn handle(msg: i64) { msg } fn helper() { ping() } }";
         let parse_result = hew_parser::parse(source);
         let item = &parse_result.program.items[0].0;
         let mut visitor = RecordingVisitor::default();
@@ -1103,7 +1103,7 @@ mod tests {
 
     #[test]
     fn params_to_bindings_marks_parameter_name_span() {
-        let source = "fn f(abc: int) { abc }";
+        let source = "fn f(abc: i64) { abc }";
         let parse_result = hew_parser::parse(source);
         let Item::Function(function) = &parse_result.program.items[0].0 else {
             panic!("expected function");
@@ -1117,7 +1117,7 @@ mod tests {
     #[test]
     fn lambda_params_to_bindings_use_non_zero_name_spans() {
         let source =
-            "fn main() { let first = |x: int| x; let second = |y: int, z: int| { y + z }; }";
+            "fn main() { let first = |x: i64| x; let second = |y: i64, z: i64| { y + z }; }";
         let parse_result = hew_parser::parse(source);
         let Item::Function(function) = &parse_result.program.items[0].0 else {
             panic!("expected function");
@@ -1141,7 +1141,7 @@ mod tests {
 
     #[test]
     fn visible_bindings_at_keeps_selected_body_isolated() {
-        let source = "fn first(a: int) { let b = a; b }\nfn second(c: int) { c }";
+        let source = "fn first(a: i64) { let b = a; b }\nfn second(c: i64) { c }";
         let parse_result = hew_parser::parse(source);
         let offset = source.find("b }").expect("b usage");
         let bindings = visible_bindings_at(source, &parse_result, offset);

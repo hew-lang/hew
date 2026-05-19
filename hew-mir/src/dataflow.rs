@@ -1177,7 +1177,7 @@ mod tests {
 
     /// A non-leaf function with a single loop back-edge.
     ///
-    /// Simulates: `fn loop_sum() -> int { for i in 0..100 { ... } }`.
+    /// Simulates: `fn loop_sum() -> i64 { for i in 0..100 { ... } }`.
     /// The CFG has three non-leaf blocks:
     ///
     ///   block 0: stmt×10, Goto { target: 1 }   ← entry; Goto fwd = not a back-edge

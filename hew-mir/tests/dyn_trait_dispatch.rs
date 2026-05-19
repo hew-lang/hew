@@ -47,7 +47,7 @@ fn all_instrs(p: &IrPipeline, fn_name: &str) -> Vec<Instr> {
 
 /// `T → dyn Display` argument coercion at a call site emits exactly one
 /// `Instr::CoerceToDynTrait` with `trait_name = "Display"` and the
-/// concrete `Self` type (`i64` after `int` default materialisation).
+/// concrete `Self` type (`i64` after `i64` default materialisation).
 #[test]
 fn int_to_dyn_display_coercion_emits_coerce_instr() {
     let source = r"

@@ -235,7 +235,7 @@ fn no_test_files_in_directory_exits_zero() {
 #[test]
 fn no_test_functions_found_exits_zero() {
     let output = run_suite(
-        &[("helpers_test.hew", "fn helper() -> int {\n    42\n}\n")],
+        &[("helpers_test.hew", "fn helper() -> i64 {\n    42\n}\n")],
         &["--no-color"],
     );
 

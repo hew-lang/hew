@@ -18,7 +18,7 @@
 //!   integer cast) is read off the LLVM value kind at codegen time, never
 //!   re-derived from the checker's allowance set.
 //! - `exhaustive-coverage` (P0): one assertion per code-path shape in the
-//!   `Instr::IdentityCompare` arm (int-value path exercised here; pointer
+//!   `Instr::IdentityCompare` arm (i64-value path exercised here; pointer
 //!   path asserted structurally in `llvm.rs`).
 
 use std::path::Path;

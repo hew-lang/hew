@@ -1210,7 +1210,7 @@ mod tests {
         };
         let text = format_type_def_hover(&td);
         assert!(text.contains("type Point"));
-        assert!(text.contains("float"), "should contain field types");
+        assert!(text.contains("f64"), "should contain field types");
     }
 
     #[test]
@@ -1493,7 +1493,7 @@ mod tests {
     }
 
     #[test]
-    fn hover_uses_int_alias_for_user_facing_types() {
+    fn hover_shows_explicit_width_for_integer_types() {
         let source = "fn main() {\n    let count = 42;\n}";
         let pr = hew_parser::parse(source);
         let count_offset = source.find("count").unwrap();
@@ -1534,19 +1534,18 @@ mod tests {
         };
 
         let result = hover(source, &pr, Some(&tc), count_offset).unwrap();
-        assert!(result.contents.contains("count: int"));
-        assert!(!result.contents.contains("i64"));
+        assert!(result.contents.contains("count: i64"));
     }
 
     #[test]
     fn hover_shows_unannotated_let_binding_type() {
-        let source = "fn compute() -> int { 42 }\nfn main() {\n    let count = compute();\n}";
+        let source = "fn compute() -> i64 { 42 }\nfn main() {\n    let count = compute();\n}";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.find("count").unwrap();
 
         let result = hover(source, &pr, Some(&tc), offset).unwrap();
-        assert_eq!(result.contents, "```hew\ncount: int\n```");
+        assert_eq!(result.contents, "```hew\ncount: i64\n```");
         assert_eq!(
             result.span,
             Some(OffsetSpan {
@@ -1558,13 +1557,13 @@ mod tests {
 
     #[test]
     fn hover_shows_annotated_var_binding_type() {
-        let source = "fn main() {\n    var total: int = 0;\n}";
+        let source = "fn main() {\n    var total: i64 = 0;\n}";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.find("total").unwrap();
 
         let result = hover(source, &pr, Some(&tc), offset).unwrap();
-        assert_eq!(result.contents, "```hew\ntotal: int\n```");
+        assert_eq!(result.contents, "```hew\ntotal: i64\n```");
         assert_eq!(
             result.span,
             Some(OffsetSpan {
@@ -1654,7 +1653,7 @@ mod tests {
         let offset = source.find("item in").unwrap();
 
         let result = hover(source, &pr, Some(&tc), offset).unwrap();
-        assert_eq!(result.contents, "```hew\nitem: int\n```");
+        assert_eq!(result.contents, "```hew\nitem: i64\n```");
         assert_eq!(
             result.span,
             Some(OffsetSpan {
@@ -1667,7 +1666,7 @@ mod tests {
     #[test]
     fn hover_shows_while_let_pattern_binding_type() {
         let source =
-            "fn pair() -> (bool, int) { (true, 1) }\nfn main() {\n    while let (flag, _) = pair() {\n        flag\n    }\n}";
+            "fn pair() -> (bool, i64) { (true, 1) }\nfn main() {\n    while let (flag, _) = pair() {\n        flag\n    }\n}";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.find("flag, _").unwrap();
@@ -1686,7 +1685,7 @@ mod tests {
     #[test]
     fn hover_shows_if_let_pattern_binding_type() {
         let source =
-            "fn pair() -> (bool, int) { (true, 1) }\nfn main() {\n    if let (flag, _) = pair() {\n        flag\n    }\n}";
+            "fn pair() -> (bool, i64) { (true, 1) }\nfn main() {\n    if let (flag, _) = pair() {\n        flag\n    }\n}";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.find("flag, _").unwrap();
@@ -1704,14 +1703,14 @@ mod tests {
 
     #[test]
     fn hover_prefers_local_over_global_name() {
-        let source = "fn value() -> int { 1 }\nfn main() {\n    let value = 2;\n    value\n}";
+        let source = "fn value() -> i64 { 1 }\nfn main() {\n    let value = 2;\n    value\n}";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.rfind("value").unwrap();
 
         let result = hover(source, &pr, Some(&tc), offset).unwrap();
         assert!(
-            result.contents.contains(": int"),
+            result.contents.contains(": i64"),
             "local hover should render the local binding type: {result:?}"
         );
         assert_eq!(result.span.map(|span| span.start), Some(offset));
@@ -1720,7 +1719,7 @@ mod tests {
     #[test]
     fn hover_shows_match_arm_pattern_binding_type() {
         let source =
-            "fn pair() -> (bool, int) { (true, 1) }\nfn main() {\n    match pair() {\n        (flag, _) => flag,\n    }\n}";
+            "fn pair() -> (bool, i64) { (true, 1) }\nfn main() {\n    match pair() {\n        (flag, _) => flag,\n    }\n}";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.find("flag, _").unwrap();
@@ -1738,7 +1737,7 @@ mod tests {
 
     /// Regression: the expr-types fallback hover path crosses the
     /// checker boundary through `ResolvedTy::from_ty`. Int-literal kinds
-    /// must be defaulted on the way through — rendering `<int literal>`
+    /// must be defaulted on the way through — rendering `<i64 literal>`
     /// (the internal-form spelling) would prove the boundary was
     /// bypassed.
     #[test]
@@ -1786,10 +1785,10 @@ mod tests {
         let result = hover(source, &pr, Some(&tc), x_offset).unwrap();
         // Goes through ResolvedTy::from_ty(materialize_literal_defaults)
         // which produces ResolvedTy::I64, whose user-facing form is
-        // "int" — the same as a concrete i64 at the boundary. If the
-        // boundary were bypassed we would render "<int literal>".
+        // "i64" — the same as a concrete i64 at the boundary. If the
+        // boundary were bypassed we would render "<i64 literal>".
         assert!(
-            result.contents.contains("int"),
+            result.contents.contains("i64"),
             "expected boundary-defaulted rendering, got {}",
             result.contents
         );

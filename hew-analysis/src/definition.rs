@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn definition_finds_while_let_pattern_binding() {
-        let source = "fn pair() -> (bool, int) { (true, 1) }\nfn main() { while let (flag, _) = pair() { flag } }";
+        let source = "fn pair() -> (bool, i64) { (true, 1) }\nfn main() { while let (flag, _) = pair() { flag } }";
         let pr = parse(source);
         let offset = source.rfind("flag").expect("usage should exist");
         let result = find_local_binding_definition(source, &pr, "flag", offset)
@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn definition_finds_if_let_pattern_binding() {
-        let source = "fn pair() -> (bool, int) { (true, 1) }\nfn main() { if let (flag, _) = pair() { flag } }";
+        let source = "fn pair() -> (bool, i64) { (true, 1) }\nfn main() { if let (flag, _) = pair() { flag } }";
         let pr = parse(source);
         let offset = source.rfind("flag").expect("usage should exist");
         let result = find_local_binding_definition(source, &pr, "flag", offset)
@@ -512,7 +512,7 @@ mod tests {
 
     #[test]
     fn definition_finds_match_arm_pattern_binding() {
-        let source = "fn pair() -> (bool, int) { (true, 1) }\nfn main() { match pair() { (flag, _) => flag, } }";
+        let source = "fn pair() -> (bool, i64) { (true, 1) }\nfn main() { match pair() { (flag, _) => flag, } }";
         let pr = parse(source);
         let offset = source.rfind("flag").expect("usage should exist");
         let result = find_local_binding_definition(source, &pr, "flag", offset)

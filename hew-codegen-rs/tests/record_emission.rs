@@ -21,7 +21,7 @@
 //! elaborator inserts fires at the right point. With the v0.5 spine the
 //! affine-resource drop classification only fires for `@resource` /
 //! `@linear` value classes — plain records of `Copy` fields produce no
-//! drops. Records carrying heap-backed fields (`Vec<int>`, `String`)
+//! drops. Records carrying heap-backed fields (`Vec<i64>`, `String`)
 //! that need per-field drop are a follow-on slice; see the deliverable
 //! report for details.
 //!

@@ -1787,7 +1787,7 @@ mod tests {
 
     #[test]
     fn round_trip_mutable_function_param() {
-        let parsed = hew_parser::parse("fn bump(var x: int) -> int { x = x + 1; x }");
+        let parsed = hew_parser::parse("fn bump(var x: i64) -> i64 { x = x + 1; x }");
         assert!(parsed.errors.is_empty(), "errors: {:?}", parsed.errors);
 
         let bytes = serialize_to_msgpack(

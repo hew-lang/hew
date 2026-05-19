@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn plan_rename_param_shadow_returns_conflict() {
         // Rename a local `x` to a parameter name `a` that's in scope.
-        let source = "fn main(a: int) {\n    let x = 1;\n    x + a\n}";
+        let source = "fn main(a: i64) {\n    let x = 1;\n    x + a\n}";
         let pr = parse(source);
         let offset = source.find("let x").unwrap() + 4;
         let err = plan_rename(source, &pr, offset, "a").unwrap_err();

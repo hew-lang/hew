@@ -32,10 +32,10 @@ fn pipeline_with_tc(source: &str) -> IrPipeline {
 #[test]
 fn direct_call_emits_call_terminator_with_correct_callee_and_args() {
     let src = r"
-        fn add(a: int, b: int) -> int {
+        fn add(a: i64, b: i64) -> i64 {
             a + b
         }
-        fn main() -> int {
+        fn main() -> i64 {
             add(2, 3)
         }
     ";
@@ -99,7 +99,7 @@ fn direct_call_emits_call_terminator_with_correct_callee_and_args() {
             );
             assert!(
                 dest.is_some(),
-                "add() returns int; call terminator dest must be Some"
+                "add() returns i64; call terminator dest must be Some"
             );
         }
         other => panic!("expected call terminator, got {other:?}"),
@@ -112,10 +112,10 @@ fn direct_call_emits_call_terminator_with_correct_callee_and_args() {
 #[test]
 fn callee_params_resolve_to_local_slots_no_unresolved_place() {
     let src = r"
-        fn add(a: int, b: int) -> int {
+        fn add(a: i64, b: i64) -> i64 {
             a + b
         }
-        fn main() -> int {
+        fn main() -> i64 {
             add(2, 3)
         }
     ";
@@ -160,7 +160,7 @@ fn callee_params_resolve_to_local_slots_no_unresolved_place() {
 fn unresolved_call_emits_cutover_unsupported_not_call_terminator() {
     // `unknown_fn` is not declared in this module and is not a runtime symbol.
     let src = r"
-        fn main() -> int {
+        fn main() -> i64 {
             unknown_fn(42)
         }
     ";

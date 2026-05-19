@@ -4,8 +4,8 @@
 //! `Instr::CallRuntimeAbi` + producer arms, and the consumer-side
 //! drop-plan scaffolding (slice 3/3.5/3.6) all in place, drop
 //! elaboration now flows end-to-end for real source-text-derived MIR.
-//! A `let (a, b) = duplex_pair<int, int>(N);` registers both bindings
-//! in `owned_locals` with the resolved `Duplex<int, int>` type, the
+//! A `let (a, b) = duplex_pair<i64, i64>(N);` registers both bindings
+//! in `owned_locals` with the resolved `Duplex<i64, i64>` type, the
 //! producer wraps both handle Places as `Place::DuplexHandle(_)`, and
 //! the elaborator emits one `ElabDrop` per binding at every
 //! Return-terminated block in reverse-binding order with
@@ -82,7 +82,7 @@ fn all_plan_drops(p: &IrPipeline, fn_name: &str) -> Vec<hew_mir::ElabDrop> {
 // duplex_pair — drop emission on Return
 // ---------------------------------------------------------------------------
 
-/// `let (a, b) = duplex_pair<int, int>(16); return 0;` emits exactly
+/// `let (a, b) = duplex_pair<i64, i64>(16); return 0;` emits exactly
 /// two `ElabDrop` entries on the Return exit, both with
 /// `DropKind::DuplexClose` and `Place::DuplexHandle(_)`.  The two
 /// handles must select distinct local indices.
@@ -91,8 +91,8 @@ fn all_plan_drops(p: &IrPipeline, fn_name: &str) -> Vec<hew_mir::ElabDrop> {
 #[test]
 fn duplex_pair_emits_two_duplex_close_drops_on_return() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             return 0;
         }
     ";
@@ -136,8 +136,8 @@ fn duplex_pair_emits_two_duplex_close_drops_on_return() {
 #[test]
 fn duplex_pair_drops_fire_in_reverse_binding_order() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             return 0;
         }
     ";
@@ -191,9 +191,9 @@ fn duplex_pair_drops_fire_in_reverse_binding_order() {
 #[test]
 fn two_duplex_pairs_emit_four_drops_in_full_lifo_order() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
-            let (c, d) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
+            let (c, d) = duplex_pair<i64, i64>(16);
             return 0;
         }
     ";
@@ -251,8 +251,8 @@ fn two_duplex_pairs_emit_four_drops_in_full_lifo_order() {
 #[test]
 fn send_is_non_consuming_drop_fires_once_per_handle() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             a.send(42);
             a.send(43);
             a.send(44);
@@ -280,7 +280,7 @@ fn send_is_non_consuming_drop_fires_once_per_handle() {
 // LambdaActorHandle drop emission (spawn_actor / actor literal)
 // ---------------------------------------------------------------------------
 
-/// `let h = actor |msg: int| -> int { ... };` produces a
+/// `let h = actor |msg: i64| -> i64 { ... };` produces a
 /// `Place::LambdaActorHandle(_)` slot and a Return-path drop with
 /// `DropKind::LambdaActorRelease`.
 ///
@@ -295,8 +295,8 @@ fn send_is_non_consuming_drop_fires_once_per_handle() {
 #[test]
 fn actor_literal_emits_lambda_actor_release_drop_on_return() {
     let source = r"
-        fn main() -> int {
-            let h = actor |msg: int| -> int { return msg; };
+        fn main() -> i64 {
+            let h = actor |msg: i64| -> i64 { return msg; };
             return 0;
         }
     ";
@@ -336,9 +336,9 @@ fn substrate_handle_places_select_specialised_drop_kinds() {
     // bindings reach the same elaborator and must yield specialised
     // DropKind values, not the generic Resource.
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
-            let h = actor |msg: int| -> int { return msg; };
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
+            let h = actor |msg: i64| -> i64 { return msg; };
             return 0;
         }
     ";
@@ -387,8 +387,8 @@ fn substrate_handle_places_select_specialised_drop_kinds() {
 #[test]
 fn every_return_exit_carries_drop_plan_for_owned_handles() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             return 0;
         }
     ";
@@ -424,7 +424,7 @@ fn every_return_exit_carries_drop_plan_for_owned_handles() {
 // ---------------------------------------------------------------------------
 
 /// `drop_fn` is populated from the HIR `type_classes` registry, not
-/// hardcoded per Place variant.  For `Duplex<int, int>` the close
+/// hardcoded per Place variant.  For `Duplex<i64, i64>` the close
 /// method is `"close"`, so `drop_fn` reads `"Duplex::close"`.  This
 /// pins that `build_lifo_drops` consults the registry and that
 /// `seed_builtin_type_classes` seeds the substrate types with a
@@ -436,8 +436,8 @@ fn every_return_exit_carries_drop_plan_for_owned_handles() {
 #[test]
 fn duplex_drop_fn_resolves_via_registry() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             return 0;
         }
     ";

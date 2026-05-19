@@ -22,18 +22,18 @@ fn actor_send_ask_lower_to_mir_terminators_and_state_access() {
     let pipeline = lower_checked(
         r"
         actor Counter {
-            let count: int;
+            let count: i64;
 
-            receive fn increment(n: int) {
+            receive fn increment(n: i64) {
                 count = count + n;
             }
 
-            receive fn total() -> int {
+            receive fn total() -> i64 {
                 count
             }
         }
 
-        fn main() -> int {
+        fn main() -> i64 {
             let counter = spawn Counter(count: 0);
             counter.increment(10);
             counter.total()

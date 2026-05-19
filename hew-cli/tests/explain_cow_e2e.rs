@@ -8,7 +8,7 @@
 //! - Line 24: `printer.print_message(greeting)` — sends a `String` value
 //!   (non-Copy); classifier returns ALIAS (bare-identifier non-Copy non-Drop
 //!   send, alias gate enabled).
-//! - Line 25: `counter.increment(42)` — sends an `int` literal (Copy type);
+//! - Line 25: `counter.increment(42)` — sends an `i64` literal (Copy type);
 //!   classifier returns COPY (Copy type, not eligible for alias path).
 //!
 //! The golden test pins the two-class output so that any regression in the
@@ -29,11 +29,11 @@ fn fixture_path() -> std::path::PathBuf {
 /// `hew check --explain-cow` exits 0 and emits one line per actor send site.
 ///
 /// The fixture has two sends: a `String` (non-Copy bare identifier, yields
-/// ALIAS) and an `int` (Copy type, yields COPY). The test verifies:
+/// ALIAS) and an `i64` (Copy type, yields COPY). The test verifies:
 /// - exit code 0 (file type-checks successfully)
 /// - exactly two send entries appear in stdout
 /// - the String send is classified ALIAS
-/// - the int send is classified COPY with the feature-gate reason
+/// - the i64 send is classified COPY with the feature-gate reason
 /// - each entry names the fixture file
 #[test]
 fn explain_cow_golden_alias_and_copy_sites() {
@@ -75,20 +75,20 @@ fn explain_cow_golden_alias_and_copy_sites() {
         "ALIAS entry must be on line 24 (String send), got: {alias_line:?}"
     );
 
-    // Line 25 (int send) must be COPY with the feature-gate reason.
+    // Line 25 (i64 send) must be COPY with the feature-gate reason.
     let copy_line = send_lines.iter().find(|l| l.contains("COPY")).copied();
     assert!(
         copy_line.is_some(),
-        "expected one COPY entry (int send), got:\n{stdout}"
+        "expected one COPY entry (i64 send), got:\n{stdout}"
     );
     let copy_line = copy_line.unwrap();
     assert!(
         copy_line.contains(":25:"),
-        "COPY entry must be on line 25 (int send), got: {copy_line:?}"
+        "COPY entry must be on line 25 (i64 send), got: {copy_line:?}"
     );
     assert!(
         copy_line.contains("non-identifier expression"),
-        "COPY entry for the int literal send must name the `non-identifier expression` reason, got: {copy_line:?}"
+        "COPY entry for the i64 literal send must name the `non-identifier expression` reason, got: {copy_line:?}"
     );
 
     // Both entries must name the fixture file.

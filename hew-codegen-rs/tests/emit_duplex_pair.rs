@@ -87,7 +87,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
                 drop_fn: Some("hew_duplex_close".to_string()),
             },
             // Populate the return slot so the integer-only return
-            // contract holds (the spine subset declares main->int).
+            // contract holds (the spine subset declares main->i64).
             Instr::ConstI64 {
                 dest: Place::ReturnSlot,
                 value: 0,

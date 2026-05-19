@@ -60,14 +60,14 @@ fn vec_array_elements_fail_closed_before_mlir() {
     let location = format!("{}:2:12: error:", fixture.display());
     assert!(
         stderr.contains(&format!(
-            "{location} Vec<[int; 2]> is not supported; vec lowering does not support array element types yet"
+            "{location} Vec<[i64; 2]> is not supported; vec lowering does not support array element types yet"
         )),
         "{stderr}",
     );
     assert!(stderr.contains("type errors found"), "{stderr}");
     assert!(!stderr.contains("vecElemSuffix"), "{stderr}");
     assert!(
-        stderr.contains("2 |     let v: Vec<[int; 2]> = Vec::new();")
+        stderr.contains("2 |     let v: Vec<[i64; 2]> = Vec::new();")
             && stderr.contains("|            ^"),
         "{stderr}",
     );

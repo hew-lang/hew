@@ -3,7 +3,7 @@
 // Contains two actor send sites:
 //   1. A send of a string value (non-Copy; α records Copy while alias gate
 //      is disabled)
-//   2. A send of an int value (Copy type; always records Copy)
+//   2. A send of an i64 value (Copy type; always records Copy)
 //
 // The golden test verifies that both sites appear in --explain-cow output
 // with COPY classification and the expected location.
@@ -13,7 +13,7 @@ actor Printer {
 }
 
 actor Counter {
-    receive fn increment(amount: int) {
+    receive fn increment(amount: i64) {
     }
 }
 

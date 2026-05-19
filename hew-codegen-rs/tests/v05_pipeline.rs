@@ -129,8 +129,8 @@ fn v05_pipeline_accepts_float_literal_in_mir() {
 #[test]
 fn v05_pipeline_accepts_user_fn_call_via_call_terminator() {
     let parsed = hew_parser::parse(
-        "fn add(x: int, y: int) -> int { x + y }\n\
-         fn main() -> int { add(10, 32) }\n",
+        "fn add(x: i64, y: i64) -> i64 { x + y }\n\
+         fn main() -> i64 { add(10, 32) }\n",
     );
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
@@ -157,12 +157,12 @@ fn v05_pipeline_accepts_user_fn_call_via_call_terminator() {
 fn actor_on_stop_emits_terminate_trampoline_and_registration() {
     let src = r#"
         actor Counter {
-            let count: int;
+            let count: i64;
             receive fn noop() { }
             #[on(stop)]
             fn shutdown() { count = 0; }
         }
-        fn main() -> int {
+        fn main() -> i64 {
             let c = spawn Counter(count: 0);
             0
         }

@@ -509,6 +509,56 @@ fn intern_runtime_decl<'ctx>(
             &[ptr_ty.into(), i32_ty.into(), ptr_ty.into(), i64_ty.into()],
             false,
         ),
+        // hew_actor_ask_with_channel(actor: *mut HewActor, msg_type: i32,
+        //                            data: *mut c_void, size: usize,
+        //                            ch: *mut HewReplyChannel) -> i32
+        // (`hew-runtime/src/actor.rs:3259`). Returns 0 (HewError::Ok) on
+        // success; non-zero indicates the ask could not be submitted (the
+        // caller-provided channel ref is consumed only on success; on
+        // failure the runtime releases the queued retain but the
+        // caller-provided creator ref remains live so the select caller
+        // can still free it via `hew_reply_channel_free`).
+        "hew_actor_ask_with_channel" => i32_ty.fn_type(
+            &[
+                ptr_ty.into(),
+                i32_ty.into(),
+                ptr_ty.into(),
+                i64_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        ),
+        // hew_reply_channel_new() -> *mut HewReplyChannel
+        // (`hew-runtime/src/reply_channel.rs:78`). Box-allocates a fresh
+        // single-shot reply channel with one caller-side reference.
+        // The caller must free with `hew_reply_channel_free` after
+        // `hew_reply_wait` returns (or after cancel on the loser path).
+        "hew_reply_channel_new" => ptr_ty.fn_type(&[], false),
+        // hew_reply_wait(ch: *mut HewReplyChannel) -> *mut c_void
+        // (`hew-runtime/src/reply_channel.rs:296`). Blocks until a reply
+        // is deposited; returns the malloc'd reply pointer (caller frees
+        // with `libc::free`) or null on orphaned-ask. The channel ref
+        // count is NOT consumed — the caller must still call
+        // `hew_reply_channel_free` exactly once.
+        "hew_reply_wait" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_reply_channel_cancel(ch: *mut HewReplyChannel) -> void
+        // (`hew-runtime/src/reply_channel.rs:440`). Marks the channel
+        // cancelled so a late replier observes the flag and releases
+        // its sender-side ref without UAF. MUST be called BEFORE
+        // `hew_reply_channel_free` on every loser arm (Risk R4 in the
+        // select-actor-ask-race plan; the cancel flag + ref count
+        // prevent UAF when a reply races our free).
+        "hew_reply_channel_cancel" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_reply_channel_free(ch: *mut HewReplyChannel) -> void
+        // (`hew-runtime/src/reply_channel.rs:409`). Releases one
+        // reference; frees the channel when the refcount reaches zero.
+        "hew_reply_channel_free" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_select_first(channels: *mut *mut HewReplyChannel, count: i32,
+        //                  timeout_ms: i32) -> i32
+        // (`hew-runtime/src/reply_channel.rs:484`). Returns the winning
+        // channel index, or -1 on timeout (-1 timeout means wait
+        // indefinitely; any non-negative value enforces a deadline).
+        "hew_select_first" => i32_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false),
         "hew_actor_cooperate" => i32_ty.fn_type(&[], false),
         // hew_actor_link(a: *mut HewActor, b: *mut HewActor) -> void
         // (`hew-runtime/src/link.rs:80`). Establishes a bidirectional link.
@@ -4878,124 +4928,740 @@ fn lower_terminator<'ctx>(
                 .map_err(|e| CodegenError::Llvm(format!("ask br: {e:?}")))?;
         }
         Terminator::Select { arms, .. } => {
-            // Sealed `select{}` construct. The MIR terminator's shape is
-            // fixed (see hew-mir::model::Terminator::Select) and HIR
-            // recognises the four sealed arm forms; the runtime
-            // substrate (`hew_select_wait` heterogeneous-arm dispatch,
-            // `hew_stream_poll` pending-read, multiplex-await primitive
-            // for task-await win-path, and actor-call lowering for the
-            // ask arm) is not yet wired. `hew_task_scope_cancel_one`
-            // (task-await loss-path) is available. Codegen fails closed
-            // per arm kind with a message naming the remaining substrate
-            // the future implementation must satisfy.
-            //
-            // Each arm kind's TODO marker below records the semantic
-            // invariants the runtime substrate must observe (lifted
-            // from HEW-SPEC-2026 §4.11.1's per-form table). The
-            // markers are intentionally semantic — they tell a future
-            // implementer the contract, not which lane will land it.
-            let first_kind = arms.first().map(|arm| &arm.kind);
-            let msg: String = match first_kind {
-                Some(hew_mir::SelectArmKind::StreamNext { .. }) => {
-                    // The cancellable pending-read primitive on
-                    // Stream<T> now exists in hew-runtime
-                    // (`hew_stream_poll` + `hew_stream_cancel_pending_read`).
-                    // Lowering still fails closed because the
-                    // heterogeneous-arm dispatch glue
-                    // (`hew_select_wait`) that picks a winner across
-                    // arm kinds is not yet wired. When that glue
-                    // lands, this arm emits:
-                    //   - `hew_stream_poll(stream, callback, userdata)`
-                    //     on the winning side, returning a
-                    //     PendingReadId stored per-arm.
-                    //   - `hew_stream_cancel_pending_read(stream, id)`
-                    //     on every losing side, using the stored id.
-                    //   - Binding for the winning arm receives the
-                    //     malloc'd item pointer (null → None on EOF).
-                    "select{} stream-next arm awaits runtime substrate: \
-                     hew_select_wait heterogeneous-arm dispatch glue \
-                     (the cancellable pending-read primitive on Stream<T> \
-                     is wired via hew_stream_poll / \
-                     hew_stream_cancel_pending_read; the loser-cleanup \
-                     path withdraws the pending read without consuming \
-                     the stream)"
-                        .to_string()
-                }
-                Some(hew_mir::SelectArmKind::ActorAsk { .. }) => {
-                    // TODO: emit actor-ask lowering for this select arm.
-                    // The MIR shape is complete: `Terminator::Ask`
-                    // (with distinct `channel` and `reply_dest` Places),
-                    // `ExitPath::Ask` (carrying the `channel` Place for
-                    // loser-cleanup), and `MirCheck::ActorAskEscape`.
-                    // The runtime ABI is present; what remains is
-                    // lowering each select arm into a per-arm body block
-                    // terminated by `Terminator::Ask`.
-                    //
-                    // Runtime ABI invariants:
-                    // - Win path: hew_reply_channel_new →
-                    //     hew_actor_ask_with_channel → hew_reply_wait.
-                    // - Lose / cancel path: hew_reply_channel_cancel +
-                    //     hew_reply_channel_free against the channel
-                    //     slot. The pending ask is withdrawn; the actor
-                    //     handler may still deliver a reply after cancel.
-                    // - Late replies to a cancelled channel are silently
-                    //     dropped by the receiver (OrphanedAsk path);
-                    //     the caller must not interpret a false return
-                    //     from hew_reply as an error.
-                    // - Loser cleanup is best-effort: hew_reply may race
-                    //     cancel; the ref-count prevents use-after-free.
-                    "select{} actor-ask arm: per-arm body-block lowering \
-                     terminated by Terminator::Ask \
-                     (win: hew_reply_channel_new → hew_actor_ask_with_channel \
-                     → hew_reply_wait; lose: cancel + free the channel)"
-                        .to_string()
-                }
-                Some(hew_mir::SelectArmKind::TaskAwait { .. }) => {
-                    // TODO: emit task-await observer registration for
-                    // the await arm. The runtime must (a) register a
-                    // completion observer on the existing task
-                    // handle, (b) park the current coroutine, (c)
-                    // resume with the task result on win (only
-                    // `Ok(T)` is a winning value; cancellation and
-                    // trap outcomes propagate through the select
-                    // site), (d) on loss cancel the task at its next
-                    // safepoint via `hew_task_scope_cancel_one`
-                    // (available; cancel-after-done is a no-op).
-                    // The remaining gap is the completion-observer /
-                    // park / resume primitive for the win-path.
-                    "select{} task-await arm awaits multiplex-await \
-                     substrate: hew_task_scope_cancel_one available; \
-                     missing completion-observer/park/resume primitive \
-                     for winner path"
-                        .to_string()
-                }
-                Some(hew_mir::SelectArmKind::AfterTimer { .. }) => {
-                    // TODO: emit timer-arm registration. The runtime
-                    // must (a) schedule a one-shot timer on the
-                    // current task scope's timer list with the
-                    // absolute deadline, (b) park the current
-                    // coroutine, (c) resume the after-arm body on
-                    // expiry. Loser cleanup: hew_timer_cancel
-                    // unregisters the timer from the wheel (the
-                    // timer wheel substrate is complete; only the
-                    // heterogeneous-arm dispatch glue is missing).
-                    "select{} after-timer arm awaits runtime substrate: \
-                     heterogeneous-arm dispatch wiring \
-                     (hew_select_wait) to the existing timer wheel"
-                        .to_string()
-                }
-                None => {
-                    // HIR rejects empty selects with SelectNoArms; a
-                    // zero-arm Terminator::Select is structurally
-                    // unreachable. Fail closed defensively.
-                    "select{} terminator carries zero arms (HIR should \
-                     have rejected with SelectNoArms)"
-                        .to_string()
-                }
-            };
-            return Err(CodegenError::FailClosed(msg));
+            emit_select_terminator(fn_ctx, arms)?;
         }
     }
+    Ok(())
+}
+
+/// Emit the LLVM IR for `Terminator::Select` with `ActorAsk` +
+/// optional `AfterTimer` arms.
+///
+/// Producer contract (`Terminator::Select { arms, next }`):
+/// - Every arm carries `body_block` (the block reached on win) and
+///   `binding` (the per-arm reply slot for `ActorAsk` arms; `None`
+///   for `AfterTimer`).
+/// - At most one `AfterTimer` arm is present (HIR enforces).
+/// - `StreamNext` / `TaskAwait` arms are not in scope for this lane
+///   and remain fail-closed below (defence-in-depth — the MIR
+///   producer rejects them before this codegen runs).
+///
+/// Emitted shape (per slice 3 plan §6 + runtime ABI). For each
+/// `ActorAsk` arm: allocate `ch = hew_reply_channel_new()`, store
+/// into a stack array slot, then call `hew_actor_ask_with_channel`.
+/// If that call returns non-zero, branch to a mid-setup error
+/// recovery block that frees every channel allocated so far and
+/// traps (Risk R3). Read the AfterTimer arm's duration if present,
+/// convert ns → ms, saturate to `i32::MAX`; otherwise use -1
+/// (wait indefinitely). Call `hew_select_first(arr, n_asks, timeout_ms)`
+/// to get the winner index. Dispatch via switch: an ActorAsk arm
+/// index routes to that arm's winner block; the default routes to
+/// the AfterTimer winner block (when present) or a trap. In each
+/// winner block, `hew_reply_wait(ch[winner])` reads the reply, the
+/// value is stored into `arm.binding`'s slot, `libc::free(reply_ptr)`
+/// releases the buffer, and `hew_reply_channel_free(ch[winner])`
+/// releases the channel. For every loser j, `hew_reply_channel_cancel(ch[j])`
+/// runs BEFORE `hew_reply_channel_free(ch[j])` — Risk R4: cancel
+/// before free prevents UAF when a reply races our free.
+/// Finally each winner block branches to the arm's MIR-allocated
+/// `body_block`.
+fn emit_select_terminator<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    arms: &[hew_mir::SelectArm],
+) -> CodegenResult<()> {
+    use hew_mir::SelectArmKind;
+
+    if arms.is_empty() {
+        // HIR rejects empty selects with SelectNoArms; defence-in-depth.
+        return Err(CodegenError::FailClosed(
+            "select{} terminator carries zero arms (HIR should have rejected with SelectNoArms)"
+                .to_string(),
+        ));
+    }
+
+    // Partition arms by kind, preserving original arm indices for the
+    // body-block dispatch. ActorAsk arms feed the `hew_select_first`
+    // channel array; the AfterTimer arm (at most one — HIR enforces)
+    // supplies the deadline.
+    let mut ask_arm_indices: Vec<usize> = Vec::with_capacity(arms.len());
+    let mut after_arm_index: Option<usize> = None;
+    for (i, arm) in arms.iter().enumerate() {
+        match &arm.kind {
+            SelectArmKind::ActorAsk { .. } => ask_arm_indices.push(i),
+            SelectArmKind::AfterTimer { .. } => {
+                if after_arm_index.is_some() {
+                    return Err(CodegenError::FailClosed(
+                        "select{} carries more than one AfterTimer arm \
+                         (HIR should have rejected)"
+                            .to_string(),
+                    ));
+                }
+                after_arm_index = Some(i);
+            }
+            SelectArmKind::StreamNext { .. } => {
+                // Defence-in-depth: MIR producer rejects these before
+                // reaching codegen (see hew-mir lower_select); this
+                // lane does not wire stream-next.
+                return Err(CodegenError::FailClosed(
+                    "select{} stream-next arm is out of scope for this lane: \
+                     MIR producer should have rejected with \
+                     SelectArmNotImplemented; future lane: M3 select-widening"
+                        .to_string(),
+                ));
+            }
+            SelectArmKind::TaskAwait { .. } => {
+                return Err(CodegenError::FailClosed(
+                    "select{} task-await arm is out of scope for this lane: \
+                     MIR producer should have rejected with \
+                     SelectArmNotImplemented; future lane: M3 select-widening"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+
+    if ask_arm_indices.is_empty() {
+        // A select with only an `after` arm is structurally valid but
+        // has no race to dispatch: we'd reduce to "wait then run the
+        // after-arm body". The HIR forbids select{} composed only of
+        // an `after` arm (a sealed-shape invariant); fail closed.
+        return Err(CodegenError::FailClosed(
+            "select{} carries no ActorAsk arms (only AfterTimer): \
+             HIR should have rejected as a sealed-shape violation"
+                .to_string(),
+        ));
+    }
+
+    let n_asks: usize = ask_arm_indices.len();
+    let n_asks_i32 = i32::try_from(n_asks).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "select{{}} arm count {n_asks} exceeds i32::MAX — runtime ABI is i32-bound"
+        ))
+    })?;
+
+    let ctx = fn_ctx.ctx;
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+
+    // Allocate the channel array on the stack: [N x ptr]. Per-ActorAsk
+    // arm index i stores the freshly-allocated `*mut HewReplyChannel`
+    // at `channel_array[i]`. The array is referenced by the winner
+    // dispatch (free/cancel) and by `hew_select_first`.
+    let arr_ty = ptr_ty.array_type(n_asks_i32 as u32);
+    let arr_ptr = fn_ctx
+        .builder
+        .build_alloca(arr_ty, "select_channels")
+        .map_err(|e| CodegenError::Llvm(format!("select channel array alloca: {e:?}")))?;
+
+    // Resolve the parent function once for block allocation.
+    let parent_fn = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("select block has no parent function".into()))?;
+
+    let channel_new = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_new",
+    )?;
+    let ask_with_channel = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_ask_with_channel",
+    )?;
+    let channel_cancel = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_cancel",
+    )?;
+    let channel_free = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_free",
+    )?;
+    let reply_wait = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_wait",
+    )?;
+    let select_first = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_select_first",
+    )?;
+    let libc_free = get_or_declare_free(fn_ctx);
+
+    // Per-ActorAsk arm: allocate channel, store into array, issue ask.
+    // On any ask-issue failure, branch to a recovery block that frees
+    // every channel allocated up to that point and traps. (Risk R3.)
+    //
+    // Channel-array-slot GEP helper: `&channel_array[i]`.
+    let slot_ptr = |i: usize| -> CodegenResult<PointerValue<'ctx>> {
+        let i_u32 = u32::try_from(i).map_err(|_| {
+            CodegenError::FailClosed(format!("select arm index {i} exceeds u32::MAX"))
+        })?;
+        let idx0 = i32_ty.const_zero();
+        let idx1 = i32_ty.const_int(u64::from(i_u32), false);
+        let gep = unsafe {
+            fn_ctx
+                .builder
+                .build_gep(arr_ty, arr_ptr, &[idx0, idx1], &format!("ch_slot_{i}"))
+                .map_err(|e| CodegenError::Llvm(format!("ch slot gep: {e:?}")))?
+        };
+        Ok(gep)
+    };
+
+    for (slot_idx, &arm_idx) in ask_arm_indices.iter().enumerate() {
+        let (msg_type_i32, actor_place, value_place) = match &arms[arm_idx].kind {
+            SelectArmKind::ActorAsk {
+                actor,
+                msg_type,
+                value,
+                ..
+            } => (*msg_type, *actor, *value),
+            _ => unreachable!("ask_arm_indices only carries ActorAsk indices"),
+        };
+
+        // Allocate the channel.
+        let ch_val = fn_ctx
+            .builder
+            .build_call(channel_new, &[], &format!("select_ch_new_{slot_idx}"))
+            .map_err(|e| CodegenError::Llvm(format!("hew_reply_channel_new call: {e:?}")))?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_reply_channel_new returned void".into()))?
+            .into_pointer_value();
+
+        // Store into channel_array[slot_idx]. We perform the store
+        // BEFORE issuing the ask so the recovery block sees a
+        // consistent array view if the ask issue fails.
+        let slot = slot_ptr(slot_idx)?;
+        fn_ctx
+            .builder
+            .build_store(slot, ch_val)
+            .map_err(|e| CodegenError::Llvm(format!("ch slot store: {e:?}")))?;
+
+        // Issue the ask with the caller-provided channel.
+        let actor_ptr = load_duplex_handle(fn_ctx, actor_place, "select_actor_handle")?;
+        let (payload_ptr, payload_size) =
+            actor_payload_ptr_size(fn_ctx, value_place, "select_ask_payload")?;
+        let msg_type_val = i32_ty.const_int(msg_type_i32 as u64, false);
+        let status = fn_ctx
+            .builder
+            .build_call(
+                ask_with_channel,
+                &[
+                    actor_ptr.into(),
+                    msg_type_val.into(),
+                    payload_ptr.into(),
+                    payload_size.into(),
+                    ch_val.into(),
+                ],
+                &format!("select_ask_issue_{slot_idx}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("hew_actor_ask_with_channel call: {e:?}")))?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("hew_actor_ask_with_channel returned void".into())
+            })?
+            .into_int_value();
+
+        // Branch on status: 0 → next ask setup or select_first; non-zero
+        // → mid-setup recovery (free every channel allocated through
+        // `slot_idx` inclusive, then trap).
+        let zero = i32_ty.const_zero();
+        let failed = fn_ctx
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                status,
+                zero,
+                &format!("select_ask_failed_{slot_idx}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select ask cmp: {e:?}")))?;
+        let setup_ok_bb = ctx.append_basic_block(parent_fn, &format!("select_setup_ok_{slot_idx}"));
+        let setup_fail_bb =
+            ctx.append_basic_block(parent_fn, &format!("select_setup_fail_{slot_idx}"));
+        fn_ctx
+            .builder
+            .build_conditional_branch(failed, setup_fail_bb, setup_ok_bb)
+            .map_err(|e| CodegenError::Llvm(format!("select setup br: {e:?}")))?;
+
+        // Recovery block: free channels [0..=slot_idx] (each was
+        // allocated and stored; the ask-issue failure also released
+        // the queued sender ref on the failing channel inside the
+        // runtime, but the caller-side ref is still live — see
+        // `submit_ask_with_reply_channel`'s KeepCreatorRef behaviour).
+        // Cancel before free for any channel where an ask was
+        // successfully submitted (i < slot_idx); the failing channel
+        // (slot_idx) only needs `free`.
+        fn_ctx.builder.position_at_end(setup_fail_bb);
+        for j in 0..slot_idx {
+            let cleanup_slot = slot_ptr(j)?;
+            let cleanup_ch = fn_ctx
+                .builder
+                .build_load(ptr_ty, cleanup_slot, &format!("select_cleanup_load_{j}"))
+                .map_err(|e| CodegenError::Llvm(format!("setup-fail load: {e:?}")))?
+                .into_pointer_value();
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_cancel,
+                    &[cleanup_ch.into()],
+                    &format!("select_cleanup_cancel_{j}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("setup-fail cancel: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_free,
+                    &[cleanup_ch.into()],
+                    &format!("select_cleanup_free_{j}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("setup-fail free: {e:?}")))?;
+        }
+        // Failing channel: free the caller-side ref (no cancel — no
+        // ask was successfully submitted, so no late replier exists).
+        fn_ctx
+            .builder
+            .build_call(
+                channel_free,
+                &[ch_val.into()],
+                &format!("select_setup_fail_free_self_{slot_idx}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("setup-fail self free: {e:?}")))?;
+
+        // Trap with HEW_TRAP_ACTOR_SEND_FAILED (the same diagnostic
+        // code `Terminator::Send` uses on send-status failure — the
+        // ask submission failed because the receiver mailbox was
+        // unreachable, which is the same supervisor-visible failure).
+        emit_select_setup_failure_trap(fn_ctx)?;
+
+        fn_ctx.builder.position_at_end(setup_ok_bb);
+    }
+
+    // Determine the deadline. If the select carries an AfterTimer arm,
+    // load its duration (i64 ns), convert to i32 ms (saturating). With
+    // no AfterTimer arm, use -1 (wait indefinitely).
+    let timeout_ms_val = if let Some(idx) = after_arm_index {
+        let duration_place = match &arms[idx].kind {
+            SelectArmKind::AfterTimer { duration } => *duration,
+            _ => unreachable!("after_arm_index only set for AfterTimer arms"),
+        };
+        let (dur_ptr, dur_ty) = place_pointer(fn_ctx, duration_place)?;
+        let dur_ns = fn_ctx
+            .builder
+            .build_load(dur_ty, dur_ptr, "select_after_dur_ns")
+            .map_err(|e| CodegenError::Llvm(format!("select after dur load: {e:?}")))?
+            .into_int_value();
+        // ns → ms = dur_ns / 1_000_000.
+        let ms_per_ns = i64_ty.const_int(1_000_000, false);
+        let dur_ms_i64 = fn_ctx
+            .builder
+            .build_int_signed_div(dur_ns, ms_per_ns, "select_after_dur_ms_i64")
+            .map_err(|e| CodegenError::Llvm(format!("select after dur sdiv: {e:?}")))?;
+        // Saturate to i32::MAX (the runtime ABI is i32; a duration
+        // > ~24.8 days clamps to "effectively wait forever" but stays
+        // non-negative so `hew_select_first` doesn't interpret it as
+        // -1 = infinite).
+        let i32_max_as_i64 = i64_ty.const_int(i64::from(i32::MAX) as u64, true);
+        let too_big = fn_ctx
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGT,
+                dur_ms_i64,
+                i32_max_as_i64,
+                "select_after_dur_too_big",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select after dur cmp: {e:?}")))?;
+        let clamped = fn_ctx
+            .builder
+            .build_select(
+                too_big,
+                i32_max_as_i64,
+                dur_ms_i64,
+                "select_after_dur_clamped",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select after dur select: {e:?}")))?
+            .into_int_value();
+        // Negative durations clamp to 0 (immediate timeout) so we
+        // never accidentally collide with the -1 wait-forever
+        // sentinel.
+        let zero_i64 = i64_ty.const_zero();
+        let neg = fn_ctx
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                clamped,
+                zero_i64,
+                "select_after_dur_neg",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select after dur neg cmp: {e:?}")))?;
+        let clamped_nonneg = fn_ctx
+            .builder
+            .build_select(neg, zero_i64, clamped, "select_after_dur_nonneg")
+            .map_err(|e| CodegenError::Llvm(format!("select after dur nonneg select: {e:?}")))?
+            .into_int_value();
+        fn_ctx
+            .builder
+            .build_int_truncate(clamped_nonneg, i32_ty, "select_after_dur_ms")
+            .map_err(|e| CodegenError::Llvm(format!("select after dur trunc: {e:?}")))?
+    } else {
+        // No AfterTimer arm: wait indefinitely.
+        i32_ty.const_int(u64::from(u32::MAX), true) // -1 in two's complement
+    };
+
+    // GEP the array down to a `*mut *mut HewReplyChannel` for the call.
+    let idx0 = i32_ty.const_zero();
+    let arr_first_ptr = unsafe {
+        fn_ctx
+            .builder
+            .build_gep(arr_ty, arr_ptr, &[idx0, idx0], "select_channels_first")
+            .map_err(|e| CodegenError::Llvm(format!("select arr first gep: {e:?}")))?
+    };
+    let count_val = i32_ty.const_int(n_asks_i32 as u64, true);
+    let winner = fn_ctx
+        .builder
+        .build_call(
+            select_first,
+            &[
+                arr_first_ptr.into(),
+                count_val.into(),
+                timeout_ms_val.into(),
+            ],
+            "select_winner_idx",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_select_first call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_select_first returned void".into()))?
+        .into_int_value();
+
+    // Allocate per-arm winner blocks and an AfterTimer-winner block
+    // (if applicable). Each winner block handles its own loser
+    // cleanup, reply read, and branch to the MIR-allocated body block.
+    let mut winner_bbs: Vec<inkwell::basic_block::BasicBlock<'_>> =
+        Vec::with_capacity(ask_arm_indices.len());
+    for slot_idx in 0..ask_arm_indices.len() {
+        winner_bbs.push(ctx.append_basic_block(parent_fn, &format!("select_win_ask_{slot_idx}")));
+    }
+    let after_winner_bb =
+        after_arm_index.map(|_| ctx.append_basic_block(parent_fn, "select_win_after"));
+    // Fallback "unreachable" block: -1 with no AfterTimer arm should
+    // never happen because we passed -1 timeout, but defence-in-depth.
+    let no_winner_bb = ctx.append_basic_block(parent_fn, "select_no_winner_trap");
+
+    // Build the switch on `winner`:
+    //   case 0 → winner_bbs[0]
+    //   case 1 → winner_bbs[1]
+    //   ...
+    //   default → after_winner_bb (if present) else no_winner_bb
+    let default_bb = after_winner_bb.unwrap_or(no_winner_bb);
+    let cases: Vec<(IntValue<'_>, inkwell::basic_block::BasicBlock<'_>)> = winner_bbs
+        .iter()
+        .enumerate()
+        .map(|(slot_idx, bb)| (i32_ty.const_int(slot_idx as u64, true), *bb))
+        .collect();
+    fn_ctx
+        .builder
+        .build_switch(winner, default_bb, &cases)
+        .map_err(|e| CodegenError::Llvm(format!("select winner switch: {e:?}")))?;
+
+    // No-winner fallback: trap. (Reachable only if the runtime
+    // contract is violated — `hew_select_first` returned a value
+    // outside `0..n_asks` and there was no AfterTimer arm.)
+    fn_ctx.builder.position_at_end(no_winner_bb);
+    emit_select_no_winner_trap(fn_ctx)?;
+
+    // For each ActorAsk winner block: read the reply, cancel+free
+    // every loser, branch to the arm body block.
+    for (winner_slot, &arm_idx) in ask_arm_indices.iter().enumerate() {
+        let arm = &arms[arm_idx];
+        let binding_place = arm.binding.ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "select{{}} ActorAsk arm {arm_idx} carries no binding Place (the producer must \
+                 populate `SelectArm.binding` with the per-arm reply slot)"
+            ))
+        })?;
+        let body_block_id = arm.body_block;
+
+        fn_ctx.builder.position_at_end(winner_bbs[winner_slot]);
+
+        // Load the winning channel from the array.
+        let win_slot_ptr = slot_ptr(winner_slot)?;
+        let win_ch = fn_ctx
+            .builder
+            .build_load(
+                ptr_ty,
+                win_slot_ptr,
+                &format!("select_win_ch_load_{winner_slot}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select winner load: {e:?}")))?
+            .into_pointer_value();
+
+        // Read reply via hew_reply_wait. Returns *mut c_void; the
+        // caller owns the buffer and must `libc::free` it after
+        // loading the value.
+        let reply_ptr = fn_ctx
+            .builder
+            .build_call(
+                reply_wait,
+                &[win_ch.into()],
+                &format!("select_reply_wait_{winner_slot}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("hew_reply_wait call: {e:?}")))?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_reply_wait returned void".into()))?
+            .into_pointer_value();
+
+        // Defensive null check on the reply pointer. `hew_reply_wait`
+        // returns null when the published value pointer was null —
+        // which happens on the allocation-failure-during-publish path
+        // (`take_ready_reply` at `hew-runtime/src/reply_channel.rs:164`
+        // returns null after `hew_reply_channel_mark_allocation_failed`
+        // toggled the flag). `hew_select_first` will route us here
+        // because the channel reached `ready=true` with a null value;
+        // dereferencing would SIGSEGV. Mirrors `Terminator::Ask`'s
+        // null-trap shape (`llvm.rs:4831-4854`).
+        let null_bb =
+            ctx.append_basic_block(parent_fn, &format!("select_reply_null_trap_{winner_slot}"));
+        let ok_bb = ctx.append_basic_block(parent_fn, &format!("select_reply_ok_{winner_slot}"));
+        let is_null = fn_ctx
+            .builder
+            .build_is_null(reply_ptr, &format!("select_reply_is_null_{winner_slot}"))
+            .map_err(|e| CodegenError::Llvm(format!("select reply null cmp: {e:?}")))?;
+        fn_ctx
+            .builder
+            .build_conditional_branch(is_null, null_bb, ok_bb)
+            .map_err(|e| CodegenError::Llvm(format!("select reply null branch: {e:?}")))?;
+        // Null-reply trap branch.
+        fn_ctx.builder.position_at_end(null_bb);
+        let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
+            CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into())
+        })?;
+        let trap_fn = trap_intrinsic
+            .get_declaration(fn_ctx.llvm_mod, &[])
+            .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+        fn_ctx
+            .builder
+            .build_call(
+                trap_fn,
+                &[],
+                &format!("select_reply_null_trap_call_{winner_slot}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select reply null trap: {e:?}")))?;
+        fn_ctx
+            .builder
+            .build_unreachable()
+            .map_err(|e| CodegenError::Llvm(format!("select reply null unreachable: {e:?}")))?;
+        // Ok branch: load + store + frees.
+        fn_ctx.builder.position_at_end(ok_bb);
+        let (dest_ptr, dest_ty) = place_pointer(fn_ctx, binding_place)?;
+        let reply_val = fn_ctx
+            .builder
+            .build_load(
+                dest_ty,
+                reply_ptr,
+                &format!("select_reply_value_{winner_slot}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select reply load: {e:?}")))?;
+        fn_ctx
+            .builder
+            .build_store(dest_ptr, reply_val)
+            .map_err(|e| CodegenError::Llvm(format!("select reply store: {e:?}")))?;
+
+        // Free the reply buffer.
+        fn_ctx
+            .builder
+            .build_call(
+                libc_free,
+                &[reply_ptr.into()],
+                &format!("select_reply_free_{winner_slot}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select reply free: {e:?}")))?;
+
+        // Free the winning channel's caller-side ref (no cancel — we
+        // consumed its reply, the channel is not abandoned).
+        fn_ctx
+            .builder
+            .build_call(
+                channel_free,
+                &[win_ch.into()],
+                &format!("select_win_ch_free_{winner_slot}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select winner ch free: {e:?}")))?;
+
+        // Loser cleanup: every OTHER ActorAsk arm gets cancel + free,
+        // in that order (Risk R4 — cancel BEFORE free is the UAF
+        // mitigation for late-reply races on cancelled channels).
+        for (loser_slot, _) in ask_arm_indices.iter().enumerate() {
+            if loser_slot == winner_slot {
+                continue;
+            }
+            let loser_slot_ptr = slot_ptr(loser_slot)?;
+            let loser_ch = fn_ctx
+                .builder
+                .build_load(
+                    ptr_ty,
+                    loser_slot_ptr,
+                    &format!("select_loser_load_w{winner_slot}_l{loser_slot}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("select loser load: {e:?}")))?
+                .into_pointer_value();
+            // CANCEL FIRST. Then FREE. Order is load-bearing.
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_cancel,
+                    &[loser_ch.into()],
+                    &format!("select_loser_cancel_w{winner_slot}_l{loser_slot}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("select loser cancel: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_free,
+                    &[loser_ch.into()],
+                    &format!("select_loser_free_w{winner_slot}_l{loser_slot}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("select loser free: {e:?}")))?;
+        }
+
+        // Branch into the arm body block.
+        let body_bb = *fn_ctx.blocks.get(&body_block_id).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "select{{}} ActorAsk arm {arm_idx} body block {body_block_id} \
+                 missing from FnCtx.blocks"
+            ))
+        })?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(body_bb)
+            .map_err(|e| CodegenError::Llvm(format!("select win br: {e:?}")))?;
+    }
+
+    // AfterTimer winner: every ActorAsk arm is a loser; cancel + free
+    // each, then branch to the AfterTimer arm's body block.
+    if let (Some(after_idx), Some(after_bb)) = (after_arm_index, after_winner_bb) {
+        let after_arm = &arms[after_idx];
+        let body_block_id = after_arm.body_block;
+        fn_ctx.builder.position_at_end(after_bb);
+        for (loser_slot, _) in ask_arm_indices.iter().enumerate() {
+            let loser_slot_ptr = slot_ptr(loser_slot)?;
+            let loser_ch = fn_ctx
+                .builder
+                .build_load(
+                    ptr_ty,
+                    loser_slot_ptr,
+                    &format!("select_after_loser_load_{loser_slot}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("select after loser load: {e:?}")))?
+                .into_pointer_value();
+            // CANCEL FIRST, THEN FREE.
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_cancel,
+                    &[loser_ch.into()],
+                    &format!("select_after_loser_cancel_{loser_slot}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("select after loser cancel: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_free,
+                    &[loser_ch.into()],
+                    &format!("select_after_loser_free_{loser_slot}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("select after loser free: {e:?}")))?;
+        }
+        let body_bb = *fn_ctx.blocks.get(&body_block_id).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "select{{}} AfterTimer arm {after_idx} body block {body_block_id} \
+                 missing from FnCtx.blocks"
+            ))
+        })?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(body_bb)
+            .map_err(|e| CodegenError::Llvm(format!("select after br: {e:?}")))?;
+    }
+
+    Ok(())
+}
+
+/// Emit a fail-closed trap for a `Terminator::Select` mid-setup
+/// failure (an ask-issue returned non-zero, leaving partially-allocated
+/// channels which the recovery path frees before reaching here). Uses
+/// `hew_trap_with_code(HEW_TRAP_ACTOR_SEND_FAILED=206)` so the
+/// supervisor sees the same diagnostic as `Terminator::Send` failures;
+/// follows with `llvm.trap` + `unreachable` as the non-actor fallback
+/// (mirrors the `Terminator::Send` send-fail trap shape).
+fn emit_select_setup_failure_trap<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<()> {
+    const HEW_TRAP_ACTOR_SEND_FAILED: u64 = 206;
+    let trap_with_code_fn = match fn_ctx.llvm_mod.get_function("hew_trap_with_code") {
+        Some(fv) => fv,
+        None => {
+            let i32_ty = fn_ctx.ctx.i32_type();
+            let fn_ty = fn_ctx.ctx.void_type().fn_type(&[i32_ty.into()], false);
+            fn_ctx
+                .llvm_mod
+                .add_function("hew_trap_with_code", fn_ty, Some(Linkage::External))
+        }
+    };
+    let code = fn_ctx
+        .ctx
+        .i32_type()
+        .const_int(HEW_TRAP_ACTOR_SEND_FAILED, false);
+    fn_ctx
+        .builder
+        .build_call(trap_with_code_fn, &[code.into()], "select_setup_fail_trap")
+        .map_err(|e| CodegenError::Llvm(format!("select setup fail trap: {e:?}")))?;
+    let trap_intrinsic = Intrinsic::find("llvm.trap")
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into()))?;
+    let trap_fn = trap_intrinsic
+        .get_declaration(fn_ctx.llvm_mod, &[])
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    fn_ctx
+        .builder
+        .build_call(trap_fn, &[], "select_setup_fail_llvm_trap")
+        .map_err(|e| CodegenError::Llvm(format!("select setup fail llvm.trap: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_unreachable()
+        .map_err(|e| CodegenError::Llvm(format!("select setup fail unreachable: {e:?}")))?;
+    Ok(())
+}
+
+/// Emit a fail-closed trap for the unreachable "no winner" arm of the
+/// select winner-dispatch switch. Reachable only if the runtime
+/// contract is violated (e.g. `hew_select_first` returned -1 even
+/// though we passed `-1` as the timeout and provided non-empty
+/// channels).
+fn emit_select_no_winner_trap<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<()> {
+    let trap_intrinsic = Intrinsic::find("llvm.trap")
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into()))?;
+    let trap_fn = trap_intrinsic
+        .get_declaration(fn_ctx.llvm_mod, &[])
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    fn_ctx
+        .builder
+        .build_call(trap_fn, &[], "select_no_winner_trap")
+        .map_err(|e| CodegenError::Llvm(format!("select no winner trap: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_unreachable()
+        .map_err(|e| CodegenError::Llvm(format!("select no winner unreachable: {e:?}")))?;
     Ok(())
 }
 
@@ -5922,14 +6588,21 @@ mod tests {
         );
     }
 
-    // ── Terminator::Select fail-closed per arm kind ──────────────────
+    // ── Terminator::Select codegen ──────────────────────────────────
     //
-    // The four sealed select arm forms each lower through a distinct
-    // codegen match arm that fails closed with a message naming the
-    // runtime substrate the future implementation must wire. These
-    // tests pin the per-arm-kind diagnostic so a regression that
-    // silently swallows a Select terminator is caught immediately.
+    // ActorAsk and AfterTimer arms emit real IR (slice 3); StreamNext
+    // and TaskAwait remain fail-closed as defence-in-depth (the MIR
+    // producer rejects them with SelectArmNotImplemented before reaching
+    // codegen — but the codegen branch still guards against any future
+    // shape change that lets one slip through).
 
+    /// Construct an `IrPipeline` carrying a single function whose only
+    /// block is a `Terminator::Select` with the given single arm. Used
+    /// for the defence-in-depth fail-closed tests (StreamNext / TaskAwait
+    /// kinds; an `ActorAsk` arm without surrounding setup would fail at
+    /// `actor_payload_ptr_size` / `load_duplex_handle` for missing
+    /// locals — those positive paths are covered by the
+    /// `pipeline_with_select_*_arms` builders below).
     fn pipeline_with_select_terminator(arm_kind: hew_mir::SelectArmKind) -> IrPipeline {
         let main = RawMirFunction {
             name: "main".to_string(),
@@ -5963,86 +6636,701 @@ mod tests {
         }
     }
 
+    /// Stream-next arms remain fail-closed at codegen as
+    /// defence-in-depth — the MIR producer rejects them earlier but
+    /// the codegen branch must also refuse.
     #[test]
-    fn select_stream_next_arm_fails_closed_with_named_substrate() {
+    fn select_stream_next_arm_fails_closed_as_defence_in_depth() {
         let pipeline = pipeline_with_select_terminator(hew_mir::SelectArmKind::StreamNext {
             stream: Place::Local(0),
         });
         let ctx = Context::create();
         let err = build_module(&ctx, &pipeline, "select_stream_next")
-            .expect_err("Terminator::Select stream-next must fail closed");
+            .expect_err("Terminator::Select stream-next must fail closed at codegen");
         let msg = match err {
             CodegenError::FailClosed(s) => s,
             other => panic!("expected FailClosed, got {other:?}"),
         };
         assert!(
-            msg.contains("stream-next")
-                && msg.contains("hew_select_wait")
-                && msg.contains("hew_stream_poll")
-                && msg.contains("hew_stream_cancel_pending_read"),
-            "stream-next FailClosed must name the dispatch glue still \
-             missing and the substrate primitives that now exist: {msg}"
+            msg.contains("stream-next") && msg.contains("out of scope"),
+            "stream-next FailClosed must mark the arm as out-of-lane: {msg}"
         );
     }
 
+    /// Task-await arms remain fail-closed at codegen as
+    /// defence-in-depth.
     #[test]
-    fn select_actor_ask_arm_fails_closed_with_named_substrate() {
-        let pipeline = pipeline_with_select_terminator(hew_mir::SelectArmKind::ActorAsk {
-            actor: Place::Local(0),
-            method: "process".to_string(),
-            args: Vec::new(),
-        });
-        let ctx = Context::create();
-        let err = build_module(&ctx, &pipeline, "select_actor_ask")
-            .expect_err("Terminator::Select actor-ask must fail closed");
-        let msg = match err {
-            CodegenError::FailClosed(s) => s,
-            other => panic!("expected FailClosed, got {other:?}"),
-        };
-        assert!(
-            msg.contains("actor-ask") && msg.contains("Terminator::Ask"),
-            "actor-ask FailClosed must name the missing substrate \
-             (per-arm body-block construction terminated by \
-             Terminator::Ask): {msg}"
-        );
-    }
-
-    #[test]
-    fn select_task_await_arm_fails_closed_with_named_substrate() {
+    fn select_task_await_arm_fails_closed_as_defence_in_depth() {
         let pipeline = pipeline_with_select_terminator(hew_mir::SelectArmKind::TaskAwait {
             task: Place::Local(0),
         });
         let ctx = Context::create();
         let err = build_module(&ctx, &pipeline, "select_task_await")
-            .expect_err("Terminator::Select task-await must fail closed");
+            .expect_err("Terminator::Select task-await must fail closed at codegen");
         let msg = match err {
             CodegenError::FailClosed(s) => s,
             other => panic!("expected FailClosed, got {other:?}"),
         };
         assert!(
-            msg.contains("task-await")
-                && msg.contains("hew_task_scope_cancel_one")
-                && msg.contains("multiplex-await"),
-            "task-await FailClosed must name the available cancel ABI \
-             and the missing multiplex-await substrate: {msg}"
+            msg.contains("task-await") && msg.contains("out of scope"),
+            "task-await FailClosed must mark the arm as out-of-lane: {msg}"
         );
     }
 
+    /// A select carrying only an `AfterTimer` arm has no race; the
+    /// HIR should have rejected the shape, but codegen must refuse
+    /// defensively (no ActorAsk arms means nothing to race).
     #[test]
-    fn select_after_timer_arm_fails_closed_with_named_substrate() {
+    fn select_no_actor_ask_arms_fails_closed() {
         let pipeline = pipeline_with_select_terminator(hew_mir::SelectArmKind::AfterTimer {
             duration: Place::Local(0),
         });
         let ctx = Context::create();
-        let err = build_module(&ctx, &pipeline, "select_after_timer")
-            .expect_err("Terminator::Select after-timer must fail closed");
+        let err = build_module(&ctx, &pipeline, "select_after_only")
+            .expect_err("Terminator::Select with only AfterTimer must fail closed");
         let msg = match err {
             CodegenError::FailClosed(s) => s,
             other => panic!("expected FailClosed, got {other:?}"),
         };
         assert!(
-            msg.contains("after-timer") && msg.contains("hew_select_wait"),
-            "after-timer FailClosed must name the dispatch wiring: {msg}"
+            msg.contains("no ActorAsk arms"),
+            "after-only FailClosed must explain the sealed-shape violation: {msg}"
         );
+    }
+
+    // ── Terminator::Select positive-path emit (ActorAsk + AfterTimer) ─
+
+    /// Build an `IrPipeline` whose `main` issues a `Terminator::Select`
+    /// with the given arm vector. Local 0 is a `Duplex` (the actor
+    /// handle source for each ActorAsk arm); locals 1.. are per-arm
+    /// reply slots (one per ActorAsk arm) plus a single i64 reply
+    /// payload slot (unit-arg variant uses `ResolvedTy::Unit` to skip
+    /// payload pointer load). Local for after-arm duration is
+    /// allocated as `ResolvedTy::Duration` (i64 ns).
+    ///
+    /// The resulting function has one originating block (id 0) sealed
+    /// by `Terminator::Select` and per-arm body blocks (each just
+    /// `Terminator::Return`) plus a join block (also `Return`).
+    fn pipeline_with_select_arms(
+        arms: Vec<hew_mir::SelectArm>,
+        locals: Vec<ResolvedTy>,
+        body_block_ids: &[u32],
+        join_block_id: u32,
+    ) -> IrPipeline {
+        // Build the originating block + per-arm body blocks + join block.
+        let mut blocks: Vec<BasicBlock> = Vec::new();
+        blocks.push(BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Select {
+                arms,
+                next: join_block_id,
+            },
+        });
+        for &bb_id in body_block_ids {
+            blocks.push(BasicBlock {
+                id: bb_id,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Goto {
+                    target: join_block_id,
+                },
+            });
+        }
+        blocks.push(BasicBlock {
+            id: join_block_id,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Return,
+        });
+
+        let main = RawMirFunction {
+            name: "main".to_string(),
+            return_ty: ResolvedTy::I64,
+            call_conv: hew_mir::FunctionCallConv::Default,
+            params: vec![],
+            locals,
+            blocks,
+            decisions: Vec::new(),
+        };
+        IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![main],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+        }
+    }
+
+    /// Helper: a `ResolvedTy::Named { name: "Duplex", .. }` so the
+    /// codegen treats local 0 as an actor handle (the same shape
+    /// `Place::DuplexHandle` references via `load_duplex_handle`).
+    fn duplex_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "Duplex".to_string(),
+            args: Vec::new(),
+        }
+    }
+
+    /// Render the LLVM IR of the emitted module so test bodies can
+    /// inspect the call-site ordering, channel-array shape, and per-arm
+    /// dispatch (the "ground-truth" the runtime ABI demands).
+    fn emit_select_ir(name: &str, pipeline: &IrPipeline) -> String {
+        let ctx = Context::create();
+        let llvm_mod = build_module(&ctx, pipeline, name).expect("select pipeline must compile");
+        llvm_mod.print_to_string().to_string()
+    }
+
+    /// Two ActorAsk arms (no AfterTimer): emit shows exactly 2 channel
+    /// allocations, 2 ask-issues, 1 `hew_select_first` call with
+    /// timeout=-1, a switch on the winner index, per-winner reply
+    /// wait, and 1 cancel + 1 free for the losing arm in each winner
+    /// branch.
+    #[test]
+    fn select_two_actor_ask_arms_emit_full_dispatch() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "ping".to_string(),
+                    args: Vec::new(),
+                    msg_type: 7,
+                    value: Place::Local(3), // unit payload slot
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "pong".to_string(),
+                    args: Vec::new(),
+                    msg_type: 8,
+                    value: Place::Local(3),
+                },
+                body_block: 11,
+                binding: Some(Place::Local(2)),
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),      // 0: actor handle
+            ResolvedTy::I64,  // 1: arm 0 reply slot
+            ResolvedTy::I64,  // 2: arm 1 reply slot
+            ResolvedTy::Unit, // 3: payload (unit)
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_two_asks", &pipeline);
+
+        assert_eq!(
+            ir.matches("call ptr @hew_reply_channel_new(").count(),
+            2,
+            "expected 2 channel allocations; ir:\n{ir}"
+        );
+        assert_eq!(
+            ir.matches("call i32 @hew_actor_ask_with_channel(").count(),
+            2,
+            "expected 2 ask-issues; ir:\n{ir}"
+        );
+        assert_eq!(
+            ir.matches("call i32 @hew_select_first(").count(),
+            1,
+            "expected 1 hew_select_first call; ir:\n{ir}"
+        );
+        // No after arm → timeout_ms = -1.
+        assert!(
+            ir.contains("@hew_select_first(ptr %select_channels_first, i32 2, i32 -1)"),
+            "hew_select_first must be called with count=2, timeout=-1; ir:\n{ir}"
+        );
+        // One reply-wait per winner branch (two branches, one wait each).
+        assert_eq!(
+            ir.matches("call ptr @hew_reply_wait(").count(),
+            2,
+            "expected 2 reply-wait calls (one per winner branch); ir:\n{ir}"
+        );
+        // Cancel/free counts across the whole module:
+        //   - winner branches: 2 (each cancels 1 loser, frees winner-self + loser).
+        //   - setup_fail_0: 0 cancels (arm 0 failed first), 1 self-free.
+        //   - setup_fail_1: 1 cancel (arm 0 was successfully submitted),
+        //     2 frees (arm 0 + self).
+        // Totals: 2 (win) + 1 (setup_fail_1) = 3 cancels;
+        //         (1+1)*2 (winners) + 1 (setup_fail_0) + 2 (setup_fail_1) = 7 frees.
+        assert_eq!(
+            ir.matches("call void @hew_reply_channel_cancel(").count(),
+            3,
+            "expected 3 cancels (1 loser per winner branch + 1 recovery on \
+             arm-1 ask-issue failure); ir:\n{ir}"
+        );
+        assert_eq!(
+            ir.matches("call void @hew_reply_channel_free(").count(),
+            7,
+            "expected 7 channel frees across winner + setup-fail paths; ir:\n{ir}"
+        );
+    }
+
+    /// One ActorAsk + one AfterTimer arm: the AfterTimer's duration
+    /// drives the `hew_select_first` deadline (ns→ms / 1_000_000).
+    #[test]
+    fn select_actor_ask_plus_after_timer_emits_deadline() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "ping".to_string(),
+                    args: Vec::new(),
+                    msg_type: 7,
+                    value: Place::Local(3),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::AfterTimer {
+                    duration: Place::Local(2),
+                },
+                body_block: 11,
+                binding: None,
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),          // 0: actor handle
+            ResolvedTy::I64,      // 1: reply slot
+            ResolvedTy::Duration, // 2: after-arm duration (ns, i64)
+            ResolvedTy::Unit,     // 3: payload
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_ask_and_after", &pipeline);
+
+        // 1 channel allocation, 1 ask-issue, 1 hew_select_first call.
+        assert_eq!(ir.matches("call ptr @hew_reply_channel_new(").count(), 1);
+        assert_eq!(
+            ir.matches("call i32 @hew_actor_ask_with_channel(").count(),
+            1
+        );
+        assert_eq!(ir.matches("call i32 @hew_select_first(").count(), 1);
+        // Deadline derived from i64 ns: should show sdiv by 1_000_000.
+        assert!(
+            ir.contains("sdiv i64") && ir.contains("1000000"),
+            "expected ns→ms sdiv by 1_000_000; ir:\n{ir}"
+        );
+        // Two winner branches: ActorAsk winner + AfterTimer winner.
+        // Each branch cancels + frees the loser(s); the AfterTimer
+        // branch cancels + frees the single ActorAsk channel.
+        assert!(
+            ir.contains("select_win_ask_0:") && ir.contains("select_win_after:"),
+            "expected both winner branch labels; ir:\n{ir}"
+        );
+    }
+
+    /// Loser-cleanup order invariant (Risk R4): cancel BEFORE free on
+    /// every loser channel — the cancel flag + ref count are what
+    /// prevent UAF on a late-reply race.
+    #[test]
+    fn select_loser_cleanup_cancels_before_freeing() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "a".to_string(),
+                    args: Vec::new(),
+                    msg_type: 1,
+                    value: Place::Local(3),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "b".to_string(),
+                    args: Vec::new(),
+                    msg_type: 2,
+                    value: Place::Local(3),
+                },
+                body_block: 11,
+                binding: Some(Place::Local(2)),
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),
+            ResolvedTy::I64,
+            ResolvedTy::I64,
+            ResolvedTy::Unit,
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_loser_order", &pipeline);
+
+        // The loser cleanup lives in the per-winner "ok" block
+        // (`select_reply_ok_N`) following the defensive null-reply
+        // check on `hew_reply_wait`. We anchor on the named loser-load
+        // SSA value emitted by the codegen (`select_loser_load_wN_lM`)
+        // so we test the SAME channel's cleanup ordering, not arbitrary
+        // `hew_reply_channel_*` calls that may interleave the
+        // winner-self free.
+        //
+        // The two winners produce distinct SSA names
+        // (`select_loser_load_w0_l1` vs `select_loser_load_w1_l0`),
+        // so anchoring on the SSA name uniquely identifies each
+        // winner's loser cleanup regardless of block-label
+        // intervening text. We do not need to bound the search
+        // region — the SSA name is globally unique in this module.
+        let cancel0_idx = ir
+            .find("call void @hew_reply_channel_cancel(ptr %select_loser_load_w0_l1)")
+            .expect("loser cancel for arm-1 in win-0 region");
+        let free0_idx = ir
+            .find("call void @hew_reply_channel_free(ptr %select_loser_load_w0_l1)")
+            .expect("loser free for arm-1 in win-0 region");
+        assert!(
+            cancel0_idx < free0_idx,
+            "Risk R4: cancel must precede free in win-0 loser cleanup"
+        );
+
+        let cancel1_idx = ir
+            .find("call void @hew_reply_channel_cancel(ptr %select_loser_load_w1_l0)")
+            .expect("loser cancel for arm-0 in win-1 region");
+        let free1_idx = ir
+            .find("call void @hew_reply_channel_free(ptr %select_loser_load_w1_l0)")
+            .expect("loser free for arm-0 in win-1 region");
+        assert!(
+            cancel1_idx < free1_idx,
+            "Risk R4: cancel must precede free in win-1 loser cleanup"
+        );
+    }
+
+    /// Mid-setup error recovery (Risk R3): if any `hew_actor_ask_with_channel`
+    /// returns non-zero, every channel allocated through that point is
+    /// freed and the path traps. We assert the IR contains a
+    /// `select_setup_fail_N` block per arm with the recovery sequence.
+    #[test]
+    fn select_setup_failure_branches_free_allocated_channels_and_trap() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "a".to_string(),
+                    args: Vec::new(),
+                    msg_type: 1,
+                    value: Place::Local(3),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "b".to_string(),
+                    args: Vec::new(),
+                    msg_type: 2,
+                    value: Place::Local(3),
+                },
+                body_block: 11,
+                binding: Some(Place::Local(2)),
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),
+            ResolvedTy::I64,
+            ResolvedTy::I64,
+            ResolvedTy::Unit,
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_setup_recovery", &pipeline);
+
+        // Per-arm setup-failure blocks must exist.
+        assert!(
+            ir.contains("select_setup_fail_0:") && ir.contains("select_setup_fail_1:"),
+            "expected per-arm setup-failure blocks; ir:\n{ir}"
+        );
+        // The recovery path must call hew_trap_with_code(206) and
+        // llvm.trap then unreachable (matching the Send-fail shape).
+        assert!(
+            ir.contains("@hew_trap_with_code") && ir.contains("call void @llvm.trap"),
+            "expected hew_trap_with_code + llvm.trap on setup-fail path; ir:\n{ir}"
+        );
+    }
+
+    /// Setup-fail-1 (arm 1's ask fails) must cancel-then-free arm 0's
+    /// channel (an ask was successfully submitted on arm 0, so a late
+    /// reply is possible) before freeing arm 1's own channel.
+    #[test]
+    fn select_setup_failure_in_second_arm_cleans_up_first_arm_with_cancel_first() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "a".to_string(),
+                    args: Vec::new(),
+                    msg_type: 1,
+                    value: Place::Local(3),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "b".to_string(),
+                    args: Vec::new(),
+                    msg_type: 2,
+                    value: Place::Local(3),
+                },
+                body_block: 11,
+                binding: Some(Place::Local(2)),
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),
+            ResolvedTy::I64,
+            ResolvedTy::I64,
+            ResolvedTy::Unit,
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_setup_recovery_late", &pipeline);
+
+        let fail1_idx = ir
+            .find("select_setup_fail_1:")
+            .expect("setup-fail-1 block must exist");
+        // Bound the region by the next block label after fail-1; for
+        // simplicity, search the rest of the IR for the cancel before
+        // any free.
+        let fail1_region = &ir[fail1_idx..];
+        let cancel_idx = fail1_region
+            .find("call void @hew_reply_channel_cancel(")
+            .expect("setup-fail-1 must cancel arm-0's channel");
+        let free_idx = fail1_region
+            .find("call void @hew_reply_channel_free(")
+            .expect("setup-fail-1 must free at least one channel");
+        assert!(
+            cancel_idx < free_idx,
+            "setup-fail-1 must cancel arm-0 BEFORE any free (UAF mitigation); region:\n{fail1_region}"
+        );
+    }
+
+    /// The winner-switch dispatches on the i32 returned by
+    /// `hew_select_first`. Each ActorAsk arm slot index is a case;
+    /// the default lands on the AfterTimer winner block when present.
+    #[test]
+    fn select_winner_switch_uses_arm_slot_index() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "a".to_string(),
+                    args: Vec::new(),
+                    msg_type: 1,
+                    value: Place::Local(3),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::AfterTimer {
+                    duration: Place::Local(2),
+                },
+                body_block: 11,
+                binding: None,
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),
+            ResolvedTy::I64,
+            ResolvedTy::Duration,
+            ResolvedTy::Unit,
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_switch_shape", &pipeline);
+
+        // An LLVM `switch i32 %winner_idx, label %<default> [ ...
+        // i32 0, label %select_win_ask_0 ... ]` pattern must appear.
+        assert!(
+            ir.contains("switch i32 %select_winner_idx") && ir.contains("select_win_ask_0"),
+            "expected switch on winner index with per-arm case; ir:\n{ir}"
+        );
+        assert!(
+            ir.contains("select_win_after"),
+            "default arm of the switch must route to the AfterTimer winner block; ir:\n{ir}"
+        );
+    }
+
+    /// Channel-array allocation: a fixed-size `[N x ptr]` alloca with
+    /// N = number of ActorAsk arms; the `hew_select_first` call site
+    /// receives the array-first GEP, not the alloca handle directly.
+    #[test]
+    fn select_channel_array_layout_matches_runtime_abi() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "a".to_string(),
+                    args: Vec::new(),
+                    msg_type: 1,
+                    value: Place::Local(3),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "b".to_string(),
+                    args: Vec::new(),
+                    msg_type: 2,
+                    value: Place::Local(3),
+                },
+                body_block: 11,
+                binding: Some(Place::Local(2)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "c".to_string(),
+                    args: Vec::new(),
+                    msg_type: 3,
+                    value: Place::Local(5),
+                },
+                body_block: 12,
+                binding: Some(Place::Local(4)),
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),
+            ResolvedTy::I64,
+            ResolvedTy::I64,
+            ResolvedTy::Unit,
+            ResolvedTy::I64,
+            ResolvedTy::Unit,
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11, 12], 99);
+        let ir = emit_select_ir("select_three_asks", &pipeline);
+
+        // [3 x ptr] alloca for the channel array.
+        assert!(
+            ir.contains("alloca [3 x ptr]"),
+            "expected [3 x ptr] channel-array alloca; ir:\n{ir}"
+        );
+        // Three ask-issues + one select_first call.
+        assert_eq!(
+            ir.matches("call i32 @hew_actor_ask_with_channel(").count(),
+            3
+        );
+        assert!(ir.contains("@hew_select_first(ptr %select_channels_first, i32 3, i32 -1)"));
+    }
+
+    /// Producer-bridge: the SelectArm.binding Place is the slot codegen
+    /// writes the reply into on win. We verify the winner block emits
+    /// a load from the reply pointer + a store into the binding
+    /// alloca, then frees the reply buffer.
+    #[test]
+    fn select_winner_writes_reply_into_binding_place_and_frees_buffer() {
+        let arms = vec![hew_mir::SelectArm {
+            kind: hew_mir::SelectArmKind::ActorAsk {
+                actor: Place::DuplexHandle(0),
+                method: "ping".to_string(),
+                args: Vec::new(),
+                msg_type: 1,
+                value: Place::Local(2),
+            },
+            body_block: 10,
+            binding: Some(Place::Local(1)),
+        }];
+        let locals = vec![duplex_ty(), ResolvedTy::I64, ResolvedTy::Unit];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10], 99);
+        let ir = emit_select_ir("select_one_ask_binding", &pipeline);
+
+        // The reply-wait result is loaded, stored into the binding,
+        // and then `free`d (libc free, not channel_free).
+        assert!(
+            ir.contains("@hew_reply_wait("),
+            "winner must wait on its channel; ir:\n{ir}"
+        );
+        assert!(
+            ir.contains("call void @free("),
+            "winner must free the reply buffer via libc free; ir:\n{ir}"
+        );
+        // The binding's alloca (local_1) must receive a store of the
+        // loaded reply value.
+        assert!(
+            ir.contains("%local_1") && ir.contains("store i64"),
+            "binding slot (local_1) must receive the reply value; ir:\n{ir}"
+        );
+    }
+
+    /// Each winner branch defensively traps if `hew_reply_wait` returns
+    /// null (the allocation-failure-during-publish path documented at
+    /// `hew-runtime/src/reply_channel.rs:164`). Mirrors the null-trap
+    /// shape of `Terminator::Ask`'s lowering.
+    #[test]
+    fn select_winner_traps_on_null_reply_pointer() {
+        let arms = vec![hew_mir::SelectArm {
+            kind: hew_mir::SelectArmKind::ActorAsk {
+                actor: Place::DuplexHandle(0),
+                method: "ping".to_string(),
+                args: Vec::new(),
+                msg_type: 1,
+                value: Place::Local(2),
+            },
+            body_block: 10,
+            binding: Some(Place::Local(1)),
+        }];
+        let locals = vec![duplex_ty(), ResolvedTy::I64, ResolvedTy::Unit];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10], 99);
+        let ir = emit_select_ir("select_null_reply_trap", &pipeline);
+
+        assert!(
+            ir.contains("select_reply_null_trap_0:") && ir.contains("select_reply_ok_0:"),
+            "expected null-trap + ok blocks per winner; ir:\n{ir}"
+        );
+        // The conditional branch must route null to the trap block.
+        assert!(
+            ir.contains("br i1 %select_reply_is_null_0, label %select_reply_null_trap_0"),
+            "expected conditional branch on null reply; ir:\n{ir}"
+        );
+    }
+
+    /// Module-verification: the emitted module passes `Module::verify`.
+    /// This is the floor invariant — any structural error in the
+    /// channel-array, switch, or per-arm CFG composition is caught
+    /// here even if the per-feature tests above pass.
+    #[test]
+    fn select_emitted_module_verifies() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "ping".to_string(),
+                    args: Vec::new(),
+                    msg_type: 7,
+                    value: Place::Local(3),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::AfterTimer {
+                    duration: Place::Local(2),
+                },
+                body_block: 11,
+                binding: None,
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),
+            ResolvedTy::I64,
+            ResolvedTy::Duration,
+            ResolvedTy::Unit,
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ctx = Context::create();
+        let llvm_mod =
+            build_module(&ctx, &pipeline, "select_verify").expect("pipeline must compile");
+        if let Err(e) = llvm_mod.verify() {
+            panic!(
+                "emitted Select module failed verification: {}\nIR:\n{}",
+                e.to_string(),
+                llvm_mod.print_to_string().to_string()
+            );
+        }
     }
 }

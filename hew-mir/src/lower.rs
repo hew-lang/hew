@@ -4582,6 +4582,11 @@ impl Builder {
                     let arg_places: Option<Vec<Place>> =
                         args.iter().map(|a| self.lower_value(a)).collect();
                     let arg_places = arg_places?;
+                    // Pack args into a single payload Place using the
+                    // same helper single-shot ask lowering uses. This
+                    // is the codegen-side ABI shape: one payload ptr
+                    // + size threads through `hew_actor_ask_with_channel`.
+                    let payload_place = self.lower_actor_payload(args, site)?;
                     // Per-arm reply slot. Codegen writes
                     // `hew_reply_wait`'s result here on win before
                     // jumping into the arm body. Register against the
@@ -4596,6 +4601,8 @@ impl Builder {
                             actor: actor_place,
                             method: method.clone(),
                             args: arg_places,
+                            msg_type: info.msg_type,
+                            value: payload_place,
                         },
                         Some(reply_dest),
                     )

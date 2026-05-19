@@ -55,6 +55,13 @@
 const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // --- Actor cooperate/link/monitor surface -------------------------------
     "hew_actor_ask",
+    // `hew_actor_ask_with_channel(actor, msg_type, data, size, ch) -> i32`
+    // (`hew-runtime/src/actor.rs:3259`). Sends a request with a caller-
+    // provided reply channel. Returns 0 (HewError::Ok) on success;
+    // non-zero indicates failure. Used by `Terminator::Select`
+    // codegen to issue per-arm asks before `hew_select_first` decides
+    // the winner.
+    "hew_actor_ask_with_channel",
     // `hew_actor_cooperate() -> c_int` — reduction-budget safepoint injected
     // by codegen at Checked MIR cooperate sites. Implemented by both native
     // and WASM schedulers.
@@ -97,6 +104,28 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // --- RecvHalf<T> ---------------------------------------------
     "hew_recv_half_recv",
     "hew_recv_half_try_recv",
+    // --- Reply channel surface (select{} actor-ask arm) ----------
+    // `hew_reply_channel_cancel(ch) -> void`
+    // (`hew-runtime/src/reply_channel.rs:440`). Marks a reply channel
+    // cancelled so a late replier observes the flag and releases its
+    // sender-side ref without UAF. Codegen invokes this on every
+    // loser arm of a `Terminator::Select` BEFORE freeing the channel
+    // (cancel-then-free is the Risk R4 ordering invariant).
+    "hew_reply_channel_cancel",
+    // `hew_reply_channel_free(ch) -> void`
+    // (`hew-runtime/src/reply_channel.rs:409`). Releases one reference;
+    // frees the channel when refcount reaches zero. Symmetric with
+    // `hew_reply_channel_new`.
+    "hew_reply_channel_free",
+    // `hew_reply_channel_new() -> *mut HewReplyChannel`
+    // (`hew-runtime/src/reply_channel.rs:78`). Allocates a fresh
+    // single-shot reply channel with one caller-side reference.
+    "hew_reply_channel_new",
+    // `hew_reply_wait(ch) -> *mut c_void`
+    // (`hew-runtime/src/reply_channel.rs:296`). Blocks until the reply
+    // arrives; returns the reply pointer (caller frees with libc::free)
+    // or null on orphaned-ask. Does NOT consume the channel ref.
+    "hew_reply_wait",
     // --- scope{} structured-concurrency surface (Phase 2, rows 2/3/4) ---------
     // `hew_scope_spawn(scope: *mut HewScope, actor: *mut c_void) -> i32`
     // (`hew-runtime/src/scope.rs:169`). Adds an actor to the scope's actor
@@ -105,6 +134,14 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // calls (row 3). MIR producers must not wire a dest — the i32 return is
     // a runtime-internal signal, not a user-visible value.
     "hew_scope_spawn",
+    // --- Select winner-picker -----------------------------------
+    // `hew_select_first(channels, count, timeout_ms) -> i32`
+    // (`hew-runtime/src/reply_channel.rs:484`). Polls multiple reply
+    // channels; returns the index of the first ready channel, or -1
+    // on timeout. `timeout_ms < 0` waits indefinitely. Codegen
+    // marshals the per-arm channel array + AfterTimer duration into
+    // this call.
+    "hew_select_first",
     // --- SendHalf<T> ---------------------------------------------
     "hew_send_half_send",
     "hew_send_half_try_send",

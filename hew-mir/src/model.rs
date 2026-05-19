@@ -538,10 +538,20 @@ pub enum SelectArmKind {
     /// `next(<stream>)` — pending read on a stream.
     StreamNext { stream: Place },
     /// `<actor>.<method>(<args>)` — actor ask.
+    ///
+    /// `msg_type` and `value` mirror `Terminator::Ask` so codegen
+    /// consumes the same packed-payload shape per arm (slice 3
+    /// resolves the method name to its handler `msg_type` and packs
+    /// the args via `lower_actor_payload` at producer time, the same
+    /// path single-shot ask lowering uses). `method` is kept for
+    /// diagnostics and producer-side tests; codegen reads `msg_type`
+    /// and `value` only.
     ActorAsk {
         actor: Place,
         method: String,
         args: Vec<Place>,
+        msg_type: i32,
+        value: Place,
     },
     /// `await <task>` — task completion.
     TaskAwait { task: Place },

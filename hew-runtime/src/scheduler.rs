@@ -18,7 +18,6 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
@@ -104,51 +103,78 @@ fn run_activate_pre_reenqueue_hook(actor: *mut HewActor) {
     }
 }
 
-// ── Per-worker thread-locals ───────────────────────────────────────────
-
-thread_local! {
-    /// Reply channel for the message currently being dispatched.
-    /// Set before calling the actor's dispatch function, cleared after.
-    /// Read by codegen-emitted code via [`hew_get_reply_channel`].
-    static CURRENT_REPLY_CHANNEL: Cell<*mut c_void> = const { Cell::new(std::ptr::null_mut()) };
-    /// Whether the current dispatch consumed the reply channel's sender-side
-    /// reference by calling `hew_reply`.
-    static CURRENT_REPLY_CHANNEL_CONSUMED: Cell<bool> = const { Cell::new(false) };
-}
+// ── Reply-channel readers (ctx-backed) ──────────────────────────────────
+//
+// R17 sole-authority: the reply channel for the currently-dispatched message
+// lives on [`HewExecutionContext::reply_channel`], and the "consumed" bit
+// lives in [`HewExecutionContext::flags`] under
+// [`HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED`]. Nested dispatch (worker A asks
+// worker B mid-select) restores the outer arm's reply channel via the
+// existing `prev_context` chain — no thread-local backing store survives.
 
 /// Get the reply channel for the currently-dispatched message.
 ///
-/// Returns null if no reply channel was set (fire-and-forget send).
+/// Returns null if no reply channel is set (fire-and-forget send) or if no
+/// execution context is installed; the latter records a fail-closed
+/// diagnostic via [`crate::execution_context::require_current_context`].
 /// Called from codegen-emitted dispatch functions.
 #[no_mangle]
 pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
-    CURRENT_REPLY_CHANNEL.with(std::cell::Cell::get)
+    let ctx = crate::execution_context::require_current_context();
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: scheduler-installed contexts remain valid for the lifetime of
+    // the dispatch; `require_current_context` returned non-null.
+    unsafe { (*ctx).reply_channel }
 }
 
-pub(crate) fn set_current_reply_channel(ch: *mut c_void) {
-    CURRENT_REPLY_CHANNEL.with(|current| current.set(ch));
-    CURRENT_REPLY_CHANNEL_CONSUMED.with(|consumed| consumed.set(false));
-}
-
-pub(crate) fn clear_current_reply_channel() -> *mut c_void {
-    let ch = CURRENT_REPLY_CHANNEL.with(|current| current.replace(std::ptr::null_mut()));
-    CURRENT_REPLY_CHANNEL_CONSUMED.with(|consumed| consumed.set(false));
-    ch
-}
-
+/// Mark the current dispatch's reply channel as consumed if it matches `ch`.
+///
+/// The guard mirrors the legacy TLS shape: an inner-ctx dispatch consuming
+/// its own channel cannot flip the outer ctx's consumed bit because we only
+/// flip the bit on the currently-installed ctx and only when the channels
+/// match.
 pub(crate) fn mark_current_reply_channel_consumed(ch: *mut c_void) {
     if ch.is_null() {
         return;
     }
-    CURRENT_REPLY_CHANNEL.with(|current| {
-        if current.get() == ch {
-            CURRENT_REPLY_CHANNEL_CONSUMED.with(|consumed| consumed.set(true));
+    let ctx = crate::execution_context::current_context();
+    if ctx.is_null() {
+        return;
+    }
+    // SAFETY: scheduler-installed contexts remain valid for the lifetime of
+    // the dispatch; the current-context pointer is non-null per the guard.
+    unsafe {
+        if (*ctx).reply_channel == ch {
+            (*ctx).flags |= crate::execution_context::HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
         }
-    });
+    }
 }
 
-fn current_reply_channel_consumed() -> bool {
-    CURRENT_REPLY_CHANNEL_CONSUMED.with(std::cell::Cell::get)
+fn current_reply_channel_consumed_on(
+    ctx: *mut crate::execution_context::HewExecutionContext,
+) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    // SAFETY: caller passes a context still installed (or recently installed
+    // and not yet unmapped) for this worker's dispatch frame.
+    unsafe { ((*ctx).flags & crate::execution_context::HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED) != 0 }
+}
+
+fn clear_reply_channel_on(ctx: *mut crate::execution_context::HewExecutionContext) -> *mut c_void {
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: caller passes a context still backed by live storage for this
+    // worker's dispatch frame.
+    unsafe {
+        let ch = (*ctx).reply_channel;
+        (*ctx).reply_channel = std::ptr::null_mut();
+        (*ctx).flags &= !crate::execution_context::HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
+        ch
+    }
 }
 
 fn restore_current_context_after_dispatch() {
@@ -762,9 +788,11 @@ fn activate_actor(actor: *mut HewActor) {
                     a.reductions
                         .store(HEW_DEFAULT_REDUCTIONS, Ordering::Relaxed);
 
-                    // Make the reply channel available to the dispatch function
-                    // via hew_get_reply_channel().
-                    set_current_reply_channel(msg_ref.reply_channel);
+                    // The reply channel travels with the dispatch carrier
+                    // (`execution_context.reply_channel` below) so that
+                    // `hew_get_reply_channel` reads sole-authoritatively from
+                    // the currently-installed context. Nested dispatch is
+                    // restored via `prev_context`.
 
                     // Phase α COW: envelope-aware dispatch.  Legacy
                     // (copy-mode) nodes carry payload bytes in
@@ -798,7 +826,7 @@ fn activate_actor(actor: *mut HewActor) {
                         partition_policy: std::ptr::null_mut(),
                         prev_context: crate::execution_context::current_context(),
                         lock_seat: dispatch_lock_seat_for_actor(actor),
-                        _reserved: [0],
+                        reply_channel: msg_ref.reply_channel,
                     };
                     let prev_context = execution_context.prev_context;
                     let installed_prev =
@@ -827,12 +855,16 @@ fn activate_actor(actor: *mut HewActor) {
                         }
                         crate::signal::clear_dispatch_recovery();
                         crate::tracing::hew_trace_end(a.id, msg_ref.msg_type);
+                        // Read reply-channel state from the dispatch ctx
+                        // BEFORE restoring `prev_context`, so the values come
+                        // from this dispatch's frame.
+                        let reply_consumed =
+                            current_reply_channel_consumed_on(&raw mut execution_context);
+                        let crash_reply = clear_reply_channel_on(&raw mut execution_context);
                         let restored_context =
                             crate::execution_context::set_current_context(prev_context);
                         debug_assert_eq!(restored_context, &raw mut execution_context);
 
-                        let reply_consumed = current_reply_channel_consumed();
-                        let crash_reply = clear_current_reply_channel();
                         if !reply_consumed && !crash_reply.is_null() {
                             // SAFETY: crash_reply is a valid HewReplyChannel pointer.
                             unsafe {
@@ -882,10 +914,10 @@ fn activate_actor(actor: *mut HewActor) {
                         }
                         crate::signal::clear_dispatch_recovery();
                         crate::tracing::hew_trace_end(a.id, msg_ref.msg_type);
+                        let _ = clear_reply_channel_on(&raw mut execution_context);
                         let restored_context =
                             crate::execution_context::set_current_context(prev_context);
                         debug_assert_eq!(restored_context, &raw mut execution_context);
-                        let _ = clear_current_reply_channel();
                         // SAFETY: msg is exclusively owned by this worker.
                         unsafe {
                             (*msg).reply_channel = std::ptr::null_mut();
@@ -899,8 +931,9 @@ fn activate_actor(actor: *mut HewActor) {
                         set_last_error("actor dispatch panicked");
                     }
 
-                    let reply_consumed = current_reply_channel_consumed();
-                    clear_current_reply_channel();
+                    let reply_consumed =
+                        current_reply_channel_consumed_on(&raw mut execution_context);
+                    let _ = clear_reply_channel_on(&raw mut execution_context);
 
                     // Preserve the mailbox-owned reply sender only for teardown
                     // states so hew_msg_node_free can publish the self-stop
@@ -957,6 +990,13 @@ fn activate_actor(actor: *mut HewActor) {
                     unsafe {
                         let _ = crate::actor::hew_actor_state_lock_release_after_panic(actor);
                     }
+                    // Capture the crashed dispatch's reply-channel state from
+                    // the still-installed ctx before restoring `prev_context`.
+                    // The ctx pointer becomes stale after the restore, so we
+                    // must read it here.
+                    let crashed_ctx = crate::execution_context::current_context();
+                    let reply_consumed = current_reply_channel_consumed_on(crashed_ctx);
+                    let crash_reply = clear_reply_channel_on(crashed_ctx);
                     restore_current_context_after_dispatch();
                     //
                     // SAFETY: called immediately after sigsetjmp returned
@@ -973,8 +1013,6 @@ fn activate_actor(actor: *mut HewActor) {
                         unsafe { crate::arena::hew_arena_reset(actor_arena) };
                     }
 
-                    let reply_consumed = current_reply_channel_consumed();
-                    let crash_reply = clear_current_reply_channel();
                     // If dispatch has not already consumed the sender-side
                     // reply reference, send an empty reply so the waiting
                     // caller of hew_actor_ask is unblocked rather than

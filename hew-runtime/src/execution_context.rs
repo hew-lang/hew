@@ -63,8 +63,13 @@ pub const HEW_CTX_OFFSET_PARTITION_POLICY: usize = 96;
 pub const HEW_CTX_OFFSET_PREV_CONTEXT: usize = 104;
 /// Byte offset of [`HewExecutionContext::lock_seat`].
 pub const HEW_CTX_OFFSET_LOCK_SEAT: usize = 112;
-/// Byte offset of [`HewExecutionContext::_reserved`].
-pub const HEW_CTX_OFFSET_RESERVED: usize = 120;
+/// Byte offset of [`HewExecutionContext::reply_channel`].
+pub const HEW_CTX_OFFSET_REPLY_CHANNEL: usize = 120;
+
+/// `flags` bit indicating the current dispatch consumed the reply-channel
+/// sender-side reference (i.e. user code called `hew_reply`). Read by the
+/// scheduler after dispatch to decide whether to publish a fallback reply.
+pub const HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED: u32 = 1 << 0;
 
 /// Canonical per-dispatch carrier installed in worker-local TLS.
 ///
@@ -82,7 +87,9 @@ pub struct HewExecutionContext {
     pub parent_supervisor: *mut c_void,
     /// Snapshotted child index in the parent supervisor.
     pub supervisor_child_index: i32,
-    /// Runtime context flags; bits are reserved until reader migration lands.
+    /// Runtime context flags. Bit 0 ([`HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED`])
+    /// is set when the current dispatch consumed the reply channel by calling
+    /// `hew_reply`. Remaining bits are reserved until reader migration lands.
     pub flags: u32,
     /// Cooperative cancellation token for the dispatch, or null when absent.
     pub cancel_token: *mut HewCancelToken,
@@ -98,12 +105,11 @@ pub struct HewExecutionContext {
     pub prev_context: *mut HewExecutionContext,
     /// Reserved D24-1 actor-state-lock seat.
     pub lock_seat: *mut HewActorStateLockState,
-    /// Remaining reserved lane for future dispatch substrate.
-    #[allow(
-        clippy::pub_underscore_fields,
-        reason = "The public ABI carrier intentionally exposes the reserved lane as `_reserved`."
-    )]
-    pub _reserved: [u64; 1],
+    /// Reply channel for the message currently being dispatched, or null for
+    /// fire-and-forget sends. Owned by the per-dispatch carrier so nested
+    /// dispatch (worker A mid-select → worker B inner ask) restores the
+    /// outer arm's channel via the `prev_context` chain.
+    pub reply_channel: *mut c_void,
 }
 
 thread_local! {
@@ -191,7 +197,7 @@ const _: () = {
     assert!(offset_of!(HewExecutionContext, partition_policy) == HEW_CTX_OFFSET_PARTITION_POLICY);
     assert!(offset_of!(HewExecutionContext, prev_context) == HEW_CTX_OFFSET_PREV_CONTEXT);
     assert!(offset_of!(HewExecutionContext, lock_seat) == HEW_CTX_OFFSET_LOCK_SEAT);
-    assert!(offset_of!(HewExecutionContext, _reserved) == HEW_CTX_OFFSET_RESERVED);
+    assert!(offset_of!(HewExecutionContext, reply_channel) == HEW_CTX_OFFSET_REPLY_CHANNEL);
     assert!(std::mem::size_of::<HewExecutionContext>() == HEW_CTX_SIZE);
     assert!(std::mem::align_of::<HewExecutionContext>() == 8);
 };
@@ -307,9 +313,54 @@ mod tests {
             HEW_CTX_OFFSET_LOCK_SEAT
         );
         assert_eq!(
-            offset_of!(HewExecutionContext, _reserved),
-            HEW_CTX_OFFSET_RESERVED
+            offset_of!(HewExecutionContext, reply_channel),
+            HEW_CTX_OFFSET_REPLY_CHANNEL
         );
+    }
+
+    #[test]
+    fn nested_dispatch_restores_outer_reply_channel() {
+        // R17 property: install ctx A (reply_channel=ch_A), then ctx B
+        // (prev=A, reply_channel=ch_B). After clearing B, the current
+        // context's reply_channel must be ch_A again — i.e. nested dispatch
+        // cannot clobber the outer arm's reply channel.
+        let _runtime_guard = crate::runtime_test_guard();
+        let _context_guard = ContextResetGuard::new();
+
+        let ch_a: *mut c_void = 0x0A0A_0A0A_usize as *mut c_void;
+        let ch_b: *mut c_void = 0x0B0B_0B0B_usize as *mut c_void;
+
+        let mut ctx_a = HewExecutionContext {
+            reply_channel: ch_a,
+            ..HewExecutionContext::default()
+        };
+        let outer = &raw mut ctx_a;
+        let mut ctx_b = HewExecutionContext {
+            reply_channel: ch_b,
+            // Inner dispatch records its prev pointer, mirroring the scheduler.
+            prev_context: outer,
+            ..HewExecutionContext::default()
+        };
+        let inner = &raw mut ctx_b;
+
+        let prev_a = set_current_context(outer);
+        assert!(prev_a.is_null());
+        // SAFETY: outer points to the live stack slot for ctx_a.
+        assert_eq!(unsafe { (*current_context()).reply_channel }, ch_a);
+
+        let prev_b = set_current_context(inner);
+        assert_eq!(prev_b, outer);
+        // SAFETY: inner points to the live stack slot for ctx_b.
+        assert_eq!(unsafe { (*current_context()).reply_channel }, ch_b);
+
+        // Clear B by restoring its prev — outer's reply_channel must survive.
+        let restored = set_current_context(prev_b);
+        assert_eq!(restored, inner);
+        assert_eq!(current_context(), outer);
+        // SAFETY: outer points to the live stack slot for ctx_a.
+        assert_eq!(unsafe { (*current_context()).reply_channel }, ch_a);
+
+        let _ = set_current_context(prev_a);
     }
 
     #[test]

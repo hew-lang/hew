@@ -779,7 +779,7 @@ pub unsafe extern "C" fn hew_task_spawn_thread_with_inherited_context(
             partition_policy: ptr::null_mut(),
             prev_context: ptr::null_mut(),
             lock_seat: ptr::null_mut(),
-            _reserved: [0],
+            reply_channel: ptr::null_mut(),
         };
         let installed_previous =
             crate::execution_context::set_current_context(&raw mut execution_context);

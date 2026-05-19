@@ -428,12 +428,21 @@ pub struct HewChildSpec {
 }
 
 /// Child lifecycle event (sent as system message payload).
+///
+/// `crash_code` carries the trap-kind integer (`HEW_TRAP_*` constants, 201–205,
+/// or other actor-defined error codes) captured from the child actor's
+/// `error_code` slot at the moment of the trap. It is meaningful only when
+/// `exit_state == HewActorState::Crashed`; for normal stops it is `0`.
+/// Routing this through the event payload lets the supervisor record the real
+/// trap code in crash-stats and forward it to a registered `on_crash` handler
+/// instead of falling back to the historical SIGSEGV placeholder (`11`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct ChildEvent {
     child_index: c_int,
     child_id: u64,
     exit_state: c_int,
+    crash_code: c_int,
 }
 
 // ---------------------------------------------------------------------------
@@ -568,15 +577,9 @@ struct InternalChildSpec {
     /// applied by every restart path so restarted actors keep the cap
     /// originally set by `#[max_heap(N)]`.
     arena_cap_bytes: usize,
-    /// Crash handler copied from `HewChildSpec::on_crash`. Invoked before
-    /// the restart policy when the child exits with `HewActorState::Crashed`.
-    // WHY: field is stored so the ABI copy path is complete; the read path
-    // is added by the crash-handler invocation change.
-    // WHEN: remove `allow` when `apply_restart` reads this field.
-    #[allow(
-        dead_code,
-        reason = "read path is added by the crash-handler invocation change"
-    )]
+    /// Crash handler copied from `HewChildSpec::on_crash`. Invoked from
+    /// `apply_restart` before the restart policy is consulted when the child
+    /// exits with `HewActorState::Crashed`. `None` means no handler.
     on_crash: Option<HewOnCrashFn>,
     /// Codegen-emitted drop callback for owned state fields (e.g. `Vec`, `String`).
     /// Registered via [`hew_supervisor_set_child_state_drop`] after the child spec
@@ -720,6 +723,10 @@ fn escalate_to_parent(sup: &HewSupervisor) {
         child_index: -1,
         child_id: sup.index_in_parent as u64,
         exit_state: HewActorState::Crashed as c_int,
+        // Child-supervisor escalation: no single trap code applies to the
+        // subtree-restart-budget exhaustion that triggered this escalation.
+        // Use the honest unknown value rather than fabricating a signal number.
+        crash_code: 0,
     };
     // SAFETY: parent.self_actor is valid.
     unsafe {
@@ -1432,13 +1439,86 @@ unsafe fn restart_child_supervisor_with_budget(sup: &mut HewSupervisor, failed_i
 /// # Safety
 ///
 /// `sup` must be valid.
-unsafe fn apply_restart(sup: &mut HewSupervisor, failed_index: usize, exit_state: c_int) {
+unsafe fn apply_restart(
+    sup: &mut HewSupervisor,
+    failed_index: usize,
+    exit_state: c_int,
+    crash_code: c_int,
+    ctx: *mut crate::execution_context::HewExecutionContext,
+) {
     let spec = &mut sup.child_specs[failed_index];
 
-    // Record crash if it was a crash (not a normal stop)
+    // Record crash if it was a crash (not a normal stop). `crash_code` is the
+    // real trap-kind integer (`HEW_TRAP_*`, 201–205) captured from the child
+    // actor's `error_code` slot at the moment of the trap; if no specific code
+    // is available it is `0` (unknown). Historically this site passed the
+    // literal `11` (a SIGSEGV stand-in) which made crash-stats lie about why
+    // the actor died — we plumb the real value through now.
     if exit_state == HewActorState::Crashed as c_int {
-        circuit_breaker_record_crash(spec, 11); // Default to SIGSEGV if signal not available
-                                                // Apply exponential backoff delay after crash (only for subsequent crashes)
+        circuit_breaker_record_crash(spec, crash_code);
+
+        // ── on(crash) handler invocation ─────────────────────────────────
+        //
+        // If the user declared `#[on(crash)]` on the child actor, codegen
+        // populated `spec.on_crash` (S1 ABI slot + S2 MIR symbol + S3
+        // codegen pointer); fire the handler now, BEFORE the restart-policy
+        // gate. The handler runs in the supervisor's own actor-dispatch
+        // context (`ctx`), which is the same context the surrounding
+        // `supervisor_dispatch` is executing under. The crashed child's
+        // actor was already torn down by `take_child_slot` in
+        // `supervisor_dispatch`, so there is no risk of re-entering the
+        // crashed dispatch.
+        //
+        // Arguments:
+        //   - `ctx`: supervisor's execution context, threaded down from
+        //     `supervisor_dispatch`. Re-using the supervisor ctx
+        //     preserves task-scope cancellation propagation; do not
+        //     synthesise a fresh ctx (cf. `f4df6354`).
+        //   - `crash_code`: the trap-kind integer captured above. Cast to
+        //     `c_int` for the C ABI; the handler receives a single i32
+        //     register matching the MIR lowering of `PanicInfo { code: i64 }`
+        //     (`hew-types/src/check/items.rs:887-906`).
+        //   - `spec.init_state`: pointer to the *new* (template) seed state
+        //     the next-restarted actor will be cloned from. The crashed
+        //     actor's last-seen state is gone with the actor. Handler-side
+        //     mutations to this pointer therefore persist across EVERY
+        //     subsequent restart of this child slot, not just the next
+        //     one. v0.6 may revisit ("last-seen-state" semantics, fresh
+        //     template clone per crash) once the design is ratified.
+        //
+        // Fail-closed mechanism:
+        //   - The handler ABI is `extern "C"` (non-unwinding). If the
+        //     handler itself traps via `hew_trap_with_code`, the longjmp
+        //     unwinds into the SUPERVISOR's recovery frame (we are inside
+        //     the supervisor's dispatch), which surfaces as a supervisor-
+        //     level crash that the parent restart-budget escalates per
+        //     `restart_within_window`. We deliberately do NOT wrap this
+        //     call in `std::panic::catch_unwind` — there is nothing to
+        //     catch across a non-unwinding ABI, and silently swallowing
+        //     would violate the `boundary-fail-closed` invariant.
+        //
+        // `CrashAction` return is IGNORED in v0.5:
+        //   `std/failure.hew` declares `on(crash)` returning a
+        //   `CrashAction` variant (Restart/Kill/Escalate) but the v0.5
+        //   supervisor honours only the per-child `restart_policy` enum
+        //   set at spec-registration time. The hook is side-effects-only
+        //   ("log + react") for v0.5; the return-shape consult is deferred
+        //   to v0.6 (JOURNEY.md Q46/A23, `std/failure.hew:34-38`). The
+        //   handler's signature here is `unsafe extern "C" fn(*mut ctx,
+        //   c_int, *mut c_void)` returning unit — the variant byte the
+        //   user `return`s simply does not reach the runtime.
+        if let Some(handler) = spec.on_crash {
+            // Capture state pointer before relinquishing the borrow.
+            let state_ptr = spec.init_state;
+            // SAFETY: `handler` is a codegen-emitted `extern "C" fn` with
+            // the `HewOnCrashFn` signature; `ctx` is the live supervisor
+            // execution context for the in-flight dispatch; `state_ptr`
+            // is the template state the supervisor owns for this child
+            // slot (allocated in `hew_supervisor_add_child_spec`).
+            unsafe { handler(ctx, crash_code, state_ptr) };
+        }
+
+        // Apply exponential backoff delay after crash (only for subsequent crashes)
         if spec.restart_delay_ms > 0 {
             apply_restart_backoff(spec);
         }
@@ -1527,7 +1607,7 @@ unsafe fn apply_restart(sup: &mut HewSupervisor, failed_index: usize, exit_state
 
 /// Supervisor dispatch function (handles system messages).
 unsafe extern "C-unwind" fn supervisor_dispatch(
-    _ctx: *mut crate::execution_context::HewExecutionContext,
+    ctx: *mut crate::execution_context::HewExecutionContext,
     state: *mut c_void,
     msg_type: i32,
     data: *mut c_void,
@@ -1575,8 +1655,11 @@ unsafe extern "C-unwind" fn supervisor_dispatch(
                 unsafe { actor::hew_actor_free(child) };
             }
 
-            // SAFETY: sup is valid.
-            unsafe { apply_restart(sup, idx, event.exit_state) };
+            // SAFETY: sup is valid; ctx is the supervisor's own dispatch
+            // context, threaded through so a registered on_crash handler
+            // receives the supervisor's ctx (preserves task-scope
+            // cancellation propagation per f4df6354).
+            unsafe { apply_restart(sup, idx, event.exit_state, event.crash_code, ctx) };
         }
         SYS_MSG_SUPERVISOR_STOP => {
             sup.cancelled.store(true, Ordering::Release);
@@ -1798,6 +1881,7 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_event(
     child_index: c_int,
     child_id: u64,
     exit_state: c_int,
+    crash_code: c_int,
 ) {
     cabi_guard!(sup.is_null());
     // SAFETY: caller guarantees sup is valid.
@@ -1810,6 +1894,7 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_event(
         child_index,
         child_id,
         exit_state,
+        crash_code,
     };
 
     let msg_type = if exit_state == HewActorState::Crashed as c_int {
@@ -2453,11 +2538,15 @@ pub unsafe extern "C" fn hew_supervisor_handle_crash(
     }
 
     let exit_state = child_ref.actor_state.load(Ordering::Acquire);
+    // Read the child's recorded trap code (set by `hew_actor_trap` before the
+    // state transition). `0` for non-crash exits or when no specific code was
+    // recorded — we propagate the honest unknown rather than fabricating.
+    let crash_code = child_ref.error_code.load(Ordering::Acquire);
 
     // Notify the supervisor actor via the event system.
     // SAFETY: sup is valid and child_id / exit_state are read from valid memory.
     unsafe {
-        hew_supervisor_notify_child_event(sup, idx, child_ref.id, exit_state);
+        hew_supervisor_notify_child_event(sup, idx, child_ref.id, exit_state, crash_code);
     }
 }
 

@@ -405,6 +405,7 @@ impl Checker {
             dyn_trait_method_calls: std::mem::take(&mut self.dyn_trait_method_calls),
             closure_capture_facts: resolved_closure_capture_facts,
             actor_protocol_descriptors,
+            intrinsic_declarations: std::mem::take(&mut self.intrinsic_declarations),
         };
 
         // Detect actor reference cycles and emit warnings.

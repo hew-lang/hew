@@ -270,7 +270,32 @@ pub fn lower_program_with_mono_cap(
                 }
             }
             Item::Function(func) => {
-                items.push(HirItem::Function(ctx.lower_fn(func, span.clone())));
+                // If this function carries `#[intrinsic("key")]`, the checker
+                // recorded it in `intrinsic_declarations`. Validate the key
+                // against the stdlib catalog and skip body lowering — the
+                // catalog entry already supplies the semantics. Fail-closed:
+                // an unknown key produces `UnknownIntrinsic` instead of a
+                // silently-incorrect lowering.
+                if let Some(intrinsic_key) = ctx.intrinsic_declarations.get(&func.name).cloned() {
+                    let known = crate::stdlib_catalog::entries()
+                        .iter()
+                        .any(|e| e.name == intrinsic_key);
+                    if !known {
+                        ctx.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::UnknownIntrinsic {
+                                fn_name: func.name.clone(),
+                                intrinsic_key,
+                            },
+                            span.clone(),
+                            "intrinsic key not found in stdlib catalog; \
+                             check the #[intrinsic(\"..\")] argument matches a catalog entry name",
+                        ));
+                    }
+                    // Either way, do not lower a body — the declaration is a
+                    // typed substrate stub that must match an existing catalog entry.
+                } else {
+                    items.push(HirItem::Function(ctx.lower_fn(func, span.clone())));
+                }
             }
             Item::Impl(impl_decl)
                 if impl_decl
@@ -862,6 +887,12 @@ struct LowerCtx {
     /// Tracks whether the `RecordLayoutCapExceeded` diagnostic has
     /// already been emitted for this lowering invocation.
     record_layout_cap_diag_emitted: bool,
+    /// Checker-authoritative mapping from qualified function name to the
+    /// intrinsic catalog key declared via `#[intrinsic("key")]`. Functions
+    /// present here must be validated against `stdlib_catalog` and must have
+    /// their bodies skipped during lowering (the body is a placeholder).
+    /// Fail-closed: an unknown key emits `UnknownIntrinsic`.
+    intrinsic_declarations: HashMap<String, String>,
 }
 
 impl LowerCtx {
@@ -901,6 +932,7 @@ impl LowerCtx {
             record_init_type_args: tc_output.record_init_type_args.clone(),
             record_layout_registry: RecordLayoutRegistry::with_cap(mono_cap),
             record_layout_cap_diag_emitted: false,
+            intrinsic_declarations: tc_output.intrinsic_declarations.clone(),
         }
     }
 

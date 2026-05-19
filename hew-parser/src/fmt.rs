@@ -1158,7 +1158,19 @@ impl<'a> Formatter<'a> {
                         self.write(", ");
                     }
                     match arg {
-                        AttributeArg::Positional(s) => self.write(s),
+                        AttributeArg::Positional(s) => {
+                            // If the value contains characters that are not valid
+                            // in a bare identifier (e.g. `.` in `"math.sqrt"`),
+                            // re-quote it as a string literal so the output round-trips.
+                            let needs_quotes = s.chars().any(|c| !c.is_alphanumeric() && c != '_');
+                            if needs_quotes {
+                                self.write("\"");
+                                self.write(s);
+                                self.write("\"");
+                            } else {
+                                self.write(s);
+                            }
+                        }
                         AttributeArg::KeyValue { key, value } => {
                             self.write(key);
                             self.write(" = ");

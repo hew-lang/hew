@@ -859,6 +859,7 @@ fn test_yield_outside_generator() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
     let program = Program {
         module_graph: None,
@@ -1120,6 +1121,7 @@ fn test_stream_annotation_resolves_to_stream_type() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let program = Program {
@@ -1172,6 +1174,7 @@ fn test_actor_stream_name_no_longer_aliases_stream() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let program = Program {
@@ -1233,6 +1236,7 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let program = Program {
@@ -5106,6 +5110,7 @@ fn make_pub_fn(name: &str, params: Vec<Param>, ret: Option<TypeExpr>) -> FnDecl 
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     }
 }
 
@@ -5135,6 +5140,7 @@ fn make_priv_fn(name: &str) -> FnDecl {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     }
 }
 
@@ -6183,6 +6189,7 @@ fn test_file_import_private_items_not_visible() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     });
 
     let private_const = Item::Const(ConstDecl {
@@ -11042,6 +11049,7 @@ mod non_root_module_inference_scope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
         Module {
             id: mod_id.clone(),
@@ -11181,6 +11189,7 @@ mod non_root_module_inference_scope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         let root_id = ModuleId::root();
@@ -11235,6 +11244,7 @@ mod non_root_module_inference_scope {
                 doc_comment: None,
                 decl_span: 0..0,
                 fn_span: 0..0,
+                intrinsic: None,
             };
             (Item::Function(fd), span_start..span_start + 30)
         };
@@ -11318,6 +11328,7 @@ mod non_root_module_inference_scope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         let non_root = Module {
@@ -11384,6 +11395,7 @@ mod non_root_module_inference_scope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         let non_root = Module {
@@ -11840,6 +11852,7 @@ mod non_root_module_inference_scope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         let non_root = Module {
@@ -11940,6 +11953,7 @@ fn module_graph_body_type_error_is_reported() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let program = make_program_with_module_graph(vec![(Item::Function(bad_fn), 0..10)]);
@@ -11988,6 +12002,7 @@ fn module_graph_body_infer_return_resolves_without_error() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let program = make_program_with_module_graph(vec![(Item::Function(inferred_fn), 0..10)]);
@@ -12049,6 +12064,7 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let program = make_program_with_module_graph(vec![(Item::Function(ok_fn), 0..30)]);
@@ -12187,6 +12203,7 @@ fn module_graph_body_private_local_type_is_available() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let program = make_program_with_module_graph(vec![
@@ -12236,6 +12253,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let ok_fn = FnDecl {
@@ -12264,6 +12282,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let helper_string = FnDecl {
@@ -12287,6 +12306,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let root_id = ModuleId::root();
@@ -12398,6 +12418,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
     let extern_string = ExternBlock {
         abi: "C".to_string(),
@@ -12525,6 +12546,7 @@ mod module_body_diagnostic_envelope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
         (Item::Function(fn_decl), 0..20)
     }
@@ -12583,6 +12605,7 @@ mod module_body_diagnostic_envelope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
         let program = Program {
             module_graph: None,
@@ -12636,6 +12659,7 @@ mod module_body_diagnostic_envelope {
                 doc_comment: None,
                 decl_span: 0..0,
                 fn_span: 0..0,
+                intrinsic: None,
             };
             (Item::Function(fd), 0..20)
         };
@@ -12748,6 +12772,7 @@ mod module_body_diagnostic_envelope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         let program =
@@ -12804,6 +12829,7 @@ mod module_body_diagnostic_envelope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         let program =
@@ -12949,6 +12975,7 @@ mod warning_source_attribution {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         }
     }
 
@@ -12975,6 +13002,7 @@ mod warning_source_attribution {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
         let root_id = ModuleId::root();
         let module_id = ModuleId::new(vec![module_name.to_string()]);
@@ -13333,6 +13361,7 @@ mod warning_source_attribution {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         // caller() body: `fakemod.helper()` expressed as a MethodCall statement.
@@ -13365,6 +13394,7 @@ mod warning_source_attribution {
             doc_comment: None,
             decl_span: 150..200,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         // Import of fakemod in mod_a must carry resolved_items that include

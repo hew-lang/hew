@@ -845,6 +845,7 @@ fn program_with_select(select_expr: Expr) -> Program {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
     Program {
         items: vec![(Item::Function(main_fn), 0..0)],

@@ -256,6 +256,23 @@ pub struct TypeCheckOutput {
     /// through this side-table — see `hew_mir::lower` where the actor
     /// layout is constructed.
     pub actor_protocol_descriptors: HashMap<String, crate::actor_protocol::ActorProtocolDescriptor>,
+    /// Intrinsic-declaration side-table: function name → intrinsic key.
+    ///
+    /// Populated for every `#[intrinsic("key")] pub fn name(...)` declaration
+    /// seen during type-checking. HIR lowering consults this table when it
+    /// encounters a function item: if the name is present here, the body stub
+    /// is skipped and the function is treated as a compiler-intrinsic with the
+    /// given key. HIR validates the key against the known intrinsic catalog and
+    /// fails closed with `HirDiagnosticKind::UnknownIntrinsic` if the key is
+    /// absent.
+    ///
+    /// WHY: the catalog previously conjured `CompilerIntrinsic` entries without
+    /// a Hew-side declaration. This table is the checker-owned authority for
+    /// the typed-declaration migration path.
+    /// WHEN-OBSOLETE: when all catalog `CompilerIntrinsic` rows have migrated
+    /// to `#[intrinsic]` declarations (slices 4–7); the table then becomes the
+    /// complete intrinsic registry and the catalog rows can be removed.
+    pub intrinsic_declarations: HashMap<String, String>,
 }
 
 /// By-value capture mode selected for one closure environment field.
@@ -472,6 +489,7 @@ impl Default for TypeCheckOutput {
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
         }
     }
 }
@@ -1363,6 +1381,11 @@ pub struct Checker {
     /// Processed in `apply_deferred_range_bound_types` after all inference and
     /// literal defaulting is complete.
     pub(super) deferred_range_bounds: Vec<(Span, TypeVar, Option<i64>)>,
+    /// Intrinsic declarations seen during registration: fn name → intrinsic key.
+    ///
+    /// Populated in `register_fn` for functions with `#[intrinsic("key")]`.
+    /// Moved into `TypeCheckOutput::intrinsic_declarations` at `check_program` exit.
+    pub(super) intrinsic_declarations: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1380,6 +1403,10 @@ pub(super) enum ConstValue {
 
 impl Checker {
     #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "initialises every checker field; splitting would scatter defaults"
+    )]
     pub fn new(module_registry: ModuleRegistry) -> Self {
         Self {
             env: TypeEnv::new(),
@@ -1480,6 +1507,7 @@ impl Checker {
             lambda_poly_sig_map: HashMap::new(),
             last_lambda_generic_sig: None,
             deferred_range_bounds: Vec::new(),
+            intrinsic_declarations: HashMap::new(),
         }
     }
 

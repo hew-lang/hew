@@ -658,6 +658,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             record_init_type_args: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_handler_state_guards: HashMap::new(),

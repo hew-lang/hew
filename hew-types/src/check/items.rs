@@ -521,6 +521,7 @@ impl Checker {
                         doc_comment: None,
                         decl_span: 0..0,
                         fn_span: 0..0,
+                        intrinsic: None,
                     };
                     let qualified = format!("{}::{}", td.name, method.name);
                     self.check_function_as(&fn_decl, &qualified);

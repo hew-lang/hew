@@ -125,10 +125,16 @@ pub fn clamp_f(x: f64, lo: f64, hi: f64) -> f64 {
 }
 
 /// Return the square root of a float.
-pub fn sqrt(x: f64) -> f64 {
-    // Codegen maps to mlir::math::SqrtOp
-    0.0
-}
+// WHY: `#[intrinsic("math.sqrt")]` is the typed-declaration substrate introduced
+// in the stdlib-refactor early-substrate lane. The attribute names the catalog key
+// so HIR can skip body lowering and route to the existing CompilerIntrinsic entry.
+// WHEN OBSOLETE: once the mass-migration slices (4-7) land and the catalog entry is
+// removed, this comment becomes the authoritative declaration and the WHY/WHEN block
+// can be dropped in favour of a plain doc-comment.
+// WHAT: slices 4-7 remove the parallel catalog entry and make this declaration the
+// sole source of truth; codegen emits the MLIR math-dialect op by intrinsic key.
+#[intrinsic("math.sqrt")]
+pub fn sqrt(x: f64) -> f64;
 
 /// Raise `base` to the power `exp`.
 pub fn pow(base: f64, exp: f64) -> f64 {

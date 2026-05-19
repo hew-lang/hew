@@ -1687,8 +1687,28 @@ impl<'src> Parser<'src> {
         let return_type = self.parse_opt_return_type()?;
         let where_clause = self.parse_opt_where_clause()?;
 
-        let body = self.parse_block()?;
-        let fn_end = self.peek_span().start;
+        // Extract intrinsic key from `#[intrinsic("name")]` if present.
+        // An intrinsic declaration may omit the body and use `;` instead.
+        let intrinsic = attributes
+            .iter()
+            .find(|a| a.name == "intrinsic")
+            .and_then(|a| a.args.first().map(|arg| arg.as_str().to_string()));
+
+        let (body, fn_end) = if intrinsic.is_some() && self.peek() == Some(&Token::Semicolon) {
+            // `#[intrinsic("key")] pub fn name(...) -> T;` — bodyless form.
+            // Produce an empty block so the rest of the pipeline sees a well-formed FnDecl.
+            let semi_end = self.peek_span().end;
+            self.advance(); // consume `;`
+            let empty_block = Block {
+                stmts: vec![],
+                trailing_expr: None,
+            };
+            (empty_block, semi_end)
+        } else {
+            let body = self.parse_block()?;
+            let fn_end = self.peek_span().start;
+            (body, fn_end)
+        };
 
         Some(FnDecl {
             attributes,
@@ -1705,6 +1725,7 @@ impl<'src> Parser<'src> {
             doc_comment: None,
             decl_span: decl_start..decl_end,
             fn_span: fn_start..fn_end,
+            intrinsic,
         })
     }
 
@@ -1749,6 +1770,7 @@ impl<'src> Parser<'src> {
             doc_comment: None,
             decl_span: decl_start..decl_end,
             fn_span: fn_start..fn_end,
+            intrinsic: None,
         };
         Some((decl, has_consuming_self))
     }
@@ -9151,5 +9173,46 @@ wire type Msg {
             "double base `..a, ..b` must produce a 'must be the last item' error; got: {:?}",
             result.errors
         );
+    }
+
+    #[test]
+    fn intrinsic_attribute_parsed_with_semicolon_body() {
+        // A function annotated with `#[intrinsic("key")]` and a `;` terminator
+        // must parse without errors and carry the intrinsic key in `FnDecl.intrinsic`.
+        let src = r#"#[intrinsic("math.sqrt")] pub fn sqrt(x: f64) -> f64;"#;
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "#[intrinsic] with semicolon body must parse cleanly; got: {:?}",
+            result.errors
+        );
+        let (item, _) = result.program.items.first().expect("expected one item");
+        if let crate::ast::Item::Function(fd) = item {
+            assert_eq!(
+                fd.intrinsic.as_deref(),
+                Some("math.sqrt"),
+                "FnDecl.intrinsic must carry the catalog key"
+            );
+        } else {
+            panic!("expected Item::Function, got something else");
+        }
+    }
+
+    #[test]
+    fn intrinsic_attribute_key_is_none_for_normal_fns() {
+        // Regular functions must have `intrinsic == None`.
+        let src = r"pub fn add(a: i64, b: i64) -> i64 { a + b }";
+        let result = parse(src);
+        assert!(result.errors.is_empty());
+        let (item, _) = result.program.items.first().expect("expected one item");
+        if let crate::ast::Item::Function(fd) = item {
+            assert!(
+                fd.intrinsic.is_none(),
+                "normal fn must have intrinsic == None, got {:?}",
+                fd.intrinsic
+            );
+        } else {
+            panic!("expected Item::Function");
+        }
     }
 } // mod tests

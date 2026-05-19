@@ -2810,6 +2810,7 @@ impl Checker {
                 doc_comment: None,
                 decl_span: span.clone(),
                 fn_span: 0..0,
+                intrinsic: None,
             },
         );
         self.current_trait_for_self_projection = prev_trait_self;
@@ -2997,6 +2998,12 @@ impl Checker {
             .unwrap_or_else(|| name.to_string());
         self.fn_sigs.insert(key.clone(), sig);
         self.record_fn_sig_inference_holes(&key, hole_vars);
+        // If the declaration carries `#[intrinsic("name")]`, record the
+        // mapping so HIR lowering can skip the body and wire to the catalog.
+        if let Some(intrinsic_key) = &fd.intrinsic {
+            self.intrinsic_declarations
+                .insert(key, intrinsic_key.clone());
+        }
     }
 
     /// Register an impl method on a type's method table and `fn_sigs`.

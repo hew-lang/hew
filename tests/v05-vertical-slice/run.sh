@@ -87,6 +87,12 @@ run_accept_expect_status "actor_counter" 42
 # The exit code being 42 (not 41) proves on(start) fired before the first message.
 run_accept_expect_status "actor_counter_init" 42
 
+# select{} with two actor-ask arms + after-timer: FastWorker replies with 42
+# immediately; SlowWorker sleeps 50 ms; after-arm deadline is 100 ms.
+# FastWorker always wins under normal CI load. Exit code 42 proves the winner
+# value is returned and the loser channel is cancelled without leaking.
+run_accept_expect_status "actor_ask_race" 42
+
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"
 run_accept_expect_stdout "print_f64"

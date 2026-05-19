@@ -134,8 +134,7 @@ pub fn clamp_f(x: f64, lo: f64, hi: f64) -> f64 {
 // sole source of truth; codegen emits the MLIR math-dialect op by intrinsic key.
 /// Return the square root of a float.
 #[intrinsic("math.sqrt")]
-pub fn sqrt(x: f64) -> f64 {
-}
+pub fn sqrt(x: f64) -> f64 {}
 
 /// Raise `base` to the power `exp`.
 pub fn pow(base: f64, exp: f64) -> f64 {

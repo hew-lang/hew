@@ -446,6 +446,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &module.type_classes,
                     &record_field_orders,
                     &actor_layout_map,
+                    &supervisor_layout_map,
                     None,
                     &module_fn_names,
                     &module.call_site_type_args,
@@ -567,6 +568,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             &module.type_classes,
             &record_field_orders,
             &actor_layout_map,
+            &supervisor_layout_map,
             None,
             &module_fn_names,
             &module.call_site_type_args,
@@ -687,6 +689,7 @@ fn lower_actor_receive_handlers(
             type_classes,
             record_field_orders,
             actor_layouts,
+            &HashMap::new(),
             Some(&actor.name),
             module_fn_names,
             call_site_type_args,
@@ -798,6 +801,7 @@ fn lower_actor_init_handler(
         type_classes,
         record_field_orders,
         actor_layouts,
+        &HashMap::new(),
         Some(&actor.name),
         module_fn_names,
         call_site_type_args,
@@ -861,6 +865,7 @@ fn lower_actor_lifecycle_handlers(
                     type_classes,
                     record_field_orders,
                     actor_layouts,
+                    &HashMap::new(),
                     Some(&actor.name),
                     module_fn_names,
                     call_site_type_args,
@@ -902,6 +907,7 @@ fn lower_actor_lifecycle_handlers(
                     type_classes,
                     record_field_orders,
                     actor_layouts,
+                    &HashMap::new(),
                     Some(&actor.name),
                     module_fn_names,
                     call_site_type_args,
@@ -1170,7 +1176,7 @@ fn local_pid_of(actor_name: &str) -> ResolvedTy {
 )]
 fn lower_supervisor_bootstrap(
     sup: &HirSupervisorDecl,
-    _supervisor_layouts: &HashMap<String, crate::model::SupervisorLayout>,
+    supervisor_layouts: &HashMap<String, crate::model::SupervisorLayout>,
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: &HashMap<String, ActorLayout>,
@@ -1355,13 +1361,26 @@ fn lower_supervisor_bootstrap(
         span: sup.span.clone(),
     };
 
+    // Bootstrap returns `LocalPid<Sup>` so callers of `spawn Sup` receive a
+    // typed handle. The body does not yet emit a return value — S-D.3 replaces
+    // the body wholesale with the `hew_supervisor_*` call sequence and a real
+    // return. For this slice the return slot is intentionally left unwritten;
+    // the MIR-level dataflow checker does not enforce return-slot initialisation,
+    // and codegen will never see this stub body (S-D.3 lands before codegen
+    // is exercised on supervisor programs).
+    //
+    // SHIM(S-D.1→S-D.3): bootstrap body is a stub. Return slot unwritten.
+    // WHY: type signature must be correct before the routing call site is
+    //   wired; body replacement is a separate slice.
+    // WHEN obsolete: S-D.3 replaces the body with the hew_supervisor_* sequence.
+    // WHAT: emit hew_supervisor_start/register_child/etc in S-D.3.
     let synthetic_fn = HirFn {
         id: sup.id,
         node: sup.node,
         name: format!("{}::__bootstrap", sup.name),
         type_params: Vec::new(),
         params: Vec::new(),
-        return_ty: ResolvedTy::Unit,
+        return_ty: local_pid_of(&sup.name),
         body,
         span: sup.span.clone(),
     };
@@ -1373,6 +1392,7 @@ fn lower_supervisor_bootstrap(
         type_classes,
         record_field_orders,
         actor_layouts,
+        supervisor_layouts,
         // Supervisors have no actor state. `lower_actor_init_handler`
         // passes `Some(&actor.name)` for the same role; here we pass
         // `None` because there's no state-field table to lift into the
@@ -1639,6 +1659,7 @@ fn lower_function(
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: &HashMap<String, ActorLayout>,
+    supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
     current_actor_name: Option<&str>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -1648,6 +1669,7 @@ fn lower_function(
         type_classes: type_classes.clone(),
         record_field_orders: record_field_orders.clone(),
         actor_layouts: actor_layouts.clone(),
+        supervisor_layout_map: supervisor_layout_map.clone(),
         current_actor_state_fields: current_actor_name
             .and_then(|name| actor_layouts.get(name))
             .map(|layout| {
@@ -1868,6 +1890,7 @@ fn push_unknown_type_diagnostics(
         if builder.type_classes.contains_key(&name)
             || matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor")
             || builder.actor_layouts.contains_key(&name)
+            || builder.supervisor_layout_map.contains_key(&name)
         {
             continue;
         }
@@ -1989,6 +2012,13 @@ struct Builder {
     /// `StructInit`). They will never be looked up here.
     record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: HashMap<String, ActorLayout>,
+    /// Supervisor-layout map, mirroring `actor_layouts` for supervisor types.
+    /// Used by `lower_spawn_actor` to route `spawn Sup` to the supervisor
+    /// bootstrap call and by `push_unknown_type_diagnostics` to recognise
+    /// supervisor names inside `LocalPid<Sup>` type args as known. Empty for
+    /// functions whose call context cannot reference supervisor types (actor
+    /// handlers, closure shims).
+    supervisor_layout_map: HashMap<String, crate::model::SupervisorLayout>,
     current_actor_state_fields: HashMap<String, (FieldOffset, ResolvedTy)>,
     /// Names of every user-defined function declared in the module. Used by
     /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
@@ -5296,6 +5326,41 @@ impl Builder {
         args: &[(String, HirExpr)],
         expr: &HirExpr,
     ) -> Option<Place> {
+        // ── Supervisor dispatch ───────────────────────────────────────────
+        // Check if `actor_name` names a supervisor before falling through to
+        // the actor-layout path. Supervisors are not in `actor_layouts`; their
+        // spawn is routed to the synthesised bootstrap function via a
+        // `Terminator::Call` rather than `Instr::SpawnActor`.
+        if let Some(sup_layout) = self.supervisor_layout_map.get(actor_name).cloned() {
+            if !args.is_empty() {
+                // Supervisor init args are not yet supported. The checker
+                // already rejects supervisor declarations with init params;
+                // this branch catches any future surface that reaches MIR
+                // before the checker guard does.
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!(
+                            "supervisor spawn with init args (`spawn {actor_name}(…)`)"
+                        ),
+                        site: expr.site,
+                    },
+                    note: "supervisor init args deferred to follow-on lane; \
+                           use `spawn {actor_name}` with no arguments"
+                        .to_string(),
+                });
+                return None;
+            }
+            // Route `spawn Sup` → `Terminator::Call { bootstrap_symbol }`.
+            // `lower_direct_call` allocates the destination local (typed
+            // `LocalPid<Sup>` from `expr.ty`) and emits the call terminator.
+            return self.lower_direct_call(
+                &sup_layout.bootstrap_symbol,
+                &[], // bootstrap takes no arguments
+                &expr.ty,
+                expr.site,
+            );
+        }
+        // ── Actor dispatch (existing path) ───────────────────────────────
         let Some(layout) = self.actor_layouts.get(actor_name).cloned() else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::CutoverUnsupported {
@@ -7337,6 +7402,7 @@ mod slice3_invariants {
                 "handler".to_string(),
                 HashMap::new(),
                 &hew_hir::TypeClassTable::default(),
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 None,

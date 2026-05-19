@@ -1,17 +1,22 @@
-//! S-C slice tests for supervisor MIR lowering.
+//! S-C / S-D slice tests for supervisor MIR lowering.
 //!
 //! Validates that `HirItem::Supervisor` produces a bootstrap function whose
 //! body spawns each declared child in topological order, threading
 //! `wired_to:` siblings through the existing `Instr::SpawnActor` substrate
 //! as `init_args`. The supervisor itself is materialized as a
 //! `SupervisorLayout` on the produced `IrPipeline`.
+//!
+//! S-D.1 routing tests: `spawn Sup` in user code routes to a
+//! `Terminator::Call { App__bootstrap }` with a `LocalPid<Sup>`-typed
+//! destination, and init-args are rejected with `CutoverUnsupported`.
 
 use std::collections::HashMap;
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, FunctionCallConv, Instr, Place};
-use hew_types::{module_registry::ModuleRegistry, Checker};
+use hew_mir::{lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, Place, Terminator};
+use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
+/// Lower a Hew source program to MIR, asserting no parse or HIR diagnostics.
 fn lower_module_from_source(source: &str) -> hew_mir::IrPipeline {
     let parsed = hew_parser::parse(source);
     assert!(
@@ -95,7 +100,17 @@ fn supervisor_three_children_with_wired_to_dep_emits_topo_ordered_spawn_sequence
         FunctionCallConv::ActorHandler,
         "supervisors are actor-likes: their bootstrap carries an execution context"
     );
-    assert_eq!(bootstrap.return_ty, hew_types::ResolvedTy::Unit);
+    assert_eq!(
+        bootstrap.return_ty,
+        hew_types::ResolvedTy::Named {
+            name: "LocalPid".to_string(),
+            args: vec![hew_types::ResolvedTy::Named {
+                name: "App".to_string(),
+                args: vec![],
+            }],
+        },
+        "bootstrap returns LocalPid<App> so spawn-site callers receive a typed handle"
+    );
     assert!(
         bootstrap.params.is_empty(),
         "the bootstrap is a no-arg synthetic entry-point"
@@ -188,5 +203,128 @@ fn supervisor_with_no_wired_to_preserves_declaration_order() {
         order,
         vec!["a", "b", "c"],
         "siblings with no wired_to deps preserve source declaration order"
+    );
+}
+
+/// S-D.1: `spawn App` in a user function routes to a `Terminator::Call` targeting
+/// `App__bootstrap`, with a `LocalPid<App>`-typed destination place. No diagnostics.
+#[test]
+fn spawn_supervisor_routes_to_bootstrap_call_with_local_pid_return() {
+    let pipeline = lower_module_from_source(
+        r"
+        actor Worker { receive fn ping() {} }
+
+        supervisor App {
+            child w: Worker
+        }
+
+        fn main() -> i64 {
+            spawn App;
+            42
+        }
+        ",
+    );
+
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "no MIR diagnostics expected; got: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let main_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "main")
+        .expect("main function emitted into raw_mir");
+
+    // Find the Terminator::Call targeting App__bootstrap.
+    let call_term = main_fn
+        .blocks
+        .iter()
+        .find_map(|b| {
+            if let Terminator::Call { callee, dest, .. } = &b.terminator {
+                if callee == "App__bootstrap" {
+                    return Some((callee.clone(), *dest));
+                }
+            }
+            None
+        })
+        .expect("main body contains a Terminator::Call targeting App__bootstrap");
+
+    // The destination place must be typed LocalPid<App>.
+    let (_, dest) = call_term;
+    let dest_place = dest.expect("bootstrap call must allocate a return destination");
+    let local_idx = match dest_place {
+        Place::Local(idx) => idx,
+        other => panic!("expected Place::Local for bootstrap call dest, got {other:?}"),
+    };
+    let dest_ty = &main_fn.locals[local_idx as usize];
+    assert_eq!(
+        *dest_ty,
+        ResolvedTy::Named {
+            name: "LocalPid".to_string(),
+            args: vec![ResolvedTy::Named {
+                name: "App".to_string(),
+                args: vec![],
+            }],
+        },
+        "bootstrap call destination must have type LocalPid<App>"
+    );
+
+    // No SpawnActor instruction in main — the supervisor is called, not spawned directly.
+    let spawn_count = main_fn
+        .blocks
+        .iter()
+        .flat_map(|b| b.instructions.iter())
+        .filter(|i| matches!(i, Instr::SpawnActor { .. }))
+        .count();
+    assert_eq!(
+        spawn_count, 0,
+        "main must not contain Instr::SpawnActor for a supervisor spawn"
+    );
+}
+
+/// S-D.1 negative: `spawn App(x: 1)` emits `CutoverUnsupported` with the
+/// "supervisor spawn with init args" construct string.
+#[test]
+fn spawn_supervisor_with_init_args_emits_cutover_unsupported() {
+    // Build the pipeline without asserting HIR or MIR diagnostics clean —
+    // the MIR diagnostic we want is exactly what this test asserts.
+    let parsed = hew_parser::parse(
+        r"
+        actor Worker { receive fn ping() {} }
+
+        supervisor App {
+            child w: Worker
+        }
+
+        fn main() -> i64 {
+            spawn App(x: 1);
+            42
+        }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    let hir = hew_hir::lower_program(&parsed.program, &tc_output, &hew_hir::ResolutionCtx);
+    let pipeline = hew_mir::lower_hir_module(&hir.module);
+
+    let cutover = pipeline.diagnostics.iter().find(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::CutoverUnsupported { construct, .. }
+                if construct.contains("supervisor spawn with init args")
+        )
+    });
+    assert!(
+        cutover.is_some(),
+        "expected CutoverUnsupported for supervisor spawn with init args; \
+         got diagnostics: {:#?}",
+        pipeline.diagnostics
     );
 }

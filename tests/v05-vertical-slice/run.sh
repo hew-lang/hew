@@ -217,3 +217,18 @@ if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/spawn_lambda_legacy.h
   exit 1
 fi
 grep -q 'E_LEGACY_SPAWN_LAMBDA_SYNTAX' "${reject_output}"
+
+# Reject: link/monitor/unlink pending Cluster 2 composite-return spine.
+# Runtime symbols (hew_actor_link, hew_actor_monitor) and codegen arms exist,
+# but Result<(),LinkError> / MonitorRef construction requires Cluster 2.
+# The diagnostic must be CutoverUnsupported with slice_target "Cluster-2",
+# NOT UnresolvedSymbol (which would look like a user typo).
+if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/link_monitor_pending_cluster2.hew" >"${reject_output}" 2>&1; then
+  echo "expected link/monitor fixture to fail" >&2
+  exit 1
+fi
+grep -q 'CutoverUnsupported' "${reject_output}"
+grep -q 'Cluster-2' "${reject_output}"
+# The verifier emits a secondary UnresolvedSymbol for the unresolved callee
+# (consistent with all unresolved-builtin-callee paths); the primary and
+# informative diagnostic is CutoverUnsupported — verified above.

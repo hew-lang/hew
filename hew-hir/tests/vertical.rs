@@ -1164,3 +1164,98 @@ fn make() {
          captures = {captures:?}",
     );
 }
+
+// ── link / monitor / unlink rejection ──────────────────────────────────────
+//
+// These builtins have runtime substrate (`hew_actor_link`, `hew_actor_monitor`)
+// and codegen arms, but the MIR producer cannot be wired until the Cluster 2
+// composite-return spine lands (Result<(),LinkError> and MonitorRef).
+// Until then, every call must emit CutoverUnsupported with slice_target
+// "Cluster-2" — never UnresolvedSymbol (which looks like a user typo).
+
+#[test]
+fn link_call_emits_cutover_not_unresolved() {
+    // `link(x)` in a syntactically valid actor context.
+    // The checker is not run here (TypeCheckOutput::default()); HIR lowering
+    // must fire the intercept independently of type-check state.
+    let output = lower(
+        "actor Probe { receive fn crash() { exit(1) } }
+         fn main() { let p = spawn Probe; link(p); }",
+    );
+    let cutover = output.diagnostics.iter().any(|d| match &d.kind {
+        HirDiagnosticKind::CutoverUnsupported {
+            construct,
+            slice_target,
+        } => construct.contains("link") && slice_target == "Cluster-2",
+        _ => false,
+    });
+    assert!(
+        cutover,
+        "link() call must emit CutoverUnsupported(Cluster-2), got: {:?}",
+        output.diagnostics
+    );
+    // Must NOT produce a bare UnresolvedSymbol that looks like a user typo.
+    let unresolved_name = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(&d.kind, HirDiagnosticKind::UnresolvedSymbol { name } if name == "link"));
+    assert!(
+        !unresolved_name,
+        "link() must not produce UnresolvedSymbol(link); \
+         CutoverUnsupported is the expected diagnostic"
+    );
+}
+
+#[test]
+fn monitor_call_emits_cutover_not_unresolved() {
+    let output = lower(
+        "actor Target { receive fn ping() {} }
+         fn main() { let t = spawn Target; monitor(t); }",
+    );
+    let cutover = output.diagnostics.iter().any(|d| match &d.kind {
+        HirDiagnosticKind::CutoverUnsupported {
+            construct,
+            slice_target,
+        } => construct.contains("monitor") && slice_target == "Cluster-2",
+        _ => false,
+    });
+    assert!(
+        cutover,
+        "monitor() call must emit CutoverUnsupported(Cluster-2), got: {:?}",
+        output.diagnostics
+    );
+    let unresolved_name = output.diagnostics.iter().any(
+        |d| matches!(&d.kind, HirDiagnosticKind::UnresolvedSymbol { name } if name == "monitor"),
+    );
+    assert!(
+        !unresolved_name,
+        "monitor() must not produce UnresolvedSymbol(monitor)"
+    );
+}
+
+#[test]
+fn unlink_call_emits_cutover_not_unresolved() {
+    let output = lower(
+        "actor Probe { receive fn crash() { exit(1) } }
+         fn main() { let p = spawn Probe; unlink(p); }",
+    );
+    let cutover = output.diagnostics.iter().any(|d| match &d.kind {
+        HirDiagnosticKind::CutoverUnsupported {
+            construct,
+            slice_target,
+        } => construct.contains("unlink") && slice_target == "Cluster-2",
+        _ => false,
+    });
+    assert!(
+        cutover,
+        "unlink() call must emit CutoverUnsupported(Cluster-2), got: {:?}",
+        output.diagnostics
+    );
+    let unresolved_name = output.diagnostics.iter().any(
+        |d| matches!(&d.kind, HirDiagnosticKind::UnresolvedSymbol { name } if name == "unlink"),
+    );
+    assert!(
+        !unresolved_name,
+        "unlink() must not produce UnresolvedSymbol(unlink)"
+    );
+}

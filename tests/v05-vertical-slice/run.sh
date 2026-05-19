@@ -117,6 +117,26 @@ run_accept_expect_status "supervisor_basic" 42
 # by hew-runtime/tests/on_crash_invocation.rs.
 run_accept_expect_status "on_crash_basic" 42
 
+# Reject: accessing a non-existent child name on a supervisor LHS.
+# `app.w2` does not exist — App declares only `w1`.  The checker emits
+# UndefinedField with a fuzzy suggestion for `w1`.
+if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/supervisor_unknown_child.hew" >"${reject_output}" 2>&1; then
+  echo "expected supervisor-unknown-child fixture to fail" >&2
+  exit 1
+fi
+grep -q 'has no child named' "${reject_output}"
+grep -q 'w1' "${reject_output}"
+
+# Reject: field access on a plain actor LocalPid, not a supervisor.
+# `w.child` on LocalPid<Worker> — the checker emits UndefinedField because
+# LocalPid has no user-visible fields and is not in the supervisor_children map.
+if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/supervisor_child_on_plain_actor.hew" >"${reject_output}" 2>&1; then
+  echo "expected supervisor-child-on-plain-actor fixture to fail" >&2
+  exit 1
+fi
+grep -q 'no field' "${reject_output}"
+grep -q 'LocalPid' "${reject_output}"
+
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"
 run_accept_expect_stdout "print_f64"

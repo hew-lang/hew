@@ -1,0 +1,24 @@
+// Reject fixture: accessing a non-existent child name on a supervisor LHS.
+//
+// `app.w2` does not exist — `App` declares only `w1`.  The checker must emit
+// `UndefinedField` with the message "supervisor `App` has no child named `w2`"
+// and a fuzzy suggestion for `w1` (Levenshtein distance 1).
+actor Worker {
+    receive fn ping(n: i64) -> i64 {
+        n
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    max_restarts: 3;
+    window: 60;
+
+    child w1: Worker;
+}
+
+fn main() -> i64 {
+    let app = spawn App;
+    let _w = app.w2;
+    42
+}

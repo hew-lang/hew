@@ -309,15 +309,26 @@ unsafe impl Send for InternalPoolSpec {}
 const SUP_INITIAL_CAPACITY: usize = 16;
 const MAX_RESTARTS_TRACK: usize = 32;
 
-/// Restart strategies.
-const STRATEGY_ONE_FOR_ONE: c_int = 0;
-const STRATEGY_ONE_FOR_ALL: c_int = 1;
-const STRATEGY_REST_FOR_ONE: c_int = 2;
+/// Restart strategies. `pub` so codegen names them by symbol when emitting
+/// the `hew_supervisor_new(strategy, ...)` call from a supervisor bootstrap
+/// function — single source of truth across runtime + codegen.
+pub const STRATEGY_ONE_FOR_ONE: c_int = 0;
+pub const STRATEGY_ONE_FOR_ALL: c_int = 1;
+pub const STRATEGY_REST_FOR_ONE: c_int = 2;
+/// `simple_one_for_one` (pool dynamics). Reserved in the strategy ABI so
+/// every variant is explicit on the runtime side; the codegen surface that
+/// emits this constant — and the per-pool runtime semantics — lands in S-E.
+/// Today the match arm in `restart_with_budget_and_strategy` accepts the
+/// variant as a documented no-op (pool restart is driven by the per-pool
+/// machinery on `HewSupervisor.pool_*`, not by this child-restart helper).
+pub const STRATEGY_SIMPLE_ONE_FOR_ONE: c_int = 3;
 
-/// Restart policies.
-const RESTART_PERMANENT: c_int = 0;
-const RESTART_TRANSIENT: c_int = 1;
-const RESTART_TEMPORARY: c_int = 2;
+/// Restart policies. `pub` for the same reason as the strategy constants:
+/// codegen names them when emitting `HewChildSpec.restart_policy` from a
+/// supervisor bootstrap.
+pub const RESTART_PERMANENT: c_int = 0;
+pub const RESTART_TRANSIENT: c_int = 1;
+pub const RESTART_TEMPORARY: c_int = 2;
 
 // ── Exit reasons ─────────────────────────────────────────────────────────
 //
@@ -1336,7 +1347,23 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
                 unsafe { restart_child_from_spec(sup, i) };
             }
         }
-        _ => {}
+        STRATEGY_SIMPLE_ONE_FOR_ONE => {
+            // Pool dynamics — pool children restart via the per-pool path on
+            // `HewSupervisor.pool_*`, not via this child-restart helper. The
+            // codegen-side bootstrap that emits this strategy + the per-pool
+            // restart machinery land together in S-E. Keeping the arm
+            // explicit (not a wildcard) so `exhaustive-coverage` holds.
+        }
+        unknown => {
+            // Fail-closed: any non-listed strategy is a codegen/runtime ABI
+            // drift. Pre-S-D this fell through a `_ => {}` wildcard, which
+            // silently dropped restart requests for unrecognized strategies.
+            unreachable!(
+                "hew_supervisor: unknown restart strategy {unknown}; \
+                 valid: ONE_FOR_ONE=0, ONE_FOR_ALL=1, REST_FOR_ONE=2, \
+                 SIMPLE_ONE_FOR_ONE=3"
+            );
+        }
     }
 
     notify_restart(sup);

@@ -3259,11 +3259,21 @@ impl LowerCtx {
             // Each arm body lowers inside its own scope so `binding_name`
             // resolves to this arm's reply value within the body, and is
             // invisible to sibling arms and the surrounding scope.
+            //
+            // The `BindingId` returned by `bind()` is recorded on the
+            // arm so MIR's `Terminator::Select` producer can register
+            // `binding_locals[id] = <reply_dest_place>` before lowering
+            // the arm body; without this id the body's `BindingRef`
+            // resolves to an unbound `Place` and falls back to
+            // `MirDiagnosticKind::UnresolvedPlace`.
             self.push_scope();
-            if let Some(ref name) = binding_name {
+            let binding_id = if let Some(ref name) = binding_name {
                 let binding_ty = self.select_arm_binding_ty(&kind, &arm.source.1);
-                self.bind(name.clone(), binding_ty, false, arm.binding.1.clone());
-            }
+                let bound = self.bind(name.clone(), binding_ty, false, arm.binding.1.clone());
+                Some(bound.id)
+            } else {
+                None
+            };
             let body = self.lower_expr(&arm.body, IntentKind::Read);
             self.pop_scope();
             if let Some(expected) = expected_ty.as_ref() {
@@ -3284,6 +3294,7 @@ impl LowerCtx {
             hir_arms.push(HirSelectArm {
                 kind,
                 binding_name,
+                binding_id,
                 body,
             });
         }
@@ -3318,6 +3329,7 @@ impl LowerCtx {
                     duration: Box::new(duration),
                 },
                 binding_name: None,
+                binding_id: None,
                 body,
             });
         }

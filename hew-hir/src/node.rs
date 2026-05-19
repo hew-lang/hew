@@ -799,10 +799,19 @@ pub struct HirSelect {
 /// for `AfterTimer` arms (timer arms produce no value) and `Some` for
 /// the three value-bearing forms. The `body` runs only when this arm
 /// wins.
+///
+/// `binding_id` is the [`BindingId`] HIR allocated for `binding_name`
+/// when it pushed the arm-body's scope (see slice 1 — `lower_select` at
+/// `lower.rs:3262`). MIR's `Terminator::Select` producer reads this id
+/// to register `binding_locals[id] = <reply_dest>` before lowering the
+/// arm body so the body's `BindingRef` to `binding_name` resolves to
+/// the per-arm reply slot. `None` whenever `binding_name` is `None`
+/// (e.g. `AfterTimer` arms; arms without an `<name> from` pattern).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirSelectArm {
     pub kind: HirSelectArmKind,
     pub binding_name: Option<String>,
+    pub binding_id: Option<BindingId>,
     pub body: HirExpr,
 }
 

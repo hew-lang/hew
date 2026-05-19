@@ -113,7 +113,8 @@ fn diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         | hew_mir::MirDiagnosticKind::UnresolvedPlace { .. }
         | hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { .. }
         | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
-        | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. } => "E_MIR",
+        | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
+        | hew_mir::MirDiagnosticKind::SelectArmNotImplemented { .. } => "E_MIR",
     }
 }
 

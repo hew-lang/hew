@@ -1843,6 +1843,18 @@ pub enum MirDiagnosticKind {
     /// Defense-in-depth: an `HirExprKind::Unsupported` node reached MIR
     /// lowering.  The HIR diagnostic should have stopped the pipeline earlier.
     UnsupportedNode { reason: String },
+    /// A `select{}` arm of a kind the current lane does not lower
+    /// (today: `StreamNext` and `TaskAwait`). Distinct from
+    /// `UnsupportedNode` so the diagnostic names both the arm kind and
+    /// the future lane that will close it; the producer-bridge contract
+    /// for MIR's `Terminator::Select` is "only `ActorAsk` + `AfterTimer`
+    /// arms emit; everything else fails closed with a named pointer to
+    /// the lane that lifts the restriction."
+    SelectArmNotImplemented {
+        arm_kind: String,
+        lane_pointer: String,
+        site: SiteId,
+    },
     /// Cluster 1 spine subset rejection: an expression form (e.g. a call, a
     /// non-integer literal, a control-flow construct) is recognised but not
     /// yet lowered to the backend `Instr` stream. Fail-closed so the emitter

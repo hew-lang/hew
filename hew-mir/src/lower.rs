@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use hew_hir::stdlib_catalog;
 use hew_hir::{
     named_type_names, BindingId, HirActorDecl, HirBlock, HirExpr, HirExprKind, HirFn, HirItem,
-    HirLifecycleHookKind, HirLiteral, HirModule, HirStmtKind, IntentKind, ResolvedRef, ValueClass,
+    HirLifecycleHookKind, HirLiteral, HirModule, HirSelect, HirSelectArmKind, HirStmtKind,
+    IntentKind, ResolvedRef, ValueClass,
 };
 use hew_parser::ast::BinaryOp;
 use hew_types::{ExecutionContextReader, ResolvedTy};
@@ -13,8 +14,8 @@ use crate::model::{
     ActorHandlerLayout, ActorLayout, BasicBlock, BlockKind, CheckedMirFunction, CmpPred,
     DecisionFact, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath,
     FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MirCheck,
-    MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy, Terminator,
-    ThirFunction, TrapKind,
+    MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, SelectArm,
+    SelectArmKind, Strategy, Terminator, ThirFunction, TrapKind,
 };
 
 const HEW_CTX_OFFSET_ACTOR_ID: usize = 8;
@@ -2285,51 +2286,7 @@ impl Builder {
                 output_ty,
                 ..
             } => self.lower_await_task(*binding_id, output_ty, expr.site),
-            HirExprKind::Select(_select) => {
-                // Sealed `select{}` construct. The HIR shape is fixed
-                // (see `HirSelect`/`HirSelectArmKind`) and the MIR
-                // terminator + per-arm shape are declared in
-                // `model::Terminator::Select`, but the runtime
-                // substrate (`hew_select_wait` heterogeneous-arm
-                // dispatch, `hew_stream_poll` pending-read,
-                // `hew_task_scope_cancel_one`, and actor-call
-                // lowering for the ask arm) is not yet wired. MIR
-                // rejects the construct here with a clear diagnostic
-                // so the pipeline fails closed at the earliest seam
-                // that can name the missing substrate; codegen also
-                // fails closed if a `Terminator::Select` ever reaches
-                // it (defence-in-depth).
-                //
-                // TODO: when the runtime substrate lands, replace
-                // this diagnostic with the real construction:
-                //   1. Allocate per-arm setup blocks, winner blocks,
-                //      and a single join block.
-                //   2. Per-arm setup emits the form-specific
-                //      registration runtime call (stream-poll
-                //      registration, ask issue, task observer
-                //      register, timer schedule).
-                //   3. Terminate the select's current basic block
-                //      with `Terminator::Select { arms, next }` where
-                //      `next` is the join block.
-                //   4. The per-arm cleanup blocks consume the
-                //      cleanup-CFG substrate (`BlockKind::Cleanup`,
-                //      `ExitPath::Cancel`) introduced by the
-                //      CFG-construction work that already merged.
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::UnsupportedNode {
-                        reason: "select-construct: runtime substrate \
-                                 (hew_select_wait dispatch + per-arm \
-                                 cancellable primitives) not yet wired"
-                            .to_string(),
-                    },
-                    note: "select{} construct reached MIR lowering; \
-                           HIR-level Select recognition is in place but \
-                           MIR-to-codegen lowering awaits the runtime \
-                           substrate"
-                        .to_string(),
-                });
-                None
-            }
+            HirExprKind::Select(select) => self.lower_select(select, &expr.ty, expr.site),
             HirExprKind::SpawnLambdaActor { .. } => {
                 // The lambda-actor literal allocates a fresh local
                 // (typed as the actor's Duplex<Msg, Reply>) and
@@ -4471,6 +4428,275 @@ impl Builder {
         });
         self.start_block(next);
         None
+    }
+
+    /// Lower a sealed `select{}` expression to MIR.
+    ///
+    /// ## Shape produced
+    ///
+    /// ```text
+    /// originating_bb:
+    ///   <lower each arm's actor receiver + args / duration into Places>
+    ///   Terminator::Select { arms, next: join_bb }
+    ///
+    /// arm_body_bb[i]:                    // entered when arm i wins
+    ///   <body lowers; binding (if any) resolves through binding_locals
+    ///    to the per-arm reply slot codegen writes via hew_reply_wait>
+    ///   Move { dest: result_place, src: <arm body value> }
+    ///   Terminator::Goto { target: join_bb }
+    ///
+    /// join_bb:                           // single convergence point
+    ///   <subsequent function lowering continues here; the select's
+    ///    value is result_place, written by exactly one arm body>
+    /// ```
+    ///
+    /// ## Producer-bridge contract (consumed by codegen / slice 3)
+    ///
+    /// Codegen reads `Terminator::Select { arms, next }` and, for each
+    /// arm:
+    ///   * `SelectArmKind::ActorAsk { actor, method, args }` — emits
+    ///     `hew_reply_channel_new` + `hew_actor_ask_with_channel` per
+    ///     arm in the originating block; calls `hew_select_first` to
+    ///     pick a winner; on win, calls `hew_reply_wait` and writes the
+    ///     reply into `arm.binding` (the reply slot MIR allocated),
+    ///     then jumps to `arm.body_block`; on loss, calls
+    ///     `hew_reply_channel_cancel` + `hew_reply_channel_free`.
+    ///   * `SelectArmKind::AfterTimer { duration }` — wins when the
+    ///     deadline elapses; jumps to `arm.body_block` with no binding.
+    ///
+    /// ## Out-of-scope arm kinds (fail-closed)
+    ///
+    /// `StreamNext` and `TaskAwait` are rejected here with
+    /// `MirDiagnosticKind::SelectArmNotImplemented` naming the future
+    /// lane (`M3 select-widening`). The defence-in-depth fail-closed
+    /// at codegen's `Terminator::Select` arm-kind switch remains.
+    ///
+    /// ## Cleanup-CFG composition (D24-2 / `ExitPath::Select`)
+    ///
+    /// The select terminator emits a `Terminator::Select`; the
+    /// elaboration pass (`enumerate_exits` at lower.rs:6450) wires
+    /// `ExitPath::Select { block: originating_bb, next: join_bb }`
+    /// into `drop_plans` automatically — the function-wide LIFO drop
+    /// plan is empty for this exit (per-arm loser cleanup happens at
+    /// the codegen dispatch site, not at function exit).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "lower_select threads four phases — arm-kind rejection, \
+                  block allocation, per-arm Place lowering + binding \
+                  registration, and per-arm body emit — that don't \
+                  factor cleanly into helpers without re-threading \
+                  Builder state (binding_locals, statements buffer, \
+                  current block cursor)"
+    )]
+    fn lower_select(
+        &mut self,
+        select: &HirSelect,
+        expected_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // Reject out-of-scope arm kinds before allocating any blocks.
+        // The diagnostic names the arm kind and the future lane so a
+        // pipeline-rejection trace points the user (and future
+        // implementers) at the lane that closes the restriction.
+        for arm in &select.arms {
+            match &arm.kind {
+                HirSelectArmKind::ActorAsk { .. } | HirSelectArmKind::AfterTimer { .. } => {}
+                HirSelectArmKind::StreamNext { .. } => {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::SelectArmNotImplemented {
+                            arm_kind: "StreamNext".to_string(),
+                            lane_pointer: "M3 select-widening".to_string(),
+                            site,
+                        },
+                        note: "select{} stream-next arms are not yet lowered; \
+                               only ActorAsk and AfterTimer arms emit Terminator::Select \
+                               in this lane"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                HirSelectArmKind::TaskAwait { .. } => {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::SelectArmNotImplemented {
+                            arm_kind: "TaskAwait".to_string(),
+                            lane_pointer: "M3 select-widening".to_string(),
+                            site,
+                        },
+                        note: "select{} task-await arms are not yet lowered; \
+                               only ActorAsk and AfterTimer arms emit Terminator::Select \
+                               in this lane"
+                            .to_string(),
+                    });
+                    return None;
+                }
+            }
+        }
+
+        // Result local first so it dominates every arm-body's Move.
+        // For Unit-typed selects the placeholder write is benign — no
+        // load occurs in the join block. Mirrors the `lower_if` pattern.
+        let result_place = self.alloc_local(expected_ty.clone());
+
+        // Allocate body blocks for every arm and the single join block
+        // up front so each `SelectArm.body_block` is known before the
+        // originating block seals with `Terminator::Select`.
+        let body_bbs: Vec<u32> = (0..select.arms.len()).map(|_| self.alloc_block()).collect();
+        let join_bb = self.alloc_block();
+
+        // Lower per-arm operands (actor receiver + args, or duration)
+        // and allocate per-arm reply slots in the ORIGINATING block.
+        // Codegen consumes the SelectArm payload to emit the per-arm
+        // setup (channel alloc + ask issue) in the same originating
+        // block before the `hew_select_first` dispatch.
+        let mut mir_arms: Vec<SelectArm> = Vec::with_capacity(select.arms.len());
+        for (arm_index, arm) in select.arms.iter().enumerate() {
+            let (kind, binding_place) = match &arm.kind {
+                HirSelectArmKind::ActorAsk {
+                    actor,
+                    method,
+                    args,
+                } => {
+                    // Resolve the actor handler's reply type so the
+                    // reply slot is typed correctly. Mirrors the
+                    // single-arm `lower_actor_ask` path; differs only
+                    // in that the wait + bind happen across the
+                    // Terminator::Select boundary, not Terminator::Ask.
+                    let info = self.actor_method_info(&actor.ty, method, site)?;
+                    if info.param_tys.len() != args.len() {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::CutoverUnsupported {
+                                construct: format!(
+                                    "select actor-ask arm arity mismatch for `{method}`"
+                                ),
+                                site,
+                            },
+                            note: format!(
+                                "handler expects {} argument(s), arm supplied {}",
+                                info.param_tys.len(),
+                                args.len()
+                            ),
+                        });
+                        return None;
+                    }
+                    let actor_place = self.lower_value(actor)?;
+                    let arg_places: Option<Vec<Place>> =
+                        args.iter().map(|a| self.lower_value(a)).collect();
+                    let arg_places = arg_places?;
+                    // Per-arm reply slot. Codegen writes
+                    // `hew_reply_wait`'s result here on win before
+                    // jumping into the arm body. Register against the
+                    // HIR binding so the body's BindingRef resolves to
+                    // this slot.
+                    let reply_dest = self.alloc_local(info.return_ty.clone());
+                    if let Some(binding_id) = arm.binding_id {
+                        self.binding_locals.insert(binding_id, reply_dest);
+                    }
+                    (
+                        SelectArmKind::ActorAsk {
+                            actor: actor_place,
+                            method: method.clone(),
+                            args: arg_places,
+                        },
+                        Some(reply_dest),
+                    )
+                }
+                HirSelectArmKind::AfterTimer { duration } => {
+                    let duration_place = self.lower_value(duration)?;
+                    // AfterTimer arms bind no value — `binding_id` is
+                    // None by construction (HIR forbids `<name> from
+                    // after ...` patterns). Defensive: even if a
+                    // future HIR shape attached a binding, we'd skip
+                    // registration since codegen has no value to write.
+                    debug_assert!(
+                        arm.binding_id.is_none(),
+                        "AfterTimer arms must not carry a binding_id"
+                    );
+                    (
+                        SelectArmKind::AfterTimer {
+                            duration: duration_place,
+                        },
+                        None,
+                    )
+                }
+                HirSelectArmKind::StreamNext { .. } | HirSelectArmKind::TaskAwait { .. } => {
+                    // Rejected above; defence-in-depth.
+                    unreachable!(
+                        "stream-next / task-await arms were rejected before \
+                         block allocation"
+                    );
+                }
+            };
+            mir_arms.push(SelectArm {
+                kind,
+                body_block: body_bbs[arm_index],
+                binding: binding_place,
+            });
+        }
+
+        // Seal the originating block with the select terminator.
+        self.finish_current_block(Terminator::Select {
+            arms: mir_arms,
+            next: join_bb,
+        });
+
+        // Per-arm body blocks. Each lowers the arm body; the body's
+        // BindingRef (for ActorAsk arms with a binding) resolves
+        // through `binding_locals` to the per-arm reply slot codegen
+        // populated. AfterTimer arms have no binding by construction.
+        // Every body block terminates with Goto join_bb so the join
+        // converges (single-predecessor-per-arm CFG; the converging
+        // result_place plays the role of an SSA phi for the join).
+        for (arm_index, arm) in select.arms.iter().enumerate() {
+            self.start_block(body_bbs[arm_index]);
+            // ActorAsk arms with a value-bearing binding: emit a
+            // `MirStatement::Bind` at the body-block entry so the
+            // dataflow pass sees the binding initialised before the
+            // body's `BindingRef` reads. Codegen writes
+            // `hew_reply_wait`'s result into `SelectArm.binding` on
+            // win, then jumps into this body block — the Bind here
+            // mirrors that runtime initialisation in the MIR
+            // statement stream.
+            if let (Some(binding_id), Some(binding_name)) =
+                (arm.binding_id, arm.binding_name.as_ref())
+            {
+                let binding_ty = self.subst_ty(&arm.body.ty);
+                // The arm body's HIR type matches the bound reply
+                // type (HIR's `select_arm_binding_ty` for ActorAsk
+                // arms reads the same `actor_method_dispatch` reply
+                // type the body's `BindingRef.ty` carries).
+                // Use the arm-binding's resolved type (not the body
+                // expression's) by consulting binding_locals' Place
+                // which we populated earlier.
+                let _ = binding_ty;
+                let binding_place = self
+                    .binding_locals
+                    .get(&binding_id)
+                    .copied()
+                    .expect("ActorAsk arm registered its reply slot before body lowering");
+                let ty_of_place: ResolvedTy = match binding_place {
+                    Place::Local(n) => self.locals[n as usize].clone(),
+                    _ => arm.body.ty.clone(),
+                };
+                self.statements.push(MirStatement::Bind {
+                    binding: binding_id,
+                    name: binding_name.clone(),
+                    site: arm.body.site,
+                    ty: ty_of_place,
+                });
+            }
+            let body_value = self.lower_value(&arm.body);
+            if let Some(src) = body_value {
+                self.instructions.push(Instr::Move {
+                    dest: result_place,
+                    src,
+                });
+            }
+            self.finish_current_block(Terminator::Goto { target: join_bb });
+        }
+
+        // Join block — subsequent lowering continues here.
+        self.start_block(join_bb);
+        Some(result_place)
     }
 
     fn lower_actor_ask(

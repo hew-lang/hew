@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use hew_hir::{
     ids::IdGen, HirActorDecl, HirActorReceiveFn, HirActorStateGuard, HirBinding, HirBlock, HirExpr,
-    HirExprKind, HirField, HirFn, HirItem, HirLiteral, HirModule, HirStmt, HirStmtKind, IntentKind,
-    ResolvedRef, ScopeId, ValueClass,
+    HirExprKind, HirField, HirFn, HirItem, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
+    HirModule, HirStmt, HirStmtKind, IntentKind, ResolvedRef, ScopeId, ValueClass,
 };
 use hew_mir::{lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, Terminator};
 use hew_types::ResolvedTy;
@@ -174,11 +174,23 @@ fn actor_receive_handlers_emit_actor_handler_functions_and_layout() {
         vec![ResolvedTy::I64]
     );
     assert_eq!(
+        pipeline.actor_layouts[0].init_param_names,
+        vec!["initial".to_string()]
+    );
+    assert_eq!(
         pipeline.actor_layouts[0].init_param_tys,
         vec![ResolvedTy::I64]
     );
+    assert_eq!(
+        pipeline.actor_layouts[0].init_symbol.as_deref(),
+        Some("Counter__init")
+    );
 
-    for symbol in ["Counter__recv__increment", "Counter__recv__current"] {
+    for symbol in [
+        "Counter__init",
+        "Counter__recv__increment",
+        "Counter__recv__current",
+    ] {
         let func = pipeline
             .raw_mir
             .iter()
@@ -215,7 +227,10 @@ fn actor_handler_generator_receive_fn_emits_unsupported_diagnostic_and_no_body()
 
     let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
 
-    assert!(pipeline.raw_mir.is_empty());
+    assert!(pipeline
+        .raw_mir
+        .iter()
+        .all(|func| func.name != "Counter__recv__ticks"));
     assert!(pipeline.diagnostics.iter().any(|diag| {
         matches!(
             &diag.kind,
@@ -223,6 +238,78 @@ fn actor_handler_generator_receive_fn_emits_unsupported_diagnostic_and_no_body()
                 if reason == "actor receive fn declared as generator; generator MIR lowering is a separate lane"
         )
     }));
+}
+
+#[test]
+fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
+    let mut ids = IdGen::default();
+    let start_return = return_none_stmt(&mut ids);
+    let stop_return = return_none_stmt(&mut ids);
+    let crash_return = return_none_stmt(&mut ids);
+    let upgrade_return = return_none_stmt(&mut ids);
+    let actor = {
+        let mut actor = actor(&mut ids, "Counter", vec![]);
+        actor.lifecycle_hooks = vec![
+            HirLifecycleHook {
+                kind: HirLifecycleHookKind::Start,
+                name: "boot".to_string(),
+                params: vec![],
+                return_ty: ResolvedTy::Unit,
+                body: block(&mut ids, vec![start_return], None, ResolvedTy::Unit),
+                span: 0..0,
+            },
+            HirLifecycleHook {
+                kind: HirLifecycleHookKind::Stop,
+                name: "shutdown".to_string(),
+                params: vec![],
+                return_ty: ResolvedTy::Unit,
+                body: block(&mut ids, vec![stop_return], None, ResolvedTy::Unit),
+                span: 0..0,
+            },
+            HirLifecycleHook {
+                kind: HirLifecycleHookKind::Crash,
+                name: "crashed".to_string(),
+                params: vec![],
+                return_ty: ResolvedTy::Unit,
+                body: block(&mut ids, vec![crash_return], None, ResolvedTy::Unit),
+                span: 0..0,
+            },
+            HirLifecycleHook {
+                kind: HirLifecycleHookKind::Upgrade,
+                name: "upgrade".to_string(),
+                params: vec![],
+                return_ty: ResolvedTy::Unit,
+                body: block(&mut ids, vec![upgrade_return], None, ResolvedTy::Unit),
+                span: 0..0,
+            },
+        ];
+        actor
+    };
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
+
+    assert_eq!(
+        pipeline.actor_layouts[0].on_start_symbol.as_deref(),
+        Some("Counter__on_start")
+    );
+    let start = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Counter__on_start")
+        .expect("start hook MIR");
+    assert_eq!(start.call_conv, FunctionCallConv::ActorHandler);
+    for diagnostic_name in [
+        "OnStopNotYetWired",
+        "OnCrashNotYetWired",
+        "OnUpgradeNotYetWired",
+    ] {
+        assert!(pipeline.diagnostics.iter().any(|diag| {
+            matches!(
+                &diag.kind,
+                MirDiagnosticKind::UnsupportedNode { reason } if reason.contains(diagnostic_name)
+            )
+        }));
+    }
 }
 
 #[test]
@@ -249,7 +336,10 @@ fn actor_handler_unknown_self_field_emits_typed_diagnostic_and_skips_handler() {
 
     let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
 
-    assert!(pipeline.raw_mir.is_empty());
+    assert!(pipeline
+        .raw_mir
+        .iter()
+        .all(|func| func.name != "Counter__recv__bad"));
     assert!(pipeline.diagnostics.iter().any(|diag| {
         matches!(
             &diag.kind,

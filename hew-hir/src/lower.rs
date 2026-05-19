@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
 use hew_parser::ast::{
-    ActorDecl, AttributeArg, BinaryOp, Block, Expr, FnDecl, Item, LambdaParam, Literal,
-    MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, ResourceMarker,
-    RestartPolicy, SelectArm, Span, Spanned, Stmt, SupervisorDecl, SupervisorStrategy,
-    TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
+    ActorDecl, AttributeArg, BinaryOp, Block, CompoundAssignOp, Expr, FnDecl, Item, LambdaParam,
+    Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind,
+    ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, SupervisorDecl,
+    SupervisorStrategy, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
 };
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ClosureCaptureFact,
@@ -1884,7 +1884,7 @@ impl LowerCtx {
             .map(|rf| self.lower_actor_receive_fn(rf, &state_fields))
             .collect();
 
-        let (methods, lifecycle_hooks) = self.partition_actor_methods(&decl.methods);
+        let (methods, lifecycle_hooks) = self.partition_actor_methods(&decl.methods, &state_fields);
 
         HirActorDecl {
             id: self.ids.item(),
@@ -1995,6 +1995,7 @@ impl LowerCtx {
     fn partition_actor_methods(
         &mut self,
         methods: &[FnDecl],
+        state_fields: &[HirField],
     ) -> (Vec<HirActorMethod>, Vec<HirLifecycleHook>) {
         let mut plain = Vec::new();
         let mut hooks = Vec::new();
@@ -2004,7 +2005,7 @@ impl LowerCtx {
                 .as_ref()
                 .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
             let (params, body) =
-                self.lower_actor_body(&[], &method.params, &method.body, &return_ty);
+                self.lower_actor_body(state_fields, &method.params, &method.body, &return_ty);
             let hook_attr = method.attributes.iter().find(|a| a.name == "on");
             let hook_kind = hook_attr
                 .and_then(|a| a.args.first())
@@ -2353,11 +2354,8 @@ impl LowerCtx {
                 HirStmtKind::Let(binding, value)
             }
             Stmt::Assign { target, op, value } => {
-                if op.is_some() {
-                    self.unsupported(span.clone(), "compound assignment", "actor-body-slice4");
-                    HirStmtKind::Expr(
-                        self.unsupported_expr(span.clone(), "unsupported compound assignment"),
-                    )
+                if let Some(op) = op {
+                    self.lower_compound_assignment(target, *op, value, &span)
                 } else {
                     let target = self.lower_expr(target, IntentKind::Modify);
                     let value = self.lower_expr(value, IntentKind::Consume);
@@ -2425,6 +2423,51 @@ impl LowerCtx {
             node: self.ids.node(),
             kind,
             span,
+        }
+    }
+
+    fn lower_compound_assignment(
+        &mut self,
+        target: &Spanned<Expr>,
+        op: CompoundAssignOp,
+        value: &Spanned<Expr>,
+        span: &Span,
+    ) -> HirStmtKind {
+        let binary_op = Self::compound_assign_binary_op(op);
+        let target_read = self.lower_expr(target, IntentKind::Read);
+        let rhs = self.lower_expr(value, IntentKind::Read);
+        let target_write = self.lower_expr(target, IntentKind::Modify);
+        let value = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: target_read.ty.clone(),
+            value_class: target_read.value_class,
+            intent: IntentKind::Consume,
+            kind: HirExprKind::Binary {
+                op: binary_op,
+                left: Box::new(target_read),
+                right: Box::new(rhs),
+            },
+            span: span.clone(),
+        };
+        HirStmtKind::Assign {
+            target: target_write,
+            value,
+        }
+    }
+
+    fn compound_assign_binary_op(op: CompoundAssignOp) -> BinaryOp {
+        match op {
+            CompoundAssignOp::Add => BinaryOp::Add,
+            CompoundAssignOp::Subtract => BinaryOp::Subtract,
+            CompoundAssignOp::Multiply => BinaryOp::Multiply,
+            CompoundAssignOp::Divide => BinaryOp::Divide,
+            CompoundAssignOp::Modulo => BinaryOp::Modulo,
+            CompoundAssignOp::BitAnd => BinaryOp::BitAnd,
+            CompoundAssignOp::BitOr => BinaryOp::BitOr,
+            CompoundAssignOp::BitXor => BinaryOp::BitXor,
+            CompoundAssignOp::Shl => BinaryOp::Shl,
+            CompoundAssignOp::Shr => BinaryOp::Shr,
         }
     }
 

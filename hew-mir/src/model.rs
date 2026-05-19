@@ -71,9 +71,16 @@ pub struct ActorLayout {
     pub state_field_names: Vec<String>,
     /// Actor state field types in declaration order.
     pub state_field_tys: Vec<ResolvedTy>,
+    /// Actor init parameter names in declaration order. Empty when the actor
+    /// has no explicit init block.
+    pub init_param_names: Vec<String>,
     /// Actor init parameter types in declaration order. Empty when the actor
     /// has no explicit init block.
     pub init_param_tys: Vec<ResolvedTy>,
+    /// Actor init handler symbol. `None` when the actor has no explicit init block.
+    pub init_symbol: Option<String>,
+    /// `#[on(start)]` handler symbol. `None` when the actor has no start hook.
+    pub on_start_symbol: Option<String>,
     /// Receive handlers in message-type order.
     pub handlers: Vec<ActorHandlerLayout>,
 }
@@ -961,6 +968,7 @@ pub enum Instr {
     SpawnActor {
         actor_name: String,
         state: Option<Place>,
+        init_args: Vec<Place>,
         dest: Place,
     },
     /// Call a first-class callable pair. Codegen loads the function pointer and

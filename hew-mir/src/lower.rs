@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use hew_hir::stdlib_catalog;
 use hew_hir::{
     named_type_names, BindingId, HirActorDecl, HirBlock, HirExpr, HirExprKind, HirFn, HirItem,
-    HirLiteral, HirModule, HirStmtKind, IntentKind, ResolvedRef, ValueClass,
+    HirLifecycleHookKind, HirLiteral, HirModule, HirStmtKind, IntentKind, ResolvedRef, ValueClass,
 };
 use hew_parser::ast::BinaryOp;
 use hew_types::{ExecutionContextReader, ResolvedTy};
@@ -315,11 +315,25 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         .iter()
                         .map(|field| field.ty.clone())
                         .collect(),
+                    init_param_names: actor
+                        .init
+                        .as_ref()
+                        .map(|init| init.params.iter().map(|param| param.name.clone()).collect())
+                        .unwrap_or_default(),
                     init_param_tys: actor
                         .init
                         .as_ref()
                         .map(|init| init.params.iter().map(|param| param.ty.clone()).collect())
                         .unwrap_or_default(),
+                    init_symbol: actor
+                        .init
+                        .as_ref()
+                        .map(|_| mangle_actor_init_handler(&actor.name)),
+                    on_start_symbol: actor
+                        .lifecycle_hooks
+                        .iter()
+                        .find(|hook| hook.kind == HirLifecycleHookKind::Start)
+                        .map(|_| mangle_actor_start_handler(&actor.name)),
                     handlers: actor
                         .receive_handlers
                         .iter()
@@ -444,7 +458,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 diagnostics.extend(lowered.diagnostics);
             }
             HirItem::Actor(actor) => {
-                let lowered_handlers = lower_actor_receive_handlers(
+                let lowered_handlers = lower_actor_body_handlers(
                     actor,
                     &module.type_classes,
                     &record_field_orders,
@@ -649,6 +663,219 @@ fn lower_actor_receive_handlers(
     lowered
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "actor body lowering threads the same module tables as regular function lowering"
+)]
+fn lower_actor_body_handlers(
+    actor: &HirActorDecl,
+    type_classes: &hew_hir::TypeClassTable,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    module_fn_names: &HashSet<String>,
+    call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    emitted_symbols: &mut HashMap<String, String>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) -> Vec<LoweredFunction> {
+    let mut lowered = Vec::new();
+    if let Some(init) = &actor.init {
+        if let Some(func) = lower_actor_init_handler(
+            actor,
+            init,
+            type_classes,
+            record_field_orders,
+            actor_layouts,
+            module_fn_names,
+            call_site_type_args,
+            emitted_symbols,
+            diagnostics,
+        ) {
+            lowered.push(func);
+        }
+    }
+    lowered.extend(lower_actor_lifecycle_handlers(
+        actor,
+        type_classes,
+        record_field_orders,
+        actor_layouts,
+        module_fn_names,
+        call_site_type_args,
+        emitted_symbols,
+        diagnostics,
+    ));
+    lowered.extend(lower_actor_receive_handlers(
+        actor,
+        type_classes,
+        record_field_orders,
+        actor_layouts,
+        module_fn_names,
+        call_site_type_args,
+        emitted_symbols,
+        diagnostics,
+    ));
+    lowered
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "actor init lowering threads the same module tables as regular function lowering"
+)]
+fn lower_actor_init_handler(
+    actor: &HirActorDecl,
+    init: &hew_hir::HirActorInit,
+    type_classes: &hew_hir::TypeClassTable,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    module_fn_names: &HashSet<String>,
+    call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    emitted_symbols: &mut HashMap<String, String>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) -> Option<LoweredFunction> {
+    let emit_name = mangle_actor_init_handler(&actor.name);
+    let duplicate_label = format!("actor `{}` init", actor.name);
+    if let Some(existing) = emitted_symbols.get(&emit_name) {
+        diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::ActorHandlerSymbolCollision {
+                symbol: emit_name,
+                existing: existing.clone(),
+                duplicate: duplicate_label,
+            },
+            note: "actor init handler symbol mangling must be one-to-one before MIR emission"
+                .to_string(),
+        });
+        return None;
+    }
+    emitted_symbols.insert(emit_name.clone(), duplicate_label);
+
+    let synthetic_fn = HirFn {
+        id: actor.id,
+        node: actor.node,
+        name: format!("{}::init", actor.name),
+        type_params: Vec::new(),
+        params: init.params.clone(),
+        return_ty: ResolvedTy::Unit,
+        body: init.body.clone(),
+        span: actor.span.clone(),
+    };
+    Some(lower_function(
+        &synthetic_fn,
+        emit_name,
+        HashMap::new(),
+        type_classes,
+        record_field_orders,
+        actor_layouts,
+        Some(&actor.name),
+        module_fn_names,
+        call_site_type_args,
+        crate::model::FunctionCallConv::ActorHandler,
+    ))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "actor lifecycle lowering threads the same module tables as regular function lowering"
+)]
+fn lower_actor_lifecycle_handlers(
+    actor: &HirActorDecl,
+    type_classes: &hew_hir::TypeClassTable,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    module_fn_names: &HashSet<String>,
+    call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    emitted_symbols: &mut HashMap<String, String>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) -> Vec<LoweredFunction> {
+    let mut lowered = Vec::new();
+    for hook in &actor.lifecycle_hooks {
+        match hook.kind {
+            HirLifecycleHookKind::Start => {
+                let emit_name = mangle_actor_start_handler(&actor.name);
+                let duplicate_label =
+                    format!("actor `{}` #[on(start)] hook `{}`", actor.name, hook.name);
+                if let Some(existing) = emitted_symbols.get(&emit_name) {
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::ActorHandlerSymbolCollision {
+                            symbol: emit_name,
+                            existing: existing.clone(),
+                            duplicate: duplicate_label,
+                        },
+                        note: "actor #[on(start)] handler symbol mangling must be one-to-one before MIR emission"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                emitted_symbols.insert(emit_name.clone(), duplicate_label);
+
+                let synthetic_fn = HirFn {
+                    id: actor.id,
+                    node: actor.node,
+                    name: format!("{}::{}", actor.name, hook.name),
+                    type_params: Vec::new(),
+                    params: hook.params.clone(),
+                    return_ty: hook.return_ty.clone(),
+                    body: hook.body.clone(),
+                    span: hook.span.clone(),
+                };
+                lowered.push(lower_function(
+                    &synthetic_fn,
+                    emit_name,
+                    HashMap::new(),
+                    type_classes,
+                    record_field_orders,
+                    actor_layouts,
+                    Some(&actor.name),
+                    module_fn_names,
+                    call_site_type_args,
+                    crate::model::FunctionCallConv::ActorHandler,
+                ));
+            }
+            HirLifecycleHookKind::Stop => push_lifecycle_not_wired_diagnostic(
+                diagnostics,
+                &actor.name,
+                &hook.name,
+                "OnStopNotYetWired",
+                "stop",
+                "actor shutdown lifecycle invocation is not wired yet",
+            ),
+            HirLifecycleHookKind::Crash => push_lifecycle_not_wired_diagnostic(
+                diagnostics,
+                &actor.name,
+                &hook.name,
+                "OnCrashNotYetWired",
+                "crash",
+                "supervisor crash lifecycle invocation is pending on S-C",
+            ),
+            HirLifecycleHookKind::Upgrade => push_lifecycle_not_wired_diagnostic(
+                diagnostics,
+                &actor.name,
+                &hook.name,
+                "OnUpgradeNotYetWired",
+                "upgrade",
+                "hot-upgrade lifecycle invocation is pending explicit ratification",
+            ),
+        }
+    }
+    lowered
+}
+
+fn push_lifecycle_not_wired_diagnostic(
+    diagnostics: &mut Vec<MirDiagnostic>,
+    actor_name: &str,
+    hook_name: &str,
+    diagnostic_name: &str,
+    hook_kind: &str,
+    reason: &str,
+) {
+    diagnostics.push(MirDiagnostic {
+        kind: MirDiagnosticKind::UnsupportedNode {
+            reason: format!("{diagnostic_name}: #[on({hook_kind})] is not wired"),
+        },
+        note: format!(
+            "`#[on({hook_kind})]` hook `{actor_name}::{hook_name}` would silently never run; {reason}"
+        ),
+    });
+}
+
 /// Deterministic actor receive-handler symbol mangling.
 ///
 /// Scheme: `<Actor>__recv__<handler>`, with source identifiers preserved
@@ -656,6 +883,14 @@ fn lower_actor_receive_handlers(
 /// existing function symbols and earlier handler symbols before body emission.
 fn mangle_actor_receive_handler(actor_name: &str, handler_name: &str) -> String {
     format!("{actor_name}__recv__{handler_name}")
+}
+
+fn mangle_actor_init_handler(actor_name: &str) -> String {
+    format!("{actor_name}__init")
+}
+
+fn mangle_actor_start_handler(actor_name: &str) -> String {
+    format!("{actor_name}__on_start")
 }
 
 fn unknown_self_fields_in_block(block: &HirBlock, state_fields: &HashSet<String>) -> Vec<String> {
@@ -4306,15 +4541,25 @@ impl Builder {
             });
             return None;
         };
-        if args.len() != layout.state_field_names.len() {
+        let explicit_init = layout.init_symbol.is_some();
+        let expected_arg_names = if explicit_init {
+            &layout.init_param_names
+        } else {
+            &layout.state_field_names
+        };
+        if args.len() != expected_arg_names.len() {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::CutoverUnsupported {
-                    construct: format!("spawn `{actor_name}` state arity mismatch"),
+                    construct: format!(
+                        "spawn `{actor_name}` {} arity mismatch",
+                        if explicit_init { "init" } else { "state" }
+                    ),
                     site: expr.site,
                 },
                 note: format!(
-                    "actor has {} state field(s), spawn supplied {} initializer(s)",
-                    layout.state_field_names.len(),
+                    "actor expects {} {} argument(s), spawn supplied {} initializer(s)",
+                    expected_arg_names.len(),
+                    if explicit_init { "init" } else { "state" },
                     args.len()
                 ),
             });
@@ -4324,43 +4569,11 @@ impl Builder {
         for (name, arg) in args {
             explicit.insert(name.as_str(), arg);
         }
-        let state = if layout.state_field_names.is_empty() {
-            None
-        } else {
-            let state_ty = ResolvedTy::Named {
-                name: actor_name.to_string(),
-                args: Vec::new(),
-            };
-            let dest = self.alloc_local(state_ty.clone());
-            let mut fields = Vec::new();
-            for (idx, field_name) in layout.state_field_names.iter().enumerate() {
-                let Some(arg) = explicit.get(field_name.as_str()) else {
-                    self.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::CutoverUnsupported {
-                            construct: format!("spawn `{actor_name}` missing field `{field_name}`"),
-                            site: expr.site,
-                        },
-                        note: "actor spawn requires every state field by declaration name"
-                            .to_string(),
-                    });
-                    return None;
-                };
-                let src = self.lower_value(arg)?;
-                fields.push((
-                    FieldOffset(
-                        u32::try_from(idx)
-                            .expect("actor state field count exceeds u32::MAX — impossible"),
-                    ),
-                    src,
-                ));
-            }
-            self.instructions.push(Instr::RecordInit {
-                ty: state_ty,
-                fields,
-                dest,
-            });
-            Some(dest)
-        };
+        let init_args =
+            self.lower_spawn_actor_init_args(actor_name, &layout, explicit_init, &explicit, expr)?;
+        let state = self
+            .lower_spawn_actor_state(actor_name, &layout, explicit_init, &explicit, expr)
+            .ok()?;
         let slot = self.alloc_local(expr.ty.clone());
         let Place::Local(local_id) = slot else {
             unreachable!("alloc_local returns Place::Local");
@@ -4369,9 +4582,170 @@ impl Builder {
         self.instructions.push(Instr::SpawnActor {
             actor_name: actor_name.to_string(),
             state,
+            init_args,
             dest,
         });
         Some(dest)
+    }
+
+    fn lower_spawn_actor_init_args(
+        &mut self,
+        actor_name: &str,
+        layout: &ActorLayout,
+        explicit_init: bool,
+        explicit: &HashMap<&str, &HirExpr>,
+        expr: &HirExpr,
+    ) -> Option<Vec<Place>> {
+        let mut init_args = Vec::new();
+        if !explicit_init {
+            return Some(init_args);
+        }
+        for param_name in &layout.init_param_names {
+            let Some(arg) = explicit.get(param_name.as_str()) else {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!(
+                            "spawn `{actor_name}` missing init parameter `{param_name}`"
+                        ),
+                        site: expr.site,
+                    },
+                    note: "actor spawn with an explicit init block requires every init parameter by name"
+                        .to_string(),
+                });
+                return None;
+            };
+            init_args.push(self.lower_value(arg)?);
+        }
+        Some(init_args)
+    }
+
+    fn lower_spawn_actor_state(
+        &mut self,
+        actor_name: &str,
+        layout: &ActorLayout,
+        explicit_init: bool,
+        explicit: &HashMap<&str, &HirExpr>,
+        expr: &HirExpr,
+    ) -> Result<Option<Place>, ()> {
+        if layout.state_field_names.is_empty() {
+            return Ok(None);
+        }
+        let state_ty = ResolvedTy::Named {
+            name: actor_name.to_string(),
+            args: Vec::new(),
+        };
+        let dest = self.alloc_local(state_ty.clone());
+        let mut fields = Vec::new();
+        for (idx, field_name) in layout.state_field_names.iter().enumerate() {
+            let src = if explicit_init {
+                self.default_actor_state_field_value(
+                    actor_name,
+                    field_name,
+                    &layout.state_field_tys[idx],
+                    expr.site,
+                )
+                .ok_or(())?
+            } else {
+                self.lower_spawn_actor_state_arg(actor_name, field_name, explicit, expr)
+                    .ok_or(())?
+            };
+            fields.push((
+                FieldOffset(
+                    u32::try_from(idx)
+                        .expect("actor state field count exceeds u32::MAX — impossible"),
+                ),
+                src,
+            ));
+        }
+        self.instructions.push(Instr::RecordInit {
+            ty: state_ty,
+            fields,
+            dest,
+        });
+        Ok(Some(dest))
+    }
+
+    fn lower_spawn_actor_state_arg(
+        &mut self,
+        actor_name: &str,
+        field_name: &str,
+        explicit: &HashMap<&str, &HirExpr>,
+        expr: &HirExpr,
+    ) -> Option<Place> {
+        let Some(arg) = explicit.get(field_name) else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("spawn `{actor_name}` missing field `{field_name}`"),
+                    site: expr.site,
+                },
+                note: "actor spawn without an init block requires every state field by declaration name"
+                    .to_string(),
+            });
+            return None;
+        };
+        self.lower_value(arg)
+    }
+
+    fn default_actor_state_field_value(
+        &mut self,
+        actor_name: &str,
+        field_name: &str,
+        ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let dest = self.alloc_local(ty.clone());
+        match ty {
+            ResolvedTy::I8
+            | ResolvedTy::I16
+            | ResolvedTy::I32
+            | ResolvedTy::I64
+            | ResolvedTy::U8
+            | ResolvedTy::U16
+            | ResolvedTy::U32
+            | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
+            | ResolvedTy::Bool
+            | ResolvedTy::Char
+            | ResolvedTy::Duration => {
+                self.instructions.push(Instr::ConstI64 { dest, value: 0 });
+                Some(dest)
+            }
+            ResolvedTy::F32 => {
+                self.instructions.push(Instr::FloatLit {
+                    dest,
+                    value_bits: 0.0f32.to_bits().into(),
+                    width: FloatWidth::F32,
+                });
+                Some(dest)
+            }
+            ResolvedTy::F64 => {
+                self.instructions.push(Instr::FloatLit {
+                    dest,
+                    value_bits: 0.0f64.to_bits(),
+                    width: FloatWidth::F64,
+                });
+                Some(dest)
+            }
+            ResolvedTy::Unit => {
+                self.instructions.push(Instr::UnitLit { dest });
+                Some(dest)
+            }
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!(
+                            "actor init default state value for field `{actor_name}.{field_name}`"
+                        ),
+                        site,
+                    },
+                    note: format!(
+                        "state field `{field_name}` has type `{other:?}`; spawn-time init currently only zero-initializes scalar state before calling `__init`"
+                    ),
+                });
+                None
+            }
+        }
     }
 
     fn sanitize_symbol_component(input: &str) -> String {
@@ -5728,11 +6102,17 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         }
         Instr::SpawnTaskDirect { task, .. } => vec![*task],
         Instr::SpawnTaskClosure { task, env, .. } => vec![*task, *env],
-        Instr::SpawnActor { state, dest, .. } => {
+        Instr::SpawnActor {
+            state,
+            init_args,
+            dest,
+            ..
+        } => {
             let mut places = Vec::new();
             if let Some(state) = state {
                 places.push(*state);
             }
+            places.extend(init_args.iter().copied());
             places.push(*dest);
             places
         }

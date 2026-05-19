@@ -526,6 +526,8 @@ fn intern_runtime_decl<'ctx>(
             &[i64_ty.into(), i32_ty.into(), ptr_ty.into(), i64_ty.into()],
             false,
         ),
+        "hew_actor_state_lock_acquire" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_actor_state_lock_release" => i32_ty.fn_type(&[ptr_ty.into()], false),
         "hew_actor_spawn" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
         "hew_get_reply_channel" => ptr_ty.fn_type(&[], false),
         "hew_reply" => ctx
@@ -1222,6 +1224,7 @@ fn emit_spawn_actor(
     fn_ctx: &FnCtx<'_, '_>,
     actor_name: &str,
     state: Option<Place>,
+    init_args: &[Place],
     dest: Place,
 ) -> CodegenResult<()> {
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
@@ -1286,6 +1289,7 @@ fn emit_spawn_actor(
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_actor_spawn returned void".into()))?
         .into_pointer_value();
+    emit_actor_spawn_lifecycle(fn_ctx, actor_name, spawned, init_args)?;
     let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
     if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
         return Err(CodegenError::FailClosed(format!(
@@ -1296,6 +1300,199 @@ fn emit_spawn_actor(
         .builder
         .build_store(dest_ptr, spawned)
         .map_err(|e| CodegenError::Llvm(format!("SpawnActor store: {e:?}")))?;
+    Ok(())
+}
+
+fn emit_actor_spawn_lifecycle<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    actor_name: &str,
+    spawned: PointerValue<'ctx>,
+    init_args: &[Place],
+) -> CodegenResult<()> {
+    let init_name = format!("{actor_name}__init");
+    let start_name = format!("{actor_name}__on_start");
+    let init_fn = fn_ctx.llvm_mod.get_function(&init_name);
+    let start_fn = fn_ctx.llvm_mod.get_function(&start_name);
+    if init_fn.is_none() && !init_args.is_empty() {
+        return Err(CodegenError::FailClosed(format!(
+            "spawn `{actor_name}` carried init args but `{init_name}` was not declared"
+        )));
+    }
+    if init_fn.is_none() && start_fn.is_none() {
+        return Ok(());
+    }
+
+    let mut init_call_args = Vec::with_capacity(1 + init_args.len());
+    for (idx, place) in init_args.iter().enumerate() {
+        init_call_args.push(load_place_as_metadata(
+            fn_ctx,
+            *place,
+            &format!("actor_init_arg_{idx}"),
+        )?);
+    }
+    let ctx_arg = build_spawn_lifecycle_context(fn_ctx, spawned)?;
+    emit_actor_state_lock_call(fn_ctx, spawned, "hew_actor_state_lock_acquire")?;
+    if let Some(init_fn) = init_fn {
+        let mut args = Vec::with_capacity(1 + init_call_args.len());
+        args.push(ctx_arg.into());
+        args.extend(init_call_args);
+        fn_ctx
+            .builder
+            .build_call(init_fn, &args, &format!("call_{init_name}"))
+            .map_err(|e| CodegenError::Llvm(format!("actor init call: {e:?}")))?;
+    }
+    if let Some(start_fn) = start_fn {
+        fn_ctx
+            .builder
+            .build_call(start_fn, &[ctx_arg.into()], &format!("call_{start_name}"))
+            .map_err(|e| CodegenError::Llvm(format!("actor on(start) call: {e:?}")))?;
+    }
+    emit_actor_state_lock_call(fn_ctx, spawned, "hew_actor_state_lock_release")?;
+    Ok(())
+}
+
+fn build_spawn_lifecycle_context<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    actor: PointerValue<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let ctx_ty = fn_ctx.ctx.i8_type().array_type(128);
+    let ctx_slot = fn_ctx
+        .builder
+        .build_alloca(ctx_ty, "actor_spawn_lifecycle_ctx")
+        .map_err(|e| CodegenError::Llvm(format!("spawn lifecycle ctx alloca: {e:?}")))?;
+    store_context_ptr_field(fn_ctx, ctx_slot, HEW_CTX_OFFSET_ACTOR, actor, "ctx_actor")?;
+    let actor_id = load_actor_id(fn_ctx, actor)?;
+    store_context_i64_field(
+        fn_ctx,
+        ctx_slot,
+        HEW_CTX_OFFSET_ACTOR_ID,
+        actor_id,
+        "ctx_actor_id",
+    )?;
+    Ok(ctx_slot)
+}
+
+fn store_context_ptr_field<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    ctx_slot: PointerValue<'ctx>,
+    offset: usize,
+    value: PointerValue<'ctx>,
+    name: &str,
+) -> CodegenResult<()> {
+    let field_ptr = unsafe {
+        fn_ctx
+            .builder
+            .build_gep(
+                fn_ctx.ctx.i8_type(),
+                ctx_slot,
+                &[fn_ctx.ctx.i64_type().const_int(offset as u64, false)],
+                &format!("{name}_slot"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("{name} gep: {e:?}")))?
+    };
+    fn_ctx
+        .builder
+        .build_store(field_ptr, value)
+        .map_err(|e| CodegenError::Llvm(format!("{name} store: {e:?}")))?;
+    Ok(())
+}
+
+fn store_context_i64_field<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    ctx_slot: PointerValue<'ctx>,
+    offset: usize,
+    value: IntValue<'ctx>,
+    name: &str,
+) -> CodegenResult<()> {
+    let field_ptr = unsafe {
+        fn_ctx
+            .builder
+            .build_gep(
+                fn_ctx.ctx.i8_type(),
+                ctx_slot,
+                &[fn_ctx.ctx.i64_type().const_int(offset as u64, false)],
+                &format!("{name}_slot"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("{name} gep: {e:?}")))?
+    };
+    fn_ctx
+        .builder
+        .build_store(field_ptr, value)
+        .map_err(|e| CodegenError::Llvm(format!("{name} store: {e:?}")))?;
+    Ok(())
+}
+
+fn load_place_as_metadata<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    place: Place,
+    label: &str,
+) -> CodegenResult<BasicMetadataValueEnum<'ctx>> {
+    let (ptr, ty) = place_pointer(fn_ctx, place)?;
+    let loaded = fn_ctx
+        .builder
+        .build_load(ty, ptr, &format!("{label}_load"))
+        .map_err(|e| CodegenError::Llvm(format!("{label} load: {e:?}")))?;
+    Ok(metadata_value_from_basic(loaded))
+}
+
+fn emit_actor_state_lock_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    actor: PointerValue<'_>,
+    symbol: &str,
+) -> CodegenResult<()> {
+    let lock_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        symbol,
+    )?;
+    let rc = fn_ctx
+        .builder
+        .build_call(lock_fn, &[actor.into()], &format!("{symbol}_call"))
+        .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} returned void")))?
+        .into_int_value();
+    let ok = fn_ctx
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            rc,
+            fn_ctx.ctx.i32_type().const_zero(),
+            &format!("{symbol}_ok"),
+        )
+        .map_err(|e| CodegenError::Llvm(format!("{symbol} compare: {e:?}")))?;
+    let current = fn_ctx
+        .builder
+        .get_insert_block()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} has no insertion block")))?;
+    let parent = current
+        .get_parent()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} block has no parent")))?;
+    let ok_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{symbol}_ok_bb"));
+    let trap_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{symbol}_trap_bb"));
+    fn_ctx
+        .builder
+        .build_conditional_branch(ok, ok_bb, trap_bb)
+        .map_err(|e| CodegenError::Llvm(format!("{symbol} branch: {e:?}")))?;
+    fn_ctx.builder.position_at_end(trap_bb);
+    let trap = Intrinsic::find("llvm.trap")
+        .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    fn_ctx
+        .builder
+        .build_call(trap, &[], &format!("{symbol}_trap"))
+        .map_err(|e| CodegenError::Llvm(format!("{symbol} trap: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_unreachable()
+        .map_err(|e| CodegenError::Llvm(format!("{symbol} unreachable: {e:?}")))?;
+    fn_ctx.builder.position_at_end(ok_bb);
     Ok(())
 }
 
@@ -2357,9 +2554,10 @@ fn lower_instruction(
         Instr::SpawnActor {
             actor_name,
             state,
+            init_args,
             dest,
         } => {
-            emit_spawn_actor(fn_ctx, actor_name, *state, *dest)?;
+            emit_spawn_actor(fn_ctx, actor_name, *state, init_args, *dest)?;
             let _ = ctx;
         }
         // TO-3 lands the MIR shape (`Instr::CoerceToDynTrait`,
@@ -5021,9 +5219,8 @@ fn lower_function<'ctx>(
     }
 
     let actor_state_ty = if func.call_conv == FunctionCallConv::ActorHandler {
-        func.name
-            .split_once("__recv__")
-            .and_then(|(actor_name, _)| record_layouts.get(actor_name).copied())
+        actor_name_from_handler_symbol(&func.name)
+            .and_then(|actor_name| record_layouts.get(actor_name).copied())
     } else {
         None
     };
@@ -5261,6 +5458,14 @@ fn emit_actor_dispatch_trampoline<'ctx>(
         .build_return(None)
         .map_err(|e| CodegenError::Llvm(format!("actor dispatch return: {e:?}")))?;
     Ok(())
+}
+
+fn actor_name_from_handler_symbol(symbol: &str) -> Option<&str> {
+    symbol
+        .split_once("__recv__")
+        .map(|(actor_name, _)| actor_name)
+        .or_else(|| symbol.strip_suffix("__init"))
+        .or_else(|| symbol.strip_suffix("__on_start"))
 }
 
 // ---------------------------------------------------------------------------

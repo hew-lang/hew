@@ -383,8 +383,14 @@ fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         Instr::RecordFieldLoad { record, dest, .. } => (vec![*record], vec![*dest]),
         Instr::ActorStateFieldStore { src, .. } => (vec![*src], vec![]),
         Instr::TupleFieldLoad { tuple, dest, .. } => (vec![*tuple], vec![*dest]),
-        Instr::SpawnActor { state, dest, .. } => {
-            let reads = state.iter().copied().collect();
+        Instr::SpawnActor {
+            state,
+            init_args,
+            dest,
+            ..
+        } => {
+            let mut reads: Vec<_> = state.iter().copied().collect();
+            reads.extend(init_args.iter().copied());
             (reads, vec![*dest])
         }
         Instr::CoerceToDynTrait { value, dest, .. } => (vec![*value], vec![*dest]),

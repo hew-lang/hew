@@ -80,6 +80,13 @@ grep -q 'assertion failed: assert_eq(4, 5)' "${stderr_output}"
 
 run_accept_expect_status "exit_42" 42
 
+# Actor body: increment(10) + increment(32) = 42.
+run_accept_expect_status "actor_counter" 42
+
+# Actor body with init + on(start): initial=9, boot increments to 10, increment(32) = 42.
+# The exit code being 42 (not 41) proves on(start) fired before the first message.
+run_accept_expect_status "actor_counter_init" 42
+
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"
 run_accept_expect_stdout "print_f64"

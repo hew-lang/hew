@@ -1,0 +1,32 @@
+// Reject fixture: fork_non_unit_return — `fork`-spawned callee returns non-Unit.
+//
+// The structured-concurrency scope currently supports only no-argument functions
+// returning unit.  Attempting to spawn a callee that returns a value (here i64)
+// fails closed in MIR lowering with a targeted E_NOT_YET_IMPLEMENTED diagnostic.
+//
+// This fixture pins the fail-closed boundary at:
+//   hew-mir/src/lower.rs (direct_no_arg_unit_callee gate)
+//
+// When S2 widens value-bearing task propagation this fixture moves to accept/.
+//
+// Harness verb: hew compile
+// Expected diagnostics:
+//   - E_NOT_YET_IMPLEMENTED
+//   - "spawned call"
+//   - "no-argument functions returning unit"
+
+fn returns_i64() -> i64 { 42 }
+
+actor _Worker {
+    receive fn run() -> i64 {
+        scope {
+            returns_i64();
+        };
+        0
+    }
+}
+
+fn main() -> i64 {
+    let w = spawn _Worker;
+    w.run()
+}

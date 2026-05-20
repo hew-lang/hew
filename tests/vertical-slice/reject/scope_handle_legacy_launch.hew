@@ -1,0 +1,19 @@
+// Reject fixture: scope_handle_legacy_launch — removed `scope |s| { s.launch(...) }` surface.
+//
+// The `scope |s| { s.launch / s.spawn / s.cancel }` handle-based scope API was
+// removed.  The parser detects this surface and emits a targeted diagnostic
+// directing users to the `scope { fork name = call(...); }` form.
+//
+// This pins the LESSONS row `reject-scope-fork-collapse`: the two keywords
+// (`scope` and `fork`) must remain distinct; the handle-passing surface must
+// not be resurrected.
+//
+// Harness verb: hew check
+// Expected diagnostic: "scope |s| { s.launch / s.spawn / s.cancel }' has been removed"
+
+fn _foo() {}
+
+fn main() -> i64 {
+    scope |s| { s.launch(_foo); };
+    0
+}

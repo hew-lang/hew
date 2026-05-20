@@ -310,3 +310,68 @@ grep -q 'cluster-runtime' "${reject_output}"
 # The verifier emits a secondary UnresolvedSymbol for the unresolved callee
 # (consistent with all unresolved-builtin-callee paths); the primary and
 # informative diagnostic is NotYetImplemented — verified above.
+
+# ---------------------------------------------------------------------------
+# scope{} / fork — fail-closed surface pins
+# ---------------------------------------------------------------------------
+
+# Reject: `fork name = expr` outside any scope{} body.
+# The type checker rejects this before HIR lowering — the construct is
+# parser-only in the current build.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/fork_outside_scope.hew" >"${reject_output}" 2>&1; then
+  echo "expected fork-outside-scope fixture to fail" >&2
+  exit 1
+fi
+grep -qF 'parser-only in this build' "${reject_output}"
+
+# Reject: removed `scope |s| { s.launch / s.spawn / s.cancel }` surface.
+# Pins LESSONS row reject-scope-fork-collapse: the handle-based scope API was
+# removed; the parser emits a targeted diagnostic directing users to the new
+# `scope { fork name = call(...); }` form.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/scope_handle_legacy_launch.hew" >"${reject_output}" 2>&1; then
+  echo "expected scope-handle-legacy-launch fixture to fail" >&2
+  exit 1
+fi
+grep -qF "scope |s| { s.launch / s.spawn / s.cancel }' has been removed" "${reject_output}"
+
+# Reject: fork-spawned callee returns a non-Unit value (here i64).
+# Pins the fail-closed boundary at hew-mir/src/lower.rs direct_no_arg_unit_callee gate.
+# Moves to accept/ when S2 lands value-bearing task propagation.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_non_unit_return.hew" >"${reject_output}" 2>&1; then
+  echo "expected fork-non-unit-return fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF 'spawned call' "${reject_output}"
+grep -qF 'no-argument functions returning unit' "${reject_output}"
+
+# Reject: fork-spawned callee takes arguments.
+# Same gate as fork_non_unit_return; pins the no-args boundary.
+# Moves to accept/ when S5 lands argument-bearing fork callees.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_with_args.hew" >"${reject_output}" 2>&1; then
+  echo "expected fork-with-args fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF 'spawned call' "${reject_output}"
+grep -qF 'no-argument functions returning unit' "${reject_output}"
+
+# Reject: `fork { ... }` block with multiple statements.
+# Pins the fail-closed boundary at hew-mir/src/lower.rs:lower_fork_block_task.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_multi_stmt.hew" >"${reject_output}" 2>&1; then
+  echo "expected fork-multi-stmt fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF 'fork block cancellation child' "${reject_output}"
+grep -qF 'exactly one statement' "${reject_output}"
+
+# Reject: `after(duration) { ... }` with a non-empty timeout body.
+# Pins the fail-closed boundary at hew-mir/src/lower.rs:lower_scope_deadline.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/scope_deadline_body.hew" >"${reject_output}" 2>&1; then
+  echo "expected scope-deadline-body fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF 'scope deadline body' "${reject_output}"
+grep -qF 'non-empty timeout bodies remain fail-closed' "${reject_output}"

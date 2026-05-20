@@ -364,7 +364,7 @@ pub fn tcp_counters_snapshot() -> TcpCountersSnapshot {
     }
 }
 
-fn record_tcp_error_kind(kind: ErrorKind) {
+pub(crate) fn record_tcp_error_kind(kind: ErrorKind) {
     if !matches!(
         kind,
         ErrorKind::WouldBlock | ErrorKind::Interrupted | ErrorKind::TimedOut
@@ -822,8 +822,24 @@ fn tcp_clone_listener(handle: c_int) -> Option<TcpListener> {
     TCP_API_STATE.access(|state| state.listeners.get(&handle)?.try_clone().ok())
 }
 
-fn tcp_clone_stream(handle: c_int) -> Option<TcpStream> {
+pub(crate) fn tcp_clone_stream(handle: c_int) -> Option<TcpStream> {
     TCP_API_STATE.access(|state| state.streams.get(&handle)?.try_clone().ok())
+}
+
+/// Remove a TCP connection handle from the table WITHOUT calling `shutdown`.
+///
+/// Used by `hew_tcp_stream_from_conn` after cloning the socket for the read
+/// and write backings.  The two clones keep the underlying OS socket alive;
+/// calling `shutdown` here would invalidate those clones because `TcpStream`
+/// clones share a single file descriptor on Unix.
+///
+/// This is intentionally different from `hew_tcp_close`, which does call
+/// `shutdown(Both)` because it fully releases the connection.
+pub(crate) fn tcp_release_conn(handle: c_int) {
+    TCP_API_STATE.access(|state| {
+        state.streams.remove(&handle);
+        // Drop the removed TcpStream here. No shutdown call.
+    });
 }
 
 /// Open a TCP listener at `addr` (`host:port`).

@@ -263,9 +263,16 @@ pub fn emit_module(
 /// - `hew_duplex_*` — excluded from wasm32 builds via
 ///   `hew-runtime/src/duplex.rs:54` (`#![cfg(not(target_arch = "wasm32"))]`).
 ///   WASM-TODO(#1451).
-/// - `hew_supervisor_child_get` — requires the native preemptive scheduler's
+/// - `hew_supervisor_*` — requires the native preemptive scheduler's
 ///   supervisor restart machinery; WASM builds use a cooperative executor that
 ///   does not support it.  WASM-TODO(#1475).
+/// - `hew_tcp_stream_from_conn` — TCP transport is unavailable on wasm32.
+///   The runtime stub returns null; codegen surfaces a structured diagnostic
+///   when a MIR `CallRuntimeAbi` refers to this symbol on a wasm target.
+///   WASM-TODO(#1451): TCP transport gap.
+///   Note: calls from the Hew stdlib `extern "C"` block in `std/net/net.hew`
+///   bypass this scan (they produce direct LLVM calls, not `CallRuntimeAbi`
+///   instructions); the wasm32 runtime stub is the safety net for those.
 ///
 /// This scan detects them in the MIR before the `wasm-ld` step so the caller
 /// can return `CodegenError::WasmUnsupportedSubstrate` instead of a confusing
@@ -294,7 +301,13 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
                         //   single-threaded executor that does not support supervisor
                         //   restart machinery.
                         //   WASM-TODO(#1475): supervisor WASM parity is tracked there.
-                        (sym.starts_with("hew_duplex_") || sym.starts_with("hew_supervisor_"))
+                        // hew_tcp_stream_from_conn — TCP transport is unavailable on
+                        //   wasm32; the runtime stub returns null but codegen surfaces
+                        //   a structured diagnostic instead of a silent null.
+                        //   WASM-TODO(#1451): TCP transport gap.
+                        (sym.starts_with("hew_duplex_")
+                            || sym.starts_with("hew_supervisor_")
+                            || sym == "hew_tcp_stream_from_conn")
                             .then(|| sym.to_string())
                     }
                     Instr::Drop {

@@ -607,6 +607,7 @@ stable = [
   "hew_tcp_connect",
   "hew_tcp_connect_timed",
   "hew_tcp_connect_timeout",
+  "hew_tcp_stream_from_conn",
   "hew_tcp_listen",
   "hew_tcp_listener_close",
   "hew_tcp_read",

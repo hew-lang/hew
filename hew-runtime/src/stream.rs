@@ -40,9 +40,10 @@
 )]
 
 use std::collections::VecDeque;
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::{c_char, c_int, c_void, CStr};
 use std::fs;
 use std::io::{BufReader, Read};
+use std::net::TcpStream;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -265,6 +266,95 @@ impl StreamBacking for FileReadStream {
 
     fn is_closed(&self) -> bool {
         // File streams don't know they are at EOF until they try to read.
+        false
+    }
+}
+
+// ── TCP read backing ──────────────────────────────────────────────────────────
+//
+// A `StreamBacking` that reads from a cloned `TcpStream` handle.  Created
+// exclusively by `hew_tcp_stream_from_conn` — never directly by user code.
+//
+// Thread-safety: the struct is `Send` (TcpStream is Send), so it is safe
+// to drive from the park thread inside `hew_stream_poll`.  It is NOT `Sync`;
+// at most one reader exists at any point (the park thread).
+//
+// Blocking behaviour: `next` blocks until data arrives, the peer closes,
+// or the OS returns an error.  If the caller wants a deadline, they call
+// `conn.set_read_timeout(ms)` on the `Connection` before calling
+// `into_stream_sink` — the timeout is inherited by the clone.
+// See Risk R1 in the R45 plan: callers composing this inside `select{}`
+// SHOULD set a read timeout on the connection to avoid an uninterruptible
+// park-thread block.
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+struct TcpStreamBacking {
+    stream: TcpStream,
+}
+
+/// TCP read backing size, matching `hew_tcp_read`'s buffer (transport.rs:1216).
+#[cfg(not(target_arch = "wasm32"))]
+const TCP_BACKING_BUF_SIZE: usize = 8192;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl StreamBacking for TcpStreamBacking {
+    fn next(&mut self) -> Option<Item> {
+        let mut buf = [0u8; TCP_BACKING_BUF_SIZE];
+        loop {
+            match self.stream.read(&mut buf) {
+                Ok(0) => {
+                    // Peer closed the connection — clean EOF.
+                    return None;
+                }
+                Ok(n) => return Some(buf[..n].to_vec()),
+                Err(e) => {
+                    // Record the error kind in the transport counters.
+                    crate::transport::record_tcp_error_kind(e.kind());
+
+                    if e.kind() == std::io::ErrorKind::Interrupted {
+                        // POSIX EINTR: the read was interrupted by a signal.
+                        // Retry immediately — EINTR is fully recoverable and
+                        // must not be surfaced as a stream error or pause.
+                    } else {
+                        // EAGAIN / EWOULDBLOCK: socket is non-blocking or a
+                        // read timeout fired with no data available.  Set a
+                        // distinct errno so callers can call
+                        // hew_stream_last_errno() to distinguish this pause
+                        // from clean EOF (where errno stays 0).
+                        // WouldBlock maps to EAGAIN; TimedOut to ETIMEDOUT.
+                        // Persistent errors use the raw OS errno.
+                        let (msg, raw) = match e.kind() {
+                            std::io::ErrorKind::WouldBlock => {
+                                (format!("TCP read would block: {e}"), libc::EAGAIN)
+                            }
+                            std::io::ErrorKind::TimedOut => {
+                                (format!("TCP read timed out: {e}"), libc::ETIMEDOUT)
+                            }
+                            _ => (
+                                format!("TCP read error: {e}"),
+                                e.raw_os_error().unwrap_or(0),
+                            ),
+                        };
+                        set_last_error_with_errno(msg, raw);
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+
+    fn close(&mut self) {
+        // The cloned TcpStream fd closes when this struct is dropped.
+        // No explicit action needed; document the drop-on-drop contract:
+        //   TcpStreamBacking::drop → TcpStream::drop → OS fd table entry removed.
+        // Callers that want eager half-close should set a read timeout
+        // before bridging (Risk R1 in the R45 plan).
+    }
+
+    fn is_closed(&self) -> bool {
+        // TCP streams can't know they're at EOF without attempting a read.
+        // This matches FileReadStream's posture.
         false
     }
 }
@@ -737,6 +827,96 @@ pub unsafe extern "C" fn hew_stream_channel(capacity: i64) -> *mut HewStreamPair
         sink: sink_ptr,
         stream: stream_ptr,
     }))
+}
+
+/// Bridge a live TCP connection into a `(Stream<bytes>, Sink<bytes>)` pair.
+///
+/// Clones the underlying socket twice (once for the read backing, once for
+/// the write backing) via the existing `tcp_clone_stream` helper so the
+/// two halves own independent `TcpStream` descriptors.  After a successful
+/// clone, the original handle is removed from the TCP connection table (the
+/// same close path as `hew_tcp_close`) so there is no fd leak — the caller
+/// has transferred ownership to the returned pair.
+///
+/// Returns a `*mut HewStreamPair` on success.  The caller must extract the
+/// stream and sink with `hew_stream_pair_stream_bytes` /
+/// `hew_stream_pair_sink_bytes`, then free with `hew_stream_pair_free`.
+///
+/// Returns `null` with the last-error set to EBADF (errno 9) if `conn` is
+/// not a registered TCP connection handle.
+///
+/// # Safety
+///
+/// `conn` must be a valid connection handle returned by `hew_tcp_accept` or
+/// `hew_tcp_connect`.  After this call the original `conn` handle is
+/// consumed: do not pass it to any other `hew_tcp_*` function.
+///
+/// # Platform
+///
+/// Not available on `wasm32` targets; TCP transport is unavailable there.
+/// See `WASM-TODO(#1451)`.  The `wasm32` stub returns `null` so the symbol
+/// resolves at link time, but every call returns `null` without side-effects.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_tcp_stream_from_conn(conn: c_int) -> *mut HewStreamPair {
+    use crate::transport::{tcp_clone_stream, tcp_release_conn};
+
+    // Clone the read fd.
+    let Some(read_stream) = tcp_clone_stream(conn) else {
+        set_last_error_with_errno(
+            format!("hew_tcp_stream_from_conn: invalid connection handle {conn}"),
+            9, // EBADF
+        );
+        return ptr::null_mut();
+    };
+
+    // Clone the write fd.
+    let Some(write_stream) = tcp_clone_stream(conn) else {
+        // read_stream RAII drops its clone here.
+        set_last_error_with_errno(
+            format!("hew_tcp_stream_from_conn: could not clone write fd for handle {conn}"),
+            9, // EBADF
+        );
+        return ptr::null_mut();
+    };
+
+    // Release the original handle from the connection table WITHOUT calling
+    // shutdown.  TcpStream clones share a single OS file descriptor on Unix;
+    // calling shutdown on any clone shuts down the shared socket, which would
+    // immediately invalidate the two backings we just created.
+    // `tcp_release_conn` only removes the table entry — the two clones keep
+    // the socket alive.
+    tcp_release_conn(conn);
+
+    // Build the stream (read) half via the canonical helper.
+    let stream_ptr = into_stream_ptr(TcpStreamBacking {
+        stream: read_stream,
+    });
+
+    // Build the sink (write) half using the Write-backed sink constructor,
+    // matching the `hew_stream_from_file_write` pattern.
+    let sink_ptr = into_write_sink_ptr(write_stream);
+
+    Box::into_raw(Box::new(HewStreamPair {
+        sink: sink_ptr,
+        stream: stream_ptr,
+    }))
+}
+
+/// `wasm32` stub: TCP transport is unavailable on wasm32 builds.
+///
+/// Returns `null` unconditionally.  The symbol is present so the wasm32 link
+/// succeeds; actual rejection happens at the type-checker level
+/// (`hew-types/src/check/methods.rs`: `reject_if_wasm_native_only_handle`)
+/// which emits `WasmUnsupportedFeature::TcpNetworking` for any call on
+/// `net.Connection`, including `into_stream_sink`.  This stub is never
+/// reachable through valid Hew code compiled for wasm32.
+///
+/// WASM-TODO(#1451): TCP transport gap.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_tcp_stream_from_conn(_conn: c_int) -> *mut HewStreamPair {
+    ptr::null_mut()
 }
 
 /// Extract the `HewSink*` from a pair without consuming the pair.
@@ -3966,5 +4146,190 @@ mod tests {
             // This second call must abort the process.
             hew_stream_poll(stream_ptr, record_callback, userdata);
         }
+    }
+
+    // ── TcpStreamBacking unit tests ──────────────────────────────────────
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn tcp_stream_backing_reads_bytes_until_peer_closes() {
+        use std::io::Write;
+        use std::net::{TcpListener, TcpStream};
+
+        // Bind on OS-assigned port to avoid conflicts in parallel test runs.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let payload = b"hello from peer";
+
+        // Peer thread: write payload then close.
+        let t = std::thread::spawn(move || {
+            let mut peer = TcpStream::connect(addr).unwrap();
+            peer.write_all(payload).unwrap();
+            // peer drops here, closing the connection (EOF to the reader).
+        });
+
+        let (accepted, _) = listener.accept().unwrap();
+        let mut backing = TcpStreamBacking { stream: accepted };
+
+        // Read all items until EOF.
+        let mut collected = Vec::new();
+        while let Some(chunk) = backing.next() {
+            collected.extend_from_slice(&chunk);
+        }
+
+        t.join().unwrap();
+
+        assert_eq!(collected, payload);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn tcp_stream_backing_records_error_on_reset() {
+        use std::net::{TcpListener, TcpStream};
+        #[cfg(unix)]
+        use std::os::unix::io::AsRawFd;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Peer thread: connect, set SO_LINGER=0, then drop to send RST.
+        let t = std::thread::spawn(move || {
+            let peer = TcpStream::connect(addr).unwrap();
+            // Force RST on close by setting SO_LINGER with l_onoff=1, l_linger=0.
+            #[cfg(unix)]
+            // SAFETY: setsockopt is called with a valid fd and a stack-allocated
+            // linger struct whose address and size are correct for SO_LINGER.
+            unsafe {
+                let fd = peer.as_raw_fd();
+                let linger = libc::linger {
+                    l_onoff: 1,
+                    l_linger: 0,
+                };
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_LINGER,
+                    std::ptr::addr_of!(linger).cast::<libc::c_void>(),
+                    // socklen_t is u32; sizeof(linger) is always <= 8 bytes, safe to cast.
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "sizeof(linger) fits in u32"
+                    )]
+                    {
+                        std::mem::size_of::<libc::linger>() as libc::socklen_t
+                    },
+                );
+            }
+            drop(peer);
+        });
+
+        let (accepted, _) = listener.accept().unwrap();
+        t.join().unwrap();
+
+        // Give the RST time to arrive.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let mut backing = TcpStreamBacking { stream: accepted };
+        // RST produces either ConnectionReset or Ok(0) EOF — either way None.
+        let result = backing.next();
+        assert!(
+            result.is_none(),
+            "backing.next() must return None on RST/EOF, got {result:?}"
+        );
+    }
+
+    // ── hew_tcp_stream_from_conn factory tests ───────────────────────────
+
+    /// Register a real TCP connection via the runtime's own connect/accept
+    /// path so `TCP_API_STATE` holds the handle, then call the factory.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn make_loopback_conn() -> (c_int, std::net::TcpStream) {
+        use std::net::TcpListener;
+
+        // Bind a listener on an OS-assigned port.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let addr = CString::new(format!("127.0.0.1:{port}")).unwrap();
+
+        // hew_tcp_connect registers the client-side conn in TCP_API_STATE.
+        // SAFETY: addr is a valid NUL-terminated C string.
+        let conn_handle = unsafe { crate::transport::hew_tcp_connect(addr.as_ptr()) };
+        assert!(conn_handle > 0, "hew_tcp_connect failed");
+
+        let (peer, _) = listener.accept().unwrap();
+        (conn_handle, peer)
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn factory_returns_pair_for_valid_conn() {
+        let (conn_handle, _peer) = make_loopback_conn();
+
+        // SAFETY: conn_handle is a valid registered connection.
+        let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
+        assert!(
+            !pair.is_null(),
+            "factory must return non-null for valid conn"
+        );
+
+        // Both halves must be extractable.
+        // SAFETY: pair is valid.
+        let stream_ptr = unsafe { hew_stream_pair_stream_bytes(pair) };
+        assert!(!stream_ptr.is_null());
+
+        // SAFETY: pair still valid (stream extraction nulls the stream slot, sink is still there).
+        let sink_ptr = unsafe { hew_stream_pair_sink_bytes(pair) };
+        assert!(!sink_ptr.is_null());
+
+        // SAFETY: cleanup.
+        unsafe {
+            hew_stream_close(stream_ptr);
+            drop(Box::from_raw(sink_ptr));
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn factory_null_for_invalid_conn() {
+        use hew_cabi::sink::hew_stream_last_errno;
+
+        // Clear any prior errno.
+        let _ = hew_stream_last_errno();
+
+        // SAFETY: -1 is never a valid registered handle.
+        let pair = unsafe { hew_tcp_stream_from_conn(-1) };
+        assert!(
+            pair.is_null(),
+            "factory must return null for invalid handle"
+        );
+        assert_eq!(
+            hew_stream_last_errno(),
+            9, // EBADF
+            "factory must set EBADF errno for invalid handle"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn factory_consumes_original_conn_handle() {
+        let (conn_handle, _peer) = make_loopback_conn();
+
+        // SAFETY: conn_handle is valid.
+        let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
+        assert!(!pair.is_null());
+
+        // After the factory consumes the handle, a second call with the same
+        // handle must return null (the entry is gone from TCP_API_STATE).
+        // SAFETY: conn_handle is no longer valid (consumed above).
+        let pair2 = unsafe { hew_tcp_stream_from_conn(conn_handle) };
+        assert!(
+            pair2.is_null(),
+            "factory must return null when conn handle is already consumed"
+        );
+
+        // SAFETY: cleanup pair1.
+        unsafe { hew_stream_pair_free(pair) };
     }
 }

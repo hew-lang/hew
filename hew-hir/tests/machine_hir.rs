@@ -30,8 +30,8 @@ machine TrafficLight {
 const MEALY_MACHINE_SRC: &str = r"
 machine Door {
     state Closed {
-        entry { log(closed_entered); }
-        exit { log(closed_exited); }
+        entry { Closed }
+        exit { Closed }
     }
     state Open;
 
@@ -372,14 +372,14 @@ machine ExitConflict {
     );
 }
 
-// ── Slice 1 substrate: transition body + entry/exit lowered to HIR ──────────
+// ── Lowered transition body + entry/exit substrate ──────────────────────────
 
 #[test]
 fn transition_body_lowers_to_hir_expr_substrate() {
     // A transition with a non-trivial body (a bare state-name tail expression)
-    // should populate `HirMachineTransition::body` as Slice 1 substrate, even
-    // though bare state-name references aren't yet resolved in HIR (they
-    // lower to `HirExprKind::Unsupported` placeholders — see Slice 2).
+    // should populate `HirMachineTransition::body`, even though bare state-name
+    // references aren't yet resolved in HIR (they survive lowering as
+    // `HirExprKind::Unsupported` placeholders).
     let src = r"
 machine Counter {
     state Running { count: Int; }
@@ -414,8 +414,8 @@ machine Counter {
         .iter()
         .find(|t| t.event_name == "Tick")
         .expect("expected Tick transition");
-    // The body must be present as some HIR expression form — slice 1 is
-    // structural substrate only, no claims about kind beyond "not empty".
+    // The body must be present as some HIR expression form — this test is
+    // structural-substrate only, no claims about kind beyond "not empty".
     assert!(
         !matches!(tr.body.kind, HirExprKind::Literal(_)),
         "non-empty transition body should lower to a non-literal HirExpr; got {:?}",
@@ -426,14 +426,16 @@ machine Counter {
 #[test]
 fn entry_exit_blocks_lower_to_hir_block_substrate() {
     // The Door machine has an entry and exit block on `Closed`. Both should
-    // appear as `Some(HirBlock)` on the lowered state. Constructs inside that
-    // can't yet round-trip through HIR (e.g. unresolved `log` call) are fenced
-    // so existing diagnostics stay quiet.
+    // appear as `Some(HirBlock)` on the lowered state. The blocks here use
+    // only constructs the body-diagnostic filter accounts for (a bare
+    // state-name reference) so the test isolates substrate population from
+    // the orthogonal "unrelated diagnostics still fire" axis (which is
+    // covered by `entry_block_unrelated_unresolved_symbol_still_diagnoses`).
     let src = r"
 machine Door {
     state Closed {
-        entry { log(closed_entered); }
-        exit { log(closed_exited); }
+        entry { Closed }
+        exit { Closed }
     }
     state Open;
 
@@ -487,13 +489,14 @@ machine Door {
 }
 
 #[test]
-fn transition_body_with_machine_emit_is_fenced_but_cycle_diagnostic_fires() {
-    // Bodies that include `emit` are not yet routed through `HirExprKind`
-    // (Slice 2 owns that). Slice 1 must:
+fn transition_body_with_machine_emit_filters_only_emit_noise() {
+    // Bodies that include `emit` are not yet routed through `HirExprKind`.
+    // The body-diagnostic filter must:
     //   1. still lower the body to a `HirExpr` substrate without crashing,
-    //   2. preserve the Lane A `MachineEmitCycle` diagnostic (from the AST
-    //      summary walk), and
-    //   3. not introduce extra "unsupported" diagnostic noise for the emit.
+    //   2. preserve the `MachineEmitCycle` diagnostic from the AST summary
+    //      walk, and
+    //   3. not introduce extra `CutoverUnsupported` noise for the
+    //      `emit Tick {}` expression itself.
     let src = r"
 machine Cyclic {
     state Active;
@@ -521,6 +524,155 @@ machine Cyclic {
     assert_eq!(
         unsupported_count, 0,
         "Slice 1 fences body-lowering diagnostics; saw: {:?}",
+        output.diagnostics
+    );
+}
+
+// ── Negative falsification: unrelated unresolved constructs still diagnose ──
+
+#[test]
+fn transition_body_unrelated_unresolved_symbol_still_diagnoses() {
+    // The body-diagnostic filter must drop only the expected machine-body
+    // noise (state-name identifier refs, `this`, `emit`). An unrelated
+    // unresolved identifier inside a transition body — here the call
+    // `not_a_real_helper()` — must still produce a visible diagnostic so
+    // a typo in user code cannot be silently embedded as success-shaped HIR.
+    let src = r"
+machine Counter {
+    state Running { count: Int; }
+
+    event Tick;
+
+    on Tick: Running -> Running @reenter {
+        not_a_real_helper();
+        Running { count: 1 }
+    }
+}
+";
+    let output = lower(src);
+    let unresolved_helper = output.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            HirDiagnosticKind::UnresolvedSymbol { name } if name == "not_a_real_helper"
+        )
+    });
+    assert!(
+        unresolved_helper,
+        "unrelated unresolved identifier inside a transition body must surface; \
+         got: {:?}",
+        output.diagnostics
+    );
+    // Sanity: the state-name reference (`Running`) is still allowlisted so
+    // its own UnresolvedSymbol does not appear.
+    let state_name_leaked = output.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            HirDiagnosticKind::UnresolvedSymbol { name } if name == "Running"
+        )
+    });
+    assert!(
+        !state_name_leaked,
+        "state-name reference `Running` should be filtered; got: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn entry_block_unrelated_unresolved_symbol_still_diagnoses() {
+    // Same falsification for an entry block: the diagnostic filter must
+    // not swallow `not_a_real_helper`.
+    let src = r"
+machine Door {
+    state Closed {
+        entry { not_a_real_helper(); }
+    }
+    state Open;
+
+    event OpenDoor;
+    event CloseDoor;
+
+    on OpenDoor: Closed -> Open;
+    on OpenDoor: Open -> Open;
+    on CloseDoor: Open -> Closed;
+    on CloseDoor: Closed -> Closed;
+}
+";
+    let output = lower(src);
+    let unresolved_helper = output.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            HirDiagnosticKind::UnresolvedSymbol { name } if name == "not_a_real_helper"
+        )
+    });
+    assert!(
+        unresolved_helper,
+        "unrelated unresolved identifier inside an entry block must surface; \
+         got: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn exit_block_unrelated_unresolved_symbol_still_diagnoses() {
+    // Same falsification for an exit block.
+    let src = r"
+machine Door {
+    state Closed {
+        exit { not_a_real_helper(); }
+    }
+    state Open;
+
+    event OpenDoor;
+    event CloseDoor;
+
+    on OpenDoor: Closed -> Open;
+    on OpenDoor: Open -> Open;
+    on CloseDoor: Open -> Closed;
+    on CloseDoor: Closed -> Closed;
+}
+";
+    let output = lower(src);
+    let unresolved_helper = output.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            HirDiagnosticKind::UnresolvedSymbol { name } if name == "not_a_real_helper"
+        )
+    });
+    assert!(
+        unresolved_helper,
+        "unrelated unresolved identifier inside an exit block must surface; \
+         got: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn transition_body_non_state_name_identifier_still_diagnoses() {
+    // Allowlist is narrow: only identifiers whose name matches a declared
+    // state are filtered. `NotAState`, which is *not* a state name, must
+    // still produce an UnresolvedSymbol diagnostic.
+    let src = r"
+machine Counter {
+    state Running;
+
+    event Tick;
+
+    on Tick: Running -> Running @reenter {
+        NotAState
+    }
+}
+";
+    let output = lower(src);
+    let unresolved_unknown = output.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            HirDiagnosticKind::UnresolvedSymbol { name } if name == "NotAState"
+        )
+    });
+    assert!(
+        unresolved_unknown,
+        "identifier `NotAState` is not a declared state and must still \
+         produce an UnresolvedSymbol diagnostic; got: {:?}",
         output.diagnostics
     );
 }

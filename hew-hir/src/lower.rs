@@ -1830,6 +1830,13 @@ impl LowerCtx {
         decl: &MachineDecl,
         span: std::ops::Range<usize>,
     ) -> Option<HirMachineDecl> {
+        // Collect declared state names up front; the machine-body diagnostic
+        // filter uses this to recognise the semicolon-shorthand transition
+        // body (`Expr::Identifier(target_state)`) and avoid leaking its
+        // expected `UnresolvedSymbol` diagnostic, while leaving every other
+        // unresolved identifier visible.
+        let state_names: HashSet<String> = decl.states.iter().map(|s| s.name.clone()).collect();
+
         // Lower states.
         let mut hir_states = Vec::new();
         for state in &decl.states {
@@ -1844,8 +1851,8 @@ impl LowerCtx {
                 .collect();
 
             // Shallow-scan the entry and exit blocks for field-assignment targets.
-            // Lane A does not fully lower block bodies; this is enough for
-            // effect-parity checking.
+            // Body-level effect-parity checking still uses the AST summary
+            // walk; the lowered HIR block below is structural substrate.
             let entry_writes = state
                 .entry
                 .as_ref()
@@ -1857,21 +1864,18 @@ impl LowerCtx {
                 .map(collect_assigned_field_names)
                 .unwrap_or_default();
 
-            // Best-effort lowering of entry/exit blocks for Slice 1 substrate.
-            // Constructs that aren't yet wired in HIR (e.g. `emit`, `this`,
-            // bare state-name expressions) fall through to
-            // `HirExprKind::Unsupported`; the diagnostics those would otherwise
-            // raise are fenced because the canonical machine-body diagnostics
-            // are still owned by the AST-summary checks above. Slice 2 wires
-            // `MachineEmit` into HIR and unlocks proper diagnostics.
+            // Lower entry/exit blocks. The filter drops only the explicitly
+            // expected diagnostics for the machine-body forms not yet wired
+            // through HIR (state-name identifier refs, `this`, `emit`); any
+            // other unresolved or unsupported construct still surfaces.
             let entry = state
                 .entry
                 .as_ref()
-                .map(|block| self.lower_machine_block_fenced(block));
+                .map(|block| self.lower_machine_block_filtered(block, &state_names));
             let exit = state
                 .exit
                 .as_ref()
-                .map(|block| self.lower_machine_block_fenced(block));
+                .map(|block| self.lower_machine_block_filtered(block, &state_names));
 
             hir_states.push(HirMachineState {
                 name: state.name.clone(),
@@ -1910,15 +1914,15 @@ impl LowerCtx {
 
         // Lower transitions — record names, guard presence, body writes,
         // and emitted event names (for static checks). The body is also
-        // lowered best-effort to `HirExpr` as Slice 1 substrate; see
-        // `lower_machine_expr_fenced` for the fenced-diagnostic contract.
+        // lowered to `HirExpr`; see `lower_machine_expr_filtered` for the
+        // narrow diagnostic-filter contract.
         let mut hir_transitions: Vec<HirMachineTransition> =
             Vec::with_capacity(decl.transitions.len());
         for tr in &decl.transitions {
             let is_self_transition = tr.source_state == tr.target_state && tr.source_state != "_";
             let body_writes = collect_assigned_field_names_expr(&tr.body.0);
             let body_emits = collect_emitted_events(&tr.body.0);
-            let body = self.lower_machine_expr_fenced(&tr.body);
+            let body = self.lower_machine_expr_filtered(&tr.body, &state_names);
             hir_transitions.push(HirMachineTransition {
                 event_name: tr.event_name.clone(),
                 source_state: tr.source_state.clone(),
@@ -2122,39 +2126,67 @@ impl LowerCtx {
         })
     }
 
-    /// Best-effort lowering of a machine transition body expression for
-    /// Slice 1 substrate.
-    ///
-    /// Slice 1 introduces `HirMachineTransition::body: HirExpr` so MIR /
-    /// codegen has a typed-HIR tree to consume in later slices. The body
-    /// itself contains constructs that aren't yet wired through HIR —
-    /// notably `Expr::MachineEmit`, `Expr::This`, and bare state-name
-    /// references — and the canonical machine-body diagnostics are still
-    /// produced by the AST-summary walks (`body_writes` / `body_emits`)
-    /// invoked alongside this helper. To avoid double-reporting the same
-    /// constructs as `CutoverUnsupported` / `UnresolvedSymbol` noise (and
-    /// to keep existing fixtures stable until Slice 2 routes
-    /// `MachineEmit` through `HirExprKind`), any diagnostics produced
-    /// while lowering the body are dropped; the lowered tree itself is
-    /// kept as substrate (`HirExprKind::Unsupported` placeholders mark
-    /// the gaps).
-    fn lower_machine_expr_fenced(&mut self, body: &Spanned<Expr>) -> HirExpr {
+    /// Lower a machine transition body expression to `HirExpr` so MIR /
+    /// codegen has a typed-HIR tree to consume. The body's surface still
+    /// uses constructs that aren't yet wired through HIR — direct
+    /// state-name references (the semicolon-shorthand body
+    /// `Expr::Identifier(target_state)`), `Expr::This`, and `Expr::MachineEmit`.
+    /// Those produce specific, expected diagnostics that the AST-summary
+    /// walks (`body_writes` / `body_emits`) and the per-machine static
+    /// checks (exhaustiveness, self-transition rules, effect-parity,
+    /// emit-cycle) already cover; this helper filters out *only those
+    /// exact* diagnostics whose span matches an allowlisted construct in
+    /// the AST. Unrelated diagnostics — unresolved user symbols, type
+    /// mismatches, malformed checker output, etc. — flow through
+    /// unchanged so a buggy machine body still fails closed.
+    fn lower_machine_expr_filtered(
+        &mut self,
+        body: &Spanned<Expr>,
+        state_names: &HashSet<String>,
+    ) -> HirExpr {
+        let mut allowlist = MachineBodyAllowlist::default();
+        walk_expr_for_machine_allowlist(body, state_names, &mut allowlist);
         let diag_snapshot = self.diagnostics.len();
         self.push_scope();
         let expr = self.lower_expr(body, IntentKind::Read);
         self.pop_scope();
-        self.diagnostics.truncate(diag_snapshot);
+        self.retain_or_drop_machine_body_diags(diag_snapshot, &allowlist);
         expr
     }
 
-    /// Best-effort lowering of a machine state's `entry { ... }` /
-    /// `exit { ... }` block for Slice 1 substrate. See
-    /// `lower_machine_expr_fenced` for the diagnostic-fencing contract.
-    fn lower_machine_block_fenced(&mut self, block: &Block) -> HirBlock {
+    /// Lower a machine state's `entry { ... }` / `exit { ... }` block,
+    /// applying the same allowlist filter as `lower_machine_expr_filtered`.
+    fn lower_machine_block_filtered(
+        &mut self,
+        block: &Block,
+        state_names: &HashSet<String>,
+    ) -> HirBlock {
+        let mut allowlist = MachineBodyAllowlist::default();
+        walk_block_for_machine_allowlist(block, state_names, &mut allowlist);
         let diag_snapshot = self.diagnostics.len();
         let lowered = self.lower_block(block, &ResolvedTy::Unit);
-        self.diagnostics.truncate(diag_snapshot);
+        self.retain_or_drop_machine_body_diags(diag_snapshot, &allowlist);
         lowered
+    }
+
+    /// Filter diagnostics produced since `snapshot_len`: drop only those
+    /// whose `(kind, span)` matches an entry in `allowlist`. Anything else
+    /// — including diagnostics with the same *kind* but a different span,
+    /// or with the same span but a different kind — is preserved.
+    fn retain_or_drop_machine_body_diags(
+        &mut self,
+        snapshot_len: usize,
+        allowlist: &MachineBodyAllowlist,
+    ) {
+        if snapshot_len >= self.diagnostics.len() {
+            return;
+        }
+        let tail: Vec<_> = self.diagnostics.drain(snapshot_len..).collect();
+        for diag in tail {
+            if !allowlist.permits(&diag) {
+                self.diagnostics.push(diag);
+            }
+        }
     }
 
     /// Lower an `actor` declaration into `HirActorDecl`, including executable
@@ -5433,6 +5465,212 @@ fn collect_captures_walk_block(
 }
 
 // ── Machine static-check helpers ────────────────────────────────────────────
+
+/// Allowlist of AST spans that mark constructs in a machine transition body
+/// or entry/exit block which the HIR lowerer cannot resolve today but which
+/// are owned by the AST-summary static checks (exhaustiveness, self-
+/// transition rules, effect-parity, emit-cycle). When lowering a machine
+/// body produces a diagnostic whose `(kind, span)` matches one of these
+/// entries exactly, the diagnostic is dropped; every other diagnostic
+/// produced during the same lowering is preserved so unrelated unresolved
+/// symbols and type errors still fail closed.
+#[derive(Debug, Default)]
+struct MachineBodyAllowlist {
+    /// Spans of `Expr::Identifier(name)` where `name` is a declared state
+    /// name in the current machine — drops the matching `UnresolvedSymbol`.
+    state_name_refs: Vec<(Span, String)>,
+    /// Spans of `Expr::This` — drops the matching `CutoverUnsupported`
+    /// raised by the catch-all expression arm.
+    this_spans: Vec<Span>,
+    /// Spans of `Expr::MachineEmit { .. }` — drops the matching
+    /// `CutoverUnsupported` raised by the catch-all expression arm.
+    /// Emit-cycle detection still runs over the AST summary.
+    machine_emit_spans: Vec<Span>,
+}
+
+impl MachineBodyAllowlist {
+    /// Return `true` iff the diagnostic's `(kind, span)` is one this
+    /// allowlist explicitly accounts for. Anything else flows through.
+    fn permits(&self, diag: &HirDiagnostic) -> bool {
+        match &diag.kind {
+            HirDiagnosticKind::UnresolvedSymbol { name } => self
+                .state_name_refs
+                .iter()
+                .any(|(span, allowed)| spans_equal(span, &diag.span) && allowed == name),
+            HirDiagnosticKind::CutoverUnsupported { .. } => self
+                .this_spans
+                .iter()
+                .chain(self.machine_emit_spans.iter())
+                .any(|span| spans_equal(span, &diag.span)),
+            _ => false,
+        }
+    }
+}
+
+fn spans_equal(a: &Span, b: &Span) -> bool {
+    a.start == b.start && a.end == b.end
+}
+
+/// Walk a machine transition body expression to populate
+/// `MachineBodyAllowlist`. Only the specific constructs that the HIR
+/// lowerer is known not to support yet (state-name identifier references,
+/// `this`, and `emit`) are recorded. All other sub-expressions are walked
+/// solely to descend into their children — they themselves are never
+/// allowlisted, so e.g. an unresolved user identifier inside a `Call`
+/// argument still produces a visible diagnostic.
+fn walk_expr_for_machine_allowlist(
+    expr: &Spanned<Expr>,
+    state_names: &HashSet<String>,
+    out: &mut MachineBodyAllowlist,
+) {
+    let (node, span) = expr;
+    match node {
+        Expr::This => out.this_spans.push(span.clone()),
+        Expr::MachineEmit { fields, .. } => {
+            out.machine_emit_spans.push(span.clone());
+            for (_, value) in fields {
+                walk_expr_for_machine_allowlist(value, state_names, out);
+            }
+        }
+        Expr::Identifier(name) if state_names.contains(name) => {
+            out.state_name_refs.push((span.clone(), name.clone()));
+        }
+        Expr::Block(block) => walk_block_for_machine_allowlist(block, state_names, out),
+        Expr::Binary { left, right, .. } => {
+            walk_expr_for_machine_allowlist(left, state_names, out);
+            walk_expr_for_machine_allowlist(right, state_names, out);
+        }
+        Expr::Unary { operand, .. } => {
+            walk_expr_for_machine_allowlist(operand, state_names, out);
+        }
+        Expr::Call { function, args, .. } => {
+            walk_expr_for_machine_allowlist(function, state_names, out);
+            for arg in args {
+                walk_expr_for_machine_allowlist(arg.expr(), state_names, out);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            walk_expr_for_machine_allowlist(receiver, state_names, out);
+            for arg in args {
+                walk_expr_for_machine_allowlist(arg.expr(), state_names, out);
+            }
+        }
+        Expr::FieldAccess { object, .. } => {
+            walk_expr_for_machine_allowlist(object, state_names, out);
+        }
+        Expr::Index { object, index } => {
+            walk_expr_for_machine_allowlist(object, state_names, out);
+            walk_expr_for_machine_allowlist(index, state_names, out);
+        }
+        Expr::StructInit { fields, base, .. } => {
+            for (_, value) in fields {
+                walk_expr_for_machine_allowlist(value, state_names, out);
+            }
+            if let Some(base) = base {
+                walk_expr_for_machine_allowlist(base, state_names, out);
+            }
+        }
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            walk_expr_for_machine_allowlist(condition, state_names, out);
+            walk_expr_for_machine_allowlist(then_block, state_names, out);
+            if let Some(else_block) = else_block {
+                walk_expr_for_machine_allowlist(else_block, state_names, out);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            walk_expr_for_machine_allowlist(scrutinee, state_names, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    walk_expr_for_machine_allowlist(guard, state_names, out);
+                }
+                walk_expr_for_machine_allowlist(&arm.body, state_names, out);
+            }
+        }
+        Expr::Cast { expr, .. } => walk_expr_for_machine_allowlist(expr, state_names, out),
+        Expr::Range { start, end, .. } => {
+            if let Some(start) = start {
+                walk_expr_for_machine_allowlist(start, state_names, out);
+            }
+            if let Some(end) = end {
+                walk_expr_for_machine_allowlist(end, state_names, out);
+            }
+        }
+        Expr::Is { lhs, rhs } => {
+            walk_expr_for_machine_allowlist(lhs, state_names, out);
+            walk_expr_for_machine_allowlist(rhs, state_names, out);
+        }
+        Expr::Tuple(items) | Expr::Array(items) => {
+            for item in items {
+                walk_expr_for_machine_allowlist(item, state_names, out);
+            }
+        }
+        // Other Expr variants (lambdas, spawn, select, scope, timeout,
+        // for-loops, ...) aren't expected to appear inside a machine
+        // transition body or entry/exit block in v0.5. They are
+        // intentionally not descended-into: the walker's contract is
+        // conservative, so any sub-expression we don't visit cannot
+        // mask an unresolved diagnostic — the diagnostic simply isn't
+        // allowlisted and surfaces normally.
+        _ => {}
+    }
+}
+
+/// Walk a machine entry/exit block to populate `MachineBodyAllowlist`.
+fn walk_block_for_machine_allowlist(
+    block: &Block,
+    state_names: &HashSet<String>,
+    out: &mut MachineBodyAllowlist,
+) {
+    for (stmt, _) in &block.stmts {
+        walk_stmt_for_machine_allowlist(stmt, state_names, out);
+    }
+    if let Some(tail) = &block.trailing_expr {
+        walk_expr_for_machine_allowlist(tail, state_names, out);
+    }
+}
+
+fn walk_stmt_for_machine_allowlist(
+    stmt: &Stmt,
+    state_names: &HashSet<String>,
+    out: &mut MachineBodyAllowlist,
+) {
+    match stmt {
+        Stmt::Expression(e) => walk_expr_for_machine_allowlist(e, state_names, out),
+        Stmt::Assign { target, value, .. } => {
+            walk_expr_for_machine_allowlist(target, state_names, out);
+            walk_expr_for_machine_allowlist(value, state_names, out);
+        }
+        Stmt::Let { value, .. } | Stmt::Var { value, .. } | Stmt::Return(value) => {
+            if let Some(value) = value {
+                walk_expr_for_machine_allowlist(value, state_names, out);
+            }
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            walk_expr_for_machine_allowlist(condition, state_names, out);
+            walk_block_for_machine_allowlist(then_block, state_names, out);
+            if let Some(else_block) = else_block {
+                if let Some(block) = &else_block.block {
+                    walk_block_for_machine_allowlist(block, state_names, out);
+                }
+                if let Some(if_stmt) = &else_block.if_stmt {
+                    walk_stmt_for_machine_allowlist(&if_stmt.0, state_names, out);
+                }
+            }
+        }
+        Stmt::Defer(inner) => walk_expr_for_machine_allowlist(inner, state_names, out),
+        // Other statement variants aren't expected inside an entry/exit
+        // block in v0.5; see the walker contract note on `walk_expr_for_machine_allowlist`.
+        _ => {}
+    }
+}
 
 /// Determine whether a self-transition body is "empty" for the `@reenter` rule.
 ///

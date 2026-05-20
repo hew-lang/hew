@@ -371,6 +371,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         .iter()
                         .find(|hook| hook.kind == HirLifecycleHookKind::Crash)
                         .map(|_| mangle_actor_crash_handler(&actor.name)),
+                    max_heap_bytes: actor.max_heap_bytes,
                     handlers: lower_actor_handler_layouts(actor),
                 });
             }
@@ -472,16 +473,16 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         .map(|layout| (layout.name.clone(), layout))
         .collect();
 
-    // Post-loop pass: populate on_crash_symbol on each SupervisorChildLayout
-    // using the now-complete actor_layout_map. build_supervisor_layout runs
-    // inside the single-pass item loop, so actor declarations that follow a
-    // supervisor in source order would not have been visible yet. Deferring
-    // the lookup here makes ordering irrelevant.
+    // Post-loop pass: populate on_crash_symbol and max_heap_bytes on each
+    // SupervisorChildLayout using the now-complete actor_layout_map.
+    // build_supervisor_layout runs inside the single-pass item loop, so actor
+    // declarations that follow a supervisor in source order would not have been
+    // visible yet. Deferring the lookup here makes ordering irrelevant.
     for sup_layout in &mut supervisor_layouts {
         for child in &mut sup_layout.children {
-            child.on_crash_symbol = actor_layout_map
-                .get(&child.actor_name)
-                .and_then(|al| al.on_crash_symbol.clone());
+            let al = actor_layout_map.get(&child.actor_name);
+            child.on_crash_symbol = al.and_then(|al| al.on_crash_symbol.clone());
+            child.max_heap_bytes = al.and_then(|al| al.max_heap_bytes);
         }
     }
 
@@ -1406,6 +1407,7 @@ fn build_supervisor_layout(
             // lower_hir_module) to handle any declaration order. Left None
             // here so build_supervisor_layout needs no actor-layout parameter.
             on_crash_symbol: None,
+            max_heap_bytes: None,
         })
         .collect();
 
@@ -5995,6 +5997,7 @@ impl Builder {
             state,
             init_args,
             dest,
+            max_heap_bytes: layout.max_heap_bytes,
         });
         Some(dest)
     }

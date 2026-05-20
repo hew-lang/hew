@@ -595,6 +595,10 @@ fn intern_runtime_decl<'ctx>(
         "hew_actor_state_lock_acquire" => i32_ty.fn_type(&[ptr_ty.into()], false),
         "hew_actor_state_lock_release" => i32_ty.fn_type(&[ptr_ty.into()], false),
         "hew_actor_spawn" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
+        // hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut HewActor
+        // (`hew-runtime/src/actor.rs:1754`). Used when `#[max_heap(N)]` is
+        // set; routes through the opts struct instead of the 3-arg spawn.
+        "hew_actor_spawn_opts" => ptr_ty.fn_type(&[ptr_ty.into()], false),
         "hew_get_reply_channel" => ptr_ty.fn_type(&[], false),
         "hew_reply" => ctx
             .bool_type()
@@ -1347,8 +1351,10 @@ fn emit_spawn_actor(
     state: Option<Place>,
     init_args: &[Place],
     dest: Place,
+    max_heap_bytes: Option<u64>,
 ) -> CodegenResult<()> {
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let i32_ty = fn_ctx.ctx.i32_type();
     let i64_ty = fn_ctx.ctx.i64_type();
     let (state_ptr, state_size) = if let Some(state_place) = state {
         let (slot, slot_ty) = place_pointer(fn_ctx, state_place)?;
@@ -1388,28 +1394,107 @@ fn emit_spawn_actor(
         .builder
         .build_call(sched_init, &[], "hew_sched_init_call")
         .map_err(|e| CodegenError::Llvm(format!("hew_sched_init call: {e:?}")))?;
-    let spawn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_spawn",
-    )?;
-    let spawned = fn_ctx
-        .builder
-        .build_call(
-            spawn,
+
+    let spawned = if let Some(cap) = max_heap_bytes {
+        // `#[max_heap(N)]` is set — route through `hew_actor_spawn_opts` so
+        // the runtime applies the per-dispatch arena cap. The `HewActorOpts`
+        // struct is stack-allocated, populated with the minimal fields, and
+        // passed by pointer.
+        //
+        // `HewActorOpts` `#[repr(C)]` field order (hew-runtime/src/actor.rs:1418):
+        //   0  init_state:       *mut c_void   → ptr
+        //   1  state_size:       usize         → i64
+        //   2  dispatch:         Option<fn>    → ptr
+        //   3  mailbox_capacity: i32           → i32
+        //   4  overflow:         i32           → i32
+        //   5  coalesce_key_fn:  Option<fn>    → ptr
+        //   6  coalesce_fallback: i32          → i32
+        //   7  budget:           i32           → i32
+        //   8  arena_cap_bytes:  usize         → i64
+        let opts_ty = fn_ctx.ctx.struct_type(
             &[
-                state_ptr.into(),
-                state_size.into(),
-                dispatch.as_global_value().as_pointer_value().into(),
+                ptr_ty.into(), // init_state
+                i64_ty.into(), // state_size
+                ptr_ty.into(), // dispatch
+                i32_ty.into(), // mailbox_capacity
+                i32_ty.into(), // overflow
+                ptr_ty.into(), // coalesce_key_fn (null)
+                i32_ty.into(), // coalesce_fallback
+                i32_ty.into(), // budget
+                i64_ty.into(), // arena_cap_bytes
             ],
-            "hew_actor_spawn_call",
-        )
-        .map_err(|e| CodegenError::Llvm(format!("hew_actor_spawn call: {e:?}")))?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_actor_spawn returned void".into()))?
-        .into_pointer_value();
+            false,
+        );
+        let opts_slot = fn_ctx
+            .builder
+            .build_alloca(opts_ty, "actor_spawn_opts")
+            .map_err(|e| CodegenError::Llvm(format!("HewActorOpts alloca: {e:?}")))?;
+        let opts_fields: [(u32, BasicValueEnum<'_>); 9] = [
+            (0, state_ptr.into()),
+            (1, state_size.into()),
+            (2, dispatch.as_global_value().as_pointer_value().into()),
+            (3, i32_ty.const_zero().into()),
+            (4, i32_ty.const_zero().into()),
+            (5, ptr_ty.const_null().into()),
+            (6, i32_ty.const_zero().into()),
+            (7, i32_ty.const_zero().into()),
+            (8, i64_ty.const_int(cap, false).into()),
+        ];
+        for (field_idx, value) in opts_fields {
+            let gep = fn_ctx
+                .builder
+                .build_struct_gep(opts_ty, opts_slot, field_idx, &format!("opts_f{field_idx}"))
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("HewActorOpts GEP field {field_idx}: {e:?}"))
+                })?;
+            fn_ctx.builder.build_store(gep, value).map_err(|e| {
+                CodegenError::Llvm(format!("HewActorOpts store field {field_idx}: {e:?}"))
+            })?;
+        }
+        let spawn_opts_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_actor_spawn_opts",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                spawn_opts_fn,
+                &[opts_slot.into()],
+                "hew_actor_spawn_opts_call",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("hew_actor_spawn_opts call: {e:?}")))?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_actor_spawn_opts returned void".into()))?
+            .into_pointer_value()
+    } else {
+        // No arena cap — use the lighter 3-arg `hew_actor_spawn` path.
+        let spawn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_actor_spawn",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                spawn,
+                &[
+                    state_ptr.into(),
+                    state_size.into(),
+                    dispatch.as_global_value().as_pointer_value().into(),
+                ],
+                "hew_actor_spawn_call",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("hew_actor_spawn call: {e:?}")))?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_actor_spawn returned void".into()))?
+            .into_pointer_value()
+    };
+
     emit_actor_spawn_lifecycle(fn_ctx, actor_name, spawned, init_args)?;
     let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
     if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
@@ -1743,6 +1828,10 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     let name_ptr = name_global.as_pointer_value();
 
     let restart_int = child.restart_policy.map(restart_policy_to_int).unwrap_or(0);
+    // arena_cap_bytes: lifted from the child actor's `#[max_heap(N)]`
+    // annotation (mirrored into SupervisorChildLayout.max_heap_bytes by the
+    // MIR post-loop pass). Zero means unbounded — matches runtime default.
+    let arena_cap = child.max_heap_bytes.unwrap_or(0);
 
     let field_values: [(u32, BasicValueEnum<'ctx>); 9] = [
         (0, name_ptr.into()),
@@ -1752,7 +1841,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         (4, i32_ty.const_int(restart_int as u64, true).into()),
         (5, i32_ty.const_zero().into()),
         (6, i32_ty.const_zero().into()),
-        (7, i64_ty.const_zero().into()),
+        (7, i64_ty.const_int(arena_cap, false).into()), // arena_cap_bytes from #[max_heap(N)]
         (8, on_crash_ptr), // on_crash: fn-pointer when child's actor has #[on(crash)], null otherwise
     ];
     for (field_idx, value) in field_values {
@@ -3097,8 +3186,16 @@ fn lower_instruction(
             state,
             init_args,
             dest,
+            max_heap_bytes,
         } => {
-            emit_spawn_actor(fn_ctx, actor_name, *state, init_args, *dest)?;
+            emit_spawn_actor(
+                fn_ctx,
+                actor_name,
+                *state,
+                init_args,
+                *dest,
+                *max_heap_bytes,
+            )?;
             let _ = ctx;
         }
         // TO-3 lands the MIR shape (`Instr::CoerceToDynTrait`,

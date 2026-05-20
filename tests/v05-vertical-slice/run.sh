@@ -138,6 +138,29 @@ run_accept_expect_status "on_crash_basic" 42
 # FieldAccess lowering succeeds.  The supervisor boots and main returns 42.
 run_accept_expect_status "on_crash_info_code" 42
 
+# `#[max_heap(N)]` wire-through — direct spawn path:
+#   1. MIR dump confirms ActorLayout carries max_heap_bytes: Some(65536),
+#      proving the annotation propagated from HIR through MIR.
+#   2. Binary exits 42, proving codegen routed the spawn through
+#      hew_actor_spawn_opts (arena_cap_bytes=65536) without breaking
+#      actor functionality.
+"${HEW}" compile --dump-mir raw "${ROOT}/tests/v05-vertical-slice/accept/actor_max_heap_basic.hew" >"${accept_output}" 2>&1
+grep -q 'max_heap_bytes: Some(' "${accept_output}"
+grep -q '65536' "${accept_output}"
+run_accept_expect_status "actor_max_heap_basic" 42
+
+# `#[max_heap(N)]` wire-through — supervisor child path:
+#   1. MIR dump confirms the supervisor bootstrap's SpawnActor instruction
+#      carries max_heap_bytes: Some(131072), proving the post-loop pass
+#      mirrored the cap from ActorLayout into SupervisorChildLayout, and
+#      codegen emitted it into HewChildSpec.arena_cap_bytes.
+#   2. Binary exits 42, proving the supervisor bootstrap path is
+#      unaffected.
+"${HEW}" compile --dump-mir raw "${ROOT}/tests/v05-vertical-slice/accept/supervisor_max_heap.hew" >"${accept_output}" 2>&1
+grep -q 'max_heap_bytes: Some(' "${accept_output}"
+grep -q '131072' "${accept_output}"
+run_accept_expect_status "supervisor_max_heap" 42
+
 # Reject: accessing a non-existent child name on a supervisor LHS.
 # `app.w2` does not exist — App declares only `w1`.  The checker emits
 # UndefinedField with a fuzzy suggestion for `w1`.

@@ -95,6 +95,12 @@ pub struct ActorLayout {
     pub on_stop_symbols: Vec<String>,
     /// `#[on(crash)]` handler symbol. `None` when the actor has no crash hook.
     pub on_crash_symbol: Option<String>,
+    /// Per-actor arena cap in bytes from `#[max_heap(N)]`. `None` means no
+    /// annotation (unbounded arena). Codegen reads this to select
+    /// `hew_actor_spawn` (None) vs `hew_actor_spawn_opts` with
+    /// `arena_cap_bytes = N` (Some). Mirrored into `SupervisorChildLayout`
+    /// for the supervisor restart path.
+    pub max_heap_bytes: Option<u64>,
     /// Receive handlers in message-type order.
     pub handlers: Vec<ActorHandlerLayout>,
 }
@@ -199,6 +205,12 @@ pub struct SupervisorChildLayout {
     /// (Slice 3) reads this to populate the `on_crash_fn` pointer in the
     /// emitted `HewChildSpec` literal; if `None`, the field is left null.
     pub on_crash_symbol: Option<String>,
+    /// Per-actor arena cap in bytes from `#[max_heap(N)]` on this child's
+    /// actor type. Mirrored from `ActorLayout.max_heap_bytes` in the
+    /// post-loop pass; `None` when the actor declares no `#[max_heap]`.
+    /// Codegen populates `HewChildSpec.arena_cap_bytes` from this field so
+    /// the supervisor restart path preserves the cap across crashes.
+    pub max_heap_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1093,6 +1105,11 @@ pub enum Instr {
         state: Option<Place>,
         init_args: Vec<Place>,
         dest: Place,
+        /// Per-actor arena cap in bytes from the actor's `#[max_heap(N)]`
+        /// annotation. `None` means uncapped (runtime default). Codegen
+        /// routes `Some(N)` through `hew_actor_spawn_opts`; `None` uses
+        /// the plain `hew_actor_spawn` path.
+        max_heap_bytes: Option<u64>,
     },
     /// Call a first-class callable pair. Codegen loads the function pointer and
     /// environment pointer from `callee`, then emits an indirect call with the

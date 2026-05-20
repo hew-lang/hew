@@ -791,6 +791,7 @@ fn walk_program<V: SideTableVisitor>(
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}
+            Expr::GenBlock { body } => collect_block(body, tco, visitor, out),
         }
     }
 

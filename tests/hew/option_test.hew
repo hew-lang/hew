@@ -61,14 +61,14 @@ fn test_unwrap_or_int_none() {
 #[test]
 fn test_map_int_some() {
     let x = Some(21);
-    let mapped = option.map_int(x, (v: i64) => v * 2);
+    let mapped = option.map_int(x, |v: i64| v * 2);
     testing.assert_eq(option.unwrap_int(mapped), 42);
 }
 
 #[test]
 fn test_map_int_none() {
     let x: Option<i64> = None;
-    let mapped = option.map_int(x, (v: i64) => v * 2);
+    let mapped = option.map_int(x, |v: i64| v * 2);
     testing.assert_true(option.is_none_int(mapped));
 }
 
@@ -121,14 +121,14 @@ fn test_unwrap_or_str_none() {
 #[test]
 fn test_map_str_some() {
     let x = Some("hello");
-    let mapped = option.map_str(x, (s: string) => s + "!");
+    let mapped = option.map_str(x, |s: string| s + "!");
     testing.assert_eq_str(option.unwrap_str(mapped), "hello!");
 }
 
 #[test]
 fn test_map_str_none() {
     let x: Option<string> = None;
-    let mapped = option.map_str(x, (s: string) => s + "!");
+    let mapped = option.map_str(x, |s: string| s + "!");
     testing.assert_true(option.is_none_str(mapped));
 }
 
@@ -188,14 +188,14 @@ fn test_unwrap_or_f64_none() {
 #[test]
 fn test_map_f64_some() {
     let x = Some(1.5);
-    let mapped = option.map_f64(x, (v: f64) => v * 2.0);
+    let mapped = option.map_f64(x, |v: f64| v * 2.0);
     testing.assert_true(option.unwrap_or_f64(mapped, 0.0) == 3.0);
 }
 
 #[test]
 fn test_map_f64_none() {
     let x: Option<f64> = None;
-    let mapped = option.map_f64(x, (v: f64) => v * 2.0);
+    let mapped = option.map_f64(x, |v: f64| v * 2.0);
     testing.assert_true(option.is_none_f64(mapped));
 }
 

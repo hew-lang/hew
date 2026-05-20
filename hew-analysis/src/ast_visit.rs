@@ -744,7 +744,9 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&value.0, &value.1, body);
                 }
             }
-            Expr::Scope { body: inner_body } | Expr::ForkBlock { body: inner_body } => {
+            Expr::Scope { body: inner_body }
+            | Expr::ForkBlock { body: inner_body }
+            | Expr::GenBlock { body: inner_body } => {
                 self.walk_block(inner_body, body);
             }
             Expr::ScopeDeadline {

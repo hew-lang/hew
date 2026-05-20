@@ -3326,6 +3326,35 @@ impl LowerCtx {
                 body,
                 ..
             } => self.lower_closure(params, return_type.as_ref(), body, span.clone()),
+            Expr::GenBlock { .. } => {
+                // WHY: `gen { }` expression-position generator blocks are a
+                //      v0.5 surface that requires HIR/MIR coroutine support.
+                //      That support is not yet implemented.
+                // WHEN OBSOLETE: when generator lowering wires up
+                //      HirExprKind::GenResume and the coroutine scheduler.
+                // REAL SOLUTION: lower to HirExprKind::GenBlock carrying a
+                //      HirBlock body, yield points converted to
+                //      HirExprKind::GenYield nodes; the MIR scheduler then
+                //      desugars those into coroutine state machines.
+                //
+                // Fail-closed: emit a typed diagnostic and return Unit so
+                // the rest of the program continues to be lowered (diagnosing
+                // as many errors as possible in one pass).
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::UnresolvedSymbol {
+                        name: "E_GEN_BLOCK_PENDING: generator block lowering is not yet \
+                               implemented; generator blocks are parsed but cannot be compiled \
+                               in this version"
+                            .to_string(),
+                    },
+                    span.clone(),
+                    "gen {} blocks require coroutine lowering (not yet implemented)",
+                ));
+                (
+                    HirExprKind::Literal(crate::HirLiteral::Unit),
+                    ResolvedTy::Unit,
+                )
+            }
             Expr::MethodCall {
                 receiver,
                 method,

@@ -155,7 +155,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         | Expr::SpawnLambdaActor { .. }
         | Expr::Yield(None)
         | Expr::ForkChild { .. } => false,
-        Expr::ForkBlock { body } => block_contains_defer(body),
+        Expr::ForkBlock { body } | Expr::GenBlock { body } => block_contains_defer(body),
         Expr::ScopeDeadline { duration, body } => {
             expr_contains_defer(&duration.0) || block_contains_defer(body)
         }
@@ -343,7 +343,9 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         | Expr::SpawnLambdaActor { .. }
         | Expr::Yield(None)
         | Expr::ForkChild { .. } => {}
-        Expr::ForkBlock { body } => {
+        // Generator blocks are not tail-call candidates; mark the body
+        // so any inner call expressions can still be identified.
+        Expr::ForkBlock { body } | Expr::GenBlock { body } => {
             mark_block(body, false);
         }
         Expr::ScopeDeadline { duration, body } => {

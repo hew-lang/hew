@@ -5279,16 +5279,18 @@ impl<'src> Parser<'src> {
                 }
             }
             Token::Less => {
-                // Speculative parse for generic lambda: <T>(x: T) => expr
+                // Speculative parse to detect old generic lambda: <T>(x: T) => expr.
+                // This form was removed in v0.5; type-parameterized closures are not
+                // supported. Detect the form and emit a typed migration diagnostic.
                 let saved_pos = self.save_pos();
                 self.advance(); // consume '<'
 
-                let is_generic_lambda = if let Some(_type_params) = self.parse_type_params() {
+                let is_old_generic_lambda = if let Some(_type_params) = self.parse_type_params() {
                     if self.peek() == Some(&Token::LeftParen) {
                         self.advance(); // consume '('
                         if self.try_parse_lambda_params().is_some() {
                             if self.expect(&Token::RightParen).is_some() {
-                                // Check for optional return type
+                                // Check for optional return type then `=>`
                                 if self.eat(&Token::Arrow) {
                                     self.parse_type().is_some()
                                         && self.peek() == Some(&Token::FatArrow)
@@ -5310,44 +5312,40 @@ impl<'src> Parser<'src> {
 
                 self.restore_pos(saved_pos);
 
-                if is_generic_lambda {
+                if is_old_generic_lambda {
+                    // Consume through the form for error recovery, then emit typed error.
                     self.advance(); // consume '<'
-                    let type_params = Some(self.parse_type_params()?);
-                    self.expect(&Token::LeftParen)?;
-                    let params = self.try_parse_lambda_params()?;
-                    self.expect(&Token::RightParen)?;
-
-                    let return_type = self.parse_opt_return_type()?;
-
-                    self.expect(&Token::FatArrow)?;
-                    let body = Box::new(self.parse_expr()?);
-
-                    Expr::Lambda {
-                        is_move: false,
-                        type_params,
-                        params,
-                        return_type,
-                        body,
+                    self.parse_type_params();
+                    self.expect(&Token::LeftParen);
+                    self.try_parse_lambda_params();
+                    self.expect(&Token::RightParen);
+                    self.parse_opt_return_type();
+                    if self.eat(&Token::FatArrow) {
+                        self.parse_expr();
                     }
-                } else {
-                    // Not a generic lambda.
-                    // Could be a syntax error, or maybe valid if we support other <... syntax.
-                    // For now, report error as "expected expression" or similar, but since we are in parse_primary...
-                    // Actually, if we return None here, the caller might handle it.
-                    // But wait, parse_primary expects to consume something.
-                    // If we found '<' but it's not a generic lambda, it's likely an error.
-                    self.error("unexpected '<' at start of expression".to_string());
+                    self.error_closure_pipe_syntax(
+                        "E_CLOSURE_PIPE_SYNTAX: `<T>(params) => body` has been removed; \
+                         type-parameterized closures are not supported in v0.5"
+                            .to_string(),
+                        start..self.peek_span().start,
+                        "use `|params| body` — omit type parameters on closure expressions",
+                    );
                     return None;
                 }
+                self.error("unexpected '<' at start of expression".to_string());
+                return None;
             }
             Token::LeftParen => {
                 self.advance();
 
-                // Try parsing as lambda first
+                // Detect and reject old `(params) => body` parenthesized lambda syntax.
+                // This form was removed in v0.5; the current form is `|params| body`.
+                // Keep the detection here so we can surface a typed migration diagnostic
+                // rather than a cryptic parse error when `=>` is encountered later.
                 let saved_pos = self.save_pos();
-                let is_lambda = if self.try_parse_lambda_params().is_some() {
+                let is_old_paren_lambda = if self.try_parse_lambda_params().is_some() {
                     if self.expect(&Token::RightParen).is_some() {
-                        // Check for optional return type
+                        // Check for optional return type annotation then `=>`
                         if self.eat(&Token::Arrow) {
                             self.parse_type().is_some() && self.peek() == Some(&Token::FatArrow)
                         } else {
@@ -5361,23 +5359,22 @@ impl<'src> Parser<'src> {
                 };
                 self.restore_pos(saved_pos);
 
-                if is_lambda {
-                    let is_move = false;
-                    let params = self.try_parse_lambda_params()?;
-                    self.expect(&Token::RightParen)?;
-
-                    let return_type = self.parse_opt_return_type()?;
-
-                    self.expect(&Token::FatArrow)?;
-                    let body = Box::new(self.parse_expr()?);
-
-                    Expr::Lambda {
-                        is_move,
-                        type_params: None,
-                        params,
-                        return_type,
-                        body,
+                if is_old_paren_lambda {
+                    // Consume through the entire form for error recovery continuity.
+                    self.try_parse_lambda_params();
+                    self.expect(&Token::RightParen);
+                    self.parse_opt_return_type();
+                    if self.eat(&Token::FatArrow) {
+                        self.parse_expr();
                     }
+                    self.error_closure_pipe_syntax(
+                        "E_CLOSURE_PIPE_SYNTAX: `(params) => body` has been removed; \
+                         use `|params| body` instead"
+                            .to_string(),
+                        start..self.peek_span().start,
+                        "replace `(params) => body` with `|params| body`",
+                    );
+                    return None;
                 } else if self.eat(&Token::RightParen) {
                     // Unit tuple
                     Expr::Tuple(Vec::new())
@@ -5616,23 +5613,41 @@ impl<'src> Parser<'src> {
                 self.advance();
                 if matches!(self.peek(), Some(Token::Pipe | Token::PipePipe)) {
                     self.parse_pipe_lambda(true, start)?
-                } else if self.eat(&Token::LeftParen) {
-                    // Move lambda
-                    let params = self.try_parse_lambda_params()?;
-                    self.expect(&Token::RightParen)?;
+                } else if self.peek() == Some(&Token::LeftParen) {
+                    // Old `move (params) => body` form — detect and diagnose.
+                    // Consume through the form for recovery, then emit a typed error.
+                    let saved_pos = self.save_pos();
+                    self.advance(); // consume '('
+                    let is_old_paren_lambda = self.try_parse_lambda_params().is_some()
+                        && self.expect(&Token::RightParen).is_some()
+                        && (self.peek() == Some(&Token::FatArrow)
+                            || self.peek() == Some(&Token::Arrow));
+                    self.restore_pos(saved_pos);
 
-                    let return_type = self.parse_opt_return_type()?;
-
-                    self.expect(&Token::FatArrow)?;
-                    let body = Box::new(self.parse_expr()?);
-
-                    Expr::Lambda {
-                        is_move: true,
-                        type_params: None,
-                        params,
-                        return_type,
-                        body,
+                    if is_old_paren_lambda {
+                        self.advance(); // consume '('
+                        self.try_parse_lambda_params();
+                        self.expect(&Token::RightParen);
+                        self.parse_opt_return_type();
+                        if self.eat(&Token::FatArrow) {
+                            self.parse_expr();
+                        }
+                        self.error_closure_pipe_syntax(
+                            "E_CLOSURE_PIPE_SYNTAX: `move (params) => body` has been removed; \
+                             use `move |params| expr` instead"
+                                .to_string(),
+                            start..self.peek_span().start,
+                            "replace `move (params) => body` with `move |params| expr`",
+                        );
+                        return None;
                     }
+                    self.error_closure_pipe_syntax(
+                        "E_CLOSURE_PIPE_SYNTAX: expected `|` after `move` to begin a closure"
+                            .to_string(),
+                        self.peek_span(),
+                        "write `move |params| expr`",
+                    );
+                    return None;
                 } else {
                     self.error_closure_pipe_syntax(
                         "E_CLOSURE_PIPE_SYNTAX: expected `|` after `move` to begin a closure"
@@ -5642,6 +5657,27 @@ impl<'src> Parser<'src> {
                     );
                     return None;
                 }
+            }
+            // gen { yield ...; } — lazy generator block expression.
+            // Must be followed immediately by a braced block; `gen fn` (item-level
+            // generator functions) is parsed separately and does not reach here.
+            // Bare `gen` without a block emits a typed diagnostic.
+            Token::Gen if self.peek_at(self.pos + 1) == Some(&Token::LeftBrace) => {
+                self.advance(); // consume `gen`
+                let body = self.parse_block()?;
+                Expr::GenBlock { body }
+            }
+            Token::Gen => {
+                self.advance(); // consume `gen`
+                let found = match self.peek() {
+                    Some(tok) => format!("`{tok}`"),
+                    None => "end of file".to_string(),
+                };
+                self.error_with_hint(
+                    format!("E_GEN_BLOCK_SYNTAX: `gen` must be followed by a block; found {found}"),
+                    "write `gen { yield expr; }` to create a generator block".to_string(),
+                );
+                return None;
             }
             Token::Return => {
                 self.advance();
@@ -7988,36 +8024,103 @@ fn demo() {}
         }
     }
     #[test]
-    fn parse_generic_lambda() {
-        let source = "fn main() { let id = <T>(x: T) => x; }";
-        let result = parse(source);
-        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    fn parse_generic_lambda_removed_emits_typed_diagnostic() {
+        // Generic lambda `<T>(params) => body` was removed in v0.5.
+        // The parser must emit a typed E_CLOSURE_PIPE_SYNTAX diagnostic,
+        // not silently accept or produce a cryptic error.
+        for source in [
+            "fn main() { let id = <T>(x: T) => x; }",
+            "fn main() { let add = <T: Add>(x: T, y: T) => x + y; }",
+            "fn main() { let id = <T>(x: T) -> T => x; }",
+        ] {
+            let result = parse(source);
+            assert!(
+                result.errors.iter().any(|e| matches!(
+                    e.kind,
+                    ParseDiagnosticKind::ClosurePipeSyntax
+                ) && e.message.contains("E_CLOSURE_PIPE_SYNTAX")),
+                "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda: {source}\ngot: {:?}",
+                result.errors
+            );
+        }
+    }
 
+    #[test]
+    fn parse_paren_lambda_removed_emits_typed_diagnostic() {
+        // Parenthesized `(params) => body` was removed in v0.5.
+        // The parser must emit a typed E_CLOSURE_PIPE_SYNTAX diagnostic.
+        for source in [
+            "fn main() { let f = (x) => x; }",
+            "fn main() { let f = (x: i32) => x; }",
+            "fn main() { let f = (x: i32) -> i32 => x; }",
+            "fn main() { let f = move (x) => x; }",
+        ] {
+            let result = parse(source);
+            assert!(
+                result.errors.iter().any(|e| matches!(
+                    e.kind,
+                    ParseDiagnosticKind::ClosurePipeSyntax
+                ) && e.message.contains("E_CLOSURE_PIPE_SYNTAX")),
+                "expected typed E_CLOSURE_PIPE_SYNTAX for removed paren lambda: {source}\ngot: {:?}",
+                result.errors
+            );
+        }
+    }
+
+    #[test]
+    fn parse_gen_block_expression() {
+        // `gen { yield ...; }` in expression position.
+        let source = "fn main() { let g = gen { yield 1; yield 2; }; }";
+        let result = parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "expected gen block to parse cleanly: {source}\nerrors: {:?}",
+            result.errors
+        );
         if let Item::Function(f) = &result.program.items[0].0 {
             if let Stmt::Let {
-                value: Some((Expr::Lambda { type_params, .. }, _)),
+                value: Some((Expr::GenBlock { .. }, _)),
                 ..
             } = &f.body.stmts[0].0
             {
-                let tps = type_params.as_ref().expect("expected type params");
-                assert_eq!(tps.len(), 1);
-                assert_eq!(tps[0].name, "T");
+                // Correct: let binding holds a GenBlock
             } else {
-                panic!("expected let with generic lambda");
+                panic!("expected let with GenBlock, got: {:?}", f.body.stmts[0].0);
             }
         } else {
-            panic!("expected function");
+            panic!("expected function item");
         }
+    }
 
-        // With bounds: <T: Add>(x: T, y: T) => x + y
-        let source = "fn main() { let add = <T: Add>(x: T, y: T) => x + y; }";
+    #[test]
+    fn parse_gen_block_empty_body() {
+        // Empty gen block is syntactically valid (checker will reject it without item type).
+        let source = "fn main() { let g = gen {}; }";
         let result = parse(source);
-        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "expected empty gen block to parse cleanly: {source}\nerrors: {:?}",
+            result.errors
+        );
+    }
 
-        // With explicit return type: <T>(x: T) -> T => x
-        let source = "fn main() { let id = <T>(x: T) -> T => x; }";
+    #[test]
+    fn parse_gen_without_block_emits_diagnostic() {
+        // `gen` without a following brace must emit a diagnostic.
+        let source = "fn main() { let g = gen 42; }";
         let result = parse(source);
-        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.errors.is_empty(),
+            "expected error for `gen` without block"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("E_GEN_BLOCK_SYNTAX")),
+            "expected E_GEN_BLOCK_SYNTAX diagnostic, got: {:?}",
+            result.errors
+        );
     }
 
     #[test]

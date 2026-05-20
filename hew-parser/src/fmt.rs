@@ -2358,6 +2358,10 @@ impl<'a> Formatter<'a> {
                     self.write(" }");
                 }
             }
+            Expr::GenBlock { body } => {
+                self.write("gen ");
+                self.format_block(body, self.source.len());
+            }
         }
     }
 

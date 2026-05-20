@@ -49,7 +49,7 @@ fn show_stack_hints_flag_emits_perf_001_on_known_allocations() {
     // a primitive i64 return does not allocate on the heap.
     let source = "fn main() {\n\
         \x20\x20\x20\x20let v: Vec<i64> = Vec::new();\n\
-        \x20\x20\x20\x20let f = (x: i64) -> i64 => x * 2;\n\
+        \x20\x20\x20\x20let f = |x: i64| -> i64 { x * 2 };\n\
         \x20\x20\x20\x20let r: i64 = f(3);\n\
         \x20\x20\x20\x20println(f\"v.len = {v.len()}, r = {r}\");\n\
         }\n";

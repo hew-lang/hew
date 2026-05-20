@@ -167,8 +167,8 @@ fn core_div(a: i64, b: i64) -> Result<i64, i64> {{
 }}
 
 fn core_pipeline(seed: i64) -> Result<i64, i64> {{
-    let closure = (x) => x + seed;
-    let thunk = () => closure(1);
+    let closure = |x| x + seed;
+    let thunk = || closure(1);
     let maybe = Some(thunk());
     let picked = match maybe {{
         Some(v) => v,
@@ -231,7 +231,7 @@ impl FunctionSpec {
         let v = i32::from(self.seed % 5) + 1;
         format!(
             r#"fn fuzz_fn_{idx}(input: i64) -> Result<i64, i64> {{
-    let mapper = (x) => x + {v};
+    let mapper = |x| x + {v};
     let mapped = mapper(input);
     let result = core_div(mapped, 1)?;
     Ok(result)

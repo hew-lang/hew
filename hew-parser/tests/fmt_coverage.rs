@@ -641,13 +641,22 @@ fn fmt_multi_param_lambda() {
     assert!(out.contains("|a, b| a + b"), "output: {out}");
 }
 
+// Generic `<T>(params) => body` lambda syntax was removed in v0.5; the
+// formatter no longer needs a roundtrip test for it.  Pipe-closure tests
+// below cover `|params| body` formatting instead.
+
 #[test]
-fn fmt_generic_lambda_type_params() {
-    let src = "fn main() { let id = <T: Display>(x: T) -> T => x; }";
+fn fmt_gen_block_expression() {
+    // Generator block in expression position: `gen { yield ...; }`.
+    let src = "fn main() {\n    let g = gen {\n        yield 1;\n        yield 2;\n    };\n}\n";
     let out = roundtrip(src);
     assert!(
-        out.contains("<T: Display>(x: T) -> T => x"),
-        "output: {out}"
+        out.contains("gen {"),
+        "formatted output should contain `gen {{`: {out}"
+    );
+    assert!(
+        out.contains("yield 1"),
+        "formatted output should contain `yield 1`: {out}"
     );
 }
 

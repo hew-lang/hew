@@ -1422,6 +1422,24 @@ impl Checker {
                 self.check_against(&duration.0, &duration.1, &Ty::Duration);
                 Ty::option(inner_ty)
             }
+            Expr::GenBlock { body } => {
+                // WHY: `gen { }` expression-position generator blocks are part
+                //      of the v0.5 surface (parser support present).
+                //      HIR/MIR coroutine lowering is not yet wired; fail closed here.
+                // WHEN OBSOLETE: when generator lowering wires
+                //      HirExprKind::GenBlock and the coroutine scheduler.
+                // REAL SOLUTION: synthesize the yield type from the block,
+                //      return Ty::Named { name: "Iterator", args: [yield_ty] }.
+                self.check_block(body, None);
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "E_GEN_BLOCK_PENDING: `gen { }` generator blocks are not yet supported; \
+                     generator lowering will be added in a future release"
+                        .to_string(),
+                );
+                Ty::Error
+            }
             _ => Ty::Unit,
         }
     }
@@ -3182,7 +3200,8 @@ impl Checker {
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
             | Expr::MachineEmit { .. }
-            | Expr::Is { .. } => {}
+            | Expr::Is { .. }
+            | Expr::GenBlock { .. } => {}
         }
     }
 

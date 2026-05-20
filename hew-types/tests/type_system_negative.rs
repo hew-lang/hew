@@ -1597,7 +1597,7 @@ fn explicit_hole_nonitem_lambda_param_annotation_is_rejected() {
     let output = typecheck(
         r"
         fn main() {
-            let _f = (x: _) => 1;
+            let _f = |x: _| 1;
         }
     ",
     );
@@ -1616,7 +1616,7 @@ fn explicit_hole_nonitem_lambda_param_annotation_is_inferred_from_expected_type(
     let output = typecheck(
         r"
         fn main() {
-            let _f: fn(i64) -> i64 = (x: _) => 1;
+            let _f: fn(i64) -> i64 = |x: _| 1;
         }
     ",
     );
@@ -1635,7 +1635,7 @@ fn explicit_hole_nonitem_lambda_return_annotation_is_rejected() {
     let output = typecheck(
         r"
         fn main() {
-            let _f = () -> _ => None;
+            let _f = || -> _ { None };
         }
     ",
     );
@@ -1654,7 +1654,7 @@ fn explicit_hole_nonitem_lambda_return_annotation_is_resolved_from_body() {
     let output = typecheck(
         r"
         fn main() {
-            let _f = () -> _ => 1;
+            let _f = || -> _ { 1 };
         }
     ",
     );
@@ -1884,7 +1884,7 @@ fn postfix_try_in_option_lambda_inside_plain_fn_is_valid() {
             if x > 0 { Some(x) } else { None }
         }
         fn outer(x: i32) {
-            let _f = (v: i32) -> Option<i32> => {
+            let _f = |v: i32| -> Option<i32> {
                 let w = maybe(v)?;
                 Some(w)
             };
@@ -1909,7 +1909,7 @@ fn postfix_try_in_plain_lambda_inside_option_fn_is_invalid() {
             if x > 0 { Some(x) } else { None }
         }
         fn outer(x: i32) -> Option<i32> {
-            let _f = (v: i32) -> i32 => {
+            let _f = |v: i32| -> i32 {
                 let w = maybe(v)?;
                 w
             };

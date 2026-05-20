@@ -297,6 +297,21 @@ pub enum Expr {
         event_name: String,
         fields: Vec<(String, Spanned<Expr>)>,
     },
+
+    /// Generator block expression: `gen { yield ...; }`.
+    ///
+    /// The block body is lazy — it does not run until `Iterator::next` is
+    /// called on the produced generator value.  Each `yield expr;` statement
+    /// emits one `Some(expr)` from `next`.  When the body falls off the end
+    /// the generator transitions to `Ended`; a subsequent `next` call traps.
+    ///
+    /// HIR/MIR/codegen lowering is not yet implemented.  The checker
+    /// and HIR lowerer emit a typed `E_GEN_BLOCK_PENDING` diagnostic for any
+    /// generator block, surfacing a real error instead of
+    /// silently fabricating a value.
+    GenBlock {
+        body: Block,
+    },
 }
 
 // ── Statements ───────────────────────────────────────────────────────

@@ -1856,7 +1856,7 @@ fn context_reader_in_non_actor_lambda_is_typed_diagnostic() {
     let source = "\
         actor Worker {
             receive fn ping() {
-                let f = () => @actor_id;
+                let f = || @actor_id;
             }
         }";
     let output = check_source(source);
@@ -6265,41 +6265,22 @@ fn test_file_import_private_items_not_visible() {
 }
 
 #[test]
-fn check_generic_lambda() {
+fn check_generic_lambda_removed_emits_typed_diagnostic() {
+    // Generic lambda `<T>(params) => body` was removed in v0.5.
+    // The parser must emit a typed E_CLOSURE_PIPE_SYNTAX diagnostic.
     let source = r"
-        fn apply<T>(f: fn(T) -> T, x: T) -> T {
-            f(x)
-        }
-
         fn main() {
-            // Identity generic lambda
             let id = <T>(x: T) => x;
-            // Instantiation happens when calling `apply`
-            // apply takes fn(T) -> T. `id` matches that.
-            // However, `id` is a generic closure.
-            // We need to make sure generic instantiation works.
-            // Currently, `check_lambda` creates fresh type variables for T.
-            // So id has type ?0 -> ?0.
-            // When passed to apply(id, 5), T inferred as i64.
-            // apply expects fn(i64) -> i64.
-            // id matches fn(?0) -> ?0 where ?0=i64.
-            let res = apply(id, 5);
         }
     ";
-
     let result = hew_parser::parse(source);
     assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
+        result.errors.iter().any(|e| {
+            matches!(e.kind, hew_parser::ParseDiagnosticKind::ClosurePipeSyntax)
+                && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
+        }),
+        "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda, got: {:?}",
         result.errors
-    );
-
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    assert!(
-        output.errors.is_empty(),
-        "type check errors: {:?}",
-        output.errors
     );
 }
 
@@ -6311,8 +6292,12 @@ fn check_generic_lambda() {
 ///    return type correctly.
 /// 3. `call_type_args` is populated for the call so the enricher can
 ///    fill in explicit type arguments before serialisation to MLIR.
+// Generic lambda `<T>(params) => body` was removed in v0.5.
+// The tests below confirm the parser emits typed diagnostics instead.
+// Equivalent named-function generics continue to work (tested elsewhere).
+
 #[test]
-fn generic_lambda_slice1_type_inference() {
+fn generic_lambda_slice1_removed_emits_diagnostic() {
     let source = r"
         fn main() {
             let v: i64 = 30;
@@ -6320,83 +6305,36 @@ fn generic_lambda_slice1_type_inference() {
             let q = r(v, v);
         }
     ";
-
     let result = hew_parser::parse(source);
     assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
+        result.errors.iter().any(|e| {
+            matches!(e.kind, hew_parser::ParseDiagnosticKind::ClosurePipeSyntax)
+                && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
+        }),
+        "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda, got: {:?}",
         result.errors
-    );
-
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    assert!(
-        output.errors.is_empty(),
-        "type check errors: {:?}",
-        output.errors
-    );
-
-    // The call r(v, v) must have produced a call_type_args entry (T→i64).
-    assert!(
-        !output.call_type_args.is_empty(),
-        "call_type_args should contain the inferred type for r(v,v)"
-    );
-    // The single entry should map to [i64 / i64].
-    let type_args: Vec<_> = output.call_type_args.values().collect();
-    assert_eq!(type_args.len(), 1);
-    assert_eq!(
-        type_args[0],
-        &vec![crate::ty::Ty::I64],
-        "T should be inferred as i64 (i64)"
     );
 }
 
-/// Slice-1: two-type-param generic lambda, verify both params inferred.
 #[test]
-fn generic_lambda_slice1_two_type_params() {
-    let source = concat!(
-        "fn main() {\n",
-        r#"    let combine = <A, B>(a: A, b: B) -> A => a;"#,
-        "\n",
-        r#"    let x: i64 = 1;"#,
-        "\n",
-        r#"    let y: string = "hello";"#,
-        "\n",
-        r#"    let z = combine(x, y);"#,
-        "\n",
-        "}\n",
-    );
-
+fn generic_lambda_two_type_params_removed_emits_diagnostic() {
+    let source = "fn main() { let combine = <A, B>(a: A, b: B) -> A => a; combine(1, 2); }";
     let result = hew_parser::parse(source);
     assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
+        result.errors.iter().any(|e| {
+            matches!(e.kind, hew_parser::ParseDiagnosticKind::ClosurePipeSyntax)
+                && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
+        }),
+        "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda, got: {:?}",
         result.errors
     );
-
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    assert!(
-        output.errors.is_empty(),
-        "type check errors: {:?}",
-        output.errors
-    );
-
-    // Should have one call_type_args entry with two type args.
-    assert_eq!(
-        output.call_type_args.len(),
-        1,
-        "expected one call_type_args entry"
-    );
-    let args = output.call_type_args.values().next().unwrap();
-    assert_eq!(args.len(), 2, "expected two type args (A and B)");
 }
 
 #[test]
 fn contextual_lambda_binding_records_lambda_expr_type() {
     let source = concat!(
         "fn main() {\n",
-        "    let f: fn(i64) -> i64 = (x) => x + 1;\n",
+        "    let f: fn(i64) -> i64 = |x| x + 1;\n",
         "    let y = f(5);\n",
         "}\n",
     );
@@ -6701,60 +6639,25 @@ fn trait_method_type_params_do_not_unify_across_calls() {
     );
 }
 
-/// Regression: a generic lambda passed as a function *argument* (not
-/// directly bound to `let`) must not leak its `TypeVar` pairs into the
-/// scratch field and then be picked up by the *next* unrelated let-binding.
-///
-/// Before the fix, `last_lambda_generic_vars` was set by `check_lambda`
-/// any time a generic lambda was type-checked, so the following sequence
-/// would falsely register `q` as having a generic lambda type:
-///
-/// ```text
-///   fn apply<T>(f: fn(T) -> T, x: T) -> T { f(x) }
-///   fn main() {
-///       apply(<T>(x: T) => x, 5);  // generic lambda in arg position
-///       let q = 42;                 // should NOT be in lambda_poly_type_var_map
-///   }
-/// ```
+/// Generic lambda `<T>(params) => body` was removed in v0.5.
+/// The parser must emit a typed `E_CLOSURE_PIPE_SYNTAX` diagnostic even when
+/// the generic lambda appears as a call argument rather than a let binding.
 #[test]
-fn generic_lambda_scratch_state_no_leak() {
-    let source = r"
-        fn apply<T>(f: fn(T) -> T, x: T) -> T {
-            f(x)
-        }
-
-        fn main() {
-            apply(<T>(x: T) => x, 5);
-            let q = 42;
-            let z = q + 1;
-        }
-    ";
-
+fn generic_lambda_in_arg_position_rejected() {
+    // Replaces `generic_lambda_scratch_state_no_leak`: the old test verified
+    // that scratch state didn't leak between a generic lambda argument and a
+    // subsequent let-binding. The scenario is now moot because generic lambdas
+    // are rejected at the parse stage. This assertion verifies the removal
+    // diagnostic fires in argument position.
+    let source = r"fn main() { apply(<T>(x: T) => x, 5); }";
     let result = hew_parser::parse(source);
     assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
+        result.errors.iter().any(|e| {
+            matches!(e.kind, hew_parser::ParseDiagnosticKind::ClosurePipeSyntax)
+                && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
+        }),
+        "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda in arg position, got: {:?}",
         result.errors
-    );
-
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    assert!(
-        output.errors.is_empty(),
-        "type check errors: {:?}",
-        output.errors
-    );
-
-    // call_type_args may have an entry for the `apply(...)` call, but q
-    // must not appear in lambda_poly_type_var_map.  We verify indirectly:
-    // the number of call_type_args entries must be exactly 1 (for `apply`)
-    // and must not grow due to a spurious phantom call on `q` or `z`.
-    // (There is no call through q, so any extra entry would signal a leak.)
-    assert!(
-        output.call_type_args.len() <= 1,
-        "expected at most 1 call_type_args entry (for apply), got {}; \
-         stale lambda scratch state likely leaked into a later let-binding",
-        output.call_type_args.len()
     );
 }
 
@@ -11432,7 +11335,7 @@ mod non_root_module_inference_scope {
 
     #[test]
     fn inferred_binding_without_annotation_fails_closed() {
-        let source = "fn main() { let f = (x) => x; }";
+        let source = "fn main() { let f = |x| x; }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -11453,26 +11356,18 @@ mod non_root_module_inference_scope {
     }
 
     #[test]
-    fn explicit_generic_lambda_binding_stays_valid() {
+    fn explicit_generic_lambda_binding_rejected() {
+        // Generic lambda `<T>(params) => body` was removed in v0.5.
+        // The parser must emit a typed E_CLOSURE_PIPE_SYNTAX diagnostic.
         let source = "fn main() { let id = <T>(x: T) => x; }";
         let result = hew_parser::parse(source);
         assert!(
-            result.errors.is_empty(),
-            "parse errors: {:?}",
+            result.errors.iter().any(|e| {
+                matches!(e.kind, hew_parser::ParseDiagnosticKind::ClosurePipeSyntax)
+                    && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
+            }),
+            "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda, got: {:?}",
             result.errors
-        );
-
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&result.program);
-        let errs = inference_failed_errors(&output);
-        assert!(
-            errs.is_empty(),
-            "explicit generic lambda binding should not produce InferenceFailed: {errs:?}"
-        );
-        assert!(
-            output.errors.is_empty(),
-            "explicit generic lambda binding should type-check cleanly: {:?}",
-            output.errors
         );
     }
 
@@ -11724,7 +11619,7 @@ mod non_root_module_inference_scope {
 
     #[test]
     fn inferred_binding_does_not_duplicate_lambda_hole_error() {
-        let source = "fn main() { let f = (x: _) => x; }";
+        let source = "fn main() { let f = |x: _| x; }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -13568,8 +13463,7 @@ actor MyActor {
         // Lambda with annotated (unresolvable) return type:
         //   let f = (x: i32) -> UnknownType => { let y: i32 = "bad"; y };
         // The let-binding mismatch inside the lambda body must still be reported.
-        let source =
-            r#"fn foo() { let f = (x: i32) -> UnknownType => { let y: i32 = "bad"; y }; }"#;
+        let source = r#"fn foo() { let f = |x: i32| -> UnknownType { let y: i32 = "bad"; y }; }"#;
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -13677,13 +13571,13 @@ actor MyActor {
 
     #[test]
     fn error_return_type_question_mark_in_lambda_no_false_context_error() {
-        // fn foo() { let r: Result<i64, string> = Ok(1); let f = (x: i64) -> UnknownType => { r? }; }
+        // fn foo() { let r: Result<i64, string> = Ok(1); let f = |x: i64| -> UnknownType { r? }; }
         //
         // Same invariant as the plain-function case but inside a lambda whose
         // return annotation is Ty::Error.  The `?` context check sees the
         // lambda's own `current_return_type` (Ty::Error), so the Ty::Error
         // bypass must apply there too.
-        let source = r"fn foo() { let r: Result<i64, string> = Ok(1); let f = (x: i64) -> UnknownType => { r? }; }";
+        let source = r"fn foo() { let r: Result<i64, string> = Ok(1); let f = |x: i64| -> UnknownType { r? }; }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -15708,13 +15602,24 @@ mod for_loop_iterable_fail_closed {
 
     #[test]
     fn generator_blocks_are_deferred_to_generator_surface_slice() {
-        // TODO(D24-position-3): when `gen { ... }` blocks parse, add the
-        // Iterator trait smoke for generator block values here. Today only
-        // `gen fn` / `async gen fn` are accepted by the parser.
+        // `gen { ... }` expression-position blocks now parse. HIR/MIR lowering is not yet
+        // wired, so the type checker must produce errors rather than
+        // silently accepting the program. Once generator lowering lands
+        // (Iterator trait smoke + coroutine scheduler), this test should
+        // be replaced with a positive type-check assertion.
         let result = hew_parser::parse("fn main() { let g = gen { yield 1; yield 2; }; }");
         assert!(
-            !result.errors.is_empty(),
-            "gen blocks are not expected to parse until the generator surface slice"
+            result.errors.is_empty(),
+            "gen {{ ... }} expression blocks should parse cleanly: {:?}",
+            result.errors
+        );
+        // The checker or HIR lowerer must emit at least one error to fail
+        // closed while generator lowering is pending.
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            !output.errors.is_empty(),
+            "gen block in let-binding must produce a diagnostic until generator lowering is implemented"
         );
     }
 

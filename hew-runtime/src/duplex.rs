@@ -107,6 +107,16 @@ pub enum SendError {
     ///
     /// Exported as `4` across the C-ABI surface.
     DoubleClose = 4,
+    /// An ask completed but the reply channel was orphaned because the
+    /// actor's body panicked or returned a non-zero error code before
+    /// delivering a reply. The reply out-parameter is null.
+    ///
+    /// Distinct from `ActorStopped` (which covers pre-send stop checks)
+    /// so callers can distinguish "actor stopped before we sent" from
+    /// "actor died during handling of our ask". Mirrors `AskError::OrphanedAsk`.
+    ///
+    /// Exported as `5` across the C-ABI surface.
+    OrphanedAsk = 5,
 }
 
 /// Failure modes for [`Queue::recv`].

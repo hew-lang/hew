@@ -93,6 +93,7 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_duplex_try_recv",
     "hew_duplex_try_send",
     // --- Lambda-actor surface (overlays Duplex<Msg, Reply>) -----
+    "hew_lambda_actor_ask",
     "hew_lambda_actor_clone",
     "hew_lambda_actor_downgrade",
     "hew_lambda_actor_new",

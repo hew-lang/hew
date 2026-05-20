@@ -1,6 +1,6 @@
-# Build and push the LLVM+MLIR Alpine Docker image to GHCR.
+# Build and push the Alpine LLVM toolchain image to GHCR.
 #
-# This image is used by the release pipeline to build hew-codegen
+# This image is used by the release pipeline to provide the pinned LLVM toolchain
 # for Alpine/musl without rebuilding LLVM from source every time
 # (~30 min build → ~2 min using cached image).
 #

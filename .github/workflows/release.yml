@@ -76,9 +76,9 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
-      # ── LLVM/MLIR installation ──────────────────────────────────────────
+      # ── LLVM toolchain installation ─────────────────────────────────────
 
-      - name: Install LLVM/MLIR (macOS)
+      - name: Install LLVM (macOS)
         if: startsWith(matrix.target, 'darwin')
         run: |
           brew install llvm@${{ env.LLVM_VERSION }} ninja zstd
@@ -87,7 +87,7 @@ jobs:
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
           echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
 
-      - name: Configure embedded codegen toolchain (macOS)
+      - name: Configure LLVM toolchain (macOS)
         if: startsWith(matrix.target, 'darwin')
         run: |
           echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
@@ -109,8 +109,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $toolchainTag = "toolchain/llvm-22.1.0-windows-msvc-v1"
-          $asset        = "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
+          $toolchainTag = "toolchain/llvm-22.1.0-windows-msvc-v2"
+          $asset        = "hew-llvm-22.1.0-windows-msvc-v2.tar.gz"
 
           # Fail fast if the toolchain release is not published yet.
           # Run prebuild-llvm.yml to publish it before retrying the release.
@@ -147,7 +147,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $asset = "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
+          $asset = "hew-llvm-22.1.0-windows-msvc-v2.tar.gz"
           gh attestation verify $asset --repo "$env:GITHUB_REPOSITORY"
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::error::Provenance attestation verification failed for $asset"
@@ -159,15 +159,14 @@ jobs:
         if: startsWith(matrix.target, 'windows')
         shell: pwsh
         run: |
-          $asset = "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
+          $asset = "hew-llvm-22.1.0-windows-msvc-v2.tar.gz"
           # Archive root is llvm-22/; extracting to C:\ gives C:\llvm-22.
           tar -xzf $asset -C C:\
           Remove-Item -Force $asset, "$asset.sha256"
 
           $required = @(
             "C:\llvm-22\bin\clang.exe",
-            "C:\llvm-22\lib\cmake\llvm\LLVMConfig.cmake",
-            "C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake"
+            "C:\llvm-22\lib\cmake\llvm\LLVMConfig.cmake"
           )
           foreach ($path in $required) {
             if (!(Test-Path $path)) {
@@ -187,7 +186,7 @@ jobs:
           }
           Write-Host "LLVM toolchain ready at C:\llvm-22. Linker: $linker"
 
-      - name: Configure embedded codegen toolchain (Windows)
+      - name: Configure LLVM toolchain (Windows)
         if: startsWith(matrix.target, 'windows')
         run: |
           echo "LLVM_PREFIX=C:\llvm-22" >> $env:GITHUB_ENV
@@ -287,7 +286,7 @@ jobs:
           # Licenses and docs
           cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
 
-          # macOS release binaries embed static LLVM/MLIR codegen and rely on
+          # macOS release binaries embed static LLVM support and rely on
           # Mach-O weak/coalesced definitions that `strip` can break. Keep the
           # packaged binaries unstripped so the published archive matches the
           # already-validated release build.
@@ -564,8 +563,6 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             llvm-${{ env.LLVM_VERSION }}-dev \
-            libmlir-${{ env.LLVM_VERSION }}-dev \
-            mlir-${{ env.LLVM_VERSION }}-tools \
             clang-${{ env.LLVM_VERSION }} \
             lld-${{ env.LLVM_VERSION }}
 
@@ -574,7 +571,7 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
-      - name: Configure embedded codegen toolchain
+      - name: Configure LLVM toolchain
         run: |
           {
             echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}"
@@ -616,7 +613,7 @@ jobs:
           test -f "target/${{ matrix.rust_target }}/release/libhew.a"
 
           if ldd "target/${{ matrix.rust_target }}/release/hew" | grep -Eqi 'llvm|mlir'; then
-            echo "::error::Linux release binary dynamically links LLVM/MLIR"
+            echo "::error::Linux release binary dynamically links LLVM-family libraries"
             exit 1
           fi
 
@@ -708,12 +705,12 @@ jobs:
           echo "name=hew-v${VERSION}-freebsd-x86_64" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Restore LLVM+MLIR cache (FreeBSD)
+      - name: Restore LLVM cache (FreeBSD)
         id: cache-llvm-freebsd
         uses: actions/cache/restore@v4
         with:
           path: llvm-freebsd-install.tar.zst
-          key: llvm-mlir-22.1.0-freebsd15-amd64-v1
+          key: llvm-22.1.0-freebsd15-amd64-v2
 
       - name: Build on FreeBSD
         uses: vmactions/freebsd-vm@v1
@@ -726,7 +723,7 @@ jobs:
           run: |
             set -eux
 
-            # ── LLVM/MLIR ──────────────────────────────────────────────────
+            # ── LLVM ───────────────────────────────────────────────────────
             LLVM_PREFIX=/usr/local/llvm22-src
             if [ -f llvm-freebsd-install.tar.zst ]; then
               echo "==> Restoring LLVM from cache"
@@ -738,12 +735,11 @@ jobs:
               git clone --depth 1 --branch llvmorg-22.1.0 \
                 --filter=blob:none --sparse \
                 https://github.com/llvm/llvm-project.git /tmp/llvm-src
-              (cd /tmp/llvm-src && git sparse-checkout set llvm mlir cmake third-party)
+              (cd /tmp/llvm-src && git sparse-checkout set llvm cmake third-party)
 
               cmake -S /tmp/llvm-src/llvm -B /tmp/llvm-build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX="${LLVM_PREFIX}" \
-                -DLLVM_ENABLE_PROJECTS="mlir" \
                 -DLLVM_TARGETS_TO_BUILD="X86" \
                 -DLLVM_BUILD_TOOLS=ON \
                 -DLLVM_BUILD_UTILS=ON \
@@ -756,9 +752,7 @@ jobs:
                 -DLLVM_ENABLE_ZLIB=ON \
                 -DLLVM_ENABLE_ZSTD=OFF \
                 -DLLVM_BUILD_LLVM_DYLIB=OFF \
-                -DBUILD_SHARED_LIBS=OFF \
-                -DMLIR_BUILD_MLIR_C_DYLIB=OFF \
-                -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
+                -DBUILD_SHARED_LIBS=OFF
 
               cmake --build /tmp/llvm-build -j$(sysctl -n hw.ncpu)
               cmake --install /tmp/llvm-build
@@ -832,12 +826,12 @@ jobs:
             echo "${output}"
             echo "${output}" | grep -q "pkg-smoke-ok"
 
-      - name: Save LLVM+MLIR cache (FreeBSD)
+      - name: Save LLVM cache (FreeBSD)
         if: steps.cache-llvm-freebsd.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: llvm-freebsd-install.tar.zst
-          key: llvm-mlir-22.1.0-freebsd15-amd64-v1
+          key: llvm-22.1.0-freebsd15-amd64-v2
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

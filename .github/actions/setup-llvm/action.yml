@@ -14,7 +14,7 @@ inputs:
 
 outputs:
   prefix:
-    description: Absolute path to the extracted LLVM install root (suitable for LLVM_SYS_*_PREFIX, LLVM_DIR, MLIR_DIR roots).
+    description: Absolute path to the extracted LLVM install root (suitable for LLVM_SYS_*_PREFIX or LLVM_DIR roots).
     value: ${{ steps.layout.outputs.prefix }}
 
 runs:
@@ -127,10 +127,8 @@ runs:
         set -euo pipefail
         prefix="${{ steps.layout.outputs.prefix }}"
         # llvm-sys-221 honours LLVM_SYS_221_PREFIX; inkwell follows.
-        # Intentionally do NOT set LLVM_PREFIX or LLVM_DIR / MLIR_DIR — the
-        # hew-cli build.rs treats any of those as a request to build the
-        # embedded C++ codegen via cmake, which is skipped during the
-        # v0.5 spine pass.
+        # Export only the llvm-sys prefix and PATH here; the Rust backend no
+        # longer needs extra backend-specific environment setup.
         # On Windows the prefix arrives in POSIX form (under cygpath -u)
         # but llvm-sys's build script invokes Windows-native APIs against
         # it, so it needs to be a backslash path. Convert back here.

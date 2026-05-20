@@ -755,6 +755,7 @@ codegen-stable = [
   "hew_require_execution_context",
   "hew_sched_init",
   "hew_task_scope_set_current",
+  "hew_wasm_register_actor_meta",
 ]
 
 # jit: internal — lifecycle, session/global-state, scheduler shutdown/reset/

@@ -139,6 +139,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
         record_layouts: vec![],
         actor_layouts: vec![],
         supervisor_layouts: vec![],
+        machine_layouts: vec![],
     }
 }
 

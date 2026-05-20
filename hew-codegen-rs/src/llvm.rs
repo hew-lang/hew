@@ -1258,6 +1258,18 @@ fn place_pointer<'ctx>(
                     .to_string(),
             ))
         }
+        // MachineTag and MachineVariant are MIR addressing primitives for
+        // the tagged-union machine layout. Codegen support lands in Slice 5
+        // when the LLVM struct type and GEP paths are emitted. Fail closed
+        // here so any premature reach-through surfaces as a diagnostic
+        // rather than emitting a misrouted load/store.
+        // WHY FailClosed: LESSONS boundary-fail-closed — stub bodies record
+        // and refuse; they never fabricate a value.
+        Place::MachineTag(_) | Place::MachineVariant { .. } => Err(CodegenError::FailClosed(
+            "Place::MachineTag / Place::MachineVariant lowering is not yet wired; \
+             Slice 5 (tagged-union codegen) wires the GEP paths for machine state dispatch"
+                .to_string(),
+        )),
     }
 }
 
@@ -1272,6 +1284,14 @@ fn place_resolved_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, place: Place) -> CodegenResu
             CodegenError::FailClosed(format!("local {id} has no resolved type before use"))
         }),
         Place::ReturnSlot => Ok(&fn_ctx.return_resolved_ty),
+        // MachineTag and MachineVariant project into a machine value's
+        // tagged-union layout. Slice 5 wires the type resolution; fail
+        // closed until then. LESSONS: boundary-fail-closed.
+        Place::MachineTag(_) | Place::MachineVariant { .. } => Err(CodegenError::FailClosed(
+            "Place::MachineTag / Place::MachineVariant type resolution not yet wired; \
+             Slice 5 (tagged-union codegen) provides the type path"
+                .to_string(),
+        )),
     }
 }
 
@@ -5672,6 +5692,7 @@ fn lower_terminator<'ctx>(
             const HEW_TRAP_SHIFT_OUT_OF_RANGE: u64 = 204;
             const HEW_TRAP_INDEX_OUT_OF_BOUNDS: u64 = 205;
             const HEW_TRAP_ACTOR_SEND_FAILED: u64 = 206;
+            const HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE: u64 = 207;
             let code: u64 = match *kind {
                 TrapKind::IntegerOverflow => HEW_TRAP_INTEGER_OVERFLOW,
                 TrapKind::DivideByZero => HEW_TRAP_DIVIDE_BY_ZERO,
@@ -5679,6 +5700,7 @@ fn lower_terminator<'ctx>(
                 TrapKind::ShiftOutOfRange => HEW_TRAP_SHIFT_OUT_OF_RANGE,
                 TrapKind::IndexOutOfBounds => HEW_TRAP_INDEX_OUT_OF_BOUNDS,
                 TrapKind::SupervisorChildUnavailable => HEW_TRAP_ACTOR_SEND_FAILED,
+                TrapKind::MachineDispatchUnreachable => HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE,
             };
             emit_trap_with_code(fn_ctx, code, "trap")?;
         }
@@ -8015,6 +8037,7 @@ mod tests {
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
         }
     }
 
@@ -8058,6 +8081,7 @@ mod tests {
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -8119,6 +8143,7 @@ mod tests {
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -8174,6 +8199,7 @@ mod tests {
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m =
@@ -8214,6 +8240,7 @@ mod tests {
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let err =
@@ -8270,6 +8297,7 @@ mod tests {
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
         }
     }
 
@@ -8460,6 +8488,7 @@ mod tests {
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
         }
     }
 

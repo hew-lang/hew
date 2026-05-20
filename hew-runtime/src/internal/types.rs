@@ -250,6 +250,15 @@ pub const HEW_TRAP_INDEX_OUT_OF_BOUNDS: i32 = 205;
 /// the message.
 pub const HEW_TRAP_ACTOR_SEND_FAILED: i32 = 206;
 
+/// Error code recorded for `Terminator::Trap { kind: MachineDispatchUnreachable }`.
+///
+/// Fires when a synthesised `<Name>__step` machine dispatch function reaches a
+/// state×event combination that has no declared transition. Per LESSONS
+/// `fail-closed-not-pretend` (P0), the trap is the substrate's fail-closed
+/// surface — HIR exhaustiveness guarantees this code is dead in well-typed
+/// programs; the trap proves the property at runtime.
+pub const HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE: i32 = 207;
+
 /// Convert a canonical Hew trap discriminator into the WASI process exit code
 /// used when a trap escapes outside actor dispatch.
 ///
@@ -265,7 +274,8 @@ pub fn canonical_trap_wasi_exit_code(code: i32) -> Option<i32> {
         | HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE
         | HEW_TRAP_SHIFT_OUT_OF_RANGE
         | HEW_TRAP_INDEX_OUT_OF_BOUNDS
-        | HEW_TRAP_ACTOR_SEND_FAILED => Some(code),
+        | HEW_TRAP_ACTOR_SEND_FAILED
+        | HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE => Some(code),
         _ => None,
     }
 }
@@ -292,6 +302,9 @@ pub enum ExitReason {
     /// Actor crashed because `hew_actor_send_by_id` returned a nonzero status
     /// (error code 206).
     ActorSendFailed,
+    /// Actor crashed because a synthesised machine `<Name>__step` dispatch
+    /// reached a state×event combination with no transition (error code 207).
+    MachineDispatchUnreachable,
     /// Actor crashed with a hardware signal or via `hew_panic`. The raw
     /// signal number is preserved.
     Signal(i32),
@@ -313,6 +326,7 @@ impl ExitReason {
             HEW_TRAP_SHIFT_OUT_OF_RANGE => ExitReason::ShiftOutOfRange,
             HEW_TRAP_INDEX_OUT_OF_BOUNDS => ExitReason::IndexOutOfBounds,
             HEW_TRAP_ACTOR_SEND_FAILED => ExitReason::ActorSendFailed,
+            HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE => ExitReason::MachineDispatchUnreachable,
             sig => ExitReason::Signal(sig),
         }
     }

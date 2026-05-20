@@ -74,6 +74,7 @@ fn pipeline_with_call_runtime_abi(symbol: &str) -> IrPipeline {
         record_layouts: vec![],
         actor_layouts: vec![],
         supervisor_layouts: vec![],
+        machine_layouts: vec![],
     }
 }
 

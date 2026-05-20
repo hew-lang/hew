@@ -101,6 +101,7 @@ fn spawn_pipeline() -> IrPipeline {
         record_layouts: vec![],
         actor_layouts: vec![actor_layout],
         supervisor_layouts: vec![],
+        machine_layouts: vec![],
     }
 }
 

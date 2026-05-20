@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use hew_hir::stdlib_catalog;
 use hew_hir::{
     named_type_names, BindingId, HirActorDecl, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn,
-    HirItem, HirLifecycleHookKind, HirLiteral, HirModule, HirNodeId, HirSelect, HirSelectArmKind,
-    HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, IntentKind, ResolvedRef, ScopeId,
-    SiteId, ValueClass,
+    HirItem, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirModule, HirNodeId, HirSelect,
+    HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, IntentKind,
+    ResolvedRef, ScopeId, SiteId, ValueClass,
 };
 use hew_parser::ast::BinaryOp;
 use hew_types::{ChildKind, ChildSlot, ExecutionContextReader, ResolvedTy};
@@ -262,6 +262,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     let mut record_layouts: Vec<crate::model::RecordLayout> = Vec::new();
     let mut actor_layouts: Vec<crate::model::ActorLayout> = Vec::new();
     let mut supervisor_layouts: Vec<crate::model::SupervisorLayout> = Vec::new();
+    let mut machine_layouts: Vec<crate::model::MachineLayout> = Vec::new();
     for item in &module.items {
         match item {
             HirItem::Record(decl) => {
@@ -632,10 +633,52 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     diagnostics.extend(lowered.diagnostics);
                 }
             }
-            HirItem::Record(_) | HirItem::TypeDecl(_) | HirItem::Machine(_) => {
-                // Type declarations and Lane A machine declarations have no
-                // executable MIR bodies in S-A. TypeDecl markers are consumed
-                // via `HirModule.type_classes`; machine codegen is Lane B.
+            HirItem::Record(_) | HirItem::TypeDecl(_) => {
+                // Type declarations have no executable MIR bodies. TypeDecl
+                // markers are consumed via `HirModule.type_classes`.
+            }
+            HirItem::Machine(md) => {
+                // Synthesise the public `<Name>__step(self, event) -> Name`
+                // MIR function for this machine declaration. The synthesised
+                // body is a single block that fail-closes on dispatch — the
+                // state×event switch tree is grown into this seam by the
+                // codegen-side tagged-union layout work (plan §5). Until
+                // then, every reachable call traps with a typed exit code
+                // rather than silently no-op'ing or fabricating a state.
+                let lowered = synthesize_machine_step_fn(md);
+                thir.push(lowered.thir);
+                raw_mir.push(lowered.raw);
+                checked_mir.push(lowered.checked);
+                elaborated_mir.push(lowered.elaborated);
+                diagnostics.extend(lowered.diagnostics);
+
+                // Build and record the per-machine layout descriptor.
+                // `tag_width` is the minimum bit width to index all states:
+                // max(1, ceil(log2(state_count))). A single-state machine uses
+                // 1 bit (tag field is always present) so `Place::MachineTag`
+                // is always addressable. `variants` is empty in Slice 4a;
+                // Slice 5 fills the per-state `field_tys` lists when it walks
+                // `HirMachineState.fields`. The layout entry here is the
+                // metadata anchor that Slice 4b (transition body lowering) and
+                // Slice 4c (drop-elaboration) need to size switch dispatch and
+                // tag-dominance checks without re-reading HIR.
+                let state_count = u32::try_from(md.states.len().max(1)).unwrap_or(u32::MAX);
+                let tag_width = u32::max(1, state_count.next_power_of_two().trailing_zeros());
+                machine_layouts.push(crate::model::MachineLayout {
+                    name: md.name.clone(),
+                    tag_width,
+                    variants: md
+                        .states
+                        .iter()
+                        .map(|s| crate::model::MachineVariantLayout {
+                            name: s.name.clone(),
+                            // Slice 4a: field_tys left empty — Slice 5 populates
+                            // from HirMachineState.fields when codegen-side
+                            // tagged-union layout lands.
+                            field_tys: Vec::new(),
+                        })
+                        .collect(),
+                });
             }
         }
     }
@@ -709,6 +752,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         record_layouts,
         actor_layouts,
         supervisor_layouts,
+        machine_layouts,
     }
 }
 
@@ -1278,6 +1322,154 @@ fn mangle_actor_crash_handler(actor_name: &str) -> String {
 /// function's LLVM signature.
 fn mangle_supervisor_bootstrap(name: &str) -> String {
     format!("{name}__bootstrap")
+}
+
+/// Mangle the synthesised step function symbol for a machine declaration.
+///
+/// The `<Name>__step` symbol is the compiler-internal helper that the
+/// public `m.step(event)` call-site rewrite dispatches through. The user
+/// never names this symbol; it lives in the `__`-prefixed compiler-reserved
+/// namespace.
+fn mangle_machine_step(name: &str) -> String {
+    format!("{name}__step")
+}
+
+/// Synthesise the `<Name>__step(self, event) -> Name` MIR function for a
+/// machine declaration.
+///
+/// # Substrate seam
+///
+/// This is the seam between machine declarations and executable MIR. It
+/// lands the function symbol, signature, and a fail-closed single-block
+/// body. The state×event dispatch tree, transition body lowering, and
+/// `entry`/`exit`/`@reenter` semantics are grown into this seam once the
+/// tagged-union value layout is decided downstream. Until then, any
+/// synthesised dispatch would make load-bearing claims about a layout
+/// that does not yet exist — `TypeDefKind::Machine` is already registered
+/// by the type checker but its MIR/codegen representation is not.
+///
+/// The body is a single block terminating in
+/// `Terminator::Trap { kind: TrapKind::MachineDispatchUnreachable }`.
+/// HIR exhaustiveness checks already guarantee this code is dead in
+/// well-typed programs; the trap is the substrate's fail-closed surface
+/// (LESSONS P0 `fail-closed-not-pretend`). Once the dispatch tree lowering
+/// lands, the trap becomes the default arm proving exhaustiveness at
+/// runtime.
+///
+/// # Signature
+///
+/// - `self: <Name>` — the machine value, passed by value. Mutation is
+///   modelled as returning a new value; the public `m.step(ev)` rewrite
+///   is responsible for store-back into the caller's binding.
+/// - `event: <Name>Event` — the companion event enum, registered by
+///   `register_machine_decl` as a `TypeDefKind::Enum`.
+/// - return `<Name>` — the next machine value.
+///
+/// For generic machines (`type_params` non-empty), the parameters
+/// reference type parameters by name via `ResolvedTy::Named` with empty
+/// `args`, matching the convention `hew-types` uses for unbound type
+/// variables in registered type definitions. The synthesised function is
+/// emitted once per machine declaration (not per monomorphisation);
+/// monomorphisation-aware codegen for generic machines arrives with the
+/// stdlib machine catalogue.
+fn synthesize_machine_step_fn(md: &HirMachineDecl) -> LoweredFunction {
+    let emit_name = mangle_machine_step(&md.name);
+
+    // For generic machines, build the self-type with each type-param as a
+    // free `ResolvedTy::Named` arg (the same convention as registration in
+    // `hew-types`). Non-generic machines have an empty args vec.
+    let type_args: Vec<ResolvedTy> = md
+        .type_params
+        .iter()
+        .map(|param| ResolvedTy::Named {
+            name: param.clone(),
+            args: vec![],
+        })
+        .collect();
+    let self_ty = ResolvedTy::Named {
+        name: md.name.clone(),
+        args: type_args.clone(),
+    };
+    let event_ty = ResolvedTy::Named {
+        name: format!("{}Event", md.name),
+        args: vec![],
+    };
+    let return_ty = self_ty.clone();
+
+    // Param locals: self at index 0, event at index 1. Standard parameter
+    // prologue (LESSONS `parameter-locals-occupy-low-indices`): codegen
+    // emits one alloca per parameter and stores each `get_nth_param(i)`
+    // into `Place::Local(i)` before the first user instruction.
+    let locals = vec![self_ty.clone(), event_ty.clone()];
+    let params = vec![self_ty.clone(), event_ty.clone()];
+
+    // Body: a single block that traps immediately with a typed exit code.
+    // No instructions — the trap is the terminator and codegen emits
+    // `llvm.trap` followed by `unreachable` with no preceding ops.
+    let entry_block = BasicBlock {
+        id: 0,
+        statements: Vec::new(),
+        instructions: Vec::new(),
+        terminator: Terminator::Trap {
+            kind: TrapKind::MachineDispatchUnreachable,
+        },
+    };
+    let blocks = vec![entry_block];
+
+    let raw = RawMirFunction {
+        name: emit_name.clone(),
+        return_ty: return_ty.clone(),
+        call_conv: crate::model::FunctionCallConv::Default,
+        params,
+        locals,
+        blocks: blocks.clone(),
+        decisions: Vec::new(),
+    };
+
+    let thir = ThirFunction {
+        name: emit_name.clone(),
+        return_ty: return_ty.clone(),
+        statements: Vec::new(),
+    };
+
+    let checked = CheckedMirFunction {
+        name: emit_name.clone(),
+        return_ty: return_ty.clone(),
+        blocks: blocks.clone(),
+        decisions: Vec::new(),
+        checks: Vec::new(),
+        cooperate_sites: Vec::new(),
+    };
+
+    // Trap-only function: no `@resource` locals, no drop edges, no
+    // cleanup blocks. The elaborated form mirrors the raw CFG with a
+    // single `Normal` block and no drop plans (the trap path is
+    // `ExitPath::Panic`-equivalent — codegen never returns from a trap).
+    let elaborated = ElaboratedMirFunction {
+        name: emit_name,
+        return_ty,
+        statements: Vec::new(),
+        decisions: Vec::new(),
+        blocks: vec![ElabBlock {
+            id: 0,
+            kind: BlockKind::Normal,
+            drops: Vec::new(),
+            successor: None,
+        }],
+        drop_plans: Vec::new(),
+        coroutine: None,
+        lambda_captures: Vec::new(),
+    };
+
+    LoweredFunction {
+        thir,
+        raw,
+        checked,
+        elaborated,
+        diagnostics: Vec::new(),
+        generated: Vec::new(),
+        record_layouts: Vec::new(),
+    }
 }
 
 /// Topologically sort supervisor children by `wired_to:` dependencies via
@@ -2659,6 +2851,26 @@ impl Builder {
                             let slot = self.alloc_local(binding.ty.clone());
                             self.instructions.push(Instr::Move { dest: slot, src });
                             self.binding_locals.insert(binding.id, slot);
+                        }
+                        // Machine sub-structure places (`MachineTag` and
+                        // `MachineVariant`) are addressing primitives — they
+                        // project into a machine value rather than denoting
+                        // an independent binding. A `Let` that binds directly
+                        // to one of these is a builder invariant violation;
+                        // fail-closed with a panic so the lowering defect
+                        // surfaces at MIR construction time rather than
+                        // silently producing malformed IR.
+                        // WHY not a MirDiagnostic: the invariant is imposed
+                        // by the producer, not by user code; a panic is the
+                        // correct fail-closed signal for a producer bug.
+                        Place::MachineTag(_) | Place::MachineVariant { .. } => {
+                            panic!(
+                                "builder invariant: `Let` binding may not bind directly to a \
+                                 MachineTag or MachineVariant place; these are projection \
+                                 primitives into a machine value, not independent bindings. \
+                                 Binding {:?}, src {:?}",
+                                binding.id, src
+                            );
                         }
                     }
                 }
@@ -7064,7 +7276,12 @@ fn duplex_parent_local(place: Place) -> Option<u32> {
         Place::LambdaActorHandle(_)
         | Place::ActorHandle(_)
         | Place::Local(_)
-        | Place::ReturnSlot => None,
+        | Place::ReturnSlot
+        // Machine sub-structure places are not Duplex-family; they have no
+        // parent Duplex local. MachineTag and MachineVariant are part of the
+        // machine tagged-union, not the M2 duplex substrate.
+        | Place::MachineTag(_)
+        | Place::MachineVariant { .. } => None,
     }
 }
 
@@ -7665,7 +7882,23 @@ fn drop_kind_for(place: Place, ty: &ResolvedTy) -> DropKind {
         Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::TraitObject { .. }) => {
             DropKind::TraitObject
         }
-        Place::ActorHandle(_) | Place::Local(_) | Place::ReturnSlot => DropKind::Resource,
+        // Machine tag and variant fields are sub-structure of a machine value,
+        // not independent resources. Machine values are `BitCopy` by value
+        // class; the entry/exit hooks at transition sites are emitted by the
+        // drop-elaborator (Slice 4c) using tag-dominance, not here. Reaching
+        // this arm with a `MachineTag` or `MachineVariant` place is a
+        // builder-invariant violation — the drop-elaborator must never
+        // directly drop a sub-place; it drops the whole machine binding via
+        // its `Place::Local` slot. Fail-closed as `DropKind::Resource` so
+        // codegen surfaces a diagnostic rather than silently no-op'ing.
+        // WHY not `unreachable!`: a diagnostic is more actionable than a panic
+        // at MIR-dump time; codegen's fail-closed arm on `DropKind::Resource`
+        // for unrecognised locals is the backstop.
+        Place::ActorHandle(_)
+        | Place::Local(_)
+        | Place::ReturnSlot
+        | Place::MachineTag(_)
+        | Place::MachineVariant { .. } => DropKind::Resource,
     }
 }
 

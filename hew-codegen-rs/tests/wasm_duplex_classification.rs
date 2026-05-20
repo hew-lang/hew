@@ -104,6 +104,7 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
         record_layouts: vec![],
         actor_layouts: vec![],
         supervisor_layouts: vec![],
+        machine_layouts: vec![],
     }
 }
 
@@ -164,6 +165,7 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
         record_layouts: vec![],
         actor_layouts: vec![],
         supervisor_layouts: vec![],
+        machine_layouts: vec![],
     }
 }
 
@@ -228,6 +230,7 @@ fn pipeline_no_duplex() -> IrPipeline {
         record_layouts: vec![],
         actor_layouts: vec![],
         supervisor_layouts: vec![],
+        machine_layouts: vec![],
     }
 }
 

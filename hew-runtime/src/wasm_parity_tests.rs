@@ -1396,8 +1396,16 @@ fn wasm_trap_exit_code_mapping_actor_send_failed_is_allowlisted_as_206() {
 }
 
 #[test]
+fn wasm_trap_exit_code_mapping_machine_dispatch_unreachable_is_allowlisted_as_207() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE,
+        crate::internal::types::ExitReason::MachineDispatchUnreachable,
+    );
+}
+
+#[test]
 fn wasm_unknown_non_actor_trap_code_is_not_mapped_to_process_exit() {
-    for unknown in [-1, 1, 101, 199, 207, i32::MAX] {
+    for unknown in [-1, 1, 101, 199, 208, i32::MAX] {
         assert_eq!(
             crate::internal::types::canonical_trap_wasi_exit_code(unknown),
             None,

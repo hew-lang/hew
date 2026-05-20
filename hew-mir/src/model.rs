@@ -51,6 +51,20 @@ pub struct IrPipeline {
     /// Codegen (S-D) consumes this to emit the per-supervisor registration
     /// table that the runtime supervisor substrate dispatches against.
     pub supervisor_layouts: Vec<SupervisorLayout>,
+    /// Layout descriptors for every `machine` declaration in the module.
+    /// Populated by `lower_hir_module` from `HirItem::Machine` declarations
+    /// in source order. One entry per machine, in declaration order.
+    ///
+    /// Codegen (Slice 5) consumes this to emit the tagged-union LLVM type
+    /// for each machine: the outer struct carries an integer tag of width
+    /// `tag_width` bits followed by a union payload that covers all variant
+    /// structs. The `variants` vector (populated in Slice 5 from the machine's
+    /// `HirMachineState.fields`) provides the per-variant field type list.
+    ///
+    /// `Place::MachineTag(binding)` and `Place::MachineVariant { .. }` address
+    /// into this layout; the drop-elaborator (Slice 4c) reads `tag_width` and
+    /// `variants` to emit tag-dominant field drops at transition sites.
+    pub machine_layouts: Vec<MachineLayout>,
 }
 
 /// Layout descriptor for a named-form `record` declaration. The codegen
@@ -234,6 +248,61 @@ pub struct SupervisorChildLayout {
     /// Codegen populates `HewChildSpec.arena_cap_bytes` from this field so
     /// the supervisor restart path preserves the cap across crashes.
     pub max_heap_bytes: Option<u64>,
+}
+
+/// Layout descriptor for one state variant in a `machine` declaration.
+///
+/// Each variant corresponds to one `state` declared in the machine's body.
+/// The `field_tys` list carries the payload field types in declaration order
+/// (`HirMachineState.fields` order). For zero-field states (the common case
+/// in v0.5) this vector is empty.
+///
+/// Populated in Slice 5 (`lower_hir_module`'s machine arm) from
+/// `HirMachineState.fields`. Slice 4a declares the struct with an empty
+/// `field_tys` as the metadata anchor; Slice 5 fills the field lists in.
+///
+/// Codegen (Slice 5) uses `field_tys` to emit the per-variant inner
+/// struct body inside the tagged-union LLVM representation. The
+/// `Place::MachineVariant { variant_idx, field_idx, .. }` addressing
+/// primitive indexes into this list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MachineVariantLayout {
+    /// State name (e.g. `"Red"`, `"Idle"`). Matches `HirMachineState.name`.
+    pub name: String,
+    /// Payload field types in declaration order. Empty for zero-field states.
+    pub field_tys: Vec<ResolvedTy>,
+}
+
+/// Layout descriptor for a `machine` declaration.
+///
+/// Pairs the machine's name and tag-bit-width with its per-state variant
+/// list so codegen (Slice 5) can emit the tagged-union LLVM type and the
+/// `Place::MachineTag` / `Place::MachineVariant` addressing primitives can
+/// be validated without re-reading HIR.
+///
+/// The `variants` vector is in state declaration order — `variants[i]`
+/// corresponds to the i-th `state` in `HirMachineDecl.states` and to
+/// `variant_idx == i` in any `Place::MachineVariant` that names this
+/// machine.
+///
+/// **Slice 4a invariant**: `variants` entries have empty `field_tys`
+/// vectors. Slice 5 populates them when it walks `HirMachineState.fields`
+/// for each state. The layout entry itself (name + `tag_width` + empty
+/// variants) is the metadata anchor that Slice 4b and 4c need to
+/// correctly size the switch and dominance checks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MachineLayout {
+    /// Machine type name (e.g. `"TrafficLight"`). Matches `HirMachineDecl.name`.
+    pub name: String,
+    /// Bit width of the discriminant tag field. Computed as
+    /// `u32::max(1, (state_count as f64).log2().ceil() as u32)` —
+    /// the minimum number of bits needed to enumerate all states.
+    /// A one-state machine uses a 1-bit tag (two encodings; only 0 is valid)
+    /// rather than zero bits to keep the tag field present in the LLVM struct
+    /// at all times. Codegen selects `iN` where `N = tag_width`.
+    pub tag_width: u32,
+    /// Per-state variant layouts in declaration order.
+    pub variants: Vec<MachineVariantLayout>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -563,6 +632,15 @@ pub enum TrapKind {
     /// must stay in lock-step with `HEW_TRAP_SUPERVISOR_CHILD_UNAVAILABLE` in
     /// `hew-runtime/src/supervisor.rs`. Producer: S2 (`FieldAccess` intercept).
     SupervisorChildUnavailable,
+    /// Machine `<Name>__step` dispatch reached a state×event combination that
+    /// has no transition. Per LESSONS `fail-closed-not-pretend` (P0), MIR
+    /// surfaces a typed trap rather than silently returning the receiver
+    /// unchanged or fabricating a target state. HIR exhaustiveness checks
+    /// already guarantee this trap is dead code in well-typed programs; the
+    /// trap proves the property at runtime and is the fail-closed surface
+    /// that future codegen grows into when the state×event dispatch tree
+    /// replaces the synthesised step function's single-block stub.
+    MachineDispatchUnreachable,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -765,6 +843,58 @@ pub enum Place {
     /// R-direction only; the S-direction stays open until the
     /// matching `SendHalf` (or last surviving `DuplexHandle`) drops.
     RecvHalf(u32),
+    /// Discriminant tag of a machine value identified by `binding`.
+    ///
+    /// Addresses the integer tag field of the tagged-union representation
+    /// of a machine instance. The tag encodes the active state variant as
+    /// a zero-based ordinal matching the declaration order in the machine's
+    /// `states` list.
+    ///
+    /// **Tag-dominance authority**: the drop-elaborator (Slice 4c) reads
+    /// `MachineTag` places to determine which variant is live before
+    /// emitting entry/exit hooks and field drops. Any `Place::MachineVariant`
+    /// access is only legal when the corresponding `MachineTag` dominates
+    /// the use site.
+    ///
+    /// **Drop semantics**: machine values are `BitCopy` by value-class
+    /// (the tag itself carries no heap resources). Dropping a machine
+    /// binding releases no resources via this place; entry/exit hooks are
+    /// separately emitted by the drop-elaborator at transition sites.
+    ///
+    /// WHY declared here: Slice 4b (transition body lowering) emits
+    /// `MachineTag` stores to update the discriminant after a transition.
+    /// Slice 4c (drop-elaboration) reads `MachineTag` to drive
+    /// tag-dominant drop. Neither can express machine dispatch in MIR
+    /// without this place primitive.
+    /// WHEN-OBSOLETE: never — this is a permanent MIR primitive once
+    /// tagged-union machine layout lands in Slice 5.
+    MachineTag(BindingId),
+    /// Active variant payload field of a machine value, dominated by
+    /// `Place::MachineTag(binding)`.
+    ///
+    /// Addresses a single field within the active variant's payload.
+    /// `binding` identifies the machine local (same `BindingId` as the
+    /// corresponding `MachineTag`). `variant_idx` is the zero-based state
+    /// ordinal (declaration order in `HirMachineDecl.states`). `field_idx`
+    /// is the zero-based field ordinal within that state's payload
+    /// (declaration order in `HirMachineState.fields`).
+    ///
+    /// **Dominance invariant**: a `MachineVariant` load or store is only
+    /// legal when `Place::MachineTag(binding)` is known to carry
+    /// `variant_idx` at the use site (i.e. the tag-dominance CFG
+    /// property holds). Slice 4c enforces this during drop-elaboration;
+    /// Slice 4b enforces it during transition body lowering.
+    ///
+    /// WHY declared here: Slice 4b needs to materialise next-state field
+    /// values without going through codegen-specific layout. Storing into
+    /// `MachineVariant` at transition sites is the substrate-correct seam.
+    /// WHEN-OBSOLETE: never — permanent MIR primitive paired with
+    /// `MachineTag`.
+    MachineVariant {
+        binding: BindingId,
+        variant_idx: u32,
+        field_idx: u32,
+    },
 }
 
 /// Integer comparison predicate. Maps 1:1 to LLVM `IntPredicate`. The

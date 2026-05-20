@@ -259,6 +259,7 @@ pub mod duration;
 pub mod parse_error_slot;
 
 pub mod internal;
+mod send_ptr;
 mod tagged_union;
 mod trap_code;
 // On WASM, provide shims for runtime functions used by codegen but not

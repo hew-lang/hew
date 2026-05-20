@@ -16,6 +16,7 @@
 //! snapshots.  Unregistered dispatch functions fall back to `"Actor"`.
 
 use crate::lifetime::PoisonSafe;
+use crate::send_ptr::SendPtr;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
@@ -23,20 +24,8 @@ use crate::actor::HewActor;
 use crate::internal::types::{HewActorState, HewDispatchFn};
 use crate::mailbox::HewMailbox;
 
-/// Wrapper to make `*mut HewActor` `Send` for the registry `HashMap`.
-///
-/// # Safety
-///
-/// `HewActor` implements `Send + Sync`. The raw pointer is only
-/// dereferenced while the actor is live (between register and unregister).
-struct SendPtr(*mut HewActor);
-
-// SAFETY: `HewActor` is `Send + Sync` (see actor.rs). The registry only
-// holds pointers to live actors and unregisters before free.
-unsafe impl Send for SendPtr {}
-
 /// Global registry of live actors. Keyed by actor ID.
-static REGISTRY: PoisonSafe<Option<HashMap<u64, SendPtr>>> = PoisonSafe::new(None);
+static REGISTRY: PoisonSafe<Option<HashMap<u64, SendPtr<HewActor>>>> = PoisonSafe::new(None);
 
 /// Side table mapping dispatch function pointer (as `usize`) to Hew type name.
 ///
@@ -195,11 +184,11 @@ pub fn lookup_handler_name(dispatch_fn: Option<HewDispatchFn>, msg_type: i32) ->
 pub fn lookup_dispatch_for_actor_id(actor_id: u64) -> Option<usize> {
     REGISTRY.access(|guard| {
         let map = guard.as_ref()?;
-        let SendPtr(ptr) = map.get(&actor_id)?;
+        let ptr = map.get(&actor_id)?.as_ptr();
         // SAFETY: The actor pointer is valid while it is registered.  We take only
         // the dispatch fn value (a function pointer cast to usize) without
         // dereferencing any managed data.
-        let dispatch = unsafe { (**ptr).dispatch };
+        let dispatch = unsafe { (*ptr).dispatch };
         dispatch.map(|f| f as usize)
     })
 }
@@ -237,9 +226,12 @@ pub unsafe fn register(actor: *mut HewActor) {
     // SAFETY: Actor was just allocated and is valid.
     let id = unsafe { (*actor).id };
     REGISTRY.access(|guard| {
-        guard
-            .get_or_insert_with(HashMap::new)
-            .insert(id, SendPtr(actor));
+        // SAFETY: `HewActor` is `Send + Sync` (see actor.rs).  The registry only
+        // holds pointers to live actors and `unregister` removes the entry
+        // before the actor is freed, so the pointer is valid for the duration
+        // of its registration.
+        let entry = unsafe { SendPtr::new(actor) };
+        guard.get_or_insert_with(HashMap::new).insert(id, entry);
     });
 }
 
@@ -291,10 +283,11 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
         };
 
         let mut result = Vec::with_capacity(map.len());
-        for SendPtr(actor_ptr) in map.values() {
+        for entry in map.values() {
+            let actor_ptr = entry.as_ptr();
             // SAFETY: Actor is registered and not yet freed. The pointer
             // is valid and the atomic fields can be read concurrently.
-            let a = unsafe { &**actor_ptr };
+            let a = unsafe { &*actor_ptr };
 
             let state_int = a.actor_state.load(Ordering::Relaxed);
             let state_name = if state_int == HewActorState::Idle as i32 {

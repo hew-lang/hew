@@ -1871,12 +1871,12 @@ External C functions are declared in `extern` blocks:
 
 ```hew
 extern "C" {
-    fn malloc(size: usize) -> *var u8;
-    fn free(ptr: *var u8);
-    fn printf(fmt: *u8, ...) -> i32;
-    fn open(path: *u8, flags: i32) -> i32;
-    fn read(fd: i32, buf: *var u8, count: usize) -> isize;
-    fn write(fd: i32, buf: *u8, count: usize) -> isize;
+    fn malloc(size: usize) -> *mut u8;
+    fn free(ptr: *mut u8);
+    fn printf(fmt: *const u8, ...) -> i32;
+    fn open(path: *const u8, flags: i32) -> i32;
+    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
+    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
     fn close(fd: i32) -> i32;
 }
 ```
@@ -1919,9 +1919,9 @@ type FileInfo {
 #### 3.9.3 Type Mapping: Hew ↔ C
 
 > **v0.6+.** This mapping becomes relevant when `extern "C"` blocks and
-> `#[repr(C)]` land. In v0.5, raw pointer types (`*T`, `*var T`) are only
-> usable within the runtime allowlist; the cross-language mapping below is
-> informational for v0.6+ planning.
+> `#[repr(C)]` land. In v0.5, raw pointer types (`*const T`, `*mut T`) are
+> only usable within the runtime allowlist; the cross-language mapping
+> below is informational for v0.6+ planning.
 
 | Hew Type                  | C Type                      | Notes                      |
 | ------------------------- | --------------------------- | -------------------------- |
@@ -1931,9 +1931,9 @@ type FileInfo {
 | `usize`                   | `uintptr_t` / `size_t`      | Platform-dependent         |
 | `f32`, `f64`              | `float`, `double`           | IEEE 754                   |
 | `bool`                    | `_Bool` / `bool`            | C99 bool                   |
-| `*T`                      | `const T*`                  | Immutable raw pointer      |
-| `*var T`                  | `T*`                        | Mutable raw pointer        |
-| `*u8`                     | `const char*`               | C string (null-terminated) |
+| `*const T`                | `const T*`                  | Immutable raw pointer      |
+| `*mut T`                  | `T*`                        | Mutable raw pointer        |
+| `*const u8`               | `const char*`               | C string (null-terminated) |
 | `fn(...) -> T`            | Function pointer            | C function pointer         |
 
 #### 3.9.4 Exporting Functions to C
@@ -1946,7 +1946,7 @@ Use `#[export]` to make Hew functions callable from C:
 
 ```hew
 #[export("hew_process_data")]
-fn process_data(data: *u8, len: usize) -> i32 {
+fn process_data(data: *const u8, len: usize) -> i32 {
     // Implementation accessible from C as hew_process_data()
 }
 
@@ -1966,13 +1966,13 @@ extern "C" fn my_callback(value: i32) -> i32 {
 **All FFI calls are `unsafe`:**
 
 ```hew
-fn allocate_buffer(size: usize) -> *var u8 {
+fn allocate_buffer(size: usize) -> *mut u8 {
     unsafe {
         malloc(size)
     }
 }
 
-fn safe_read(fd: i32, buf: *var u8, count: usize) -> Result<usize, String> {
+fn safe_read(fd: i32, buf: *mut u8, count: usize) -> Result<usize, String> {
     let result = unsafe { read(fd, buf, count) };
     if result < 0 {
         Err("read failed")

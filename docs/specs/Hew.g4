@@ -866,8 +866,8 @@ type_
     | '[' type_ ';' INT_LIT ']'             // Fixed-size array: [i32; 256]
     | '[' type_ ']'                         // Slice: [i32]
     | 'fn' '(' typeList? ')' retType?       // Function type
-    | '*' 'var' type_                       // Mutable raw pointer
-    | '*' type_                             // Immutable raw pointer
+    | '*' 'mut' type_                       // Mutable raw pointer
+    | '*' 'const' type_                     // Immutable raw pointer
     | 'dyn' traitBound                      // Trait object (single trait + optional type args)
     | 'dyn' '(' traitBounds ')'             // Multi-trait object: dyn (Trait1 + Trait2)
     | '_'                                   // Inferred type

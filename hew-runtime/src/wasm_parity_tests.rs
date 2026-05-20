@@ -879,6 +879,27 @@ unsafe extern "C-unwind" fn request_wasm_stop_dispatch(
     }
 }
 
+unsafe extern "C-unwind" fn close_wasm_mailbox_then_cooperate_dispatch(
+    ctx: *mut crate::execution_context::HewExecutionContext,
+    _state: *mut c_void,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _data_size: usize,
+) {
+    // SAFETY: scheduler_wasm installs a non-null canonical context before
+    // entering dispatch.
+    unsafe {
+        let actor = (*ctx).actor;
+        assert!(!actor.is_null(), "dispatch context must carry actor");
+        let mailbox = (*actor)
+            .mailbox
+            .cast::<crate::mailbox_wasm::HewMailboxWasm>();
+        assert!(!mailbox.is_null(), "actor must carry mailbox");
+        crate::mailbox_wasm::hew_mailbox_close(mailbox);
+    }
+    push_dispatch_context_snapshot(ctx, crate::scheduler_wasm::hew_actor_cooperate());
+}
+
 unsafe extern "C" fn mark_terminate_state(state: *mut c_void) {
     if !state.is_null() {
         // SAFETY: the test installs an AtomicBool as the actor state pointer.
@@ -1169,6 +1190,46 @@ fn wasm_cooperate_returns_zero_when_actor_state_is_running() {
 
         let _ = Box::from_raw(actor_ptr);
     }
+}
+
+#[test]
+fn wasm_cooperate_returns_cancel_when_mailbox_closes_during_dispatch() {
+    let _guard = crate::runtime_test_guard();
+    crate::scheduler_wasm::hew_sched_shutdown();
+    crate::scheduler_wasm::hew_sched_init();
+    reset_dispatch_context_snapshots();
+
+    // SAFETY: test owns mailbox and actor until after the scheduler drain.
+    unsafe {
+        let mailbox = crate::mailbox_wasm::hew_mailbox_new().cast::<c_void>();
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            crate::mailbox_wasm::hew_mailbox_send(mailbox.cast(), 7, std::ptr::null_mut(), 0),
+            HewError::Ok as i32
+        );
+
+        let actor = stub_dispatch_actor(mailbox, close_wasm_mailbox_then_cooperate_dispatch);
+        let actor_ptr = Box::into_raw(actor);
+        crate::scheduler_wasm::sched_enqueue(actor_ptr.cast::<crate::scheduler_wasm::HewActor>());
+        crate::scheduler_wasm::hew_sched_run();
+
+        let snapshots = wait_for_dispatch_context_snapshots(1);
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(
+            snapshots[0].cooperate_result, 2,
+            "closing a WASM actor mailbox during dispatch must propagate cooperate cancel code 2"
+        );
+        assert_eq!(
+            (*actor_ptr).actor_state.load(Ordering::Acquire),
+            HewActorState::Stopped as i32,
+            "closed mailbox should still drive the post-dispatch stop transition"
+        );
+
+        crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
+        drop(Box::from_raw(actor_ptr));
+    }
+
+    crate::scheduler_wasm::hew_sched_shutdown();
 }
 
 // ── HeapExceeded parity ─────────────────────────────────────────────────────

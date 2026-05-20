@@ -1417,7 +1417,8 @@ pub use crate::execution_context::hew_get_reply_channel;
 /// non-recursive cooperative driver so yielding never returns `1` without a
 /// scheduler tick.
 ///
-/// Returns 0 if the actor should continue, 1 if it yielded.
+/// Returns 0 if the actor should continue, 1 if it yielded, and 2 if the
+/// actor observed cancellation.
 ///
 /// # Safety
 ///
@@ -1474,18 +1475,23 @@ pub extern "C" fn hew_actor_cooperate() -> c_int {
     // Stopped, Crashed) that happened mid-handler must propagate to the
     // codegen-emitted `cooperate == 2 → cancel_exit` branch, matching the
     // native behaviour. On native this signal travels via task-scope cancel
-    // tokens; on WASM (single-threaded, no task scopes) the only observable
-    // cancel source within a handler is the actor's own state, which an
-    // earlier statement in the same handler (or a supervisor stop pre-empted
-    // by a host tick) may have already transitioned. Reading it here turns
-    // a previously-silent divergence into the same fail-closed cancel exit
-    // that native produces.
+    // tokens; on WASM (single-threaded, no task scopes) the observable cancel
+    // sources within a handler are the actor's own state and the actor mailbox
+    // closing under it. Reading them here turns previously-silent divergence
+    // into the same fail-closed cancel exit that native produces.
     let actor_state = a.actor_state.load(Ordering::Acquire);
     if actor_state == HewActorState::Stopping as i32
         || actor_state == HewActorState::Stopped as i32
         || actor_state == HewActorState::Crashed as i32
     {
         return 2;
+    }
+    if !a.mailbox.is_null() {
+        // SAFETY: actor mailbox pointer is owned by the live actor installed in
+        // the current execution context.
+        if unsafe { crate::mailbox_wasm::mailbox_is_closed(a.mailbox.cast()) } {
+            return 2;
+        }
     }
 
     // Decrement reduction counter. If still positive, continue.

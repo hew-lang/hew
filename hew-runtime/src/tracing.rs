@@ -746,13 +746,14 @@ pub extern "C" fn hew_trace_reset() {
 /// }
 /// ```
 ///
-/// `actor_type_id` is the dispatch function pointer cast to `u64`.  It is `0`
-/// when the actor is no longer live at drain time (short-lived actors may have
-/// been freed before the drain runs).
+/// On native targets, `actor_type_id` is the dispatch function pointer cast to
+/// `u64`. On WASM targets, it is a deterministic non-zero bridge-local id
+/// derived from registered actor metadata. It is `0` when the actor attribution
+/// source cannot resolve the event at drain time.
 ///
-/// `actor_type` is the registered Hew type name (e.g. `"Counter"`).  It is
-/// `null` when the dispatch pointer has not been registered via
-/// `hew_actor_register_type` (which requires codegen emission — see #1258).
+/// `actor_type` is the registered Hew type name (e.g. `"Counter"`). It is
+/// `null` when neither native registration nor WASM bridge metadata can resolve
+/// the event.
 ///
 /// `handler_name` is non-null on native builds when `hew_register_handler_name`
 /// has been called for the `(dispatch_fn, msg_type)` pair (requires codegen
@@ -810,21 +811,24 @@ pub fn drain_events_json() -> String {
                     dispatch_ptr,
                     ev.msg_type,
                 );
-                (type_id, type_name, hname)
+                let actor_type = if type_name == "Actor" && type_id == 0 {
+                    None
+                } else {
+                    Some(type_name.to_owned())
+                };
+                (type_id, actor_type, hname)
             };
 
-            // WASM-TODO(#1451): WASM codegen registration not yet implemented; actor_type_id/actor_type are zeroed on WASM path
             #[cfg(any(target_arch = "wasm32", test))]
-            let (actor_type_id, actor_type_str, handler_name): (
-                u64,
-                &'static str,
-                Option<String>,
-            ) = (0, "Actor", crate::bridge::resolve_handler_name(ev.msg_type));
+            let (actor_type_id, actor_type_str, handler_name): (u64, Option<String>, Option<String>) =
+                crate::bridge::resolve_actor_trace_attribution(ev.msg_type).map_or_else(
+                    || (0, None, crate::bridge::resolve_handler_name(ev.msg_type)),
+                    |(id, actor_type, handler_name)| (id, Some(actor_type), handler_name),
+                );
 
-            let actor_type_json = if actor_type_str == "Actor" && actor_type_id == 0 {
-                "null".to_owned()
-            } else {
-                format!("\"{actor_type_str}\"")
+            let actor_type_json = match actor_type_str {
+                Some(actor_type_str) if actor_type_id != 0 => format!("\"{actor_type_str}\""),
+                _ => "null".to_owned(),
             };
             let handler_name_json = match &handler_name {
                 Some(name) => format!("\"{name}\""),
@@ -1164,6 +1168,66 @@ mod tests {
         );
 
         // Cleanup.
+        reset_bridge_full();
+        hew_trace_reset();
+    }
+
+    #[cfg(feature = "profiler")]
+    #[test]
+    fn drain_events_json_includes_wasm_registered_actor_type() {
+        use crate::bridge::{
+            hew_wasm_register_actor_meta, reset_bridge_full, HewActorMeta, HewHandlerMeta,
+            BRIDGE_TEST_LOCK,
+        };
+        let _runtime_guard = crate::runtime_test_guard();
+
+        let _bridge_guard = BRIDGE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _trace_guard = tracing_test_guard();
+        let _ctx = TestExecutionContext::install(HewExecutionContext::default());
+
+        reset_bridge_full();
+        hew_trace_reset();
+        hew_trace_enable(1);
+
+        let actor_name = b"TypedActor\0";
+        let handler_name = b"on_tick\0";
+        let handler = HewHandlerMeta {
+            name: handler_name.as_ptr().cast(),
+            msg_type: 88,
+            params: std::ptr::null(),
+            param_count: 0,
+            return_type: std::ptr::null(),
+            return_size: 0,
+        };
+        let actor_meta = HewActorMeta {
+            name: actor_name.as_ptr().cast(),
+            handlers: &raw const handler,
+            handler_count: 1,
+        };
+        // SAFETY: all pointers remain valid for this call; registration copies strings.
+        unsafe { hew_wasm_register_actor_meta(&raw const actor_meta) };
+
+        hew_trace_begin(42, 88);
+        hew_trace_begin(42, 89);
+
+        let json = crate::tracing::drain_events_json();
+
+        assert!(json.contains(r#""actor_type":"TypedActor""#), "{json}");
+        assert!(
+            !json.contains(r#""actor_type_id":0,"actor_type":"TypedActor""#),
+            "registered actor_type_id must be non-zero: {json}"
+        );
+        assert!(
+            json.contains(r#""handler_name":"TypedActor::on_tick""#),
+            "{json}"
+        );
+        assert!(
+            json.contains(r#""actor_type_id":0,"actor_type":null"#),
+            "unknown msg_type must remain unattributed: {json}"
+        );
+
         reset_bridge_full();
         hew_trace_reset();
     }

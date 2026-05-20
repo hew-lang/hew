@@ -963,11 +963,20 @@ fn wasm_on_stop_emits_stop_lifecycle_trace_before_terminate_completes() {
             timestamp_ns: 0,
         }; 4];
         let count = crate::tracing::hew_trace_drain(events.as_mut_ptr(), 4);
-        assert_eq!(count, 1, "on(stop) should emit one lifecycle stop event");
-        assert_eq!(events[0].event_type, crate::tracing::SPAN_STOP);
-        assert_eq!(events[0].actor_id, 37);
         assert_eq!(
-            events[0].msg_type, 0,
+            count, 3,
+            "dispatch should emit begin/end plus one lifecycle stop event"
+        );
+        assert_eq!(events[0].event_type, crate::tracing::SPAN_BEGIN);
+        assert_eq!(events[0].actor_id, 37);
+        assert_eq!(events[0].msg_type, 7);
+        assert_eq!(events[1].event_type, crate::tracing::SPAN_END);
+        assert_eq!(events[1].actor_id, 37);
+        assert_eq!(events[1].msg_type, 7);
+        assert_eq!(events[2].event_type, crate::tracing::SPAN_STOP);
+        assert_eq!(events[2].actor_id, 37);
+        assert_eq!(
+            events[2].msg_type, 0,
             "lifecycle stop events mirror native and carry no message type"
         );
 
@@ -980,20 +989,61 @@ fn wasm_on_stop_emits_stop_lifecycle_trace_before_terminate_completes() {
     crate::scheduler_wasm::hew_sched_shutdown();
 }
 
-// WASM-R37-S9 / WASM-TODO(#1451): Slice 2 makes the on(stop) lifecycle event
-// observable on the WASM scheduler. The drain-time actor_type_id field is still
-// intentionally zeroed for WASM/test in `tracing.rs` until Slice 5 teaches WASM
-// codegen to emit handler-name/type registration. This ignored regression
-// flips when that producer exists.
 #[test]
-#[ignore = "WASM-R37-S9 / WASM-TODO(#1451): actor_type_id registration lands in Slice 5"]
 #[cfg(feature = "profiler")]
-fn wasm_on_stop_lifecycle_json_includes_actor_type_id_when_registration_lands() {
+fn wasm_trace_json_uses_registered_actor_type_attribution() {
+    let _guard = crate::runtime_test_guard();
+    let _bridge_guard = crate::bridge::BRIDGE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _trace_guard = crate::tracing::tracing_test_guard();
+    let _ctx = crate::execution_context::TestExecutionContext::install(
+        crate::execution_context::HewExecutionContext::default(),
+    );
+
+    crate::bridge::reset_bridge_full();
+    crate::tracing::hew_trace_reset();
+    crate::tracing::hew_trace_enable(1);
+
+    let handler = crate::bridge::HewHandlerMeta {
+        name: c"on_ping".as_ptr().cast(),
+        msg_type: 55,
+        param_count: 0,
+        params: std::ptr::null(),
+        return_type: std::ptr::null(),
+        return_size: 0,
+    };
+    let actor_meta = crate::bridge::HewActorMeta {
+        name: c"WasmActor".as_ptr().cast(),
+        handler_count: 1,
+        handlers: &raw const handler,
+    };
+    // SAFETY: actor_meta is a valid stack-allocated struct with valid C strings.
+    unsafe { crate::bridge::hew_wasm_register_actor_meta(&raw const actor_meta) };
+
+    crate::tracing::hew_trace_begin(9, 55);
+    crate::tracing::hew_trace_begin(9, 56);
+
     let json = crate::tracing::drain_events_json();
     assert!(
-        !json.contains("\"actor_type_id\":0"),
-        "WASM on(stop) lifecycle JSON should include non-zero actor_type_id once registration lands"
+        json.contains(r#""actor_type":"WasmActor""#),
+        "registered actor type should render in WASM/test trace JSON: {json}"
     );
+    assert!(
+        json.contains(r#""handler_name":"WasmActor::on_ping""#),
+        "registered handler name should render in WASM/test trace JSON: {json}"
+    );
+    assert!(
+        !json.contains(r#""actor_type_id":0,"actor_type":"WasmActor""#),
+        "registered actor type id should be non-zero: {json}"
+    );
+    assert!(
+        json.contains(r#""actor_type_id":0,"actor_type":null"#),
+        "unregistered msg_type should remain zero/null: {json}"
+    );
+
+    crate::bridge::reset_bridge_full();
+    crate::tracing::hew_trace_reset();
 }
 
 #[test]

@@ -1019,6 +1019,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
 
                 // SAFETY: `msg` is exclusively owned by this scheduler tick.
                 let msg_ref = unsafe { &*msg };
+                crate::tracing::hew_trace_begin(a.id, msg_ref.msg_type);
                 // Install the per-message reply channel directly on the
                 // activation's canonical context. The consumed flag is reset
                 // before every dispatch so a previous handler's `hew_reply`
@@ -1041,6 +1042,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     execution_context.reply_channel = std::ptr::null_mut();
                     execution_context.flags &=
                         !crate::execution_context::HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
+                    crate::tracing::hew_trace_end(a.id, msg_ref.msg_type);
                     // SAFETY: msg is exclusively owned by this scheduler tick.
                     unsafe {
                         (*msg).reply_channel = std::ptr::null_mut();
@@ -1074,6 +1076,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     execution_context.reply_channel = std::ptr::null_mut();
                     execution_context.flags &=
                         !crate::execution_context::HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
+                    crate::tracing::hew_trace_end(a.id, msg_ref.msg_type);
                     // SAFETY: msg is exclusively owned by this scheduler tick.
                     unsafe {
                         (*msg).reply_channel = std::ptr::null_mut();
@@ -1132,6 +1135,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                         }
                     }
                 }
+                crate::tracing::hew_trace_end(a.id, msg_ref.msg_type);
 
                 msgs_processed += 1;
                 a.prof_messages_processed.fetch_add(1, Ordering::Relaxed);

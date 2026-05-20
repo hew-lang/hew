@@ -429,6 +429,10 @@ struct FnCtx<'a, 'ctx> {
     /// is shared (read-only) — no new declarations are added during body
     /// lowering.
     fn_symbols: &'a FnSymbolMap<'ctx>,
+    /// Module-wide actor layouts keyed by `ActorLayout.name` at use sites.
+    /// Spawn lowering consumes these layouts to emit the WASM bridge metadata
+    /// producer before calling into the runtime spawn ABI.
+    actor_layouts: &'a [ActorLayout],
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
@@ -598,6 +602,12 @@ fn intern_runtime_decl<'ctx>(
         // (`hew-runtime/src/actor.rs:1754`). Used when `#[max_heap(N)]` is
         // set; routes through the opts struct instead of the 3-arg spawn.
         "hew_actor_spawn_opts" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_wasm_register_actor_meta(meta: *const HewActorMeta) -> void
+        // (`hew-runtime/src/bridge.rs`). WASM/test bridge registration for
+        // trace actor-type attribution and host metadata queries. The metadata
+        // structs are generated on the spawn path because this backend has no
+        // module-init hook.
+        "hew_wasm_register_actor_meta" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         "hew_get_reply_channel" => ptr_ty.fn_type(&[], false),
         "hew_reply" => ctx
             .bool_type()
@@ -1344,6 +1354,214 @@ fn emit_spawn_task_direct(
     Ok(())
 }
 
+fn llvm_global_name_fragment(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "unnamed".to_string()
+    } else {
+        out
+    }
+}
+
+fn intern_global_string_ptr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: &str,
+    name: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    if let Some(global) = fn_ctx.llvm_mod.get_global(name) {
+        return Ok(global.as_pointer_value());
+    }
+    let global = fn_ctx
+        .builder
+        .build_global_string_ptr(value, name)
+        .map_err(|e| CodegenError::Llvm(format!("actor metadata string `{name}`: {e:?}")))?;
+    Ok(global.as_pointer_value())
+}
+
+fn emit_wasm_actor_metadata_registration<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    actor_name: &str,
+) -> CodegenResult<()> {
+    let layout = fn_ctx
+        .actor_layouts
+        .iter()
+        .find(|layout| layout.name == actor_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "spawn `{actor_name}` has no ActorLayout for WASM trace metadata registration"
+            ))
+        })?;
+
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let actor_fragment = llvm_global_name_fragment(actor_name);
+    let actor_name_ptr = intern_global_string_ptr(
+        fn_ctx,
+        actor_name,
+        &format!("str_actor_meta_name_{actor_fragment}"),
+    )?;
+
+    // Mirrors hew-runtime/src/bridge.rs:
+    //   HewHandlerMeta { name: *const u8, msg_type: i32, param_count: u32,
+    //                    params: *const HewParamMeta, return_type: *const u8,
+    //                    return_size: u32 }
+    //   HewActorMeta   { name: *const u8, handler_count: u32,
+    //                    handlers: *const HewHandlerMeta }
+    //
+    // Parameter and return metadata require names/layouts that ActorLayout does
+    // not own today. Trace attribution consumes the supported fields available
+    // here (actor name, handler name, msg_type) and leaves params/return null.
+    let handler_ty = fn_ctx.ctx.struct_type(
+        &[
+            ptr_ty.into(),
+            i32_ty.into(),
+            i32_ty.into(),
+            ptr_ty.into(),
+            ptr_ty.into(),
+            i32_ty.into(),
+        ],
+        false,
+    );
+    let actor_meta_ty = fn_ctx
+        .ctx
+        .struct_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false);
+
+    let handlers_ptr = if layout.handlers.is_empty() {
+        ptr_ty.const_null()
+    } else {
+        let handler_count = u32::try_from(layout.handlers.len()).map_err(|_| {
+            CodegenError::FailClosed(format!(
+                "actor `{actor_name}` has more than u32::MAX handlers"
+            ))
+        })?;
+        let handler_array_ty = handler_ty.array_type(handler_count);
+        let handler_array_slot = fn_ctx
+            .builder
+            .build_alloca(
+                handler_array_ty,
+                &format!("actor_meta_handlers_{actor_fragment}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("actor metadata handler array: {e:?}")))?;
+        for (idx, handler) in layout.handlers.iter().enumerate() {
+            let handler_idx = u32::try_from(idx).map_err(|_| {
+                CodegenError::FailClosed(format!(
+                    "actor `{actor_name}` handler index exceeds u32::MAX"
+                ))
+            })?;
+            let handler_name_fragment = llvm_global_name_fragment(&handler.name);
+            let handler_name_ptr = intern_global_string_ptr(
+                fn_ctx,
+                &handler.name,
+                &format!(
+                    "str_actor_meta_handler_{actor_fragment}_{handler_idx}_{handler_name_fragment}"
+                ),
+            )?;
+            let handler_slot = unsafe {
+                fn_ctx
+                    .builder
+                    .build_gep(
+                        handler_array_ty,
+                        handler_array_slot,
+                        &[
+                            i32_ty.const_zero(),
+                            i32_ty.const_int(handler_idx as u64, false),
+                        ],
+                        &format!("actor_meta_handler_{handler_idx}"),
+                    )
+                    .map_err(|e| CodegenError::Llvm(format!("actor metadata handler GEP: {e:?}")))?
+            };
+            let fields: [(u32, BasicValueEnum<'ctx>); 6] = [
+                (0, handler_name_ptr.into()),
+                (1, i32_ty.const_int(handler.msg_type as u64, true).into()),
+                (2, i32_ty.const_zero().into()),
+                (3, ptr_ty.const_null().into()),
+                (4, ptr_ty.const_null().into()),
+                (5, i32_ty.const_zero().into()),
+            ];
+            for (field_idx, value) in fields {
+                let field_ptr = fn_ctx
+                    .builder
+                    .build_struct_gep(
+                        handler_ty,
+                        handler_slot,
+                        field_idx,
+                        &format!("actor_meta_handler_{handler_idx}_f{field_idx}"),
+                    )
+                    .map_err(|e| {
+                        CodegenError::Llvm(format!("actor metadata handler field GEP: {e:?}"))
+                    })?;
+                fn_ctx.builder.build_store(field_ptr, value).map_err(|e| {
+                    CodegenError::Llvm(format!("actor metadata handler field store: {e:?}"))
+                })?;
+            }
+        }
+        unsafe {
+            fn_ctx
+                .builder
+                .build_gep(
+                    handler_array_ty,
+                    handler_array_slot,
+                    &[i32_ty.const_zero(), i32_ty.const_zero()],
+                    "actor_meta_handlers_ptr",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("actor metadata handlers ptr: {e:?}")))?
+        }
+    };
+
+    let actor_meta_slot = fn_ctx
+        .builder
+        .build_alloca(actor_meta_ty, &format!("actor_meta_{actor_fragment}"))
+        .map_err(|e| CodegenError::Llvm(format!("actor metadata alloca: {e:?}")))?;
+    let handler_count = u32::try_from(layout.handlers.len()).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "actor `{actor_name}` has more than u32::MAX handlers"
+        ))
+    })?;
+    let fields: [(u32, BasicValueEnum<'ctx>); 3] = [
+        (0, actor_name_ptr.into()),
+        (1, i32_ty.const_int(handler_count as u64, false).into()),
+        (2, handlers_ptr.into()),
+    ];
+    for (field_idx, value) in fields {
+        let field_ptr = fn_ctx
+            .builder
+            .build_struct_gep(
+                actor_meta_ty,
+                actor_meta_slot,
+                field_idx,
+                &format!("actor_meta_f{field_idx}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("actor metadata field GEP: {e:?}")))?;
+        fn_ctx
+            .builder
+            .build_store(field_ptr, value)
+            .map_err(|e| CodegenError::Llvm(format!("actor metadata field store: {e:?}")))?;
+    }
+
+    let register = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_wasm_register_actor_meta",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            register,
+            &[actor_meta_slot.into()],
+            "hew_wasm_register_actor_meta_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_wasm_register_actor_meta call: {e:?}")))?;
+    Ok(())
+}
+
 fn emit_spawn_actor(
     fn_ctx: &FnCtx<'_, '_>,
     actor_name: &str,
@@ -1393,6 +1611,7 @@ fn emit_spawn_actor(
         .builder
         .build_call(sched_init, &[], "hew_sched_init_call")
         .map_err(|e| CodegenError::Llvm(format!("hew_sched_init call: {e:?}")))?;
+    emit_wasm_actor_metadata_registration(fn_ctx, actor_name)?;
 
     let spawned = if let Some(cap) = max_heap_bytes {
         // `#[max_heap(N)]` is set — route through `hew_actor_spawn_opts` so
@@ -6520,6 +6739,10 @@ fn declare_function<'ctx>(
 /// dataflow pass. Empty/missing checked MIR means no cooperate injection
 /// for legacy hand-built codegen tests; full lowered pipelines always carry
 /// a matching checked function.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "module-lowering context is deliberately passed as explicit borrows"
+)]
 fn lower_function<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -6528,6 +6751,7 @@ fn lower_function<'ctx>(
     elab: Option<&ElaboratedMirFunction>,
     checked: Option<&CheckedMirFunction>,
     record_layouts: &RecordLayoutMap<'ctx>,
+    actor_layouts: &[ActorLayout],
 ) -> CodegenResult<()> {
     let symbol = *fn_symbols.get(&func.name).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -6653,6 +6877,7 @@ fn lower_function<'ctx>(
         runtime_decls: RefCell::new(HashMap::new()),
         record_layouts,
         fn_symbols,
+        actor_layouts,
     };
 
     // Extract drop_plans from the matched elaborated function, or use an
@@ -7101,6 +7326,7 @@ fn build_module<'ctx>(
             elab,
             checked,
             &record_layouts,
+            &pipeline.actor_layouts,
         )?;
     }
     llvm_mod

@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use std::ffi::c_void;
+use std::ffi::{c_void, CStr};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -178,6 +178,39 @@ fn stub_dispatch_actor(
         .store(crate::actor::HEW_DEFAULT_REDUCTIONS, Ordering::Relaxed);
     actor.dispatch = Some(dispatch);
     actor
+}
+
+struct CurrentExecutionContextReset {
+    prev: *mut crate::execution_context::HewExecutionContext,
+}
+
+impl CurrentExecutionContextReset {
+    fn new() -> Self {
+        crate::hew_clear_error();
+        let prev = crate::execution_context::set_current_context(std::ptr::null_mut());
+        Self { prev }
+    }
+}
+
+impl Drop for CurrentExecutionContextReset {
+    fn drop(&mut self) {
+        let _ = crate::execution_context::set_current_context(self.prev);
+    }
+}
+
+fn last_error_message() -> Option<String> {
+    let ptr = crate::hew_last_error();
+    if ptr.is_null() {
+        None
+    } else {
+        // SAFETY: hew_last_error returns a C string pointer valid until the next
+        // error mutation on this thread.
+        Some(
+            unsafe { CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
 }
 
 #[test]
@@ -616,6 +649,56 @@ fn wasm_envelope_must_be_zero_mask_covers_bits_nine_through_thirtyone() {
 }
 
 // ── Execution-context dispatch parity ────────────────────────────────────────
+
+#[test]
+fn wasm_reply_channel_lookup_reads_current_execution_context() {
+    use crate::execution_context::{HewExecutionContext, TestExecutionContext};
+
+    let _guard = crate::runtime_test_guard();
+    let _context_reset = CurrentExecutionContextReset::new();
+    let reply_channel = 0x5151_5151usize as *mut c_void;
+
+    let _ctx_guard = TestExecutionContext::install(HewExecutionContext {
+        reply_channel,
+        ..HewExecutionContext::default()
+    });
+
+    assert_eq!(
+        crate::scheduler_wasm::hew_get_reply_channel(),
+        reply_channel
+    );
+    assert_eq!(last_error_message(), None);
+}
+
+#[test]
+fn wasm_reply_channel_lookup_without_context_fails_closed_after_context_removed() {
+    use crate::execution_context::{
+        HewExecutionContext, TestExecutionContext, EXECUTION_CONTEXT_NOT_INSTALLED,
+    };
+
+    let _guard = crate::runtime_test_guard();
+    let _context_reset = CurrentExecutionContextReset::new();
+    let stale_reply_channel = 0x5252_5252usize as *mut c_void;
+
+    {
+        let _ctx_guard = TestExecutionContext::install(HewExecutionContext {
+            reply_channel: stale_reply_channel,
+            ..HewExecutionContext::default()
+        });
+        assert_eq!(
+            crate::scheduler_wasm::hew_get_reply_channel(),
+            stale_reply_channel
+        );
+    }
+
+    crate::hew_clear_error();
+    assert!(crate::execution_context::current_context().is_null());
+    assert!(crate::scheduler_wasm::hew_get_reply_channel().is_null());
+    assert_eq!(
+        last_error_message().as_deref(),
+        Some(EXECUTION_CONTEXT_NOT_INSTALLED)
+    );
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct DispatchContextSnapshot {

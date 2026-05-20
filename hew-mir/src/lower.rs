@@ -5617,7 +5617,7 @@ impl Builder {
     /// ## Producer-bridge contract (consumed by codegen / slice 3)
     ///
     /// Codegen reads `Terminator::Select { arms, next }` and, for each
-    /// arm:
+    /// currently-supported arm:
     ///   * `SelectArmKind::ActorAsk { actor, method, args }` — emits
     ///     `hew_reply_channel_new` + `hew_actor_ask_with_channel` per
     ///     arm in the originating block; calls `hew_select_first` to
@@ -5628,12 +5628,14 @@ impl Builder {
     ///   * `SelectArmKind::AfterTimer { duration }` — wins when the
     ///     deadline elapses; jumps to `arm.body_block` with no binding.
     ///
-    /// ## Out-of-scope arm kinds (fail-closed)
+    /// ## Out-of-scope consumer arm kinds (fail-closed)
     ///
-    /// `StreamNext` and `TaskAwait` are rejected here with
-    /// `MirDiagnosticKind::SelectArmNotImplemented` naming the future
-    /// lane (`M3 select-widening`). The defence-in-depth fail-closed
-    /// at codegen's `Terminator::Select` arm-kind switch remains.
+    /// `StreamNext` and `TaskAwait` are produced in MIR so the producer
+    /// boundary carries the sealed HIR shape forward. The
+    /// defence-in-depth fail-closed at codegen's `Terminator::Select`
+    /// arm-kind switch remains until the backend consumer lands.
+    /// `StreamNext` remains fail-closed on wasm32 at this producer
+    /// boundary because the stream runtime substrate is native-only.
     ///
     /// ## Cleanup-CFG composition (D24-2 / `ExitPath::Select`)
     ///
@@ -5658,41 +5660,24 @@ impl Builder {
         expected_ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        // Reject out-of-scope arm kinds before allocating any blocks.
-        // The diagnostic names the arm kind and the future lane so a
-        // pipeline-rejection trace points the user (and future
-        // implementers) at the lane that closes the restriction.
+        // Native lowering produces all sealed arm kinds. On wasm32,
+        // StreamNext stays fail-closed because the stream substrate is
+        // native-only; keeping the typed producer diagnostic prevents a
+        // malformed MIR shape from reaching later stages on that target.
+        #[cfg(target_arch = "wasm32")]
         for arm in &select.arms {
-            match &arm.kind {
-                HirSelectArmKind::ActorAsk { .. } | HirSelectArmKind::AfterTimer { .. } => {}
-                HirSelectArmKind::StreamNext { .. } => {
-                    self.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::SelectArmNotImplemented {
-                            arm_kind: "StreamNext".to_string(),
-                            lane_pointer: "M3 select-widening".to_string(),
-                            site,
-                        },
-                        note: "select{} stream-next arms are not yet lowered; \
-                               only ActorAsk and AfterTimer arms emit Terminator::Select \
-                               in this lane"
-                            .to_string(),
-                    });
-                    return None;
-                }
-                HirSelectArmKind::TaskAwait { .. } => {
-                    self.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::SelectArmNotImplemented {
-                            arm_kind: "TaskAwait".to_string(),
-                            lane_pointer: "M3 select-widening".to_string(),
-                            site,
-                        },
-                        note: "select{} task-await arms are not yet lowered; \
-                               only ActorAsk and AfterTimer arms emit Terminator::Select \
-                               in this lane"
-                            .to_string(),
-                    });
-                    return None;
-                }
+            if matches!(arm.kind, HirSelectArmKind::StreamNext { .. }) {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::SelectArmNotImplemented {
+                        arm_kind: "StreamNext".to_string(),
+                        lane_pointer: "native stream select substrate".to_string(),
+                        site,
+                    },
+                    note: "select{} stream-next arms are native-only at the MIR \
+                           producer boundary; wasm32 remains fail-closed"
+                        .to_string(),
+                });
+                return None;
             }
         }
 
@@ -5707,8 +5692,8 @@ impl Builder {
         let body_bbs: Vec<u32> = (0..select.arms.len()).map(|_| self.alloc_block()).collect();
         let join_bb = self.alloc_block();
 
-        // Lower per-arm operands (actor receiver + args, or duration)
-        // and allocate per-arm reply slots in the ORIGINATING block.
+        // Lower per-arm operands and allocate per-arm value slots in the
+        // ORIGINATING block.
         // Codegen consumes the SelectArm payload to emit the per-arm
         // setup (channel alloc + ask issue) in the same originating
         // block before the `hew_select_first` dispatch.
@@ -5771,6 +5756,35 @@ impl Builder {
                         Some(reply_dest),
                     )
                 }
+                HirSelectArmKind::StreamNext { stream } => {
+                    let stream_place = self.lower_value(stream)?;
+                    let item_dest = self.alloc_local(ResolvedTy::Unit);
+                    if let Some(binding_id) = arm.binding_id {
+                        self.binding_locals.insert(binding_id, item_dest);
+                    }
+                    (
+                        SelectArmKind::StreamNext {
+                            stream: stream_place,
+                        },
+                        Some(item_dest),
+                    )
+                }
+                HirSelectArmKind::TaskAwait { task } => {
+                    let task_place = self.lower_value(task)?;
+                    let task_ty = self.subst_ty(&task.ty);
+                    let await_ty = match task_ty {
+                        ResolvedTy::Task(inner) => *inner,
+                        _ => ResolvedTy::Unit,
+                    };
+                    let await_dest = self.alloc_local(await_ty);
+                    if let Some(binding_id) = arm.binding_id {
+                        self.binding_locals.insert(binding_id, await_dest);
+                    }
+                    (
+                        SelectArmKind::TaskAwait { task: task_place },
+                        Some(await_dest),
+                    )
+                }
                 HirSelectArmKind::AfterTimer { duration } => {
                     let duration_place = self.lower_value(duration)?;
                     // AfterTimer arms bind no value — `binding_id` is
@@ -5788,13 +5802,6 @@ impl Builder {
                         },
                         None,
                     )
-                }
-                HirSelectArmKind::StreamNext { .. } | HirSelectArmKind::TaskAwait { .. } => {
-                    // Rejected above; defence-in-depth.
-                    unreachable!(
-                        "stream-next / task-await arms were rejected before \
-                         block allocation"
-                    );
                 }
             };
             mir_arms.push(SelectArm {

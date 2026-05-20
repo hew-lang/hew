@@ -7,8 +7,8 @@
 //!   * `ExitPath::Select { block: originating, next: join_bb }` wired
 //!     into the elaborated function's `drop_plans` (cleanup-CFG
 //!     composition with D24-2);
-//!   * `SelectArm::binding` populated (Some) for `ActorAsk` arms with a
-//!     value-bearing pattern, None for `AfterTimer` arms.
+//!   * `SelectArm::binding` populated (Some) for value-bearing arms with a
+//!     binding pattern, None for `AfterTimer` arms.
 //!
 //! LESSONS row `producer-bridge-before-codegen` (P0): every cross-stage
 //! producer-emit must carry a structural assertion test before the
@@ -16,7 +16,7 @@
 //! gate. This file is that gate for the select-actor-ask-race lane.
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{ExitPath, IrPipeline, MirDiagnosticKind, RawMirFunction, SelectArmKind, Terminator};
+use hew_mir::{ExitPath, IrPipeline, RawMirFunction, SelectArmKind, Terminator};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn lower_checked(source: &str) -> IrPipeline {
@@ -38,6 +38,21 @@ fn lower_checked(source: &str) -> IrPipeline {
         hir.diagnostics.is_empty(),
         "HIR diagnostics: {:?}",
         hir.diagnostics
+    );
+    hew_mir::lower_hir_module(&hir.module)
+}
+
+fn lower_hir_without_typecheck(source: &str) -> IrPipeline {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let hir = hew_hir::lower_program(
+        &parsed.program,
+        &hew_types::TypeCheckOutput::default(),
+        &hew_hir::ResolutionCtx,
     );
     hew_mir::lower_hir_module(&hir.module)
 }
@@ -359,20 +374,18 @@ fn select_terminator_wires_exitpath_select_in_drop_plans() {
     assert_eq!(next, join_bb, "ExitPath::Select.next mismatch");
 }
 
-// Reject (fail-closed) any select containing a `StreamNext` arm with a
-// diagnostic that names both the arm kind and the future lane that
-// closes the restriction. We bypass the type-checker (which has no
-// `Stream<i64>` literal surface today) by driving HIR lowering with an
-// empty `TypeCheckOutput`; HIR diagnostics about unresolved symbols
-// are expected, but the HIR module still carries the `Select` node
-// with a `StreamNext` arm — which is exactly what MIR must reject.
+// Native MIR now carries `StreamNext` arms through to `Terminator::Select`.
+// We bypass the type-checker and use a literal stream operand because this
+// producer-side test only pins the HIR→MIR arm-kind bridge; codegen still
+// fails closed for this arm kind until the backend consumer lands.
 #[test]
-fn stream_next_arm_rejected_with_lane_pointer_diagnostic() {
-    let parsed = hew_parser::parse(
+#[cfg(not(target_arch = "wasm32"))]
+fn stream_next_arm_emits_select_arm_kind_on_native() {
+    let pipeline = lower_hir_without_typecheck(
         r"
         fn main() -> i64 {
             let r = select {
-                item from next(s) => 0,
+                item from next(1) => 0,
                 after 10ms => 0,
             };
             r
@@ -380,44 +393,60 @@ fn stream_next_arm_rejected_with_lane_pointer_diagnostic() {
         ",
     );
     assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
+        pipeline.diagnostics.is_empty(),
+        "MIR diagnostics: {:?}",
+        pipeline.diagnostics
     );
-    let hir = hew_hir::lower_program(
-        &parsed.program,
-        &hew_types::TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-    );
-    // HIR will emit UnresolvedSymbol / similar for `s`; that's fine.
-    // We only require the Select node to reach MIR.
-    let pipeline = hew_mir::lower_hir_module(&hir.module);
-    let found = pipeline.diagnostics.iter().any(|d| {
-        matches!(
-            &d.kind,
-            MirDiagnosticKind::SelectArmNotImplemented { arm_kind, lane_pointer, .. }
-                if arm_kind == "StreamNext" && lane_pointer.contains("M3 select-widening")
-        )
-    });
+
+    let main = find_main(&pipeline);
+    let (_, arms, _) = find_select_terminator(main);
+    assert_eq!(arms.len(), 2);
+    let stream = arms
+        .iter()
+        .find(|a| matches!(a.kind, SelectArmKind::StreamNext { .. }))
+        .expect("StreamNext arm");
     assert!(
-        found,
-        "expected SelectArmNotImplemented for StreamNext naming M3 \
-         select-widening; got {:?}",
+        stream.binding.is_some(),
+        "StreamNext arm binding must be Some for its item slot"
+    );
+}
+
+// wasm32 remains fail-closed for StreamNext at the MIR producer boundary
+// because the stream substrate is native-only.
+#[test]
+#[cfg(target_arch = "wasm32")]
+fn stream_next_arm_rejected_on_wasm32() {
+    let pipeline = lower_hir_without_typecheck(
+        r"
+        fn main() -> i64 {
+            let r = select {
+                item from next(1) => 0,
+                after 10ms => 0,
+            };
+            r
+        }
+        ",
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            hew_mir::MirDiagnosticKind::SelectArmNotImplemented { arm_kind, .. }
+                if arm_kind == "StreamNext"
+        )),
+        "expected StreamNext to remain fail-closed on wasm32; got {:?}",
         pipeline.diagnostics
     );
 }
 
-// Same fail-closed contract for `TaskAwait` arms — out of scope for
-// this lane (the multiplex-await observer/park/resume primitive isn't
-// wired; codegen has matching defence-in-depth). Lane pointer must
-// name M3 select-widening.
+// MIR now carries `TaskAwait` arms through to `Terminator::Select`; codegen
+// keeps the defence-in-depth rejection until the backend consumer lands.
 #[test]
-fn task_await_arm_rejected_with_lane_pointer_diagnostic() {
-    let parsed = hew_parser::parse(
+fn task_await_arm_emits_select_arm_kind() {
+    let pipeline = lower_hir_without_typecheck(
         r"
         fn main() -> i64 {
             let r = select {
-                v from await t => 0,
+                v from await 1 => 0,
                 after 10ms => 0,
             };
             r
@@ -425,28 +454,21 @@ fn task_await_arm_rejected_with_lane_pointer_diagnostic() {
         ",
     );
     assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let hir = hew_hir::lower_program(
-        &parsed.program,
-        &hew_types::TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-    );
-    let pipeline = hew_mir::lower_hir_module(&hir.module);
-    let found = pipeline.diagnostics.iter().any(|d| {
-        matches!(
-            &d.kind,
-            MirDiagnosticKind::SelectArmNotImplemented { arm_kind, lane_pointer, .. }
-                if arm_kind == "TaskAwait" && lane_pointer.contains("M3 select-widening")
-        )
-    });
-    assert!(
-        found,
-        "expected SelectArmNotImplemented for TaskAwait naming M3 \
-         select-widening; got {:?}",
+        pipeline.diagnostics.is_empty(),
+        "MIR diagnostics: {:?}",
         pipeline.diagnostics
+    );
+
+    let main = find_main(&pipeline);
+    let (_, arms, _) = find_select_terminator(main);
+    assert_eq!(arms.len(), 2);
+    let task = arms
+        .iter()
+        .find(|a| matches!(a.kind, SelectArmKind::TaskAwait { .. }))
+        .expect("TaskAwait arm");
+    assert!(
+        task.binding.is_some(),
+        "TaskAwait arm binding must be Some for its awaited value slot"
     );
 }
 

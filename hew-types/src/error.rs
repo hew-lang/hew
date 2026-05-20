@@ -536,6 +536,25 @@ pub enum TypeErrorKind {
         /// Actionable hint for the user.
         hint: String,
     },
+    /// A `gen { }` generator block appeared inside an actor receive handler.
+    ///
+    /// The scheduler holds the actor-state lock for the entire handler
+    /// invocation; a mid-handler yield cannot release it, so generator blocks
+    /// are statically forbidden inside actor receive handlers.
+    ///
+    /// Envelope code: `E_GENBLOCK_IN_ACTOR_RECEIVE`.
+    GenBlockInActorReceive,
+    /// A closure referenced its own let-binding name inside its body.
+    ///
+    /// By-value capture cannot capture a value before construction without
+    /// cycles. Recursive closures require a fixed-point surface that v0.5
+    /// intentionally does not expose; use a named function instead.
+    ///
+    /// Envelope code: `E_CLOSURE_RECURSIVE`.
+    ClosureRecursive {
+        /// The name of the binding the closure attempted to capture recursively.
+        name: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -592,6 +611,8 @@ impl TypeErrorKind {
             Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",
             Self::ActorProtocolCollision { .. } => "ActorProtocolCollision",
             Self::ExternRtSymbolUnclassified { .. } => "ExternRtSymbolUnclassified",
+            Self::GenBlockInActorReceive => "GenBlockInActorReceive",
+            Self::ClosureRecursive { .. } => "ClosureRecursive",
         }
     }
 }

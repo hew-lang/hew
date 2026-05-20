@@ -940,6 +940,30 @@ impl Checker {
         if let Some(ty) = found {
             ty
         } else {
+            // Detect recursive closure self-reference: if we are inside a lambda
+            // body (capture depth is set) and the name matches the let-binding
+            // being defined, emit ClosureRecursive rather than UndefinedVariable.
+            // By-value capture cannot capture a value before construction, so
+            // recursive closures are forbidden in v0.5.
+            if self.lambda_capture_depth.is_some()
+                && self
+                    .pending_let_closure_name
+                    .as_deref()
+                    .is_some_and(|pending| pending == name)
+            {
+                self.report_error(
+                    TypeErrorKind::ClosureRecursive {
+                        name: name.to_string(),
+                    },
+                    span,
+                    format!(
+                        "E_CLOSURE_RECURSIVE: closure cannot refer to its own binding \
+                         `{name}` — recursive closures require a fixed-point surface that \
+                         is not available in this version; use a named function instead"
+                    ),
+                );
+                return Ty::Error;
+            }
             if name == "self" {
                 let message = if self.current_actor_type.is_some() {
                     "`self` is not used in Hew actor bodies; access actor state with bare field names like `count` (not `self.count`), or use `this` when you need the actor handle".to_string()
@@ -1430,6 +1454,24 @@ impl Checker {
                 //      HirExprKind::GenBlock and the coroutine scheduler.
                 // REAL SOLUTION: synthesize the yield type from the block,
                 //      return Ty::Named { name: "Iterator", args: [yield_ty] }.
+                //
+                // A98 / Q98: generator blocks inside actor receive handlers are
+                // permanently forbidden.  The scheduler holds the actor-state lock
+                // for the entire handler invocation; there is no safe point to
+                // yield mid-handler.  This is a typed compile error, not a runtime
+                // trap.
+                if self.in_actor_handler_context {
+                    self.report_error(
+                        TypeErrorKind::GenBlockInActorReceive,
+                        span,
+                        "E_GENBLOCK_IN_ACTOR_RECEIVE: `gen { }` blocks are forbidden inside \
+                         actor receive handlers — the scheduler holds the actor-state lock for \
+                         the entire handler invocation; use a named generator function outside \
+                         the handler instead"
+                            .to_string(),
+                    );
+                    return Ty::Error;
+                }
                 self.check_block(body, None);
                 self.report_error(
                     TypeErrorKind::InvalidOperation,

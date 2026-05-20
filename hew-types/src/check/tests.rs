@@ -17591,6 +17591,106 @@ mod assoc_types_slice2 {
         );
     }
 
+    // ── gen{} in actor receive handler (A98 / Q98) ─────────────────────────
+
+    /// A `gen { }` block inside an actor receive handler must produce
+    /// `GenBlockInActorReceive`, not a generic `InvalidOperation`.
+    #[test]
+    fn genblock_inside_actor_receive_handler_is_rejected() {
+        let output = check_source(
+            r"
+            actor Counter {
+                count: i32;
+                receive fn tick() {
+                    let _g = gen { count = count + 1; };
+                }
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::GenBlockInActorReceive),
+            "gen{{}} inside actor receive handler must emit GenBlockInActorReceive; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// A `gen { }` block in a plain function (not an actor handler) must NOT
+    /// emit `GenBlockInActorReceive` — only `E_GEN_BLOCK_PENDING`.
+    #[test]
+    fn genblock_outside_actor_receive_handler_is_not_rejected_with_actor_error() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _g = gen { };
+            }
+            ",
+        );
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::GenBlockInActorReceive),
+            "gen{{}} outside actor handler must not emit GenBlockInActorReceive; got: {:?}",
+            output.errors
+        );
+        // It should still fail with InvalidOperation (E_GEN_BLOCK_PENDING).
+        assert!(
+            !output.errors.is_empty(),
+            "gen{{}} should still be rejected with E_GEN_BLOCK_PENDING"
+        );
+    }
+
+    // ── recursive closure self-reference (E_CLOSURE_RECURSIVE) ─────────────
+
+    /// A closure that references its own let-binding by name must produce
+    /// `ClosureRecursive`, not `UndefinedVariable`.
+    #[test]
+    fn recursive_closure_self_reference_is_rejected() {
+        let output = check_source(
+            r"
+            fn main() {
+                let f = |x: i32| -> i32 { f(x) };
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::ClosureRecursive { .. })),
+            "recursive closure self-reference must emit ClosureRecursive; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// A non-recursive closure that references a binding of the same name
+    /// from an outer scope is fine — the binding exists at capture depth.
+    #[test]
+    fn closure_referencing_outer_binding_same_name_is_not_recursive_error() {
+        let output = check_source(
+            r"
+            fn apply(f: fn(i32) -> i32, x: i32) -> i32 { f(x) }
+            fn main() {
+                let k: i32 = 10;
+                let f = |x: i32| -> i32 { x + k };
+                let _result = apply(f, 5);
+            }
+            ",
+        );
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::ClosureRecursive { .. })),
+            "non-recursive closure should not emit ClosureRecursive; got: {:?}",
+            output.errors
+        );
+    }
+
     /// The hint in the diagnostic must direct the user to add the symbol to
     /// the classification toml.
     #[test]

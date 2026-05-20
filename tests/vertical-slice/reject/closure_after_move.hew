@@ -1,0 +1,8 @@
+// Reject fixture: UseAfterMove for closures
+// A binding moved into a closure cannot be used again after the closure literal.
+// Expected: type error UseAfterMove
+fn main() {
+    let s: string = "hew";
+    let _f = move || s;
+    let _again = s;
+}

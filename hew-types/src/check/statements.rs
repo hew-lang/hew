@@ -358,6 +358,15 @@ impl Checker {
                         self.env.define(bind_name.clone(), duplex_ty, false);
                     }
                 }
+                // Set pending_let_closure_name so synthesize_identifier can
+                // detect recursive self-reference inside a closure body and emit
+                // ClosureRecursive instead of UndefinedVariable.
+                let prev_pending = self.pending_let_closure_name.take();
+                if let (Pattern::Identifier(name), Some((Expr::Lambda { .. }, _))) =
+                    (&pattern.0, &value)
+                {
+                    self.pending_let_closure_name = Some(name.clone());
+                }
                 let val_ty = if let Some((val, vs)) = value {
                     if let Some(annotation) = ty {
                         let expected =
@@ -372,6 +381,7 @@ impl Checker {
                     let v = TypeVar::fresh();
                     Ty::Var(v)
                 };
+                self.pending_let_closure_name = prev_pending;
                 // Consume the scratch field unconditionally so stale state
                 // never accumulates across statements.  Only register the
                 // generic call signature in lambda_poly_sig_map when the binding value is

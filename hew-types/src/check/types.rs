@@ -1420,6 +1420,15 @@ pub struct Checker {
     /// Populated in `register_fn` for functions with `#[intrinsic("key")]`.
     /// Moved into `TypeCheckOutput::intrinsic_declarations` at `check_program` exit.
     pub(super) intrinsic_declarations: HashMap<String, String>,
+    /// When a `let name = |...| ...` is being synthesised, holds `name` so that
+    /// `synthesize_identifier` can detect a recursive self-reference inside the
+    /// closure body and emit `ClosureRecursive` instead of `UndefinedVariable`.
+    ///
+    /// WHY: by-value closure capture cannot capture a value before construction,
+    ///      so recursive self-reference via the let-binding is unsupported in v0.5.
+    /// WHEN OBSOLETE: if a `let rec` or fixed-point surface is ratified.
+    /// REAL SOLUTION: a proper `letrec`/`fix`-point binder in the type checker.
+    pub(super) pending_let_closure_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1543,6 +1552,7 @@ impl Checker {
             last_lambda_generic_sig: None,
             deferred_range_bounds: Vec::new(),
             intrinsic_declarations: HashMap::new(),
+            pending_let_closure_name: None,
         }
     }
 

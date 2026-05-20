@@ -753,6 +753,28 @@ impl Checker {
             }
         }
 
+        // Detect recursive closure self-reference in call position: if we are
+        // inside a lambda body and the callee name matches the pending let-binding,
+        // emit ClosureRecursive rather than UndefinedFunction.
+        if self.lambda_capture_depth.is_some()
+            && self
+                .pending_let_closure_name
+                .as_deref()
+                .is_some_and(|pending| pending == func_name.as_str())
+        {
+            self.report_error(
+                TypeErrorKind::ClosureRecursive {
+                    name: func_name.clone(),
+                },
+                span,
+                format!(
+                    "E_CLOSURE_RECURSIVE: closure cannot call itself via binding \
+                     `{func_name}` — recursive closures require a fixed-point surface \
+                     that is not available in this version; use a named function instead"
+                ),
+            );
+            return Ty::Error;
+        }
         let similar = crate::error::find_similar(
             &func_name,
             self.fn_sigs

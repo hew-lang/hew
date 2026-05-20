@@ -1,0 +1,7 @@
+// Reject fixture: E_CLOSURE_RECURSIVE
+// A closure that refers to its own let-binding name inside its body is rejected.
+// By-value capture cannot capture a value before construction (no letrec).
+// Expected: type error ClosureRecursive
+fn main() {
+    let f = |x: i32| -> i32 { f(x) };
+}

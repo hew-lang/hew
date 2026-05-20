@@ -281,6 +281,37 @@ pub unsafe extern "C" fn hew_reply(
     }
 }
 
+/// Mark a retained reply-channel reference ready without depositing a payload.
+///
+/// This is the callback-compatible readiness proxy for multiplexed waits:
+/// pass a retained `HewReplyChannel*` as the observer context, and this
+/// function consumes that retained producer/observer reference when it fires.
+/// The original waiter reference remains owned by the caller and must still
+/// be released with [`hew_reply_channel_free`].
+///
+/// # Safety
+///
+/// `ch` must be either null or a retained `HewReplyChannel*` reference. When
+/// non-null, this function consumes exactly one reference. It must be called
+/// at most once for that retained reference.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_signal_ready(ch: *mut c_void) {
+    let ch = ch.cast::<HewReplyChannel>();
+    if ch.is_null() {
+        return;
+    }
+
+    // SAFETY: caller provides a retained producer/observer reference. The
+    // helper either consumes it on cancellation or publishes a null payload and
+    // releases it, matching `hew_reply`'s sender-reference ownership model.
+    unsafe {
+        if release_sender_ref_if_cancelled(ch) {
+            return;
+        }
+        publish_reply_from_sender_ref(ch, ptr::null_mut(), 0);
+    }
+}
+
 // ── Wait (receiver side) ────────────────────────────────────────────────
 
 /// Block until a reply is available, then return the value.
@@ -654,6 +685,86 @@ mod tests {
     }
 
     #[test]
+    fn signal_ready_marks_channel_ready_without_payload() {
+        let _guard = crate::runtime_test_guard();
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: the test retains an observer-side reference that
+        // `hew_reply_channel_signal_ready` consumes, leaving the original
+        // waiter reference live for select/wait/free.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            hew_reply_channel_signal_ready(ch.cast());
+
+            assert!(hew_reply_channel_is_ready_for_test(ch));
+            let mut channels = [ch];
+            assert_eq!(hew_select_first(channels.as_mut_ptr(), 1, 0), 0);
+            assert!(
+                hew_reply_wait(ch).is_null(),
+                "readiness proxy must not fabricate a reply payload"
+            );
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    #[test]
+    fn signal_ready_after_cancel_consumes_observer_reference() {
+        let _guard = crate::runtime_test_guard();
+        let pre_new = active_channel_count();
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: the retained observer reference keeps `ch` live after the
+        // waiter cancels and releases its own reference.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            hew_reply_channel_cancel(ch);
+            hew_reply_channel_free(ch);
+            assert_eq!(active_channel_count(), pre_new + 1);
+
+            hew_reply_channel_signal_ready(ch.cast());
+        }
+
+        assert_eq!(
+            active_channel_count(),
+            pre_new,
+            "late readiness callback must release its retained channel reference"
+        );
+    }
+
+    #[test]
+    fn task_completion_observer_can_signal_select_readiness_proxy() {
+        let _guard = crate::runtime_test_guard();
+
+        // SAFETY: the test owns all scope/task/channel pointers exclusively.
+        unsafe {
+            let scope = crate::task_scope::hew_task_scope_new();
+            let task = crate::task_scope::hew_task_new();
+            crate::task_scope::hew_task_scope_spawn(scope, task);
+            let ch = hew_reply_channel_new();
+
+            hew_reply_channel_retain(ch);
+            assert_eq!(
+                crate::task_scope::hew_task_completion_observe(
+                    scope,
+                    task,
+                    Some(hew_reply_channel_signal_ready),
+                    ch.cast(),
+                ),
+                0
+            );
+
+            let mut channels = [ch];
+            assert_eq!(hew_select_first(channels.as_mut_ptr(), 1, 0), -1);
+            crate::task_scope::hew_task_scope_complete_task(scope, task);
+            assert_eq!(hew_select_first(channels.as_mut_ptr(), 1, 0), 0);
+            assert!(hew_reply_wait(ch).is_null());
+
+            hew_reply_channel_free(ch);
+            crate::task_scope::hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
     fn send_recv_roundtrip() {
         let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
@@ -701,6 +812,7 @@ mod tests {
             hew_reply_channel_retain(ptr::null_mut());
             hew_reply_channel_free(ptr::null_mut());
             hew_reply_channel_cancel(ptr::null_mut());
+            hew_reply_channel_signal_ready(ptr::null_mut());
         }
     }
 

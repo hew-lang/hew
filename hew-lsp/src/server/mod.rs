@@ -5920,4 +5920,267 @@ machine Traffic {
             "end.character must be UTF-16 code units ({utf16_len}), not byte count ({byte_len})"
         );
     }
+
+    // ── Hew v0.5 syntax coverage fixtures ────────────────────────────────
+
+    fn v05_fixture_path(name: &str) -> String {
+        format!("file:///v05/{name}.hew")
+    }
+
+    fn flatten_symbol_names<'a>(symbols: &'a [DocumentSymbol], names: &mut Vec<&'a str>) {
+        for symbol in symbols {
+            names.push(symbol.name.as_str());
+            if let Some(children) = &symbol.children {
+                flatten_symbol_names(children, names);
+            }
+        }
+    }
+
+    fn assert_v05_lsp_fixture(
+        fixture_name: &str,
+        source: &str,
+        probe_name: &str,
+        expected_symbols: &[&str],
+    ) {
+        let uri = Url::parse(&v05_fixture_path(fixture_name)).unwrap();
+        let doc = make_typed_doc(source);
+        assert!(
+            doc.parse_result.errors.is_empty(),
+            "parse errors in {fixture_name}: {:?}",
+            doc.parse_result.errors
+        );
+
+        let analysis_symbols =
+            hew_analysis::symbols::build_document_symbols(&doc.source, &doc.parse_result);
+        let document_symbols: Vec<DocumentSymbol> = analysis_symbols
+            .into_iter()
+            .map(|symbol| symbol_info_to_doc_symbol(&doc.source, &doc.line_offsets, symbol))
+            .collect();
+        let mut symbol_names = Vec::new();
+        flatten_symbol_names(&document_symbols, &mut symbol_names);
+        for expected in expected_symbols {
+            assert!(
+                symbol_names.contains(expected),
+                "documentSymbol for {fixture_name} missing {expected}; got {symbol_names:?}"
+            );
+        }
+
+        let probe_offset = source
+            .rfind(probe_name)
+            .unwrap_or_else(|| panic!("{fixture_name} missing probe {probe_name}"));
+        let hover = hew_analysis::hover::hover(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            probe_offset,
+        )
+        .unwrap_or_else(|| panic!("hover missing for {probe_name} in {fixture_name}"));
+        assert!(
+            hover.contents.contains(probe_name),
+            "hover for {probe_name} in {fixture_name} should mention probe, got: {}",
+            hover.contents
+        );
+
+        let resolver_has_definition = hew_analysis::resolver::resolve_symbol_at_raw(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            uri.as_str(),
+            probe_offset,
+        )
+        .is_some_and(|resolution| resolution.def_location().is_some());
+        assert!(
+            resolver_has_definition
+                || find_definition_in_ast(
+                    &doc.source,
+                    &doc.line_offsets,
+                    &doc.parse_result,
+                    probe_name,
+                )
+                .is_some(),
+            "goto definition missing for {probe_name} in {fixture_name}"
+        );
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(uri.clone(), doc);
+        let doc_ref = documents.get(&uri).unwrap();
+        let refs = build_reference_locations(&uri, &doc_ref, probe_offset, true, &documents);
+        assert!(
+            refs.len() >= 2,
+            "findReferences for {probe_name} in {fixture_name} should include definition and use, got {refs:?}"
+        );
+    }
+
+    #[test]
+    fn v05_record_literals_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_record_literals",
+            include_str!("../../tests/fixtures/v05_record_literals.hew"),
+            "record_probe",
+            &["Point", "record_probe", "record_literals"],
+        );
+    }
+
+    #[test]
+    #[ignore = "LSP gap: tuple record literals — parser/analysis handlers need tuple record support"]
+    fn v05_record_tuple_literal_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_record_tuple_literal",
+            include_str!("../../tests/fixtures/v05_record_tuple_literal.hew"),
+            "record_tuple_probe",
+            &["Pair", "record_tuple_probe", "record_tuple_literal"],
+        );
+    }
+
+    #[test]
+    fn v05_is_operator_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_is_operator",
+            include_str!("../../tests/fixtures/v05_is_operator.hew"),
+            "is_probe",
+            &["Payload", "is_probe", "is_operator"],
+        );
+    }
+
+    #[test]
+    fn v05_unsafe_block_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_unsafe_block",
+            include_str!("../../tests/fixtures/v05_unsafe_block.hew"),
+            "unsafe_probe",
+            &["unsafe_probe", "unsafe_block"],
+        );
+    }
+
+    #[test]
+    fn v05_machine_generics_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_machine_generics",
+            include_str!("../../tests/fixtures/v05_machine_generics.hew"),
+            "machine_generics_probe",
+            &["Boxed", "Store", "Idle", "machine_generics_probe"],
+        );
+    }
+
+    #[test]
+    fn v05_machine_states_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_machine_states",
+            include_str!("../../tests/fixtures/v05_machine_states.hew"),
+            "machine_states_probe",
+            &[
+                "Traffic",
+                "Start",
+                "Stop",
+                "Idle",
+                "Running",
+                "machine_states_probe",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_scope_fork_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_scope_fork",
+            include_str!("../../tests/fixtures/v05_scope_fork.hew"),
+            "fork_worker",
+            &["fork_worker", "scope_fork"],
+        );
+    }
+
+    #[test]
+    #[ignore = "LSP gap: select arm kinds — parser/analysis handlers need StreamNext, TaskAwait, AfterTimer, and ActorAsk support"]
+    fn v05_select_arms_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_select_arms",
+            include_str!("../../tests/fixtures/v05_select_arms.hew"),
+            "select_probe",
+            &["Responder", "ask", "select_probe", "select_arms"],
+        );
+    }
+
+    #[test]
+    fn v05_attributes_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_attributes",
+            include_str!("../../tests/fixtures/v05_attributes.hew"),
+            "attribute_crash_probe",
+            &[
+                "AttributeActor",
+                "ping",
+                "attribute_crash_probe",
+                "attribute_upgrade_probe",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_link_monitor_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_link_monitor",
+            include_str!("../../tests/fixtures/v05_link_monitor.hew"),
+            "link_monitor_probe",
+            &["LinkWorker", "ping", "link_monitor_probe", "link_monitor"],
+        );
+    }
+
+    #[test]
+    #[ignore = "LSP gap: spawn lambda actor — parser/analysis handlers need lambda actor spawn support"]
+    fn v05_spawn_lambda_actor_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_spawn_lambda_actor",
+            include_str!("../../tests/fixtures/v05_spawn_lambda_actor.hew"),
+            "spawn_lambda_probe",
+            &["spawn_lambda_probe", "spawn_lambda_actor"],
+        );
+    }
+
+    #[test]
+    fn v05_std_channels_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_std_channels",
+            include_str!("../../tests/fixtures/v05_std_channels.hew"),
+            "std_channels_probe",
+            &["std_channels_probe", "std_channels"],
+        );
+    }
+
+    #[test]
+    fn v05_associated_type_projection_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_associated_type_projection",
+            include_str!("../../tests/fixtures/v05_associated_type_projection.hew"),
+            "associated_projection_probe",
+            &["Conveyor", "Item", "next", "associated_projection_probe"],
+        );
+    }
+
+    #[test]
+    fn v05_index_trait_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_index_trait",
+            include_str!("../../tests/fixtures/v05_index_trait.hew"),
+            "index_probe",
+            &[
+                "Bag",
+                "Indexable",
+                "Item",
+                "get",
+                "index_probe",
+                "index_trait",
+            ],
+        );
+    }
+
+    #[test]
+    #[ignore = "LSP gap: async/await — parser/analysis handlers need async function and await expression support"]
+    fn v05_async_await_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_async_await",
+            include_str!("../../tests/fixtures/v05_async_await.hew"),
+            "async_probe",
+            &["async_value", "async_probe", "async_await"],
+        );
+    }
 }

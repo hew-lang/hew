@@ -1,0 +1,30 @@
+actor Responder {
+    receive fn ask(value: i32) -> i32 {
+        value
+    }
+}
+
+fn select_probe() -> i32 {
+    7
+}
+
+fn select_arms(
+    stream: Stream<i32>,
+    task: Task<i32>,
+    recipient: Responder,
+) -> i32 {
+    select {
+        StreamNext(value) from stream => {
+            value
+        }
+        TaskAwait(value) from task => {
+            value
+        }
+        AfterTimer from after 10 => {
+            select_probe()
+        }
+        ActorAsk(value) from recipient.ask(1) => {
+            value
+        }
+    }
+}

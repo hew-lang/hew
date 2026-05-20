@@ -1,0 +1,12 @@
+trait Conveyor {
+    type Item;
+    fn next(self) -> Self::Item;
+}
+
+fn associated_projection_probe() -> i32 {
+    7
+}
+
+fn associated_type_projection() -> i32 {
+    associated_projection_probe()
+}

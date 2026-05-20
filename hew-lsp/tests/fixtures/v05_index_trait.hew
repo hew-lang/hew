@@ -1,0 +1,17 @@
+type Bag {
+    value: i32;
+}
+
+trait Indexable {
+    type Item;
+    fn get(self, key: i32) -> Self::Item;
+}
+
+fn index_probe() -> i32 {
+    7
+}
+
+fn index_trait(obj: Bag, key: i32) -> i32 {
+    let value = obj[key];
+    index_probe()
+}

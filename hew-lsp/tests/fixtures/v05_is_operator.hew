@@ -1,0 +1,15 @@
+type Payload {
+    value: i32;
+}
+
+fn is_probe() -> i32 {
+    7
+}
+
+fn is_operator(value: Payload) -> i32 {
+    if value is Payload {
+        is_probe()
+    } else {
+        0
+    }
+}

@@ -1,0 +1,15 @@
+type Point {
+    x: i32;
+    y: i32;
+}
+
+fn record_probe() -> i32 {
+    7
+}
+
+fn record_literals() -> i32 {
+    let base = Point { x: 1, y: 2 };
+    let named = Point { x: record_probe(), y: base.y };
+    let updated = Point { x: record_probe(), ..base };
+    record_probe()
+}

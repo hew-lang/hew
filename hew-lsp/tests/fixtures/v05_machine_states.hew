@@ -1,0 +1,37 @@
+machine Traffic {
+    event Start;
+    event Stop;
+    event Started;
+    event Stopped;
+
+    state Idle {
+        entry {
+            emit Stopped;
+        }
+    }
+
+    state Running {
+        entry {
+            emit Started;
+        }
+        exit {
+            emit Stopped;
+        }
+    }
+
+    on Start: Idle -> Running {
+        emit Started;
+    }
+
+    on Stop: Running -> Idle {
+        emit Stopped;
+    }
+}
+
+fn machine_states_probe() -> i32 {
+    7
+}
+
+fn machine_states_use() -> i32 {
+    machine_states_probe()
+}

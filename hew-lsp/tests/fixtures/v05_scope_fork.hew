@@ -1,0 +1,15 @@
+fn fork_worker() -> i32 {
+    7
+}
+
+fn scope_fork() -> i32 {
+    scope {
+        fork {
+            fork_worker();
+        }
+        fork {
+            fork_worker();
+        }
+    }
+    fork_worker()
+}

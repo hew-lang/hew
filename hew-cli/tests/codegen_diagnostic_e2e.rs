@@ -5,8 +5,8 @@ use std::process::Command;
 
 use support::{describe_output, hew_binary, repo_root, require_codegen, strip_ansi};
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn extern_type_codegen_errors_report_the_type_span() {
     require_codegen();
@@ -39,8 +39,8 @@ fn extern_type_codegen_errors_report_the_type_span() {
     );
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn vec_array_elements_fail_closed_before_mlir() {
     let fixture = repo_root()
@@ -73,8 +73,8 @@ fn vec_array_elements_fail_closed_before_mlir() {
     );
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn module_qualified_generic_call_builds_with_inferred_type_args() {
     require_codegen();
@@ -121,8 +121,8 @@ fn module_qualified_generic_call_builds_with_inferred_type_args() {
     );
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn slice_annotations_fail_in_typecheck_before_mlir_codegen() {
     require_codegen();

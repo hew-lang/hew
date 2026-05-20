@@ -23,8 +23,8 @@ fn run_suite(files: &[(&str, &str)], extra_args: &[&str]) -> std::process::Outpu
     run_hew_in(dir.path(), &args)
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn passing_suite_exits_zero() {
     require_codegen();
@@ -43,8 +43,8 @@ fn passing_suite_exits_zero() {
     assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn failing_suite_exits_non_zero() {
     require_codegen();
@@ -63,8 +63,8 @@ fn failing_suite_exits_non_zero() {
     assert!(stdout.contains("expected failure"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn mixed_suite_reports_each_test_and_exits_non_zero() {
     require_codegen();
@@ -91,8 +91,8 @@ fn mixed_suite_reports_each_test_and_exits_non_zero() {
 }
 
 // Disabled during v0.5 cutover: `hew test` is short-circuited in router.rs before
-// reaching discovery or the runner. Re-enable once the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// reaching discovery or the runner. Re-enable after it routes through Rust MIR/codegen-rs.
+#[ignore = "v0.5: hew test awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn ignored_test_is_skipped_and_counted() {
     require_codegen();
@@ -111,8 +111,8 @@ fn ignored_test_is_skipped_and_counted() {
     assert!(stdout.contains("0 passed; 0 failed; 1 ignored"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn include_ignored_flag_runs_skipped_tests() {
     require_codegen();
@@ -132,8 +132,8 @@ fn include_ignored_flag_runs_skipped_tests() {
     assert!(stdout.contains("0 passed; 1 failed; 0 ignored"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn filter_narrows_to_matching_tests() {
     require_codegen();
@@ -160,8 +160,8 @@ fn filter_narrows_to_matching_tests() {
     assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn should_panic_test_passes_when_it_panics() {
     require_codegen();
@@ -180,8 +180,8 @@ fn should_panic_test_passes_when_it_panics() {
     assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn should_panic_test_fails_when_it_does_not_panic() {
     require_codegen();
@@ -202,8 +202,8 @@ fn should_panic_test_fails_when_it_does_not_panic() {
 }
 
 // Disabled during v0.5 cutover: `hew test` is short-circuited in router.rs before
-// reaching discovery or the runner. Re-enable once the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// reaching discovery or the runner. Re-enable after it routes through Rust MIR/codegen-rs.
+#[ignore = "v0.5: hew test awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn no_test_files_in_directory_exits_zero() {
     let dir = support::tempdir();
@@ -230,8 +230,8 @@ fn no_test_files_in_directory_exits_zero() {
 }
 
 // Disabled during v0.5 cutover: `hew test` is short-circuited in router.rs before
-// reaching discovery or the runner. Re-enable once the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// reaching discovery or the runner. Re-enable after it routes through Rust MIR/codegen-rs.
+#[ignore = "v0.5: hew test awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn no_test_functions_found_exits_zero() {
     let output = run_suite(
@@ -254,8 +254,8 @@ fn no_test_functions_found_exits_zero() {
     );
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn multi_path_invocation_aggregates_results() {
     require_codegen();
@@ -295,8 +295,8 @@ fn multi_path_invocation_aggregates_results() {
 }
 
 // Disabled during v0.5 cutover: `hew test` is short-circuited in router.rs before
-// reaching discovery or the runner. Re-enable once the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// reaching discovery or the runner. Re-enable after it routes through Rust MIR/codegen-rs.
+#[ignore = "v0.5: hew test awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn parse_errors_fail_the_suite() {
     let output = run_suite(
@@ -312,8 +312,8 @@ fn parse_errors_fail_the_suite() {
     assert!(stderr.contains("expected"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn timeout_exit_code_is_non_zero() {
     require_codegen();
@@ -333,8 +333,8 @@ fn timeout_exit_code_is_non_zero() {
 }
 
 // Disabled during v0.5 cutover: `hew test` is short-circuited in router.rs before
-// reaching discovery or the runner. Re-enable once the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// reaching discovery or the runner. Re-enable after it routes through Rust MIR/codegen-rs.
+#[ignore = "v0.5: hew test awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn missing_path_exits_non_zero() {
     let dir = support::tempdir();
@@ -350,8 +350,8 @@ fn missing_path_exits_non_zero() {
     assert!(stderr.contains("path not found"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn junit_passing_suite_emits_xml_on_stdout() {
     require_codegen();
@@ -390,8 +390,8 @@ fn junit_passing_suite_emits_xml_on_stdout() {
     assert!(stdout.contains("</testsuites>"), "stdout: {stdout}");
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn junit_failing_suite_emits_failure_element_and_exits_one() {
     require_codegen();
@@ -421,8 +421,8 @@ fn junit_failing_suite_emits_failure_element_and_exits_one() {
 }
 
 // Disabled during v0.5 cutover: `hew test` is short-circuited in router.rs before
-// reaching discovery or the runner. Re-enable once the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// reaching discovery or the runner. Re-enable after it routes through Rust MIR/codegen-rs.
+#[ignore = "v0.5: hew test awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn junit_ignored_suite_emits_skipped_element() {
     require_codegen();
@@ -451,8 +451,8 @@ fn junit_ignored_suite_emits_skipped_element() {
 }
 
 // Disabled during v0.5 cutover: `hew test` is short-circuited in router.rs before
-// reaching discovery or the runner. Re-enable once the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// reaching discovery or the runner. Re-enable after it routes through Rust MIR/codegen-rs.
+#[ignore = "v0.5: hew test awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn filter_with_no_matching_tests_exits_zero_and_reports_zero_tests() {
     require_codegen();

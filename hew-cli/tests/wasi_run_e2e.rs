@@ -44,8 +44,8 @@ fn run_wasi_example(source: &Path) -> Output {
 // misclassified manifest entries before they silently drop out of the runnable loop.
 const EXPECTED_WASI_UNSUPPORTED: &[&str] = &["concurrency/supervisor"];
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn curated_playground_examples_run_under_wasi() {
     require_wasi_runner();
@@ -102,8 +102,8 @@ fn curated_playground_examples_run_under_wasi() {
     }
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
     require_wasi_runner();
@@ -142,8 +142,8 @@ fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
     );
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn wasi_run_timeout_terminates_a_non_terminating_program() {
     require_wasi_runner();

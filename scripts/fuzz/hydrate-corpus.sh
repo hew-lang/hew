@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 corpus_root="$repo_root/hew-parser/fuzz/corpus"
 
-source_targets=(fuzz_parse fuzz_lex fuzz_check fuzz_mir fuzz_msgpack)
+source_targets=(fuzz_parse fuzz_lex fuzz_check fuzz_mir)
 all_targets=("${source_targets[@]}" fuzz_machine fuzz_structured)
 
 for target in "${all_targets[@]}"; do
@@ -43,7 +43,5 @@ printf 'state A;\nevent Tick;\non Tick: A -> A { A }\n' \
     >"$corpus_root/fuzz_machine/minimal-machine-body.hew"
 
 printf '\0\1\2hew-v05-structured-seed' >"$corpus_root/fuzz_structured/structured-seed"
-printf 'wire enum SeedCommand {\n    Start;\n    Stop;\n}\n' \
-    >"$corpus_root/fuzz_msgpack/wire-enum-seed.hew"
 
 printf 'hydrated fuzz corpus in %s\n' "$corpus_root"

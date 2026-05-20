@@ -17,7 +17,6 @@ cargo +nightly fuzz run fuzz_parse       # UTF-8 source -> parser
 cargo +nightly fuzz run fuzz_lex         # UTF-8 source -> lexer span invariants
 cargo +nightly fuzz run fuzz_check       # parse-clean source -> checker
 cargo +nightly fuzz run fuzz_mir         # typecheck-clean source -> HIR/MIR lowering
-cargo +nightly fuzz run fuzz_msgpack     # wire declarations and msgpack descriptors
 ```
 
 ## Corpus

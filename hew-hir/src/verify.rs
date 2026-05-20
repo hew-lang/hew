@@ -288,6 +288,11 @@ impl Verifier {
             HirExprKind::CoerceToDynTrait { value, .. } => {
                 self.expr(value);
             }
+            HirExprKind::MachineEmit { fields, .. } => {
+                for (_, field_val) in fields {
+                    self.expr(field_val);
+                }
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive
                 // to verification without a prior CutoverUnsupported diagnostic.

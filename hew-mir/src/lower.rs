@@ -1919,6 +1919,11 @@ fn collect_unknown_self_fields_in_expr(
         HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
         }
+        HirExprKind::MachineEmit { fields, .. } => {
+            for (_, field_val) in fields {
+                collect_unknown_self_fields_in_expr(field_val, state_fields, seen, unknown);
+            }
+        }
     }
 }
 
@@ -3403,6 +3408,20 @@ impl Builder {
                     args: lowered_args,
                 });
                 dest
+            }
+            HirExprKind::MachineEmit { .. } => {
+                // `emit` expressions are valid HIR (Slice 2), but MIR
+                // lowering for machine bodies is deferred to Lane B Slice 4b.
+                // Fail closed so that a machine body reaching MIR via an
+                // unanticipated path is rejected rather than silently
+                // producing no-op code.
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UnsupportedNode {
+                        reason: "MachineEmit (Lane B Slice 4b not yet wired)".to_string(),
+                    },
+                    note: "machine emit expressions are not yet lowered to MIR".to_string(),
+                });
+                None
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted

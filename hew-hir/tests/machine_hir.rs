@@ -490,11 +490,11 @@ machine Door {
 
 #[test]
 fn transition_body_with_machine_emit_filters_only_emit_noise() {
-    // Bodies that include `emit` are not yet routed through `HirExprKind`.
+    // `emit` now lowers to `HirExprKind::MachineEmit` directly (Slice 2).
     // The body-diagnostic filter must:
-    //   1. still lower the body to a `HirExpr` substrate without crashing,
-    //   2. preserve the `MachineEmitCycle` diagnostic from the AST summary
-    //      walk, and
+    //   1. lower the body to a `HirExpr` substrate without crashing,
+    //   2. preserve the `MachineEmitCycle` diagnostic from the HIR emit-cycle
+    //      walk (which supersedes the old AST summary walk), and
     //   3. not introduce extra `CutoverUnsupported` noise for the
     //      `emit Tick {}` expression itself.
     let src = r"
@@ -533,7 +533,7 @@ machine Cyclic {
 #[test]
 fn transition_body_unrelated_unresolved_symbol_still_diagnoses() {
     // The body-diagnostic filter must drop only the expected machine-body
-    // noise (state-name identifier refs, `this`, `emit`). An unrelated
+    // noise (state-name identifier refs and `this`). An unrelated
     // unresolved identifier inside a transition body — here the call
     // `not_a_real_helper()` — must still produce a visible diagnostic so
     // a typo in user code cannot be silently embedded as success-shaped HIR.
@@ -673,6 +673,93 @@ machine Counter {
         unresolved_unknown,
         "identifier `NotAState` is not a declared state and must still \
          produce an UnresolvedSymbol diagnostic; got: {:?}",
+        output.diagnostics
+    );
+}
+
+// ── HIR emit-cycle walker descends into conditional branches ─────────────────
+
+#[test]
+fn reject_machine_emit_cycle_inside_conditional_or_match() {
+    // The emit-cycle check must fire even when the self-emit is nested inside
+    // an `if` branch, not just at the top level of the transition body.
+    //
+    // Before Slice 2 the emit-cycle walker inspected the raw AST and only
+    // traversed `Expr::Block` children; a `MachineEmit` inside an `if` body
+    // would be invisible to it.  After Slice 2 the walker operates on the
+    // lowered `HirExpr` tree which explicitly descends into `HirExprKind::If`
+    // branches — this test pins that property.
+    // Use `if` as the trailing expression so it reaches `Expr::If` lowering
+    // rather than `Stmt::If`. Both paths lower to `HirExprKind::If`; this test
+    // exercises the expression-position path. The statement-position `else if`
+    // path is covered by `reject_machine_emit_cycle_in_stmt_else_if` below.
+    // The emit-cycle property depends on `collect_hir_emitted_events`
+    // descending into the `HirExprKind::If` branch, not on statement lowering.
+    let src = r"
+machine Conditional {
+    state Active;
+
+    event Tick;
+
+    on Tick: Active -> Active @reenter {
+        if true { emit Tick {}; Active } else { Active }
+    }
+}
+";
+    let output = lower(src);
+    let has_cycle_error = output.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            HirDiagnosticKind::MachineEmitCycle { machine_name, event_name }
+            if machine_name == "Conditional" && event_name == "Tick"
+        )
+    });
+    assert!(
+        has_cycle_error,
+        "expected emit-cycle diagnostic for emit nested inside an if branch; \
+         got: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn reject_machine_emit_cycle_in_stmt_else_if() {
+    // The emit-cycle walker must also fire when the self-emit is inside a
+    // statement-position `else if` branch (i.e. `Stmt::If` with is_if=true).
+    //
+    // A statement-position `if` occurs when the if-chain is not the trailing
+    // expression of the block — here `Active` is the trailing state expression,
+    // so the `if ... else if ...` is parsed as `Stmt::If`.  The else-if arm is
+    // lowered via `lower_stmt` recursion into a nested `HirExprKind::If` which
+    // `collect_hir_emitted_events` then descends into normally.
+    //
+    // Without the fix, `else_expr` was `None` for `is_if=true` else-blocks, so
+    // the self-emit in the else-if arm was invisible to the walker.
+    let src = r"
+machine StmtElseIf {
+    state Active;
+
+    event Tick;
+
+    on Tick: Active -> Active @reenter {
+        if false { }
+        else if true { emit Tick {} }
+        Active
+    }
+}
+";
+    let output = lower(src);
+    let has_cycle_error = output.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            HirDiagnosticKind::MachineEmitCycle { machine_name, event_name }
+            if machine_name == "StmtElseIf" && event_name == "Tick"
+        )
+    });
+    assert!(
+        has_cycle_error,
+        "expected emit-cycle diagnostic for self-emit inside a statement-position \
+         else-if branch; got: {:?}",
         output.diagnostics
     );
 }

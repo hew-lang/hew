@@ -44,18 +44,24 @@
   (non-blocking), `.close()`, `.send_half()`, `.recv_half()` (split into
   directional handles). Constructor builtins: `duplex_pair<S,R>()` (creates a
   matched pair), `channel<T>()` (creates a `(Sink<T>, Stream<T>)` pair).
+  In v0.5 the type surface and constructors are checker-verified; an end-to-end
+  compile+run fixture remains a follow-up.
 - **Lambda-actor form — `actor |params| { body }`:** A lambda-actor literal
   evaluates to a `Duplex<Msg, Reply>` handle. The actor body runs in a
   supervised child context; the caller holds both send and receive directions
   of the channel. Lambda-actor handles accept both bare-call syntax
   `handle(msg)` and `.send(msg)` — both are equivalent. Replaces the removed
-  `spawn |...|` form.
+  `spawn |...|` form. The form is type-checkable in v0.5; compile-to-binary
+  coverage remains a follow-up.
 - **Structured concurrency — `scope` block + `fork` verb:** `scope { ... }`
   is the lexical lifetime bracket for child tasks. Inside a scope block,
   `fork name = call(...)` starts a named child; the scope block does not
   return until all children complete (or one faults and the rest are
   cancelled). The `fork` keyword is now exclusively the child-start verb; the
-  `scope` keyword is the lifetime container.
+  `scope` keyword is the lifetime container. In v0.5 the surface is parsed and
+  structurally typed; simple no-arg, unit-return fork bodies have a codegen
+  path, while non-unit result propagation and value-bearing fork arms fail
+  closed with a compiler diagnostic.
 - **Actor lifecycle hooks — `#[on(start)]` and `#[on(stop)]`:** Actor methods
   annotated with `#[on(start)]` run before the actor's message loop begins;
   methods annotated with `#[on(stop)]` run after the loop exits (whether by
@@ -84,6 +90,15 @@
   traits, concrete `type Item = ...;` definitions in impls, and `Self::Item`
   references in type position. Associated-type bounds and multi-type trait
   families remain deferred to `HEW-FUTURE.md` §2.2.
+
+### Known WASM behavioral gaps
+
+- **Reply-channel state is process-global on WASM:** cooperative scheduling on
+  WASM still routes ask reply-channel state through process-global storage, so
+  concurrent ask races can diverge from native per-execution-context behavior.
+- **`#[on(stop)]` observability is narrower on WASM:** the WASM terminate path
+  runs without the native signal-recovery and lifecycle-tracing path, so stop
+  hook semantics hold but lifecycle tracing is omitted.
 
 ### Changed
 

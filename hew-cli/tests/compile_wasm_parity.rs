@@ -52,7 +52,7 @@ fn non_duplex_program_emits_wasm() {
         return;
     }
 
-    let fixture = repo_root().join("tests/v05-vertical-slice/accept/01-arith.hew");
+    let fixture = repo_root().join("tests/vertical-slice/accept/01-arith.hew");
     assert!(fixture.exists(), "fixture not found: {}", fixture.display());
 
     let emit_dir = tempfile::Builder::new()
@@ -112,7 +112,7 @@ fn non_duplex_program_emits_wasm() {
 fn bare_compile_skips_wasm_for_non_duplex() {
     require_codegen();
 
-    let fixture = repo_root().join("tests/v05-vertical-slice/accept/01-arith.hew");
+    let fixture = repo_root().join("tests/vertical-slice/accept/01-arith.hew");
     assert!(fixture.exists(), "fixture not found: {}", fixture.display());
 
     let emit_dir = tempfile::Builder::new()
@@ -169,7 +169,7 @@ fn duplex_program_wasm_surfaces_structured_diagnostic() {
 
     // This fixture requires E3 to compile; it will fail at HIR with
     // `UnresolvedSymbol: duplex_pair` until E3 lands.
-    let fixture = repo_root().join("tests/v05-vertical-slice/accept/duplex_pair_send_skeleton.hew");
+    let fixture = repo_root().join("tests/vertical-slice/accept/duplex_pair_send_skeleton.hew");
 
     let emit_dir = tempfile::Builder::new()
         .prefix("compile-duplex-wasm-")

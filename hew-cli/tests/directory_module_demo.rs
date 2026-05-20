@@ -10,7 +10,7 @@
 /// `hew check` (parse + typecheck) is the right gate here because the demo
 /// uses string concatenation, which is not yet lowered in the v0.5 codegen.
 /// The directory-module resolution and call-lowering paths are covered by
-/// the vertical-slice acceptance suite (`tests/v05-vertical-slice/accept/`).
+/// the vertical-slice acceptance suite (`tests/vertical-slice/accept/`).
 mod support;
 
 /// `hew check` on the `directory_module_demo` example exits 0.

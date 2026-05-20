@@ -166,7 +166,7 @@ fn lower_file_to_mir(
     Ok(pipeline)
 }
 
-fn emit_v05_module(
+fn emit_module(
     pipeline: &hew_mir::IrPipeline,
     module_name: &str,
     emit_dir: &Path,
@@ -222,7 +222,7 @@ pub(crate) fn compile_native_binary(input: &Path, bin_path: &Path) -> Result<(),
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("module");
-    let artefacts = emit_v05_module(&pipeline, module_name, emit_dir, CompileEmitTarget::Native)?;
+    let artefacts = emit_module(&pipeline, module_name, emit_dir, CompileEmitTarget::Native)?;
     let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
         eprintln!("E_CUTOVER_UNSUPPORTED: native codegen did not produce an object");
     })?;
@@ -293,7 +293,7 @@ pub(crate) fn compile_native_from_program(
         }
         CompileEmitTarget::Native
     };
-    let artefacts = emit_v05_module(&pipeline, module_name, emit_dir, emit_target)?;
+    let artefacts = emit_module(&pipeline, module_name, emit_dir, emit_target)?;
 
     match emit_target {
         CompileEmitTarget::Native => {
@@ -361,7 +361,7 @@ fn cmd_compile(a: &args::CompileArgs) {
 
     let emit_target = resolve_compile_emit_target(a.target.as_deref());
     let artefacts =
-        emit_v05_module(&pipeline, module_name, emit_dir, emit_target).unwrap_or_else(|()| {
+        emit_module(&pipeline, module_name, emit_dir, emit_target).unwrap_or_else(|()| {
             std::process::exit(1);
         });
 

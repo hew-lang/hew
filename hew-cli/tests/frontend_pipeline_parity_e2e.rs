@@ -3,8 +3,8 @@
 //! These tests assert that both commands run the same frontend (parse →
 //! import-graph → typecheck) and therefore produce identical frontend
 //! diagnostics for every scenario below.  They are the durable invariant that
-//! trips when someone reintroduces a bypass (e.g. a `cmd_compile_v05`-style
-//! shortcut that skips `run_file_frontend_to_typecheck`).
+//! trips when someone reintroduces a bypass (e.g. a compile shortcut that
+//! skips `run_file_frontend_to_typecheck`).
 //!
 //! ## Equality predicate
 //!
@@ -359,7 +359,7 @@ fn type_error_in_imported_module_reported_identically() {
 /// `compile_wasm_parity.rs` (pending E3 HIR duplex bridge landing).
 #[test]
 fn wasm_target_compile_shares_frontend_with_check() {
-    let fixture = repo_root().join("tests/v05-vertical-slice/accept/01-arith.hew");
+    let fixture = repo_root().join("tests/vertical-slice/accept/01-arith.hew");
     assert!(fixture.exists(), "fixture not found: {}", fixture.display());
     let path = fixture.to_str().expect("fixture path is valid UTF-8");
 
@@ -381,7 +381,7 @@ fn wasm_target_compile_shares_frontend_with_check() {
 
     // `hew compile --target wasm32-unknown-unknown` must also not produce any
     // frontend-layer diagnostics for this fixture.  (It may fail at codegen
-    // if `hew-emit-v05` is absent; that is a tooling concern, not a frontend
+    // if `hew-emit` is absent; that is a tooling concern, not a frontend
     // parity concern.  We only inspect the absence of `: error:` / `: warning:`
     // lines that reference the fixture path.)
     let (compile_out, _emit_dir) = run_compile_with_target(path, "wasm32-unknown-unknown");

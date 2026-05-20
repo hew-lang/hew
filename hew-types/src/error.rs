@@ -435,12 +435,12 @@ pub enum TypeErrorKind {
         operation: String,
     },
     /// A raw-pointer operation was used inside `unsafe { ... }` but the
-    /// v0.5 compiler does not lower it to HIR/MIR/codegen.  Emitted so
+    /// compiler does not lower it to HIR/MIR/codegen.  Emitted so
     /// users get a deterministic, source-located rejection instead of a
     /// later "unsupported expression" failure deep in lowering.
     ///
     /// Envelope code: `E_M5_RAW_POINTER_OP_NOT_LOWERED`.
-    RawPointerOpNotLoweredV05 {
+    RawPointerOpNotLowered {
         /// Short identifier for the raw-pointer operation, e.g.
         /// `"raw pointer dereference"`.
         operation: String,
@@ -584,7 +584,7 @@ impl TypeErrorKind {
             Self::UnsafeCollectionElement => "UnsafeCollectionElement",
             Self::TaskNotNameable => "TaskNotNameable",
             Self::UnsafeOperationRequiresBlock { .. } => "UnsafeOperationRequiresBlock",
-            Self::RawPointerOpNotLoweredV05 { .. } => "RawPointerOpNotLoweredV05",
+            Self::RawPointerOpNotLowered { .. } => "RawPointerOpNotLowered",
             Self::TraitNotObjectSafe { .. } => "TraitNotObjectSafe",
             Self::MissingAssocTypeBinding { .. } => "MissingAssocTypeBinding",
             Self::ClosureExplicitMoveRequired { .. } => "ClosureExplicitMoveRequired",

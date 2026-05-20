@@ -73,7 +73,7 @@ fn raw_deref_outside_unsafe_blocks_lowering() {
     );
 }
 
-/// `*p` inside `unsafe` is rejected with `RawPointerOpNotLoweredV05`
+/// `*p` inside `unsafe` is rejected with `RawPointerOpNotLowered`
 /// before HIR can lower it; the build still fails.
 #[test]
 fn raw_deref_inside_unsafe_blocks_lowering_in_v05() {
@@ -90,10 +90,10 @@ fn raw_deref_inside_unsafe_blocks_lowering_in_v05() {
     let has_not_lowered = tc
         .errors
         .iter()
-        .any(|e| matches!(&e.kind, TypeErrorKind::RawPointerOpNotLoweredV05 { .. }));
+        .any(|e| matches!(&e.kind, TypeErrorKind::RawPointerOpNotLowered { .. }));
     assert!(
         has_not_lowered,
-        "expected RawPointerOpNotLoweredV05 from raw deref inside unsafe; \
+        "expected RawPointerOpNotLowered from raw deref inside unsafe; \
          got errors: {:#?}",
         tc.errors
     );

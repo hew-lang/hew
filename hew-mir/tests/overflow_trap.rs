@@ -8,7 +8,7 @@
 //! `cont_bb` is the continuation the rest of the function lowers into.
 //!
 //! These tests pin the MIR shape: they never run the LLVM emitter (that
-//! is the hew-codegen-rs `v05_pipeline.rs` smoke). The shape is what
+//! is the hew-codegen-rs `pipeline_smoke.rs` smoke). The shape is what
 //! drop-elaboration, the cross-block dataflow pass, and codegen all key
 //! on, so it is the right level to lock down.
 //!

@@ -4,7 +4,7 @@
 //!
 //! Every assertion targets the textual LLVM IR (`.ll`) — the
 //! in-process build half is safe to drive from a unit test; only the
-//! back-half object emission requires the `hew-emit-v05` helper, and
+//! back-half object emission requires the `hew-emit` helper, and
 //! these tests pass `native: false, wasm: false` so the helper is
 //! never invoked.
 //!

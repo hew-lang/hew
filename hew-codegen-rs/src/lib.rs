@@ -1,10 +1,10 @@
-//! Native and WebAssembly LLVM IR emitter for the v0.5 Hew backend.
+//! Native and WebAssembly LLVM IR emitter for the Hew backend.
 //!
 //! Produces native object files and standalone WebAssembly modules from
 //! `hew-mir`'s raw MIR, with the LLVM module verified by `Module::verify()`
 //! before emission. The pipeline is split across two processes: IR
 //! construction runs in-process, object emission runs in the
-//! `hew-emit-v05` helper binary (see `src/llvm.rs` for the architectural
+//! `hew-emit` helper binary (see `src/llvm.rs` for the architectural
 //! reasoning).
 //!
 //! ## Spine subset (initial)

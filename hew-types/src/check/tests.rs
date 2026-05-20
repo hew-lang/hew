@@ -16334,10 +16334,10 @@ mod task_type_surface_rules {
     }
 
     #[test]
-    fn raw_deref_inside_unsafe_emits_not_lowered_in_v05() {
-        // `*p` inside `unsafe { ... }` is still fail-closed: v0.5 does not
+    fn raw_deref_inside_unsafe_emits_not_lowered() {
+        // `*p` inside `unsafe { ... }` is still fail-closed: the compiler does not
         // lower raw-pointer dereference to HIR/MIR/codegen, so the checker
-        // emits `RawPointerOpNotLoweredV05` rather than typing the
+        // emits `RawPointerOpNotLowered` rather than typing the
         // expression as the pointee type.
         let output = check_source(
             r#"
@@ -16356,7 +16356,7 @@ mod task_type_surface_rules {
             .filter(|e| {
                 matches!(
                     &e.kind,
-                    TypeErrorKind::RawPointerOpNotLoweredV05 { operation }
+                    TypeErrorKind::RawPointerOpNotLowered { operation }
                         if operation == "raw pointer dereference"
                 )
             })
@@ -16364,7 +16364,7 @@ mod task_type_surface_rules {
         assert_eq!(
             not_lowered.len(),
             1,
-            "expected exactly one `RawPointerOpNotLoweredV05(raw pointer dereference)` \
+            "expected exactly one `RawPointerOpNotLowered(raw pointer dereference)` \
              error; got: {:#?}",
             output.errors
         );

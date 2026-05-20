@@ -1,4 +1,4 @@
-//! Inkwell direct LLVM IR emitter for the v0.5 backend.
+//! Inkwell direct LLVM IR emitter for the out-of-process LLVM backend.
 //!
 //! Adopted from the §10 backend probe (Track C) at HEAD `e6c83faa` on
 //! `experiment/c1-backend-shootout-2026-05-13`. Both cross-ecosystem reviewers
@@ -37,11 +37,11 @@
 //! earlier in-process LLVM setup has pre-touched the global
 //! `PassRegistry`. The fix is structural — the back half runs in its own
 //! process. `emit_module` writes the textual `.ll` in-process, then
-//! spawns the sibling `hew-emit-v05` helper binary to compile each
+//! spawns the sibling `hew-emit` helper binary to compile each
 //! requested triple to a relocatable object. The helper process starts
 //! with a clean `libLLVM` global-state footprint, so the legacy PM
 //! scheduler finds its analyses and `write_to_file` succeeds.
-//! See `src/bin/hew_emit_v05.rs` for the helper's own module docs.
+//! See `src/bin/hew_emit.rs` for the helper's own module docs.
 //!
 //! ## Side-table audit
 //!
@@ -197,8 +197,8 @@ pub struct EmitArtefacts {
 /// The textual LLVM IR (`<name>.ll`) is built in-process — the
 /// IR-construction path is safe under the `hew` driver's normal in-process
 /// LLVM setup. Object emission shells out to
-/// the `hew-emit-v05` helper (see the helper's module docs for why), so the
-/// caller's binary must ship `hew-emit-v05` alongside `hew` in the same
+/// the `hew-emit` helper (see the helper's module docs for why), so the
+/// caller's binary must ship `hew-emit` alongside `hew` in the same
 /// directory (the workspace `cargo build` produces both into `target/<profile>/`).
 ///
 /// # Errors
@@ -331,12 +331,12 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
     None
 }
 
-/// Locate the `hew-emit-v05` helper binary sibling to the currently running
+/// Locate the `hew-emit` helper binary sibling to the currently running
 /// executable, then invoke it to compile `ll_path` for `triple` into
 /// `out_path`.
 ///
 /// The rustc-driver-style discovery (sibling of `current_exe`) handles both
-/// the dev layout (`target/debug/hew` next to `target/debug/hew-emit-v05`)
+/// the dev layout (`target/debug/hew` next to `target/debug/hew-emit`)
 /// and any future install layout where the two binaries share a `bin/`.
 fn run_emit_helper(ll_path: &Path, triple: &str, out_path: &Path) -> CodegenResult<()> {
     let helper = locate_emit_helper()?;
@@ -352,7 +352,7 @@ fn run_emit_helper(ll_path: &Path, triple: &str, out_path: &Path) -> CodegenResu
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(CodegenError::Llvm(format!(
-            "hew-emit-v05 ({:?}) failed for triple={triple} out={}: {}",
+            "hew-emit ({:?}) failed for triple={triple} out={}: {}",
             output.status,
             out_path.display(),
             stderr.trim()
@@ -371,15 +371,15 @@ fn locate_emit_helper() -> CodegenResult<std::path::PathBuf> {
         ))
     })?;
     let name = if cfg!(windows) {
-        "hew-emit-v05.exe"
+        "hew-emit.exe"
     } else {
-        "hew-emit-v05"
+        "hew-emit"
     };
     let candidate = dir.join(name);
     if !candidate.exists() {
         return Err(CodegenError::Llvm(format!(
             "helper binary `{}` not found next to `{}`; \
-             ensure `cargo build -p hew-codegen-rs --bin hew-emit-v05` has run",
+             ensure `cargo build -p hew-codegen-rs --bin hew-emit` has run",
             candidate.display(),
             exe.display()
         )));
@@ -1048,10 +1048,10 @@ fn primitive_to_llvm<'ctx>(
         // Platform-sized integers: 32-bit on WASM32, 64-bit on native
         // (Q42 ratification; B-D1).  The spine currently targets native
         // only (see llvm.rs `intern_runtime_decl` comment at line ~394);
-        // WASM32 lowers separately via the `hew_emit_v05` binary's
+        // WASM32 lowers separately via the `hew_emit` binary's
         // `--target wasm32-unknown-unknown` path, which calls back into
         // this same function.  The target data layout recorded on the
-        // LLVM module by `hew_emit_v05.rs:107` ensures `i32` is
+        // LLVM module by `hew_emit.rs:107` ensures `i32` is
         // pointer-sized on wasm32 and `i64` on native.
         //
         // SHIM: pointer-width selection here is compile-time via the Rust

@@ -22,7 +22,7 @@ copy_source_seed() {
 
 while IFS= read -r -d '' src; do
     copy_source_seed "$src" "accept-$(basename "$src")"
-done < <(find "$repo_root/tests/v05-vertical-slice/accept" -maxdepth 1 -name '*.hew' -print0 | sort -z)
+done < <(find "$repo_root/tests/vertical-slice/accept" -maxdepth 1 -name '*.hew' -print0 | sort -z)
 
 # Curated examples kept current by existing playground/machine lanes.
 while IFS= read -r -d '' src; do

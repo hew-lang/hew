@@ -27,8 +27,8 @@ inkwell = { version = "0.9", features = ["llvm22-1"] }
 # initialized LLVM global state for IR construction. The CLI lowers MIR → LLVM
 # IR in-process and shells out to this helper for the object-emission step.
 # Mirrors the rustc front half/back half split.
-name = "hew-emit-v05"
-path = "src/bin/hew_emit_v05.rs"
+name = "hew-emit"
+path = "src/bin/hew_emit.rs"
 
 [dev-dependencies]
 hew-parser = { path = "../hew-parser" }

@@ -4293,7 +4293,8 @@ are expected to land.
 5. `#[on(start)]` and `#[on(stop)]` hooks return `()`.
 6. A hook is **not** `pure`, **not** generic, and has no `where` clause.
 7. Hook functions are not invocable from message handlers; the runtime is the sole caller.
-8. Each v0.5 hook kind appears **at most once** per actor.
+8. Multiple `#[on(stop)]` hooks are permitted and execute in **lexical order**.
+   `#[on(start)]` and `#[on(crash)]` each appear **at most once** per actor.
 
 **Cancellation and resource ordering (normative):**
 

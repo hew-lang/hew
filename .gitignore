@@ -70,3 +70,8 @@ hew-lsp/.test-artifacts/
 
 # Scratchpad output directory (local tooling, not committed)
 out/
+
+# Retired local C++/MLIR codegen checkout and clangd residue. The active v0.5
+# compiler substrate is `hew-codegen-rs`; keep any machine-local `hew-codegen/`
+# directory untracked without deleting it.
+/hew-codegen/

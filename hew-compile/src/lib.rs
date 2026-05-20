@@ -2480,6 +2480,7 @@ mod tests {
             closure_capture_facts: std::collections::HashMap::new(),
             actor_protocol_descriptors: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
+            machine_method_dispatch: std::collections::HashMap::new(),
         };
 
         let err = enrich_program_ast(

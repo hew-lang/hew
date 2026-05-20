@@ -637,6 +637,24 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, field_val, indent + 6);
             }
         }
+        HirExprKind::MachineStep {
+            machine_name,
+            receiver,
+            event,
+        } => {
+            writeln!(out, "{pad}  machine-step {machine_name}").expect("write to string");
+            writeln!(out, "{pad}    receiver:").expect("write to string");
+            dump_expr(out, receiver, indent + 6);
+            writeln!(out, "{pad}    event:").expect("write to string");
+            dump_expr(out, event, indent + 6);
+        }
+        HirExprKind::MachineStateName {
+            machine_name,
+            receiver,
+        } => {
+            writeln!(out, "{pad}  machine-state-name {machine_name}").expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+        }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");
         }

@@ -804,6 +804,10 @@ struct LowerCtx {
     /// HIR consumes these to choose `ActorSend` / `ActorAsk` without reclassifying
     /// receiver types.
     actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    /// Checker-owned machine method dispatch decisions keyed by method-call span.
+    /// HIR checks this before `method_call_rewrites` to produce `MachineStep` /
+    /// `MachineStateName` nodes rather than falling through to `MethodCallNoRewrite`.
+    machine_method_dispatch: HashMap<SpanKey, hew_types::MachineMethodKind>,
     /// Checker-owned method-call receiver classifications. Used only to fail
     /// closed when the checker classified a receiver as actor-dispatchable but
     /// omitted the corresponding `actor_method_dispatch` discriminator.
@@ -1012,6 +1016,7 @@ impl LowerCtx {
             diagnostics: Vec::new(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
             actor_method_dispatch: tc_output.actor_method_dispatch.clone(),
+            machine_method_dispatch: tc_output.machine_method_dispatch.clone(),
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
@@ -4703,6 +4708,48 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         }
+        // Machine method dispatch: `.step()` / `.state_name()` recorded in the
+        // checker's `machine_method_dispatch` side-table. Checked before
+        // `method_call_rewrites` so these calls produce dedicated HIR nodes
+        // (`MachineStep` / `MachineStateName`) rather than falling through to
+        // `MethodCallNoRewrite`. MIR/codegen consumers wire this in slice 6.
+        if let Some(dispatch) = self.machine_method_dispatch.get(&key).cloned() {
+            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            let lowered_args: Vec<HirExpr> = args
+                .iter()
+                .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                .collect();
+            return match dispatch {
+                hew_types::MachineMethodKind::Step { machine_name } => {
+                    let event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        value_class: ValueClass::PersistentShare,
+                        ty: ResolvedTy::Unit,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::Unsupported(
+                            "machine step: missing event argument".into(),
+                        ),
+                        span: span.clone(),
+                    });
+                    (
+                        HirExprKind::MachineStep {
+                            machine_name,
+                            receiver: Box::new(lowered_receiver),
+                            event: Box::new(event),
+                        },
+                        ResolvedTy::Unit,
+                    )
+                }
+                hew_types::MachineMethodKind::StateName { machine_name } => (
+                    HirExprKind::MachineStateName {
+                        machine_name,
+                        receiver: Box::new(lowered_receiver),
+                    },
+                    ResolvedTy::String,
+                ),
+            };
+        }
         // `dyn Trait` receivers take precedence: the checker's
         // `dyn_trait_method_calls` side-table pins the trait/method/slot
         // resolution authoritatively, and these calls do NOT have a
@@ -5394,6 +5441,17 @@ fn collect_captures_walk(
                 collect_captures_walk(field_val, param_ids, seen, captures, self_id);
             }
         }
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            // Machine method calls are not expected inside lambda/closure
+            // bodies in v0.5. Walk defensively for exhaustiveness.
+            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
+            collect_captures_walk(event, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::MachineStateName { receiver, .. } => {
+            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
+        }
     }
 }
 
@@ -5571,6 +5629,15 @@ fn collect_general_closure_captures_walk(
             for (_, field_val) in fields {
                 collect_general_closure_captures_walk(field_val, outer_bindings, seen, captures);
             }
+        }
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(event, outer_bindings, seen, captures);
+        }
+        HirExprKind::MachineStateName { receiver, .. } => {
+            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
         }
     }
 }

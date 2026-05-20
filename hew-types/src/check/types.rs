@@ -113,6 +113,16 @@ pub struct TypeCheckOutput {
     /// HIR lowering consumes this side table before the generic method-call
     /// rewrite bridge and never reclassifies the receiver type downstream.
     pub actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    /// Checker-owned machine method dispatch decisions keyed by the method call span.
+    ///
+    /// Populated for every accepted `.step()` / `.state_name()` call on a
+    /// machine-typed receiver.  HIR lowering checks this table before
+    /// `method_call_rewrites` so machine method calls produce dedicated HIR
+    /// nodes (`MachineStep` / `MachineStateName`) instead of falling through
+    /// to the generic rewrite path (which would emit `MethodCallNoRewrite`).
+    ///
+    /// MIR/codegen consumers: wired in slice 6.
+    pub machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span. Missing entry means the checker rejected the target.
     pub assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
@@ -485,6 +495,7 @@ impl Default for TypeCheckOutput {
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
@@ -694,6 +705,27 @@ pub enum ActorMethodKind {
     Fire(String),
     /// Request/reply dispatch to an actor receive handler with a non-unit reply.
     Ask(String, Ty),
+}
+
+/// Checker-authoritative machine method dispatch discriminator.
+///
+/// Keyed by the method-call span in `machine_method_dispatch`.  HIR lowering
+/// checks this table before `method_call_rewrites` so that machine method
+/// calls produce dedicated HIR nodes rather than falling through to the generic
+/// rewrite path (which would emit `MethodCallNoRewrite`).
+///
+/// MIR/codegen consumers: `MachineStep` lowers in slice 6; `MachineStateName`
+/// lowers in slice 6 (string-table lookup on the tag).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineMethodKind {
+    /// `.step(event: NameEvent) -> ()` — mutates the machine value in place.
+    ///
+    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
+    Step { machine_name: String },
+    /// `.state_name() -> String` — returns the current state tag as a string.
+    ///
+    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
+    StateName { machine_name: String },
 }
 
 #[derive(Debug, Clone)]
@@ -1151,6 +1183,8 @@ pub struct Checker {
     pub(super) deferred_channel_rewrites: HashMap<SpanKey, DeferredChannelMethodRewrite>,
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    /// Machine method dispatch side-table. Mirrors [`TypeCheckOutput::machine_method_dispatch`].
+    pub(super) machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
     pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     /// Diagnostic-only stack-allocation hints accumulated by `classify_stack_hints`.
@@ -1430,6 +1464,7 @@ impl Checker {
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             stack_hints: Vec::new(),

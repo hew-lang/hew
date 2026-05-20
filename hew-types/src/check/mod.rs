@@ -38,8 +38,8 @@ pub use self::types::{
     ActorMethodKind, ActorSendAliasing, ActorSendCopyReason, ActorStateGuard, AllocationClass,
     AssignTargetKind, AssignTargetShape, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
     ClosureCaptureMode, DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey,
-    ExecutionContextReader, FnSig, MethodCallReceiverKind, MethodCallRewrite, SpanKey, StackHint,
-    TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
+    ExecutionContextReader, FnSig, MachineMethodKind, MethodCallReceiverKind, MethodCallRewrite,
+    SpanKey, StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
 };
 use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,
@@ -384,6 +384,7 @@ impl Checker {
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
+            machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),
             assign_target_shapes: std::mem::take(&mut self.assign_target_shapes),
             errors: std::mem::take(&mut self.errors),

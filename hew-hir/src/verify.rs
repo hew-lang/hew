@@ -293,6 +293,15 @@ impl Verifier {
                     self.expr(field_val);
                 }
             }
+            HirExprKind::MachineStep {
+                receiver, event, ..
+            } => {
+                self.expr(receiver);
+                self.expr(event);
+            }
+            HirExprKind::MachineStateName { receiver, .. } => {
+                self.expr(receiver);
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive
                 // to verification without a prior NotYetImplemented diagnostic.

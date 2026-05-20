@@ -99,6 +99,15 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 visit_expr(field_val, out);
             }
         }
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            visit_expr(receiver, out);
+            visit_expr(event, out);
+        }
+        HirExprKind::MachineStateName { receiver, .. } => {
+            visit_expr(receiver, out);
+        }
         HirExprKind::Select(_)
         | HirExprKind::AwaitTask { .. }
         | HirExprKind::BindingRef { .. }

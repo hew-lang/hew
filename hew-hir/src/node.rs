@@ -795,6 +795,29 @@ pub enum HirExprKind {
         event_idx: usize,
         fields: Vec<(String, HirExpr)>,
     },
+    /// `m.step(event) -> ()` — advance the machine one step.
+    ///
+    /// The checker has verified that `receiver` is a mutable binding and that
+    /// `event` matches the `NameEvent` companion enum.  MIR/codegen consumers
+    /// lower this to a call to the internal `<machine_name>__step` helper
+    /// followed by a store-back into the receiver's binding slot (slice 6).
+    ///
+    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
+    MachineStep {
+        machine_name: String,
+        receiver: Box<HirExpr>,
+        event: Box<HirExpr>,
+    },
+    /// `m.state_name() -> String` — current state tag as a string.
+    ///
+    /// MIR/codegen consumers lower this to a static string-table lookup on
+    /// the tag field of the machine value (slice 6).
+    ///
+    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
+    MachineStateName {
+        machine_name: String,
+        receiver: Box<HirExpr>,
+    },
     Unsupported(String),
 }
 

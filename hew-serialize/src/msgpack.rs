@@ -2215,6 +2215,7 @@ mod tests {
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
             actor_protocol_descriptors: std::collections::HashMap::new(),
+            machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
         };
 
@@ -2310,6 +2311,7 @@ mod tests {
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
             actor_protocol_descriptors: std::collections::HashMap::new(),
+            machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
         };
 
@@ -2529,6 +2531,7 @@ mod tests {
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
             actor_protocol_descriptors: std::collections::HashMap::new(),
+            machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
         };
 
@@ -2625,6 +2628,7 @@ mod tests {
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
             actor_protocol_descriptors: std::collections::HashMap::new(),
+            machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
         };
 
@@ -2716,6 +2720,7 @@ mod tests {
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
             actor_protocol_descriptors: std::collections::HashMap::new(),
+            machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
         };
 
@@ -2837,6 +2842,7 @@ mod tests {
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
             actor_protocol_descriptors: std::collections::HashMap::new(),
+            machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
         };
 
@@ -3181,6 +3187,7 @@ mod tests {
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
             actor_protocol_descriptors: std::collections::HashMap::new(),
+            machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
         };
 
@@ -3282,6 +3289,7 @@ mod tests {
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
             actor_protocol_descriptors: std::collections::HashMap::new(),
+            machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
         };
 
@@ -3376,6 +3384,7 @@ mod tests {
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
             actor_protocol_descriptors: std::collections::HashMap::new(),
+            machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
         };
 
@@ -3469,6 +3478,7 @@ mod tests {
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
             actor_protocol_descriptors: std::collections::HashMap::new(),
+            machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
         };
 

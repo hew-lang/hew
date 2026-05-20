@@ -1924,6 +1924,15 @@ fn collect_unknown_self_fields_in_expr(
                 collect_unknown_self_fields_in_expr(field_val, state_fields, seen, unknown);
             }
         }
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_expr(event, state_fields, seen, unknown);
+        }
+        HirExprKind::MachineStateName { receiver, .. } => {
+            collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
+        }
     }
 }
 
@@ -3420,6 +3429,28 @@ impl Builder {
                         reason: "MachineEmit (Lane B Slice 4b not yet wired)".to_string(),
                     },
                     note: "machine emit expressions are not yet lowered to MIR".to_string(),
+                });
+                None
+            }
+            HirExprKind::MachineStep { .. } => {
+                // `machine.step(event)` is valid HIR (Slice 3), but MIR
+                // lowering for machine step dispatch is deferred to a later slice.
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UnsupportedNode {
+                        reason: "MachineStep (MIR lowering not yet wired)".to_string(),
+                    },
+                    note: "machine step expressions are not yet lowered to MIR".to_string(),
+                });
+                None
+            }
+            HirExprKind::MachineStateName { .. } => {
+                // `machine.state_name()` is valid HIR (Slice 3), but MIR
+                // lowering for machine state-tag lookup is deferred to a later slice.
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UnsupportedNode {
+                        reason: "MachineStateName (MIR lowering not yet wired)".to_string(),
+                    },
+                    note: "machine state name expressions are not yet lowered to MIR".to_string(),
                 });
                 None
             }

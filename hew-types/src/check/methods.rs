@@ -3375,6 +3375,70 @@ impl Checker {
                     {
                         self.enforce_actor_method_send_args(args);
                     }
+                    // Machine method dispatch: `.step()` and `.state_name()` on a
+                    // machine-typed receiver are recorded in the checker-owned
+                    // `machine_method_dispatch` side-table so HIR lowering can
+                    // produce dedicated HIR nodes without falling through to the
+                    // generic `method_call_rewrites` path (which would emit
+                    // `MethodCallNoRewrite`).
+                    //
+                    // `.step()` additionally requires a mutable binding receiver:
+                    // the internal `<Name>__step` helper returns a new machine
+                    // value that must be stored back into the binding (slice 6).
+                    // R-value and immutable-binding receivers are rejected here
+                    // with a typed diagnostic.
+                    if self
+                        .type_defs
+                        .get(name)
+                        .is_some_and(|td| td.kind == TypeDefKind::Machine)
+                    {
+                        match method {
+                            "step" => {
+                                // Enforce mutable-binding receiver requirement.
+                                // A bare identifier receiver is the common case;
+                                // r-value and non-identifier receivers are also
+                                // rejected because store-back (slice 6) cannot
+                                // target them.
+                                let receiver_is_mutable = match &receiver.0 {
+                                    Expr::Identifier(binding_name) => self
+                                        .env
+                                        .lookup_ref(binding_name)
+                                        .is_some_and(|b| b.is_mutable),
+                                    _ => false,
+                                };
+                                if !receiver_is_mutable {
+                                    let receiver_name = if let Expr::Identifier(n) = &receiver.0 {
+                                        format!("`{n}`")
+                                    } else {
+                                        "this expression".to_string()
+                                    };
+                                    self.report_error(
+                                        TypeErrorKind::MutabilityError,
+                                        span,
+                                        format!(
+                                            "`.step()` requires a mutable binding receiver; \
+                                             {receiver_name} is not declared with `var`"
+                                        ),
+                                    );
+                                }
+                                self.machine_method_dispatch.insert(
+                                    SpanKey::from(span),
+                                    MachineMethodKind::Step {
+                                        machine_name: name.clone(),
+                                    },
+                                );
+                            }
+                            "state_name" => {
+                                self.machine_method_dispatch.insert(
+                                    SpanKey::from(span),
+                                    MachineMethodKind::StateName {
+                                        machine_name: name.clone(),
+                                    },
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
                     // #1295: stdlib `impl Closable for T { fn close }` flattens
                     // into the inherent-method table on T; honour any
                     // `consumes_receiver` declared on a trait whose impl

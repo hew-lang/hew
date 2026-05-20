@@ -1137,6 +1137,7 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
         }
     }
 
@@ -1403,6 +1404,7 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
         };
         let offset = source.find("Point").unwrap();
         let result = hover(source, &pr, Some(&tc), offset);
@@ -1491,6 +1493,7 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
         };
         let result = hover(source, &pr, Some(&tc), x_offset);
         assert!(result.is_some(), "should find hover via expr_types");
@@ -1539,6 +1542,7 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
         };
 
         let result = hover(source, &pr, Some(&tc), count_offset).unwrap();
@@ -1641,6 +1645,7 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
         };
 
         let result = hover(source, &pr, Some(&tc), use_offset).unwrap();
@@ -1793,6 +1798,7 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
         };
         let result = hover(source, &pr, Some(&tc), x_offset).unwrap();
         // Goes through ResolvedTy::from_ty(materialize_literal_defaults)

@@ -1362,10 +1362,7 @@ impl<'a> Formatter<'a> {
                 is_mutable,
                 pointee,
             } => {
-                self.write("*");
-                if *is_mutable {
-                    self.write("var ");
-                }
+                self.write(if *is_mutable { "*mut " } else { "*const " });
                 self.format_type_expr(&pointee.0);
             }
             TypeExpr::TraitObject(bounds) => {

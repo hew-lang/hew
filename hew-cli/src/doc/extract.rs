@@ -152,7 +152,7 @@ fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
             is_mutable,
             pointee,
         } => {
-            let prefix = if *is_mutable { "&mut " } else { "&" };
+            let prefix = if *is_mutable { "*mut " } else { "*const " };
             format!("{prefix}{}", format_type(&pointee.0))
         }
         TypeExpr::Option(inner) => format!("{}?", format_type(&inner.0)),

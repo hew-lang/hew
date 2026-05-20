@@ -3721,8 +3721,41 @@ impl<'src> Parser<'src> {
                 }
             }
             Some(Token::Star) => {
+                let star_span = self.peek_span();
                 self.advance();
-                let is_mutable = self.eat(&Token::Var);
+                // v0.5 canonical pointer spelling: `*const T` and `*mut T`.
+                // Bare `*T` and legacy `*var T` are explicitly rejected so
+                // callers cannot silently get one mutability and assume
+                // the other.
+                let is_mutable = match self.peek() {
+                    Some(Token::Mut) => {
+                        self.advance();
+                        true
+                    }
+                    Some(Token::Const) => {
+                        self.advance();
+                        false
+                    }
+                    Some(Token::Var) => {
+                        let span = self.peek_span();
+                        self.error_at(
+                            "pointer type uses canonical spelling `*mut T` — \
+                             `*var T` is no longer accepted"
+                                .to_string(),
+                            span,
+                        );
+                        return None;
+                    }
+                    _ => {
+                        self.error_at(
+                            "pointer type must specify mutability: write `*const T` \
+                             or `*mut T`"
+                                .to_string(),
+                            star_span,
+                        );
+                        return None;
+                    }
+                };
                 let pointee = self.parse_type()?;
                 TypeExpr::Pointer {
                     is_mutable,

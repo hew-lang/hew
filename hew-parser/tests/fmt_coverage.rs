@@ -1704,12 +1704,12 @@ fn fmt_const_decl_roundtrip() {
 
 #[test]
 fn fmt_extern_immutable_pointer_type_roundtrip() {
-    exact_roundtrip("extern \"C\" {\n    fn malloc(n: i32) -> *u8;\n}\n");
+    exact_roundtrip("extern \"C\" {\n    fn malloc(n: i32) -> *const u8;\n}\n");
 }
 
 #[test]
 fn fmt_extern_mutable_pointer_type_roundtrip() {
-    exact_roundtrip("extern \"C\" {\n    fn free(ptr: *var u8);\n}\n");
+    exact_roundtrip("extern \"C\" {\n    fn free(ptr: *mut u8);\n}\n");
 }
 
 #[test]

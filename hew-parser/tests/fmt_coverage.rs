@@ -1662,6 +1662,27 @@ fn fmt_machine_default_clause_roundtrip() {
 }
 
 #[test]
+fn fmt_machine_single_generic_param_roundtrip() {
+    exact_roundtrip(
+        "machine Lifecycle<T> {\n    state Created;\n    state Running;\n\n    event Start;\n\n    on Start: Created -> Running;\n    on Start: Running -> Running;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_multiple_generic_params_roundtrip() {
+    exact_roundtrip(
+        "machine Pair<K, V> {\n    state Empty;\n    state Filled;\n\n    event Insert;\n\n    on Insert: Empty -> Filled;\n    on Insert: Filled -> Filled;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_pub_generic_param_roundtrip() {
+    exact_roundtrip(
+        "pub machine Lifecycle<T> {\n    state Created;\n    state Running;\n\n    event Start;\n\n    on Start: Created -> Running;\n    on Start: Running -> Running;\n}\n",
+    );
+}
+
+#[test]
 fn fmt_supervisor_decl_roundtrip() {
     exact_roundtrip(
         "supervisor Pool {\n    strategy: one_for_one;\n    max_restarts: 5;\n    window: 30;\n\n    child worker: Worker(1);\n}\n",

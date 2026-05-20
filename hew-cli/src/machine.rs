@@ -223,6 +223,19 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
 // ── HIR-backed renderers (used when --check is active) ──────────────────────
 
 fn print_mermaid_hir(machine: &HirMachineDecl) {
+    // Mermaid YAML frontmatter title carries the generic-params signature
+    // when present (e.g. `Lifecycle<T>`). Omitted entirely for monomorphic
+    // machines so existing snapshot tests and consumer pipelines are
+    // unaffected.
+    if !machine.type_params.is_empty() {
+        println!("---");
+        println!(
+            "title: {}<{}>",
+            machine.name,
+            machine.type_params.join(", ")
+        );
+        println!("---");
+    }
     println!("stateDiagram-v2");
 
     if let Some(first) = machine.states.first() {

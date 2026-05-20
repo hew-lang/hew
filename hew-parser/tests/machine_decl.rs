@@ -329,3 +329,136 @@ fn main() {}
         "expected entry, exit, emit functions in extern block, got: {names:?}"
     );
 }
+
+#[test]
+fn parse_machine_generic_decl() {
+    // `machine Name<T, U> { ... }` parses with the type-param names
+    // threaded onto `MachineDecl::type_params`. No bounds, no defaults,
+    // no machine-over-machine generics — those are not supported in v0.5.
+    let source = r"
+machine Lifecycle<T> {
+    state Created;
+    state Running;
+
+    event Start;
+
+    on Start: Created -> Running {
+        Running
+    }
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    assert_eq!(result.program.items.len(), 1);
+
+    if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
+        assert_eq!(m.name, "Lifecycle");
+        assert_eq!(m.type_params, vec!["T".to_string()]);
+        assert_eq!(m.states.len(), 2);
+        assert_eq!(m.events.len(), 1);
+        assert_eq!(m.transitions.len(), 1);
+    } else {
+        panic!("expected Machine item, got {:?}", result.program.items[0].0);
+    }
+}
+
+#[test]
+fn parse_machine_generic_decl_multiple_params() {
+    let source = r"
+machine Pair<K, V> {
+    state Empty;
+    state Filled;
+
+    event Insert;
+
+    on Insert: Empty -> Filled {
+        Filled
+    }
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 else {
+        panic!("expected Machine item, got {:?}", result.program.items[0].0);
+    };
+    assert_eq!(m.name, "Pair");
+    assert_eq!(m.type_params, vec!["K".to_string(), "V".to_string()]);
+}
+
+#[test]
+fn parse_machine_monomorphic_has_empty_type_params() {
+    // Existing monomorphic machines must continue to parse and carry an
+    // empty `type_params` vector — no implicit single-param sugar.
+    let source = r"
+machine Light {
+    state Off;
+    state On;
+
+    event Toggle;
+
+    on Toggle: Off -> On { On }
+    on Toggle: On -> Off { Off }
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 else {
+        panic!("expected Machine item");
+    };
+    assert!(m.type_params.is_empty());
+}
+
+#[test]
+fn parse_machine_generic_decl_empty_angles_is_rejected() {
+    // `machine Name<> { ... }` is meaningless — the author either forgot
+    // to name the parameter or copied the wrong syntax. Fail closed.
+    let source = r"
+machine Empty<> {
+    state Off;
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected parse error for empty `<>`"
+    );
+}
+
+#[test]
+fn parse_machine_generic_decl_trait_bounds_are_rejected() {
+    // Trait bounds on machine type parameters are not supported in v0.5;
+    // they are a v0.6+ ratification. Reject with a clear diagnostic so
+    // users do not silently lose the bound.
+    let source = r"
+machine Bounded<T: Display> {
+    state Idle;
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected parse error for `<T: Display>`"
+    );
+    let has_bound_msg = result
+        .errors
+        .iter()
+        .any(|e| format!("{e:?}").contains("trait bounds on machine type parameters"));
+    assert!(
+        has_bound_msg,
+        "expected trait-bound rejection diagnostic, got: {:?}",
+        result.errors
+    );
+}

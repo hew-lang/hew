@@ -5966,6 +5966,7 @@ mod tests {
             Item::Machine(MachineDecl {
                 visibility: Visibility::Private,
                 name: "Light".into(),
+                type_params: vec![],
                 states: vec![MachineState {
                     name: "On".into(),
                     fields: vec![(
@@ -6692,6 +6693,7 @@ mod tests {
                 Item::Machine(MachineDecl {
                     visibility: Visibility::Private,
                     name: "Light".into(),
+                    type_params: vec![],
                     states: vec![],
                     events: vec![],
                     transitions: vec![MachineTransition {

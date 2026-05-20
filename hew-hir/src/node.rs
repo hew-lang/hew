@@ -257,6 +257,12 @@ pub struct HirMachineDecl {
     pub id: ItemId,
     pub node: HirNodeId,
     pub name: String,
+    /// Generic type parameters declared on the machine (e.g. `Lifecycle<T>`).
+    ///
+    /// Names only — see `MachineDecl::type_params`. Threaded verbatim from
+    /// the parser AST; subsequent layers (type checker, MIR, codegen) are
+    /// responsible for interpreting these names.
+    pub type_params: Vec<String>,
     pub states: Vec<HirMachineState>,
     pub events: Vec<HirMachineEvent>,
     pub transitions: Vec<HirMachineTransition>,

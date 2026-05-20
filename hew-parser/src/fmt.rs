@@ -990,6 +990,16 @@ impl<'a> Formatter<'a> {
         self.write_visibility(decl.visibility);
         self.write("machine ");
         self.write(&decl.name);
+        if !decl.type_params.is_empty() {
+            self.write("<");
+            for (i, name) in decl.type_params.iter().enumerate() {
+                if i > 0 {
+                    self.write(", ");
+                }
+                self.write(name);
+            }
+            self.write(">");
+        }
         self.write(" {\n");
         self.indent += 1;
 

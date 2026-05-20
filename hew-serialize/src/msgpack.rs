@@ -1709,6 +1709,7 @@ mod tests {
                 Item::Machine(MachineDecl {
                     visibility: Visibility::Pub,
                     name: "TrafficLight".into(),
+                    type_params: vec![],
                     has_default: false,
                     states: vec![
                         MachineState {
@@ -1784,6 +1785,90 @@ mod tests {
 
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
         assert_eq!(program, restored);
+    }
+
+    /// Round-trip a generic `MachineDecl` (with non-empty `type_params`) through
+    /// `MessagePack`. Guards against the field being silently dropped on the
+    /// wire when the machine declares `<T, U>`.
+    #[test]
+    fn round_trip_machine_decl_with_generic_type_params() {
+        let program = Program {
+            items: vec![(
+                Item::Machine(MachineDecl {
+                    visibility: Visibility::Pub,
+                    name: "Lifecycle".into(),
+                    type_params: vec!["T".into(), "U".into()],
+                    has_default: false,
+                    states: vec![
+                        MachineState {
+                            name: "Created".into(),
+                            fields: vec![],
+                            entry: None,
+                            exit: None,
+                        },
+                        MachineState {
+                            name: "Running".into(),
+                            fields: vec![],
+                            entry: None,
+                            exit: None,
+                        },
+                    ],
+                    events: vec![MachineEvent {
+                        name: "Start".into(),
+                        fields: vec![],
+                    }],
+                    transitions: vec![
+                        MachineTransition {
+                            event_name: "Start".into(),
+                            source_state: "Created".into(),
+                            target_state: "Running".into(),
+                            guard: None,
+                            reenter: false,
+                            body: (Expr::Identifier("Running".into()), 15..25),
+                        },
+                        MachineTransition {
+                            event_name: "Start".into(),
+                            source_state: "Running".into(),
+                            target_state: "Running".into(),
+                            guard: None,
+                            reenter: false,
+                            body: (Expr::Identifier("Running".into()), 26..36),
+                        },
+                    ],
+                }),
+                0..100,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        assert!(!bytes.is_empty());
+
+        let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
+        assert_eq!(program, restored);
+
+        // Belt-and-braces: pull the machine back out and assert the
+        // type-params survived encode/decode in order.
+        let Item::Machine(decoded) = &restored.items[0].0 else {
+            panic!("expected Machine item after round-trip");
+        };
+        assert_eq!(decoded.type_params, vec!["T".to_string(), "U".to_string()]);
     }
 
     #[test]

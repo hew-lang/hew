@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HEW="${ROOT}/target/debug/hew"
 
+# hew-emit-v05 is the out-of-process object emitter required by `hew compile`.
+# libhew.a is the combined runtime+stdlib static library linked into native outputs.
+cargo build -q -p hew-codegen-rs --bin hew-emit-v05
+cargo build -q -p hew-lib
 cargo build -q -p hew-cli
 
 mkdir -p "${ROOT}/.tmp"

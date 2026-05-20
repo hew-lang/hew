@@ -289,24 +289,24 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_self_escape.hew" >
 fi
 grep -q 'E_LAMBDA_SELF_ESCAPE' "${reject_output}"
 
-# Reject: removed spawn-lambda syntax (E_LEGACY_SPAWN_LAMBDA_SYNTAX).
-if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/spawn_lambda_legacy.hew" >"${reject_output}" 2>&1; then
-  echo "expected spawn-lambda-legacy fixture to fail" >&2
+# Reject: removed spawn-lambda syntax (E_SPAWN_LAMBDA_SYNTAX_REMOVED).
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/spawn_lambda_removed.hew" >"${reject_output}" 2>&1; then
+  echo "expected spawn-lambda-removed fixture to fail" >&2
   exit 1
 fi
-grep -q 'E_LEGACY_SPAWN_LAMBDA_SYNTAX' "${reject_output}"
+grep -q 'E_SPAWN_LAMBDA_SYNTAX_REMOVED' "${reject_output}"
 
-# Reject: link/monitor/unlink pending Cluster 2 composite-return spine.
+# Reject: link/monitor/unlink pending cluster-runtime composite-return spine.
 # Runtime symbols (hew_actor_link, hew_actor_monitor) and codegen arms exist,
-# but Result<(),LinkError> / MonitorRef construction requires Cluster 2.
-# The diagnostic must be CutoverUnsupported with slice_target "Cluster-2",
+# but Result<(),LinkError> / MonitorRef construction requires cluster-runtime.
+# The diagnostic must be NotYetImplemented with owning_pass "cluster-runtime",
 # NOT UnresolvedSymbol (which would look like a user typo).
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/link_monitor_pending_cluster2.hew" >"${reject_output}" 2>&1; then
   echo "expected link/monitor fixture to fail" >&2
   exit 1
 fi
-grep -q 'CutoverUnsupported' "${reject_output}"
-grep -q 'Cluster-2' "${reject_output}"
+grep -q 'NotYetImplemented' "${reject_output}"
+grep -q 'cluster-runtime' "${reject_output}"
 # The verifier emits a secondary UnresolvedSymbol for the unresolved callee
 # (consistent with all unresolved-builtin-callee paths); the primary and
-# informative diagnostic is CutoverUnsupported — verified above.
+# informative diagnostic is NotYetImplemented — verified above.

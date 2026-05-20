@@ -54,7 +54,7 @@ fn runtime_call_constructs_for_hew_vec_slice_range_i64() {
 fn runtime_call_constructs_for_hew_vec_slice_range_str() {
     // String slicing is supported (runtime strdups each element); the
     // allowlist boundary must accept the symbol so the MIR producer can
-    // emit a Vec<String>-slice without `CutoverUnsupported`.
+    // emit a Vec<String>-slice without `NotYetImplemented`.
     let call = hew_mir::RuntimeCall::new(
         "hew_vec_slice_range_str",
         vec![Place::Local(0), Place::Local(1), Place::Local(2)],

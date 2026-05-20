@@ -204,7 +204,7 @@ pub fn lower_program_with_mono_cap(
                         // into `record_registry` so `Expr::StructInit` and
                         // `Expr::FieldAccess` lowering can resolve their field
                         // layouts. Without this, `PanicInfo.code` in an
-                        // `#[on(crash)]` body fails with `CutoverUnsupported`
+                        // `#[on(crash)]` body fails with `NotYetImplemented`
                         // because the layout is missing from `record_field_orders`
                         // at MIR time.
                         //
@@ -2464,13 +2464,13 @@ impl LowerCtx {
                 let element_tys: Vec<ResolvedTy> = if let ResolvedTy::Tuple(elems) = &tuple_ty {
                     if elems.len() != element_patterns.len() {
                         self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CutoverUnsupported {
+                            HirDiagnosticKind::NotYetImplemented {
                                 construct: format!(
                                     "tuple pattern with {} elements for tuple with {} elements",
                                     element_patterns.len(),
                                     elems.len()
                                 ),
-                                slice_target: "type-checker".to_string(),
+                                owning_pass: "type-checker".to_string(),
                             },
                             span.clone(),
                             "tuple pattern element count does not match tuple value arity",
@@ -2490,9 +2490,9 @@ impl LowerCtx {
                     vec![ResolvedTy::Unit; element_patterns.len()]
                 } else {
                     self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CutoverUnsupported {
+                        HirDiagnosticKind::NotYetImplemented {
                             construct: "tuple pattern on non-tuple value".to_string(),
-                            slice_target: "type-checker".to_string(),
+                            owning_pass: "type-checker".to_string(),
                         },
                         span.clone(),
                         "tuple-let pattern requires the right-hand side to have a tuple type",
@@ -2534,9 +2534,9 @@ impl LowerCtx {
                         _ => {
                             // Nested tuple / constructor patterns are out of scope.
                             self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::CutoverUnsupported {
+                                HirDiagnosticKind::NotYetImplemented {
                                     construct: "nested pattern in tuple-let".to_string(),
-                                    slice_target: "pattern-matching".to_string(),
+                                    owning_pass: "pattern-matching".to_string(),
                                 },
                                 elem_pat.1.clone(),
                                 "only identifier and wildcard patterns are supported \
@@ -3003,9 +3003,9 @@ impl LowerCtx {
                         // WHAT: add `"hew_actor_link"` and `"hew_actor_monitor"`
                         // arms in `lower_runtime_call`; remove this block.
                         self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CutoverUnsupported {
+                            HirDiagnosticKind::NotYetImplemented {
                                 construct: format!("builtin call `{name}`"),
-                                slice_target: "Cluster-2".to_string(),
+                                owning_pass: "cluster-runtime".to_string(),
                             },
                             span.clone(),
                             "link/monitor/unlink require the Cluster 2 composite-return \
@@ -3112,7 +3112,7 @@ impl LowerCtx {
             }
             Expr::ForkChild { binding, expr } => {
                 // `fork name = expr` outside a `scope{}` body: no spawn context,
-                // so this is malformed. Emit CutoverUnsupported — the grammar
+                // so this is malformed. Emit NotYetImplemented — the grammar
                 // accepts this form but HIR-lowering requires scope context.
                 // (Inside scope{} bodies this variant is handled by lower_scope_block,
                 // not by lower_expr directly.)
@@ -4154,9 +4154,9 @@ impl LowerCtx {
         };
         let Some(actor_name) = actor_name else {
             self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CutoverUnsupported {
+                HirDiagnosticKind::NotYetImplemented {
                     construct: "spawn target expression".to_string(),
-                    slice_target: "actor-body-slice3".to_string(),
+                    owning_pass: "actor-body-lowering".to_string(),
                 },
                 span,
                 "`spawn` currently requires a named actor target",
@@ -4852,9 +4852,9 @@ impl LowerCtx {
                 // `DeferToLowering` targets the C++/MLIR pipeline and is not
                 // consumed by the Rust MIR pipeline.  Fail-closed.
                 self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CutoverUnsupported {
+                    HirDiagnosticKind::NotYetImplemented {
                         construct: format!("method-call rewrite variant for `.{method}`"),
-                        slice_target: "mir-pipeline".to_string(),
+                        owning_pass: "mir-pipeline".to_string(),
                     },
                     span,
                     "this method-call rewrite variant is not supported in the Rust MIR pipeline",
@@ -4974,12 +4974,12 @@ impl LowerCtx {
         &mut self,
         span: std::ops::Range<usize>,
         construct: impl Into<String>,
-        slice_target: impl Into<String>,
+        owning_pass: impl Into<String>,
     ) {
         self.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::CutoverUnsupported {
+            HirDiagnosticKind::NotYetImplemented {
                 construct: construct.into(),
-                slice_target: slice_target.into(),
+                owning_pass: owning_pass.into(),
             },
             span,
             "",
@@ -5641,13 +5641,13 @@ fn collect_captures_walk_block(
 ///
 /// Note: `Expr::MachineEmit` is no longer in the allowlist because it now
 /// lowers to `HirExprKind::MachineEmit` directly rather than falling through
-/// to `CutoverUnsupported`.
+/// to `NotYetImplemented`.
 #[derive(Debug, Default)]
 struct MachineBodyAllowlist {
     /// Spans of `Expr::Identifier(name)` where `name` is a declared state
     /// name in the current machine — drops the matching `UnresolvedSymbol`.
     state_name_refs: Vec<(Span, String)>,
-    /// Spans of `Expr::This` — drops the matching `CutoverUnsupported`
+    /// Spans of `Expr::This` — drops the matching `NotYetImplemented`
     /// raised by the catch-all expression arm.
     this_spans: Vec<Span>,
 }
@@ -5661,7 +5661,7 @@ impl MachineBodyAllowlist {
                 .state_name_refs
                 .iter()
                 .any(|(span, allowed)| spans_equal(span, &diag.span) && allowed == name),
-            HirDiagnosticKind::CutoverUnsupported { .. } => self
+            HirDiagnosticKind::NotYetImplemented { .. } => self
                 .this_spans
                 .iter()
                 .any(|span| spans_equal(span, &diag.span)),

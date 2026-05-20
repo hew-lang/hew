@@ -391,7 +391,7 @@ fn checked_mir_accepts_spine_integer_function() {
 #[test]
 fn cross_function_call_types_lower_via_call_terminator() {
     // Direct calls to user-defined functions in the same module are now
-    // lowered via `Terminator::Call` — no `CutoverUnsupported` for function
+    // lowered via `Terminator::Call` — no `NotYetImplemented` for function
     // calls to module functions. The pipeline() helper asserts HIR is clean;
     // this test pins the MIR acceptance shape: both functions appear in
     // `raw_mir` and the diagnostic stream is clean.
@@ -408,15 +408,15 @@ fn cross_function_call_types_lower_via_call_terminator() {
         names.contains(&"main"),
         "raw_mir must include main: {names:?}"
     );
-    // Direct user-function calls must not produce CutoverUnsupported.
-    let cutover_diags: Vec<_> = pipeline
+    // Direct user-function calls must not produce NotYetImplemented.
+    let nyi_diags: Vec<_> = pipeline
         .diagnostics
         .iter()
-        .filter(|d| matches!(&d.kind, MirDiagnosticKind::CutoverUnsupported { .. }))
+        .filter(|d| matches!(&d.kind, MirDiagnosticKind::NotYetImplemented { .. }))
         .collect();
     assert!(
-        cutover_diags.is_empty(),
-        "direct user-function calls must lower without CutoverUnsupported: {cutover_diags:?}"
+        nyi_diags.is_empty(),
+        "direct user-function calls must lower without NotYetImplemented: {nyi_diags:?}"
     );
     // Must have no diagnostics at all.
     assert!(
@@ -491,7 +491,7 @@ fn nested_array_user_type_rejected_at_mir_boundary() {
 //
 // CFG construction needs a constructible condition Place for `If`
 // lowering. Without bool literals + comparison binops at MIR, every
-// non-trivial `If` condition emits `CutoverUnsupported` and the
+// non-trivial `If` condition emits `NotYetImplemented` and the
 // fixture corpus collapses to "integer non-zero" conditions only.
 // These tests pin the seam.
 
@@ -593,15 +593,15 @@ fn lower_unsupported_binop_fails_closed_with_diagnostic() {
     // returned None for any non-{Add,Sub,Mul} binop, letting the
     // caller's `decide` run while the emitter produced no instruction
     // — a quiet fail-soft. Now the unsupported branch emits a
-    // `CutoverUnsupported` so the CLI rejection surface catches the
+    // `NotYetImplemented` so the CLI rejection surface catches the
     // construct.
     //
     // Bitwise (&, |, ^) and shift (<<, >>), divide, and modulo are now
     // all wired. This test verifies the complementary property: that
-    // implemented operators do NOT emit CutoverUnsupported. Regression
+    // implemented operators do NOT emit NotYetImplemented. Regression
     // against the earlier fail-soft: if lower_binary were to accidentally
     // fall through to the catch-all for a wired operator, no instruction
-    // would be emitted and a CutoverUnsupported would appear.
+    // would be emitted and a NotYetImplemented would appear.
     for src in [
         "fn main() -> i64 { let a: i64 = 1; let b: i64 = 2; a & b }",
         "fn main() -> i64 { let a: i64 = 1; let b: i64 = 2; a | b }",
@@ -614,7 +614,7 @@ fn lower_unsupported_binop_fails_closed_with_diagnostic() {
         let pipeline = lower_hir_module(&output.module);
         assert!(
             pipeline.diagnostics.is_empty(),
-            "Implemented bitwise op must not emit CutoverUnsupported: \
+            "Implemented bitwise op must not emit NotYetImplemented: \
              {src} => {:?}",
             pipeline.diagnostics
         );
@@ -624,7 +624,7 @@ fn lower_unsupported_binop_fails_closed_with_diagnostic() {
 #[test]
 fn divide_lowers_cleanly_with_trap_edges() {
     // B-5: integer `/` is now wired — it must lower without a
-    // CutoverUnsupported diagnostic and produce a DivideByZero trap edge.
+    // NotYetImplemented diagnostic and produce a DivideByZero trap edge.
     let parsed = hew_parser::parse("fn main() -> i64 { let r = 1 / 2; 0 }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
@@ -636,7 +636,7 @@ fn divide_lowers_cleanly_with_trap_edges() {
     let pipeline = lower_hir_module(&output.module);
     assert!(
         pipeline.diagnostics.is_empty(),
-        "Divide must lower without CutoverUnsupported after B-5: {:?}",
+        "Divide must lower without NotYetImplemented after B-5: {:?}",
         pipeline.diagnostics
     );
     // At least one DivideByZero trap block must be present.
@@ -779,7 +779,7 @@ fn if_expression_join_block_terminates_with_return() {
 fn if_no_else_unit_typed_lowers_without_diagnostic() {
     // HIR types `if x { 7 }` (no else) as Unit. Our `lower_if` accepts
     // `else_expr: None` and emits an else block that Goto's join with
-    // no Move. No CutoverUnsupported here.
+    // no Move. No NotYetImplemented here.
     let p = pipeline("fn main() -> i64 { let _r = if 1 == 1 { 7 }; 42 }");
     assert!(
         p.diagnostics.is_empty(),

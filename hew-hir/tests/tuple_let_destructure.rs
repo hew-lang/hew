@@ -65,11 +65,8 @@ fn two_element_tuple_let_produces_three_stmts() {
         .diagnostics
         .iter()
         .filter(|d| {
-            matches!(
-                d.kind,
-                hew_hir::HirDiagnosticKind::CutoverUnsupported { .. }
-            ) && {
-                if let hew_hir::HirDiagnosticKind::CutoverUnsupported { ref construct, .. } = d.kind
+            matches!(d.kind, hew_hir::HirDiagnosticKind::NotYetImplemented { .. }) && {
+                if let hew_hir::HirDiagnosticKind::NotYetImplemented { ref construct, .. } = d.kind
                 {
                     construct.contains("tuple")
                 } else {
@@ -80,7 +77,7 @@ fn two_element_tuple_let_produces_three_stmts() {
         .collect();
     assert!(
         tuple_errors.is_empty(),
-        "no tuple-pattern CutoverUnsupported errors must fire for a well-formed two-element let; \
+        "no tuple-pattern NotYetImplemented errors must fire for a well-formed two-element let; \
          got: {tuple_errors:#?}"
     );
 

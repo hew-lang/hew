@@ -50,7 +50,7 @@ fn two_instantiations_produce_two_specialised_mir_functions() {
         .filter(|d| {
             matches!(
                 d.kind,
-                MirDiagnosticKind::CutoverUnsupported { .. }
+                MirDiagnosticKind::NotYetImplemented { .. }
                     | MirDiagnosticKind::UnresolvedPlace { .. }
                     | MirDiagnosticKind::UnsupportedNode { .. }
             )

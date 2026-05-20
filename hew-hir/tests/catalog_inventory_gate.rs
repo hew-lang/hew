@@ -6,12 +6,12 @@
 //!
 //! Authority: the `stable` list in `scripts/jit-symbol-classification.toml`
 //! covers every `#[no_mangle] extern "C"` symbol that JIT modules may
-//! reference directly. This is a superset of `M2_RUNTIME_SYMBOLS` (which is the
+//! reference directly. This is a superset of `MIR_EMITTER_RUNTIME_SYMBOLS` (which is the
 //! MIR-emitter subset). We validate against `stable` here because:
 //!
 //! - `RuntimeFfiShim`, `ToStringShim`, `StringCloneShim`, and `PrintIntercept`
 //!   entries name real C-ABI symbols the codegen will link against.
-//! - `M2_RUNTIME_SYMBOLS` is not exhaustive: for example `hew_int_to_string` and
+//! - `MIR_EMITTER_RUNTIME_SYMBOLS` is not exhaustive: for example `hew_int_to_string` and
 //!   `hew_assert_eq_*` are in the catalog but not in M2. Using M2 would produce
 //!   false failures for legitimately classified symbols.
 //! - `CompilerIntrinsic` entries do not name a C-ABI symbol; they are handled

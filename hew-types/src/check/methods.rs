@@ -2576,7 +2576,7 @@ impl Checker {
             //
             // Admitted for all integer-to-integer pairs (any width, any sign).
             // Truncates / sign-extends / zero-extends bits per LLVM trunc/sext/zext.
-            // MIR lowering is a follow-up slice; a CutoverUnsupported stub is emitted.
+            // MIR lowering is a follow-up slice; a NotYetImplemented stub is emitted.
             //
             // Guard: `wrapping_as_` must be checked BEFORE the arithmetic `wrapping_*`
             // arm so the suffix "as_<W>" does not fall through to the op-name matcher.
@@ -2618,7 +2618,7 @@ impl Checker {
             //
             // Admitted for all integer-to-integer pairs (any width, any sign).
             // Returns W::MAX / W::MIN on overflow.
-            // MIR lowering is a follow-up slice; a CutoverUnsupported stub is emitted.
+            // MIR lowering is a follow-up slice; a NotYetImplemented stub is emitted.
             //
             // Guard: `saturating_as_` must be checked BEFORE the arithmetic `saturating_*`
             // arm so the suffix "as_<W>" does not fall through to the op-name matcher.

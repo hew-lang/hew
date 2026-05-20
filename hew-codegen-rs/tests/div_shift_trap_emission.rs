@@ -44,8 +44,8 @@ fn emit_ll(source: &str, module_name: &str) -> String {
         native: false,
         wasm: false,
     };
-    let artefacts = emit_module(&pipeline, &options)
-        .expect("B-5 div/shift trap pipeline must emit successfully");
+    let artefacts =
+        emit_module(&pipeline, &options).expect("div/shift trap pipeline must emit successfully");
     let ll_path: &Path = artefacts
         .ll_path
         .as_deref()

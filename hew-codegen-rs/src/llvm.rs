@@ -809,7 +809,7 @@ fn intern_runtime_decl<'ctx>(
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "intern_runtime_decl: codegen has no LLVM signature for runtime \
-                 symbol {other:?}; the symbol is on the M2_RUNTIME_SYMBOLS allowlist \
+                 symbol {other:?}; the symbol is on the MIR_EMITTER_RUNTIME_SYMBOLS allowlist \
                  but no codegen arm wires it — extend the signature table or leave \
                  the producer fail-closed"
             )));
@@ -5900,7 +5900,7 @@ fn emit_select_terminator<'ctx>(
                 return Err(CodegenError::FailClosed(
                     "select{} stream-next arm is out of scope for this lane: \
                      MIR producer should have rejected with \
-                     SelectArmNotImplemented; future lane: M3 select-widening"
+                     SelectArmNotImplemented; deferred to: select-widening"
                         .to_string(),
                 ));
             }
@@ -5908,7 +5908,7 @@ fn emit_select_terminator<'ctx>(
                 return Err(CodegenError::FailClosed(
                     "select{} task-await arm is out of scope for this lane: \
                      MIR producer should have rejected with \
-                     SelectArmNotImplemented; future lane: M3 select-widening"
+                     SelectArmNotImplemented; deferred to: select-widening"
                         .to_string(),
                 ));
             }

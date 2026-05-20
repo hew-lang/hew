@@ -145,7 +145,7 @@
   named-actor sends or call-syntax `handle(msg)` for lambda-actor handles.
 - **BREAKING CHANGE: `spawn (params) => body` lambda-actor syntax removed**
   (see HEW-SPEC-2026 §2.1.3): The `spawn`-based lambda-actor literal form is
-  no longer accepted. The parser emits `E_LEGACY_SPAWN_LAMBDA_SYNTAX` with a
+  no longer accepted. The parser emits `E_SPAWN_LAMBDA_SYNTAX_REMOVED` with a
   fixit note. Use `actor |params| { body }` instead.
 - **`hew_duplex_new` removed from the C ABI:** The `hew_duplex_new` function,
   which created a self-loopback duplex without a peer, has been removed from

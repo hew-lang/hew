@@ -5499,7 +5499,7 @@ impl<'src> Parser<'src> {
 
                 if self.peek() != Some(&Token::Pipe) {
                     self.error_with_hint(
-                        "E_LEGACY_SPAWN_LAMBDA_SYNTAX: expected `|` to begin actor parameter list"
+                        "E_SPAWN_LAMBDA_SYNTAX_REMOVED: expected `|` to begin actor parameter list"
                             .to_string(),
                         "use `actor |params| { body }` to declare a lambda actor".to_string(),
                     );
@@ -5516,7 +5516,7 @@ impl<'src> Parser<'src> {
                 // Lambda actor body must be a braced block; parse_block consumes the `{`.
                 if self.peek() != Some(&Token::LeftBrace) {
                     self.error_with_hint(
-                        "E_LEGACY_SPAWN_LAMBDA_SYNTAX: expected `{` to begin actor body"
+                        "E_SPAWN_LAMBDA_SYNTAX_REMOVED: expected `{` to begin actor body"
                             .to_string(),
                         "use `actor |params| { body }` — the body must be a braced block"
                             .to_string(),
@@ -5566,7 +5566,7 @@ impl<'src> Parser<'src> {
                             self.parse_expr();
                         }
                         self.error_at_with_hint(
-                            "E_LEGACY_SPAWN_LAMBDA_SYNTAX: `spawn (...) => ...` has been removed; \
+                            "E_SPAWN_LAMBDA_SYNTAX_REMOVED: `spawn (...) => ...` has been removed; \
                              use `actor |...| { ... }` instead (HEW-SPEC-2026 §4.x)"
                                 .to_string(),
                             start..self.peek_span().start,

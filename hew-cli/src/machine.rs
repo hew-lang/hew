@@ -76,7 +76,7 @@ fn check_and_lower(path: &str, source: &str) -> Vec<HirMachineDecl> {
 
     let lowered = lower_program(&result.program, &TypeCheckOutput::default(), &ResolutionCtx);
 
-    // Filter out CutoverUnsupported diagnostics from non-machine items —
+    // Filter out NotYetImplemented diagnostics from non-machine items —
     // Lane A only lowers machines; functions are also lowered if present.
     let machine_errors: Vec<_> = lowered
         .diagnostics
@@ -84,7 +84,7 @@ fn check_and_lower(path: &str, source: &str) -> Vec<HirMachineDecl> {
         .filter(|d| {
             !matches!(
                 &d.kind,
-                HirDiagnosticKind::CutoverUnsupported { .. }
+                HirDiagnosticKind::NotYetImplemented { .. }
                     | HirDiagnosticKind::UnresolvedSymbol { .. }
                     | HirDiagnosticKind::ImportMissing { .. }
             )

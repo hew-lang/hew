@@ -495,7 +495,7 @@ fn transition_body_with_machine_emit_filters_only_emit_noise() {
     //   1. lower the body to a `HirExpr` substrate without crashing,
     //   2. preserve the `MachineEmitCycle` diagnostic from the HIR emit-cycle
     //      walk (which supersedes the old AST summary walk), and
-    //   3. not introduce extra `CutoverUnsupported` noise for the
+    //   3. not introduce extra `NotYetImplemented` noise for the
     //      `emit Tick {}` expression itself.
     let src = r"
 machine Cyclic {
@@ -519,7 +519,7 @@ machine Cyclic {
     let unsupported_count = output
         .diagnostics
         .iter()
-        .filter(|d| matches!(&d.kind, HirDiagnosticKind::CutoverUnsupported { .. }))
+        .filter(|d| matches!(&d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
         .count();
     assert_eq!(
         unsupported_count, 0,

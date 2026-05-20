@@ -2,7 +2,7 @@ use hew_parser::ast::ResourceMarker;
 
 use crate::value_class::TypeClassTable;
 
-/// Seed a `TypeClassTable` with the M2 substrate compiler-known resource types.
+/// Seed a `TypeClassTable` with the compiler-known built-in resource types.
 ///
 /// These types are not defined by user-level `TypeDecl` items; they are
 /// intrinsic to the runtime and must be seeded before the source-order

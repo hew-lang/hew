@@ -51,21 +51,21 @@ fn inferred_type_annotation_rejects_at_hir_boundary() {
 }
 
 #[test]
-fn unsupported_construct_emits_cutover_diagnostic() {
-    // A type expression outside slice 1 emits CutoverUnsupported.
+fn unsupported_construct_emits_not_yet_implemented_diagnostic() {
+    // A type expression outside slice 1 emits NotYetImplemented.
     // Pointer types are a slice-2 construct that exercises the _ arm in lower_type.
-    // (If this fixture stops triggering CutoverUnsupported, the test will
+    // (If this fixture stops triggering NotYetImplemented, the test will
     //  produce `diagnostics.is_empty()` and the assert will catch it.)
     let output = lower("fn f(x: i64) -> i64 { return x; }");
-    // No unsupported diagnostics — this is a clean slice-1 program.
-    let cutover_count = output
+    // No unsupported diagnostics — this is a clean hir-lowering program.
+    let nyi_count = output
         .diagnostics
         .iter()
-        .filter(|d| matches!(d.kind, HirDiagnosticKind::CutoverUnsupported { .. }))
+        .filter(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
         .count();
     assert_eq!(
-        cutover_count, 0,
-        "clean program should have no cutover diagnostics"
+        nyi_count, 0,
+        "clean program should have no not-yet-implemented diagnostics"
     );
 }
 
@@ -100,18 +100,18 @@ fn call_to_unresolved_function_emits_inference_var() {
 
 #[test]
 fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
-    // Defense-in-depth: verify_hir emits CutoverUnsupported for any Unsupported
+    // Defense-in-depth: verify_hir emits NotYetImplemented for any Unsupported
     // HIR node it finds, even when the lowerer already emitted the diagnostic.
     // A tuple literal is a slice-2 expression; `lower_expr` produces an
     // HirExprKind::Unsupported node for it.
     let output = lower("fn f() { let t = (1, 2); }");
-    // The lowerer already emits CutoverUnsupported for the unsupported expression.
+    // The lowerer already emits NotYetImplemented for the unsupported expression.
     assert!(
         output
             .diagnostics
             .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::CutoverUnsupported { .. })),
-        "lowerer must emit CutoverUnsupported for unsupported expression: {:?}",
+            .any(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. })),
+        "lowerer must emit NotYetImplemented for unsupported expression: {:?}",
         output.diagnostics
     );
     // The verifier independently flags the surviving Unsupported node.
@@ -119,7 +119,7 @@ fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
     assert!(
         verify
             .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::CutoverUnsupported { .. })),
+            .any(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. })),
         "verifier must flag Unsupported HIR node as defense-in-depth: {verify:?}"
     );
 }
@@ -446,14 +446,14 @@ fn task_handle_ti1_statement_call_inside_fork_becomes_spawned_call() {
          fn main() { scope { worker(); } }",
     );
     // No diagnostic errors expected from HIR lowering (the fork expression
-    // itself lowers cleanly; MIR-level CutoverUnsupported fires downstream).
+    // itself lowers cleanly; MIR-level NotYetImplemented fires downstream).
     let hir_diags: Vec<_> = output
         .diagnostics
         .iter()
         .filter(|d| {
             !matches!(
                 d.kind,
-                HirDiagnosticKind::CutoverUnsupported { .. }
+                HirDiagnosticKind::NotYetImplemented { .. }
                     | HirDiagnosticKind::UnresolvedInferenceVar
             )
         })
@@ -493,7 +493,7 @@ fn task_handle_ti2_named_fork_child_binds_task_type() {
     let real_diags: Vec<_> = output
         .diagnostics
         .iter()
-        .filter(|d| !matches!(d.kind, HirDiagnosticKind::CutoverUnsupported { .. }))
+        .filter(|d| !matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
         .collect();
     assert!(
         real_diags.is_empty(),
@@ -546,7 +546,7 @@ fn task_handle_ti4_await_task_binding_inside_fork_lowers_to_await_task() {
     let real_diags: Vec<_> = output
         .diagnostics
         .iter()
-        .filter(|d| !matches!(d.kind, HirDiagnosticKind::CutoverUnsupported { .. }))
+        .filter(|d| !matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
         .collect();
     assert!(
         real_diags.is_empty(),
@@ -619,7 +619,7 @@ fn scope_deadline_derives_cancellation_token() {
     let real_diags: Vec<_> = output
         .diagnostics
         .iter()
-        .filter(|d| !matches!(d.kind, HirDiagnosticKind::CutoverUnsupported { .. }))
+        .filter(|d| !matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
         .collect();
     assert!(
         real_diags.is_empty(),
@@ -1170,11 +1170,11 @@ fn make() {
 // These builtins have runtime substrate (`hew_actor_link`, `hew_actor_monitor`)
 // and codegen arms, but the MIR producer cannot be wired until the Cluster 2
 // composite-return spine lands (Result<(),LinkError> and MonitorRef).
-// Until then, every call must emit CutoverUnsupported with slice_target
-// "Cluster-2" — never UnresolvedSymbol (which looks like a user typo).
+// Until then, every call must emit NotYetImplemented with owning_pass
+// "cluster-runtime" — never UnresolvedSymbol (which looks like a user typo).
 
 #[test]
-fn link_call_emits_cutover_not_unresolved() {
+fn link_call_emits_not_yet_implemented_not_unresolved() {
     // `link(x)` in a syntactically valid actor context.
     // The checker is not run here (TypeCheckOutput::default()); HIR lowering
     // must fire the intercept independently of type-check state.
@@ -1182,16 +1182,16 @@ fn link_call_emits_cutover_not_unresolved() {
         "actor Probe { receive fn crash() { exit(1) } }
          fn main() { let p = spawn Probe; link(p); }",
     );
-    let cutover = output.diagnostics.iter().any(|d| match &d.kind {
-        HirDiagnosticKind::CutoverUnsupported {
+    let is_nyi = output.diagnostics.iter().any(|d| match &d.kind {
+        HirDiagnosticKind::NotYetImplemented {
             construct,
-            slice_target,
-        } => construct.contains("link") && slice_target == "Cluster-2",
+            owning_pass,
+        } => construct.contains("link") && owning_pass == "cluster-runtime",
         _ => false,
     });
     assert!(
-        cutover,
-        "link() call must emit CutoverUnsupported(Cluster-2), got: {:?}",
+        is_nyi,
+        "link() call must emit NotYetImplemented(cluster-runtime), got: {:?}",
         output.diagnostics
     );
     // Must NOT produce a bare UnresolvedSymbol that looks like a user typo.
@@ -1202,26 +1202,26 @@ fn link_call_emits_cutover_not_unresolved() {
     assert!(
         !unresolved_name,
         "link() must not produce UnresolvedSymbol(link); \
-         CutoverUnsupported is the expected diagnostic"
+         NotYetImplemented is the expected diagnostic"
     );
 }
 
 #[test]
-fn monitor_call_emits_cutover_not_unresolved() {
+fn monitor_call_emits_not_yet_implemented_not_unresolved() {
     let output = lower(
         "actor Target { receive fn ping() {} }
          fn main() { let t = spawn Target; monitor(t); }",
     );
-    let cutover = output.diagnostics.iter().any(|d| match &d.kind {
-        HirDiagnosticKind::CutoverUnsupported {
+    let is_nyi = output.diagnostics.iter().any(|d| match &d.kind {
+        HirDiagnosticKind::NotYetImplemented {
             construct,
-            slice_target,
-        } => construct.contains("monitor") && slice_target == "Cluster-2",
+            owning_pass,
+        } => construct.contains("monitor") && owning_pass == "cluster-runtime",
         _ => false,
     });
     assert!(
-        cutover,
-        "monitor() call must emit CutoverUnsupported(Cluster-2), got: {:?}",
+        is_nyi,
+        "monitor() call must emit NotYetImplemented(cluster-runtime), got: {:?}",
         output.diagnostics
     );
     let unresolved_name = output.diagnostics.iter().any(
@@ -1234,21 +1234,21 @@ fn monitor_call_emits_cutover_not_unresolved() {
 }
 
 #[test]
-fn unlink_call_emits_cutover_not_unresolved() {
+fn unlink_call_emits_not_yet_implemented_not_unresolved() {
     let output = lower(
         "actor Probe { receive fn crash() { exit(1) } }
          fn main() { let p = spawn Probe; unlink(p); }",
     );
-    let cutover = output.diagnostics.iter().any(|d| match &d.kind {
-        HirDiagnosticKind::CutoverUnsupported {
+    let is_nyi = output.diagnostics.iter().any(|d| match &d.kind {
+        HirDiagnosticKind::NotYetImplemented {
             construct,
-            slice_target,
-        } => construct.contains("unlink") && slice_target == "Cluster-2",
+            owning_pass,
+        } => construct.contains("unlink") && owning_pass == "cluster-runtime",
         _ => false,
     });
     assert!(
-        cutover,
-        "unlink() call must emit CutoverUnsupported(Cluster-2), got: {:?}",
+        is_nyi,
+        "unlink() call must emit NotYetImplemented(cluster-runtime), got: {:?}",
         output.diagnostics
     );
     let unresolved_name = output.diagnostics.iter().any(

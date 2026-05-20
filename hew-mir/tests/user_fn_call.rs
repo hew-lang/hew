@@ -28,7 +28,7 @@ fn pipeline_with_tc(source: &str) -> IrPipeline {
 
 /// `add(2, 3)` from `main` must produce `Terminator::Call` with callee
 /// `"add"` and two `Place::Local` arguments, with no `UnresolvedPlace` or
-/// `CutoverUnsupported` diagnostics.
+/// `NotYetImplemented` diagnostics.
 #[test]
 fn direct_call_emits_call_terminator_with_correct_callee_and_args() {
     let src = r"
@@ -49,7 +49,7 @@ fn direct_call_emits_call_terminator_with_correct_callee_and_args() {
         .filter(|d| {
             matches!(
                 d.kind,
-                MirDiagnosticKind::CutoverUnsupported { .. }
+                MirDiagnosticKind::NotYetImplemented { .. }
                     | MirDiagnosticKind::UnresolvedPlace { .. }
             )
         })
@@ -149,15 +149,15 @@ fn callee_params_resolve_to_local_slots_no_unresolved_place() {
 }
 
 /// An unresolved call (a callee name that is neither a runtime-ABI symbol
-/// nor a declared module function) must produce `CutoverUnsupported`, not
+/// nor a declared module function) must produce `NotYetImplemented`, not
 /// `Terminator::Call`. Guards the fail-closed boundary in `lower_value`.
 ///
 /// The test uses a bare identifier `unknown_fn(42)` that is not declared in
 /// the module — the HIR bridge emits `BindingRef { resolved: Unresolved }`.
 /// After the runtime-ABI and module-fn checks both fail, the fallthrough
-/// path must emit `CutoverUnsupported`.
+/// path must emit `NotYetImplemented`.
 #[test]
-fn unresolved_call_emits_cutover_unsupported_not_call_terminator() {
+fn unresolved_call_emits_not_yet_implemented_not_call_terminator() {
     // `unknown_fn` is not declared in this module and is not a runtime symbol.
     let src = r"
         fn main() -> i64 {
@@ -176,14 +176,14 @@ fn unresolved_call_emits_cutover_unsupported_not_call_terminator() {
     let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
     let pipeline = hew_mir::lower_hir_module(&output.module);
 
-    // Must produce CutoverUnsupported for the unresolved call.
-    let has_cutover = pipeline
+    // Must produce NotYetImplemented for the unresolved call.
+    let has_nyi = pipeline
         .diagnostics
         .iter()
-        .any(|d| matches!(d.kind, MirDiagnosticKind::CutoverUnsupported { .. }));
+        .any(|d| matches!(d.kind, MirDiagnosticKind::NotYetImplemented { .. }));
     assert!(
-        has_cutover,
-        "unresolved call must produce CutoverUnsupported; got diagnostics: {:#?}",
+        has_nyi,
+        "unresolved call must produce NotYetImplemented; got diagnostics: {:#?}",
         pipeline.diagnostics
     );
 

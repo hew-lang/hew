@@ -295,13 +295,13 @@ impl Verifier {
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive
-                // to verification without a prior CutoverUnsupported diagnostic.
+                // to verification without a prior NotYetImplemented diagnostic.
                 // This catches any path where unsupported_expr() was called
                 // without a preceding unsupported() call.
                 self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CutoverUnsupported {
+                    HirDiagnosticKind::NotYetImplemented {
                         construct: reason.clone(),
-                        slice_target: "slice-1".to_string(),
+                        owning_pass: "hir-lowering".to_string(),
                     },
                     expr.span.clone(),
                     "verifier: Unsupported HIR node reached verification without a prior diagnostic",

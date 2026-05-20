@@ -29,7 +29,7 @@
 //!
 //! Exit 0 on success. On failure: a one-line error to stderr and a non-zero
 //! exit code. The CLI surfaces stderr verbatim under its
-//! `E_CUTOVER_UNSUPPORTED` channel so the original LLVM message reaches the
+//! `E_NOT_YET_IMPLEMENTED` channel so the original LLVM message reaches the
 //! user.
 
 use std::path::PathBuf;

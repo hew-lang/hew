@@ -768,7 +768,7 @@ pub enum CmpPred {
 /// A validated runtime-ABI call payload carried by `Instr::CallRuntimeAbi`.
 ///
 /// Construction is only possible via `RuntimeCall::new`, which enforces that
-/// `symbol` is in the `runtime_symbols::M2_RUNTIME_SYMBOLS` allowlist.
+/// `symbol` is in the `runtime_symbols::MIR_EMITTER_RUNTIME_SYMBOLS` allowlist.
 /// Direct struct construction is impossible because the fields are private,
 /// so the allowlist check cannot be bypassed at any call site — including
 /// release builds (LESSONS P0 `boundary-fail-closed`).
@@ -1029,7 +1029,7 @@ pub enum Instr {
     /// Call into a `hew_*` runtime-ABI entry by name. The carried
     /// `symbol` names a `#[no_mangle] extern "C" fn` exported by
     /// `hew-runtime/` (the M2 substrate set is listed in
-    /// `crate::runtime_symbols::M2_RUNTIME_SYMBOLS`). One variant
+    /// `crate::runtime_symbols::MIR_EMITTER_RUNTIME_SYMBOLS`). One variant
     /// covers every Duplex / lambda-actor / half-handle runtime
     /// call — codegen disambiguates by the `symbol` string at lower
     /// time. Aligns with the runtime ABI shape: each symbol IS the
@@ -1041,7 +1041,7 @@ pub enum Instr {
     /// producers MUST validate `symbol` against
     /// `crate::runtime_symbols::is_known_runtime_symbol` BEFORE
     /// pushing this instruction. A typo or unrecognised symbol
-    /// surfaces as a `MirDiagnostic::CutoverUnsupported` at MIR
+    /// surfaces as a `MirDiagnostic::NotYetImplemented` at MIR
     /// construction, never as a silent link-time failure.
     ///
     /// `dest = None` denotes a runtime call whose return type the
@@ -1992,14 +1992,14 @@ pub enum MirDiagnosticKind {
     /// the lane that lifts the restriction."
     SelectArmNotImplemented {
         arm_kind: String,
-        lane_pointer: String,
+        deferred_by: String,
         site: SiteId,
     },
     /// Cluster 1 spine subset rejection: an expression form (e.g. a call, a
     /// non-integer literal, a control-flow construct) is recognised but not
     /// yet lowered to the backend `Instr` stream. Fail-closed so the emitter
     /// never sees a function body with an uninitialised return slot.
-    CutoverUnsupported { construct: String, site: SiteId },
+    NotYetImplemented { construct: String, site: SiteId },
     /// A `BindingRef` could not be resolved to a backend `Place` (typically
     /// a function parameter — Cluster 1's spine does not yet bind incoming
     /// arguments to local slots). Without a Place, the value cannot be

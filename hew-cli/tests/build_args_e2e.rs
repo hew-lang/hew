@@ -24,7 +24,7 @@ fn werror_flag_is_accepted_by_build_style_commands() {
 }
 
 #[test]
-fn build_subcommand_is_rejected_after_compile_cutover() {
+fn build_subcommand_is_rejected_as_unrecognised() {
     let output = Command::new(hew_binary())
         .args(["build", "placeholder.hew"])
         .current_dir(repo_root())
@@ -33,7 +33,7 @@ fn build_subcommand_is_rejected_after_compile_cutover() {
 
     assert!(
         !output.status.success(),
-        "hew build must be rejected after compile cutover\n{}",
+        "hew build subcommand must be rejected as unrecognised\n{}",
         describe_output(&output),
     );
     let stderr = String::from_utf8_lossy(&output.stderr);

@@ -73,7 +73,7 @@ fn pipeline_rejects_nested_named_type_before_codegen() {
 /// stored width is whatever HIR resolved (`ResolvedTy::Bool`, mapped to
 /// i8 by `primitive_to_llvm`); `ConstI64`'s store truncates the value
 /// to the dest local's width. The MIR pipeline must accept `fn main()
-/// -> bool { true }` cleanly — no `CutoverUnsupported` for bool
+/// -> bool { true }` cleanly — no `NotYetImplemented` for bool
 /// literals, no `UnresolvedPlace`, nothing else.
 #[test]
 fn pipeline_accepts_bool_literal_return() {
@@ -98,7 +98,7 @@ fn pipeline_accepts_bool_literal_return() {
 }
 
 /// Float literals now lower to `Instr::FloatLit` in the MIR. The MIR
-/// diagnostic stream must be empty — no `CutoverUnsupported` — for a
+/// diagnostic stream must be empty — no `NotYetImplemented` — for a
 /// simple `fn main() -> f64 { 1.5 }` program.
 #[test]
 fn pipeline_accepts_float_literal_in_mir() {
@@ -124,7 +124,7 @@ fn pipeline_accepts_float_literal_in_mir() {
 
 /// A direct call to a module function now lowers cleanly via
 /// `Terminator::Call`. `main` returns `add(10, 32)`; the MIR pipeline must
-/// accept the program without `CutoverUnsupported` or `UnresolvedPlace`
+/// accept the program without `NotYetImplemented` or `UnresolvedPlace`
 /// diagnostics, and codegen must emit valid LLVM IR.
 #[test]
 fn pipeline_accepts_user_fn_call_via_call_terminator() {

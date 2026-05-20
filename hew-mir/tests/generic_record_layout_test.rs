@@ -103,7 +103,7 @@ fn struct_init_carries_concrete_type_args_and_emits_mangled_layout() {
 /// `let b: Box<i64> = Box { value: 42 }; let x = b.value;` round-trips
 /// through HIR/MIR: the field access uses the same mangled key as the
 /// struct-init, so `RecordFieldLoad` finds the offset and produces no
-/// `CutoverUnsupported` diagnostic.
+/// `NotYetImplemented` diagnostic.
 #[test]
 fn field_access_through_generic_record_round_trips() {
     let (pl, hir_diags) = pipeline_with_tc(
@@ -124,15 +124,15 @@ fn field_access_through_generic_record_round_trips() {
     // name; user `pub type` without a `#[resource]` / `#[linear]`
     // marker is BitCopy by default). That diagnostic is orthogonal to
     // G-2.d's contract — assert only that the failure mode this slice
-    // closes does NOT fire: no `CutoverUnsupported` for unregistered
+    // closes does NOT fire: no `NotYetImplemented` for unregistered
     // field-order on the generic record's mangled key.
     for diag in &pl.diagnostics {
-        if let hew_mir::MirDiagnosticKind::CutoverUnsupported { construct, .. } = &diag.kind {
+        if let hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. } = &diag.kind {
             assert!(
                 !construct.contains("unregistered record")
                     && !construct.contains("not registered in field-order table")
                     && !construct.contains("unknown field"),
-                "G-2.d regression: unexpected CutoverUnsupported on generic record \
+                "regression: unexpected NotYetImplemented on generic record \
                  field-access: {construct}"
             );
         }

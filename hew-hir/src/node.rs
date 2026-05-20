@@ -579,7 +579,7 @@ pub enum HirExprKind {
     ///
     /// MIR lowering (slice A-7) will emit the field-read instruction. For
     /// A-6 the MIR producer walks the `object` sub-expression for
-    /// checker-stream coverage and defers via `CutoverUnsupported`.
+    /// checker-stream coverage and defers via `NotYetImplemented`.
     FieldAccess {
         object: Box<HirExpr>,
         field: String,

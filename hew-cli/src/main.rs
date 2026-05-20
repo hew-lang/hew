@@ -88,7 +88,7 @@ fn diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. } => "E_MIR_CHECK",
-        hew_mir::MirDiagnosticKind::CutoverUnsupported { .. } => "E_CUTOVER_UNSUPPORTED",
+        hew_mir::MirDiagnosticKind::NotYetImplemented { .. } => "E_NOT_YET_IMPLEMENTED",
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
         | hew_mir::MirDiagnosticKind::UnresolvedPlace { .. }
@@ -194,7 +194,7 @@ fn emit_module(
             Err(())
         }
         Err(e) => {
-            eprintln!("E_CUTOVER_UNSUPPORTED: {e}");
+            eprintln!("E_NOT_YET_IMPLEMENTED: {e}");
             Err(())
         }
     }
@@ -224,7 +224,7 @@ pub(crate) fn compile_native_binary(input: &Path, bin_path: &Path) -> Result<(),
         .unwrap_or("module");
     let artefacts = emit_module(&pipeline, module_name, emit_dir, CompileEmitTarget::Native)?;
     let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
-        eprintln!("E_CUTOVER_UNSUPPORTED: native codegen did not produce an object");
+        eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
     })?;
     link_native_object(obj, bin_path)
 }
@@ -298,7 +298,7 @@ pub(crate) fn compile_native_from_program(
     match emit_target {
         CompileEmitTarget::Native => {
             let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
-                eprintln!("E_CUTOVER_UNSUPPORTED: native codegen did not produce an object");
+                eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
             })?;
             link_native_object(obj, output_path)
         }
@@ -306,7 +306,7 @@ pub(crate) fn compile_native_from_program(
             if artefacts.wasm_path.is_some() {
                 Ok(())
             } else {
-                eprintln!("E_CUTOVER_UNSUPPORTED: WASM codegen did not produce a module");
+                eprintln!("E_NOT_YET_IMPLEMENTED: WASM codegen did not produce a module");
                 Err(())
             }
         }

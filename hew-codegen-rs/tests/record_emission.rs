@@ -60,7 +60,7 @@ fn emit_ll_with_checker(source: &str, module_name: &str) -> String {
         wasm: false,
     };
     let artefacts =
-        emit_module(&pipeline, &options).expect("A-7 record pipeline must emit successfully");
+        emit_module(&pipeline, &options).expect("record pipeline must emit successfully");
     let ll_path: &Path = artefacts
         .ll_path
         .as_deref()

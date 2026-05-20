@@ -31,6 +31,7 @@ name = "hew-emit"
 path = "src/bin/hew_emit.rs"
 
 [dev-dependencies]
+hew-runtime = { path = "../hew-runtime", default-features = false }
 hew-parser = { path = "../hew-parser" }
 # Required by jit_trap_bridge.rs: libc::c_int for the sigsetjmp/siglongjmp FFI
 # declarations used in the trap recorder (same pattern as hew-runtime/src/signal.rs).

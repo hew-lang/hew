@@ -174,6 +174,8 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // result). Needed for `await task` (row 4).
     "hew_task_await_blocking",
     "hew_task_complete_threaded",
+    "hew_task_completion_observe",
+    "hew_task_completion_unobserve",
     // `hew_task_free(task: *mut HewTask) -> void`
     // (`hew-runtime/src/task_scope.rs:237`). Frees a Box-allocated HewTask
     // and its result buffer. Called by the scope teardown path and by the

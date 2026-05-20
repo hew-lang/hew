@@ -307,6 +307,14 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
                     return Some(sym);
                 }
             }
+            if let Terminator::Select { arms, .. } = &block.terminator {
+                if arms
+                    .iter()
+                    .any(|arm| matches!(arm.kind, hew_mir::SelectArmKind::StreamNext { .. }))
+                {
+                    return Some("hew_stream_poll".to_string());
+                }
+            }
         }
     }
     // Also scan elaborated_mir drop_plans: the real close path goes through
@@ -572,6 +580,8 @@ fn intern_runtime_decl<'ctx>(
         // (`hew-runtime/src/reply_channel.rs:409`). Releases one
         // reference; frees the channel when the refcount reaches zero.
         "hew_reply_channel_free" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        "hew_reply_channel_retain" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        "hew_reply_channel_signal_ready" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         // hew_select_first(channels: *mut *mut HewReplyChannel, count: i32,
         //                  timeout_ms: i32) -> i32
         // (`hew-runtime/src/reply_channel.rs:484`). Returns the winning
@@ -787,11 +797,23 @@ fn intern_runtime_decl<'ctx>(
         // if Done, null otherwise. Called after hew_task_await_blocking
         // when the producer needs to read the result separately.
         "hew_task_get_result" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_task_completion_observe" => i32_ty.fn_type(
+            &[ptr_ty.into(), ptr_ty.into(), ptr_ty.into(), ptr_ty.into()],
+            false,
+        ),
+        "hew_task_completion_unobserve" => i32_ty.fn_type(
+            &[ptr_ty.into(), ptr_ty.into(), ptr_ty.into(), ptr_ty.into()],
+            false,
+        ),
         // hew_task_free(task: *mut HewTask) -> void
         // (`hew-runtime/src/task_scope.rs:237`). Frees the Box-allocated
         // HewTask and its result buffer. Called by the scope teardown path
         // after all tasks have been awaited.
         "hew_task_free" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        "hew_stream_poll" => i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false),
+        "hew_stream_cancel_pending_read" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
         // hew_require_execution_context() -> *mut HewExecutionContext
         // (`hew-runtime/src/execution_context.rs`). Returns the current
         // per-dispatch execution context. Used by codegen-emitted terminate
@@ -1108,7 +1130,10 @@ fn primitive_to_llvm<'ctx>(
             "Slice type — composite lowering is Cluster 2",
         )),
         ResolvedTy::Named { name, .. }
-            if matches!(name.as_str(), "Duplex" | "LocalPid" | "ActorRef" | "Actor") =>
+            if matches!(
+                name.as_str(),
+                "Duplex" | "LocalPid" | "ActorRef" | "Actor" | "Stream"
+            ) =>
         {
             // M2 substrate duplex handle. The producer (`hew-mir/src/lower.rs`
             // `lower_duplex_pair` + `lower_duplex_send`) allocates a
@@ -5860,6 +5885,184 @@ fn lower_terminator<'ctx>(
 /// before free prevents UAF when a reply races our free.
 /// Finally each winner block branches to the arm's MIR-allocated
 /// `body_block`.
+fn stream_callback_type_suffix(item_ty: BasicTypeEnum<'_>) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in item_ty.print_to_string().to_string().bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn get_or_create_select_stream_callback<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    item_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let callback_name = format!(
+        "hew_select_stream_reply_ready_{}",
+        stream_callback_type_suffix(item_ty)
+    );
+    if let Some(fv) = fn_ctx.llvm_mod.get_function(&callback_name) {
+        return Ok(fv);
+    }
+
+    let ctx = fn_ctx.ctx;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    let item_size = item_ty.size_of().ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "stream callback item type has no static size: {item_ty:?}"
+        ))
+    })?;
+    let fn_ty = ctx
+        .void_type()
+        .fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+    let callback = fn_ctx
+        .llvm_mod
+        .add_function(&callback_name, fn_ty, Some(Linkage::Private));
+    let entry = ctx.append_basic_block(callback, "entry");
+    let null_item_bb = ctx.append_basic_block(callback, "null_item");
+    let non_null_bb = ctx.append_basic_block(callback, "non_null");
+    let delivered_bb = ctx.append_basic_block(callback, "delivered");
+    let not_delivered_bb = ctx.append_basic_block(callback, "not_delivered");
+    let free_item_bb = ctx.append_basic_block(callback, "free_item");
+    let return_bb = ctx.append_basic_block(callback, "return");
+
+    let builder = ctx.create_builder();
+    builder.position_at_end(entry);
+    let ch = callback
+        .get_nth_param(0)
+        .ok_or_else(|| CodegenError::Llvm("stream callback missing channel param".into()))?
+        .into_pointer_value();
+    let item = callback
+        .get_nth_param(1)
+        .ok_or_else(|| CodegenError::Llvm("stream callback missing item param".into()))?
+        .into_pointer_value();
+    let item_is_null = builder
+        .build_is_null(item, "stream_item_is_null")
+        .map_err(|e| CodegenError::Llvm(format!("stream callback item null cmp: {e:?}")))?;
+    builder
+        .build_conditional_branch(item_is_null, null_item_bb, non_null_bb)
+        .map_err(|e| CodegenError::Llvm(format!("stream callback item null branch: {e:?}")))?;
+
+    let reply = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply",
+    )?;
+
+    builder.position_at_end(null_item_bb);
+    builder
+        .build_call(
+            reply,
+            &[
+                ch.into(),
+                ptr_ty.const_null().into(),
+                i64_ty.const_zero().into(),
+            ],
+            "stream_reply_null_item",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("stream callback null hew_reply call: {e:?}")))?;
+    builder
+        .build_unconditional_branch(return_bb)
+        .map_err(|e| CodegenError::Llvm(format!("stream callback null return: {e:?}")))?;
+
+    builder.position_at_end(non_null_bb);
+    let item_value = builder
+        .build_load(item_ty, item, "stream_item_value")
+        .map_err(|e| CodegenError::Llvm(format!("stream callback item load: {e:?}")))?;
+    let item_slot = builder
+        .build_alloca(item_ty, "stream_item_slot")
+        .map_err(|e| CodegenError::Llvm(format!("stream callback item slot alloca: {e:?}")))?;
+    builder
+        .build_store(item_slot, item_value)
+        .map_err(|e| CodegenError::Llvm(format!("stream callback item store: {e:?}")))?;
+    let item_size = if item_size.get_type() == i64_ty {
+        item_size
+    } else {
+        builder
+            .build_int_z_extend(item_size, i64_ty, "stream_item_size")
+            .map_err(|e| CodegenError::Llvm(format!("stream callback item size zext: {e:?}")))?
+    };
+    let delivered = builder
+        .build_call(
+            reply,
+            &[ch.into(), item_slot.into(), item_size.into()],
+            "stream_reply_delivered",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("stream callback hew_reply call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_reply returned void".into()))?
+        .into_int_value();
+    builder
+        .build_conditional_branch(delivered, delivered_bb, not_delivered_bb)
+        .map_err(|e| CodegenError::Llvm(format!("stream callback delivered branch: {e:?}")))?;
+
+    builder.position_at_end(delivered_bb);
+    builder
+        .build_unconditional_branch(free_item_bb)
+        .map_err(|e| CodegenError::Llvm(format!("stream callback delivered return: {e:?}")))?;
+
+    builder.position_at_end(not_delivered_bb);
+    builder
+        .build_unconditional_branch(free_item_bb)
+        .map_err(|e| CodegenError::Llvm(format!("stream callback item free branch: {e:?}")))?;
+
+    builder.position_at_end(free_item_bb);
+    let free_fn = match fn_ctx.llvm_mod.get_function("free") {
+        Some(fv) => fv,
+        None => fn_ctx.llvm_mod.add_function(
+            "free",
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            Some(Linkage::External),
+        ),
+    };
+    builder
+        .build_call(free_fn, &[item.into()], "stream_item_free")
+        .map_err(|e| CodegenError::Llvm(format!("stream callback item free: {e:?}")))?;
+    builder
+        .build_unconditional_branch(return_bb)
+        .map_err(|e| CodegenError::Llvm(format!("stream callback free return: {e:?}")))?;
+
+    builder.position_at_end(return_bb);
+    builder
+        .build_return(None)
+        .map_err(|e| CodegenError::Llvm(format!("stream callback return: {e:?}")))?;
+    Ok(callback)
+}
+
+fn load_current_task_scope<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<PointerValue<'ctx>> {
+    let ctx_ptr = fn_ctx.execution_context.ok_or_else(|| {
+        CodegenError::FailClosed("select{} TaskAwait arm requires an execution context".into())
+    })?;
+    let offset = fn_ctx
+        .ctx
+        .i64_type()
+        .const_int(HEW_CTX_OFFSET_TASK_SCOPE as u64, false);
+    let field_ptr = unsafe {
+        fn_ctx
+            .builder
+            .build_gep(
+                fn_ctx.ctx.i8_type(),
+                ctx_ptr,
+                &[offset],
+                "select_task_scope_ptr",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select task scope gep: {e:?}")))?
+    };
+    Ok(fn_ctx
+        .builder
+        .build_load(
+            fn_ctx.ctx.ptr_type(AddressSpace::default()),
+            field_ptr,
+            "select_task_scope",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("select task scope load: {e:?}")))?
+        .into_pointer_value())
+}
+
 fn emit_select_terminator<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     arms: &[hew_mir::SelectArm],
@@ -5878,11 +6081,13 @@ fn emit_select_terminator<'ctx>(
     // body-block dispatch. ActorAsk arms feed the `hew_select_first`
     // channel array; the AfterTimer arm (at most one — HIR enforces)
     // supplies the deadline.
-    let mut ask_arm_indices: Vec<usize> = Vec::with_capacity(arms.len());
+    let mut wait_arm_indices: Vec<usize> = Vec::with_capacity(arms.len());
     let mut after_arm_index: Option<usize> = None;
     for (i, arm) in arms.iter().enumerate() {
         match &arm.kind {
-            SelectArmKind::ActorAsk { .. } => ask_arm_indices.push(i),
+            SelectArmKind::ActorAsk { .. }
+            | SelectArmKind::StreamNext { .. }
+            | SelectArmKind::TaskAwait { .. } => wait_arm_indices.push(i),
             SelectArmKind::AfterTimer { .. } => {
                 if after_arm_index.is_some() {
                     return Err(CodegenError::FailClosed(
@@ -5893,44 +6098,25 @@ fn emit_select_terminator<'ctx>(
                 }
                 after_arm_index = Some(i);
             }
-            SelectArmKind::StreamNext { .. } => {
-                // Defence-in-depth: MIR producer rejects these before
-                // reaching codegen (see hew-mir lower_select); this
-                // lane does not wire stream-next.
-                return Err(CodegenError::FailClosed(
-                    "select{} stream-next arm is out of scope for this lane: \
-                     MIR producer should have rejected with \
-                     SelectArmNotImplemented; deferred to: select-widening"
-                        .to_string(),
-                ));
-            }
-            SelectArmKind::TaskAwait { .. } => {
-                return Err(CodegenError::FailClosed(
-                    "select{} task-await arm is out of scope for this lane: \
-                     MIR producer should have rejected with \
-                     SelectArmNotImplemented; deferred to: select-widening"
-                        .to_string(),
-                ));
-            }
         }
     }
 
-    if ask_arm_indices.is_empty() {
+    if wait_arm_indices.is_empty() {
         // A select with only an `after` arm is structurally valid but
         // has no race to dispatch: we'd reduce to "wait then run the
         // after-arm body". The HIR forbids select{} composed only of
         // an `after` arm (a sealed-shape invariant); fail closed.
         return Err(CodegenError::FailClosed(
-            "select{} carries no ActorAsk arms (only AfterTimer): \
+            "select{} carries no value-producing arms (only AfterTimer): \
              HIR should have rejected as a sealed-shape violation"
                 .to_string(),
         ));
     }
 
-    let n_asks: usize = ask_arm_indices.len();
-    let n_asks_i32 = i32::try_from(n_asks).map_err(|_| {
+    let n_waits: usize = wait_arm_indices.len();
+    let n_waits_i32 = i32::try_from(n_waits).map_err(|_| {
         CodegenError::FailClosed(format!(
-            "select{{}} arm count {n_asks} exceeds i32::MAX — runtime ABI is i32-bound"
+            "select{{}} arm count {n_waits} exceeds i32::MAX — runtime ABI is i32-bound"
         ))
     })?;
 
@@ -5943,11 +6129,16 @@ fn emit_select_terminator<'ctx>(
     // arm index i stores the freshly-allocated `*mut HewReplyChannel`
     // at `channel_array[i]`. The array is referenced by the winner
     // dispatch (free/cancel) and by `hew_select_first`.
-    let arr_ty = ptr_ty.array_type(n_asks_i32 as u32);
+    let arr_ty = ptr_ty.array_type(n_waits_i32 as u32);
     let arr_ptr = fn_ctx
         .builder
         .build_alloca(arr_ty, "select_channels")
         .map_err(|e| CodegenError::Llvm(format!("select channel array alloca: {e:?}")))?;
+    let pending_id_arr_ty = i64_ty.array_type(n_waits_i32 as u32);
+    let pending_id_arr_ptr = fn_ctx
+        .builder
+        .build_alloca(pending_id_arr_ty, "select_pending_read_ids")
+        .map_err(|e| CodegenError::Llvm(format!("select pending-read array alloca: {e:?}")))?;
 
     // Resolve the parent function once for block allocation.
     let parent_fn = fn_ctx
@@ -5980,6 +6171,18 @@ fn emit_select_terminator<'ctx>(
         &mut fn_ctx.runtime_decls.borrow_mut(),
         "hew_reply_channel_free",
     )?;
+    let channel_retain = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_retain",
+    )?;
+    let signal_ready = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_signal_ready",
+    )?;
     let reply_wait = intern_runtime_decl(
         ctx,
         fn_ctx.llvm_mod,
@@ -5991,6 +6194,36 @@ fn emit_select_terminator<'ctx>(
         fn_ctx.llvm_mod,
         &mut fn_ctx.runtime_decls.borrow_mut(),
         "hew_select_first",
+    )?;
+    let stream_poll = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_stream_poll",
+    )?;
+    let stream_cancel = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_stream_cancel_pending_read",
+    )?;
+    let task_completion_observe = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_completion_observe",
+    )?;
+    let task_completion_unobserve = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_completion_unobserve",
+    )?;
+    let task_get_result = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_get_result",
     )?;
     let libc_free = get_or_declare_free(fn_ctx);
 
@@ -6014,17 +6247,27 @@ fn emit_select_terminator<'ctx>(
         Ok(gep)
     };
 
-    for (slot_idx, &arm_idx) in ask_arm_indices.iter().enumerate() {
-        let (msg_type_i32, actor_place, value_place) = match &arms[arm_idx].kind {
-            SelectArmKind::ActorAsk {
-                actor,
-                msg_type,
-                value,
-                ..
-            } => (*msg_type, *actor, *value),
-            _ => unreachable!("ask_arm_indices only carries ActorAsk indices"),
+    let pending_id_slot_ptr = |i: usize| -> CodegenResult<PointerValue<'ctx>> {
+        let i_u32 = u32::try_from(i).map_err(|_| {
+            CodegenError::FailClosed(format!("select arm index {i} exceeds u32::MAX"))
+        })?;
+        let idx0 = i32_ty.const_zero();
+        let idx1 = i32_ty.const_int(u64::from(i_u32), false);
+        let gep = unsafe {
+            fn_ctx
+                .builder
+                .build_gep(
+                    pending_id_arr_ty,
+                    pending_id_arr_ptr,
+                    &[idx0, idx1],
+                    &format!("pending_read_slot_{i}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("pending-read slot gep: {e:?}")))?
         };
+        Ok(gep)
+    };
 
+    for (slot_idx, &arm_idx) in wait_arm_indices.iter().enumerate() {
         // Allocate the channel.
         let ch_val = fn_ctx
             .builder
@@ -6044,31 +6287,135 @@ fn emit_select_terminator<'ctx>(
             .build_store(slot, ch_val)
             .map_err(|e| CodegenError::Llvm(format!("ch slot store: {e:?}")))?;
 
-        // Issue the ask with the caller-provided channel.
-        let actor_ptr = load_duplex_handle(fn_ctx, actor_place, "select_actor_handle")?;
-        let (payload_ptr, payload_size) =
-            actor_payload_ptr_size(fn_ctx, value_place, "select_ask_payload")?;
-        let msg_type_val = i32_ty.const_int(msg_type_i32 as u64, false);
-        let status = fn_ctx
-            .builder
-            .build_call(
-                ask_with_channel,
-                &[
-                    actor_ptr.into(),
-                    msg_type_val.into(),
-                    payload_ptr.into(),
-                    payload_size.into(),
-                    ch_val.into(),
-                ],
-                &format!("select_ask_issue_{slot_idx}"),
-            )
-            .map_err(|e| CodegenError::Llvm(format!("hew_actor_ask_with_channel call: {e:?}")))?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("hew_actor_ask_with_channel returned void".into())
-            })?
-            .into_int_value();
+        let (status, current_has_retained_observer) = match &arms[arm_idx].kind {
+            SelectArmKind::ActorAsk {
+                actor,
+                msg_type,
+                value,
+                ..
+            } => {
+                let actor_ptr = load_duplex_handle(fn_ctx, *actor, "select_actor_handle")?;
+                let (payload_ptr, payload_size) =
+                    actor_payload_ptr_size(fn_ctx, *value, "select_ask_payload")?;
+                let msg_type_val = i32_ty.const_int(*msg_type as u64, false);
+                let status = fn_ctx
+                    .builder
+                    .build_call(
+                        ask_with_channel,
+                        &[
+                            actor_ptr.into(),
+                            msg_type_val.into(),
+                            payload_ptr.into(),
+                            payload_size.into(),
+                            ch_val.into(),
+                        ],
+                        &format!("select_ask_issue_{slot_idx}"),
+                    )
+                    .map_err(|e| {
+                        CodegenError::Llvm(format!("hew_actor_ask_with_channel call: {e:?}"))
+                    })?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_actor_ask_with_channel returned void".into())
+                    })?
+                    .into_int_value();
+                (status, false)
+            }
+            SelectArmKind::StreamNext { stream } => {
+                let binding_place = arms[arm_idx].binding.ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "select{{}} StreamNext arm {arm_idx} carries no binding Place (the producer must \
+                         populate `SelectArm.binding` with the stream item slot)"
+                    ))
+                })?;
+                let (_, item_ty) = place_pointer(fn_ctx, binding_place)?;
+                let stream_callback = get_or_create_select_stream_callback(fn_ctx, item_ty)?;
+                fn_ctx
+                    .builder
+                    .build_call(
+                        channel_retain,
+                        &[ch_val.into()],
+                        &format!("select_stream_ch_retain_{slot_idx}"),
+                    )
+                    .map_err(|e| CodegenError::Llvm(format!("stream channel retain: {e:?}")))?;
+                let stream_ptr = load_duplex_handle(fn_ctx, *stream, "select_stream_handle")?;
+                let pending_id = fn_ctx
+                    .builder
+                    .build_call(
+                        stream_poll,
+                        &[
+                            stream_ptr.into(),
+                            stream_callback.as_global_value().as_pointer_value().into(),
+                            ch_val.into(),
+                        ],
+                        &format!("select_stream_poll_{slot_idx}"),
+                    )
+                    .map_err(|e| CodegenError::Llvm(format!("hew_stream_poll call: {e:?}")))?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_stream_poll returned void".into())
+                    })?
+                    .into_int_value();
+                let pending_slot = pending_id_slot_ptr(slot_idx)?;
+                fn_ctx
+                    .builder
+                    .build_store(pending_slot, pending_id)
+                    .map_err(|e| CodegenError::Llvm(format!("pending-read id store: {e:?}")))?;
+                let failed = fn_ctx
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        pending_id,
+                        i64_ty.const_zero(),
+                        &format!("select_stream_poll_failed_{slot_idx}"),
+                    )
+                    .map_err(|e| CodegenError::Llvm(format!("stream poll cmp: {e:?}")))?;
+                let status = fn_ctx
+                    .builder
+                    .build_int_z_extend(failed, i32_ty, &format!("select_stream_status_{slot_idx}"))
+                    .map_err(|e| CodegenError::Llvm(format!("stream poll status zext: {e:?}")))?;
+                (status, true)
+            }
+            SelectArmKind::TaskAwait { task } => {
+                fn_ctx
+                    .builder
+                    .build_call(
+                        channel_retain,
+                        &[ch_val.into()],
+                        &format!("select_task_ch_retain_{slot_idx}"),
+                    )
+                    .map_err(|e| CodegenError::Llvm(format!("task channel retain: {e:?}")))?;
+                let scope_ptr = load_current_task_scope(fn_ctx)?;
+                let task_ptr = load_duplex_handle(fn_ctx, *task, "select_task_handle")?;
+                let status = fn_ctx
+                    .builder
+                    .build_call(
+                        task_completion_observe,
+                        &[
+                            scope_ptr.into(),
+                            task_ptr.into(),
+                            signal_ready.as_global_value().as_pointer_value().into(),
+                            ch_val.into(),
+                        ],
+                        &format!("select_task_observe_{slot_idx}"),
+                    )
+                    .map_err(|e| {
+                        CodegenError::Llvm(format!("hew_task_completion_observe call: {e:?}"))
+                    })?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_task_completion_observe returned void".into())
+                    })?
+                    .into_int_value();
+                (status, true)
+            }
+            SelectArmKind::AfterTimer { .. } => {
+                unreachable!("wait_arm_indices excludes AfterTimer")
+            }
+        };
 
         // Branch on status: 0 → next ask setup or select_first; non-zero
         // → mid-setup recovery (free every channel allocated through
@@ -6100,21 +6447,80 @@ fn emit_select_terminator<'ctx>(
         // successfully submitted (i < slot_idx); the failing channel
         // (slot_idx) only needs `free`.
         fn_ctx.builder.position_at_end(setup_fail_bb);
-        for j in 0..slot_idx {
+        for (j, &prev_arm_idx) in wait_arm_indices.iter().enumerate().take(slot_idx) {
             let cleanup_slot = slot_ptr(j)?;
             let cleanup_ch = fn_ctx
                 .builder
                 .build_load(ptr_ty, cleanup_slot, &format!("select_cleanup_load_{j}"))
                 .map_err(|e| CodegenError::Llvm(format!("setup-fail load: {e:?}")))?
                 .into_pointer_value();
-            fn_ctx
-                .builder
-                .build_call(
-                    channel_cancel,
-                    &[cleanup_ch.into()],
-                    &format!("select_cleanup_cancel_{j}"),
-                )
-                .map_err(|e| CodegenError::Llvm(format!("setup-fail cancel: {e:?}")))?;
+            match &arms[prev_arm_idx].kind {
+                SelectArmKind::StreamNext { stream } => {
+                    let stream_ptr = load_duplex_handle(fn_ctx, *stream, "select_cleanup_stream")?;
+                    let pending_slot = pending_id_slot_ptr(j)?;
+                    let pending_id = fn_ctx
+                        .builder
+                        .build_load(
+                            i64_ty,
+                            pending_slot,
+                            &format!("select_cleanup_pending_id_{j}"),
+                        )
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("setup-fail pending id load: {e:?}"))
+                        })?
+                        .into_int_value();
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            stream_cancel,
+                            &[stream_ptr.into(), pending_id.into()],
+                            &format!("select_cleanup_stream_cancel_{j}"),
+                        )
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("setup-fail stream cancel: {e:?}"))
+                        })?;
+                }
+                SelectArmKind::TaskAwait { task } => {
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            channel_cancel,
+                            &[cleanup_ch.into()],
+                            &format!("select_cleanup_cancel_{j}"),
+                        )
+                        .map_err(|e| CodegenError::Llvm(format!("setup-fail cancel: {e:?}")))?;
+                    let scope_ptr = load_current_task_scope(fn_ctx)?;
+                    let task_ptr = load_duplex_handle(fn_ctx, *task, "select_cleanup_task")?;
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            task_completion_unobserve,
+                            &[
+                                scope_ptr.into(),
+                                task_ptr.into(),
+                                signal_ready.as_global_value().as_pointer_value().into(),
+                                cleanup_ch.into(),
+                            ],
+                            &format!("select_cleanup_task_unobserve_{j}"),
+                        )
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("setup-fail task unobserve: {e:?}"))
+                        })?;
+                }
+                SelectArmKind::ActorAsk { .. } => {
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            channel_cancel,
+                            &[cleanup_ch.into()],
+                            &format!("select_cleanup_cancel_{j}"),
+                        )
+                        .map_err(|e| CodegenError::Llvm(format!("setup-fail cancel: {e:?}")))?;
+                }
+                SelectArmKind::AfterTimer { .. } => {
+                    unreachable!("wait_arm_indices excludes AfterTimer")
+                }
+            }
             fn_ctx
                 .builder
                 .build_call(
@@ -6134,6 +6540,16 @@ fn emit_select_terminator<'ctx>(
                 &format!("select_setup_fail_free_self_{slot_idx}"),
             )
             .map_err(|e| CodegenError::Llvm(format!("setup-fail self free: {e:?}")))?;
+        if current_has_retained_observer {
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_free,
+                    &[ch_val.into()],
+                    &format!("select_setup_fail_free_observer_{slot_idx}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("setup-fail observer free: {e:?}")))?;
+        }
 
         // Trap with HEW_TRAP_ACTOR_SEND_FAILED (the same diagnostic
         // code `Terminator::Send` uses on send-status failure — the
@@ -6223,7 +6639,7 @@ fn emit_select_terminator<'ctx>(
             .build_gep(arr_ty, arr_ptr, &[idx0, idx0], "select_channels_first")
             .map_err(|e| CodegenError::Llvm(format!("select arr first gep: {e:?}")))?
     };
-    let count_val = i32_ty.const_int(n_asks_i32 as u64, true);
+    let count_val = i32_ty.const_int(n_waits_i32 as u64, true);
     let winner = fn_ctx
         .builder
         .build_call(
@@ -6245,8 +6661,8 @@ fn emit_select_terminator<'ctx>(
     // (if applicable). Each winner block handles its own loser
     // cleanup, reply read, and branch to the MIR-allocated body block.
     let mut winner_bbs: Vec<inkwell::basic_block::BasicBlock<'_>> =
-        Vec::with_capacity(ask_arm_indices.len());
-    for slot_idx in 0..ask_arm_indices.len() {
+        Vec::with_capacity(wait_arm_indices.len());
+    for slot_idx in 0..wait_arm_indices.len() {
         winner_bbs.push(ctx.append_basic_block(parent_fn, &format!("select_win_ask_{slot_idx}")));
     }
     let after_winner_bb =
@@ -6279,11 +6695,11 @@ fn emit_select_terminator<'ctx>(
 
     // For each ActorAsk winner block: read the reply, cancel+free
     // every loser, branch to the arm body block.
-    for (winner_slot, &arm_idx) in ask_arm_indices.iter().enumerate() {
+    for (winner_slot, &arm_idx) in wait_arm_indices.iter().enumerate() {
         let arm = &arms[arm_idx];
         let binding_place = arm.binding.ok_or_else(|| {
             CodegenError::FailClosed(format!(
-                "select{{}} ActorAsk arm {arm_idx} carries no binding Place (the producer must \
+                 "select{{}} value-producing arm {arm_idx} carries no binding Place (the producer must \
                  populate `SelectArm.binding` with the per-arm reply slot)"
             ))
         })?;
@@ -6303,21 +6719,48 @@ fn emit_select_terminator<'ctx>(
             .map_err(|e| CodegenError::Llvm(format!("select winner load: {e:?}")))?
             .into_pointer_value();
 
-        // Read reply via hew_reply_wait. Returns *mut c_void; the
-        // caller owns the buffer and must `libc::free` it after
-        // loading the value.
-        let reply_ptr = fn_ctx
-            .builder
-            .build_call(
-                reply_wait,
-                &[win_ch.into()],
-                &format!("select_reply_wait_{winner_slot}"),
+        let (dest_ptr, dest_ty) = place_pointer(fn_ctx, binding_place)?;
+        let task_result_ptr = if matches!(arm.kind, SelectArmKind::TaskAwait { .. }) {
+            let task_place = match &arm.kind {
+                SelectArmKind::TaskAwait { task } => *task,
+                _ => unreachable!("checked above"),
+            };
+            let task_ptr = load_duplex_handle(fn_ctx, task_place, "select_task_winner")?;
+            Some(
+                fn_ctx
+                    .builder
+                    .build_call(
+                        task_get_result,
+                        &[task_ptr.into()],
+                        &format!("select_task_get_result_{winner_slot}"),
+                    )
+                    .map_err(|e| CodegenError::Llvm(format!("hew_task_get_result call: {e:?}")))?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_task_get_result returned void".into())
+                    })?
+                    .into_pointer_value(),
             )
-            .map_err(|e| CodegenError::Llvm(format!("hew_reply_wait call: {e:?}")))?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_reply_wait returned void".into()))?
-            .into_pointer_value();
+        } else {
+            None
+        };
+        let reply_ptr = if let Some(result_ptr) = task_result_ptr {
+            result_ptr
+        } else {
+            fn_ctx
+                .builder
+                .build_call(
+                    reply_wait,
+                    &[win_ch.into()],
+                    &format!("select_reply_wait_{winner_slot}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_reply_wait call: {e:?}")))?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_reply_wait returned void".into()))?
+                .into_pointer_value()
+        };
 
         // Defensive null check on the reply pointer. `hew_reply_wait`
         // returns null when the published value pointer was null —
@@ -6361,7 +6804,6 @@ fn emit_select_terminator<'ctx>(
             .map_err(|e| CodegenError::Llvm(format!("select reply null unreachable: {e:?}")))?;
         // Ok branch: load + store + frees.
         fn_ctx.builder.position_at_end(ok_bb);
-        let (dest_ptr, dest_ty) = place_pointer(fn_ctx, binding_place)?;
         let reply_val = fn_ctx
             .builder
             .build_load(
@@ -6375,15 +6817,16 @@ fn emit_select_terminator<'ctx>(
             .build_store(dest_ptr, reply_val)
             .map_err(|e| CodegenError::Llvm(format!("select reply store: {e:?}")))?;
 
-        // Free the reply buffer.
-        fn_ctx
-            .builder
-            .build_call(
-                libc_free,
-                &[reply_ptr.into()],
-                &format!("select_reply_free_{winner_slot}"),
-            )
-            .map_err(|e| CodegenError::Llvm(format!("select reply free: {e:?}")))?;
+        if task_result_ptr.is_none() {
+            fn_ctx
+                .builder
+                .build_call(
+                    libc_free,
+                    &[reply_ptr.into()],
+                    &format!("select_reply_free_{winner_slot}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("select reply free: {e:?}")))?;
+        }
 
         // Free the winning channel's caller-side ref (no cancel — we
         // consumed its reply, the channel is not abandoned).
@@ -6399,7 +6842,7 @@ fn emit_select_terminator<'ctx>(
         // Loser cleanup: every OTHER ActorAsk arm gets cancel + free,
         // in that order (Risk R4 — cancel BEFORE free is the UAF
         // mitigation for late-reply races on cancelled channels).
-        for (loser_slot, _) in ask_arm_indices.iter().enumerate() {
+        for (loser_slot, &loser_arm_idx) in wait_arm_indices.iter().enumerate() {
             if loser_slot == winner_slot {
                 continue;
             }
@@ -6413,15 +6856,73 @@ fn emit_select_terminator<'ctx>(
                 )
                 .map_err(|e| CodegenError::Llvm(format!("select loser load: {e:?}")))?
                 .into_pointer_value();
-            // CANCEL FIRST. Then FREE. Order is load-bearing.
-            fn_ctx
-                .builder
-                .build_call(
-                    channel_cancel,
-                    &[loser_ch.into()],
-                    &format!("select_loser_cancel_w{winner_slot}_l{loser_slot}"),
-                )
-                .map_err(|e| CodegenError::Llvm(format!("select loser cancel: {e:?}")))?;
+            match &arms[loser_arm_idx].kind {
+                SelectArmKind::StreamNext { stream } => {
+                    let stream_ptr = load_duplex_handle(fn_ctx, *stream, "select_loser_stream")?;
+                    let pending_slot = pending_id_slot_ptr(loser_slot)?;
+                    let pending_id = fn_ctx
+                        .builder
+                        .build_load(
+                            i64_ty,
+                            pending_slot,
+                            &format!("select_loser_pending_id_w{winner_slot}_l{loser_slot}"),
+                        )
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("select loser pending id load: {e:?}"))
+                        })?
+                        .into_int_value();
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            stream_cancel,
+                            &[stream_ptr.into(), pending_id.into()],
+                            &format!("select_loser_stream_cancel_w{winner_slot}_l{loser_slot}"),
+                        )
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("select loser stream cancel: {e:?}"))
+                        })?;
+                }
+                SelectArmKind::TaskAwait { task } => {
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            channel_cancel,
+                            &[loser_ch.into()],
+                            &format!("select_loser_cancel_w{winner_slot}_l{loser_slot}"),
+                        )
+                        .map_err(|e| CodegenError::Llvm(format!("select loser cancel: {e:?}")))?;
+                    let scope_ptr = load_current_task_scope(fn_ctx)?;
+                    let task_ptr = load_duplex_handle(fn_ctx, *task, "select_loser_task")?;
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            task_completion_unobserve,
+                            &[
+                                scope_ptr.into(),
+                                task_ptr.into(),
+                                signal_ready.as_global_value().as_pointer_value().into(),
+                                loser_ch.into(),
+                            ],
+                            &format!("select_loser_task_unobserve_w{winner_slot}_l{loser_slot}"),
+                        )
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("select loser task unobserve: {e:?}"))
+                        })?;
+                }
+                SelectArmKind::ActorAsk { .. } => {
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            channel_cancel,
+                            &[loser_ch.into()],
+                            &format!("select_loser_cancel_w{winner_slot}_l{loser_slot}"),
+                        )
+                        .map_err(|e| CodegenError::Llvm(format!("select loser cancel: {e:?}")))?;
+                }
+                SelectArmKind::AfterTimer { .. } => {
+                    unreachable!("wait_arm_indices excludes AfterTimer")
+                }
+            }
             fn_ctx
                 .builder
                 .build_call(
@@ -6451,7 +6952,7 @@ fn emit_select_terminator<'ctx>(
         let after_arm = &arms[after_idx];
         let body_block_id = after_arm.body_block;
         fn_ctx.builder.position_at_end(after_bb);
-        for (loser_slot, _) in ask_arm_indices.iter().enumerate() {
+        for (loser_slot, &loser_arm_idx) in wait_arm_indices.iter().enumerate() {
             let loser_slot_ptr = slot_ptr(loser_slot)?;
             let loser_ch = fn_ctx
                 .builder
@@ -6462,15 +6963,78 @@ fn emit_select_terminator<'ctx>(
                 )
                 .map_err(|e| CodegenError::Llvm(format!("select after loser load: {e:?}")))?
                 .into_pointer_value();
-            // CANCEL FIRST, THEN FREE.
-            fn_ctx
-                .builder
-                .build_call(
-                    channel_cancel,
-                    &[loser_ch.into()],
-                    &format!("select_after_loser_cancel_{loser_slot}"),
-                )
-                .map_err(|e| CodegenError::Llvm(format!("select after loser cancel: {e:?}")))?;
+            match &arms[loser_arm_idx].kind {
+                SelectArmKind::StreamNext { stream } => {
+                    let stream_ptr =
+                        load_duplex_handle(fn_ctx, *stream, "select_after_loser_stream")?;
+                    let pending_slot = pending_id_slot_ptr(loser_slot)?;
+                    let pending_id = fn_ctx
+                        .builder
+                        .build_load(
+                            i64_ty,
+                            pending_slot,
+                            &format!("select_after_loser_pending_id_{loser_slot}"),
+                        )
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("select after loser pending id load: {e:?}"))
+                        })?
+                        .into_int_value();
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            stream_cancel,
+                            &[stream_ptr.into(), pending_id.into()],
+                            &format!("select_after_loser_stream_cancel_{loser_slot}"),
+                        )
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("select after loser stream cancel: {e:?}"))
+                        })?;
+                }
+                SelectArmKind::TaskAwait { task } => {
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            channel_cancel,
+                            &[loser_ch.into()],
+                            &format!("select_after_loser_cancel_{loser_slot}"),
+                        )
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("select after loser cancel: {e:?}"))
+                        })?;
+                    let scope_ptr = load_current_task_scope(fn_ctx)?;
+                    let task_ptr = load_duplex_handle(fn_ctx, *task, "select_after_loser_task")?;
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            task_completion_unobserve,
+                            &[
+                                scope_ptr.into(),
+                                task_ptr.into(),
+                                signal_ready.as_global_value().as_pointer_value().into(),
+                                loser_ch.into(),
+                            ],
+                            &format!("select_after_loser_task_unobserve_{loser_slot}"),
+                        )
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("select after loser task unobserve: {e:?}"))
+                        })?;
+                }
+                SelectArmKind::ActorAsk { .. } => {
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            channel_cancel,
+                            &[loser_ch.into()],
+                            &format!("select_after_loser_cancel_{loser_slot}"),
+                        )
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("select after loser cancel: {e:?}"))
+                        })?;
+                }
+                SelectArmKind::AfterTimer { .. } => {
+                    unreachable!("wait_arm_indices excludes AfterTimer")
+                }
+            }
             fn_ctx
                 .builder
                 .build_call(
@@ -7696,45 +8260,105 @@ mod tests {
         }
     }
 
-    /// Stream-next arms remain fail-closed at codegen as
-    /// defence-in-depth — the MIR producer rejects them earlier but
-    /// the codegen branch must also refuse.
+    /// Stream-next arms allocate their own readiness channel, register
+    /// a pending read, include that channel in `hew_select_first`, and
+    /// cancel the pending read when they lose.
     #[test]
-    fn select_stream_next_arm_fails_closed_as_defence_in_depth() {
-        let pipeline = pipeline_with_select_terminator(hew_mir::SelectArmKind::StreamNext {
-            stream: Place::Local(0),
-        });
-        let ctx = Context::create();
-        let err = build_module(&ctx, &pipeline, "select_stream_next")
-            .expect_err("Terminator::Select stream-next must fail closed at codegen");
-        let msg = match err {
-            CodegenError::FailClosed(s) => s,
-            other => panic!("expected FailClosed, got {other:?}"),
-        };
+    fn select_stream_next_arm_emits_readiness_proxy() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::StreamNext {
+                    stream: Place::DuplexHandle(0),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::AfterTimer {
+                    duration: Place::Local(2),
+                },
+                body_block: 11,
+                binding: None,
+            },
+        ];
+        let locals = vec![duplex_ty(), ResolvedTy::I64, ResolvedTy::Duration];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_stream_next", &pipeline);
+        assert_eq!(ir.matches("call ptr @hew_reply_channel_new(").count(), 1);
+        assert!(ir.contains("call void @hew_reply_channel_retain("));
+        assert!(ir.contains("call i64 @hew_stream_poll("));
         assert!(
-            msg.contains("stream-next") && msg.contains("out of scope"),
-            "stream-next FailClosed must mark the arm as out-of-lane: {msg}"
+            ir.contains("%stream_item_value = load i64, ptr %1"),
+            "stream callback must load the item bytes as the arm binding type; ir:\n{ir}"
         );
+        assert!(
+            ir.contains("store i64 %stream_item_value, ptr %stream_item_slot"),
+            "stream callback must reply with the loaded item value, not the item pointer; ir:\n{ir}"
+        );
+        assert_eq!(
+            ir.matches("call void @free(ptr %1)").count(),
+            1,
+            "stream callback must free the malloc'd stream buffer once via the shared free block; ir:\n{ir}"
+        );
+        assert!(ir.contains("call void @hew_stream_cancel_pending_read("));
+        assert!(ir.contains("call i32 @hew_select_first("));
     }
 
-    /// Task-await arms remain fail-closed at codegen as
-    /// defence-in-depth.
+    /// Two stream arms observing the same source still allocate and
+    /// register distinct per-arm readiness channels.
     #[test]
-    fn select_task_await_arm_fails_closed_as_defence_in_depth() {
-        let pipeline = pipeline_with_select_terminator(hew_mir::SelectArmKind::TaskAwait {
-            task: Place::Local(0),
-        });
-        let ctx = Context::create();
-        let err = build_module(&ctx, &pipeline, "select_task_await")
-            .expect_err("Terminator::Select task-await must fail closed at codegen");
-        let msg = match err {
-            CodegenError::FailClosed(s) => s,
-            other => panic!("expected FailClosed, got {other:?}"),
-        };
-        assert!(
-            msg.contains("task-await") && msg.contains("out of scope"),
-            "task-await FailClosed must mark the arm as out-of-lane: {msg}"
-        );
+    fn select_stream_next_duplicate_source_uses_per_arm_channels() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::StreamNext {
+                    stream: Place::DuplexHandle(0),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::StreamNext {
+                    stream: Place::DuplexHandle(0),
+                },
+                body_block: 11,
+                binding: Some(Place::Local(2)),
+            },
+        ];
+        let locals = vec![duplex_ty(), ResolvedTy::String, ResolvedTy::String];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_stream_duplicate", &pipeline);
+        assert_eq!(ir.matches("call ptr @hew_reply_channel_new(").count(), 2);
+        assert_eq!(ir.matches("call i64 @hew_stream_poll(").count(), 2);
+    }
+
+    /// Task-await arms observe completion through a retained reply-channel
+    /// readiness proxy and read the completed result only after winning.
+    #[test]
+    fn select_task_await_arm_emits_completion_proxy() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::TaskAwait {
+                    task: Place::DuplexHandle(0),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::AfterTimer {
+                    duration: Place::Local(2),
+                },
+                body_block: 11,
+                binding: None,
+            },
+        ];
+        let locals = vec![task_ty(), ResolvedTy::I64, ResolvedTy::Duration];
+        let pipeline = pipeline_with_select_actor_handler_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_task_await", &pipeline);
+        assert_eq!(ir.matches("call ptr @hew_reply_channel_new(").count(), 1);
+        assert!(ir.contains("call void @hew_reply_channel_retain("));
+        assert!(ir.contains("call i32 @hew_task_completion_observe("));
+        assert!(ir.contains("call i32 @hew_task_completion_unobserve("));
+        assert!(ir.contains("call ptr @hew_task_get_result("));
     }
 
     /// A select carrying only an `AfterTimer` arm has no race; the
@@ -7753,7 +8377,7 @@ mod tests {
             other => panic!("expected FailClosed, got {other:?}"),
         };
         assert!(
-            msg.contains("no ActorAsk arms"),
+            msg.contains("no value-producing arms"),
             "after-only FailClosed must explain the sealed-shape violation: {msg}"
         );
     }
@@ -7826,6 +8450,30 @@ mod tests {
         }
     }
 
+    fn pipeline_with_select_actor_handler_arms(
+        arms: Vec<hew_mir::SelectArm>,
+        locals: Vec<ResolvedTy>,
+        body_block_ids: &[u32],
+        join_block_id: u32,
+    ) -> IrPipeline {
+        let mut pipeline = pipeline_with_select_arms(arms, locals, body_block_ids, join_block_id);
+        pipeline.raw_mir[0].call_conv = hew_mir::FunctionCallConv::ActorHandler;
+        pipeline.raw_mir[0].blocks[0]
+            .instructions
+            .insert(0, Instr::EnterContext);
+        let join_block = pipeline
+            .raw_mir
+            .get_mut(0)
+            .and_then(|main| {
+                main.blocks
+                    .iter_mut()
+                    .find(|block| block.id == join_block_id)
+            })
+            .expect("select actor-handler helper must include join block");
+        join_block.instructions.push(Instr::ExitContext);
+        pipeline
+    }
+
     /// Helper: a `ResolvedTy::Named { name: "Duplex", .. }` so the
     /// codegen treats local 0 as an actor handle (the same shape
     /// `Place::DuplexHandle` references via `load_duplex_handle`).
@@ -7834,6 +8482,10 @@ mod tests {
             name: "Duplex".to_string(),
             args: Vec::new(),
         }
+    }
+
+    fn task_ty() -> ResolvedTy {
+        ResolvedTy::Task(Box::new(ResolvedTy::I64))
     }
 
     /// Render the LLVM IR of the emitted module so test bodies can

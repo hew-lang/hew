@@ -572,6 +572,7 @@ stable = [
   "hew_task_await_blocking",
   "hew_task_complete_threaded",
   "hew_task_completion_observe",
+  "hew_task_completion_unobserve",
   "hew_task_free",
   "hew_task_get_env",
   "hew_task_get_error",

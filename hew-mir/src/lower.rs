@@ -5631,11 +5631,8 @@ impl Builder {
     /// ## Out-of-scope consumer arm kinds (fail-closed)
     ///
     /// `StreamNext` and `TaskAwait` are produced in MIR so the producer
-    /// boundary carries the sealed HIR shape forward. The
-    /// defence-in-depth fail-closed at codegen's `Terminator::Select`
-    /// arm-kind switch remains until the backend consumer lands.
-    /// `StreamNext` remains fail-closed on wasm32 at this producer
-    /// boundary because the stream runtime substrate is native-only.
+    /// boundary carries the sealed HIR shape forward. Backend target-specific
+    /// fail-closed checks live in codegen, where the requested target is known.
     ///
     /// ## Cleanup-CFG composition (D24-2 / `ExitPath::Select`)
     ///
@@ -5660,27 +5657,6 @@ impl Builder {
         expected_ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        // Native lowering produces all sealed arm kinds. On wasm32,
-        // StreamNext stays fail-closed because the stream substrate is
-        // native-only; keeping the typed producer diagnostic prevents a
-        // malformed MIR shape from reaching later stages on that target.
-        #[cfg(target_arch = "wasm32")]
-        for arm in &select.arms {
-            if matches!(arm.kind, HirSelectArmKind::StreamNext { .. }) {
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::SelectArmNotImplemented {
-                        arm_kind: "StreamNext".to_string(),
-                        deferred_by: "native stream select substrate".to_string(),
-                        site,
-                    },
-                    note: "select{} stream-next arms are native-only at the MIR \
-                           producer boundary; wasm32 remains fail-closed"
-                        .to_string(),
-                });
-                return None;
-            }
-        }
-
         // Result local first so it dominates every arm-body's Move.
         // For Unit-typed selects the placeholder write is benign — no
         // load occurs in the join block. Mirrors the `lower_if` pattern.
@@ -5758,7 +5734,16 @@ impl Builder {
                 }
                 HirSelectArmKind::StreamNext { stream } => {
                     let stream_place = self.lower_value(stream)?;
-                    let item_dest = self.alloc_local(ResolvedTy::Unit);
+                    let stream_ty = self.subst_ty(&stream.ty);
+                    let item_ty = match stream_ty {
+                        ResolvedTy::Named { name, mut args }
+                            if name == "Stream" && args.len() == 1 =>
+                        {
+                            args.remove(0)
+                        }
+                        _ => ResolvedTy::Unit,
+                    };
+                    let item_dest = self.alloc_local(item_ty);
                     if let Some(binding_id) = arm.binding_id {
                         self.binding_locals.insert(binding_id, item_dest);
                     }

@@ -374,6 +374,20 @@ impl TaskDoneSignal {
         }
     }
 
+    fn unobserve(&self, callback: TaskCompletionCallback, ctx: *mut c_void) -> bool {
+        let mut state = self.lock.lock_or_recover();
+        if state.done {
+            return false;
+        }
+        let Some(pos) = state.observers.iter().position(|observer| {
+            observer.callback as usize == callback as usize && observer.ctx == ctx as usize
+        }) else {
+            return false;
+        };
+        state.observers.swap_remove(pos);
+        true
+    }
+
     fn wait_until_done(&self) {
         let mut state = self.lock.lock_or_recover();
         while !state.done {
@@ -637,6 +651,38 @@ pub unsafe extern "C" fn hew_task_completion_observe(
         .get_or_insert_with(|| Arc::new(TaskDoneSignal::new()));
     signal.observe(callback, ctx);
     0
+}
+
+#[no_mangle]
+/// Remove a previously registered task-completion observer.
+///
+/// # Safety
+///
+/// `task` must be a live task allocated by this runtime and owned by `scope`.
+/// `cb` and `ctx` must match the observer registration being removed; `ctx` is
+/// not dereferenced by this function.
+pub unsafe extern "C" fn hew_task_completion_unobserve(
+    scope: *mut HewTaskScope,
+    task: *mut HewTask,
+    cb: Option<TaskCompletionCallback>,
+    ctx: *mut c_void,
+) -> i32 {
+    if scope.is_null() || task.is_null() {
+        crate::set_last_error("C-ABI guard failed: scope.is_null() || task.is_null()");
+        return -1;
+    }
+    let Some(callback) = cb else {
+        crate::set_last_error("C-ABI guard failed: cb.is_none()");
+        return -1;
+    };
+    // SAFETY: caller guarantees `task` is a live task owned by `scope`; null was
+    // rejected above. The scope pointer is part of the FFI contract and is not
+    // dereferenced here beyond the null guard.
+    let t = unsafe { &mut *task };
+    let Some(signal) = t.done_signal.as_ref() else {
+        return 0;
+    };
+    i32::from(signal.unobserve(callback, ctx))
 }
 
 /// Set the task's result by deep-copying `result`.

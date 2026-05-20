@@ -16,9 +16,9 @@
 # Prerequisites:
 #   - SSH access to platform hosts (see PLATFORM_HOSTS below)
 #   - rsync available locally and on remote hosts
-#   - Each host must have Rust, LLVM 22, cmake, ninja installed
+#   - Each host must have Rust and LLVM 22 installed
 #   - Linux aarch64 remote validation requires Ubuntu 24.04 arm64 + sudo so the
-#     script can provision LLVM/MLIR 22 from apt.llvm.org/noble
+#     script can provision LLVM 22 from apt.llvm.org/noble
 #   - timeout (Linux) or gtimeout (macOS/coreutils) for bounded execution
 #
 # Timeout overrides (seconds):
@@ -62,7 +62,7 @@ LINUX_AARCH64_PROJECT_DIR="${HEW_LINUX_AARCH64_DIR:-${LINUX_AARCH64_PROJECT_DIR:
 FREEBSD_PROJECT_DIR="${HEW_FREEBSD_DIR:-${FREEBSD_PROJECT_DIR:-}}"
 WINDOWS_PROJECT_DIR="${HEW_WINDOWS_DIR:-${WINDOWS_PROJECT_DIR:-}}"
 WINDOWS_LLVM_PREFIX="${HEW_WINDOWS_LLVM_PREFIX:-C:\\llvm-22}"
-WINDOWS_MLIR_CONFIG="${HEW_WINDOWS_MLIR_CONFIG:-${WINDOWS_LLVM_PREFIX}\\lib\\cmake\\mlir\\MLIRConfig.cmake}"
+WINDOWS_LLVM_CONFIG="${HEW_WINDOWS_LLVM_CONFIG:-${WINDOWS_LLVM_PREFIX}\\lib\\cmake\\llvm\\LLVMConfig.cmake}"
 WINDOWS_CC="${HEW_WINDOWS_CC:-cl}"
 WINDOWS_CXX="${HEW_WINDOWS_CXX:-cl}"
 
@@ -167,7 +167,7 @@ validate_linux() {
         set -e
         echo "==> Step 1: Static-link release build"
         # This is the exact build that the release CI does
-        run_with_timeout "${LOCAL_BUILD_TIMEOUT}" env HEW_EMBED_STATIC=1 cargo build -p hew-cli -p adze-cli -p hew-lsp --release 2>&1
+        run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-cli -p adze-cli -p hew-lsp --release 2>&1
         run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-lib --release 2>&1
 
         echo "==> Step 2: Verify binaries exist and run"
@@ -333,7 +333,7 @@ validate_linux_aarch64() {
             }
         fi
 
-        echo "==> Provisioning LLVM/MLIR 22 from apt.llvm.org/noble"
+        echo "==> Provisioning LLVM 22 from apt.llvm.org/noble"
         run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${LINUX_AARCH64_HOST}" bash -lc "'
             set -eux
             cd ${LINUX_AARCH64_PROJECT_DIR}
@@ -345,10 +345,7 @@ validate_linux_aarch64() {
                 | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
             sudo apt-get update -qq
             sudo apt-get install -y -qq \
-                cmake ninja-build \
                 llvm-22-dev \
-                libmlir-22-dev \
-                mlir-22-tools \
                 clang-22 \
                 lld-22 \
                 libssl-dev pkg-config \
@@ -432,9 +429,7 @@ validate_freebsd() {
             export CC=clang
             export CXX=clang++
 
-            # FreeBSD LLVM packages only ship static archives (no libMLIR.so),
-            # so we must use static linking to build the embedded codegen.
-            HEW_EMBED_STATIC=1 cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+            cargo build -p hew-cli -p adze-cli -p hew-lsp --release
             cargo build -p hew-lib --release
 
             target/release/hew --version
@@ -475,16 +470,16 @@ validate_windows() {
         # shellcheck disable=SC2029  # WINDOWS_PROJECT_DIR is intentionally expanded locally
         run_with_timeout "${SYNC_TIMEOUT}" ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && git fetch origin main && git reset --hard origin/main"
 
-        echo "==> Verifying Windows LLVM/MLIR install"
+        echo "==> Verifying Windows LLVM install"
         run_windows_powershell "${SSH_CHECK_TIMEOUT}" "
 \$ErrorActionPreference = 'Stop'
-if (-not (Test-Path '${WINDOWS_MLIR_CONFIG}')) {
-    throw 'Missing ${WINDOWS_MLIR_CONFIG}. Bootstrap LLVM+MLIR 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_MLIR_CONFIG before running pre-release validation.'
+if (-not (Test-Path '${WINDOWS_LLVM_CONFIG}')) {
+    throw 'Missing ${WINDOWS_LLVM_CONFIG}. Bootstrap LLVM 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_LLVM_CONFIG before running pre-release validation.'
 }
-Write-Host 'Found ${WINDOWS_MLIR_CONFIG}'
+Write-Host 'Found ${WINDOWS_LLVM_CONFIG}'
 "
 
-        echo "==> Building on Windows with embedded codegen"
+        echo "==> Building on Windows with the LLVM toolchain"
         run_windows_powershell "${REMOTE_BUILD_TIMEOUT}" "
 \$ErrorActionPreference = 'Stop'
 function Assert-NativeSuccess([string]\$Label) {
@@ -494,13 +489,12 @@ function Assert-NativeSuccess([string]\$Label) {
 }
 
 Set-Location '${WINDOWS_PROJECT_DIR}'
-if (-not (Test-Path '${WINDOWS_MLIR_CONFIG}')) {
-    throw 'Missing ${WINDOWS_MLIR_CONFIG}. Bootstrap LLVM+MLIR 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_MLIR_CONFIG before running pre-release validation.'
+if (-not (Test-Path '${WINDOWS_LLVM_CONFIG}')) {
+    throw 'Missing ${WINDOWS_LLVM_CONFIG}. Bootstrap LLVM 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_LLVM_CONFIG before running pre-release validation.'
 }
 
 \$env:LLVM_PREFIX = '${WINDOWS_LLVM_PREFIX}'
 \$env:Path = '${WINDOWS_LLVM_PREFIX}\\bin;' + \$env:Path
-\$env:HEW_EMBED_STATIC = '1'
 \$env:CC = '${WINDOWS_CC}'
 \$env:CXX = '${WINDOWS_CXX}'
 

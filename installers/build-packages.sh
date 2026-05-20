@@ -426,9 +426,9 @@ build_alpine() {
     else
         info "alpine" "Building musl-native binaries..."
 
-        # Verify LLVM/MLIR is available (required for embedded codegen)
+        # Verify LLVM is available for llvm-sys / hew-codegen-rs.
         if [[ -z "${LLVM_PREFIX:-}" ]]; then
-            die "LLVM_PREFIX is not set — embedded codegen requires LLVM/MLIR.  Set LLVM_PREFIX to your LLVM installation."
+            die "LLVM_PREFIX is not set — hew-codegen-rs requires LLVM 22. Set LLVM_PREFIX to your LLVM installation."
         fi
 
         # Build Rust binaries with musl target
@@ -439,7 +439,7 @@ build_alpine() {
 
         info "cargo" "Building Rust binaries + stdlib for ${musl_target}..."
         (cd "${REPO_DIR}" &&
-            HEW_EMBED_STATIC=1 cargo build --release --target "${musl_target}" \
+            cargo build --release --target "${musl_target}" \
                 -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-lib)
 
         # Assemble Alpine tarball
@@ -573,7 +573,7 @@ RUN tar -xzf /tmp/hew.tar.gz && mv hew-v*-linux-* hew
 
 FROM alpine:3.21
 # gcompat: glibc compatibility shim for glibc-linked Rust binaries.
-# MLIR/LLVM codegen is embedded in the hew binary.
+# Hew ships a Rust frontend plus the hew-codegen-rs LLVM backend.
 RUN apk add --no-cache \
       gcompat \
       ca-certificates

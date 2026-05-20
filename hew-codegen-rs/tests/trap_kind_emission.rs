@@ -6,7 +6,8 @@
 //! to `Signal(4)` / `Signal(5)`).
 //!
 //! The exit-code constants here MUST stay in lock-step with
-//! `HEW_TRAP_*` in `hew-runtime/src/supervisor.rs`.
+//! `HEW_TRAP_*` in `hew-runtime/src/internal/types.rs`; native
+//! `supervisor.rs` re-exports those constants.
 //!
 //! LESSONS applied:
 //! - `boundary-fail-closed` (P0): the trap path must contain a real
@@ -25,6 +26,10 @@ use std::path::Path;
 
 use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_hir::{lower_program, verify_hir, ResolutionCtx};
+use hew_mir::{
+    BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
+    ExitPath, IrPipeline, RawMirFunction, Terminator, TrapKind,
+};
 use hew_types::TypeCheckOutput;
 
 fn emit_ll(source: &str, module_name: &str) -> String {
@@ -60,6 +65,68 @@ fn emit_ll(source: &str, module_name: &str) -> String {
     std::fs::read_to_string(ll_path).expect("read emitted .ll")
 }
 
+fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
+    let raw_blocks = vec![BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![],
+        terminator: Terminator::Trap { kind },
+    }];
+    let pipeline = IrPipeline {
+        thir: vec![],
+        raw_mir: vec![RawMirFunction {
+            name: "trap_probe".to_string(),
+            return_ty: hew_types::ResolvedTy::Unit,
+            call_conv: hew_mir::FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![],
+            blocks: raw_blocks.clone(),
+            decisions: vec![],
+        }],
+        checked_mir: vec![CheckedMirFunction {
+            name: "trap_probe".to_string(),
+            return_ty: hew_types::ResolvedTy::Unit,
+            blocks: raw_blocks,
+            decisions: vec![],
+            checks: vec![],
+            cooperate_sites: vec![],
+        }],
+        elaborated_mir: vec![ElaboratedMirFunction {
+            name: "trap_probe".to_string(),
+            return_ty: hew_types::ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![ElabBlock {
+                id: 0,
+                kind: BlockKind::Normal,
+                drops: vec![],
+                successor: None,
+            }],
+            drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
+            coroutine: None,
+            lambda_captures: vec![],
+        }],
+        diagnostics: vec![],
+        record_layouts: vec![],
+        actor_layouts: vec![],
+        supervisor_layouts: vec![],
+    };
+    let tmp = std::env::temp_dir().join(format!("hew-trap-kind-{module_name}"));
+    std::fs::create_dir_all(&tmp).expect("create out_dir");
+    let options = EmitOptions {
+        module_name,
+        out_dir: &tmp,
+        native: false,
+        wasm: false,
+    };
+    let artefacts = emit_module(&pipeline, &options).expect("trap-kind MIR fixture must emit");
+    let ll_path: &Path = artefacts
+        .ll_path
+        .as_deref()
+        .expect("emit_module must populate ll_path");
+    std::fs::read_to_string(ll_path).expect("read emitted .ll")
+}
+
 /// Assert the emitted IR contains a call to `hew_trap_with_code` with
 /// the given i32 argument. inkwell's textual IR formats integer
 /// constants as `i32 N` so we match on a substring that pins both the
@@ -71,13 +138,17 @@ fn assert_trap_with_code(ll: &str, code: i32) {
         "expected `{needle}` in emitted IR; got:\n{ll}"
     );
     // The fallback / verifier-required terminator must still follow.
+    let call_idx = ll
+        .find(&needle)
+        .unwrap_or_else(|| panic!("expected `{needle}` in emitted IR; got:\n{ll}"));
+    let fallback = &ll[call_idx..];
     assert!(
-        ll.contains("@llvm.trap"),
-        "trap block must still emit `llvm.trap` as the fallback terminator; got:\n{ll}"
+        fallback.contains("@llvm.trap"),
+        "trap block must still emit `llvm.trap` after `{needle}` as the fallback terminator; got:\n{ll}"
     );
     assert!(
-        ll.contains("unreachable"),
-        "trap block must end with `unreachable`; got:\n{ll}"
+        fallback.contains("unreachable"),
+        "trap block must end with `unreachable` after `{needle}`; got:\n{ll}"
     );
 }
 
@@ -121,6 +192,16 @@ fn divide_by_zero_emits_hew_trap_with_code_202() {
 }
 
 // ---------------------------------------------------------------------------
+// SignedMinDivNegOne — code 203
+// ---------------------------------------------------------------------------
+
+#[test]
+fn signed_min_div_neg_one_emits_hew_trap_with_code_203() {
+    let ll = emit_trap_kind_ll(TrapKind::SignedMinDivNegOne, "signed_min_div_neg_one");
+    assert_trap_with_code(&ll, 203);
+}
+
+// ---------------------------------------------------------------------------
 // ShiftOutOfRange — code 204
 // ---------------------------------------------------------------------------
 
@@ -131,6 +212,29 @@ fn shift_out_of_range_emits_hew_trap_with_code_204() {
         "shift_out_of_range",
     );
     assert_trap_with_code(&ll, 204);
+}
+
+// ---------------------------------------------------------------------------
+// IndexOutOfBounds — code 205
+// ---------------------------------------------------------------------------
+
+#[test]
+fn index_out_of_bounds_emits_hew_trap_with_code_205() {
+    let ll = emit_trap_kind_ll(TrapKind::IndexOutOfBounds, "index_out_of_bounds");
+    assert_trap_with_code(&ll, 205);
+}
+
+// ---------------------------------------------------------------------------
+// SupervisorChildUnavailable / actor-send discriminator — code 206
+// ---------------------------------------------------------------------------
+
+#[test]
+fn supervisor_child_unavailable_emits_hew_trap_with_code_206() {
+    let ll = emit_trap_kind_ll(
+        TrapKind::SupervisorChildUnavailable,
+        "supervisor_child_unavailable",
+    );
+    assert_trap_with_code(&ll, 206);
 }
 
 // ---------------------------------------------------------------------------

@@ -46,8 +46,9 @@ pub(crate) fn stamp_current_actor_error_code(code: c_int) -> bool {
 /// `Crashed` and leaves the discriminator observable through
 /// `ExitReason::from_error_code`.
 ///
-/// Outside an actor context this returns so the caller's following `llvm.trap`
-/// remains the fail-closed non-actor fallback, matching native.
+/// Outside an actor context, canonical Hew trap codes become WASI process exit
+/// statuses. Unknown codes return so the caller's following `llvm.trap` remains
+/// the fail-closed non-actor fallback, matching native's unknown-code sink.
 ///
 /// # Safety
 ///
@@ -59,5 +60,12 @@ pub(crate) fn stamp_current_actor_error_code(code: c_int) -> bool {
 pub unsafe extern "C" fn hew_trap_with_code(code: c_int) {
     if stamp_current_actor_error_code(code) {
         panic!("hew_trap_with_code: trap code {code}");
+    }
+    if let Some(exit_code) = crate::internal::types::canonical_trap_wasi_exit_code(code) {
+        // JUSTIFIED: wasm32 non-actor traps terminate the process immediately,
+        // so bypassing Rust Drop is deliberate and the WASI host reclaims
+        // process resources. Actor paths stamp `actor.error_code` and unwind
+        // above; they do not use this process-exit route.
+        std::process::exit(exit_code);
     }
 }

@@ -1276,6 +1276,86 @@ fn heap_exceeded_exit_reason_round_trips_through_internal_types() {
     );
 }
 
+fn assert_canonical_wasi_trap_exit(code: i32, expected_reason: crate::internal::types::ExitReason) {
+    assert_eq!(
+        crate::internal::types::canonical_trap_wasi_exit_code(code),
+        Some(code),
+        "canonical Hew trap code {code} must be allowlisted for non-actor WASI process exit"
+    );
+    assert_eq!(
+        crate::internal::types::ExitReason::from_error_code(code),
+        expected_reason,
+        "canonical Hew trap code {code} must keep the same actor ExitReason discriminator"
+    );
+}
+
+#[test]
+fn wasm_non_actor_trap_exit_code_mapping_heap_exceeded_returns_200() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+        crate::internal::types::ExitReason::HeapExceeded,
+    );
+}
+
+#[test]
+fn wasm_non_actor_trap_exit_code_mapping_integer_overflow_returns_201() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_INTEGER_OVERFLOW,
+        crate::internal::types::ExitReason::IntegerOverflow,
+    );
+}
+
+#[test]
+fn wasm_non_actor_trap_exit_code_mapping_divide_by_zero_returns_202() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_DIVIDE_BY_ZERO,
+        crate::internal::types::ExitReason::DivideByZero,
+    );
+}
+
+#[test]
+fn wasm_non_actor_trap_exit_code_mapping_signed_min_div_neg_one_returns_203() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+        crate::internal::types::ExitReason::SignedMinDivNegOne,
+    );
+}
+
+#[test]
+fn wasm_non_actor_trap_exit_code_mapping_shift_out_of_range_returns_204() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_SHIFT_OUT_OF_RANGE,
+        crate::internal::types::ExitReason::ShiftOutOfRange,
+    );
+}
+
+#[test]
+fn wasm_non_actor_trap_exit_code_mapping_index_out_of_bounds_returns_205() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+        crate::internal::types::ExitReason::IndexOutOfBounds,
+    );
+}
+
+#[test]
+fn wasm_trap_exit_code_mapping_actor_send_failed_is_allowlisted_as_206() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED,
+        crate::internal::types::ExitReason::ActorSendFailed,
+    );
+}
+
+#[test]
+fn wasm_unknown_non_actor_trap_code_is_not_mapped_to_process_exit() {
+    for unknown in [-1, 1, 101, 199, 207, i32::MAX] {
+        assert_eq!(
+            crate::internal::types::canonical_trap_wasi_exit_code(unknown),
+            None,
+            "unknown trap code {unknown} must return to the generated trailing llvm.trap sink"
+        );
+    }
+}
+
 /// Native test that exercises the WASM activation crash-transition logic:
 /// when a dispatch panics with `actor.error_code != 0`, the scheduler must
 /// observe the code and transition the actor to `Crashed`. The WASM-only
@@ -1316,6 +1396,19 @@ unsafe extern "C-unwind" fn hew_trap_with_code_dispatch(
     ) {
         panic!("simulated wasm hew_trap_with_code panic");
     }
+}
+
+unsafe extern "C-unwind" fn hew_panic_wasm_actor_dispatch(
+    _ctx: *mut crate::execution_context::HewExecutionContext,
+    _state: *mut c_void,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _data_size: usize,
+) {
+    assert!(
+        !crate::actor::stamp_wasm_actor_panic(),
+        "simulated wasm hew_panic actor unwind"
+    );
 }
 
 #[test]
@@ -1361,6 +1454,56 @@ fn wasm_activation_transitions_actor_to_crashed_when_dispatch_stamps_error_code(
             HewActorState::Crashed as i32,
             "WASM activation must transition the actor to Crashed when \
              the dispatch unwind comes with a non-zero error_code"
+        );
+
+        let _ = Box::from_raw(actor_ptr);
+        crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
+    }
+
+    crate::scheduler_wasm::hew_sched_shutdown();
+}
+
+#[test]
+fn wasm_actor_panic_stamps_101_and_unwinds_to_scheduler() {
+    let _guard = crate::runtime_test_guard();
+    crate::scheduler_wasm::hew_sched_shutdown();
+    crate::scheduler_wasm::hew_sched_init();
+
+    // SAFETY: test owns the mailbox and actor for the full scenario.
+    unsafe {
+        let mailbox = crate::mailbox_wasm::hew_mailbox_new();
+        assert!(!mailbox.is_null());
+
+        let actor = stub_dispatch_actor(mailbox.cast(), hew_panic_wasm_actor_dispatch);
+        let actor_ptr: *mut HewActor = Box::into_raw(actor);
+
+        let payload: i32 = 0;
+        let rc = crate::mailbox_wasm::hew_mailbox_send(
+            mailbox.cast(),
+            1,
+            (&raw const payload).cast_mut().cast(),
+            std::mem::size_of::<i32>(),
+        );
+        assert_eq!(rc, HewError::Ok as i32);
+
+        crate::scheduler_wasm::sched_enqueue(actor_ptr.cast());
+        crate::scheduler_wasm::hew_sched_run();
+
+        let error = (*actor_ptr).error_code.load(Ordering::Acquire);
+        let state = (*actor_ptr).actor_state.load(Ordering::Acquire);
+
+        assert_eq!(
+            error, 101,
+            "wasm actor hew_panic must stamp the raw panic sentinel before unwinding"
+        );
+        assert_eq!(
+            crate::internal::types::ExitReason::from_error_code(error),
+            crate::internal::types::ExitReason::Signal(101),
+        );
+        assert_eq!(
+            state,
+            HewActorState::Crashed as i32,
+            "WASM activation must catch actor panic unwinds instead of terminating the process"
         );
 
         let _ = Box::from_raw(actor_ptr);

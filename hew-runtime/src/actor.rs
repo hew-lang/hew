@@ -3506,17 +3506,36 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
     unsafe { (*ctx).actor }
 }
 
+/// Stamp the WASM actor panic sentinel on the current actor, when present.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn stamp_wasm_actor_panic() -> bool {
+    crate::trap_code::stamp_current_actor_error_code(101)
+}
+
 /// Trigger a panic in the current execution context.
 ///
-/// Inside an actor: longjmps back to the scheduler, which marks the
-/// actor as `Crashed`. The supervisor (if any) will restart the actor
-/// according to its restart strategy.
+/// Inside an actor: longjmps back to the scheduler on native, or stamps the
+/// panic sentinel and unwinds to the scheduler on WASM. The supervisor (if any)
+/// will restart the actor according to its restart strategy.
 ///
 /// Outside an actor (e.g. `main`): exits the process with code 101.
 ///
 /// This function never returns.
 #[no_mangle]
 pub extern "C" fn hew_panic() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        if stamp_wasm_actor_panic() {
+            panic!("hew_panic: actor panic");
+        }
+        // JUSTIFIED: wasm32 non-actor Hew panic terminates the process
+        // immediately with Rust's panic exit convention, so bypassing Rust Drop
+        // is deliberate and the WASI host reclaims process resources. Actor
+        // paths stamp `actor.error_code` and unwind above; they do not use this
+        // process-exit route.
+        std::process::exit(101);
+    }
+
     // Try direct longjmp recovery first. This avoids going through the
     // signal/exception path, which is essential on Windows where longjmp
     // from a VEH handler causes STATUS_BAD_STACK.
@@ -3532,6 +3551,7 @@ pub extern "C" fn hew_panic() {
 
     // No recovery context (e.g. panic called from main) — exit cleanly.
     // Exit code 101 follows Rust's convention for panics.
+    #[cfg(not(target_arch = "wasm32"))]
     std::process::exit(101);
 }
 

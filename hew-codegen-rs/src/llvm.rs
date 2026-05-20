@@ -5406,20 +5406,22 @@ fn lower_terminator<'ctx>(
         }
         Terminator::Trap { kind } => {
             // The exit-code constants here MUST stay in lock-step
-            // with `HEW_TRAP_*` in `hew-runtime/src/supervisor.rs`.
+            // with canonical `HEW_TRAP_*` in
+            // `hew-runtime/src/internal/types.rs`; the native supervisor
+            // module re-exports those constants for native callers.
             const HEW_TRAP_INTEGER_OVERFLOW: u64 = 201;
             const HEW_TRAP_DIVIDE_BY_ZERO: u64 = 202;
             const HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE: u64 = 203;
             const HEW_TRAP_SHIFT_OUT_OF_RANGE: u64 = 204;
             const HEW_TRAP_INDEX_OUT_OF_BOUNDS: u64 = 205;
-            const HEW_TRAP_SUPERVISOR_CHILD_UNAVAILABLE: u64 = 206;
+            const HEW_TRAP_ACTOR_SEND_FAILED: u64 = 206;
             let code: u64 = match *kind {
                 TrapKind::IntegerOverflow => HEW_TRAP_INTEGER_OVERFLOW,
                 TrapKind::DivideByZero => HEW_TRAP_DIVIDE_BY_ZERO,
                 TrapKind::SignedMinDivNegOne => HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
                 TrapKind::ShiftOutOfRange => HEW_TRAP_SHIFT_OUT_OF_RANGE,
                 TrapKind::IndexOutOfBounds => HEW_TRAP_INDEX_OUT_OF_BOUNDS,
-                TrapKind::SupervisorChildUnavailable => HEW_TRAP_SUPERVISOR_CHILD_UNAVAILABLE,
+                TrapKind::SupervisorChildUnavailable => HEW_TRAP_ACTOR_SEND_FAILED,
             };
             emit_trap_with_code(fn_ctx, code, "trap")?;
         }

@@ -16,20 +16,17 @@ hew-mir = { path = "../hew-mir" }
 hew-types = { path = "../hew-types" }
 # Inkwell wraps LLVM. Pinned to llvm22-1 because the v0.5 backend probe
 # (.claude/worktrees/c1-backend-probe @ e6c83faa) established this version
-# empirically against Homebrew llvm@22; the project Makefile already
-# auto-detects llvm@22 for the C++ subtree, so there is one shared LLVM
-# major across the codebase.
+# empirically against Homebrew llvm@22, and the release/tooling surface keeps
+# LLVM 22 as the shared major across the codebase.
 inkwell = { version = "0.9", features = ["llvm22-1"] }
 
 [[bin]]
 # Out-of-process helper that consumes a textual LLVM IR file and writes a
 # native or wasm object. Process isolation is the structural fix for the
-# legacy-PassManager assertion that fires when `libMLIR.dylib` and
-# `libLLVM.dylib` are both loaded into the same process (as they are in the
-# `hew` binary via the embedded C++ codegen). The CLI lowers MIR → LLVM IR
-# in-process (the IR-construction path is safe under dual load) and shells
-# out to this helper for the object-emission step. Mirrors the rustc front
-# half/back half split.
+# legacy-PassManager assertion that can fire after the main process has already
+# initialized LLVM global state for IR construction. The CLI lowers MIR → LLVM
+# IR in-process and shells out to this helper for the object-emission step.
+# Mirrors the rustc front half/back half split.
 name = "hew-emit-v05"
 path = "src/bin/hew_emit_v05.rs"
 

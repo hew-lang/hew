@@ -2,28 +2,24 @@
 //!
 //! ## Why a separate process
 //!
-//! The `hew` binary links `libMLIR.dylib` (via the embedded C++ codegen) and
-//! `libLLVM.dylib` (via the Rust `inkwell` / `llvm-sys` binding) into the
-//! same process. LLVM's `TargetMachine::write_to_file` flows through the
-//! legacy PassManager codepath in `LLVMTargetMachineEmitToFile`; when libMLIR
-//! has pre-touched the global `PassRegistry` the legacy AArch64 pass scheduler
-//! cannot find one of its required analyses and aborts via
+//! The `hew` binary builds LLVM IR in-process via the Rust `inkwell` /
+//! `llvm-sys` binding. LLVM's `TargetMachine::write_to_file` still flows
+//! through the legacy PassManager codepath in `LLVMTargetMachineEmitToFile`;
+//! once earlier in-process LLVM setup has pre-touched the global
+//! `PassRegistry`, the legacy AArch64 pass scheduler can no longer find one
+//! of its required analyses and aborts via
 //! `addLowerLevelRequiredPass`'s built-in trap (`brk #0x1` on aarch64).
 //!
-//! Standalone — a process that loads only `libLLVM.dylib` — the same call
-//! sequence works without complaint. This binary is that standalone process:
-//! the CLI lowers MIR to textual LLVM IR in-process (the IR-construction path
-//! is dual-load safe) and shells out to this helper for the object-emission
-//! step. The CLI hands over a `.ll` file and a target triple; the helper
-//! parses, re-attaches the data layout for the requested triple, and writes
-//! the relocatable object.
+//! Standalone — in a process that starts fresh with only the helper's LLVM
+//! state — the same call sequence works without complaint. This binary is
+//! that standalone process: the CLI lowers MIR to textual LLVM IR in-process
+//! and shells out to this helper for the object-emission step. The CLI hands
+//! over a `.ll` file and a target triple; the helper parses, re-attaches the
+//! data layout for the requested triple, and writes the relocatable object.
 //!
 //! The shape mirrors `rustc-driver`'s front-half/back-half split: the front
 //! half stays in-process where it can share state with the caller, the back
 //! half lives in its own address space where the global LLVM state is clean.
-//! When the C++ codegen subtree is retired (Cluster 7) and `libMLIR.dylib`
-//! stops loading into the `hew` process, this helper can fold back into the
-//! library and the spawn step disappears.
 //!
 //! ## Protocol
 //!

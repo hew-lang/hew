@@ -30,18 +30,17 @@
 //!
 //! ## Two-stage emission (front-half / back-half split)
 //!
-//! IR construction runs in-process via inkwell — that path is safe even
-//! when the caller binary has `libMLIR.dylib` loaded (as the `hew` binary
-//! does via the embedded C++ codegen). Object emission via
-//! `TargetMachine::write_to_file` is **not** safe under that dual-load:
+//! IR construction runs in-process via inkwell. Object emission via
+//! `TargetMachine::write_to_file` is **not** safe in that same process:
 //! LLVM's legacy PassManager scheduler (which the C codegen API still
-//! routes through) hits an `addLowerLevelRequiredPass` trap when libMLIR
-//! has pre-touched the global `PassRegistry`. The fix is structural —
-//! the back half runs in its own process. `emit_module` writes the
-//! textual `.ll` in-process, then spawns the sibling `hew-emit-v05`
-//! helper binary to compile each requested triple to a relocatable
-//! object. The helper's process loads only `libLLVM.dylib`, so the
-//! legacy PM scheduler finds its analyses and `write_to_file` succeeds.
+//! routes through) can hit an `addLowerLevelRequiredPass` trap after
+//! earlier in-process LLVM setup has pre-touched the global
+//! `PassRegistry`. The fix is structural — the back half runs in its own
+//! process. `emit_module` writes the textual `.ll` in-process, then
+//! spawns the sibling `hew-emit-v05` helper binary to compile each
+//! requested triple to a relocatable object. The helper process starts
+//! with a clean `libLLVM` global-state footprint, so the legacy PM
+//! scheduler finds its analyses and `write_to_file` succeeds.
 //! See `src/bin/hew_emit_v05.rs` for the helper's own module docs.
 //!
 //! ## Side-table audit
@@ -196,8 +195,8 @@ pub struct EmitArtefacts {
 /// of every artefact produced. Fail-closed on any verification failure.
 ///
 /// The textual LLVM IR (`<name>.ll`) is built in-process — the
-/// IR-construction path is safe under the dual `libMLIR` / `libLLVM` load
-/// state that the `hew` binary runs under. Object emission shells out to
+/// IR-construction path is safe under the `hew` driver's normal in-process
+/// LLVM setup. Object emission shells out to
 /// the `hew-emit-v05` helper (see the helper's module docs for why), so the
 /// caller's binary must ship `hew-emit-v05` alongside `hew` in the same
 /// directory (the workspace `cargo build` produces both into `target/<profile>/`).

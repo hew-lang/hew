@@ -653,7 +653,6 @@ pub unsafe extern "C" fn hew_task_completion_observe(
     0
 }
 
-#[no_mangle]
 /// Remove a previously registered task-completion observer.
 ///
 /// # Safety
@@ -661,6 +660,7 @@ pub unsafe extern "C" fn hew_task_completion_observe(
 /// `task` must be a live task allocated by this runtime and owned by `scope`.
 /// `cb` and `ctx` must match the observer registration being removed; `ctx` is
 /// not dereferenced by this function.
+#[no_mangle]
 pub unsafe extern "C" fn hew_task_completion_unobserve(
     scope: *mut HewTaskScope,
     task: *mut HewTask,

@@ -1,5 +1,5 @@
 //! Linker invocation: drives `cc` (or `wasm-ld` for WASM targets) to produce
-//! the final binary from the object file emitted by Hew's embedded codegen
+//! the final binary from the object file emitted by Hew's Rust codegen-rs
 //! backend and the combined Hew library (`libhew.a`).
 
 use crate::target::TargetSpec;

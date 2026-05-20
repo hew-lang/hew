@@ -301,8 +301,8 @@ mod tests {
     use super::*;
     use std::sync::OnceLock;
 
-    /// Skip tests that require the linked native backend when this crate was
-    /// built without the embedded MLIR/LLVM bridge.
+    /// Skip tests that require the linked native execution substrate while
+    /// `hew test` is still blocked by the v0.5 cutover guard.
     fn require_codegen() -> bool {
         ensure_test_toolchain() && crate::util::find_hew_binary().is_ok()
     }

@@ -28,22 +28,17 @@ pub(crate) struct MainCommandDispatcher;
 
 /// Print the v0.5 cutover error and exit non-zero.
 ///
-/// The legacy C++ codegen path is unsafe to invoke on this branch: inkwell's
-/// presence in the binary link surface and the C++ codegen's `libMLIR`
-/// registration collide through `libLLVM` globals, corrupting LLVM
-/// `AnalysisManager` state and crashing the process. Until the C++ codegen
-/// subtree is removed, every subcommand that reaches the legacy codegen
-/// (`run`, `eval`, `test`, `debug`) short-circuits here instead
-/// of producing a malformed artefact or a SIGSEGV.
+/// The retired execution path behind these subcommands is no longer a valid
+/// substrate. Until they are rewired to the Rust MIR/codegen-rs pipeline, keep
+/// them fail-closed instead of producing a malformed artefact or accidentally
+/// depending on removed native codegen hooks.
 fn exit_with_cutover_error(subcommand: &str) -> ! {
     eprintln!(
         "error: `hew {subcommand}` is temporarily unavailable during the v0.5 compiler cutover.\n\
          \n\
-         The legacy C++ codegen path is unsafe to invoke while inkwell is in the binary's link\n\
-         surface (libMLIR + libLLVM dual-load corrupts LLVM AnalysisManager state).\n\
-         The `run`, `eval`, `test`, and `debug` subcommands all reach that\n\
-         path and are short-circuited together until the C++ codegen subtree is\n\
-         removed.\n\
+         The retired native execution hooks have been removed. The `run`, `eval`,\n\
+         `test`, and `debug` subcommands remain blocked until they route through\n\
+         the Rust MIR/codegen-rs pipeline end-to-end.\n\
          \n\
          Use `hew compile <file>` for the integer-only spine subset on this branch,\n\
          or wait for the cutover to complete on `main`."

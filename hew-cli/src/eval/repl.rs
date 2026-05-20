@@ -1143,10 +1143,10 @@ fn run_inprocess_compiled(
 
 /// Dispatch to JIT, native, or WASM execution depending on mode and target.
 ///
-/// When `jit_mode` is `Some(Inprocess | Auto)`, compiles via the frontend
-/// pipeline and executes in-process through LLJIT — no temp dir, no subprocess.
-/// `Auto` today always selects the `Inprocess` path; future work (#1227 counter)
-/// may downgrade it to `Worker` when crash-survivability warrants it.
+/// When `jit_mode` is `Some(Inprocess | Auto)`, fail closed through the retired
+/// in-process JIT guard — no temp dir, no subprocess, and no native backend.
+/// `Worker` and `None` remain dormant AOT/WASM paths while the user-facing
+/// command is blocked by the router.
 /// When `target` resolves to a WASM target, routes through wasmtime.
 /// Otherwise falls through to the existing native `run_inprocess_compiled`
 /// AOT+spawn path.
@@ -1159,9 +1159,9 @@ fn run_eval_compiled(
     target: Option<&str>,
     jit_mode: Option<crate::args::JitMode>,
 ) -> Result<String, CompiledEvalError> {
-    // JIT in-process path — no temp dir, no subprocess.
-    // `Auto` resolves to `Inprocess` today; `Worker` and `None` fall through to
-    // the AOT+spawn path below.
+    // JIT in-process path — no temp dir, no subprocess. `Auto` resolves to the
+    // same fail-closed guard as `Inprocess`; `Worker` and `None` fall through to
+    // the dormant AOT+spawn path below.
     if matches!(
         jit_mode,
         Some(crate::args::JitMode::Inprocess | crate::args::JitMode::Auto)
@@ -1180,36 +1180,18 @@ fn run_eval_compiled(
     }
 }
 
-/// Compile and execute a single cell via LLJIT in the current process.
+/// Fail closed for the retired in-process JIT path.
 ///
-/// Runs the frontend pipeline (parse → typecheck → msgpack serialisation)
-/// and hands the result to `crate::jit::run_jit`, which invokes the C++
-/// `HewJitSession` wrapper.
-///
-/// Output from `print`/`println` goes directly to the parent's stdout fd
-/// and is not captured; this function returns `Ok(String::new())` on
-/// success.
-///
-/// SHIM: stdout is not captured.  WHY: the synchronous per-cell model
-/// writes directly to the parent fd — the M1 warm-path does not need
-/// capture.  WHEN obsolete: when #1227 adds output redirection.
+/// The former LLJIT bridge consumed frontend `MessagePack` and executed through
+/// native codegen hooks that no longer exist. Keep this helper as a narrow
+/// adapter for dormant eval tests, but do not compile or execute here.
 fn run_inprocess_jit(
-    program: hew_parser::ast::Program,
-    source: &str,
-    source_label: &str,
-    project_dir: Option<PathBuf>,
+    _program: hew_parser::ast::Program,
+    _source: &str,
+    _source_label: &str,
+    _project_dir: Option<PathBuf>,
 ) -> Result<String, CompiledEvalError> {
-    let options = crate::compile::CompileOptions {
-        project_dir,
-        // JIT always targets the host native triple — no cross-compilation.
-        target: None,
-        ..crate::compile::CompileOptions::default()
-    };
-
-    let msgpack_data = crate::compile::frontend_to_msgpack(program, source, source_label, &options)
-        .map_err(CompiledEvalError::from)?;
-
-    match crate::jit::run_jit(&msgpack_data) {
+    match crate::jit::run_jit(&[]) {
         Ok(_exit_code) => {
             // JIT output went directly to stdout; return empty to avoid
             // double-printing in emit_eval_output.
@@ -1223,19 +1205,6 @@ fn run_inprocess_jit(
                 exit_code: 1,
             })
         }
-        Err(crate::jit::JitError::PanicCaught(msg)) => {
-            // A Rust panic propagated out of JIT-emitted code and was caught
-            // by the catch_unwind seam in run_jit.  Surface it as a runtime
-            // failure so the REPL can recover and continue.
-            Err(CompiledEvalError::RuntimeFailure {
-                stdout: String::new(),
-                stderr: format!("JIT panic: {msg}"),
-                exit_code: 1,
-            })
-        }
-        Err(crate::jit::JitError::SessionCreateFailed(msg)) => Err(CompiledEvalError::Message(
-            format!("JIT session failed to initialise: {msg}"),
-        )),
     }
 }
 
@@ -1591,8 +1560,8 @@ mod tests {
         })
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_arithmetic() {
         if !require_toolchain() {
@@ -1604,8 +1573,8 @@ mod tests {
         assert_eq!(result.output, "3\n");
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_binding_persists() {
         if !require_toolchain() {
@@ -1619,8 +1588,8 @@ mod tests {
         assert_eq!(r2.output, "43\n");
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_function_persists() {
         if !require_toolchain() {
@@ -1634,8 +1603,8 @@ mod tests {
         assert_eq!(r2.output, "42\n");
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_doc_commented_function_persists() {
         if !require_toolchain() {
@@ -1654,8 +1623,8 @@ mod tests {
     /// (computed before import resolution) to `enrich_program_ast`, causing a
     /// call-site / declaration type mismatch for `hew_regex_new` in the
     /// generated MLIR.
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_regex_literal() {
         if !require_toolchain() {
@@ -1667,8 +1636,8 @@ mod tests {
         assert_eq!(result.output, "true\n");
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_clear_resets() {
         if !require_toolchain() {
@@ -1708,8 +1677,8 @@ mod tests {
         assert!(result.errors[0].contains("Unknown command"));
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_one_expression() {
         if !require_toolchain() {
@@ -1719,8 +1688,8 @@ mod tests {
         assert_eq!(result.unwrap(), "6\n");
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_timeout_is_reported() {
         if !require_toolchain() {
@@ -1745,8 +1714,8 @@ mod tests {
     }
 
     #[cfg(unix)]
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_runtime_failure_still_surfaces_stderr() {
         if !require_toolchain() {
@@ -1853,8 +1822,8 @@ mod tests {
         );
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_file_multiline() {
         if !require_toolchain() {
@@ -1871,8 +1840,8 @@ mod tests {
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_file_balanced_incomplete_expression() {
         if !require_toolchain() {
@@ -1950,8 +1919,8 @@ mod tests {
 
     /// `eval_file` anchored to a real path resolves local `src/` imports that
     /// would fail when `project_dir` defaults to an unrelated cwd.
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_file_resolves_local_src_import() {
         if !require_toolchain() {
@@ -1994,8 +1963,8 @@ mod tests {
 
     /// `ReplSession::for_path` carries the project directory so that
     /// `eval_source_file_cli` resolves imports relative to that project.
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn repl_session_for_path_carries_project_dir() {
         if !require_toolchain() {
@@ -2140,8 +2109,8 @@ mod tests {
 
     // ── WASI inline expression ───────────────────────────────────────────────
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn wasi_eval_arithmetic() {
         if !require_wasi_toolchain() {
@@ -2151,8 +2120,8 @@ mod tests {
         assert_eq!(result.unwrap(), "3\n");
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn wasi_eval_string_output() {
         if !require_wasi_toolchain() {
@@ -2193,8 +2162,8 @@ mod tests {
 
     // ── WASI file eval ───────────────────────────────────────────────────────
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn wasi_eval_file_function_and_call() {
         if !require_wasi_toolchain() {
@@ -2216,46 +2185,13 @@ mod tests {
         assert!(result.is_ok(), "wasi eval_file failed: {result:?}");
     }
 
-    // ── JIT crash-survivability seam (#1227) ─────────────────────────────────
-
-    /// Verifies that a `JitError::PanicCaught` from the `catch_unwind` seam is
-    /// converted to `CompiledEvalError::RuntimeFailure` with an appropriate
-    /// stderr message.  This exercises the error-mapping arm added in #1227
-    /// without requiring the embedded LLJIT backend.
-    ///
-    /// The `catch_unwind` wrapper in `run_jit` can only catch panics in profiles
-    /// with `panic = "unwind"` (test builds); in dev/release the process aborts.
-    /// This test proves the mapping arm compiles and routes correctly.
-    #[test]
-    fn jit_panic_caught_surfaces_as_runtime_failure() {
-        // Directly construct the error variant and verify the match arm in
-        // run_inprocess_jit maps it to the right CompiledEvalError shape.
-        // We reach the arm by checking the Display impl and error shape.
-        let err = crate::jit::JitError::PanicCaught("test panic payload".to_owned());
-        let display = format!("{err}");
-        assert!(
-            display.contains("JIT trampoline caught a panic"),
-            "unexpected display: {display}"
-        );
-        assert!(
-            display.contains("test panic payload"),
-            "message not in display: {display}"
-        );
-    }
-
     /// `JitMode::Auto` routes to the same execution path as `JitMode::Inprocess`.
-    /// Without the embedded backend both return an explicit error from the JIT
-    /// stub rather than reaching actual execution, so we verify they produce the
-    /// same success/error shape.
+    /// Both return an explicit fail-closed error from the retired JIT guard
+    /// rather than reaching actual execution, so we verify they produce the same
+    /// success/error shape.
     ///
-    /// Previously gated `#[ignore]` (issue #1523) because the `extern "C"`
-    /// declarations for `hew_jit_session_eval_msgpack` and siblings were not
-    /// cfg-gated, causing a Linux SIGSEGV when codegen was absent.  The fix
-    /// (#1523) placed those declarations inside `#[cfg(hew_embedded_codegen)]`
-    /// and added an explicit no-backend stub in `crate::jit` that returns
-    /// `Err(JitError::ExecFailed(...))`.  The `#[ignore]` is therefore removed.
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    /// Kept unignored because it proves the unavailable path is deterministic
+    /// without restoring the user-facing `hew eval` command.
     #[test]
     fn jit_auto_and_inprocess_produce_same_error_shape_without_backend() {
         // A minimal valid Hew program: a function definition.
@@ -2267,9 +2203,9 @@ mod tests {
             parse_result.errors
         );
 
-        // Without the embedded codegen backend, run_inprocess_jit returns an
-        // ExecFailed (the stub always does). Both Auto and Inprocess reach the
-        // same code path, so they produce identical error shapes.
+        // The retired in-process JIT guard always returns an explicit error.
+        // Both Auto and Inprocess reach the same code path, so they produce
+        // identical error shapes.
         let auto_result = run_eval_compiled(
             parse_result.program.clone(),
             source,
@@ -2289,35 +2225,28 @@ mod tests {
             Some(crate::args::JitMode::Inprocess),
         );
 
-        // In a no-backend build the stub always returns an error; in a backend
-        // build both paths succeed (or both fail for the same reason).  Either
-        // way the shapes must be identical.
+        // The retired in-process JIT path always fails closed.
         assert_eq!(
             auto_result.is_err(),
             inprocess_result.is_err(),
             "Auto and Inprocess should produce the same success/error shape"
         );
 
-        // Stronger no-backend invariant: both must be errors — the stub never
-        // returns Ok because there is no JIT engine to run the program.
-        #[cfg(not(hew_embedded_codegen))]
-        {
-            assert!(
-                auto_result.is_err(),
-                "Auto mode without codegen backend must return an error, not Ok"
-            );
-            assert!(
-                inprocess_result.is_err(),
-                "Inprocess mode without codegen backend must return an error, not Ok"
-            );
-        }
+        assert!(
+            auto_result.is_err(),
+            "Auto mode must return an error while in-process JIT is retired"
+        );
+        assert!(
+            inprocess_result.is_err(),
+            "Inprocess mode must return an error while in-process JIT is retired"
+        );
     }
 
     /// `JitMode::Worker` routes to the AOT+spawn path (`run_inprocess_compiled`),
     /// producing the same output as when `--jit` is absent.
     /// Skipped when the native toolchain is unavailable.
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
+    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn jit_worker_mode_produces_same_result_as_no_jit_flag() {
         if !require_toolchain() {

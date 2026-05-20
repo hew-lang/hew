@@ -1735,26 +1735,39 @@ fn lower_supervisor_bootstrap(
 /// checker rejects collision-bearing programs before MIR runs.
 fn lower_actor_handler_layouts(actor: &HirActorDecl) -> Vec<ActorHandlerLayout> {
     let descriptor = actor.protocol_descriptor.as_ref();
-    actor
-        .receive_handlers
-        .iter()
-        .map(|handler| {
-            let msg_type = descriptor
-                .and_then(|d| d.msg_id_for(&handler.name))
-                .map_or(i32::MAX, |id| i32::from_ne_bytes(id.to_ne_bytes()));
-            ActorHandlerLayout {
-                name: handler.name.clone(),
-                symbol: mangle_actor_receive_handler(&actor.name, &handler.name),
-                msg_type,
-                param_tys: handler
-                    .params
-                    .iter()
-                    .map(|param| param.ty.clone())
-                    .collect(),
-                return_ty: handler.return_ty.clone(),
-            }
-        })
-        .collect()
+    let mut layouts = Vec::with_capacity(actor.receive_handlers.len());
+    for handler in &actor.receive_handlers {
+        // Generator handlers have no lowered MIR body and are therefore
+        // absent from both the actor body MIR and the dispatch trampoline.
+        // Skip them here to keep the layout consistent with the body
+        // lowering in `lower_actor_receive_handlers`.
+        if handler.is_generator {
+            continue;
+        }
+        // The checker is the only authority for state-guard facts.
+        // `HirActorStateGuard` is intentionally closed at one variant; any
+        // future variant addition is a compile error here and must pair
+        // with a policy decision in this match.
+        let requires_state_guard = match handler.state_guard {
+            hew_hir::HirActorStateGuard::Exclusive => true,
+        };
+        let msg_type = descriptor
+            .and_then(|d| d.msg_id_for(&handler.name))
+            .map_or(i32::MAX, |id| i32::from_ne_bytes(id.to_ne_bytes()));
+        layouts.push(ActorHandlerLayout {
+            name: handler.name.clone(),
+            symbol: mangle_actor_receive_handler(&actor.name, &handler.name),
+            msg_type,
+            param_tys: handler
+                .params
+                .iter()
+                .map(|param| param.ty.clone())
+                .collect(),
+            return_ty: handler.return_ty.clone(),
+            requires_state_guard,
+        });
+    }
+    layouts
 }
 
 fn unknown_self_fields_in_block(block: &HirBlock, state_fields: &HashSet<String>) -> Vec<String> {

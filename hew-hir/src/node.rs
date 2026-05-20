@@ -197,6 +197,17 @@ pub struct HirActorReceiveFn {
 }
 
 /// Actor-state guard policy carried by dispatchable actor HIR nodes.
+///
+/// This enum is intentionally closed at one variant.  The checker is the only
+/// producer of `HirActorStateGuard` values; MIR lowers the variant to a
+/// `requires_state_guard: bool` field on `ActorHandlerLayout` via an
+/// exhaustive `match` that is a compile error if a new variant is added.
+///
+/// Adding a variant (e.g. `Shared` for read-only handlers) requires:
+/// 1. A corresponding `match` arm in `hew_mir::lower::lower_actor_handler_layouts`
+///    that maps the new policy to the correct `requires_state_guard` value.
+/// 2. Checker logic to produce the new variant for the appropriate handler forms.
+/// 3. A MIR acceptance test that verifies the layout propagation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HirActorStateGuard {
     /// Generated dispatch acquires exclusive actor-state access for the body.

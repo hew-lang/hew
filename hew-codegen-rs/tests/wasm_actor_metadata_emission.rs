@@ -88,6 +88,7 @@ fn spawn_pipeline() -> IrPipeline {
             msg_type: 7,
             param_tys: vec![],
             return_ty: ResolvedTy::Unit,
+            requires_state_guard: true,
         }],
     };
 

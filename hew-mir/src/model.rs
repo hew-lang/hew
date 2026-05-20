@@ -112,6 +112,29 @@ pub struct ActorHandlerLayout {
     pub msg_type: i32,
     pub param_tys: Vec<ResolvedTy>,
     pub return_ty: ResolvedTy,
+    /// Whether dispatch of this handler must be bracketed by an exclusive
+    /// actor-state-lock acquire/release pair.
+    ///
+    /// Set to `true` when the checker determined (via `HirActorStateGuard::Exclusive`)
+    /// that the handler body requires exclusive access to the actor's state.
+    /// The acquire/release calls are currently emitted by the runtime scheduler
+    /// (`hew-runtime/src/scheduler.rs:810,870`); this field exists so MIR
+    /// analysis passes (e.g. closures' lock-guard-live-across-yield check)
+    /// and future generated-code bracketing can read the contract without
+    /// re-deriving it from HIR.
+    ///
+    /// `false` is reserved for future pure/read-only handler variants that
+    /// the checker explicitly marks no-mutate.  All handlers produced by the
+    /// current checker carry `HirActorStateGuard::Exclusive`, so this field
+    /// is always `true` today.
+    ///
+    /// Carrying the lock contract as layout metadata (rather than emitted
+    /// instructions) lets MIR analysis and codegen bracketing consume the
+    /// fact without re-examining HIR. Codegen reads this field to decide
+    /// whether to bracket a trampoline dispatch with lock ABI calls. The
+    /// field becomes redundant once codegen emits lock calls inline rather
+    /// than relying on the scheduler acquire/release path.
+    pub requires_state_guard: bool,
 }
 
 /// Layout descriptor for a `supervisor` declaration.

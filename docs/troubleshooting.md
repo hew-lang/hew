@@ -6,18 +6,16 @@ Start with the smallest command that still reproduces the problem:
 
 ```sh
 hew check path/to/main.hew
-hew build path/to/main.hew -o app
-hew run path/to/main.hew
+hew compile path/to/main.hew
 ```
 
-For multi-file compile/typecheck flows, `hew check`, `hew build`, and `hew run`
-operate on a single entry-point file and resolve imports recursively from
-there. Pass `main.hew` (or your real top-level entry file), not every file in
-the tree.
+For multi-file compile/typecheck flows, `hew check` and `hew compile` operate
+on a single entry-point file and resolve imports recursively from there. Pass
+`main.hew` (or your real top-level entry file), not every file in the tree.
 
 For the standard bootstrap flow, start with `adze init <name>` so you get
 `hew.toml`, `main.hew`, and `.gitignore`, then begin with
-`hew check main.hew` / `hew run main.hew`. `hew init` remains the lighter
+`hew check main.hew` / `hew compile main.hew`. `hew init` remains the lighter
 source-only scaffold: it writes `main.hew` plus `README.md`, but no
 `hew.toml`.
 
@@ -26,8 +24,8 @@ source-only scaffold: it writes `main.hew` plus `README.md`, but no
 Common signs:
 
 - `Error: clang not found. Install LLVM to link Hew programs.`
-- raw linker output after `hew build <file.hew> [-o output]`
-- `hew check <file.hew>` succeeds, but `hew build ...` or `hew run ...` fails
+- raw linker output after `hew compile <file.hew>`
+- `hew check <file.hew>` succeeds, but `hew compile ...` fails
 
 What to check:
 
@@ -80,8 +78,8 @@ Common signs:
 
 What to check:
 
-- Run `hew check <file.hew>` or `hew build <file.hew> [-o output]` against the
-  real entry file, not a peer file inside a module directory.
+- Run `hew check <file.hew>` or `hew compile <file.hew>` against the real
+  entry file, not a peer file inside a module directory.
 - For `import greeting;`, Hew looks for `greeting.hew` beside the importer or
   `greeting/greeting.hew` in a directory-form module. The entry file stem must
   match the directory name.

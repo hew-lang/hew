@@ -65,9 +65,10 @@
 - **Actor lifecycle hooks — `#[on(start)]` and `#[on(stop)]`:** Actor methods
   annotated with `#[on(start)]` run before the actor's message loop begins;
   methods annotated with `#[on(stop)]` run after the loop exits (whether by
-  normal stop or supervised termination). Multiple hooks per kind are allowed
-  and execute in lexical declaration order. The legacy `terminate { }` block
-  is removed; migrate to `#[on(stop)]`.
+  normal stop or supervised termination). Multiple `#[on(stop)]` hooks are
+  allowed and execute in lexical declaration order; `#[on(start)]` and
+  `#[on(crash)]` are each allowed at most once per actor. The legacy
+  `terminate { }` block is removed; migrate to `#[on(stop)]`.
 - **Bind-and-propagate sugar — `let r? = expr`:** Sugar for `let r = expr?;`.
   The expression must evaluate to `Result<T, E>` or `Option<T>` with a
   compatible propagation path from the enclosing scope. The desugared form is
@@ -108,8 +109,8 @@
   the lifetime bracket and `fork name = expr;` for each child inside it.
 - **`scope |s| { s.launch / s.spawn / s.cancel }` removed (BREAKING):** The
   binding form that exposed a scope handle `s` with imperative launch/spawn/
-  cancel methods no longer parses. Lifecycle management is now handled
-  through `#[on(start)]` and `#[on(stop)]` hook annotations on actor methods.
+  cancel methods no longer parses. Migrate child-task lifetime management to
+  `scope { ... }` with `fork name = expr;` children inside the scope.
 - **Lambda-actor handles accept `.send()`:** Prior to v0.5, calling `.send()`
   on a lambda-actor handle was a type error (`E_LAMBDA_NO_SEND_METHOD`). That
   restriction is lifted. Both `handle(msg)` (bare call) and `handle.send(msg)`

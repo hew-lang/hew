@@ -11,8 +11,7 @@ use support::{hew_binary, require_codegen};
 /// C-ABI functions were absent from its dynamic export table, causing
 /// `DynamicLibrarySearchGenerator::GetForCurrentProcess` to report
 /// "Symbols not found: [ `_hew_print_value` ]".
-// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
-#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
+#[ignore = "in-process JIT awaits the Rust v0.5 `ORCv2` bridge (#1227/#1235)"]
 #[test]
 fn jit_inprocess_simple_expression_succeeds() {
     require_codegen();
@@ -38,9 +37,8 @@ fn jit_inprocess_simple_expression_succeeds() {
 /// `hew eval --jit auto "1 + 1"` must print `2` and exit 0.
 ///
 /// `auto` used to select `inprocess`; both modes remain ignored until eval is
-/// routed through the Rust MIR/codegen-rs execution substrate.
-// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
-#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
+/// backed by the Rust v0.5 `ORCv2` bridge (#1227/#1235).
+#[ignore = "in-process JIT awaits the Rust v0.5 `ORCv2` bridge (#1227/#1235)"]
 #[test]
 fn jit_auto_simple_expression_succeeds() {
     require_codegen();
@@ -85,8 +83,7 @@ fn jit_auto_simple_expression_succeeds() {
 ///    symbols via the dynamic linker rather than `__SYMTAB`.  A freshly-built
 ///    release binary (strip active, zero exported `T _hew_` symbols) passes
 ///    this test without any profile changes.
-// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
-#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
+#[ignore = "in-process JIT awaits the Rust v0.5 `ORCv2` bridge (#1227/#1235)"]
 #[test]
 fn jit_inprocess_release_binary_does_not_abort() {
     require_codegen();

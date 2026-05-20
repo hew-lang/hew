@@ -109,17 +109,6 @@ enum CompiledEvalError {
     },
 }
 
-impl From<crate::compile::CompileFromSourceError> for CompiledEvalError {
-    fn from(error: crate::compile::CompileFromSourceError) -> Self {
-        match error {
-            crate::compile::CompileFromSourceError::DiagnosticsRendered => {
-                Self::DiagnosticsRendered
-            }
-            crate::compile::CompileFromSourceError::Message(message) => Self::Message(message),
-        }
-    }
-}
-
 pub(crate) fn emit_runtime_failure_output(stdout: &str, stderr: &str) {
     if !stdout.is_empty() {
         print!("{stdout}");
@@ -441,10 +430,10 @@ impl ReplSession {
             }
         };
 
-        // Compile and execute in-process.  Import resolution and typecheck are
-        // re-run inside compile_from_source_checked with correct stage ordering
-        // (resolve imports BEFORE typecheck) so that stdlib type metadata is
-        // available to the enrichment and codegen passes.
+        // Compile and execute in-process. Import resolution and typecheck are
+        // re-run inside the v0.5 HIR/MIR/codegen-rs path with correct stage
+        // ordering (resolve imports BEFORE typecheck) so that stdlib type
+        // metadata is available to lowering and codegen.
         match run_eval_compiled(
             checked_program.program,
             &checked_program.source,
@@ -1101,22 +1090,18 @@ fn run_inprocess_compiled(
 
     let bin_name = format!("eval_bin{}", crate::platform::exe_suffix());
     let bin_path = tmp_dir.path().join(bin_name);
-    let bin_path_str = bin_path
-        .to_str()
-        .ok_or_else(|| CompiledEvalError::Message("temp binary path is not valid UTF-8".into()))?;
-
-    crate::compile::compile_from_source_checked(
+    crate::compile_native_from_program(
         program,
         source,
         source_label,
-        bin_path_str,
+        &bin_path,
         &crate::compile::CompileOptions {
             project_dir,
             target: target.map(str::to_owned),
             ..crate::compile::CompileOptions::default()
         },
     )
-    .map_err(CompiledEvalError::from)?;
+    .map_err(|()| CompiledEvalError::DiagnosticsRendered)?;
 
     match crate::process::run_binary_with_timeout(&bin_path, timeout) {
         Ok(crate::process::BinaryRunOutcome::Success { stdout }) => {
@@ -1143,10 +1128,9 @@ fn run_inprocess_compiled(
 
 /// Dispatch to JIT, native, or WASM execution depending on mode and target.
 ///
-/// When `jit_mode` is `Some(Inprocess | Auto)`, fail closed through the retired
-/// in-process JIT guard — no temp dir, no subprocess, and no native backend.
-/// `Worker` and `None` remain dormant AOT/WASM paths while the user-facing
-/// command is blocked by the router.
+/// When `jit_mode` is `Some(Inprocess | Auto)`, fail closed through the `ORCv2`
+/// gap guard — no temp dir, no subprocess, and no LLJIT invocation.
+/// `Worker` and `None` route through the AOT/WASM paths.
 /// When `target` resolves to a WASM target, routes through wasmtime.
 /// Otherwise falls through to the existing native `run_inprocess_compiled`
 /// AOT+spawn path.
@@ -1161,7 +1145,7 @@ fn run_eval_compiled(
 ) -> Result<String, CompiledEvalError> {
     // JIT in-process path — no temp dir, no subprocess. `Auto` resolves to the
     // same fail-closed guard as `Inprocess`; `Worker` and `None` fall through to
-    // the dormant AOT+spawn path below.
+    // the AOT+spawn path below.
     if matches!(
         jit_mode,
         Some(crate::args::JitMode::Inprocess | crate::args::JitMode::Auto)
@@ -1180,11 +1164,10 @@ fn run_eval_compiled(
     }
 }
 
-/// Fail closed for the retired in-process JIT path.
+/// Fail closed for the unavailable in-process JIT path.
 ///
-/// The former LLJIT bridge consumed frontend `MessagePack` and executed through
-/// native codegen hooks that no longer exist. Keep this helper as a narrow
-/// adapter for dormant eval tests, but do not compile or execute here.
+/// The Rust-codegen `ORCv2` bridge is not implemented yet. Keep this helper as a
+/// narrow adapter, but do not compile or execute here.
 fn run_inprocess_jit(
     _program: hew_parser::ast::Program,
     _source: &str,
@@ -1221,22 +1204,18 @@ fn run_wasm_eval_compiled(
         .map_err(|e| CompiledEvalError::Message(format!("cannot create temp dir: {e}")))?;
 
     let module_path = tmp_dir.path().join("eval_module.wasm");
-    let module_path_str = module_path
-        .to_str()
-        .ok_or_else(|| CompiledEvalError::Message("temp module path is not valid UTF-8".into()))?;
-
-    crate::compile::compile_from_source_checked(
+    crate::compile_native_from_program(
         program,
         source,
         source_label,
-        module_path_str,
+        &module_path,
         &crate::compile::CompileOptions {
             project_dir,
             target: target.map(str::to_owned),
             ..crate::compile::CompileOptions::default()
         },
     )
-    .map_err(CompiledEvalError::from)?;
+    .map_err(|()| CompiledEvalError::DiagnosticsRendered)?;
 
     match crate::wasi_runner::run_module_captured(&module_path, timeout) {
         Ok(crate::wasi_runner::WasiCapturedOutcome::Success { stdout }) => Ok(stdout),
@@ -1542,11 +1521,11 @@ mod tests {
                 eprintln!("REPL integration tests skipped: probe parse failed");
                 return false;
             }
-            let ok = crate::compile::compile_from_source_checked(
+            let ok = crate::compile_native_from_program(
                 parse_result.program,
                 source,
                 "<repl-probe>",
-                bin_path.to_str().unwrap_or("probe"),
+                &bin_path,
                 &crate::compile::CompileOptions::default(),
             )
             .is_ok();
@@ -1560,8 +1539,6 @@ mod tests {
         })
     }
 
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_arithmetic() {
         if !require_toolchain() {
@@ -1573,8 +1550,6 @@ mod tests {
         assert_eq!(result.output, "3\n");
     }
 
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_binding_persists() {
         if !require_toolchain() {
@@ -1588,8 +1563,6 @@ mod tests {
         assert_eq!(r2.output, "43\n");
     }
 
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_function_persists() {
         if !require_toolchain() {
@@ -1603,8 +1576,6 @@ mod tests {
         assert_eq!(r2.output, "42\n");
     }
 
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_doc_commented_function_persists() {
         if !require_toolchain() {
@@ -1618,13 +1589,10 @@ mod tests {
         assert_eq!(r2.output, "42\n");
     }
 
-    /// Regression test: regex literals must produce valid MLIR via the
-    /// in-process codegen path.  The old implementation passed a stale `tco`
-    /// (computed before import resolution) to `enrich_program_ast`, causing a
-    /// call-site / declaration type mismatch for `hew_regex_new` in the
-    /// generated MLIR.
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
+    /// Regression test: regex literals must lower through the v0.5 native
+    /// eval path. The old implementation passed a stale `tco` (computed before
+    /// import resolution), causing call-site / declaration type mismatches for
+    /// runtime-backed helpers such as `hew_regex_new`.
     #[test]
     fn eval_regex_literal() {
         if !require_toolchain() {
@@ -1636,8 +1604,6 @@ mod tests {
         assert_eq!(result.output, "true\n");
     }
 
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_clear_resets() {
         if !require_toolchain() {
@@ -1677,8 +1643,6 @@ mod tests {
         assert!(result.errors[0].contains("Unknown command"));
     }
 
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_one_expression() {
         if !require_toolchain() {
@@ -1688,8 +1652,6 @@ mod tests {
         assert_eq!(result.unwrap(), "6\n");
     }
 
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_timeout_is_reported() {
         if !require_toolchain() {
@@ -1714,8 +1676,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_runtime_failure_still_surfaces_stderr() {
         if !require_toolchain() {
@@ -1822,8 +1782,6 @@ mod tests {
         );
     }
 
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_file_multiline() {
         if !require_toolchain() {
@@ -1840,8 +1798,6 @@ mod tests {
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_file_balanced_incomplete_expression() {
         if !require_toolchain() {
@@ -1919,8 +1875,6 @@ mod tests {
 
     /// `eval_file` anchored to a real path resolves local `src/` imports that
     /// would fail when `project_dir` defaults to an unrelated cwd.
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn eval_file_resolves_local_src_import() {
         if !require_toolchain() {
@@ -1963,8 +1917,6 @@ mod tests {
 
     /// `ReplSession::for_path` carries the project directory so that
     /// `eval_source_file_cli` resolves imports relative to that project.
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn repl_session_for_path_carries_project_dir() {
         if !require_toolchain() {
@@ -2071,11 +2023,11 @@ mod tests {
                 eprintln!("WASI eval tests skipped: probe parse failed");
                 return false;
             }
-            let compiled = crate::compile::compile_from_source_checked(
+            let compiled = crate::compile_native_from_program(
                 parse_result.program,
                 source,
                 "<wasi-probe>",
-                wasm_path.to_str().unwrap_or("probe.wasm"),
+                &wasm_path,
                 &crate::compile::CompileOptions {
                     target: Some("wasm32-wasi".to_owned()),
                     ..crate::compile::CompileOptions::default()
@@ -2109,8 +2061,6 @@ mod tests {
 
     // ── WASI inline expression ───────────────────────────────────────────────
 
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn wasi_eval_arithmetic() {
         if !require_wasi_toolchain() {
@@ -2120,8 +2070,6 @@ mod tests {
         assert_eq!(result.unwrap(), "3\n");
     }
 
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn wasi_eval_string_output() {
         if !require_wasi_toolchain() {
@@ -2162,8 +2110,6 @@ mod tests {
 
     // ── WASI file eval ───────────────────────────────────────────────────────
 
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn wasi_eval_file_function_and_call() {
         if !require_wasi_toolchain() {
@@ -2245,8 +2191,6 @@ mod tests {
     /// `JitMode::Worker` routes to the AOT+spawn path (`run_inprocess_compiled`),
     /// producing the same output as when `--jit` is absent.
     /// Skipped when the native toolchain is unavailable.
-    // Disabled during v0.5 cutover: eval execution is not yet routed through the Rust MIR/codegen-rs substrate.
-    #[ignore = "v0.5: eval execution awaits Rust MIR/codegen-rs routing"]
     #[test]
     fn jit_worker_mode_produces_same_result_as_no_jit_flag() {
         if !require_toolchain() {

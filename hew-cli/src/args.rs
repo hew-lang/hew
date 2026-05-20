@@ -156,7 +156,6 @@ pub struct RunArgs {
     pub program_args: Vec<String>,
 }
 
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 impl RunArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {

@@ -4,13 +4,6 @@
 //! isolated program via the native compilation pipeline, and reports results
 //! with coloured output.
 
-// The test runner is still waiting for an end-to-end route through the Rust
-// MIR/codegen-rs execution substrate. The CLI dispatcher short-circuits
-// `hew test` with the cutover error, leaving every function in this subtree
-// unused on this branch. Match the pattern the rest of the cutover uses for
-// dormant subcommand bodies.
-#![allow(dead_code, reason = "dormant during v0.5 cutover")]
-
 pub mod discovery;
 pub mod output;
 pub mod runner;

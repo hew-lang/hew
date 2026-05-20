@@ -3,9 +3,7 @@
 
 #![allow(
     dead_code,
-    reason = "the dispatcher short-circuits `hew run` with a cutover error before \
-              reaching this module; its helpers are dormant until the C++ codegen \
-              subtree is removed in a later stage of the v0.5 cutover"
+    reason = "currently used only by the retained interactive WASI runner path"
 )]
 
 use std::sync::atomic::{AtomicI32, Ordering};

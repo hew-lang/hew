@@ -266,6 +266,10 @@ pub(crate) fn check_explain_cow(
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "R42 owns the full legacy compile.rs removal; R30 has removed its call sites"
+)]
 pub(crate) fn compile_from_source_checked(
     program: hew_parser::ast::Program,
     source: &str,

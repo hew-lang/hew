@@ -1,6 +1,6 @@
 //! Tests for HIR machine lowering and static checks.
 
-use hew_hir::{lower_program, HirDiagnosticKind, HirItem, ResolutionCtx};
+use hew_hir::{lower_program, HirDiagnosticKind, HirExprKind, HirItem, ResolutionCtx};
 use hew_types::TypeCheckOutput;
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
@@ -368,6 +368,159 @@ machine ExitConflict {
     assert!(
         has_exit_parity_error,
         "expected exit effect-parity diagnostic, got: {:?}",
+        output.diagnostics
+    );
+}
+
+// ── Slice 1 substrate: transition body + entry/exit lowered to HIR ──────────
+
+#[test]
+fn transition_body_lowers_to_hir_expr_substrate() {
+    // A transition with a non-trivial body (a bare state-name tail expression)
+    // should populate `HirMachineTransition::body` as Slice 1 substrate, even
+    // though bare state-name references aren't yet resolved in HIR (they
+    // lower to `HirExprKind::Unsupported` placeholders — see Slice 2).
+    let src = r"
+machine Counter {
+    state Running { count: Int; }
+
+    event Tick;
+
+    on Tick: Running -> Running @reenter {
+        Running { count: 1 }
+    }
+}
+";
+    let output = lower(src);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        output.diagnostics
+    );
+    let machine = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| {
+            if let HirItem::Machine(m) = item {
+                Some(m)
+            } else {
+                None
+            }
+        })
+        .expect("expected Machine HirItem");
+    let tr = machine
+        .transitions
+        .iter()
+        .find(|t| t.event_name == "Tick")
+        .expect("expected Tick transition");
+    // The body must be present as some HIR expression form — slice 1 is
+    // structural substrate only, no claims about kind beyond "not empty".
+    assert!(
+        !matches!(tr.body.kind, HirExprKind::Literal(_)),
+        "non-empty transition body should lower to a non-literal HirExpr; got {:?}",
+        tr.body.kind
+    );
+}
+
+#[test]
+fn entry_exit_blocks_lower_to_hir_block_substrate() {
+    // The Door machine has an entry and exit block on `Closed`. Both should
+    // appear as `Some(HirBlock)` on the lowered state. Constructs inside that
+    // can't yet round-trip through HIR (e.g. unresolved `log` call) are fenced
+    // so existing diagnostics stay quiet.
+    let src = r"
+machine Door {
+    state Closed {
+        entry { log(closed_entered); }
+        exit { log(closed_exited); }
+    }
+    state Open;
+
+    event OpenDoor;
+    event CloseDoor;
+
+    on OpenDoor: Closed -> Open;
+    on OpenDoor: Open -> Open;
+    on CloseDoor: Open -> Closed;
+    on CloseDoor: Closed -> Closed;
+}
+";
+    let output = lower(src);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        output.diagnostics
+    );
+    let machine = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| {
+            if let HirItem::Machine(m) = item {
+                Some(m)
+            } else {
+                None
+            }
+        })
+        .expect("expected Machine HirItem");
+    let closed = machine.states.iter().find(|s| s.name == "Closed").unwrap();
+    let entry = closed
+        .entry
+        .as_ref()
+        .expect("Closed.entry should be lowered as Some(HirBlock)");
+    let exit = closed
+        .exit
+        .as_ref()
+        .expect("Closed.exit should be lowered as Some(HirBlock)");
+    assert!(
+        !entry.statements.is_empty() || entry.tail.is_some(),
+        "entry block should carry at least one statement or tail expression"
+    );
+    assert!(
+        !exit.statements.is_empty() || exit.tail.is_some(),
+        "exit block should carry at least one statement or tail expression"
+    );
+    let open = machine.states.iter().find(|s| s.name == "Open").unwrap();
+    assert!(open.entry.is_none(), "Open has no entry block");
+    assert!(open.exit.is_none(), "Open has no exit block");
+}
+
+#[test]
+fn transition_body_with_machine_emit_is_fenced_but_cycle_diagnostic_fires() {
+    // Bodies that include `emit` are not yet routed through `HirExprKind`
+    // (Slice 2 owns that). Slice 1 must:
+    //   1. still lower the body to a `HirExpr` substrate without crashing,
+    //   2. preserve the Lane A `MachineEmitCycle` diagnostic (from the AST
+    //      summary walk), and
+    //   3. not introduce extra "unsupported" diagnostic noise for the emit.
+    let src = r"
+machine Cyclic {
+    state Active;
+
+    event Tick;
+
+    on Tick: Active -> Active {
+        emit Tick {};
+        Active
+    }
+}
+";
+    let output = lower(src);
+    let cycle_count = output
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(&d.kind, HirDiagnosticKind::MachineEmitCycle { .. }))
+        .count();
+    assert!(cycle_count >= 1, "expected at least one MachineEmitCycle");
+    let unsupported_count = output
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(&d.kind, HirDiagnosticKind::CutoverUnsupported { .. }))
+        .count();
+    assert_eq!(
+        unsupported_count, 0,
+        "Slice 1 fences body-lowering diagnostics; saw: {:?}",
         output.diagnostics
     );
 }

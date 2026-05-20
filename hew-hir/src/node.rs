@@ -289,6 +289,17 @@ pub struct HirMachineState {
     /// Field names written by the `exit` block, each paired with the span of
     /// the specific `self.field = ...` assignment.
     pub exit_writes: Vec<(String, Span)>,
+    /// Best-effort lowered `entry { ... }` block, populated when the source
+    /// state carries an entry block. Slice 1 substrate — downstream consumers
+    /// (MIR/codegen) are wired in later slices. Constructs that depend on
+    /// later-slice HIR forms (e.g. `emit`, `this`, bare state-name expressions)
+    /// lower to `HirExprKind::Unsupported` placeholders; the canonical
+    /// machine-body diagnostics still come from the AST-walking summary checks
+    /// driven by `entry_writes` / `body_emits`.
+    pub entry: Option<HirBlock>,
+    /// Best-effort lowered `exit { ... }` block. See `entry` for the
+    /// best-effort lowering contract.
+    pub exit: Option<HirBlock>,
     pub span: Span,
 }
 
@@ -317,6 +328,13 @@ pub struct HirMachineTransition {
     pub body_writes: Vec<String>,
     /// Event names emitted directly from the transition body (used for emit-cycle checking).
     pub body_emits: Vec<String>,
+    /// Best-effort lowered transition body. Slice 1 substrate — downstream
+    /// consumers (MIR/codegen) are wired in later slices. Constructs that
+    /// depend on later-slice HIR forms (notably `Expr::MachineEmit`, `Expr::This`,
+    /// and bare state-name references) lower to `HirExprKind::Unsupported`
+    /// placeholders; the canonical machine-body diagnostics still come from
+    /// the AST-walking summary checks driven by `body_writes` / `body_emits`.
+    pub body: HirExpr,
     pub span: Span,
 }
 

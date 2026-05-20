@@ -1857,6 +1857,22 @@ impl LowerCtx {
                 .map(collect_assigned_field_names)
                 .unwrap_or_default();
 
+            // Best-effort lowering of entry/exit blocks for Slice 1 substrate.
+            // Constructs that aren't yet wired in HIR (e.g. `emit`, `this`,
+            // bare state-name expressions) fall through to
+            // `HirExprKind::Unsupported`; the diagnostics those would otherwise
+            // raise are fenced because the canonical machine-body diagnostics
+            // are still owned by the AST-summary checks above. Slice 2 wires
+            // `MachineEmit` into HIR and unlocks proper diagnostics.
+            let entry = state
+                .entry
+                .as_ref()
+                .map(|block| self.lower_machine_block_fenced(block));
+            let exit = state
+                .exit
+                .as_ref()
+                .map(|block| self.lower_machine_block_fenced(block));
+
             hir_states.push(HirMachineState {
                 name: state.name.clone(),
                 fields,
@@ -1864,6 +1880,8 @@ impl LowerCtx {
                 has_exit: state.exit.is_some(),
                 entry_writes,
                 exit_writes,
+                entry,
+                exit,
                 span: span.clone(),
             });
         }
@@ -1890,30 +1908,30 @@ impl LowerCtx {
             })
             .collect();
 
-        // Lower transitions — shallow: record names, guard presence, body writes,
-        // and emitted event names (for static checks). Body expressions are not
-        // lowered to HirExpr in Lane A.
-        let hir_transitions: Vec<HirMachineTransition> = decl
-            .transitions
-            .iter()
-            .map(|tr| {
-                let is_self_transition =
-                    tr.source_state == tr.target_state && tr.source_state != "_";
-                let body_writes = collect_assigned_field_names_expr(&tr.body.0);
-                let body_emits = collect_emitted_events(&tr.body.0);
-                HirMachineTransition {
-                    event_name: tr.event_name.clone(),
-                    source_state: tr.source_state.clone(),
-                    target_state: tr.target_state.clone(),
-                    has_guard: tr.guard.is_some(),
-                    is_self_transition,
-                    reenter: tr.reenter,
-                    body_writes,
-                    body_emits,
-                    span: tr.body.1.clone(),
-                }
-            })
-            .collect();
+        // Lower transitions — record names, guard presence, body writes,
+        // and emitted event names (for static checks). The body is also
+        // lowered best-effort to `HirExpr` as Slice 1 substrate; see
+        // `lower_machine_expr_fenced` for the fenced-diagnostic contract.
+        let mut hir_transitions: Vec<HirMachineTransition> =
+            Vec::with_capacity(decl.transitions.len());
+        for tr in &decl.transitions {
+            let is_self_transition = tr.source_state == tr.target_state && tr.source_state != "_";
+            let body_writes = collect_assigned_field_names_expr(&tr.body.0);
+            let body_emits = collect_emitted_events(&tr.body.0);
+            let body = self.lower_machine_expr_fenced(&tr.body);
+            hir_transitions.push(HirMachineTransition {
+                event_name: tr.event_name.clone(),
+                source_state: tr.source_state.clone(),
+                target_state: tr.target_state.clone(),
+                has_guard: tr.guard.is_some(),
+                is_self_transition,
+                reenter: tr.reenter,
+                body_writes,
+                body_emits,
+                body,
+                span: tr.body.1.clone(),
+            });
+        }
 
         // ── Static checks ────────────────────────────────────────────────────
 
@@ -2102,6 +2120,41 @@ impl LowerCtx {
             has_default: decl.has_default,
             span,
         })
+    }
+
+    /// Best-effort lowering of a machine transition body expression for
+    /// Slice 1 substrate.
+    ///
+    /// Slice 1 introduces `HirMachineTransition::body: HirExpr` so MIR /
+    /// codegen has a typed-HIR tree to consume in later slices. The body
+    /// itself contains constructs that aren't yet wired through HIR —
+    /// notably `Expr::MachineEmit`, `Expr::This`, and bare state-name
+    /// references — and the canonical machine-body diagnostics are still
+    /// produced by the AST-summary walks (`body_writes` / `body_emits`)
+    /// invoked alongside this helper. To avoid double-reporting the same
+    /// constructs as `CutoverUnsupported` / `UnresolvedSymbol` noise (and
+    /// to keep existing fixtures stable until Slice 2 routes
+    /// `MachineEmit` through `HirExprKind`), any diagnostics produced
+    /// while lowering the body are dropped; the lowered tree itself is
+    /// kept as substrate (`HirExprKind::Unsupported` placeholders mark
+    /// the gaps).
+    fn lower_machine_expr_fenced(&mut self, body: &Spanned<Expr>) -> HirExpr {
+        let diag_snapshot = self.diagnostics.len();
+        self.push_scope();
+        let expr = self.lower_expr(body, IntentKind::Read);
+        self.pop_scope();
+        self.diagnostics.truncate(diag_snapshot);
+        expr
+    }
+
+    /// Best-effort lowering of a machine state's `entry { ... }` /
+    /// `exit { ... }` block for Slice 1 substrate. See
+    /// `lower_machine_expr_fenced` for the diagnostic-fencing contract.
+    fn lower_machine_block_fenced(&mut self, block: &Block) -> HirBlock {
+        let diag_snapshot = self.diagnostics.len();
+        let lowered = self.lower_block(block, &ResolvedTy::Unit);
+        self.diagnostics.truncate(diag_snapshot);
+        lowered
     }
 
     /// Lower an `actor` declaration into `HirActorDecl`, including executable

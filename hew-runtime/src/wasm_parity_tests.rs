@@ -860,6 +860,121 @@ fn wasm_dispatch_context_snapshots() -> Vec<DispatchContextSnapshot> {
     }
 }
 
+unsafe extern "C-unwind" fn request_wasm_stop_dispatch(
+    ctx: *mut crate::execution_context::HewExecutionContext,
+    _state: *mut c_void,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _data_size: usize,
+) {
+    // SAFETY: scheduler_wasm installs a non-null canonical context before
+    // entering dispatch.
+    unsafe {
+        let actor = (*ctx).actor;
+        if !actor.is_null() {
+            (*actor)
+                .actor_state
+                .store(HewActorState::Stopping as i32, Ordering::Release);
+        }
+    }
+}
+
+unsafe extern "C" fn mark_terminate_state(state: *mut c_void) {
+    if !state.is_null() {
+        // SAFETY: the test installs an AtomicBool as the actor state pointer.
+        unsafe { (*state.cast::<AtomicBool>()).store(true, Ordering::Release) };
+    }
+}
+
+#[test]
+fn wasm_on_stop_emits_stop_lifecycle_trace_before_terminate_completes() {
+    let _guard = crate::runtime_test_guard();
+    crate::scheduler_wasm::hew_sched_shutdown();
+    crate::scheduler_wasm::hew_sched_init();
+    crate::tracing::hew_trace_reset();
+    crate::tracing::hew_trace_enable(1);
+
+    // SAFETY: test owns the mailbox and actor until after the scheduler drain.
+    unsafe {
+        let mailbox = crate::mailbox_wasm::hew_mailbox_new().cast::<c_void>();
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            crate::mailbox_wasm::hew_mailbox_send(mailbox.cast(), 7, std::ptr::null_mut(), 0),
+            HewError::Ok as i32
+        );
+
+        let terminate_seen = Box::new(AtomicBool::new(false));
+        let terminate_state = Box::into_raw(terminate_seen).cast::<c_void>();
+        let mut actor = stub_dispatch_actor(mailbox, request_wasm_stop_dispatch);
+        actor.id = 37;
+        actor.state = terminate_state;
+        actor.terminate_fn = Some(mark_terminate_state);
+        let actor_ptr = Box::into_raw(actor);
+
+        crate::scheduler_wasm::sched_enqueue(actor_ptr.cast::<crate::scheduler_wasm::HewActor>());
+        crate::scheduler_wasm::hew_sched_run();
+
+        assert_eq!(
+            (*actor_ptr).actor_state.load(Ordering::Acquire),
+            HewActorState::Stopped as i32
+        );
+        assert!(
+            (*actor_ptr).terminate_called.load(Ordering::Acquire),
+            "scheduler_wasm must still route on(stop) through call_terminate_fn"
+        );
+        assert!(
+            (*actor_ptr).terminate_finished.load(Ordering::Acquire),
+            "terminate_fn must complete on the stopped actor"
+        );
+        assert!(
+            (*terminate_state.cast::<AtomicBool>()).load(Ordering::Acquire),
+            "terminate_fn must receive the actor state pointer"
+        );
+
+        let mut events = [crate::tracing::HewTraceEvent {
+            trace_id_hi: 0,
+            trace_id_lo: 0,
+            span_id: 0,
+            parent_span_id: 0,
+            actor_id: 0,
+            event_type: 0,
+            msg_type: 0,
+            timestamp_ns: 0,
+        }; 4];
+        let count = crate::tracing::hew_trace_drain(events.as_mut_ptr(), 4);
+        assert_eq!(count, 1, "on(stop) should emit one lifecycle stop event");
+        assert_eq!(events[0].event_type, crate::tracing::SPAN_STOP);
+        assert_eq!(events[0].actor_id, 37);
+        assert_eq!(
+            events[0].msg_type, 0,
+            "lifecycle stop events mirror native and carry no message type"
+        );
+
+        crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
+        drop(Box::from_raw(terminate_state.cast::<AtomicBool>()));
+        drop(Box::from_raw(actor_ptr));
+    }
+
+    crate::tracing::hew_trace_reset();
+    crate::scheduler_wasm::hew_sched_shutdown();
+}
+
+// WASM-R37-S9 / WASM-TODO(#1451): Slice 2 makes the on(stop) lifecycle event
+// observable on the WASM scheduler. The drain-time actor_type_id field is still
+// intentionally zeroed for WASM/test in `tracing.rs` until Slice 5 teaches WASM
+// codegen to emit handler-name/type registration. This ignored regression
+// flips when that producer exists.
+#[test]
+#[ignore = "WASM-R37-S9 / WASM-TODO(#1451): actor_type_id registration lands in Slice 5"]
+#[cfg(feature = "profiler")]
+fn wasm_on_stop_lifecycle_json_includes_actor_type_id_when_registration_lands() {
+    let json = crate::tracing::drain_events_json();
+    assert!(
+        !json.contains("\"actor_type_id\":0"),
+        "WASM on(stop) lifecycle JSON should include non-zero actor_type_id once registration lands"
+    );
+}
+
 #[test]
 fn dispatch_context_install_restore_matches_native_and_wasm() {
     let native = native_dispatch_context_snapshots();

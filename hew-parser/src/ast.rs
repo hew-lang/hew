@@ -494,6 +494,14 @@ pub enum UnaryOp {
     Not,
     Negate,
     BitNot,
+    /// Raw pointer dereference (`*expr`).
+    ///
+    /// v0.5 endpoint: the parser recognizes this only far enough to
+    /// reject it deterministically in the type checker.  Outside
+    /// `unsafe { ... }` the diagnostic is `UnsafeOperationRequiresBlock`;
+    /// inside `unsafe { ... }` the operation is rejected as "not lowered
+    /// in v0.5" before HIR.  No HIR/MIR/codegen path is reached.
+    RawDeref,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

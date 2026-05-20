@@ -1940,6 +1940,7 @@ impl<'a> Formatter<'a> {
                     UnaryOp::Not => self.write("!"),
                     UnaryOp::Negate => self.write("-"),
                     UnaryOp::BitNot => self.write("~"),
+                    UnaryOp::RawDeref => self.write("*"),
                 }
                 let needs_parens = matches!(operand.0, Expr::Binary { .. });
                 if needs_parens {

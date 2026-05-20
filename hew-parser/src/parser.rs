@@ -4717,6 +4717,21 @@ impl<'src> Parser<'src> {
                     let end = operand.1.end;
                     (Expr::Await(Box::new(operand)), start..end)
                 }
+                Token::Star => {
+                    // Raw pointer dereference (`*expr`).  v0.5 parses but
+                    // the type checker rejects with either
+                    // `UnsafeOperationRequiresBlock` (outside unsafe) or a
+                    // "not lowered in v0.5" diagnostic (inside unsafe).
+                    let operand = self.parse_expr_bp(rbp)?;
+                    let end = operand.1.end;
+                    (
+                        Expr::Unary {
+                            op: UnaryOp::RawDeref,
+                            operand: Box::new(operand),
+                        },
+                        start..end,
+                    )
+                }
                 _ => unreachable!(),
             }
         } else {
@@ -6440,7 +6455,10 @@ fn infix_bp(op: &Token) -> Option<(u8, u8)> {
 
 fn prefix_bp(op: &Token) -> Option<u8> {
     match op {
-        Token::Bang | Token::Minus | Token::Tilde | Token::Await => Some(25),
+        // `*expr` is a raw-pointer dereference.  v0.5 parses it only so
+        // the type checker can reject it deterministically — no codegen
+        // path is reached.  Same binding power as the other unary prefixes.
+        Token::Bang | Token::Minus | Token::Tilde | Token::Await | Token::Star => Some(25),
         _ => None,
     }
 }

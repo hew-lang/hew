@@ -193,6 +193,7 @@ fn format_literal(expr: &Expr) -> String {
                 UnaryOp::Negate => "-",
                 UnaryOp::Not => "!",
                 UnaryOp::BitNot => "~",
+                UnaryOp::RawDeref => "*",
             };
             if let Expr::Literal(lit) = &operand.0 {
                 format!("{prefix}{}", format_lit(lit))

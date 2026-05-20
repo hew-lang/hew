@@ -430,12 +430,19 @@ pub enum TypeErrorKind {
     /// construct (e.g. `"raw pointer dereference"`, `"extern fn call"`).
     ///
     /// Envelope code: `E_M5_UNSAFE_BLOCK_REQUIRED`.
-    ///
-    /// No producer emits this variant yet; it is reserved for T1-B-* and
-    /// T1-C-* slices that introduce the concrete unsafe operations.
-    // TODO(T1-B-3/T1-C-2): wire producers once raw-pointer and FFI ops land.
     UnsafeOperationRequiresBlock {
         /// Short identifier for the unsafe operation, e.g. `"raw pointer dereference"`.
+        operation: String,
+    },
+    /// A raw-pointer operation was used inside `unsafe { ... }` but the
+    /// v0.5 compiler does not lower it to HIR/MIR/codegen.  Emitted so
+    /// users get a deterministic, source-located rejection instead of a
+    /// later "unsupported expression" failure deep in lowering.
+    ///
+    /// Envelope code: `E_M5_RAW_POINTER_OP_NOT_LOWERED`.
+    RawPointerOpNotLoweredV05 {
+        /// Short identifier for the raw-pointer operation, e.g.
+        /// `"raw pointer dereference"`.
         operation: String,
     },
     /// A trait is used in `dyn` position but violates the v0.5 object-safety
@@ -577,6 +584,7 @@ impl TypeErrorKind {
             Self::UnsafeCollectionElement => "UnsafeCollectionElement",
             Self::TaskNotNameable => "TaskNotNameable",
             Self::UnsafeOperationRequiresBlock { .. } => "UnsafeOperationRequiresBlock",
+            Self::RawPointerOpNotLoweredV05 { .. } => "RawPointerOpNotLoweredV05",
             Self::TraitNotObjectSafe { .. } => "TraitNotObjectSafe",
             Self::MissingAssocTypeBinding { .. } => "MissingAssocTypeBinding",
             Self::ClosureExplicitMoveRequired { .. } => "ClosureExplicitMoveRequired",

@@ -16291,6 +16291,122 @@ mod task_type_surface_rules {
             "extern fn call after unsafe block closes must emit an unsafe-required error; got: {errors:#?}"
         );
     }
+
+    // ── Raw pointer dereference fail-closed endpoint (v0.5) ─────────────────
+    //
+    // v0.5 parses `*expr` only far enough to reject it deterministically
+    // at type-check time.  No HIR/MIR/codegen path is reached, so native
+    // and WASM lowering both fail-closed identically — this is the WASM
+    // parity story for raw pointer ops in v0.5.
+
+    #[test]
+    fn raw_deref_outside_unsafe_emits_unsafe_block_required() {
+        // `*p` outside `unsafe { ... }` must emit
+        // `UnsafeOperationRequiresBlock` with the raw-pointer-dereference
+        // operation tag.
+        let output = check_source(
+            r#"
+            extern "C" { fn make_ptr() -> *const i64; }
+            fn caller() -> i64 {
+                let p = unsafe { make_ptr() };
+                *p
+            }
+            "#,
+        );
+        let raw_deref_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| {
+                matches!(
+                    &e.kind,
+                    TypeErrorKind::UnsafeOperationRequiresBlock { operation }
+                        if operation == "raw pointer dereference"
+                )
+            })
+            .collect();
+        assert_eq!(
+            raw_deref_errors.len(),
+            1,
+            "expected exactly one `UnsafeOperationRequiresBlock(raw pointer dereference)` \
+             error; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn raw_deref_inside_unsafe_emits_not_lowered_in_v05() {
+        // `*p` inside `unsafe { ... }` is still fail-closed: v0.5 does not
+        // lower raw-pointer dereference to HIR/MIR/codegen, so the checker
+        // emits `RawPointerOpNotLoweredV05` rather than typing the
+        // expression as the pointee type.
+        let output = check_source(
+            r#"
+            extern "C" { fn make_ptr() -> *const i64; }
+            fn caller() -> i64 {
+                unsafe {
+                    let p = make_ptr();
+                    *p
+                }
+            }
+            "#,
+        );
+        let not_lowered: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| {
+                matches!(
+                    &e.kind,
+                    TypeErrorKind::RawPointerOpNotLoweredV05 { operation }
+                        if operation == "raw pointer dereference"
+                )
+            })
+            .collect();
+        assert_eq!(
+            not_lowered.len(),
+            1,
+            "expected exactly one `RawPointerOpNotLoweredV05(raw pointer dereference)` \
+             error; got: {:#?}",
+            output.errors
+        );
+
+        // Crucially, no `UnsafeOperationRequiresBlock` error must fire
+        // inside `unsafe { ... }`: that diagnostic is for callers, not
+        // for the v0.5 "not lowered" rejection.
+        let unsafe_required = output
+            .errors
+            .iter()
+            .any(|e| matches!(&e.kind, TypeErrorKind::UnsafeOperationRequiresBlock { .. }));
+        assert!(
+            !unsafe_required,
+            "raw deref inside unsafe must not emit UnsafeOperationRequiresBlock; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn raw_deref_address_of_not_introduced_in_v05() {
+        // Address-of (`&expr`, `&mut expr`, `&*expr`) remains out of scope
+        // for v0.5.  `&*` is still the single `AmpStar` wrapping-multiply
+        // token; introducing prefix `&` as address-of would require a
+        // lexer change that is explicitly deferred.  Sanity-check that
+        // a prefix `&expr` is not silently accepted as a raw-pointer
+        // construction operator — the parser must reject before the
+        // type checker even sees a coherent AST.
+        let parse_result = hew_parser::parse(
+            r"
+            fn caller() -> i64 {
+                let x: i64 = 0;
+                let _p = &x;
+                0
+            }
+            ",
+        );
+        assert!(
+            !parse_result.errors.is_empty(),
+            "prefix `&expr` must not be accepted as a v0.5 address-of \
+             operator; got no parse errors"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

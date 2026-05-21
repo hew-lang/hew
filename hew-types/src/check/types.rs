@@ -1380,10 +1380,6 @@ pub struct Checker {
     /// Tracks slice annotation spans we've already rejected so repeated
     /// resolution passes don't emit duplicate diagnostics.
     pub(super) unsupported_slice_spans: HashSet<SpanKey>,
-    /// Tracks source spans for deprecated-alias warnings already emitted so
-    /// repeated resolution passes (inference, coercion, etc.) don't duplicate
-    /// the same warning for the same source token.
-    pub(super) deprecated_alias_spans: HashSet<SpanKey>,
     /// Inside a machine transition body, the (`machine_name`, `source_state_name`, `event_name`) tuple.
     pub(super) current_machine_transition: Option<(String, String, String)>,
     /// Compile-time known numeric literal values used by later coercion sites.
@@ -1546,7 +1542,6 @@ impl Checker {
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),
             unsupported_slice_spans: HashSet::new(),
-            deprecated_alias_spans: HashSet::new(),
             current_machine_transition: None,
             const_values: HashMap::new(),
             call_type_args: HashMap::new(),

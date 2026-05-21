@@ -7,17 +7,27 @@ message flows, and handler signatures. Ignores function internals, collection
 ops, string ops, and runtime calls.
 
 Usage:
-    hew build --emit-mlir prog.hew | python scripts/viz/actor-topo.py > topo.dot
-    hew build --emit-mlir prog.hew | python scripts/viz/actor-topo.py -f svg -o topo.svg
     python scripts/viz/actor-topo.py input.mlir -o topo.png
+
+The v0.5 CLI no longer exposes ``hew build --emit-mlir``. Current inspection
+entry points are ``hew compile --dump-mir raw|checked|elab`` and
+``hew machine diagram/list``; this script remains only for previously captured
+Hew dialect MLIR streams.
 """
 
 from __future__ import annotations
 
+import os
+import sys
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path = [
+    path for path in sys.path if os.path.abspath(path or os.getcwd()) != _SCRIPT_DIR
+]
+
 import argparse
 import re
 import subprocess
-import sys
 from dataclasses import dataclass, field
 
 
@@ -841,7 +851,7 @@ def main():
     parser = argparse.ArgumentParser(
         prog="hew-actor-topo",
         description="Visualize the actor system topology from Hew MLIR dialect IR.",
-        epilog="Example: hew build --emit-mlir prog.hew | %(prog)s -f svg -o topo.svg",
+        epilog="Example: %(prog)s input.mlir -f svg -o topo.svg",
     )
     parser.add_argument(
         "input",

@@ -8,6 +8,7 @@ mod app;
 mod client;
 #[cfg(unix)]
 mod discovery;
+mod events;
 mod theme;
 mod ui;
 

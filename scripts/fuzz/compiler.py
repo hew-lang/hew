@@ -2,7 +2,7 @@
 """Generative fuzzing of the Hew compiler.
 
 Generates adversarial inputs across 50 categories and feeds them to
-``hew build`` (and ``hew check`` for differential testing) to find
+``hew compile`` (and ``hew check`` for differential testing) to find
 crashes, panics (ICEs), or hangs.
 
 Unlike fuzz-grammar.py (which requires Grammarinator and the ANTLR grammar),
@@ -23,12 +23,12 @@ Categories span four areas:
     lifecycle, try_op, methods, collections
 
   **Compiler testing techniques** (9 categories):
-    differential (check vs build), cross_feature, error_cascade,
+    differential (check vs compile), cross_feature, error_cascade,
     type_infer, recursion, oracle, comments, whitespace, well_typed
 
   **Pipeline depth testing** (2 categories):
-    oracle_exec   — build + run + verify stdout matches expected output
-    emit_ir       — stress --emit-mlir and --emit-llvm lowering paths
+    oracle_exec   — run + verify stdout matches expected output
+    dump_mir      — stress hew compile --dump-mir stages
 
 Usage:
     ./scripts/fuzz/compiler.py                   # default: all categories
@@ -103,12 +103,12 @@ class FuzzContext:
 
 
 def run_hew(
-    ctx: FuzzContext, source: str | bytes, label: str, *, mode: str = "build"
+    ctx: FuzzContext, source: str | bytes, label: str, *, mode: str = "compile"
 ) -> Issue | None:
-    """Compile *source* with ``hew build`` (or ``hew check``) and classify."""
+    """Run *source* through ``hew compile`` (or ``hew check``) and classify."""
     ctx.stats.total += 1
     tmpfile = ctx.workdir / "input.hew"
-    outfile = ctx.workdir / "output"
+    emit_dir = ctx.workdir / "emit"
 
     try:
         with open(tmpfile, "wb") as f:
@@ -120,11 +120,13 @@ def run_hew(
         ctx.stats.error += 1
         return None
 
-    cmd = [str(ctx.hew), mode]
-    if mode == "build":
-        cmd += [str(tmpfile), "-o", str(outfile)]
+    if mode == "compile":
+        shutil.rmtree(emit_dir, ignore_errors=True)
+        cmd = [str(ctx.hew), "compile", str(tmpfile), "--emit-dir", str(emit_dir)]
+    elif mode == "check":
+        cmd = [str(ctx.hew), "check", str(tmpfile)]
     else:
-        cmd.append(str(tmpfile))
+        raise ValueError(f"unsupported hew fuzz mode: {mode}")
 
     try:
         proc = subprocess.run(
@@ -139,7 +141,7 @@ def run_hew(
             ctx.stats.ok += 1
             return None
 
-        if proc.returncode in (1, 2):
+        if proc.returncode in (1, 2, 125):
             # Detect Rust panics / ICEs.  Be specific to avoid false positives
             # from user-visible mentions of "panic" in Hew error messages.
             ice_markers = (
@@ -159,7 +161,7 @@ def run_hew(
             ctx.stats.error += 1
             return None
 
-        # Negative return codes → signals (SIGSEGV, SIGABRT, …)
+        # Negative return codes -> signals (SIGSEGV, SIGABRT, ...)
         ctx.stats.crash += 1
         issue = Issue("crash", label, _clip(source), combined[:2000], proc.returncode)
         ctx.issues.append(issue)
@@ -176,8 +178,8 @@ def run_hew(
         ctx.stats.error += 1
         return None
     finally:
-        for p in (tmpfile, outfile):
-            p.unlink(missing_ok=True)
+        tmpfile.unlink(missing_ok=True)
+        shutil.rmtree(emit_dir, ignore_errors=True)
 
 
 def _clip(source: str | bytes, limit: int = 300) -> str:
@@ -206,73 +208,19 @@ def _report(issue: Issue | None) -> None:
 def run_and_verify_hew(
     ctx: FuzzContext, source: str, label: str, expected_stdout: str
 ) -> Issue | None:
-    """Build, run, and verify stdout matches *expected_stdout*.
+    """Run *source* with ``hew run`` and verify stdout matches *expected_stdout*.
 
     Returns an Issue for crashes, ICEs, hangs, and wrong output.
     """
     ctx.stats.total += 1
     tmpfile = ctx.workdir / "input.hew"
-    outfile = ctx.workdir / "output"
 
     with open(tmpfile, "w") as f:
         f.write(source)
 
-    # Build
     try:
-        build = subprocess.run(
-            [str(ctx.hew), "build", str(tmpfile), "-o", str(outfile)],
-            capture_output=True,
-            text=True,
-            timeout=ctx.timeout,
-        )
-    except subprocess.TimeoutExpired:
-        ctx.stats.hang += 1
-        issue = Issue("hang", f"{label}/build", _clip(source))
-        ctx.issues.append(issue)
-        _save_issue(ctx, issue, source)
-        return issue
-    finally:
-        tmpfile.unlink(missing_ok=True)
-
-    if build.returncode != 0:
-        combined = build.stdout + build.stderr
-        lower = combined.lower()
-        ice_markers = (
-            "thread '",
-            "rust_backtrace",
-            "internal compiler error",
-            "has overflowed its stack",
-            "panicked at",
-        )
-        if any(m in lower for m in ice_markers):
-            ctx.stats.ice += 1
-            issue = Issue("ICE", f"{label}/build", _clip(source), combined[:2000])
-            ctx.issues.append(issue)
-            _save_issue(ctx, issue, source)
-            return issue
-        if build.returncode < 0:
-            ctx.stats.crash += 1
-            issue = Issue(
-                "crash",
-                f"{label}/build",
-                _clip(source),
-                combined[:2000],
-                build.returncode,
-            )
-            ctx.issues.append(issue)
-            _save_issue(ctx, issue, source)
-            return issue
-        # Compile error on an oracle program — that's a spec regression
-        ctx.stats.oracle_fail += 1
-        issue = Issue("oracle_compile_fail", label, _clip(source), combined[:2000])
-        ctx.issues.append(issue)
-        _save_issue(ctx, issue, source)
-        return issue
-
-    # Run
-    try:
-        run = subprocess.run(
-            [str(outfile)],
+        proc = subprocess.run(
+            [str(ctx.hew), "run", str(tmpfile)],
             capture_output=True,
             text=True,
             timeout=ctx.timeout,
@@ -284,22 +232,43 @@ def run_and_verify_hew(
         _save_issue(ctx, issue, source)
         return issue
     finally:
-        outfile.unlink(missing_ok=True)
+        tmpfile.unlink(missing_ok=True)
 
-    if run.returncode < 0:
-        ctx.stats.crash += 1
-        issue = Issue(
-            "runtime_crash",
-            label,
-            _clip(source),
-            f"signal {-run.returncode}\nstdout: {run.stdout[:500]}\nstderr: {run.stderr[:500]}",
-            run.returncode,
+    combined = proc.stdout + proc.stderr
+    if proc.returncode != 0:
+        lower = combined.lower()
+        ice_markers = (
+            "thread '",
+            "rust_backtrace",
+            "internal compiler error",
+            "has overflowed its stack",
+            "panicked at",
         )
+        if any(m in lower for m in ice_markers):
+            ctx.stats.ice += 1
+            issue = Issue("ICE", f"{label}/run", _clip(source), combined[:2000])
+            ctx.issues.append(issue)
+            _save_issue(ctx, issue, source)
+            return issue
+        if proc.returncode < 0:
+            ctx.stats.crash += 1
+            issue = Issue(
+                "crash",
+                f"{label}/run",
+                _clip(source),
+                combined[:2000],
+                proc.returncode,
+            )
+            ctx.issues.append(issue)
+            _save_issue(ctx, issue, source)
+            return issue
+        ctx.stats.oracle_fail += 1
+        issue = Issue("oracle_run_fail", label, _clip(source), combined[:2000])
         ctx.issues.append(issue)
         _save_issue(ctx, issue, source)
         return issue
 
-    actual = run.stdout.rstrip("\n")
+    actual = proc.stdout.rstrip("\n")
     expected = expected_stdout.rstrip("\n")
     if actual != expected:
         ctx.stats.oracle_fail += 1
@@ -318,20 +287,19 @@ def run_and_verify_hew(
     return None
 
 
-def run_emit_hew(
-    ctx: FuzzContext, source: str, label: str, emit_flag: str
+def run_dump_mir_hew(
+    ctx: FuzzContext, source: str, label: str, stage: str
 ) -> Issue | None:
-    """Run ``hew build --emit-mlir`` or ``--emit-llvm`` to stress IR lowering."""
+    """Run ``hew compile --dump-mir`` for one MIR stage to stress lowering."""
     ctx.stats.total += 1
     tmpfile = ctx.workdir / "input.hew"
-    outfile = ctx.workdir / "output"
 
     with open(tmpfile, "w") as f:
         f.write(source)
 
     try:
         proc = subprocess.run(
-            [str(ctx.hew), "build", str(tmpfile), "-o", str(outfile), emit_flag],
+            [str(ctx.hew), "compile", str(tmpfile), "--dump-mir", stage],
             capture_output=True,
             text=True,
             timeout=ctx.timeout,
@@ -352,131 +320,31 @@ def run_emit_hew(
         )
         if any(m in lower for m in ice_markers):
             ctx.stats.ice += 1
-            issue = Issue("ICE", f"{label}/{emit_flag}", _clip(source), combined[:2000])
+            issue = Issue("ICE", label, _clip(source), combined[:2000])
             ctx.issues.append(issue)
             _save_issue(ctx, issue, source)
             return issue
+
         if proc.returncode < 0:
             ctx.stats.crash += 1
             issue = Issue(
-                "crash",
-                f"{label}/{emit_flag}",
-                _clip(source),
-                combined[:2000],
-                proc.returncode,
+                "crash", label, _clip(source), combined[:2000], proc.returncode
             )
             ctx.issues.append(issue)
             _save_issue(ctx, issue, source)
             return issue
-        # Expected error (type error, unsupported feature in IR) — not a bug
+
         ctx.stats.error += 1
         return None
 
     except subprocess.TimeoutExpired:
         ctx.stats.hang += 1
-        issue = Issue("hang", f"{label}/{emit_flag}", _clip(source))
+        issue = Issue("hang", label, _clip(source))
         ctx.issues.append(issue)
         _save_issue(ctx, issue, source)
         return issue
     finally:
         tmpfile.unlink(missing_ok=True)
-        outfile.unlink(missing_ok=True)
-
-
-# ---------------------------------------------------------------------------
-# Random generators
-# ---------------------------------------------------------------------------
-
-
-def rand_ident(maxlen: int = 20) -> str:
-    first = random.choice(string.ascii_lowercase)
-    rest = "".join(
-        random.choices(
-            string.ascii_letters + string.digits + "_", k=random.randint(0, maxlen)
-        )
-    )
-    return first + rest
-
-
-def rand_type() -> str:
-    return random.choice(
-        [
-            "i32",
-            "i64",
-            "f64",
-            "bool",
-            "string",
-            "String",
-            f"Vec<{random.choice(['i32', 'string', 'f64'])}>",
-            f"HashMap<string, {random.choice(['i32', 'string'])}>",
-        ]
-    )
-
-
-def rand_expr(depth: int = 0) -> str:
-    if depth > 5:
-        return str(random.randint(-1_000_000, 1_000_000))
-    choice = random.randint(0, 15)
-    if choice <= 3:
-        return str(random.randint(-(2**31), 2**31 - 1))
-    if choice == 4:
-        return f"{random.uniform(-1e10, 1e10)}"
-    if choice == 5:
-        return f'"{rand_ident()}"'
-    if choice == 6:
-        return random.choice(("true", "false"))
-    if choice == 7:
-        op = random.choice(
-            ["+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">=", "&&", "||"]
-        )
-        return f"({rand_expr(depth + 1)} {op} {rand_expr(depth + 1)})"
-    if choice == 8:
-        return f"if {rand_expr(depth + 1)} {{ {rand_expr(depth + 1)} }} else {{ {rand_expr(depth + 1)} }}"
-    if choice == 9:
-        return f"match {rand_expr(depth + 1)} {{ _ => {rand_expr(depth + 1)} }}"
-    if choice == 10:
-        elems = ", ".join(rand_expr(depth + 1) for _ in range(random.randint(0, 4)))
-        return f"({elems})"
-    if choice == 11:
-        return f"|{rand_ident()}: i32| -> i32 {{ {rand_expr(depth + 1)} }}"
-    if choice == 12:
-        args = ", ".join(rand_expr(depth + 1) for _ in range(random.randint(0, 3)))
-        return f"{rand_ident()}({args})"
-    if choice == 13:
-        return f"0..{random.randint(0, 100)}"
-    if choice == 14:
-        return f'f"{rand_ident()} {{{rand_expr(depth + 1)}}}"'
-    return rand_ident()
-
-
-def rand_stmt(depth: int = 0) -> str:
-    choice = random.randint(0, 10)
-    if choice <= 2:
-        return f"let {rand_ident()} = {rand_expr(depth)};"
-    if choice == 3:
-        return f"var {rand_ident()} = {rand_expr(depth)};"
-    if choice == 4:
-        return f"println({rand_expr(depth)});"
-    if choice == 5:
-        return f"if {rand_expr(depth)} {{ {rand_stmt(depth + 1)} }}"
-    if choice == 6:
-        return f"for {rand_ident()} in 0..{random.randint(0, 10)} {{ {rand_stmt(depth + 1)} }}"
-    if choice == 7:
-        return f"while {rand_expr(depth)} {{ {rand_stmt(depth + 1)} break; }}"
-    if choice == 8:
-        return f"return {rand_expr(depth)};"
-    if choice == 9:
-        name = rand_ident()
-        params = ", ".join(
-            f"{rand_ident()}: {rand_type()}" for _ in range(random.randint(0, 4))
-        )
-        return f"fn {name}({params}) -> {rand_type()} {{ {rand_expr(depth)} }}"
-    return f"{rand_expr(depth)};"
-
-
-# ---------------------------------------------------------------------------
-# Fuzz categories
-# ---------------------------------------------------------------------------
 
 
 def fuzz_empty(ctx: FuzzContext) -> None:
@@ -2041,7 +1909,7 @@ def fuzz_mailbox(ctx: FuzzContext) -> None:
 
 def fuzz_differential(ctx: FuzzContext) -> None:
     """Differential testing: programs that pass `hew check` must not crash
-    `hew build`.  If check succeeds but build crashes, that's a bug."""
+    `hew compile`. If check succeeds but compile crashes, that's a bug."""
     programs = [
         (
             "fn_returning_struct",
@@ -2229,10 +2097,10 @@ def fuzz_differential(ctx: FuzzContext) -> None:
             continue  # check itself crashed — already recorded
 
         # Second: build must not crash (may error due to codegen limitations)
-        build_result = run_hew(ctx, src, f"diff/build_{label}")
-        if build_result is not None and build_result.status == "crash":
-            build_result.label = f"diff/DIVERGE_{label}"
-            print(f"  !! DIFFERENTIAL: {label} passes check but crashes build")
+        compile_result = run_hew(ctx, src, f"diff/compile_{label}")
+        if compile_result is not None and compile_result.status == "crash":
+            compile_result.label = f"diff/DIVERGE_{label}"
+            print(f"  !! DIFFERENTIAL: {label} passes check but crashes compile")
 
 
 def fuzz_cross_feature(ctx: FuzzContext) -> None:
@@ -3284,7 +3152,7 @@ def fuzz_random_well_typed(ctx: FuzzContext, n: int = 100) -> None:
 
 
 def fuzz_oracle_exec(ctx: FuzzContext) -> None:
-    """Programs with known expected output — build, run, and verify stdout.
+    """Programs with known expected output — run and verify stdout.
 
     Each entry is (label, source, expected_stdout).  Any mismatch is a
     spec regression — the compiler produced wrong code.
@@ -3640,11 +3508,11 @@ def fuzz_oracle_exec(ctx: FuzzContext) -> None:
         _report(run_and_verify_hew(ctx, src, f"oracle_exec/{label}", expected))
 
 
-def fuzz_emit_ir(ctx: FuzzContext, n: int = 100) -> None:
-    """Stress-test MLIR and LLVM IR lowering via --emit-mlir and --emit-llvm.
+def fuzz_dump_mir(ctx: FuzzContext, n: int = 100) -> None:
+    """Stress-test the v0.5 MIR dump stages.
 
-    Uses well-typed programs that should compile.  Any crash or ICE during
-    IR emission is a lowering bug, even if linking would succeed.
+    Uses well-typed programs that should lower through raw, checked, and
+    elaborated MIR without crashing, even if later native linking would fail.
     """
     # Corpus of programs covering different codegen paths
     corpus: list[tuple[str, str]] = [
@@ -3792,42 +3660,35 @@ def fuzz_emit_ir(ctx: FuzzContext, n: int = 100) -> None:
         corpus.append((f"gen_{idx}", src))
 
     for label, src in corpus:
-        for flag in ("--emit-mlir", "--emit-llvm"):
-            _report(run_emit_hew(ctx, src, f"emit_ir/{label}", flag))
+        for stage in ("raw", "checked", "elab"):
+            _report(run_dump_mir_hew(ctx, src, f"dump_mir/{label}/{stage}", stage))
 
 
 def fuzz_formatter(ctx: FuzzContext, n: int = 200) -> None:
-    """Fuzz the formatter: generate well-typed programs, format them, and
-    verify the formatted output still passes ``hew build --emit-ast``.
-    Compare ASTs (ignoring spans) to catch semantic drift.
+    """Fuzz the formatter without mutating repository files.
+
+    Generated programs that pass ``hew check`` before formatting must format
+    deterministically, be idempotent, and still pass ``hew check`` after
+    formatting. AST-equivalence checking is deferred until a current v0.5 dump
+    API exists.
     """
-    import json as _json
 
-    def strip_spans(obj):
-        if isinstance(obj, dict):
-            return {
-                k: strip_spans(v)
-                for k, v in obj.items()
-                if k
-                not in ("span", "start", "end", "source_paths", "source_path", "path")
-            }
-        elif isinstance(obj, list):
-            return [strip_spans(v) for v in obj]
-        return obj
-
-    def emit_ast(filepath):
-        r = subprocess.run(
-            [str(ctx.hew), "build", "--emit-ast", str(filepath), "-o", "/dev/null"],
+    def check_file(filepath: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(ctx.hew), "check", str(filepath)],
             capture_output=True,
             text=True,
             timeout=ctx.timeout,
         )
-        if r.returncode != 0:
-            return None
-        try:
-            return _json.loads(r.stdout)
-        except _json.JSONDecodeError:
-            return None
+
+    def format_stdin(source: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(ctx.hew), "fmt", "--stdin"],
+            input=source,
+            capture_output=True,
+            text=True,
+            timeout=ctx.timeout,
+        )
 
     for i in range(n):
         parts: list[str] = []
@@ -3850,21 +3711,21 @@ def fuzz_formatter(ctx: FuzzContext, n: int = 200) -> None:
             parts.append(f"type Data{i} {{\n{fields}\n}}")
             init = ", ".join(f"f{k}: {random.randint(0, 50)}" for k in range(nf))
             main_stmts.append(f"let d = Data{i} {{ {init} }};")
-            main_stmts.append("println(d.f0);")
+            main_stmts.append("d.f0;")
 
         if random.random() < 0.3:
             main_stmts.append(f'let msg = f"value={{1 + {random.randint(1, 99)}}}";')
-            main_stmts.append("println(msg);")
+            main_stmts.append("msg;")
 
         main_stmts.append(f"let x = {random.randint(0, 100)};")
         if random.random() < 0.5:
-            main_stmts.append("if x > 50 { println(x); }")
+            main_stmts.append("if x > 50 { x; }")
         if random.random() < 0.3:
             main_stmts.append("var acc = 0;")
             main_stmts.append(
                 f"for i in 0 .. {random.randint(1, 10)} {{ acc = acc + i; }}"
             )
-            main_stmts.append("println(acc);")
+            main_stmts.append("acc;")
 
         body = "\n    ".join(main_stmts)
         source = "\n\n".join(parts) + f"\n\nfn main() {{\n    {body}\n}}\n"
@@ -3872,61 +3733,84 @@ def fuzz_formatter(ctx: FuzzContext, n: int = 200) -> None:
         tmpfile = ctx.workdir / "fmt_fuzz.hew"
         tmpfile.write_text(source)
 
-        before_ast = emit_ast(tmpfile)
-        if before_ast is None:
+        precheck = check_file(tmpfile)
+        if precheck.returncode != 0:
+            tmpfile.unlink(missing_ok=True)
             continue
 
         ctx.stats.total += 1
 
-        fmt_r = subprocess.run(
-            [str(ctx.hew), "fmt", str(tmpfile)],
-            capture_output=True,
-            text=True,
-            timeout=ctx.timeout,
-        )
-        if fmt_r.returncode != 0:
-            ctx.stats.crash += 1
-            ctx.issues.append(
-                Issue(
-                    "CRASH",
-                    f"formatter[{i}]",
-                    source,
-                    fmt_r.stderr,
-                    fmt_r.returncode,
-                )
-            )
-            tmpfile.write_text(source)
+        try:
+            first = format_stdin(source)
+            stability = format_stdin(source)
+        except subprocess.TimeoutExpired:
+            ctx.stats.hang += 1
+            issue = Issue("hang", f"formatter[{i}]", _clip(source))
+            ctx.issues.append(issue)
+            _save_issue(ctx, issue, source)
+            tmpfile.unlink(missing_ok=True)
             continue
 
-        after_ast = emit_ast(tmpfile)
-        if after_ast is None:
+        if first.returncode != 0 or stability.returncode != 0:
+            ctx.stats.crash += 1
+            detail = first.stderr if first.returncode != 0 else stability.stderr
+            ctx.issues.append(Issue("CRASH", f"formatter[{i}]", source, detail))
+            tmpfile.unlink(missing_ok=True)
+            continue
+
+        if first.stdout != stability.stdout:
+            ctx.stats.ice += 1
+            ctx.issues.append(
+                Issue(
+                    "ICE",
+                    f"formatter[{i}]:unstable",
+                    source,
+                    "fmt output changed across identical runs",
+                )
+            )
+            tmpfile.unlink(missing_ok=True)
+            continue
+
+        try:
+            idempotence = format_stdin(first.stdout)
+        except subprocess.TimeoutExpired:
+            ctx.stats.hang += 1
+            issue = Issue("hang", f"formatter[{i}]:idempotence", _clip(first.stdout))
+            ctx.issues.append(issue)
+            _save_issue(ctx, issue, first.stdout)
+            tmpfile.unlink(missing_ok=True)
+            continue
+
+        if idempotence.returncode != 0 or idempotence.stdout != first.stdout:
+            ctx.stats.ice += 1
+            ctx.issues.append(
+                Issue(
+                    "ICE",
+                    f"formatter[{i}]:idempotence",
+                    source,
+                    "fmt is not idempotent",
+                )
+            )
+            tmpfile.unlink(missing_ok=True)
+            continue
+
+        tmpfile.write_text(first.stdout)
+        postcheck = check_file(tmpfile)
+        if postcheck.returncode != 0:
             ctx.stats.crash += 1
             formatted = tmpfile.read_text()
             ctx.issues.append(
                 Issue(
                     "CRASH",
-                    f"formatter[{i}]:post-fmt-compile",
+                    f"formatter[{i}]:post-fmt-check",
                     formatted,
-                    "build failed after fmt",
+                    postcheck.stderr or postcheck.stdout,
                 )
             )
-            tmpfile.write_text(source)
+            tmpfile.unlink(missing_ok=True)
             continue
 
-        before_clean = strip_spans(before_ast)
-        after_clean = strip_spans(after_ast)
-        if before_clean != after_clean:
-            ctx.stats.ice += 1
-            ctx.issues.append(
-                Issue(
-                    "ICE",
-                    f"formatter[{i}]:ast-mismatch",
-                    source,
-                    "AST differs after formatting",
-                )
-            )
-
-        tmpfile.write_text(source)
+        tmpfile.unlink(missing_ok=True)
         ctx.stats.ok += 1
 
 
@@ -3975,7 +3859,7 @@ CATEGORIES: dict[str, tuple[str, object]] = {
     "methods": ("Method chaining patterns", fuzz_method_chains),
     "collections": ("Deep collection usage", fuzz_collections_deep),
     # --- Compiler testing techniques ---
-    "differential": ("Differential testing (check vs build)", fuzz_differential),
+    "differential": ("Differential testing (check vs compile)", fuzz_differential),
     "cross_feature": ("Cross-feature interactions", fuzz_cross_feature),
     "error_cascade": ("Multiple errors in one file", fuzz_error_cascade),
     "type_infer": ("Type inference stress tests", fuzz_type_inference),
@@ -3985,8 +3869,8 @@ CATEGORIES: dict[str, tuple[str, object]] = {
     "whitespace": ("Whitespace sensitivity", fuzz_whitespace),
     "well_typed": ("Random well-typed programs (CSmith-like)", fuzz_random_well_typed),
     # --- Pipeline depth testing ---
-    "oracle_exec": ("Execution oracle (build+run+verify output)", fuzz_oracle_exec),
-    "emit_ir": ("IR lowering stress (--emit-mlir/--emit-llvm)", fuzz_emit_ir),
+    "oracle_exec": ("Execution oracle (run+verify output)", fuzz_oracle_exec),
+    "dump_mir": ("MIR dump stress (hew compile --dump-mir)", fuzz_dump_mir),
     "formatter": ("Formatter semantic preservation (hew fmt)", fuzz_formatter),
 }
 

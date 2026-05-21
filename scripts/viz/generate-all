@@ -1,60 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# hew-viz — Generate all visualizations for a Hew source file.
+# hew-viz — Legacy batch visualizer for pre-v0.5 AST/MLIR emitters.
 #
 # Usage:
 #   hew-viz <file.hew> [output-dir]
-#   hew-viz <file.hew> [output-dir] --function <name>
 #
-# Generates into output-dir (default: ./viz/):
-#   ast-overview.svg      Source-level overview (actors, functions, edges)
-#   ir-overview.svg       MLIR-level overview (ops, message flows)
-#   actor-topology.svg    Actor system topology (spawn + message edges)
-#   cfg-<function>.svg    Control flow graph per public function
-#   system-explorer.html  Interactive HTML explorer (open in browser)
+# Status:
+#   Disabled for Hew v0.5. The old `hew build --emit-ast` and
+#   `hew build --emit-mlir` producers were removed, so this wrapper fails closed
+#   instead of guessing at a stale visualization.
+#
+# Current v0.5 inspection entry points:
+#   hew compile --dump-mir raw|checked|elab <file.hew>
+#   hew machine diagram [--format mermaid|graphviz|json] <file.hew>
+#   hew machine list <file.hew>
 #
 # Options:
-#   --function, -fn NAME  Also generate a focused CFG for this function
-#   --format, -f FMT      Image format: svg (default), png, pdf
 #   --help, -h            Show this help
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Find the hew binary
-HEW="${HEW:-}"
-if [[ -z "$HEW" ]]; then
-    _debug="$SCRIPT_DIR/../../target/debug/hew"
-    _release="$SCRIPT_DIR/../../target/release/hew"
-    if command -v hew &>/dev/null; then
-        HEW="hew"
-    elif [[ -x "$_debug" && -x "$_release" ]]; then
-        if [[ "$_debug" -nt "$_release" ]]; then HEW="$_debug"; else HEW="$_release"; fi
-    elif [[ -x "$_debug" ]]; then
-        HEW="$_debug"
-    elif [[ -x "$_release" ]]; then
-        HEW="$_release"
-    else
-        echo "Error: 'hew' not found. Set HEW= or add to PATH." >&2
-        exit 1
-    fi
-fi
 
 INPUT=""
 OUTDIR=""
-FUNCTION=""
-FMT="svg"
-
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)
-            sed -n '3,16p' "$0" | sed 's/^# \?//'
+            awk 'NR >= 4 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"
             exit 0
             ;;
         -fn|--function)
-            FUNCTION="$2"; shift 2 ;;
+            shift 2 ;;
         -f|--format)
-            FMT="$2"; shift 2 ;;
+            shift 2 ;;
         -*)
             echo "Unknown option: $1" >&2; exit 1 ;;
         *)
@@ -79,51 +55,14 @@ if [[ ! -f "$INPUT" ]]; then
     exit 1
 fi
 
-OUTDIR="${OUTDIR:-./viz}"
-BASENAME="$(basename "${INPUT%.hew}")"
-mkdir -p "$OUTDIR"
+cat >&2 <<'EOF'
+Error: scripts/viz/generate-all requires the removed pre-v0.5 AST/MLIR emitters.
 
-echo "Generating visualizations for $INPUT → $OUTDIR/"
+Current v0.5 inspection entry points are:
+  hew compile --dump-mir raw|checked|elab <file.hew>
+  hew machine diagram [--format mermaid|graphviz|json] <file.hew>
+  hew machine list <file.hew>
 
-# 1. AST overview (source-level)
-echo "  → ast-overview.$FMT"
-if ! "$HEW" build --emit-ast "$INPUT" 2>/dev/null \
-    | python3 "$SCRIPT_DIR/ast.py" -f "$FMT" -o "$OUTDIR/ast-overview.$FMT" 2>/dev/null; then
-    echo "    (skipped — ast generation failed)"
-fi
-
-# 2. MLIR overview (dialect-level)
-MLIR=$("$HEW" build --emit-mlir "$INPUT" 2>/dev/null) || {
-    echo "Error: failed to compile $INPUT" >&2
-    exit 1
-}
-
-echo "  → ir-overview.$FMT"
-echo "$MLIR" | python3 "$SCRIPT_DIR/ir.py" -f "$FMT" -o "$OUTDIR/ir-overview.$FMT"
-
-# 3. Actor topology (only if actors exist)
-if echo "$MLIR" | grep -q 'hew.actor_spawn'; then
-    echo "  → actor-topology.$FMT"
-    echo "$MLIR" | python3 "$SCRIPT_DIR/actor-topo.py" -f "$FMT" -o "$OUTDIR/actor-topology.$FMT"
-fi
-
-# 4. Function CFGs
-FUNCTIONS=$(echo "$MLIR" | python3 "$SCRIPT_DIR/cfg.py" --list 2>/dev/null \
-    | grep -v '(private)' | awk '{print $1}')
-
-for fn in $FUNCTIONS; do
-    echo "  → cfg-${fn}.$FMT"
-    echo "$MLIR" | python3 "$SCRIPT_DIR/cfg.py" -fn "$fn" -f "$FMT" -o "$OUTDIR/cfg-${fn}.$FMT"
-done
-
-# 4b. Focused function CFG if requested
-if [[ -n "$FUNCTION" ]]; then
-    echo "  → cfg-${FUNCTION}.$FMT (focused)"
-    echo "$MLIR" | python3 "$SCRIPT_DIR/cfg.py" -fn "$FUNCTION" -f "$FMT" -o "$OUTDIR/cfg-${FUNCTION}.$FMT"
-fi
-
-# 5. Interactive HTML explorer
-echo "  → system-explorer.html"
-echo "$MLIR" | python3 "$SCRIPT_DIR/system-explorer.py" -o "$OUTDIR/system-explorer.html" 2>/dev/null
-
-echo "Done. Open $OUTDIR/system-explorer.html in a browser for interactive view."
+Batch visualization is disabled rather than emitting stale or guessed diagrams.
+EOF
+exit 2

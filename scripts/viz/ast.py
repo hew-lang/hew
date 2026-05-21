@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
-"""Generate Graphviz diagrams from Hew AST JSON (hew build --emit-ast).
+"""Generate Graphviz diagrams from legacy Hew AST JSON.
+
+The v0.5 CLI no longer exposes ``hew build --emit-ast``. Current inspection
+entry points are ``hew compile --dump-mir raw|checked|elab`` and
+``hew machine diagram/list``; this script remains only for previously captured
+AST JSON streams.
 
 Usage:
-    hew build --emit-ast prog.hew | python3 scripts/viz/ast.py > out.dot
-    hew build --emit-ast prog.hew | python3 scripts/viz/ast.py -f svg -o out.svg
     python3 scripts/viz/ast.py input.json -o out.png
 """
 
 from __future__ import annotations
 
+import os
+import sys
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path = [
+    path for path in sys.path if os.path.abspath(path or os.getcwd()) != _SCRIPT_DIR
+]
+
 import argparse
 import json
 import subprocess
-import sys
 from dataclasses import dataclass, field
 
 
@@ -803,7 +813,7 @@ def generate_dot(walker: ASTWalker) -> str:
 def main():
     parser = argparse.ArgumentParser(
         description="Generate Graphviz diagrams from Hew AST JSON.",
-        epilog="Example: hew build --emit-ast prog.hew | python3 scripts/viz/ast.py -f svg -o out.svg",
+        epilog="Example: python3 scripts/viz/ast.py input.json -f svg -o out.svg",
     )
     parser.add_argument("input", nargs="?", help="Input JSON file (default: stdin)")
     parser.add_argument("-o", "--output", help="Output file (default: stdout)")

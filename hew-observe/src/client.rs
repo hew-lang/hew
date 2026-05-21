@@ -308,20 +308,7 @@ impl TraceEvent {
     /// (timeline, actor drill-down).  This is the single source of truth for
     /// the "actionable event" predicate used throughout hew-observe.
     pub fn is_actionable(&self) -> bool {
-        matches!(
-            self.event_type.as_str(),
-            "send"
-                | "spawn"
-                | "crash"
-                | "stop"
-                | "duplex_created"
-                | "duplex_half_split"
-                | "duplex_closed"
-                | "sink_closed"
-                | "stream_closed"
-                | "lambda_spawned"
-                | "lambda_released"
-        )
+        crate::events::trace_event_meta(&self.event_type).is_actionable()
     }
 }
 
@@ -822,18 +809,12 @@ mod tests {
     /// with the `event_type` field populated (wire-contract-test-presence).
     #[test]
     fn channel_event_types_deserialise_with_populated_fields() {
-        let channel_types = [
-            "duplex_created",
-            "duplex_half_split",
-            "duplex_closed",
-            "sink_closed",
-            "stream_closed",
-            "lambda_spawned",
-            "lambda_released",
-        ];
-        for et in channel_types {
+        for et in crate::events::ACTIONABLE_TRACE_EVENT_TYPES {
+            if matches!(*et, "send" | "spawn" | "crash" | "stop") {
+                continue;
+            }
             let ev = make_trace_event(et);
-            assert_eq!(ev.event_type, et, "event_type must round-trip for {et}");
+            assert_eq!(ev.event_type, *et, "event_type must round-trip for {et}");
             assert_eq!(
                 ev.actor_id, 12_345_678,
                 "actor_id must be populated for {et}"
@@ -848,16 +829,7 @@ mod tests {
     /// Channel lifecycle events are actionable (visible in the trace UI).
     #[test]
     fn channel_event_types_are_actionable() {
-        let actionable = [
-            "duplex_created",
-            "duplex_half_split",
-            "duplex_closed",
-            "sink_closed",
-            "stream_closed",
-            "lambda_spawned",
-            "lambda_released",
-        ];
-        for et in actionable {
+        for et in crate::events::ACTIONABLE_TRACE_EVENT_TYPES {
             let ev = make_trace_event(et);
             assert!(
                 ev.is_actionable(),

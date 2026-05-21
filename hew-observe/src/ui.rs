@@ -12,6 +12,7 @@ use ratatui::Frame;
 
 use crate::app::{App, SortColumn, Tab};
 use crate::client::{ConnectionInfo, ConnectionStatus, RouteEntry};
+use crate::events::trace_event_meta;
 use crate::theme;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -714,21 +715,8 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
         let relative_s = (evt.timestamp_ns.saturating_sub(base_ns)) as f64 / 1_000_000_000.0;
         let time_str = format!("{relative_s:>6.2}s");
 
-        let event_label = match evt.event_type.as_str() {
-            "send" => {
-                // Show resolved handler name when available, fall back to
-                // the raw msg_type integer.
-                if let Some(name) = &evt.handler_name {
-                    format!("──▶ send({name})")
-                } else {
-                    format!("──▶ send({})", evt.msg_type)
-                }
-            }
-            "spawn" => "◆ spawn".to_owned(),
-            "crash" => "✕ crash".to_owned(),
-            "stop" => "◇ stop".to_owned(),
-            other => other.to_owned(),
-        };
+        let event_label = trace_event_meta(&evt.event_type)
+            .swimlane_label(evt.msg_type, evt.handler_name.as_deref());
 
         let mut row_spans = Vec::new();
         row_spans.push(Span::styled(format!("{time_str} "), theme::dim_style()));
@@ -751,11 +739,11 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
                     format!("{event_label:<segment_width$}")
                 };
                 let lane_colour = lane_colours[lane_idx % lane_colours.len()];
-                let event_colour = match evt.event_type.as_str() {
-                    "spawn" => theme::STATE_HEALTHY,
-                    "crash" => theme::STATE_ERROR,
-                    "stop" => theme::STATE_STOPPED,
-                    _ => lane_colour,
+                let event_meta = trace_event_meta(&evt.event_type);
+                let event_colour = if event_meta.is_actionable() {
+                    theme::trace_event_tone_colour(event_meta.tone)
+                } else {
+                    lane_colour
                 };
                 row_spans.push(Span::styled(
                     label_display,
@@ -950,15 +938,49 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_timeline_legend(f: &mut Frame, area: Rect) {
+    let spawn = trace_event_meta("spawn");
+    let crash = trace_event_meta("crash");
+    let send = trace_event_meta("send");
+    let stop = trace_event_meta("stop");
+    let duplex = trace_event_meta("duplex_created");
+    let stream = trace_event_meta("stream_closed");
+    let lambda = trace_event_meta("lambda_spawned");
     let legend = Line::from(vec![
-        Span::styled(" \u{25C6} ", Style::default().fg(theme::STATE_HEALTHY)),
+        Span::styled(
+            format!(" {} ", spawn.glyph),
+            Style::default().fg(theme::trace_event_tone_colour(spawn.tone)),
+        ),
         Span::raw("spawn  "),
-        Span::styled("\u{2715} ", Style::default().fg(theme::STATE_ERROR)),
+        Span::styled(
+            format!("{} ", crash.glyph),
+            Style::default().fg(theme::trace_event_tone_colour(crash.tone)),
+        ),
         Span::raw("crash  "),
-        Span::styled("\u{25CF} ", Style::default().fg(theme::ACCENT)),
+        Span::styled(
+            format!("{} ", send.glyph),
+            Style::default().fg(theme::trace_event_tone_colour(send.tone)),
+        ),
         Span::raw("message  "),
-        Span::styled("\u{25C7} ", Style::default().fg(theme::STATE_STOPPED)),
-        Span::raw("stop"),
+        Span::styled(
+            format!("{} ", stop.glyph),
+            Style::default().fg(theme::trace_event_tone_colour(stop.tone)),
+        ),
+        Span::raw("stop  "),
+        Span::styled(
+            format!("{} ", duplex.glyph),
+            Style::default().fg(theme::trace_event_tone_colour(duplex.tone)),
+        ),
+        Span::raw("duplex  "),
+        Span::styled(
+            format!("{} ", stream.glyph),
+            Style::default().fg(theme::trace_event_tone_colour(stream.tone)),
+        ),
+        Span::raw("stream/sink  "),
+        Span::styled(
+            format!("{} ", lambda.glyph),
+            Style::default().fg(theme::trace_event_tone_colour(lambda.tone)),
+        ),
+        Span::raw("lambda"),
     ]);
     let para = Paragraph::new(legend).alignment(Alignment::Center);
     f.render_widget(para, area);

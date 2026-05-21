@@ -1,0 +1,8 @@
+fn regex_literal_probe() -> i32 {
+    7
+}
+
+fn regex_literal_use() -> i32 {
+    let pattern = re"^hew[0-9]+$";
+    regex_literal_probe()
+}

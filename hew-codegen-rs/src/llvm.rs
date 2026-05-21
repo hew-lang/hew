@@ -62,8 +62,9 @@ use hew_hir::{HirRestartPolicy, HirSupervisorStrategy};
 use hew_mir::{
     validate_context_markers, ActorLayout, CheckedMirFunction, CmpPred, CooperateKind,
     CooperateSite, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth,
-    FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, Place, RawMirFunction,
-    RecordLayout, SupervisorChildLayout, SupervisorLayout, Terminator, TrapKind,
+    FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, MachineLayout,
+    MachineVariantLayout, Place, RawMirFunction, RecordLayout, SupervisorChildLayout,
+    SupervisorLayout, Terminator, TrapKind,
 };
 use hew_types::ResolvedTy;
 
@@ -71,7 +72,7 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
-use inkwell::targets::TargetMachine;
+use inkwell::targets::{InitializationConfig, Target, TargetData, TargetMachine};
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
@@ -454,6 +455,14 @@ struct FnCtx<'a, 'ctx> {
     /// Spawn lowering consumes these layouts to emit the WASM bridge metadata
     /// producer before calling into the runtime spawn ABI.
     actor_layouts: &'a [ActorLayout],
+    /// Module-wide machine tagged-union layouts keyed by machine name
+    /// (and by `<Name>Event` for event-companion enums). Populated up
+    /// front in `build_module` via `register_machine_layouts`.
+    /// `Place::MachineTag` / `Place::MachineVariant` / `Instr::EnumTagLoad`
+    /// codegen consults this through `machine_layout_for_local` to
+    /// resolve a machine-typed local's slot to its outer LLVM struct,
+    /// per-variant inner structs, and tag integer width.
+    machine_layouts: &'a MachineLayoutMap<'ctx>,
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
@@ -1033,6 +1042,359 @@ fn register_record_layouts<'ctx>(
     Ok(map)
 }
 
+// ---------------------------------------------------------------------------
+// Machine tagged-union layouts (Slice 5)
+// ---------------------------------------------------------------------------
+//
+// **Layout invariants** (load-bearing — Slice 4b dispatch, Slice 4c
+// drop-elaborator, and forthcoming `m.step(ev)` ABI all rely on these):
+//
+// 1. The outer machine struct is a non-packed LLVM struct
+//    `{ tag: iW, payload: [N x i8] }` where:
+//      - `tag` is at struct field index 0 (offset 0 bytes — natural
+//        alignment for an integer of width `W = layout.tag_width`).
+//      - `payload` is a fixed-size byte array sized to fit the largest
+//        per-variant payload struct. The byte size is `TargetData::get_abi_size`
+//        of the variant's LLVM struct — ABI-correct, including inter-field
+//        padding (see sizing note below).
+//
+// 2. Each variant has its own anonymous LLVM struct
+//    `{ field_0, field_1, ... }` matching declaration order in
+//    `HirMachineState.fields`. Variant access bitcasts the payload
+//    pointer to the variant struct pointer and indexes via GEP.
+//
+// 3. `Place::MachineTag(local)` addresses the outer struct's field 0.
+//    `Place::MachineVariant { local, variant_idx, field_idx }` addresses
+//    `variant_struct.field_idx` through the bitcast payload pointer.
+//
+// **Sizing**: `build_tagged_union_layout` constructs each variant's LLVM
+// struct type first, then calls `host_target_data().get_abi_size(variant_struct)`
+// to obtain the ABI-correct byte count including inter-field padding.
+// `host_target_data()` initialises the native LLVM target once (via `OnceLock`)
+// and builds a `TargetData` from the host data-layout string. The wasm32 emit
+// path runs in a separate process (`hew_emit`) with its own data layout set
+// after IR generation; sizing at IR-build time uses the host layout, which
+// matches the native target. WASM-TODO(#1451): wasm32 variant layout accuracy.
+//
+// **Alignment**: the outer payload field is `[K x iA]` where `A` is the
+// max ABI alignment across all variant payload structs (in bytes) and
+// `K = ceil(N / A)`. The element type's natural alignment is `A`, so the
+// payload field itself is `A`-byte aligned in the outer struct, and variant
+// GEPs (which bitcast the payload pointer to the variant struct type) target
+// pointers whose alignment satisfies the variant's most-aligned field. A
+// 1-byte-aligned `[N x i8]` payload would be LLVM IR UB: GEP'd loads/stores
+// of i32/i64 fields at sub-natural alignment have no contract that LLVM
+// emits unaligned-tolerant ops — tier-1 hosts happen to do so today, but the
+// spec does not require it. Note that `Module::verify()` does NOT catch
+// ABI-alignment violations; the payload-element-type computed here is what
+// guarantees natural alignment.
+
+/// Per-module map from a machine type name to its registered tagged-union
+/// LLVM layout. Populated once per `build_module` from
+/// `IrPipeline.machine_layouts`.
+type MachineLayoutMap<'ctx> = HashMap<String, MachineCodegenLayout<'ctx>>;
+
+/// Cached LLVM types for one machine declaration's tagged-union layout.
+#[derive(Clone)]
+struct MachineCodegenLayout<'ctx> {
+    /// Outer named LLVM struct: `{ tag: iW, payload: [N x i8] }`. Used by
+    /// `place_resolved_ty(Place::MachineTag(local))` to size the alloca
+    /// and by `place_pointer` to GEP into field 0 (tag) or field 1
+    /// (payload).
+    outer_struct: StructType<'ctx>,
+    /// LLVM integer type for the discriminant tag (`iW` where
+    /// `W = layout.tag_width`). Cached so `Place::MachineTag` loads use
+    /// the same type the alloca was declared with.
+    tag_int_ty: inkwell::types::IntType<'ctx>,
+    /// Per-variant anonymous struct types in declaration order. Index
+    /// matches `MachineLayout.variants[i]`. Used by
+    /// `place_pointer(Place::MachineVariant { variant_idx, .. })` to
+    /// bitcast the payload byte array to the active variant's struct.
+    variant_struct_tys: Vec<StructType<'ctx>>,
+    /// Resolved per-variant field types in declaration order. Used by
+    /// `place_resolved_ty(Place::MachineVariant { ... })` to surface the
+    /// `ResolvedTy` of a payload field load/store without going through
+    /// the LLVM type back to a Hew type. Index `i` matches
+    /// `MachineLayout.variants[i].field_tys`.
+    variant_field_tys: Vec<Vec<ResolvedTy>>,
+}
+
+/// Return the native host data-layout string, initialising LLVM's native
+/// target exactly once per process (guarded by `OnceLock`).
+///
+/// `TargetData` wraps a raw pointer and is not `Sync`, so we cache the
+/// layout *string* (which is `Sync`) and construct a fresh `TargetData`
+/// from it on each call via `TargetData::create`. `TargetData::create` is
+/// cheap — it only parses the layout string into target-description tables;
+/// it does not allocate LLVM IR or touch the global PassManager.
+///
+/// The in-process LLVM limitation that motivated the `hew_emit` split
+/// applies only to `TargetMachine::write_to_file` (legacy PassManager
+/// global). Initialising the native target for layout queries has no
+/// conflicting side effects.
+///
+/// **Multi-target portability**: this function returns the *host* data layout.
+/// `emit_module` builds a single target-agnostic textual IR that `hew-emit`
+/// re-parses for both native and wasm32 in separate processes — there is no
+/// single "current target" at IR-build time. The primitive ABI alignments
+/// Hew currently lowers (i8/i16/i32/i64/ptr) agree across native and wasm32
+/// data layouts, so querying the host's `TargetData` for variant ABI size and
+/// alignment in `build_tagged_union_layout` yields the same answers as
+/// querying the wasm32 target would. The wider-integer payload element type
+/// computed there makes per-target alignment moot — the IR is naturally
+/// aligned under either target's data layout.
+fn host_data_layout_string() -> &'static str {
+    use std::sync::OnceLock;
+    static HOST_DL: OnceLock<String> = OnceLock::new();
+    HOST_DL.get_or_init(|| {
+        // `initialize_native` is idempotent; `base=true` registers only
+        // the target description, not the asm printer/parser.
+        Target::initialize_native(&InitializationConfig {
+            base: true,
+            ..InitializationConfig::default()
+        })
+        .expect(
+            "host_data_layout_string: native LLVM target failed to initialise — \
+             the host platform is not supported by this build of LLVM",
+        );
+        let triple = TargetMachine::get_default_triple();
+        let target = Target::from_triple(&triple)
+            .expect("host_data_layout_string: no LLVM target for host triple");
+        // OptimizationLevel / RelocMode / CodeModel do not affect the data
+        // layout string; use defaults to minimise setup cost.
+        let tm = target
+            .create_target_machine(
+                &triple,
+                "generic",
+                "",
+                inkwell::OptimizationLevel::None,
+                inkwell::targets::RelocMode::Default,
+                inkwell::targets::CodeModel::Default,
+            )
+            .expect("host_data_layout_string: TargetMachine construction failed");
+        tm.get_target_data()
+            .get_data_layout()
+            .as_str()
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
+/// Construct a `TargetData` for the native host from the cached data-layout
+/// string. See `host_data_layout_string` for initialisation details.
+fn host_target_data() -> TargetData {
+    TargetData::create(host_data_layout_string())
+}
+
+/// Register every machine from `pipeline.machine_layouts` as a named LLVM
+/// tagged-union struct. See the module-level "Layout invariants" block
+/// for the struct shape and access pattern.
+///
+/// Variant payload structs are anonymous; only the outer machine type
+/// is named so `Place::MachineTag(local)` slots can be alloca'd by name.
+///
+/// LESSONS: `feedback_fail_closed_not_pretend` — out-of-range variant or
+/// unsupported payload type returns `CodegenError::FailClosed`, never a
+/// silent fallback to variant 0 or a zero-sized payload.
+fn register_machine_layouts<'ctx>(
+    ctx: &'ctx Context,
+    machine_layouts: &[MachineLayout],
+    record_layout_map: &mut RecordLayoutMap<'ctx>,
+) -> CodegenResult<MachineLayoutMap<'ctx>> {
+    let mut map: MachineLayoutMap<'ctx> = HashMap::new();
+    for layout in machine_layouts {
+        // The state-side machine value: `<Name>` with state-variant payloads.
+        let machine_cg = build_tagged_union_layout(
+            ctx,
+            &layout.name,
+            layout.tag_width,
+            &layout.variants,
+            record_layout_map,
+        )?;
+        // Register the outer struct in the shared layout map so
+        // `resolve_ty` finds `ResolvedTy::Named { name: "<Name>" }`
+        // naturally — the alloca slot for a `self: <Name>` parameter
+        // resolves the same way a record-typed local does.
+        record_layout_map.insert(layout.name.clone(), machine_cg.outer_struct);
+        map.insert(layout.name.clone(), machine_cg);
+
+        // The companion event enum: `<Name>Event` with event-variant
+        // payloads. Tag bit width is derived from the event count
+        // identically to `lower_hir_module`'s machine-tag derivation —
+        // a single source for the same invariant means a future change
+        // in tag-width policy lands in one place.
+        let event_count = u32::try_from(layout.events.len().max(1)).unwrap_or(u32::MAX);
+        let event_tag_width = u32::max(1, event_count.next_power_of_two().trailing_zeros());
+        let event_name = format!("{}Event", layout.name);
+        let event_cg = build_tagged_union_layout(
+            ctx,
+            &event_name,
+            event_tag_width,
+            &layout.events,
+            record_layout_map,
+        )?;
+        record_layout_map.insert(event_name.clone(), event_cg.outer_struct);
+        map.insert(event_name, event_cg);
+    }
+    Ok(map)
+}
+
+/// Shared builder for the machine-value and event-companion tagged-union
+/// LLVM types. Both share the `{ tag: iW, payload: [N x i8] }` shape
+/// described in the layout-invariants block above.
+///
+/// Payload byte count is `TargetData::get_abi_size` of the variant's LLVM
+/// struct — ABI-correct for the host native target including inter-field
+/// padding (see sizing note in the block comment above). `record_layouts`
+/// is no longer a parameter; variant LLVM types are resolved through
+/// `record_layout_map` (the already-populated LLVM type map), which carries
+/// the same type information without needing raw `RecordLayout` access.
+fn build_tagged_union_layout<'ctx>(
+    ctx: &'ctx Context,
+    outer_name: &str,
+    tag_width: u32,
+    variants: &[MachineVariantLayout],
+    record_layout_map: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<MachineCodegenLayout<'ctx>> {
+    // Build each variant's LLVM struct type first, then query its ABI size.
+    // This order is required: `get_abi_size` operates on a completed LLVM
+    // type; we cannot query sizes incrementally from `ResolvedTy` fields
+    // without replicating LLVM's padding rules.
+    let mut variant_struct_tys: Vec<StructType<'ctx>> = Vec::with_capacity(variants.len());
+    let mut variant_field_tys: Vec<Vec<ResolvedTy>> = Vec::with_capacity(variants.len());
+    for variant in variants {
+        let field_tys: Vec<BasicTypeEnum<'ctx>> = variant
+            .field_tys
+            .iter()
+            .map(|fty| resolve_ty(ctx, fty, record_layout_map))
+            .collect::<CodegenResult<Vec<_>>>()?;
+        variant_struct_tys.push(ctx.struct_type(&field_tys, false));
+        variant_field_tys.push(variant.field_tys.clone());
+    }
+
+    // Compute the max ABI byte count AND max ABI alignment across all
+    // variant structs. Empty-variant unions yield 0 for both; we floor the
+    // byte count at 1 so field 1 is always a non-empty array and GEP indices
+    // stay consistent regardless of payload presence, and floor the alignment
+    // at 1 so the payload element type is well-defined.
+    //
+    // Alignment-aware payload typing: the payload is emitted as
+    // `[ceil(payload_bytes / max_align) x i{max_align*8}]`. The element type
+    // gives the payload field its natural alignment of `max_align` bytes, so
+    // variant-struct GEPs (which bitcast the payload pointer to the variant
+    // struct type) target pointers whose alignment meets the variant's
+    // most-aligned field. Primitive ABI alignments (i8=1, i16=2, i32=4,
+    // i64=8, ptr=8 on the targets Hew currently emits for) are consistent
+    // across native and wasm32 data layouts, so this single IR shape is
+    // valid on every target Hew lowers to. See the "Alignment" note in the
+    // layout-invariants block above.
+    let td = host_target_data();
+    let mut max_bytes: u64 = 0;
+    let mut max_align: u32 = 0;
+    for vs in &variant_struct_tys {
+        let abi_bytes = td.get_abi_size(vs);
+        if abi_bytes > max_bytes {
+            max_bytes = abi_bytes;
+        }
+        let abi_align = td.get_abi_alignment(vs);
+        if abi_align > max_align {
+            max_align = abi_align;
+        }
+    }
+    let payload_align = max_align.max(1);
+    // Round payload byte count up to a multiple of `payload_align` so the
+    // array element count `K = payload_bytes / payload_align` is exact.
+    let payload_align_u64 = u64::from(payload_align);
+    let payload_bytes = {
+        let bytes = max_bytes.max(1);
+        // `bytes` and `payload_align_u64` are non-zero; round bytes up to a
+        // multiple of `payload_align_u64` so the array element count is exact.
+        bytes.div_ceil(payload_align_u64) * payload_align_u64
+    };
+    let element_count_u64 = payload_bytes / payload_align_u64;
+    let element_count_u32 = u32::try_from(element_count_u64).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "machine `{outer_name}` payload element count {element_count_u64} exceeds u32 — \
+             a variant with > 4 GiB payload is unsupported"
+        ))
+    })?;
+    // Element bit width: `payload_align` bytes => `payload_align * 8` bits.
+    // Cap at 64 because LLVM's array element types and Hew's primitive set
+    // top out at i64; an alignment >8 on a Hew variant would imply a vector
+    // or aggregate field type the current substrate does not lower.
+    if payload_align > 8 {
+        return Err(CodegenError::FailClosed(format!(
+            "machine `{outer_name}` requires payload alignment {payload_align} > 8 bytes — \
+             Hew's primitive substrate tops out at i64 (8-byte alignment); a variant \
+             field with a wider alignment requirement is unsupported"
+        )));
+    }
+    let element_bits = payload_align * 8;
+    let element_bits_nz = std::num::NonZeroU32::new(element_bits).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "machine `{outer_name}` derived zero-bit payload element — \
+             payload_align computation is invalid"
+        ))
+    })?;
+    let payload_element_int_ty = ctx
+        .custom_width_int_type(element_bits_nz)
+        .map_err(|e| CodegenError::Llvm(format!("custom_width_int_type({element_bits}): {e}")))?;
+
+    let tag_width_nz = std::num::NonZeroU32::new(tag_width).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "machine `{outer_name}` has zero tag_width — lower_hir_module guarantees \
+             tag_width >= 1; this indicates substrate corruption"
+        ))
+    })?;
+    let tag_int_ty = ctx
+        .custom_width_int_type(tag_width_nz)
+        .map_err(|e| CodegenError::Llvm(format!("custom_width_int_type({tag_width}): {e}")))?;
+    let payload_arr_ty = payload_element_int_ty.array_type(element_count_u32);
+
+    let outer_struct = ctx.opaque_struct_type(outer_name);
+    outer_struct.set_body(&[tag_int_ty.into(), payload_arr_ty.into()], false);
+
+    Ok(MachineCodegenLayout {
+        outer_struct,
+        tag_int_ty,
+        variant_struct_tys,
+        variant_field_tys,
+    })
+}
+
+/// Locate a machine's tagged-union codegen layout for an MIR local known
+/// to hold a machine value. Reads the local's resolved type and consults
+/// the machine layout map. Fails closed if the local is not a machine
+/// type or the machine name is not registered.
+fn machine_layout_for_local<'a, 'ctx>(
+    fn_ctx: &'a FnCtx<'_, 'ctx>,
+    local: u32,
+) -> CodegenResult<&'a MachineCodegenLayout<'ctx>> {
+    let ty = fn_ctx.local_tys.get(&local).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "Place::MachineTag/MachineVariant references local {local} which has no \
+             resolved type — the MIR producer must allocate the machine local before \
+             projecting through it"
+        ))
+    })?;
+    let name = match ty {
+        ResolvedTy::Named { name, .. } => name,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "Place::MachineTag/MachineVariant references local {local} whose type \
+                 is {other:?}, not a named machine type"
+            )));
+        }
+    };
+    fn_ctx.machine_layouts.get(name).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "Place::MachineTag/MachineVariant references machine `{name}` which is not \
+             in IrPipeline.machine_layouts — registration mismatch between MIR producer \
+             and codegen"
+        ))
+    })
+}
+
 /// Resolve any `ResolvedTy` to its LLVM `BasicTypeEnum`, consulting the
 /// record-layout map first for named user records. This is the codegen-side
 /// entry point for type lowering — it replaces direct calls to
@@ -1258,18 +1620,84 @@ fn place_pointer<'ctx>(
                     .to_string(),
             ))
         }
-        // MachineTag and MachineVariant are MIR addressing primitives for
-        // the tagged-union machine layout. Codegen support lands in Slice 5
-        // when the LLVM struct type and GEP paths are emitted. Fail closed
-        // here so any premature reach-through surfaces as a diagnostic
-        // rather than emitting a misrouted load/store.
-        // WHY FailClosed: LESSONS boundary-fail-closed — stub bodies record
-        // and refuse; they never fabricate a value.
-        Place::MachineTag(_) | Place::MachineVariant { .. } => Err(CodegenError::FailClosed(
-            "Place::MachineTag / Place::MachineVariant lowering is not yet wired; \
-             Slice 5 (tagged-union codegen) wires the GEP paths for machine state dispatch"
-                .to_string(),
-        )),
+        // Tagged-union sub-structure addressing. `MachineTag` GEPs to
+        // outer-struct field 0 (the discriminant); `MachineVariant` GEPs
+        // to outer-struct field 1 (the payload byte array), then bitcasts
+        // to the active variant's struct pointer and GEPs to its field
+        // `field_idx`. See the layout-invariants block above
+        // `register_machine_layouts` for the load-bearing struct shape.
+        Place::MachineTag(local) => {
+            let layout = machine_layout_for_local(fn_ctx, local)?;
+            let (slot, _slot_ty) = fn_ctx.locals.get(&local).copied().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "Place::MachineTag({local}) has no alloca slot — local must be \
+                     allocated as the machine outer struct before tag projection"
+                ))
+            })?;
+            let tag_ptr = fn_ctx
+                .builder
+                .build_struct_gep(layout.outer_struct, slot, 0, "machine_tag_ptr")
+                .map_err(|e| CodegenError::Llvm(format!("GEP machine tag: {e:?}")))?;
+            Ok((tag_ptr, layout.tag_int_ty.into()))
+        }
+        Place::MachineVariant {
+            local,
+            variant_idx,
+            field_idx,
+        } => {
+            let layout = machine_layout_for_local(fn_ctx, local)?;
+            let variant_idx_usize = variant_idx as usize;
+            let variant_struct = layout
+                .variant_struct_tys
+                .get(variant_idx_usize)
+                .copied()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "Place::MachineVariant {{ local: {local}, variant_idx: {variant_idx} }} \
+                         is out of range — machine has {} variants. The MIR producer must \
+                         project only variants declared in MachineLayout.variants",
+                        layout.variant_struct_tys.len()
+                    ))
+                })?;
+            let (slot, _slot_ty) = fn_ctx.locals.get(&local).copied().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "Place::MachineVariant local {local} has no alloca slot"
+                ))
+            })?;
+            // GEP to outer struct field 1 (the payload byte array).
+            let payload_ptr = fn_ctx
+                .builder
+                .build_struct_gep(layout.outer_struct, slot, 1, "machine_payload_ptr")
+                .map_err(|e| CodegenError::Llvm(format!("GEP machine payload: {e:?}")))?;
+            // LLVM opaque pointers: a `ptr` is a `ptr`; the GEP that
+            // follows is typed against the variant struct, which is
+            // the LLVM idiom for "reinterpret these bytes as this
+            // variant's struct layout".
+            let field_count = variant_struct.count_fields();
+            if field_idx >= field_count {
+                return Err(CodegenError::FailClosed(format!(
+                    "Place::MachineVariant {{ field_idx: {field_idx} }} is out of range \
+                     — variant {variant_idx} has {field_count} fields"
+                )));
+            }
+            let field_ptr = fn_ctx
+                .builder
+                .build_struct_gep(
+                    variant_struct,
+                    payload_ptr,
+                    field_idx,
+                    "machine_variant_field_ptr",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("GEP machine variant field: {e:?}")))?;
+            let field_llvm_ty = variant_struct
+                .get_field_type_at_index(field_idx)
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "variant struct has no field at index {field_idx}"
+                    ))
+                })?;
+            Ok((field_ptr, field_llvm_ty))
+        }
     }
 }
 
@@ -1284,14 +1712,76 @@ fn place_resolved_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, place: Place) -> CodegenResu
             CodegenError::FailClosed(format!("local {id} has no resolved type before use"))
         }),
         Place::ReturnSlot => Ok(&fn_ctx.return_resolved_ty),
-        // MachineTag and MachineVariant project into a machine value's
-        // tagged-union layout. Slice 5 wires the type resolution; fail
-        // closed until then. LESSONS: boundary-fail-closed.
-        Place::MachineTag(_) | Place::MachineVariant { .. } => Err(CodegenError::FailClosed(
-            "Place::MachineTag / Place::MachineVariant type resolution not yet wired; \
-             Slice 5 (tagged-union codegen) provides the type path"
-                .to_string(),
-        )),
+        // Tag projection: the discriminant is an integer whose width is
+        // chosen by `MachineLayout.tag_width`. The dispatch tree (Slice
+        // 4b) widens to `ResolvedTy::I64` via a separate Move into an
+        // I64-typed local; here we surface the narrowest sound type to
+        // keep `place_resolved_ty`'s shape contract (the type the slot
+        // is declared with). Currently the only consumer that reads
+        // this through `place_resolved_ty` is `instr_places`-style
+        // walking, not type-driven loads — type-driven loads use
+        // `place_pointer`'s second tuple element. We surface a typed
+        // integer cached on the FnCtx via a `static` table so the
+        // signature stays `&ResolvedTy` (a borrow). For tag widths up
+        // through 64 we route to the standard I8/I16/I32/I64 buckets;
+        // narrower widths (1, 2, 4, …) round up to the smallest holder.
+        Place::MachineTag(_) => {
+            // Map to the smallest standard integer that fits any tag.
+            // Currently `lower_hir_module` derives `tag_width` from the
+            // state count via `next_power_of_two().trailing_zeros()` so
+            // the value is small (1..=6 for any realistic machine).
+            // Returning I64 matches what the dispatch tree's
+            // `state_tag` local is declared as. The actual LLVM tag
+            // load uses the `place_pointer` tuple's `BasicTypeEnum`
+            // (iW) and the Move arm widens to i64 when dest_ty differs
+            // (Move's existing type-mismatch handling).
+            //
+            // WHY a constant ref: `place_resolved_ty` returns
+            // `&ResolvedTy` borrowed from FnCtx fields. The tag is not
+            // stored in any FnCtx field, so we return a borrow of a
+            // static value with the appropriate width. Long-term, an
+            // `i<W>` `ResolvedTy` variant would let this surface the
+            // exact width; for v0.5 the I64-shaped reads via Move
+            // cover every use site.
+            const TAG_TY: ResolvedTy = ResolvedTy::I64;
+            Ok(&TAG_TY)
+        }
+        Place::MachineVariant {
+            local,
+            variant_idx,
+            field_idx,
+        } => {
+            let layout = fn_ctx
+                .machine_layouts
+                .get(match fn_ctx.local_tys.get(&local) {
+                    Some(ResolvedTy::Named { name, .. }) => name,
+                    _ => {
+                        return Err(CodegenError::FailClosed(format!(
+                            "Place::MachineVariant references local {local} which is not a \
+                         machine-typed local"
+                        )))
+                    }
+                })
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "Place::MachineVariant local {local} machine type not registered"
+                    ))
+                })?;
+            let variant = layout
+                .variant_field_tys
+                .get(variant_idx as usize)
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "Place::MachineVariant variant_idx {variant_idx} out of range"
+                    ))
+                })?;
+            variant.get(field_idx as usize).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "Place::MachineVariant field_idx {field_idx} out of range for variant \
+                     {variant_idx}"
+                ))
+            })
+        }
     }
 }
 
@@ -3108,6 +3598,55 @@ fn lower_instruction(
                 // WHEN obsolete: when the supervisor accessor MIR is redesigned
                 // to carry a ptr-typed handle field directly.
                 use inkwell::types::BasicTypeEnum;
+                // Slice 5: integer width mismatch (iW → iN where N >= W)
+                // arises when Slice 4b's dispatch tree moves a narrow
+                // machine tag (iW from `Place::MachineTag`) into an I64
+                // scratch local for comparison. Emit a `zext` load+store
+                // so the dispatch keeps its I64 invariant without forcing
+                // each tag-width to introduce a new MIR-level narrow type.
+                if let (BasicTypeEnum::IntType(src_int), BasicTypeEnum::IntType(dest_int)) =
+                    (src_ty, dest_ty)
+                {
+                    if src_int.get_bit_width() < dest_int.get_bit_width() {
+                        let narrow = fn_ctx
+                            .builder
+                            .build_load(src_ty, src_ptr, "move_iN_load")
+                            .map_err(|e| {
+                                CodegenError::Llvm(format!("move narrow int load: {e:?}"))
+                            })?
+                            .into_int_value();
+                        let widened = fn_ctx
+                            .builder
+                            .build_int_z_extend(narrow, dest_int, "move_iN_zext")
+                            .map_err(|e| CodegenError::Llvm(format!("move zext: {e:?}")))?;
+                        fn_ctx
+                            .builder
+                            .build_store(dest_ptr, widened)
+                            .map_err(|e| CodegenError::Llvm(format!("move zext store: {e:?}")))?;
+                        return Ok(());
+                    }
+                    // Narrowing iN → iW for the symmetric write-back:
+                    // `Move { dest: Place::MachineTag(local), src: <I64 local> }`.
+                    // The transition body's `MachineVariantCtor` emits an
+                    // `Instr::ConstI64` into an I64 local then moves it
+                    // into the tag slot.
+                    if src_int.get_bit_width() > dest_int.get_bit_width() {
+                        let wide = fn_ctx
+                            .builder
+                            .build_load(src_ty, src_ptr, "move_iN_load_wide")
+                            .map_err(|e| CodegenError::Llvm(format!("move wide int load: {e:?}")))?
+                            .into_int_value();
+                        let narrowed = fn_ctx
+                            .builder
+                            .build_int_truncate(wide, dest_int, "move_iN_trunc")
+                            .map_err(|e| CodegenError::Llvm(format!("move trunc: {e:?}")))?;
+                        fn_ctx
+                            .builder
+                            .build_store(dest_ptr, narrowed)
+                            .map_err(|e| CodegenError::Llvm(format!("move trunc store: {e:?}")))?;
+                        return Ok(());
+                    }
+                }
                 if matches!(src_ty, BasicTypeEnum::IntType(t) if t.get_bit_width() == 64)
                     && matches!(dest_ty, BasicTypeEnum::PointerType(_))
                     && matches!(*dest, Place::ActorHandle(_))
@@ -3504,17 +4043,78 @@ fn lower_instruction(
                  the emit-queue ABI must be wired before codegen can lower this instruction"
             )));
         }
-        Instr::EnumTagLoad { .. } => {
-            // Loading the discriminant tag of an enum-typed value requires the
-            // codegen-side enum layout (machine event companion + general enum
-            // tagged-union). Slice 5 wires this alongside `Place::MachineTag` /
-            // `Place::MachineVariant`. Fail closed until then — LESSONS P0
-            // boundary-fail-closed.
-            return Err(CodegenError::Llvm(
-                "Instr::EnumTagLoad reached LLVM codegen; tagged-union enum \
-                 layout is wired in Slice 5 alongside Place::MachineTag"
-                    .to_string(),
-            ));
+        Instr::EnumTagLoad { src, dest } => {
+            // The `src` local holds a tagged-union enum value (the machine
+            // event companion in Slice 4b dispatch trees). The tag is at
+            // outer-struct field 0 (per the layout invariants documented
+            // at `register_machine_layouts`). We GEP to field 0, load the
+            // iW tag, zext to the dest's integer width, and store. Symmetric
+            // with `Place::MachineTag` for state tags.
+            let Place::Local(src_local) = src else {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::EnumTagLoad src must be a Place::Local; got {src:?}"
+                )));
+            };
+            let src_ty = fn_ctx.local_tys.get(src_local).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "Instr::EnumTagLoad src local {src_local} has no resolved type"
+                ))
+            })?;
+            let enum_name = match src_ty {
+                ResolvedTy::Named { name, .. } => name.clone(),
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "Instr::EnumTagLoad src local {src_local} type {other:?} is not a \
+                         Named enum/event type"
+                    )));
+                }
+            };
+            let layout = fn_ctx.machine_layouts.get(&enum_name).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "Instr::EnumTagLoad src type `{enum_name}` is not in the machine \
+                     layout map — only machine values and their event companions are \
+                     supported by Slice 5"
+                ))
+            })?;
+            let (src_slot, _src_slot_ty) =
+                fn_ctx.locals.get(src_local).copied().ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "Instr::EnumTagLoad src local {src_local} has no alloca slot"
+                    ))
+                })?;
+            let tag_ptr = fn_ctx
+                .builder
+                .build_struct_gep(layout.outer_struct, src_slot, 0, "enum_tag_ptr")
+                .map_err(|e| CodegenError::Llvm(format!("GEP enum tag: {e:?}")))?;
+            let tag_loaded = fn_ctx
+                .builder
+                .build_load(layout.tag_int_ty, tag_ptr, "enum_tag_load")
+                .map_err(|e| CodegenError::Llvm(format!("load enum tag: {e:?}")))?
+                .into_int_value();
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let dest_int_ty = match dest_ty {
+                BasicTypeEnum::IntType(t) => t,
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "Instr::EnumTagLoad dest must be an integer-typed Place; got {other:?}"
+                    )));
+                }
+            };
+            // zext the iW tag to the destination integer width. If widths
+            // match (rare — only when dest is also iW), `build_int_z_extend`
+            // is a no-op upcast that LLVM folds.
+            let widened = if dest_int_ty.get_bit_width() == layout.tag_int_ty.get_bit_width() {
+                tag_loaded
+            } else {
+                fn_ctx
+                    .builder
+                    .build_int_z_extend(tag_loaded, dest_int_ty, "enum_tag_zext")
+                    .map_err(|e| CodegenError::Llvm(format!("zext enum tag: {e:?}")))?
+            };
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, widened)
+                .map_err(|e| CodegenError::Llvm(format!("store enum tag: {e:?}")))?;
         }
     }
     Ok(())
@@ -7292,21 +7892,26 @@ fn declare_function<'ctx>(
         Some(Linkage::Internal)
     };
     let return_ty_llvm = resolve_ty(ctx, &func.return_ty, record_layouts)?;
-    // Accept integer and pointer return types. Integer covers the original
-    // Cluster 1 spine; pointer covers `String` (a `*mut c_char` / opaque
-    // `ptr` in LLVM IR) which is now lowerable via `Instr::StringLit`.
-    // Bool/Unit/F32/F64 all reach `primitive_to_llvm` with valid shapes,
-    // but the MIR `Instr` stream cannot populate the return slot for them
-    // — the function body would emit `ret` against an uninitialised
-    // alloca. Reject the return type at declaration time so the failure
-    // is loud and well-located (LESSONS `boundary-fail-closed`).
+    // Accept integer, pointer, and struct return types. Integer covers
+    // the original Cluster 1 spine; pointer covers `String` (a
+    // `*mut c_char` / opaque `ptr` in LLVM IR) which is lowerable via
+    // `Instr::StringLit`. Struct returns are needed by synthesised
+    // machine `__step(self, event) -> <Name>` functions, which return
+    // the tagged-union machine struct by value (Slice 5). LLVM emits
+    // these as natural-ABI struct returns; the caller-side store-back
+    // is wired by the `m.step(ev)` slice. Bool/Unit/F32/F64 reach
+    // `primitive_to_llvm` with valid shapes but the MIR `Instr` stream
+    // cannot populate the return slot for them — the function body
+    // would emit `ret` against an uninitialised alloca. Reject those at
+    // declaration time so the failure is loud and well-located.
+    // LESSONS: `boundary-fail-closed`.
     if !matches!(
         return_ty_llvm,
-        BasicTypeEnum::IntType(_) | BasicTypeEnum::PointerType(_)
+        BasicTypeEnum::IntType(_) | BasicTypeEnum::PointerType(_) | BasicTypeEnum::StructType(_)
     ) {
         return Err(CodegenError::Unsupported(
-            "only integer- and pointer-returning functions are lowerable; \
-             non-integer/non-pointer return types are out of the current spine subset",
+            "only integer-, pointer-, and struct-returning functions are lowerable; \
+             non-integer/non-pointer/non-struct return types are out of the current spine subset",
         ));
     }
     // Resolve parameter types from `func.params`. Each parameter type must
@@ -7372,6 +7977,7 @@ fn lower_function<'ctx>(
     checked: Option<&CheckedMirFunction>,
     record_layouts: &RecordLayoutMap<'ctx>,
     actor_layouts: &[ActorLayout],
+    machine_layouts: &MachineLayoutMap<'ctx>,
 ) -> CodegenResult<()> {
     let symbol = *fn_symbols.get(&func.name).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -7498,6 +8104,7 @@ fn lower_function<'ctx>(
         record_layouts,
         fn_symbols,
         actor_layouts,
+        machine_layouts,
     };
 
     // Extract drop_plans from the matched elaborated function, or use an
@@ -7883,7 +8490,15 @@ fn build_module<'ctx>(
     // both paths consult `record_layouts` via `resolve_ty`, so the map must
     // be populated up front. Empty `record_layouts` (most existing pipelines)
     // produces an empty map and changes no behaviour for record-free code.
-    let record_layouts = register_record_layouts(ctx, &pipeline.record_layouts)?;
+    let mut record_layouts = register_record_layouts(ctx, &pipeline.record_layouts)?;
+    // Slice 5: register machine tagged-union types alongside records.
+    // `register_machine_layouts` inserts the outer struct of each machine
+    // and its `<Name>Event` companion into `record_layouts` so `resolve_ty`
+    // resolves `ResolvedTy::Named { name: "Foo" }` to the machine's outer
+    // struct the same way it resolves a record. The richer per-variant
+    // metadata (inner structs, tag int type) lives in `machine_layouts`.
+    let machine_layouts =
+        register_machine_layouts(ctx, &pipeline.machine_layouts, &mut record_layouts)?;
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;
     for func in &pipeline.raw_mir {
@@ -7947,6 +8562,7 @@ fn build_module<'ctx>(
             checked,
             &record_layouts,
             &pipeline.actor_layouts,
+            &machine_layouts,
         )?;
     }
     llvm_mod

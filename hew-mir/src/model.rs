@@ -61,9 +61,10 @@ pub struct IrPipeline {
     /// structs. The `variants` vector (populated in Slice 5 from the machine's
     /// `HirMachineState.fields`) provides the per-variant field type list.
     ///
-    /// `Place::MachineTag(binding)` and `Place::MachineVariant { .. }` address
-    /// into this layout; the drop-elaborator (Slice 4c) reads `tag_width` and
-    /// `variants` to emit tag-dominant field drops at transition sites.
+    /// `Place::MachineTag(local)` and `Place::MachineVariant { local, .. }`
+    /// address into this layout; the drop-elaborator (Slice 4c) reads
+    /// `tag_width` and `variants` to emit tag-dominant field drops at
+    /// transition sites.
     pub machine_layouts: Vec<MachineLayout>,
 }
 
@@ -303,6 +304,24 @@ pub struct MachineLayout {
     pub tag_width: u32,
     /// Per-state variant layouts in declaration order.
     pub variants: Vec<MachineVariantLayout>,
+    /// Event-companion variant layouts in `HirMachineDecl.events`
+    /// declaration order.
+    ///
+    /// The companion enum's tag bit width is
+    /// `max(1, (events.len() as f64).log2().ceil() as u32)` — computed
+    /// on the fly by codegen from `events.len()` so a separate
+    /// `event_tag_width` field is unnecessary. Each entry carries the
+    /// event variant name and its payload field type list (empty for
+    /// unit events like `event Tick;`).
+    ///
+    /// WHY here (not as a free-standing `EventLayout`): the event
+    /// companion enum is constructed 1:1 with its parent machine —
+    /// every machine declaration produces exactly one
+    /// `<Name>Event` enum, registered by `register_machine_decl` in
+    /// `hew-types`. Carrying the event layout alongside the machine
+    /// layout keeps both halves of the step-fn surface together for
+    /// codegen consumption.
+    pub events: Vec<MachineVariantLayout>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -843,7 +862,8 @@ pub enum Place {
     /// R-direction only; the S-direction stays open until the
     /// matching `SendHalf` (or last surviving `DuplexHandle`) drops.
     RecvHalf(u32),
-    /// Discriminant tag of a machine value identified by `binding`.
+    /// Discriminant tag of a machine value held in `local` (an MIR local
+    /// register id, matching `Place::Local(local)`).
     ///
     /// Addresses the integer tag field of the tagged-union representation
     /// of a machine instance. The tag encodes the active state variant as
@@ -861,26 +881,31 @@ pub enum Place {
     /// binding releases no resources via this place; entry/exit hooks are
     /// separately emitted by the drop-elaborator at transition sites.
     ///
+    /// WHY `u32` (not `BindingId`): codegen has no `BindingId → local`
+    /// map; the `BindingId` was always producer-supplied as a name for an
+    /// MIR local. Keying the place on the local id directly mirrors the
+    /// existing handle places (`DuplexHandle(u32)`, `SendHalf(u32)`, …)
+    /// and makes codegen consume it the same way as `Place::Local(u32)`.
     /// WHY declared here: Slice 4b (transition body lowering) emits
     /// `MachineTag` stores to update the discriminant after a transition.
     /// Slice 4c (drop-elaboration) reads `MachineTag` to drive
     /// tag-dominant drop. Neither can express machine dispatch in MIR
     /// without this place primitive.
-    /// WHEN-OBSOLETE: never — this is a permanent MIR primitive once
-    /// tagged-union machine layout lands in Slice 5.
-    MachineTag(BindingId),
-    /// Active variant payload field of a machine value, dominated by
-    /// `Place::MachineTag(binding)`.
+    /// WHEN-OBSOLETE: never — permanent MIR primitive once tagged-union
+    /// machine layout lands in Slice 5.
+    MachineTag(u32),
+    /// Active variant payload field of a machine value held in `local`,
+    /// dominated by `Place::MachineTag(local)`.
     ///
     /// Addresses a single field within the active variant's payload.
-    /// `binding` identifies the machine local (same `BindingId` as the
+    /// `local` identifies the machine MIR-local (same `u32` id as the
     /// corresponding `MachineTag`). `variant_idx` is the zero-based state
     /// ordinal (declaration order in `HirMachineDecl.states`). `field_idx`
     /// is the zero-based field ordinal within that state's payload
     /// (declaration order in `HirMachineState.fields`).
     ///
     /// **Dominance invariant**: a `MachineVariant` load or store is only
-    /// legal when `Place::MachineTag(binding)` is known to carry
+    /// legal when `Place::MachineTag(local)` is known to carry
     /// `variant_idx` at the use site (i.e. the tag-dominance CFG
     /// property holds). Slice 4c enforces this during drop-elaboration;
     /// Slice 4b enforces it during transition body lowering.
@@ -891,7 +916,7 @@ pub enum Place {
     /// WHEN-OBSOLETE: never — permanent MIR primitive paired with
     /// `MachineTag`.
     MachineVariant {
-        binding: BindingId,
+        local: u32,
         variant_idx: u32,
         field_idx: u32,
     },

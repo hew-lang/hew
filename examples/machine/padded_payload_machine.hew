@@ -1,0 +1,30 @@
+// Fixture that exercises payload-sizing correctness for variants whose
+// field layout requires inter-field padding.
+//
+// The `Active` state holds `{ tag_byte: i8; value: i64; }`. A naive
+// byte-sum gives 9 bytes; the ABI-correct size on x86_64 and AArch64
+// is 16 bytes (7 bytes of padding after `tag_byte` to align `value` to
+// its 8-byte natural boundary). This fixture drives
+// `build_tagged_union_layout` to verify that the payload array is sized
+// to the ABI size reported by `TargetData::get_abi_size` — not the
+// field-width sum.
+machine PaddedPayload {
+    state Idle;
+    state Active { tag_byte: i8; value: i64; }
+
+    event Activate;
+    event Deactivate;
+
+    on Activate: Idle -> Active {
+        Active { tag_byte: 0, value: 42 }
+    }
+    on Deactivate: Active -> Idle {
+        Idle
+    }
+    on Deactivate: Idle -> Idle @reenter {
+        Idle
+    }
+    on Activate: Active -> Active @reenter {
+        Active { tag_byte: self.tag_byte, value: self.value }
+    }
+}

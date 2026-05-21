@@ -681,10 +681,17 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         .iter()
                         .map(|s| crate::model::MachineVariantLayout {
                             name: s.name.clone(),
-                            // Slice 4a: field_tys left empty — Slice 5 populates
-                            // from HirMachineState.fields when codegen-side
-                            // tagged-union layout lands.
-                            field_tys: Vec::new(),
+                            // Slice 5: populate from HirMachineState.fields in
+                            // declaration order. Empty for zero-payload states.
+                            field_tys: s.fields.iter().map(|f| f.ty.clone()).collect(),
+                        })
+                        .collect(),
+                    events: md
+                        .events
+                        .iter()
+                        .map(|e| crate::model::MachineVariantLayout {
+                            name: e.name.clone(),
+                            field_tys: e.fields.iter().map(|f| f.ty.clone()).collect(),
                         })
                         .collect(),
                 });
@@ -1508,12 +1515,19 @@ fn synthesize_machine_step_fn(
     builder.binding_locals.insert(self_binding, self_place);
     builder.binding_locals.insert(event_binding, event_place);
 
+    // Resolve the MIR-local id of the `self` parameter so `Place::MachineTag`
+    // can address it directly (codegen has no `BindingId → local` map; the
+    // place primitive carries the local id, see `Place::MachineTag` doc).
+    let Place::Local(self_local) = self_place else {
+        unreachable!("alloc_local returns Place::Local");
+    };
+
     // Entry block: load state tag and event tag into integer scratch locals,
     // then enter the state-cascade.
     let state_tag = builder.alloc_local(ResolvedTy::I64);
     builder.instructions.push(Instr::Move {
         dest: state_tag,
-        src: Place::MachineTag(self_binding),
+        src: Place::MachineTag(self_local),
     });
     let event_tag = builder.alloc_local(ResolvedTy::I64);
     builder.instructions.push(Instr::EnumTagLoad {
@@ -1681,7 +1695,7 @@ fn synthesize_machine_step_fn(
             // under the tag at runtime IS `state_idx`, regardless of whether
             // the transition was declared as a concrete or wildcard arm.
             if fires_exit {
-                emit_machine_resource_field_drops(&mut builder, state, state_idx, self_binding);
+                emit_machine_resource_field_drops(&mut builder, state, state_idx, self_local);
             }
 
             // Lower the transition body. For wildcard arms the HIR-side
@@ -1840,11 +1854,11 @@ fn lower_machine_hook_block(
 /// the old payload is gone before the new variant's fields are written.
 ///
 /// `state_idx` is the zero-based index of `state` in
-/// `HirMachineDecl.states` (declaration order). `self_binding` is the
-/// synthetic `BindingId` allocated by `synthesize_machine_step_fn` for
-/// the `self` parameter — it matches the `BindingId` used in
-/// `Place::MachineTag(self_binding)` and `Place::MachineVariant { binding:
-/// self_binding, .. }` throughout the synthesised step function.
+/// `HirMachineDecl.states` (declaration order). `self_local` is the
+/// MIR-local id of the synthesised `self` parameter allocated by
+/// `synthesize_machine_step_fn` — it matches the local used in
+/// `Place::MachineTag(self_local)` and `Place::MachineVariant { local:
+/// self_local, .. }` throughout the synthesised step function.
 ///
 /// **Fail-closed**: if a field's type is `ResolvedTy::Named` and the name
 /// is absent from `builder.type_classes`, a `MirDiagnostic` is recorded
@@ -1864,7 +1878,7 @@ fn emit_machine_resource_field_drops(
     builder: &mut Builder,
     state: &hew_hir::HirMachineState,
     state_idx: usize,
-    self_binding: hew_hir::BindingId,
+    self_local: u32,
 ) {
     for (field_idx, field) in state.fields.iter().enumerate() {
         match ValueClass::of_ty(&field.ty, &builder.type_classes) {
@@ -1888,7 +1902,7 @@ fn emit_machine_resource_field_drops(
                 };
                 builder.instructions.push(Instr::Drop {
                     place: Place::MachineVariant {
-                        binding: self_binding,
+                        local: self_local,
                         variant_idx: u32::try_from(state_idx).unwrap_or(u32::MAX),
                         field_idx: u32::try_from(field_idx).unwrap_or(u32::MAX),
                     },
@@ -4175,24 +4189,17 @@ impl Builder {
                     args: Vec::new(),
                 };
                 let dest = self.alloc_local(dest_ty);
-                // Synthesise a BindingId for this freshly constructed machine
-                // value. We use a high-bit-set u32 to make the synthetic
-                // binding distinguishable from real HIR BindingIds (which are
-                // assigned monotonically from 0 by the module's IdGen). The
-                // counter is local-index-derived so two ctors in the same
-                // function don't collide.
-                let Place::Local(local_idx) = dest else {
+                let Place::Local(dest_local) = dest else {
                     unreachable!("alloc_local returns Place::Local");
                 };
-                let dest_binding = BindingId(u32::MAX - local_idx);
-                // Tag store: Place::MachineTag(dest_binding) = state_idx.
+                // Tag store: Place::MachineTag(dest_local) = state_idx.
                 let tag_const = self.alloc_local(ResolvedTy::I64);
                 self.instructions.push(Instr::ConstI64 {
                     dest: tag_const,
                     value: i64::try_from(*state_idx).unwrap_or(i64::MAX),
                 });
                 self.instructions.push(Instr::Move {
-                    dest: Place::MachineTag(dest_binding),
+                    dest: Place::MachineTag(dest_local),
                     src: tag_const,
                 });
                 // Per-payload-field store via Place::MachineVariant. HIR has
@@ -4210,7 +4217,7 @@ impl Builder {
                             u32::try_from(*state_idx).expect("state index exceeds u32::MAX");
                         self.instructions.push(Instr::Move {
                             dest: Place::MachineVariant {
-                                binding: dest_binding,
+                                local: dest_local,
                                 variant_idx: variant_idx_u32,
                                 field_idx: field_idx_u32,
                             },
@@ -4250,6 +4257,34 @@ impl Builder {
                     });
                     return None;
                 };
+                // Resolve the machine `self` binding to its MIR-local id so
+                // `Place::MachineVariant` can address it directly.
+                let Some(self_place) = self.binding_locals.get(&self_binding).copied() else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "MachineFieldAccess({machine_name}[{state_idx}].{field_name}) — \
+                                 self binding has no allocated local"
+                            ),
+                        },
+                        note: "internal: synthesize_machine_step_fn must allocate \
+                               the self parameter local before walking transition bodies"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                let Place::Local(self_local) = self_place else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "MachineFieldAccess({machine_name}[{state_idx}].{field_name}) — \
+                                 self binding maps to non-Local place {self_place:?}"
+                            ),
+                        },
+                        note: "internal: machine self parameter must be a Place::Local".to_string(),
+                    });
+                    return None;
+                };
                 let dest = self.alloc_local(expr.ty.clone());
                 let variant_idx_u32 =
                     u32::try_from(*state_idx).expect("state index exceeds u32::MAX");
@@ -4258,7 +4293,7 @@ impl Builder {
                 self.instructions.push(Instr::Move {
                     dest,
                     src: Place::MachineVariant {
-                        binding: self_binding,
+                        local: self_local,
                         variant_idx: variant_idx_u32,
                         field_idx: field_idx_u32,
                     },

@@ -1581,6 +1581,262 @@ impl<'a> Formatter<'a> {
         self.write("}");
     }
 
+    fn format_gen_block(&mut self, body: &Block) {
+        self.write("gen ");
+        if self.can_format_gen_block_inline(body) {
+            self.format_gen_block_inline(body);
+        } else {
+            self.format_block(body, self.source.len());
+        }
+    }
+
+    fn can_format_gen_block_inline(&self, body: &Block) -> bool {
+        let item_count = body.stmts.len() + usize::from(body.trailing_expr.is_some());
+        item_count <= 2
+            && !self.next_block_has_comments()
+            && body
+                .stmts
+                .iter()
+                .all(|(stmt, _)| Self::can_format_stmt_inline(stmt))
+            && body
+                .trailing_expr
+                .as_deref()
+                .is_none_or(|(expr, _)| Self::can_format_expr_inline(expr))
+    }
+
+    fn next_block_has_comments(&self) -> bool {
+        if self.comments.is_empty() {
+            return false;
+        }
+        let Some((open, close)) = self.next_block_bounds() else {
+            return false;
+        };
+        self.comments[self.next_comment..]
+            .iter()
+            .any(|comment| comment.span.start > open && comment.span.start < close)
+    }
+
+    fn next_block_bounds(&self) -> Option<(usize, usize)> {
+        let from = self.prev_source_pos.min(self.source.len());
+        let open = self.source[from..].find('{').map(|off| from + off)?;
+        let close = find_block_close(self.source, open + 1, self.source.len());
+        (close < self.source.len()).then_some((open, close))
+    }
+
+    fn can_format_stmt_inline(stmt: &Stmt) -> bool {
+        match stmt {
+            Stmt::Let { value, .. } | Stmt::Var { value, .. } => value
+                .as_ref()
+                .is_none_or(|(expr, _)| Self::can_format_expr_inline(expr)),
+            Stmt::Assign { target, value, .. } => {
+                Self::can_format_expr_inline(&target.0) && Self::can_format_expr_inline(&value.0)
+            }
+            Stmt::Break { value, .. } | Stmt::Return(value) => value
+                .as_ref()
+                .is_none_or(|(expr, _)| Self::can_format_expr_inline(expr)),
+            Stmt::Continue { .. } => true,
+            Stmt::Defer(expr) => Self::can_format_expr_inline(&expr.0),
+            Stmt::Expression(expr) => Self::can_format_expr_inline(&expr.0),
+            Stmt::If { .. }
+            | Stmt::IfLet { .. }
+            | Stmt::Match { .. }
+            | Stmt::Loop { .. }
+            | Stmt::For { .. }
+            | Stmt::While { .. }
+            | Stmt::WhileLet { .. } => false,
+        }
+    }
+
+    fn can_format_expr_inline(expr: &Expr) -> bool {
+        match expr {
+            Expr::Literal(_)
+            | Expr::Identifier(_)
+            | Expr::RegexLiteral(_)
+            | Expr::ByteStringLiteral(_)
+            | Expr::ByteArrayLiteral(_)
+            | Expr::Cooperate
+            | Expr::This
+            | Expr::Yield(None) => true,
+            Expr::Tuple(exprs) | Expr::Array(exprs) => exprs
+                .iter()
+                .all(|(expr, _)| Self::can_format_expr_inline(expr)),
+            Expr::MapLiteral { entries } => entries.iter().all(|(key, value)| {
+                Self::can_format_expr_inline(&key.0) && Self::can_format_expr_inline(&value.0)
+            }),
+            Expr::ArrayRepeat { value, count } => {
+                Self::can_format_expr_inline(&value.0) && Self::can_format_expr_inline(&count.0)
+            }
+            Expr::Unary { operand, .. }
+            | Expr::PostfixTry(operand)
+            | Expr::Await(operand)
+            | Expr::Yield(Some(operand)) => Self::can_format_expr_inline(&operand.0),
+            Expr::Binary { left, right, .. }
+            | Expr::Is {
+                lhs: left,
+                rhs: right,
+            } => Self::can_format_expr_inline(&left.0) && Self::can_format_expr_inline(&right.0),
+            Expr::Call { function, args, .. } => {
+                Self::can_format_expr_inline(&function.0)
+                    && args
+                        .iter()
+                        .all(|arg| Self::can_format_expr_inline(&arg.expr().0))
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                Self::can_format_expr_inline(&receiver.0)
+                    && args
+                        .iter()
+                        .all(|arg| Self::can_format_expr_inline(&arg.expr().0))
+            }
+            Expr::FieldAccess { object, .. } => Self::can_format_expr_inline(&object.0),
+            Expr::Index { object, index } => {
+                Self::can_format_expr_inline(&object.0) && Self::can_format_expr_inline(&index.0)
+            }
+            Expr::Cast { expr, .. } => Self::can_format_expr_inline(&expr.0),
+            Expr::Range { start, end, .. } => {
+                start
+                    .as_ref()
+                    .is_none_or(|expr| Self::can_format_expr_inline(&expr.0))
+                    && end
+                        .as_ref()
+                        .is_none_or(|expr| Self::can_format_expr_inline(&expr.0))
+            }
+            Expr::StructInit { fields, base, .. } => {
+                fields
+                    .iter()
+                    .all(|(_, expr)| Self::can_format_expr_inline(&expr.0))
+                    && base
+                        .as_ref()
+                        .is_none_or(|expr| Self::can_format_expr_inline(&expr.0))
+            }
+            Expr::InterpolatedString(parts) => parts.iter().all(|part| match part {
+                StringPart::Literal(_) => true,
+                StringPart::Expr((expr, _)) => Self::can_format_expr_inline(expr),
+            }),
+            Expr::Block(_)
+            | Expr::If { .. }
+            | Expr::IfLet { .. }
+            | Expr::Match { .. }
+            | Expr::Lambda { .. }
+            | Expr::Spawn { .. }
+            | Expr::SpawnLambdaActor { .. }
+            | Expr::Scope { .. }
+            | Expr::ForkChild { .. }
+            | Expr::ForkBlock { .. }
+            | Expr::ScopeDeadline { .. }
+            | Expr::Select { .. }
+            | Expr::Join(_)
+            | Expr::Timeout { .. }
+            | Expr::UnsafeBlock(_)
+            | Expr::MachineEmit { .. }
+            | Expr::GenBlock { .. } => false,
+        }
+    }
+
+    fn format_gen_block_inline(&mut self, body: &Block) {
+        self.write("{");
+        if !body.stmts.is_empty() || body.trailing_expr.is_some() {
+            self.write(" ");
+            for (stmt, _) in &body.stmts {
+                self.format_stmt_inline(stmt);
+                self.write(" ");
+            }
+            if let Some((expr, _)) = body.trailing_expr.as_deref() {
+                self.format_expr(expr);
+                self.write(" ");
+            }
+        }
+        self.write("}");
+    }
+
+    fn format_stmt_inline(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Let { pattern, ty, value } => {
+                self.write("let ");
+                self.format_pattern(&pattern.0);
+                if let Some(ty) = ty {
+                    self.write(": ");
+                    self.format_type_expr(&ty.0);
+                }
+                if let Some((expr, _)) = value {
+                    self.write(" = ");
+                    self.format_expr(expr);
+                }
+                self.write(";");
+            }
+            Stmt::Var { name, ty, value } => {
+                self.write("var ");
+                self.write(name);
+                if let Some(ty) = ty {
+                    self.write(": ");
+                    self.format_type_expr(&ty.0);
+                }
+                if let Some((expr, _)) = value {
+                    self.write(" = ");
+                    self.format_expr(expr);
+                }
+                self.write(";");
+            }
+            Stmt::Assign { target, op, value } => {
+                self.format_expr(&target.0);
+                if let Some(op) = op {
+                    self.write(" ");
+                    self.write(compound_assign_op_str(*op));
+                    self.write(" ");
+                } else {
+                    self.write(" = ");
+                }
+                self.format_expr(&value.0);
+                self.write(";");
+            }
+            Stmt::Break { label, value } => {
+                self.write("break");
+                if let Some(label) = label {
+                    self.write(" @");
+                    self.write(label);
+                }
+                if let Some((expr, _)) = value {
+                    self.write(" ");
+                    self.format_expr(expr);
+                }
+                self.write(";");
+            }
+            Stmt::Continue { label } => {
+                self.write("continue");
+                if let Some(label) = label {
+                    self.write(" @");
+                    self.write(label);
+                }
+                self.write(";");
+            }
+            Stmt::Return(value) => {
+                self.write("return");
+                if let Some((expr, _)) = value {
+                    self.write(" ");
+                    self.format_expr(expr);
+                }
+                self.write(";");
+            }
+            Stmt::Defer(expr) => {
+                self.write("defer ");
+                self.format_expr(&expr.0);
+                self.write(";");
+            }
+            Stmt::Expression(expr) => {
+                self.format_expr(&expr.0);
+                self.write(";");
+            }
+            Stmt::If { .. }
+            | Stmt::IfLet { .. }
+            | Stmt::Match { .. }
+            | Stmt::Loop { .. }
+            | Stmt::For { .. }
+            | Stmt::While { .. }
+            | Stmt::WhileLet { .. } => {
+                unreachable!("non-inline statement reached gen block inline formatter")
+            }
+        }
+    }
+
     #[expect(clippy::too_many_lines, reason = "match on all Stmt variants")]
     fn format_stmt(&mut self, stmt: &Stmt) {
         match stmt {
@@ -2359,8 +2615,7 @@ impl<'a> Formatter<'a> {
                 }
             }
             Expr::GenBlock { body } => {
-                self.write("gen ");
-                self.format_block(body, self.source.len());
+                self.format_gen_block(body);
             }
         }
     }

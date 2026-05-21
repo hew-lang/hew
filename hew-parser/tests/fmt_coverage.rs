@@ -660,6 +660,20 @@ fn fmt_gen_block_expression() {
     );
 }
 
+#[test]
+fn fmt_gen_block_compact_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let yields = gen { yield 1; yield 2; };\n    let returns = gen { yield 1; 2 };\n    let explicit = gen { return 1; };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_gen_block_multiline_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let g = gen {\n        yield 1;\n        yield 2;\n        3\n    };\n}\n",
+    );
+}
+
 // -----------------------------------------------------------------------
 // Method calls and chaining
 // -----------------------------------------------------------------------

@@ -58,7 +58,7 @@ use std::path::Path;
 use std::process::Command;
 
 use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy, PrintKind};
-use hew_hir::{HirRestartPolicy, HirSupervisorStrategy};
+use hew_hir::{mangle, HirRestartPolicy, HirSupervisorStrategy};
 use hew_mir::{
     validate_context_markers, ActorLayout, CheckedMirFunction, CmpPred, CooperateKind,
     CooperateSite, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth,
@@ -1477,8 +1477,8 @@ fn machine_layout_for_local<'a, 'ctx>(
              projecting through it"
         ))
     })?;
-    let name = match ty {
-        ResolvedTy::Named { name, .. } => name,
+    let (name, args) = match ty {
+        ResolvedTy::Named { name, args } => (name, args),
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "Place::MachineTag/MachineVariant references local {local} whose type \
@@ -1486,7 +1486,31 @@ fn machine_layout_for_local<'a, 'ctx>(
             )));
         }
     };
-    fn_ctx.machine_layouts.get(name).ok_or_else(|| {
+    // Generic-enum monomorphisations are registered under the mangled key
+    // (e.g. `"Option$$i64"`) by `register_enum_layouts`. When the local's
+    // type carries type args, compute the same mangled key used at
+    // registration so the lookup succeeds.
+    // WHY: bare-name lookup fails for any instantiated generic enum because
+    //   `register_enum_layouts` stores under `hir_layout.mangled_name`, not
+    //   the origin enum name. Bare lookup is correct only for monomorphic enums
+    //   (no type args) and machine/actor layouts.
+    // WHEN-OBSOLETE: if the layout map is ever re-keyed by a richer
+    //   identifier (e.g. a `(origin_id, mono_args)` pair), this branch goes away.
+    let lookup_key: String = if args.is_empty() {
+        name.clone()
+    } else {
+        let key = mangle(name, args);
+        if !fn_ctx.machine_layouts.contains_key(&key) {
+            return Err(CodegenError::FailClosed(format!(
+                "Place::MachineTag/MachineVariant references generic enum `{name}` \
+                 with type args {args:?}: mangled key `{key}` is not in \
+                 IrPipeline.machine_layouts — the monomorphisation was not registered \
+                 by `register_enum_layouts` (registration-mismatch)"
+            )));
+        }
+        key
+    };
+    fn_ctx.machine_layouts.get(&lookup_key).ok_or_else(|| {
         CodegenError::FailClosed(format!(
             "Place::MachineTag/MachineVariant references machine `{name}` which is not \
              in IrPipeline.machine_layouts — registration mismatch between MIR producer \
@@ -1518,8 +1542,30 @@ fn resolve_ty<'ctx>(
     ty: &ResolvedTy,
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<BasicTypeEnum<'ctx>> {
-    if let ResolvedTy::Named { name, .. } = ty {
-        if let Some(st) = record_layouts.get(name) {
+    if let ResolvedTy::Named { name, args } = ty {
+        // Generic-enum instantiations are keyed by mangled name (e.g.
+        // `"Option$$i64"`) in the record-layout map — the same key produced
+        // by `register_enum_layouts`. When type args are present, mangle
+        // before lookup so the map entry is found.
+        //
+        // WHY: bare-name lookup finds nothing for `Named { name: "Option",
+        //   args: [I64] }` because the map entry was inserted as `"Option$$i64"`.
+        //   Without mangling, `resolve_ty` falls through to `primitive_to_llvm`,
+        //   which emits a D10 fail-closed error for unknown Named types.
+        //
+        // Fall-through when the key is absent is intentional: known
+        // pointer-backed handles (Vec, Duplex, HewTask, etc.) carry type
+        // args but are handled by `primitive_to_llvm`'s explicit arm for
+        // their bare name. `primitive_to_llvm` already emits the D10 error
+        // for any Named type that reaches it without a registered layout.
+        //
+        // WHEN-OBSOLETE: same as `machine_layout_for_local` note above.
+        let lookup_key: std::borrow::Cow<str> = if args.is_empty() {
+            std::borrow::Cow::Borrowed(name.as_str())
+        } else {
+            std::borrow::Cow::Owned(mangle(name, args))
+        };
+        if let Some(st) = record_layouts.get(lookup_key.as_ref()) {
             return Ok((*st).into());
         }
     }
@@ -10011,5 +10057,100 @@ mod tests {
                 llvm_mod.print_to_string().to_string()
             );
         }
+    }
+
+    /// Verify that `resolve_ty` looks up a generic-enum local by its mangled
+    /// key (`"Option$$i64"`) rather than the bare name (`"Option"`), and that
+    /// `build_module` produces a valid LLVM module when `Option<i64>` is the
+    /// type of a local variable.
+    ///
+    /// Prior to this fix, `resolve_ty` used the bare name, found nothing in
+    /// the record-layout map, fell through to `primitive_to_llvm`, and
+    /// emitted the D10-violation diagnostic. The pipeline now succeeds: the
+    /// alloca for `local_0` acquires the tagged-union struct type registered
+    /// under `"Option$$i64"`.
+    #[test]
+    fn generic_enum_local_resolves_by_mangled_key() {
+        use hew_hir::mangle as hir_mangle;
+
+        // Build the mangled key the same way `register_enum_layouts` does.
+        let mangled = hir_mangle("Option", &[ResolvedTy::I64]);
+        assert_eq!(
+            mangled, "Option$$i64",
+            "mangle scheme must match registration"
+        );
+
+        // EnumLayout with that mangled name: `enum Option<i64> { None, Some(i64) }`
+        let enum_layout = EnumLayout {
+            name: mangled,
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "None".to_string(),
+                    field_tys: vec![],
+                },
+                MachineVariantLayout {
+                    name: "Some".to_string(),
+                    field_tys: vec![ResolvedTy::I64],
+                },
+            ],
+        };
+
+        // Function that has `Option<i64>` as a local (local_0) but only
+        // reads an i64 constant into the return slot — the alloca for
+        // local_0 is what exercises `resolve_ty` with a non-empty args vec.
+        let func = RawMirFunction {
+            name: "main".to_string(),
+            return_ty: ResolvedTy::I64,
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![
+                // local_0: Option<i64> — must resolve via mangled key
+                ResolvedTy::Named {
+                    name: "Option".to_string(),
+                    args: vec![ResolvedTy::I64],
+                },
+                // local_1: i64 — return value
+                ResolvedTy::I64,
+            ],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![
+                    Instr::ConstI64 {
+                        dest: Place::Local(1),
+                        value: 42,
+                    },
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(1),
+                    },
+                ],
+                terminator: Terminator::Return,
+            }],
+            decisions: Vec::<DecisionFact>::new(),
+        };
+
+        let pipeline = IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![func],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: vec![enum_layout],
+        };
+
+        let ctx = Context::create();
+        let m = build_module(&ctx, &pipeline, "generic_enum_mangle_test")
+            .expect("Option<i64> local must resolve via mangled key; bare-name lookup is wrong");
+        assert!(
+            m.verify().is_ok(),
+            "emitted module must pass LLVM verify:\n{}",
+            m.print_to_string().to_string()
+        );
     }
 }

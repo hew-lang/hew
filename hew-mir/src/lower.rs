@@ -304,27 +304,42 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 // generic records); their per-instantiation layouts come
                 // from `module.record_layouts` under mangled names.
                 //
-                // Generic enums (`enum Maybe<T> { Just(T); Nothing }`) need a
-                // monomorphisation-keyed registry that the next-stage
-                // `EnumLayoutRegistry` lane will land. Fail-closed for now
-                // with a typed diagnostic — strictly narrower than the
-                // previous "mixed-enum" surface this lane removed.
+                // Generic enums (`enum Maybe<T> { Just(T); Nothing }`) are
+                // handled via the HIR EnumLayoutRegistry: `module.enum_layouts`
+                // carries one substituted entry per instantiation discovered
+                // during HIR mono-pass. Those entries are emitted into
+                // `enum_layouts` below the item loop (mirroring the
+                // `module.record_layouts` precedent for generic records).
+                // The bare-name generic decl itself emits no layout here.
+                //
+                // Defensive fail-closed: if a generic enum decl has variants
+                // but no registered instantiations in `module.enum_layouts`,
+                // emit `GenericEnumNotYetSupported`. This fires only for
+                // ill-typed programs or missing discovery — not for any
+                // well-typed program that reached MIR with `enum_layouts`
+                // populated by the HIR mono pass.
                 if !decl.type_params.is_empty() {
                     if !decl.variants.is_empty() {
-                        diagnostics.push(crate::model::MirDiagnostic {
-                            kind: crate::model::MirDiagnosticKind::GenericEnumNotYetSupported {
-                                enum_name: decl.name.clone(),
-                                type_param_count: decl.type_params.len(),
-                            },
-                            note: format!(
-                                "enum `{}` declares {} type parameter(s); generic enums \
-                                 require monomorphisation-keyed layouts (next-stage \
-                                 EnumLayoutRegistry substrate). Use a monomorphic enum \
-                                 declaration for now.",
-                                decl.name,
-                                decl.type_params.len()
-                            ),
-                        });
+                        let has_instantiation = module
+                            .enum_layouts
+                            .iter()
+                            .any(|el| el.key.origin == decl.id);
+                        if !has_instantiation {
+                            diagnostics.push(crate::model::MirDiagnostic {
+                                kind: crate::model::MirDiagnosticKind::GenericEnumNotYetSupported {
+                                    enum_name: decl.name.clone(),
+                                    type_param_count: decl.type_params.len(),
+                                },
+                                note: format!(
+                                    "enum `{}` declares {} type parameter(s) but no \
+                                     monomorphisation was discovered during HIR lowering. \
+                                     This indicates the enum is declared but never \
+                                     instantiated in this module.",
+                                    decl.name,
+                                    decl.type_params.len()
+                                ),
+                            });
+                        }
                     }
                     continue;
                 }
@@ -453,6 +468,34 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         });
         record_field_orders.insert(layout.mangled_name.clone(), fields);
     }
+    // Emit one MIR `EnumLayout` per HIR `enum_layouts` entry under the
+    // mangled symbol name. The HIR mono pass has already substituted
+    // type-parameter symbols with concrete `ResolvedTy`s in each variant's
+    // `field_tys`, so the MIR layer reads the variant list verbatim.
+    // Variant index ordering is HIR-ctor-pre-pass authoritative (declaration
+    // order, matching `machine_ctor_registry` assignments). Insertion order
+    // is preserved from the HIR registry for codegen determinism.
+    // LESSONS: `producer-bridge-before-codegen` (P1) — both layout
+    // emission (this loop) and value-class resolution (Slice 4) must land
+    // in the same cluster; the HIR registry is unconsumed scaffolding without
+    // this consumer.
+    for hir_layout in &module.enum_layouts {
+        let variant_count = u32::try_from(hir_layout.variants.len().max(1)).unwrap_or(u32::MAX);
+        let tag_width = u32::max(1, variant_count.next_power_of_two().trailing_zeros());
+        let variants: Vec<crate::model::MachineVariantLayout> = hir_layout
+            .variants
+            .iter()
+            .map(|v| crate::model::MachineVariantLayout {
+                name: v.name.clone(),
+                field_tys: v.field_tys.clone(),
+            })
+            .collect();
+        enum_layouts.push(crate::model::EnumLayout {
+            name: hir_layout.mangled_name.clone(),
+            tag_width,
+            variants,
+        });
+    }
     // Register the synthetic `__HewChildLookupResult` record layout used by the
     // `FieldAccess` supervisor intercept arm (S2). The runtime struct is:
     //   { u8 tag, u8 reason, [u8;6] _pad, *mut HewActor handle }  (16 bytes, C ABI)
@@ -548,6 +591,14 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     // type. Also includes user-defined enum type names so `push_unknown_type_diagnostics`
     // and `is_known_actor_runtime_ty` accept enum-typed sites. Threaded into
     // every Builder construction site. See `Builder::machine_layout_names` doc.
+    //
+    // Generic enum origin names are added from `module.enum_layouts` so that
+    // `is_known_actor_runtime_ty` classifies `Named { name: "Option", args: [I64] }`
+    // (and the bare-name `Named { name: "Option", args: [] }` at the decl site)
+    // as `BitCopy`, resolving `ValueClass::Unknown → Strategy::UnknownBlocked` for
+    // generic-enum-typed locals. LESSONS: `boundary-fail-closed` (P0) — post-mono,
+    // no `ResolvedTy::Named` referring to a registered generic enum may produce
+    // `ValueClass::Unknown` at the MIR decision boundary.
     let machine_layout_names: HashSet<String> = module
         .items
         .iter()
@@ -560,6 +611,15 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             }
             _ => vec![],
         })
+        .chain(
+            // Include the origin name of every generic enum instantiation so that
+            // Builder::is_known_actor_runtime_ty resolves `Named { name, args }` for
+            // generic enums to BitCopy regardless of the concrete type-arg list.
+            module
+                .enum_layouts
+                .iter()
+                .map(|el| el.key.origin_name.clone()),
+        )
         .collect();
 
     // Collect the names every user-defined function will use as its
@@ -4292,25 +4352,20 @@ impl Builder {
                 None
             }
             HirExprKind::MachineVariantCtor {
-                machine_name,
-                state_idx,
-                payload,
+                state_idx, payload, ..
             } => {
-                // Construct a machine value of `Ty::Named { machine_name }` at
-                // the given state variant. The dest local is allocated with
-                // the machine's nominal type; codegen sizes the tagged-union
-                // layout at LLVM time (Slice 5 wires the LLVM struct + GEP).
+                // Construct a machine value at the given state variant. The
+                // dest local is allocated from `expr.ty` so that generic type
+                // args (e.g. `Option<I64>`) are preserved all the way through
+                // MIR. Using `expr.ty` matches the RecordInit precedent and
+                // ensures codegen sees the fully-parameterised type name.
                 //
                 // Tag-dominance invariant (Place doc, `MachineVariant`): the
                 // `Place::MachineTag` store dominates every `Place::MachineVariant`
                 // field store because they are emitted in straight-line order
                 // within the same block, and Slice 4c (drop-elaborator) reads the
                 // tag store first when computing per-variant drop plans.
-                let dest_ty = ResolvedTy::Named {
-                    name: machine_name.clone(),
-                    args: Vec::new(),
-                };
-                let dest = self.alloc_local(dest_ty);
+                let dest = self.alloc_local(expr.ty.clone());
                 let Place::Local(dest_local) = dest else {
                     unreachable!("alloc_local returns Place::Local");
                 };
@@ -8144,6 +8199,14 @@ impl Builder {
                 self.actor_layouts.contains_key(name)
                     || self.machine_layout_names.contains(name)
             }
+            // Generic enum applications (`Named { name: "Option", args: [I64] }`):
+            // the origin name is in `machine_layout_names` if the HIR mono pass
+            // discovered at least one instantiation and registered it in
+            // `module.enum_layouts`. Actor layouts never have type args, so this
+            // arm is purely for generic enum types. Classifying as `BitCopy`
+            // matches the tagged-union substrate — enums are stack-allocated
+            // discriminated unions with no drop side-effect.
+            ResolvedTy::Named { name, .. } => self.machine_layout_names.contains(name),
             _ => actor_name_from_handle_ty(ty).is_some(),
         }
     }
@@ -11220,7 +11283,8 @@ mod enum_layout_tests {
     use super::lower_hir_module;
     use crate::model::MirDiagnosticKind;
     use hew_hir::{
-        HirItem, HirModule, HirNodeId, HirTypeDecl, HirVariant, HirVariantKind, ItemId, SiteId,
+        EnumLayout, EnumMonoKey, EnumVariantLayout, HirItem, HirModule, HirNodeId, HirTypeDecl,
+        HirVariant, HirVariantKind, ItemId, SiteId,
     };
     use hew_parser::ast::ResourceMarker;
     use hew_types::{ChildSlot, ResolvedTy};
@@ -11405,5 +11469,145 @@ mod enum_layout_tests {
         );
         assert_eq!(pipeline.enum_layouts[0].name, "Colour");
         assert_eq!(pipeline.enum_layouts[0].variants.len(), 3);
+    }
+
+    #[test]
+    fn generic_enum_with_registered_instantiation_emits_mir_layout_without_diagnostic() {
+        // Slice 3 invariant: when `module.enum_layouts` carries at least one
+        // entry for a generic enum decl's origin `ItemId`, the fail-closed
+        // `GenericEnumNotYetSupported` diagnostic is suppressed and the MIR
+        // pipeline emits the mangled layout instead.
+        //
+        // Fixture: `enum Option<T> { Some(T); None }` with one instantiation
+        // `Option<i64>` pre-registered by the HIR mono pass.
+        let option_item_id = ItemId(10);
+        let decl = HirTypeDecl {
+            id: option_item_id,
+            node: HirNodeId(10),
+            name: "Option".to_string(),
+            marker: ResourceMarker::None,
+            consuming_methods: vec![],
+            type_params: vec!["T".to_string()],
+            fields: vec![],
+            variants: vec![
+                tuple_variant(
+                    "Some",
+                    vec![ResolvedTy::Named {
+                        name: "T".to_string(),
+                        args: vec![],
+                    }],
+                ),
+                unit_variant("None"),
+            ],
+            span: 0..0,
+        };
+        // The HIR mono pass would have produced this entry:
+        let hir_layout = EnumLayout {
+            key: EnumMonoKey {
+                origin: option_item_id,
+                origin_name: "Option".to_string(),
+                type_args: vec![ResolvedTy::I64],
+            },
+            mangled_name: "Option$$i64".to_string(),
+            variants: vec![
+                EnumVariantLayout {
+                    name: "Some".to_string(),
+                    field_tys: vec![ResolvedTy::I64],
+                },
+                EnumVariantLayout {
+                    name: "None".to_string(),
+                    field_tys: vec![],
+                },
+            ],
+        };
+        let mut module = minimal_module(vec![HirItem::TypeDecl(decl)]);
+        module.enum_layouts = vec![hir_layout];
+
+        let pipeline = lower_hir_module(&module);
+
+        assert!(
+            pipeline.diagnostics.is_empty(),
+            "no diagnostic expected when instantiation is registered; got: {:?}",
+            pipeline.diagnostics
+        );
+        // The MIR pipeline emits the layout under the mangled name (not "Option").
+        // Codegen finds it via the mangled key in machine_layout_map.
+        assert_eq!(
+            pipeline.enum_layouts.len(),
+            1,
+            "expected one MIR EnumLayout for Option$$i64; got: {:?}",
+            pipeline.enum_layouts
+        );
+        let layout = &pipeline.enum_layouts[0];
+        assert_eq!(
+            layout.name, "Option$$i64",
+            "layout must be emitted under mangled name"
+        );
+        assert_eq!(layout.variants.len(), 2);
+        assert_eq!(layout.variants[0].name, "Some");
+        assert_eq!(layout.variants[0].field_tys, vec![ResolvedTy::I64]);
+        assert_eq!(layout.variants[1].name, "None");
+        assert!(layout.variants[1].field_tys.is_empty());
+    }
+
+    #[test]
+    fn generic_enum_without_instantiation_still_emits_diagnostic() {
+        // The Slice 3 fail-closed guard must still fire when the generic enum
+        // has variants but zero instantiations in `module.enum_layouts`.
+        // This is the same scenario as `generic_enum_emits_typed_diagnostic_and_skips_layout`
+        // but uses the post-Slice3 narrowed guard path explicitly — verifying the
+        // defensive path is not accidentally removed by the non-empty-instantiation branch.
+        let decl = HirTypeDecl {
+            id: ItemId(20),
+            node: HirNodeId(20),
+            name: "Result".to_string(),
+            marker: ResourceMarker::None,
+            consuming_methods: vec![],
+            type_params: vec!["T".to_string(), "E".to_string()],
+            fields: vec![],
+            variants: vec![
+                tuple_variant(
+                    "Ok",
+                    vec![ResolvedTy::Named {
+                        name: "T".to_string(),
+                        args: vec![],
+                    }],
+                ),
+                tuple_variant(
+                    "Err",
+                    vec![ResolvedTy::Named {
+                        name: "E".to_string(),
+                        args: vec![],
+                    }],
+                ),
+            ],
+            span: 0..0,
+        };
+        // No enum_layouts registered (module.enum_layouts is empty by default in minimal_module).
+        let module = minimal_module(vec![HirItem::TypeDecl(decl)]);
+        let pipeline = lower_hir_module(&module);
+
+        assert_eq!(
+            pipeline.diagnostics.len(),
+            1,
+            "expected GenericEnumNotYetSupported when no instantiation registered; got: {:?}",
+            pipeline.diagnostics
+        );
+        assert!(
+            matches!(
+                &pipeline.diagnostics[0].kind,
+                MirDiagnosticKind::GenericEnumNotYetSupported {
+                    enum_name,
+                    type_param_count: 2,
+                } if enum_name == "Result"
+            ),
+            "unexpected diagnostic: {:?}",
+            pipeline.diagnostics[0].kind
+        );
+        assert!(
+            pipeline.enum_layouts.is_empty(),
+            "no MIR EnumLayout for uninstantiated generic enum; got: {:?}",
+            pipeline.enum_layouts
+        );
     }
 }

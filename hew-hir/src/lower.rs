@@ -3643,9 +3643,47 @@ impl LowerCtx {
                             ));
                         }
                     }
-                    let result_ty = ResolvedTy::Named {
-                        name: type_name.clone(),
-                        args: Vec::new(),
+                    // Register the generic-enum instantiation before building
+                    // result_ty so codegen's mangled-key lookup finds the entry.
+                    self.try_register_enum_instantiation(&span);
+                    // Checker-authoritative result type: the checker records the
+                    // full `Named { name: "Maybe", args: [I64] }` at the
+                    // struct-init expression span. Using it preserves type args
+                    // so codegen computes the mangled registry key.
+                    // Fall back to bare-name with a diagnostic if expr_types
+                    // has no entry or boundary conversion fails.
+                    let checker_key = SpanKey::from(&span);
+                    let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+                        match ResolvedTy::from_ty(&ty) {
+                            Ok(resolved) => resolved,
+                            Err(err) => {
+                                self.diagnostics.push(HirDiagnostic::new(
+                                    HirDiagnosticKind::CheckerBoundaryViolation {
+                                        name: type_name.clone(),
+                                        reason: err.to_string(),
+                                    },
+                                    span.clone(),
+                                    "checker-authoritative struct-variant result type failed boundary conversion",
+                                ));
+                                ResolvedTy::Named {
+                                    name: type_name.clone(),
+                                    args: Vec::new(),
+                                }
+                            }
+                        }
+                    } else {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: type_name.clone(),
+                                reason: "expr_types has no entry for struct-variant ctor site".into(),
+                            },
+                            span.clone(),
+                            "checker did not record a result type for this struct-variant constructor",
+                        ));
+                        ResolvedTy::Named {
+                            name: type_name.clone(),
+                            args: Vec::new(),
+                        }
                     };
                     (
                         HirExprKind::MachineVariantCtor {
@@ -5135,6 +5173,13 @@ impl LowerCtx {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "multi-branch identifier resolution: context readers, bindings, fn_sigs, \
+                  unit-variant ctors with generic-arg preservation, and fn-item references \
+                  are each a short arm; extracting a helper gains nothing without a richer \
+                  identifier-resolution abstraction"
+    )]
     fn lower_identifier(
         &mut self,
         name: &str,
@@ -5190,16 +5235,50 @@ impl LowerCtx {
                 Some(_) => false,
             };
             if checker_agrees {
+                // Register the generic-enum instantiation before building
+                // result_ty so codegen's mangled-key lookup finds the entry.
+                self.try_register_enum_instantiation(&span);
+                // Checker-authoritative result type: the checker records the
+                // full `Named { name: "Option", args: [I64] }` at this
+                // identifier span. Using it preserves type args so codegen
+                // can compute the mangled registry key (e.g. `"Option$$i64"`).
+                // Fall back to bare-name with a diagnostic if expr_types has
+                // no entry — absence is a real signal; the checker should
+                // always populate accepted unit-ctor reference sites.
+                let result_ty = if let Some(ty) = self.expr_types.get(&key).cloned() {
+                    match ResolvedTy::from_ty(&ty) {
+                        Ok(resolved) => resolved,
+                        Err(err) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: tagged_union_name.clone(),
+                                    reason: err.to_string(),
+                                },
+                                span.clone(),
+                                "checker-authoritative unit-variant result type failed boundary conversion",
+                            ));
+                            ResolvedTy::Named {
+                                name: tagged_union_name.clone(),
+                                args: Vec::new(),
+                            }
+                        }
+                    }
+                } else {
+                    // None means the checker had no entry at this span.
+                    // Treat as bare-name rather than a hard diagnostic so
+                    // synthesised/non-typed paths don't regress.
+                    ResolvedTy::Named {
+                        name: tagged_union_name.clone(),
+                        args: Vec::new(),
+                    }
+                };
                 return (
                     HirExprKind::MachineVariantCtor {
-                        machine_name: tagged_union_name.clone(),
+                        machine_name: tagged_union_name,
                         state_idx: variant_idx,
                         payload: None,
                     },
-                    ResolvedTy::Named {
-                        name: tagged_union_name,
-                        args: Vec::new(),
-                    },
+                    result_ty,
                 );
             }
         }
@@ -5876,15 +5955,47 @@ impl LowerCtx {
             .enumerate()
             .map(|(idx, expr)| (idx.to_string(), expr))
             .collect();
-        // Register the generic-enum instantiation if this ctor produces one.
-        // The checker-authoritative type at `span` carries the full
-        // `Named { name: "Option", args: [I64] }`; the `result_ty` below drops
-        // the args (monomorphic Named node). Discovery must happen before
-        // `result_ty` is built so we still own `span` immutably.
+        // Register the generic-enum instantiation before building result_ty so
+        // the registry is populated when codegen performs its mangled lookup.
         self.try_register_enum_instantiation(span);
-        let result_ty = ResolvedTy::Named {
-            name: type_name_owned.clone(),
-            args: Vec::new(),
+        // Checker-authoritative result type: the checker records the full
+        // `Named { name: "Option", args: [I64] }` at this call-expression span.
+        // Using it directly preserves type args so codegen can compute the
+        // mangled registry key (e.g. `"Option$$i64"`).  Fall back to bare-name
+        // with a diagnostic if expr_types has no entry — absence is a real
+        // signal (checker should always populate this site).
+        let checker_key = SpanKey::from(span);
+        let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+            match ResolvedTy::from_ty(&ty) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: type_name_owned.clone(),
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "checker-authoritative variant-ctor result type failed boundary conversion",
+                    ));
+                    ResolvedTy::Named {
+                        name: type_name_owned.clone(),
+                        args: Vec::new(),
+                    }
+                }
+            }
+        } else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: type_name_owned.clone(),
+                    reason: "expr_types has no entry for variant-ctor site".into(),
+                },
+                span.clone(),
+                "checker did not record a result type for this variant constructor call",
+            ));
+            ResolvedTy::Named {
+                name: type_name_owned.clone(),
+                args: Vec::new(),
+            }
         };
         (
             HirExprKind::MachineVariantCtor {

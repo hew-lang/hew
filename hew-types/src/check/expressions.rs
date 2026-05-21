@@ -898,6 +898,10 @@ impl Checker {
     }
 
     /// Look up an identifier as a unit enum variant or qualified variant name.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "multi-branch variant resolution: unqualified, qualified-in-type_defs, and qualified-in-fn_sigs each need distinct handling"
+    )]
     pub(super) fn resolve_identifier_variant(&mut self, name: &str, span: &Span) -> Ty {
         let mut found = None;
         for (type_name, td) in &self.type_defs {
@@ -917,7 +921,36 @@ impl Checker {
                 if let Some(td) = self.type_defs.get(type_prefix) {
                     if let Some(variant) = td.variants.get(variant_name) {
                         if matches!(variant, VariantDef::Unit) {
-                            let ty = Ty::normalize_named(type_prefix.to_string(), vec![]);
+                            // Instantiate type params with fresh inference variables
+                            // so that `Option::None` in `let x: Option<i64> = Option::None`
+                            // unifies correctly with the annotation.  Bare `Named { "Option",
+                            // [] }` fails arity unification against `Named { "Option", [I64] }`.
+                            //
+                            // Guard: only use fn_sig when its return type names the same enum as
+                            // type_prefix.  Two enums sharing a bare variant name (e.g. both
+                            // declaring `None`) would collide in fn_sigs because the key is the
+                            // bare variant name; without the guard, `A::None` could return
+                            // `Named { B, [?] }`.
+                            let ty = if let Some(sig) = self.fn_sigs.get(variant_name).cloned() {
+                                let sig_names_correct_enum = sig
+                                    .return_type
+                                    .type_name()
+                                    .is_some_and(|n| n == type_prefix);
+                                if sig_names_correct_enum {
+                                    let mut ret = sig.return_type.clone();
+                                    for tp in &sig.type_params {
+                                        ret = ret
+                                            .substitute_named_param(tp, &Ty::Var(TypeVar::fresh()));
+                                    }
+                                    ret
+                                } else {
+                                    // fn_sig belongs to a different enum; bare name is correct.
+                                    Ty::normalize_named(type_prefix.to_string(), vec![])
+                                }
+                            } else {
+                                // No fn_sig (monomorphic or machine variant) — bare name is correct.
+                                Ty::normalize_named(type_prefix.to_string(), vec![])
+                            };
                             found = Some(ty);
                         }
                     }

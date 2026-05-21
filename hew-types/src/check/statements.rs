@@ -1043,6 +1043,7 @@ impl Checker {
         for arm in arms {
             self.env.push_scope();
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
+            self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
 
             if let Some((guard, gs)) = &arm.guard {
                 self.check_against(guard, gs, &Ty::Bool);

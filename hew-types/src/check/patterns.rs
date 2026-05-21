@@ -52,6 +52,35 @@ fn substitute_pattern_field_ty(raw_field_ty: &Ty, type_params: &[String], type_a
         })
 }
 
+/// Extract the single binding name introduced by a sub-pattern, if any.
+///
+/// Returns `Some(name)` only for plain lowercase `Identifier` bindings.
+/// Returns `None` for wildcards, literals, constructors, structs, tuples,
+/// and or-patterns — those either introduce no name, or introduce names
+/// that the caller handles recursively.
+///
+/// This is intentionally shallow (top-level only) so the caller decides
+/// whether to recurse into constructor payloads.
+fn binding_name_for_pattern(pattern: &Pattern) -> Option<String> {
+    match pattern {
+        Pattern::Identifier(name) => {
+            let is_constructor_like =
+                name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
+            if is_constructor_like {
+                None
+            } else {
+                Some(name.clone())
+            }
+        }
+        Pattern::Wildcard
+        | Pattern::Literal(_)
+        | Pattern::Constructor { .. }
+        | Pattern::Struct { .. }
+        | Pattern::Tuple(_)
+        | Pattern::Or(_, _) => None,
+    }
+}
+
 impl Checker {
     pub(super) fn or_pattern_bindings_match(
         &self,
@@ -403,6 +432,286 @@ impl Checker {
                 }
             }
         }
+    }
+
+    /// Classify an arm pattern into an [`ArmResolution`] and record it in
+    /// `pending_pattern_resolutions` keyed by the arm's pattern span.
+    ///
+    /// Called from both `check_match_stmt` and `check_match_expr` *after*
+    /// `bind_pattern` has already accepted the arm (so the scrutinee type is
+    /// known and the payload bindings are sound).
+    ///
+    /// `Pattern::Or` arms are intentionally skipped: or-pattern lowering is a
+    /// future lane.  A missing entry for an or-pattern arm must surface a typed
+    /// diagnostic downstream, not a silent fallthrough.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pattern classification requires one branch per AST variant; extraction would hide the shape"
+    )]
+    pub(super) fn record_arm_resolution(
+        &mut self,
+        pattern: &Pattern,
+        pattern_span: &Span,
+        scrutinee_ty: &Ty,
+    ) {
+        let key = super::types::SpanKey::from(pattern_span);
+
+        let resolution = match pattern {
+            Pattern::Wildcard => ArmResolution {
+                pattern_kind: PatternKind::Wildcard,
+                variant_match: None,
+                payload_bindings: vec![],
+            },
+            Pattern::Literal(_) => ArmResolution {
+                pattern_kind: PatternKind::Literal,
+                variant_match: None,
+                payload_bindings: vec![],
+            },
+            Pattern::Identifier(name) => {
+                // Use the same heuristic as `bind_pattern` to distinguish an
+                // uppercase/qualified constructor-as-unit-variant from a
+                // plain binding.
+                let is_constructor_like =
+                    name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
+                if is_constructor_like {
+                    // Unit variant written as an identifier (e.g. `None`).
+                    let short_name = name.rsplit("::").next().unwrap_or(name);
+                    let variant_match = self.resolve_variant_match(short_name, scrutinee_ty, name);
+                    ArmResolution {
+                        pattern_kind: PatternKind::VariantCtor,
+                        variant_match,
+                        payload_bindings: vec![],
+                    }
+                } else {
+                    ArmResolution {
+                        pattern_kind: PatternKind::Binding,
+                        variant_match: None,
+                        payload_bindings: vec![],
+                    }
+                }
+            }
+            Pattern::Constructor { name, patterns } => {
+                let short_name = name.rsplit("::").next().unwrap_or(name);
+                let variant_match = self.resolve_variant_match(short_name, scrutinee_ty, name);
+                let payload_tys = self
+                    .lookup_variant_types(name, scrutinee_ty, patterns.len())
+                    .unwrap_or_else(|| vec![Ty::Error; patterns.len()]);
+                let payload_bindings: Vec<PayloadBinding> = patterns
+                    .iter()
+                    .zip(payload_tys.iter())
+                    .enumerate()
+                    .filter_map(|(field_idx, ((sub_pat, _sub_span), ty))| {
+                        binding_name_for_pattern(sub_pat).map(|binding_name| PayloadBinding {
+                            field_idx,
+                            binding_name,
+                            ty: ty.clone(),
+                        })
+                    })
+                    .collect();
+                ArmResolution {
+                    pattern_kind: PatternKind::VariantCtor,
+                    variant_match,
+                    payload_bindings,
+                }
+            }
+            Pattern::Struct { name, fields } => {
+                // Determine whether this is an enum struct-variant or a plain
+                // struct/record pattern.
+                let short_name = name.rsplit("::").next().unwrap_or(name);
+                let type_name_opt = scrutinee_ty.type_name();
+                // variant_match: Some(..) for enum struct-variants, None for plain records.
+                // field_tys: name → resolved Ty.
+                // field_order: Some(Vec<name>) in source declaration order for enum
+                //   struct-variants (so field_idx reflects the Vec position, not
+                //   alphabetical sort).  None for plain records (td.fields is a HashMap
+                //   so declaration order is not preserved; alphabetical sort is used).
+                let (variant_match, field_tys, field_order) = if let Some(type_name) = type_name_opt
+                {
+                    if let Some(td) = self.lookup_type_def(type_name) {
+                        if td.variants.contains_key(short_name) {
+                            // Enum struct-variant
+                            let vm = VariantMatch {
+                                type_name: type_name.to_string(),
+                                variant_name: short_name.to_string(),
+                            };
+                            let (field_ty_map, order) =
+                                if let Some(VariantDef::Struct(vf)) = td.variants.get(short_name) {
+                                    let type_params = td.type_params.clone();
+                                    let type_args = if let Ty::Named { args, .. } = scrutinee_ty {
+                                        args.clone()
+                                    } else {
+                                        vec![]
+                                    };
+                                    let resolved: Vec<(String, Ty)> = vf
+                                        .iter()
+                                        .map(|(fname, fty)| {
+                                            (
+                                                fname.clone(),
+                                                substitute_pattern_field_ty(
+                                                    fty,
+                                                    &type_params,
+                                                    &type_args,
+                                                ),
+                                            )
+                                        })
+                                        .collect();
+                                    let order: Vec<String> =
+                                        resolved.iter().map(|(n, _)| n.clone()).collect();
+                                    let map: std::collections::HashMap<String, Ty> =
+                                        resolved.into_iter().collect();
+                                    (map, Some(order))
+                                } else {
+                                    (std::collections::HashMap::new(), None)
+                                };
+                            (Some(vm), field_ty_map, order)
+                        } else {
+                            // Plain record struct — td.fields is a HashMap so
+                            // declaration order is not preserved here; fall back
+                            // to alphabetical sort for field_idx.
+                            let type_params = td.type_params.clone();
+                            let type_args = if let Ty::Named { args, .. } = scrutinee_ty {
+                                args.clone()
+                            } else {
+                                vec![]
+                            };
+                            let ftm: std::collections::HashMap<String, Ty> = td
+                                .fields
+                                .iter()
+                                .map(|(fname, fty)| {
+                                    (
+                                        fname.clone(),
+                                        substitute_pattern_field_ty(fty, &type_params, &type_args),
+                                    )
+                                })
+                                .collect();
+                            (None, ftm, None)
+                        }
+                    } else {
+                        (None, std::collections::HashMap::new(), None)
+                    }
+                } else {
+                    (None, std::collections::HashMap::new(), None)
+                };
+
+                let is_enum_variant = variant_match.is_some();
+                // Compute field_idx using declaration order when available (enum
+                // struct-variants), otherwise fall back to alphabetical sort (plain
+                // records, where td.fields is a HashMap with no preserved order).
+                let ordered_field_names: Vec<String> = field_order.unwrap_or_else(|| {
+                    let mut names: Vec<String> = field_tys.keys().cloned().collect();
+                    names.sort();
+                    names
+                });
+                let payload_bindings: Vec<PayloadBinding> = fields
+                    .iter()
+                    .filter_map(|pf| {
+                        let field_idx = ordered_field_names
+                            .iter()
+                            .position(|n| n == &pf.name)
+                            .unwrap_or(0);
+                        let ty = field_tys.get(&pf.name).cloned().unwrap_or(Ty::Error);
+                        // Only emit a PayloadBinding for the concrete binding
+                        // name, not for sub-patterns (those are handled by
+                        // recursion in bind_pattern, not recorded here).
+                        let binding_name = if let Some((sub_pat, _)) = &pf.pattern {
+                            binding_name_for_pattern(sub_pat)
+                        } else {
+                            Some(pf.name.clone())
+                        };
+                        binding_name.map(|binding_name| PayloadBinding {
+                            field_idx,
+                            binding_name,
+                            ty,
+                        })
+                    })
+                    .collect();
+
+                ArmResolution {
+                    pattern_kind: if is_enum_variant {
+                        PatternKind::VariantCtor
+                    } else {
+                        PatternKind::StructPattern
+                    },
+                    variant_match,
+                    payload_bindings,
+                }
+            }
+            Pattern::Tuple(pats) => {
+                let elem_tys: Vec<Ty> = if let Ty::Tuple(tys) = scrutinee_ty {
+                    tys.clone()
+                } else {
+                    vec![Ty::Error; pats.len()]
+                };
+                let payload_bindings: Vec<PayloadBinding> = pats
+                    .iter()
+                    .zip(elem_tys.iter())
+                    .enumerate()
+                    .filter_map(|(field_idx, ((sub_pat, _sub_span), ty))| {
+                        binding_name_for_pattern(sub_pat).map(|binding_name| PayloadBinding {
+                            field_idx,
+                            binding_name,
+                            ty: ty.clone(),
+                        })
+                    })
+                    .collect();
+                ArmResolution {
+                    pattern_kind: PatternKind::TuplePattern,
+                    variant_match: None,
+                    payload_bindings,
+                }
+            }
+            // Or-patterns are intentionally skipped.  Or-pattern lowering is
+            // a future lane; a missing entry must surface a typed diagnostic
+            // downstream rather than a silent fallthrough.
+            Pattern::Or(_, _) => return,
+        };
+
+        self.pending_pattern_resolutions.insert(key, resolution);
+    }
+
+    /// Resolve the source variant-match descriptor for a constructor written at
+    /// `variant_surface_name` against `scrutinee_ty`.  Returns `None` only for
+    /// built-in types whose variant resolution failed (which also fails
+    /// `bind_pattern`), so callers can treat `None` as "checker already emitted
+    /// an error for this arm".
+    fn resolve_variant_match(
+        &self,
+        short_name: &str,
+        scrutinee_ty: &Ty,
+        _full_name: &str,
+    ) -> Option<VariantMatch> {
+        // Built-in Option<T>
+        if scrutinee_ty.as_option().is_some() {
+            return match short_name {
+                "Some" | "None" => Some(VariantMatch {
+                    type_name: "Option".to_string(),
+                    variant_name: short_name.to_string(),
+                }),
+                _ => None,
+            };
+        }
+        // Built-in Result<T, E>
+        if scrutinee_ty.as_result().is_some() {
+            return match short_name {
+                "Ok" | "Err" => Some(VariantMatch {
+                    type_name: "Result".to_string(),
+                    variant_name: short_name.to_string(),
+                }),
+                _ => None,
+            };
+        }
+        // User enum
+        if let Some(type_name) = scrutinee_ty.type_name() {
+            if let Some(td) = self.lookup_type_def(type_name) {
+                if td.variants.contains_key(short_name) {
+                    return Some(VariantMatch {
+                        type_name: type_name.to_string(),
+                        variant_name: short_name.to_string(),
+                    });
+                }
+            }
+        }
+        None
     }
 
     pub(super) fn lookup_variant_types(

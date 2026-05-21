@@ -2481,6 +2481,7 @@ mod tests {
             actor_protocol_descriptors: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
             machine_method_dispatch: std::collections::HashMap::new(),
+            pattern_resolutions: std::collections::HashMap::new(),
         };
 
         let err = enrich_program_ast(

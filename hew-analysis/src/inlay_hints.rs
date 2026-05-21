@@ -676,6 +676,7 @@ mod tests {
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
+            pattern_resolutions: HashMap::new(),
         }
     }
 

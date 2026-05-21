@@ -2218,6 +2218,7 @@ mod tests {
             actor_protocol_descriptors: std::collections::HashMap::new(),
             machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
+            pattern_resolutions: std::collections::HashMap::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);
@@ -2314,6 +2315,7 @@ mod tests {
             actor_protocol_descriptors: std::collections::HashMap::new(),
             machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
+            pattern_resolutions: std::collections::HashMap::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);
@@ -2534,6 +2536,7 @@ mod tests {
             actor_protocol_descriptors: std::collections::HashMap::new(),
             machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
+            pattern_resolutions: std::collections::HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -2631,6 +2634,7 @@ mod tests {
             actor_protocol_descriptors: std::collections::HashMap::new(),
             machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
+            pattern_resolutions: std::collections::HashMap::new(),
         };
 
         let entries = build_assign_target_kind_entries(&program, &tco);
@@ -2723,6 +2727,7 @@ mod tests {
             actor_protocol_descriptors: std::collections::HashMap::new(),
             machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
+            pattern_resolutions: std::collections::HashMap::new(),
         };
 
         let entries = build_lowering_fact_entries(&program, &tco);
@@ -2845,6 +2850,7 @@ mod tests {
             actor_protocol_descriptors: std::collections::HashMap::new(),
             machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
+            pattern_resolutions: std::collections::HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3190,6 +3196,7 @@ mod tests {
             actor_protocol_descriptors: std::collections::HashMap::new(),
             machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
+            pattern_resolutions: std::collections::HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3292,6 +3299,7 @@ mod tests {
             actor_protocol_descriptors: std::collections::HashMap::new(),
             machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
+            pattern_resolutions: std::collections::HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3387,6 +3395,7 @@ mod tests {
             actor_protocol_descriptors: std::collections::HashMap::new(),
             machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
+            pattern_resolutions: std::collections::HashMap::new(),
         };
 
         let entries = build_assign_target_shape_entries(&program, &tco);
@@ -3481,6 +3490,7 @@ mod tests {
             actor_protocol_descriptors: std::collections::HashMap::new(),
             machine_method_dispatch: std::collections::HashMap::new(),
             intrinsic_declarations: std::collections::HashMap::new(),
+            pattern_resolutions: std::collections::HashMap::new(),
         };
 
         let entries = build_assign_target_shape_entries(&program, &tco);

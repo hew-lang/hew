@@ -17978,3 +17978,380 @@ mod iflet_tail_stack_hint_coverage {
         );
     }
 }
+
+// ── pattern_resolution side-table tests ──────────────────────────────────────
+
+#[cfg(test)]
+mod pattern_resolution {
+    use super::*;
+
+    /// Helper: type-check `source` and return the `pattern_resolutions` map.
+    fn pattern_resolutions(source: &str) -> HashMap<SpanKey, ArmResolution> {
+        let output = check_source(source);
+        assert!(
+            output.errors.is_empty(),
+            "pattern_resolutions test must parse and check cleanly; errors: {:#?}",
+            output.errors
+        );
+        output.pattern_resolutions
+    }
+
+    // ── wildcard arm ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn wildcard_arm_records_wildcard_kind() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(x: i64) {
+    match x {
+        _ => {}
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 1, "expected one resolution");
+        let arm = resolutions.values().next().unwrap();
+        assert_eq!(arm.pattern_kind, PatternKind::Wildcard);
+        assert!(arm.variant_match.is_none());
+        assert!(arm.payload_bindings.is_empty());
+    }
+
+    // ── literal arm ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn literal_arm_records_literal_kind() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(x: i64) -> i64 {
+    match x {
+        1 => 10,
+        _ => 0,
+    }
+}",
+        );
+        // Two arms: literal + wildcard
+        assert_eq!(resolutions.len(), 2, "expected two resolutions");
+        let literal_arm = resolutions
+            .values()
+            .find(|r| r.pattern_kind == PatternKind::Literal)
+            .expect("expected a Literal arm");
+        assert!(literal_arm.variant_match.is_none());
+        assert!(literal_arm.payload_bindings.is_empty());
+    }
+
+    // ── plain binding arm ─────────────────────────────────────────────────────
+
+    #[test]
+    fn binding_arm_records_binding_kind_no_variant_match() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(x: i64) -> i64 {
+    match x {
+        n => n,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 1);
+        let arm = resolutions.values().next().unwrap();
+        assert_eq!(arm.pattern_kind, PatternKind::Binding);
+        assert!(arm.variant_match.is_none());
+        assert!(arm.payload_bindings.is_empty());
+    }
+
+    // ── Option<T> arms ───────────────────────────────────────────────────────
+
+    #[test]
+    fn option_some_arm_records_variant_ctor_and_payload() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(opt: Option<i64>) -> i64 {
+    match opt {
+        Some(v) => v,
+        None => 0,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 2, "expected two arms");
+
+        let some_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Some")
+            })
+            .expect("expected a Some arm");
+        assert_eq!(some_arm.pattern_kind, PatternKind::VariantCtor);
+        let vm = some_arm.variant_match.as_ref().unwrap();
+        assert_eq!(vm.type_name, "Option");
+        assert_eq!(vm.variant_name, "Some");
+        assert_eq!(some_arm.payload_bindings.len(), 1);
+        assert_eq!(some_arm.payload_bindings[0].binding_name, "v");
+        assert_eq!(some_arm.payload_bindings[0].field_idx, 0);
+        assert_eq!(some_arm.payload_bindings[0].ty, Ty::I64);
+
+        let none_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "None")
+            })
+            .expect("expected a None arm");
+        assert_eq!(none_arm.pattern_kind, PatternKind::VariantCtor);
+        assert!(none_arm.payload_bindings.is_empty());
+    }
+
+    #[test]
+    fn option_some_wildcard_payload_emits_no_binding() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(opt: Option<i64>) {
+    match opt {
+        Some(_) => {},
+        None => {},
+    }
+}",
+        );
+        let some_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Some")
+            })
+            .expect("expected a Some arm");
+        // Wildcard sub-pattern emits no PayloadBinding
+        assert!(
+            some_arm.payload_bindings.is_empty(),
+            "wildcard payload should not emit a PayloadBinding"
+        );
+    }
+
+    // ── Result<T, E> arms ────────────────────────────────────────────────────
+
+    #[test]
+    fn result_ok_err_arms_record_variant_match() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(r: Result<i64, string>) -> i64 {
+    match r {
+        Ok(v) => v,
+        Err(_) => -1,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 2);
+
+        let ok_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Ok")
+            })
+            .expect("expected an Ok arm");
+        let vm = ok_arm.variant_match.as_ref().unwrap();
+        assert_eq!(vm.type_name, "Result");
+        assert_eq!(vm.variant_name, "Ok");
+        assert_eq!(ok_arm.payload_bindings.len(), 1);
+        assert_eq!(ok_arm.payload_bindings[0].binding_name, "v");
+        assert_eq!(ok_arm.payload_bindings[0].ty, Ty::I64);
+
+        let err_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Err")
+            })
+            .expect("expected an Err arm");
+        // Wildcard payload — no binding recorded
+        assert!(err_arm.payload_bindings.is_empty());
+    }
+
+    // ── user enum arms ───────────────────────────────────────────────────────
+
+    #[test]
+    fn user_enum_unit_variant_records_variant_ctor_no_payload() {
+        let resolutions = pattern_resolutions(
+            r"
+enum Color { Red; Green; Blue }
+fn foo(c: Color) {
+    match c {
+        Red => {},
+        Green => {},
+        Blue => {},
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 3);
+        for arm in resolutions.values() {
+            assert_eq!(arm.pattern_kind, PatternKind::VariantCtor);
+            assert!(arm.variant_match.is_some());
+            assert_eq!(arm.variant_match.as_ref().unwrap().type_name, "Color");
+            assert!(arm.payload_bindings.is_empty());
+        }
+    }
+
+    #[test]
+    fn user_enum_tuple_variant_records_payload_bindings() {
+        let resolutions = pattern_resolutions(
+            r"
+enum Shape { Circle(i64); Square(i64) }
+fn foo(s: Shape) -> i64 {
+    match s {
+        Circle(r) => r,
+        Square(side) => side,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 2);
+
+        let circle_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Circle")
+            })
+            .expect("expected Circle arm");
+        assert_eq!(circle_arm.payload_bindings.len(), 1);
+        assert_eq!(circle_arm.payload_bindings[0].binding_name, "r");
+        assert_eq!(circle_arm.payload_bindings[0].field_idx, 0);
+        assert_eq!(circle_arm.payload_bindings[0].ty, Ty::I64);
+    }
+
+    // ── match expression (not statement) ────────────────────────────────────
+
+    #[test]
+    fn match_expression_arm_records_resolution() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(opt: Option<i64>) -> i64 {
+    let v = match opt {
+        Some(x) => x,
+        None => 0,
+    };
+    v
+}",
+        );
+        assert_eq!(resolutions.len(), 2);
+        let some_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Some")
+            })
+            .expect("match expression must also record Some arm");
+        assert_eq!(some_arm.payload_bindings.len(), 1);
+        assert_eq!(some_arm.payload_bindings[0].binding_name, "x");
+    }
+
+    // ── tuple pattern ────────────────────────────────────────────────────────
+
+    #[test]
+    fn tuple_pattern_records_tuple_kind_and_bindings() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(pair: (i64, i64)) -> i64 {
+    match pair {
+        (a, b) => a + b,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 1);
+        let arm = resolutions.values().next().unwrap();
+        assert_eq!(arm.pattern_kind, PatternKind::TuplePattern);
+        assert!(arm.variant_match.is_none());
+        assert_eq!(arm.payload_bindings.len(), 2);
+        assert_eq!(arm.payload_bindings[0].binding_name, "a");
+        assert_eq!(arm.payload_bindings[0].field_idx, 0);
+        assert_eq!(arm.payload_bindings[1].binding_name, "b");
+        assert_eq!(arm.payload_bindings[1].field_idx, 1);
+    }
+
+    // ── or-pattern is absent ─────────────────────────────────────────────────
+
+    #[test]
+    fn or_pattern_arm_absent_from_side_table() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(x: i64) {
+    match x {
+        1 | 2 => {},
+        _ => {},
+    }
+}",
+        );
+        // The or-pattern arm must be absent; only the wildcard arm is recorded.
+        assert_eq!(
+            resolutions.len(),
+            1,
+            "or-pattern arm must not appear in pattern_resolutions"
+        );
+        let arm = resolutions.values().next().unwrap();
+        assert_eq!(arm.pattern_kind, PatternKind::Wildcard);
+    }
+
+    // ── payload types resolved at output boundary ────────────────────────────
+
+    #[test]
+    fn payload_binding_type_is_concrete_not_inferred() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(opt: Option<i64>) -> i64 {
+    match opt {
+        Some(v) => v,
+        None => 0,
+    }
+}",
+        );
+        let some_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Some")
+            })
+            .unwrap();
+        // Ty::Var must not survive the output boundary
+        assert!(
+            !matches!(some_arm.payload_bindings[0].ty, Ty::Var(_)),
+            "payload binding type must be concrete, not Ty::Var"
+        );
+        assert_eq!(some_arm.payload_bindings[0].ty, Ty::I64);
+    }
+
+    #[test]
+    fn struct_variant_records_source_order_field_idx() {
+        // Variant declared with fields in order: c, a, b.
+        // A pattern matching only `a` must record field_idx == 1
+        // (the declaration position), not field_idx == 0 (alphabetical
+        // position of "a" among ["a","b","c"]).
+        let resolutions = pattern_resolutions(
+            r"
+enum Tri { Bar { c: i64; a: i64; b: i64 } }
+fn foo(t: Tri) -> i64 {
+    match t {
+        Tri::Bar { a } => a,
+    }
+}",
+        );
+        let bar_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Bar")
+            })
+            .expect("Bar arm must be recorded");
+        assert_eq!(bar_arm.payload_bindings.len(), 1);
+        assert_eq!(bar_arm.payload_bindings[0].binding_name, "a");
+        // Declaration order: c=0, a=1, b=2 — so field_idx for 'a' must be 1.
+        assert_eq!(
+            bar_arm.payload_bindings[0].field_idx, 1,
+            "field_idx must reflect declaration order, not alphabetical order"
+        );
+    }
+}

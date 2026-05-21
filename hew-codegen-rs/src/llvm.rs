@@ -4096,14 +4096,67 @@ fn lower_instruction(
                  before the TO-4 vtable-dispatch slice landed"
             )));
         }
-        Instr::MachineEmitPlaceholder { event_idx, .. } => {
-            // The emit-queue ABI is not yet wired. A placeholder reaching codegen
-            // is a compiler gap — fail closed rather than silently dropping the
-            // emit.
-            return Err(CodegenError::Llvm(format!(
-                "Instr::MachineEmitPlaceholder(event_idx={event_idx}) reached LLVM codegen; \
-                 the emit-queue ABI must be wired before codegen can lower this instruction"
-            )));
+        Instr::MachineEmitPlaceholder { event_idx, payload } => {
+            // Lower a machine emit expression to a call to `hew_machine_emit_push`.
+            //
+            // ABI: `hew_machine_emit_push(event_idx: u64, payload_ptr: *const u8,
+            //                             payload_len: u64) -> void`
+            //
+            // The per-thread emit queue (a `thread_local!` `EmitQueue` in
+            // `hew-runtime/src/machine_emit.rs`) receives the push. After the
+            // enclosing `step()` boundary the scheduler (or test harness) calls
+            // `thread_emit_drain` / `hew_machine_emit_drain` to process events.
+            //
+            // SHIM: only unit events (empty payload) are supported in this slice.
+            // Non-unit emits require a serialisation scheme (likely MessagePack)
+            // to encode `payload: Vec<Place>` into bytes. Until that lands,
+            // non-empty payloads fail closed with a clear diagnostic.
+            // WHY: the tcp_handshake.hew fixture only emits unit events
+            //      (`emit AckReceive {}`); deferring serialisation avoids
+            //      inventing an encoding before the ABI is ratified.
+            // WHEN-OBSOLETE: when the emit-payload serialisation slice lands and
+            //      defines how field values are packed into the payload buffer.
+            // WHAT: replace the null/0 args with a stack-allocated payload struct
+            //      encoded via the ratified scheme, and load the ptr/len from it.
+            if !payload.is_empty() {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::MachineEmitPlaceholder(event_idx={event_idx}): non-unit emit \
+                     (payload len={}) cannot be lowered until the emit-payload serialisation \
+                     slice lands; only unit events (no fields) are supported in this slice",
+                    payload.len()
+                )));
+            }
+            let i64_ty = fn_ctx.ctx.i64_type();
+            let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+            // Intern (or reuse) the extern declaration for `hew_machine_emit_push`.
+            // ABI: (u64, *const u8, u64) -> void
+            let emit_push_fn = match fn_ctx.llvm_mod.get_function("hew_machine_emit_push") {
+                Some(fv) => fv,
+                None => {
+                    let fn_ty = fn_ctx
+                        .ctx
+                        .void_type()
+                        .fn_type(&[i64_ty.into(), ptr_ty.into(), i64_ty.into()], false);
+                    fn_ctx.llvm_mod.add_function(
+                        "hew_machine_emit_push",
+                        fn_ty,
+                        Some(Linkage::External),
+                    )
+                }
+            };
+            // event_idx as u64 constant.
+            let idx_val = i64_ty.const_int(*event_idx as u64, false);
+            // null payload pointer and zero length for unit events.
+            let null_ptr = ptr_ty.const_null();
+            let zero_len = i64_ty.const_int(0, false);
+            fn_ctx
+                .builder
+                .build_call(
+                    emit_push_fn,
+                    &[idx_val.into(), null_ptr.into(), zero_len.into()],
+                    "machine_emit_push_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_machine_emit_push call: {e:?}")))?;
         }
         Instr::EnumTagLoad { src, dest } => {
             // The `src` local holds a tagged-union enum value (the machine

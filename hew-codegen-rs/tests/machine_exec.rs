@@ -379,3 +379,43 @@ fn run_counter_qualified_fixture_executes() {
     let stdout = String::from_utf8(output.stdout).expect("stdout utf-8");
     assert_eq!(stdout, expected, "run_counter_qualified stdout mismatch");
 }
+
+#[test]
+fn run_emit_signal_fixture_executes() {
+    // End-to-end signal for the MachineEmitPlaceholder → hew_machine_emit_push
+    // codegen path. The `run_emit_signal.hew` fixture drives a Signal machine
+    // that calls `emit Ready {}` on the `Start: Idle -> Active` transition.
+    // This exercises unit-payload emit lowering without the actor scheduler
+    // drain path (events accumulate in the thread-local EmitQueue and are
+    // not drained by the host; the test validates that execution completes
+    // normally and state transitions are correct).
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let hew_bin = std::path::PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .join("target")
+        .join("debug")
+        .join("hew");
+    let fixture = std::path::PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join("machine")
+        .join("run_emit_signal.hew");
+    let expected_path = fixture.with_extension("expected");
+    let expected = std::fs::read_to_string(&expected_path).expect("read .expected");
+
+    let output = std::process::Command::new(&hew_bin)
+        .arg("run")
+        .arg(&fixture)
+        .output()
+        .expect("spawn hew run");
+    assert!(
+        output.status.success(),
+        "hew run exited non-zero (status={:?}); stderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf-8");
+    assert_eq!(stdout, expected, "run_emit_signal stdout mismatch");
+}

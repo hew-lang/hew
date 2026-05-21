@@ -385,6 +385,138 @@ impl Drop for DepthGuard<'_> {
     }
 }
 
+// ── Thread-local emit queue and C-ABI push/drain surface ─────────────────────
+//
+// Codegen-wired transition bodies call `hew_machine_emit_push` to record unit
+// emit events from inside a `<Name>__step` call.  The caller — either the Hew
+// runtime scheduler or a JIT-exec test harness — calls `hew_machine_emit_drain`
+// to process accumulated events after each step boundary.
+//
+// WHY thread-local: `EmitQueue` is `!Send + !Sync` by design (one queue per
+// actor thread); a thread-local gives the generated C-ABI push function access
+// without requiring a pointer argument that the current codegen substrate cannot
+// supply (no per-instance machine ID at the `__step` call site in Slice 7).
+//
+// WHEN-OBSOLETE: when per-actor scheduler integration installs a per-actor
+// queue reference — likely by passing it as an explicit parameter through the
+// actor handler ABI — the thread-local can be replaced by a pointer derived
+// from the execution context.
+//
+// SHIM: payload bytes are not yet serialised.  `hew_machine_emit_push` accepts
+// `payload_ptr` and `payload_len` arguments for ABI stability but the caller
+// (codegen) always passes `null` + `0` for unit events.  Non-unit event
+// payloads require a serialisation scheme (likely MessagePack) to be defined
+// in a follow-on slice; until then the codegen arm for non-empty payloads
+// fails closed with a diagnostic.
+use std::cell::RefCell;
+
+thread_local! {
+    /// Per-thread emit queue.  All generated `hew_machine_emit_push` calls on
+    /// this thread append to this queue.  The queue is drained by the actor
+    /// scheduler (in production) or the test harness (in tests) by calling
+    /// `hew_machine_emit_drain`.
+    static THREAD_EMIT_QUEUE: RefCell<EmitQueue> = RefCell::new(EmitQueue::new());
+}
+
+/// Push one unit emit event onto the calling thread's emit queue.
+///
+/// # ABI
+///
+/// ```text
+/// hew_machine_emit_push(event_idx: u64, payload_ptr: *const u8, payload_len: u64) -> void
+/// ```
+///
+/// `event_idx` is the zero-based index into the emitting machine's event
+/// declaration list (matches `HirMachineDecl.events` order).
+///
+/// `payload_ptr` / `payload_len` are reserved for serialised event-field
+/// bytes.  The current codegen always passes `null` + `0` (unit events only;
+/// see SHIM above).
+///
+/// The machine identity (`MachineId`) is recorded as `0` — a sentinel that
+/// signals "no per-instance identity available at this call site".  A
+/// follow-on slice that carries the execution context through the `__step`
+/// ABI will replace this with a meaningful address-derived ID.
+///
+/// # Safety
+///
+/// `payload_ptr` must be valid for `payload_len` bytes if `payload_len > 0`.
+/// Passing a null pointer with `payload_len == 0` is safe and is the only
+/// shape currently emitted by codegen.
+#[no_mangle]
+pub unsafe extern "C" fn hew_machine_emit_push(
+    event_idx: u64,
+    payload_ptr: *const u8,
+    payload_len: u64,
+) {
+    let payload = if payload_len == 0 || payload_ptr.is_null() {
+        Vec::new()
+    } else {
+        // Convert u64 → usize safely: on 32-bit targets (wasm32) payload_len
+        // may exceed usize::MAX; clamp to zero so the push is a no-op rather
+        // than unsound. The codegen SHIM note above explains why this branch
+        // is currently unreachable (all emits are unit events).
+        let len = usize::try_from(payload_len).unwrap_or(0);
+        if len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: caller guarantees payload_ptr is valid for payload_len bytes;
+            // len <= payload_len so the slice is within bounds.
+            unsafe { std::slice::from_raw_parts(payload_ptr, len).to_vec() }
+        }
+    };
+    // Convert event_idx u64 → usize; clamp on overflow (32-bit targets).
+    let event_idx_usize = usize::try_from(event_idx).unwrap_or(usize::MAX);
+    THREAD_EMIT_QUEUE.with(|cell| {
+        // `try_borrow_mut` fails if a drain is already in progress on this
+        // thread.  Failing closed is correct: a push from inside a drain
+        // handler must go through the `EmitQueueAppend` argument supplied to
+        // the handler — it is a programming error if generated code reaches
+        // this path from inside a drain.
+        //
+        // WHY not panic: a double-borrow abort would be hard to diagnose;
+        // silently dropping the push is wrong (violates reliability tenet);
+        // eprintln is the right fail-closed signal for a runtime interior
+        // error that the user's program cannot catch.
+        match cell.try_borrow_mut() {
+            Ok(mut q) => q.push(MachineId(0), event_idx_usize, payload),
+            Err(_) => {
+                eprintln!(
+                    "hew_machine_emit_push: push while drain is active on this thread \
+                     (event_idx={event_idx}); event dropped — use EmitQueueAppend inside drain"
+                );
+            }
+        }
+    });
+}
+
+/// Drain all pending emits from the calling thread's emit queue, invoking
+/// `handler` for each event in FIFO order.
+///
+/// This is the Rust-callable drain companion to the C-ABI push surface.
+/// Test harnesses and scheduler integration call this after each step
+/// boundary to process accumulated emits.
+///
+/// # Errors
+///
+/// Returns `Err(DrainError::ReentrancyCapExceeded(_))` if the reentrancy
+/// depth limit is exceeded (recursive drain from inside a drain handler via
+/// a separate code path), or `Err(DrainError::Handler(e))` if the handler
+/// returns `Err(e)` for an event.
+pub fn thread_emit_drain<E>(
+    mut handler: impl FnMut(&EmitEvent, &mut EmitQueueAppend<'_>) -> Result<(), E>,
+) -> Result<(), DrainError<E>> {
+    THREAD_EMIT_QUEUE.with(|cell| cell.borrow_mut().drain(&mut handler))
+}
+
+/// Return the number of pending events in the calling thread's emit queue.
+///
+/// Intended for test assertions; not part of the stable C ABI.
+#[must_use]
+pub fn thread_emit_pending() -> usize {
+    THREAD_EMIT_QUEUE.with(|cell| cell.borrow().pending())
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

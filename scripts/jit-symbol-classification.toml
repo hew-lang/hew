@@ -758,6 +758,7 @@ codegen-stable = [
   "hew_actor_state_lock_acquire",
   "hew_actor_state_lock_release",
   "hew_get_reply_channel",
+  "hew_machine_emit_push",
   "hew_require_execution_context",
   "hew_sched_init",
   "hew_task_scope_set_current",

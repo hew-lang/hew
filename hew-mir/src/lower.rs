@@ -1665,6 +1665,25 @@ fn synthesize_machine_step_fn(
                 lower_machine_hook_block(&mut builder, state, /*is_exit=*/ true);
             }
 
+            // Drop @resource payload fields of the source state before the
+            // transition body writes the new-state value. This is the
+            // exit→drop→entry ordering: exit hook fires first (above), then
+            // field drops, then the body (which constructs the next-state
+            // value), then the entry hook (below).
+            //
+            // Only fires on true transitions and @reenter self-transitions —
+            // the same predicate that guards entry/exit hooks. Plain self-
+            // transitions (`fires_exit == false`) leave the source state
+            // intact; its @resource fields are not dropped.
+            //
+            // For wildcard arms (`source_state == "_"`) `state` is the
+            // dispatching outer state, which is correct: the variant live
+            // under the tag at runtime IS `state_idx`, regardless of whether
+            // the transition was declared as a concrete or wildcard arm.
+            if fires_exit {
+                emit_machine_resource_field_drops(&mut builder, state, state_idx, self_binding);
+            }
+
             // Lower the transition body. For wildcard arms the HIR-side
             // source-state context was None when lowering the body — so the
             // body cannot reference self.field. The MIR-side
@@ -1808,6 +1827,112 @@ fn lower_machine_hook_block(
     }
     if let Some(tail) = &block.tail {
         let _ = builder.lower_value(tail);
+    }
+}
+
+/// Emit `Instr::Drop` for every `@resource`-bearing payload field of
+/// `state` before the transition body overwrites the machine value.
+///
+/// Called from `synthesize_machine_step_fn` in the exit→drop→entry
+/// sequence: after the source state's exit hook fires and before
+/// `builder.lower_value(&transition.body)` constructs the next-state
+/// value. This ensures each `@resource` field is released exactly once —
+/// the old payload is gone before the new variant's fields are written.
+///
+/// `state_idx` is the zero-based index of `state` in
+/// `HirMachineDecl.states` (declaration order). `self_binding` is the
+/// synthetic `BindingId` allocated by `synthesize_machine_step_fn` for
+/// the `self` parameter — it matches the `BindingId` used in
+/// `Place::MachineTag(self_binding)` and `Place::MachineVariant { binding:
+/// self_binding, .. }` throughout the synthesised step function.
+///
+/// **Fail-closed**: if a field's type is `ResolvedTy::Named` and the name
+/// is absent from `builder.type_classes`, a `MirDiagnostic` is recorded
+/// and the field is skipped rather than silently no-op'd. This surface
+/// should be unreachable for well-typed programs (the HIR checker rejects
+/// unknown named types before MIR lowering), but defence-in-depth requires
+/// the diagnostic path over a silent omission.
+///
+/// **Drop ordering**: fields are dropped in declaration order (field 0
+/// first). Reverse-declaration (LIFO) would also be correct for
+/// independent fields, but declaration order is more predictable for
+/// snapshot tests and aligns with how the codegen will lay out the struct.
+/// If inter-field dependencies exist (e.g. a `SendHalf` field and the
+/// `Duplex` it was split from), HIR's ownership checking has already
+/// rejected the program; MIR sees only independent resource fields.
+fn emit_machine_resource_field_drops(
+    builder: &mut Builder,
+    state: &hew_hir::HirMachineState,
+    state_idx: usize,
+    self_binding: hew_hir::BindingId,
+) {
+    for (field_idx, field) in state.fields.iter().enumerate() {
+        match ValueClass::of_ty(&field.ty, &builder.type_classes) {
+            ValueClass::AffineResource => {
+                // Derive the close method name from the type_classes table.
+                // For `ResolvedTy::Named { name, .. }`, the table entry is
+                // `(ResourceMarker::Resource, Some(close_method_name))`.
+                // The HIR checker guarantees a close method is present for
+                // every `@resource` type (`E_RESOURCE_MISSING_CLOSE`), so
+                // `close.as_ref()` is structurally `Some(_)` here. We
+                // preserve the fail-soft `None` path to produce a named
+                // diagnostic rather than a panic if a future surface
+                // somehow bypasses the checker.
+                let drop_fn = match &field.ty {
+                    ResolvedTy::Named { name, .. } => builder
+                        .type_classes
+                        .get(name)
+                        .and_then(|(_, close)| close.as_ref())
+                        .map(|method| format!("{name}::{method}")),
+                    _ => None,
+                };
+                builder.instructions.push(Instr::Drop {
+                    place: Place::MachineVariant {
+                        binding: self_binding,
+                        variant_idx: u32::try_from(state_idx).unwrap_or(u32::MAX),
+                        field_idx: u32::try_from(field_idx).unwrap_or(u32::MAX),
+                    },
+                    ty: field.ty.clone(),
+                    drop_fn,
+                });
+            }
+            // @linear fields in a machine state are move-checker territory —
+            // they must be consumed by the transition body before the machine
+            // value is reassigned. No implicit drop; the move-checker upstream
+            // has already verified consumption or rejected the program with
+            // MirCheck::MustConsume.
+            // BitCopy, CowValue, PersistentShare, View have no implicit drop.
+            ValueClass::Linear
+            | ValueClass::BitCopy
+            | ValueClass::CowValue
+            | ValueClass::PersistentShare
+            | ValueClass::View => {}
+            ValueClass::Unknown => {
+                // A named type whose resource/linear marker is not in the
+                // type_classes table. This is structurally unreachable for
+                // well-typed programs (the HIR checker rejects unknown
+                // named types), but fail closed so a bypassed or buggy
+                // checker does not produce a silent resource leak.
+                builder.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UnsupportedNode {
+                        reason: format!(
+                            "machine state `{}` field `{}` has unknown value class for type \
+                             `{:?}`; drop-elaboration requires the type to be in the \
+                             type_classes table (ResourceMarker::Resource or None). \
+                             This indicates a checker/HIR invariant violation.",
+                            state.name, field.name, field.ty
+                        ),
+                    },
+                    note: format!(
+                        "field `{}` in state `{}` could not be classified; \
+                         drop omitted to prevent a double-drop, but this may \
+                         leak the resource. Fix: ensure the type's @resource \
+                         marker reaches the type_classes table before MIR lowering.",
+                        field.name, state.name
+                    ),
+                });
+            }
+        }
     }
 }
 
@@ -8369,13 +8494,21 @@ fn drop_kind_for(place: Place, ty: &ResolvedTy) -> DropKind {
         }
         // Machine tag and variant fields are sub-structure of a machine value,
         // not independent resources. Machine values are `BitCopy` by value
-        // class; the entry/exit hooks at transition sites are emitted by the
-        // drop-elaborator (Slice 4c) using tag-dominance, not here. Reaching
-        // this arm with a `MachineTag` or `MachineVariant` place is a
-        // builder-invariant violation — the drop-elaborator must never
-        // directly drop a sub-place; it drops the whole machine binding via
-        // its `Place::Local` slot. Fail-closed as `DropKind::Resource` so
-        // codegen surfaces a diagnostic rather than silently no-op'ing.
+        // class overall. `@resource` payload fields ARE dropped, but that is
+        // done inline at the transition site by
+        // `emit_machine_resource_field_drops` — which emits `Instr::Drop` with
+        // `Place::MachineVariant` directly, before the transition body runs.
+        // That path bypasses `drop_kind_for` entirely.
+        //
+        // THIS function is only called from the **end-of-function LIFO
+        // elaboration path** (`build_lifo_drops`), which operates on
+        // `owned_locals` at binding granularity. A machine binding in
+        // `owned_locals` should never be found here: machine `self` is a
+        // synthetic parameter, not a user-declared `let` binding, and is
+        // therefore never inserted into `owned_locals`. Reaching this arm
+        // means a future surface has incorrectly added a machine sub-place to
+        // `owned_locals`. Fail-closed as `DropKind::Resource` so codegen
+        // surfaces a diagnostic rather than silently no-op'ing.
         // WHY not `unreachable!`: a diagnostic is more actionable than a panic
         // at MIR-dump time; codegen's fail-closed arm on `DropKind::Resource`
         // for unrecognised locals is the backstop.

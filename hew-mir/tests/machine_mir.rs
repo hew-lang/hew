@@ -15,7 +15,8 @@ use hew_hir::{
     HirExpr, HirExprKind, HirField, HirItem, HirLiteral, HirMachineDecl, HirMachineEvent,
     HirMachineState, HirMachineTransition, HirModule, IntentKind, ValueClass,
 };
-use hew_mir::{lower_hir_module, FunctionCallConv, Terminator, TrapKind};
+use hew_mir::{lower_hir_module, FunctionCallConv, Instr, Place, Terminator, TrapKind};
+use hew_parser::ast::ResourceMarker;
 use hew_types::ResolvedTy;
 use std::collections::HashMap;
 
@@ -403,5 +404,267 @@ fn step_shell_signature_and_switch_shape() {
     assert!(
         layout.variants[1].field_tys.is_empty(),
         "Slice 4a: field_tys empty; Slice 5 populates from HirMachineState.fields"
+    );
+}
+
+/// Slice 4c: verifies that `@resource`-bearing machine state payload fields
+/// receive an `Instr::Drop` targeting `Place::MachineVariant` when a true
+/// cross-state transition leaves the state. The drop must appear in the arm
+/// body block BEFORE the transition body's value instructions.
+///
+/// Fixture machine `Conn`:
+///   - State `Open { handle: ConnHandle }` where `ConnHandle` is `@resource`.
+///   - State `Closed` (zero-field state; no drops expected).
+///   - Event `Close` with transition `Open → Closed` (true transition; drop fires).
+///   - Event `Ping` with self-transition `Open → Open`, no `@reenter`
+///     (no-op self-transition; drop must NOT fire).
+///
+/// `type_classes` seeds `"ConnHandle" → (Resource, Some("close"))` so
+/// `ValueClass::of_ty` returns `AffineResource` for `ConnHandle` fields.
+///
+/// Assert invariants:
+/// 1. The `Close` arm emits exactly one `Instr::Drop` with
+///    `Place::MachineVariant { variant_idx: 0, field_idx: 0, .. }` (Open is
+///    state 0, `handle` is field 0).
+/// 2. The drop appears BEFORE the body result instruction in the same block.
+/// 3. The `Ping` arm (self-transition, no `@reenter`) emits NO
+///    `Instr::Drop` targeting the Open variant's field.
+/// 4. No diagnostics on the well-formed module.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "test function with multiple fixture builders and assertion groups"
+)]
+fn resource_field_transition_out_drops() {
+    // Build a `ConnHandle` type reference.
+    let conn_handle_ty = ResolvedTy::Named {
+        name: "ConnHandle".to_string(),
+        args: vec![],
+    };
+
+    // State 0: Open { handle: ConnHandle } — one @resource field.
+    let open_state = HirMachineState {
+        name: "Open".to_string(),
+        fields: vec![HirField {
+            name: "handle".to_string(),
+            ty: conn_handle_ty.clone(),
+            span: 0..0,
+        }],
+        has_entry: false,
+        has_exit: false,
+        entry_writes: vec![],
+        exit_writes: vec![],
+        entry: None,
+        exit: None,
+        span: 0..0,
+    };
+
+    // State 1: Closed — zero fields; no drops should ever emit for this state.
+    let closed_state = HirMachineState {
+        name: "Closed".to_string(),
+        fields: vec![],
+        has_entry: false,
+        has_exit: false,
+        entry_writes: vec![],
+        exit_writes: vec![],
+        entry: None,
+        exit: None,
+        span: 0..0,
+    };
+
+    // Unit-typed body for both transitions (no self-field writes needed).
+    let unit_body = HirExpr {
+        node: hew_hir::HirNodeId(0),
+        site: hew_hir::SiteId(0),
+        ty: ResolvedTy::Unit,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::Literal(HirLiteral::Unit),
+        span: 0..0,
+    };
+
+    // `Close`: true cross-state transition Open → Closed. Drop fires.
+    let close_transition = HirMachineTransition {
+        event_name: "Close".to_string(),
+        source_state: "Open".to_string(),
+        target_state: "Closed".to_string(),
+        has_guard: false,
+        is_self_transition: false,
+        reenter: false,
+        body_writes: vec![],
+        body_emits: vec![],
+        body: unit_body.clone(),
+        span: 0..0,
+    };
+
+    // `Ping`: self-transition Open → Open, no @reenter. Drop must NOT fire.
+    let ping_transition = HirMachineTransition {
+        event_name: "Ping".to_string(),
+        source_state: "Open".to_string(),
+        target_state: "Open".to_string(),
+        has_guard: false,
+        is_self_transition: true,
+        reenter: false,
+        body_writes: vec![],
+        body_emits: vec![],
+        body: unit_body.clone(),
+        span: 0..0,
+    };
+
+    let machine = HirMachineDecl {
+        id: hew_hir::ItemId(0),
+        node: hew_hir::HirNodeId(0),
+        name: "Conn".to_string(),
+        type_params: vec![],
+        states: vec![open_state, closed_state],
+        events: vec![
+            HirMachineEvent {
+                name: "Close".to_string(),
+                fields: vec![],
+                span: 0..0,
+            },
+            HirMachineEvent {
+                name: "Ping".to_string(),
+                fields: vec![],
+                span: 0..0,
+            },
+        ],
+        transitions: vec![close_transition, ping_transition],
+        has_default: false,
+        span: 0..0,
+    };
+
+    // Seed the type_classes table: `ConnHandle` is @resource with close method
+    // `"close"`. The drop_fn will be formatted as `"ConnHandle::close"`.
+    let mut type_classes = HashMap::new();
+    type_classes.insert(
+        "ConnHandle".to_string(),
+        (ResourceMarker::Resource, Some("close".to_string())),
+    );
+
+    let module = HirModule {
+        items: vec![HirItem::Machine(machine)],
+        type_classes,
+        monomorphisations: vec![],
+        call_site_type_args: HashMap::default(),
+        record_layouts: vec![],
+        supervisor_child_slots: HashMap::default(),
+    };
+
+    let pipeline = lower_hir_module(&module);
+
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "well-formed @resource machine must produce no diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+
+    let step_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "Conn__step")
+        .expect("Conn__step synthesised");
+
+    // Collect all Drop instructions across all blocks, recording (block_id,
+    // instr_position, place).
+    let all_drops: Vec<(u32, usize, &Place)> = step_fn
+        .blocks
+        .iter()
+        .flat_map(|b| {
+            b.instructions
+                .iter()
+                .enumerate()
+                .filter_map(move |(pos, instr)| {
+                    if let Instr::Drop { place, .. } = instr {
+                        Some((b.id, pos, place))
+                    } else {
+                        None
+                    }
+                })
+        })
+        .collect();
+
+    // Assert 1: exactly one Drop targets the Open variant (variant_idx=0,
+    // field_idx=0). This comes from the `Close` arm.
+    let open_field_drops: Vec<_> = all_drops
+        .iter()
+        .filter(|(_, _, place)| {
+            matches!(
+                place,
+                Place::MachineVariant {
+                    variant_idx: 0,
+                    field_idx: 0,
+                    ..
+                }
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        open_field_drops.len(),
+        1,
+        "exactly one Drop for Open.handle (variant_idx=0, field_idx=0); \
+         found {}: {:#?}",
+        open_field_drops.len(),
+        all_drops
+    );
+
+    // Assert 2: the Drop appears before the body result Move in the same block.
+    // The transition body for a unit literal emits a ConstI64(0) (unit
+    // representation). The Drop must precede any ConstI64 in the arm block.
+    let (drop_block_id, drop_pos, _) = open_field_drops[0];
+    let drop_block = step_fn
+        .blocks
+        .iter()
+        .find(|b| b.id == *drop_block_id)
+        .expect("drop block present");
+
+    // Find the first instruction that is NOT a tag/eq comparison setup
+    // (ConstI64 for state/event tag comparisons happen in check blocks, not
+    // arm body blocks). Any ConstI64 in the arm body block is the unit-literal
+    // body value. The drop must appear before it.
+    let first_body_instr_pos = drop_block
+        .instructions
+        .iter()
+        .enumerate()
+        .position(|(_, i)| matches!(i, Instr::ConstI64 { .. }));
+
+    if let Some(body_pos) = first_body_instr_pos {
+        assert!(
+            *drop_pos < body_pos,
+            "Drop (pos {drop_pos}) must precede body ConstI64 (pos {body_pos}) \
+             in the same arm block — exit→drop→body ordering violated"
+        );
+    }
+
+    // Assert 3: no Drop targets the Closed variant (variant_idx=1). It has no
+    // fields, so no drops should ever appear for it.
+    let closed_variant_drops: Vec<_> = all_drops
+        .iter()
+        .filter(|(_, _, place)| matches!(place, Place::MachineVariant { variant_idx: 1, .. }))
+        .collect();
+
+    assert!(
+        closed_variant_drops.is_empty(),
+        "Closed state has no @resource fields; no drops expected for variant_idx=1: \
+         {closed_variant_drops:#?}"
+    );
+
+    // Assert 4: the `Ping` arm (self-transition, no @reenter) emits no Drop.
+    // Since the Ping and Close arms are in the same state body (Open, state_idx=0),
+    // and we've already verified only one Drop for Open.handle exists total,
+    // the single Drop must be from Close and not from Ping.
+    // Additionally verify the drop_fn is correctly derived.
+    let (_, confirmed_drop_pos, _) = open_field_drops[0];
+    let drop_instr = &drop_block.instructions[*confirmed_drop_pos];
+    assert!(
+        matches!(
+            drop_instr,
+            Instr::Drop {
+                drop_fn: Some(name),
+                ..
+            } if name == "ConnHandle::close"
+        ),
+        "Drop must carry drop_fn = Some(\"ConnHandle::close\"); got: {drop_instr:?}"
     );
 }

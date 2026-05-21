@@ -16,17 +16,17 @@
   crate have been deleted from the workspace. `hew-codegen-rs` (LLVM via
   inkwell) is now the sole compiler backend and is linked into the `hew`
   binary as a normal Cargo dependency; the old CMake/Ninja/build-script path
-  and C++ codegen sanitizer lane are gone.
+  and C++ codegen sanitizer path are gone.
 
 ### Notice
 
 - **v0.5 compiler-foundation cutover in progress:** The workspace version has
-  advanced to `0.5.0-pre`. The new typed HIR/MIR/value-model foundation is
+  advanced to `0.5.0-pre`. The new typed HIR/MIR/value semantics foundation is
   under active development. Retired C++ backend internals are historical
   only; new compiler work lands in the Rust HIR/MIR/codegen-rs ladder. See
   `BREAKING.md` for freeze rules and bridge-fix admission criteria.
 
-### Failure model
+### Failure semantics
 
 - **Hew is designed for failure.** Actors are isolated fault domains: a
   panic inside an actor does not propagate to its siblings or supervisor —
@@ -36,6 +36,10 @@
 
 ### Added
 
+- **Generator blocks — `gen { ... }`:** `gen` blocks now type-check as
+  `Generator<Yield, Return>` from their yielded values and final expression.
+  Empty generator blocks fail with `E_EMPTY_GENERATOR`, and `yield` remains
+  valid only inside a `gen` block.
 - **Unified concurrency substrate — `Duplex<S,R>`, `Sink<T>`, `Stream<T>`:**
   Three typed channel primitives replace the legacy send-operator surface.
   `Duplex<S,R>` is a full-duplex channel (send `S`, receive `R`); `Sink<T>`
@@ -44,15 +48,15 @@
   (non-blocking), `.close()`, `.send_half()`, `.recv_half()` (split into
   directional handles). Constructor builtins: `duplex_pair<S,R>()` (creates a
   matched pair), `channel<T>()` (creates a `(Sink<T>, Stream<T>)` pair).
-  In v0.5 the type surface and constructors are checker-verified; an end-to-end
-  compile+run fixture remains a follow-up.
+  In v0.5 the type surface and constructors are checker-verified; end-to-end
+  compile+run fixtures are not yet included.
 - **Lambda-actor form — `actor |params| { body }`:** A lambda-actor literal
   evaluates to a `Duplex<Msg, Reply>` handle. The actor body runs in a
   supervised child context; the caller holds both send and receive directions
   of the channel. Lambda-actor handles accept both bare-call syntax
   `handle(msg)` and `.send(msg)` — both are equivalent. Replaces the removed
   `spawn |...|` form. The form is type-checkable in v0.5; compile-to-binary
-  coverage remains a follow-up.
+  coverage is not yet included.
 - **Structured concurrency — `scope` block + `fork` verb:** `scope { ... }`
   is the lexical lifetime bracket for child tasks. Inside a scope block,
   `fork name = call(...)` starts a named child; the scope block does not
@@ -86,11 +90,11 @@
   instead of treating all actor identities as one unqualified handle shape.
   The split makes remote dispatch, serialization, and same-node fast paths
   explicit in the type surface.
-- **Associated types slice 1:** Edition 2026 now admits the bounded associated
-  type surface: one associated type per trait, `type Item;` declarations in
-  traits, concrete `type Item = ...;` definitions in impls, and `Self::Item`
-  references in type position. Associated-type bounds and multi-type trait
-  families remain deferred to `HEW-FUTURE.md` §2.2.
+- **Associated types, initial surface:** Edition 2026 now admits the bounded
+  associated type surface: one associated type per trait, `type Item;`
+  declarations in traits, concrete `type Item = ...;` definitions in impls, and
+  `Self::Item` references in type position. Associated-type bounds and
+  multi-type trait families remain deferred to `HEW-FUTURE.md` §2.2.
 
 ### Known WASM behavioral gaps
 
@@ -103,6 +107,10 @@
 
 ### Changed
 
+- **Machine transition resource lifetimes:** Machine state changes now release
+  `@resource`-typed payload fields when leaving a state or taking an `@reenter`
+  transition. Plain self-transitions without `@reenter` keep their payloads
+  live.
 - **`fork { ... }` block form removed (BREAKING):** The `fork { ... }`
   syntax, which treated the fork block as a scope, no longer parses. The
   parser emits a diagnostic with a migration note. Use `scope { ... }` for

@@ -1420,10 +1420,14 @@ fn removed_alias_int_capital_is_hard_error_with_i64_suggestion() {
         "expected UndefinedType error for removed alias `Int`; got errors: {:?}",
         output.errors
     );
-    // No warnings should be emitted — this is a hard error, not a deprecation.
+    // No warning about Int should be emitted — this is a hard error, not a
+    // deprecation.  Other warnings (e.g. UnusedVariable for `x`) are fine.
     assert!(
-        output.warnings.is_empty(),
-        "expected no warnings for `Int`; got: {:?}",
+        output
+            .warnings
+            .iter()
+            .all(|w| !w.message.contains("Int") && !w.message.contains("deprecated")),
+        "unexpected Int-related warning; got: {:?}",
         output.warnings
     );
     // The error message should suggest i64.

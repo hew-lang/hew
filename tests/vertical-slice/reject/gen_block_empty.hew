@@ -1,0 +1,6 @@
+// Reject fixture: E_EMPTY_GENERATOR
+// A gen { } block with no yield expressions cannot have its yield type inferred.
+// Expected: type error containing "E_EMPTY_GENERATOR" / EmptyGenerator kind.
+fn main() {
+    let _g = gen { };
+}

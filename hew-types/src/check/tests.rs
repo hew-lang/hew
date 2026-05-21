@@ -15602,24 +15602,22 @@ mod for_loop_iterable_fail_closed {
 
     #[test]
     fn generator_blocks_are_deferred_to_generator_surface_slice() {
-        // `gen { ... }` expression-position blocks now parse. HIR/MIR lowering is not yet
-        // wired, so the type checker must produce errors rather than
-        // silently accepting the program. Once generator lowering lands
-        // (Iterator trait smoke + coroutine scheduler), this test should
-        // be replaced with a positive type-check assertion.
+        // `gen { yield 1; yield 2; }` type-checks as Generator<i32, Unit>.
+        // The checker synthesizes the yield type from yield expressions; HIR/MIR
+        // lowering is still fail-closed on GenBlock but that is a compile-phase
+        // boundary, not a type-check boundary.
         let result = hew_parser::parse("fn main() { let g = gen { yield 1; yield 2; }; }");
         assert!(
             result.errors.is_empty(),
             "gen {{ ... }} expression blocks should parse cleanly: {:?}",
             result.errors
         );
-        // The checker or HIR lowerer must emit at least one error to fail
-        // closed while generator lowering is pending.
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
-            !output.errors.is_empty(),
-            "gen block in let-binding must produce a diagnostic until generator lowering is implemented"
+            output.errors.is_empty(),
+            "gen block with yield expressions must type-check cleanly: {:?}",
+            output.errors
         );
     }
 
@@ -17618,8 +17616,8 @@ mod assoc_types_slice2 {
         );
     }
 
-    /// A `gen { }` block in a plain function (not an actor handler) must NOT
-    /// emit `GenBlockInActorReceive` — only `E_GEN_BLOCK_PENDING`.
+    /// A `gen { }` block in a plain function (not an actor handler) must emit
+    /// `EmptyGenerator` — never `GenBlockInActorReceive`.
     #[test]
     fn genblock_outside_actor_receive_handler_is_not_rejected_with_actor_error() {
         let output = check_source(
@@ -17637,10 +17635,167 @@ mod assoc_types_slice2 {
             "gen{{}} outside actor handler must not emit GenBlockInActorReceive; got: {:?}",
             output.errors
         );
-        // It should still fail with InvalidOperation (E_GEN_BLOCK_PENDING).
+        // Empty gen{} fails with EmptyGenerator (no yield expressions to infer from).
         assert!(
-            !output.errors.is_empty(),
-            "gen{{}} should still be rejected with E_GEN_BLOCK_PENDING"
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::EmptyGenerator),
+            "empty gen{{}} must emit EmptyGenerator; got: {:?}",
+            output.errors
+        );
+    }
+
+    // ── gen{} typed checking ────────────────────────────────────────────────
+
+    /// A `gen { yield 1; yield 2; }` in a plain function type-checks cleanly
+    /// and produces no errors.  The yield type is inferred as `i32`.
+    #[test]
+    fn gen_block_outside_receive_type_checks_cleanly() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _g = gen { yield 1; yield 2; };
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "gen block with yield expressions outside actor receive must type-check cleanly: {:?}",
+            output.errors
+        );
+    }
+
+    /// An empty `gen { }` block must emit `EmptyGenerator` because the yield
+    /// type-variable cannot be resolved without any `yield` expressions.
+    #[test]
+    fn gen_block_empty_emits_empty_generator() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _g = gen { };
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::EmptyGenerator),
+            "empty gen{{}} must emit EmptyGenerator; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// `gen { }` inside an actor receive handler must emit `GenBlockInActorReceive`
+    /// and must NOT emit `EmptyGenerator` — the actor guard fires first.
+    #[test]
+    fn genblock_in_actor_receive_is_rejected_not_empty_generator() {
+        let output = check_source(
+            r"
+            actor Counter {
+                count: i32;
+                receive fn tick() {
+                    let _g = gen { };
+                }
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::GenBlockInActorReceive),
+            "gen{{}} inside actor receive must emit GenBlockInActorReceive; got: {:?}",
+            output.errors
+        );
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::EmptyGenerator),
+            "gen{{}} inside actor receive must not emit EmptyGenerator (actor guard fires first); got: {:?}",
+            output.errors
+        );
+    }
+
+    // ── gen{} Return-component inference ───────────────────────────────────
+
+    /// `gen { 1 }` has a tail expression but no yield.  The Return component
+    /// must be inferred as i64 (not Unit), and no `EmptyGenerator` is emitted.
+    #[test]
+    fn gen_block_tail_expr_infers_return_component() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _g = gen { 1 };
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "gen block with tail expression but no yield must type-check cleanly: {:?}",
+            output.errors
+        );
+    }
+
+    /// `gen { return 1; }` has an explicit return but no yield.  The Return
+    /// component is i64, and the body never yields (Yield=Never).  No error.
+    #[test]
+    fn gen_block_explicit_return_infers_return_component() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _g = gen { return 1; };
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "gen block with explicit return but no yield must type-check cleanly: {:?}",
+            output.errors
+        );
+    }
+
+    /// `gen { yield 1; 2 }` has both yield and a tail expression.
+    /// Both Yield and Return must be inferred (i64 each); no error.
+    #[test]
+    fn gen_block_yield_and_tail_both_infer() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _g = gen { yield 1; 2 };
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "gen block with yield and tail expression must type-check cleanly: {:?}",
+            output.errors
+        );
+    }
+
+    /// `return 1` inside gen{} must NOT produce a return-type mismatch against
+    /// the full Generator<Y, R> shape; the checker extracts the Return component
+    /// for `Stmt::Return` when `in_generator` is set.
+    #[test]
+    fn gen_block_return_does_not_mismatch_full_generator_type() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _g = gen { return 42; };
+            }
+            ",
+        );
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| matches!(&e.kind, TypeErrorKind::Mismatch { .. })),
+            "`return <expr>` inside gen{{}} must not produce a Mismatch against the Generator \
+             wrapper; got: {:?}",
+            output.errors
         );
     }
 

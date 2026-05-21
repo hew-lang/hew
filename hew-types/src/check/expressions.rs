@@ -1472,15 +1472,72 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
-                self.check_block(body, None);
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    "E_GEN_BLOCK_PENDING: `gen { }` generator blocks are not yet supported; \
-                     generator lowering will be added in a future release"
-                        .to_string(),
-                );
-                Ty::Error
+                // Typed gen{} checking.
+                //
+                // Two fresh type-variables seed independent inference:
+                //   yield_var — unified by each `yield <expr>` site in the body.
+                //   return_var — unified with the body's tail expression type
+                //                (and by explicit `return <expr>` statements when
+                //                 Stmt::Return extracts the Return component from
+                //                 the enclosing Generator type).
+                //
+                // After the body, EmptyGenerator fires only when the body is
+                // genuinely empty of generator-relevant content: yield_var is
+                // still unbound AND the Return component is Unit or Never (i.e.
+                // no tail expression or explicit `return <value>` provided a
+                // useful return type).  `gen { return 1; }` and `gen { 1 }` are
+                // both valid generators with inferred Return=i64.
+                //
+                // The HIR lowerer is still fail-closed on GenBlock; this gates
+                // only the type checker so that type errors surface early.
+                let yield_var = TypeVar::fresh();
+                let return_var = TypeVar::fresh();
+                let gen_ty = Ty::generator(Ty::Var(yield_var), Ty::Var(return_var));
+
+                let prev_in_generator = self.in_generator;
+                let prev_return_type = self.current_return_type.take();
+                self.in_generator = true;
+                self.current_return_type = Some(gen_ty.clone());
+
+                let body_ty = self.check_block(body, None);
+
+                self.in_generator = prev_in_generator;
+                self.current_return_type = prev_return_type;
+
+                // Unify the tail-expression type with the Return type-variable.
+                // Never / Error propagate vacuously (unify is a no-op for Error).
+                self.expect_type(&Ty::Var(return_var), &body_ty, span);
+
+                let resolved_yield = self.subst.resolve(&Ty::Var(yield_var));
+                let resolved_return = self.subst.resolve(&Ty::Var(return_var));
+
+                // EmptyGenerator: no yield AND no useful return path.
+                // A resolved return_var (from a tail expr or `return <expr>`)
+                // means the body is doing real work even without a yield site.
+                let yield_unresolved = matches!(resolved_yield, Ty::Var(_));
+                let return_trivial = matches!(resolved_return, Ty::Var(_) | Ty::Unit | Ty::Never);
+
+                if yield_unresolved && return_trivial {
+                    self.report_error(
+                        TypeErrorKind::EmptyGenerator,
+                        span,
+                        "E_EMPTY_GENERATOR: `gen { }` body contains no `yield` expression \
+                         and no value-producing tail expression or `return`; \
+                         the yield type cannot be inferred — add at least one \
+                         `yield <value>` statement"
+                            .to_string(),
+                    );
+                    Ty::Error
+                } else {
+                    // If yield_var is still unresolved (body has a return but no
+                    // yield), the generator never yields — represent that as Never.
+                    let final_yield = if yield_unresolved {
+                        Ty::Never
+                    } else {
+                        resolved_yield
+                    };
+                    Ty::generator(final_yield, resolved_return)
+                }
             }
             _ => Ty::Unit,
         }

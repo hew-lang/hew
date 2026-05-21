@@ -544,6 +544,14 @@ pub enum TypeErrorKind {
     ///
     /// Envelope code: `E_GENBLOCK_IN_ACTOR_RECEIVE`.
     GenBlockInActorReceive,
+    /// A `gen { }` generator block whose body contains no `yield` expression.
+    ///
+    /// The checker infers the yield type from `yield` expressions inside the
+    /// body via unification.  When no `yield` is present the yield type-variable
+    /// remains unbound, so the generator's element type cannot be determined.
+    ///
+    /// Envelope code: `E_EMPTY_GENERATOR`.
+    EmptyGenerator,
     /// A closure referenced its own let-binding name inside its body.
     ///
     /// By-value capture cannot capture a value before construction without
@@ -612,6 +620,7 @@ impl TypeErrorKind {
             Self::ActorProtocolCollision { .. } => "ActorProtocolCollision",
             Self::ExternRtSymbolUnclassified { .. } => "ExternRtSymbolUnclassified",
             Self::GenBlockInActorReceive => "GenBlockInActorReceive",
+            Self::EmptyGenerator => "EmptyGenerator",
             Self::ClosureRecursive { .. } => "ClosureRecursive",
         }
     }

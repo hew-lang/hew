@@ -305,10 +305,12 @@ pub enum Expr {
     /// emits one `Some(expr)` from `next`.  When the body falls off the end
     /// the generator transitions to `Ended`; a subsequent `next` call traps.
     ///
-    /// HIR/MIR/codegen lowering is not yet implemented.  The checker
-    /// and HIR lowerer emit a typed `E_GEN_BLOCK_PENDING` diagnostic for any
-    /// generator block, surfacing a real error instead of
-    /// silently fabricating a value.
+    /// HIR/MIR/codegen lowering is not yet implemented.  The type checker
+    /// infers `Generator<Yield, Return>` from yield-expression sites and the
+    /// body's tail expression; an actor-receive boundary emits
+    /// `E_GENBLOCK_IN_ACTOR_RECEIVE` early.  HIR lowering remains fail-closed
+    /// on `GenBlock` (no coroutine state-machine variant yet), surfacing a real
+    /// diagnostic instead of silently fabricating a value.
     GenBlock {
         body: Block,
     },

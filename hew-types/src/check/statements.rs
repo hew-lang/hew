@@ -261,22 +261,36 @@ impl Checker {
             Stmt::Expression((expr, es)) => self.synthesize(expr, es),
             Stmt::Return(value) => {
                 if let Some(expected) = self.current_return_type.clone() {
+                    // Inside a gen{} body, `current_return_type` is shaped as
+                    // `Generator<Y, R>`.  A `return <expr>` targets the Return
+                    // component R, not the full Generator type.  Extract R when
+                    // in a generator context so that `return 1` inside gen{}
+                    // unifies against i64 rather than Generator<Y, i64>.
+                    let effective_expected = if self.in_generator {
+                        let resolved = self.subst.resolve(&expected);
+                        match resolved.as_generator() {
+                            Some((_, ret)) => ret.clone(),
+                            None => expected,
+                        }
+                    } else {
+                        expected
+                    };
                     // Guard: do not check against Ty::Error — it would silently
                     // suppress mismatch diagnostics in the returned expression.
                     // Synthesize the value instead so its own errors are still caught.
-                    if matches!(self.subst.resolve(&expected), Ty::Error) {
+                    if matches!(self.subst.resolve(&effective_expected), Ty::Error) {
                         if let Some((val, vs)) = value {
                             self.synthesize(val, vs);
                         }
                     } else {
                         match value {
                             Some((val, vs)) => {
-                                self.check_against(val, vs, &expected);
+                                self.check_against(val, vs, &effective_expected);
                             }
-                            None if expected != Ty::Unit => {
+                            None if effective_expected != Ty::Unit => {
                                 self.errors.push(TypeError::return_type_mismatch(
                                     span.clone(),
-                                    &expected,
+                                    &effective_expected,
                                     &Ty::Unit,
                                 ));
                             }
@@ -681,21 +695,35 @@ impl Checker {
             }
             Stmt::Return(value) => {
                 if let Some(expected) = self.current_return_type.clone() {
+                    // Inside a gen{} body, `current_return_type` is shaped as
+                    // `Generator<Y, R>`.  A `return <expr>` targets the Return
+                    // component R, not the full Generator type.  Extract R when
+                    // in a generator context so that `return 1` inside gen{}
+                    // unifies against i64 rather than Generator<Y, i64>.
+                    let effective_expected = if self.in_generator {
+                        let resolved = self.subst.resolve(&expected);
+                        match resolved.as_generator() {
+                            Some((_, ret)) => ret.clone(),
+                            None => expected,
+                        }
+                    } else {
+                        expected
+                    };
                     // Guard: do not check against Ty::Error — same as in
                     // check_stmt_as_expr; synthesize instead to preserve body errors.
-                    if matches!(self.subst.resolve(&expected), Ty::Error) {
+                    if matches!(self.subst.resolve(&effective_expected), Ty::Error) {
                         if let Some((val, vs)) = value {
                             self.synthesize(val, vs);
                         }
                     } else {
                         match value {
                             Some((val, vs)) => {
-                                self.check_against(val, vs, &expected);
+                                self.check_against(val, vs, &effective_expected);
                             }
-                            None if expected != Ty::Unit => {
+                            None if effective_expected != Ty::Unit => {
                                 self.errors.push(TypeError::return_type_mismatch(
                                     span.clone(),
-                                    &expected,
+                                    &effective_expected,
                                     &Ty::Unit,
                                 ));
                             }

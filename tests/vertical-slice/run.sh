@@ -375,3 +375,69 @@ fi
 grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
 grep -qF 'scope deadline body' "${reject_output}"
 grep -qF 'non-empty timeout bodies remain fail-closed' "${reject_output}"
+
+# ---------------------------------------------------------------------------
+# gen{} checker — typed generator blocks
+# ---------------------------------------------------------------------------
+
+# Accept: gen{} with yield expressions outside actor receive type-checks cleanly.
+# HIR/MIR lowering is still fail-closed (no coroutine scheduler); hew check
+# exercises the type-checker accept path.
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/gen_block_outside_receive.hew" >"${reject_output}" 2>&1; then
+  echo "expected gen-block-outside-receive fixture to pass hew check; got:" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Reject: empty gen{} has no yield expressions; yield type cannot be inferred.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/gen_block_empty.hew" >"${reject_output}" 2>&1; then
+  echo "expected gen-block-empty fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_EMPTY_GENERATOR' "${reject_output}"
+
+# Reject: gen{} inside an actor receive handler is permanently forbidden.
+# Pins GenBlockInActorReceive from fa8e8c64.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/genblock_in_actor_receive.hew" >"${reject_output}" 2>&1; then
+  echo "expected genblock-in-actor-receive fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_GENBLOCK_IN_ACTOR_RECEIVE' "${reject_output}"
+
+# Accept: gen{} with a tail expression but no yield — Return component inferred as i64.
+# Exercises the return_var inference path; E_EMPTY_GENERATOR must NOT fire.
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/gen_block_final_expr_returns.hew" >"${reject_output}" 2>&1; then
+  echo "expected gen-block-final-expr-returns fixture to pass; got:" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Accept: gen{} with explicit `return` but no yield — Return component inferred.
+# Exercises Stmt::Return extraction of the R component from Generator<Y, R>.
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/gen_block_explicit_return.hew" >"${reject_output}" 2>&1; then
+  echo "expected gen-block-explicit-return fixture to pass; got:" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Accept: gen{} with both yield expressions and a tail-expression return.
+# Both Yield and Return are inferred independently; no error.
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/gen_block_yields_and_returns.hew" >"${reject_output}" 2>&1; then
+  echo "expected gen-block-yields-and-returns fixture to pass; got:" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Reject: yield expressions with incompatible types — type mismatch (not EmptyGenerator).
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/gen_block_yield_type_mismatch.hew" >"${reject_output}" 2>&1; then
+  echo "expected gen-block-yield-type-mismatch fixture to fail" >&2
+  exit 1
+fi
+grep -q 'type mismatch' "${reject_output}"
+
+# Reject: bare yield at function scope (not inside gen{}) — YieldOutsideGenerator.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/yield_outside_gen.hew" >"${reject_output}" 2>&1; then
+  echo "expected yield-outside-gen fixture to fail" >&2
+  exit 1
+fi
+grep -q 'outside of generator' "${reject_output}"

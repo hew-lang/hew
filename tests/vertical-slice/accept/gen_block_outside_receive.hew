@@ -1,0 +1,8 @@
+// Accept fixture: gen{} with yield expressions outside actor receive handler.
+// A gen { yield 1; yield 2; } expression type-checks as Generator<i32, Unit>.
+// HIR/MIR lowering is still fail-closed on GenBlock (no coroutine scheduler yet),
+// so this fixture exercises the type-checker accept path only — it is checked
+// via `hew check`, not compiled to a binary.
+fn main() {
+    let _g = gen { yield 1; yield 2; };
+}

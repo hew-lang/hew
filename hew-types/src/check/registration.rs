@@ -3187,8 +3187,9 @@ impl Checker {
     /// trait impls cannot be hung off `type_defs`:
     ///
     /// * Primitives — keyed by `Ty::canonical_lowering_name()`.  This collapses
-    ///   the user-facing alias set (`int`/`Int`/`isize` → `i64`) so registration
-    ///   and dispatch agree on a single key.
+    ///   the user-facing alias set (`isize` → `i64`) so registration and
+    ///   dispatch agree on a single key.  `int` and `Int` are no longer
+    ///   accepted; the resolver hard-errors at the type-position lookup.
     /// * Compiler-builtin generics `Vec`, `HashMap`, `HashSet` — keyed by their
     ///   bare name; these already lack a `type_defs` entry that user impls can
     ///   attach methods to.

@@ -18355,3 +18355,117 @@ fn foo(t: Tri) -> i64 {
         );
     }
 }
+
+// ── Unsupported payload subpatterns (fail-closed gate) ──────────────────────
+//
+// These tests verify that the checker emits `UnsupportedPayloadSubpattern`
+// rather than silently lowering unsupported payload subpatterns as wildcards.
+
+/// Literal in tuple-variant payload position must emit
+/// `UnsupportedPayloadSubpattern` rather than silently matching as wildcard.
+/// This covers the reviewer's exact probe: `Shape::Line(1)` must not match
+/// `Shape::Line(2)` via wildcard fallthrough.
+#[test]
+fn constructor_payload_literal_emits_unsupported_diagnostic() {
+    let output = check_source(
+        r"
+enum Shape { Line(i64); Square(i64) }
+fn main() -> i64 {
+    let s = Shape::Line(2);
+    match s {
+        Shape::Line(1) => 999,
+        Shape::Line(x) => x,
+        Shape::Square(_) => 0,
+    }
+}",
+    );
+    assert!(
+        output.errors.iter().any(|e| matches!(
+            &e.kind,
+            crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
+                kind_label,
+                ..
+            } if kind_label == "literal"
+        )),
+        "expected UnsupportedPayloadSubpattern(literal) error; got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Nested constructor in tuple-variant payload must be rejected.
+#[test]
+fn constructor_payload_nested_ctor_emits_unsupported_diagnostic() {
+    let output = check_source(
+        r"
+enum Color { Red; Green }
+enum Shape { Line(Color); Square(i64) }
+fn main() -> i64 {
+    let s = Shape::Line(Color::Red);
+    match s {
+        Shape::Line(Color::Red) => 1,
+        Shape::Line(_) => 0,
+        Shape::Square(_) => 0,
+    }
+}",
+    );
+    assert!(
+        output.errors.iter().any(|e| matches!(
+            &e.kind,
+            crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
+                kind_label,
+                ..
+            } if kind_label == "nested constructor"
+        )),
+        "expected UnsupportedPayloadSubpattern(nested constructor) error; got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Tuple destructure inside tuple-variant payload position must be rejected.
+#[test]
+fn constructor_payload_tuple_destructure_emits_unsupported_diagnostic() {
+    let output = check_source(
+        r"
+enum Pair { Both((i64, i64)); None }
+fn main() -> i64 {
+    let p = Pair::Both((1, 2));
+    match p {
+        Pair::Both((a, b)) => a,
+        Pair::None => 0,
+    }
+}",
+    );
+    assert!(
+        output.errors.iter().any(|e| matches!(
+            &e.kind,
+            crate::error::TypeErrorKind::UnsupportedPayloadSubpattern { .. }
+        )),
+        "expected UnsupportedPayloadSubpattern error for tuple-in-payload; got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Binding and wildcard payload subpatterns must remain accepted.
+/// Guards against the rejection being too broad.
+#[test]
+fn constructor_payload_binding_and_wildcard_are_accepted() {
+    let output = check_source(
+        r"
+enum Shape { Line(i64); Square(i64) }
+fn foo(s: Shape) -> i64 {
+    match s {
+        Shape::Line(x) => x,
+        Shape::Square(_) => 0,
+    }
+}",
+    );
+    assert!(
+        !output.errors.iter().any(|e| matches!(
+            &e.kind,
+            crate::error::TypeErrorKind::UnsupportedPayloadSubpattern { .. }
+        )),
+        "binding and wildcard payload subpatterns must not emit UnsupportedPayloadSubpattern; \
+         got errors: {:#?}",
+        output.errors
+    );
+}

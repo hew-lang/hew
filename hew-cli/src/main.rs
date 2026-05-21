@@ -101,7 +101,7 @@ fn diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. } => "E_MIR_CHECK",
         hew_mir::MirDiagnosticKind::NotYetImplemented { .. }
-        | hew_mir::MirDiagnosticKind::MixedEnumNotYetSupported { .. } => "E_NOT_YET_IMPLEMENTED",
+        | hew_mir::MirDiagnosticKind::GenericEnumNotYetSupported { .. } => "E_NOT_YET_IMPLEMENTED",
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
         | hew_mir::MirDiagnosticKind::UnresolvedPlace { .. }

@@ -85,7 +85,7 @@ Nuance row (table under the core):
 | id | trigger | apply | evidence |
 | --- | --- | --- | --- |
 | `exhaustive-traversal-and-lowering` | A new AST variant, lowering branch, or supported type is added. | Maintain explicit variant/type lists, build an operation × type matrix for typed lowerings, cover narrow widths and uncommon shapes, and prefer errors over warnings when a case is unsupported. | PR #798/#786/#797. |
-| `match-fail-closed` | Match checking or lowering changes. | Forbid cross-enum fallback, treat guarded wildcards as non-exhaustive, exclude `Never` and `Error` from result inference, wrap `HashMap.get()` at the expression boundary, and trap on runtime fallthrough. | Original match correctness audit. |
+| `match-fail-closed` | Match checking or lowering changes. | Forbid cross-enum fallback, treat guarded wildcards as non-exhaustive, exclude `Never` and `Error` from result inference, wrap `HashMap.get()` at the expression boundary, trap on runtime fallthrough, and emit `MirStatement::Bind` (not just `Instr::Move`) at the entry of every arm body that introduces a payload binding — the move-checker dataflow keys on `Bind` to lift the binding from `Uninit` to `Live`, so a bare `Move` into the binding's local trips `InitialisedBeforeUse` on the first arm-body read. | Original match correctness audit; `feat/mono-mixed-enum-payload-ctor`. |
 
 ### `lifecycle-symmetry` — every setup has a matched teardown on every exit path
 

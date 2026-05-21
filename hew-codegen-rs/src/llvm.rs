@@ -1261,10 +1261,13 @@ fn register_machine_layouts<'ctx>(
 /// enum-typed locals by their type name.
 ///
 /// User enums share the tagged-union substrate (`{ tag: iW, payload: [N x i8] }`)
-/// with machine states and event companions. Only unit-variant enums are
-/// supported in this slice; payload-bearing variants are not yet registered
-/// and will produce `CodegenError::FailClosed` if a construction site is
-/// reached.
+/// with machine states and event companions. Monomorphic enums of every
+/// variant shape (unit, tuple, struct) lower end-to-end through this
+/// substrate — `build_tagged_union_layout` walks per-variant `field_tys` and
+/// emits an alignment-correct payload byte array sized to the widest variant.
+/// Generic enums (`enum Maybe<T> { ... }`) are blocked upstream at MIR with
+/// `GenericEnumNotYetSupported`; they need a monomorphisation-keyed registry
+/// the next-stage `EnumLayoutRegistry` lane will land.
 fn register_enum_layouts<'ctx>(
     ctx: &'ctx Context,
     enum_layouts: &[EnumLayout],

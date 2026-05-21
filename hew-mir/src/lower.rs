@@ -303,7 +303,29 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 // declarations emit zero bare-name layouts (same rule as
                 // generic records); their per-instantiation layouts come
                 // from `module.record_layouts` under mangled names.
+                //
+                // Generic enums (`enum Maybe<T> { Just(T); Nothing }`) need a
+                // monomorphisation-keyed registry that the next-stage
+                // `EnumLayoutRegistry` lane will land. Fail-closed for now
+                // with a typed diagnostic — strictly narrower than the
+                // previous "mixed-enum" surface this lane removed.
                 if !decl.type_params.is_empty() {
+                    if !decl.variants.is_empty() {
+                        diagnostics.push(crate::model::MirDiagnostic {
+                            kind: crate::model::MirDiagnosticKind::GenericEnumNotYetSupported {
+                                enum_name: decl.name.clone(),
+                                type_param_count: decl.type_params.len(),
+                            },
+                            note: format!(
+                                "enum `{}` declares {} type parameter(s); generic enums \
+                                 require monomorphisation-keyed layouts (next-stage \
+                                 EnumLayoutRegistry substrate). Use a monomorphic enum \
+                                 declaration for now.",
+                                decl.name,
+                                decl.type_params.len()
+                            ),
+                        });
+                    }
                     continue;
                 }
                 let fields: Vec<(String, ResolvedTy)> = decl
@@ -318,50 +340,29 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     });
                     record_field_orders.insert(decl.name.clone(), fields);
                 }
-                // Enum-kind type decls: register a tagged-union layout so
-                // codegen can allocate + tag unit-variant construction sites.
-                // MIXED enums (unit + payload variants) cannot be safely
-                // lowered yet: registering only unit variants would assign
-                // wrong tag offsets (a unit variant at body-position N would
-                // get layout-index 0..K instead of runtime tag N). Fail-closed
-                // and skip registration — the diagnostic surfaces via `hew check`.
-                if !decl.unit_variants.is_empty() {
-                    if decl.payload_variant_count > 0 {
-                        diagnostics.push(crate::model::MirDiagnostic {
-                            kind: crate::model::MirDiagnosticKind::MixedEnumNotYetSupported {
-                                enum_name: decl.name.clone(),
-                                payload_variant_count: decl.payload_variant_count,
-                            },
-                            note: format!(
-                                "enum `{}` mixes unit variants with {} payload-bearing variant(s); \
-                                 mixed-variant enums require match-arm payload lowering (not yet \
-                                 supported). Declare all-unit or all-payload enums for now.",
-                                decl.name, decl.payload_variant_count
-                            ),
-                        });
-                        // Skip layout registration — a partial layout with wrong
-                        // tag offsets would silently mis-route match-arm dispatch.
-                    } else {
-                        let variant_count =
-                            u32::try_from(decl.unit_variants.len().max(1)).unwrap_or(u32::MAX);
-                        let tag_width =
-                            u32::max(1, variant_count.next_power_of_two().trailing_zeros());
-                        // Build variant entries in declaration order. Only unit
-                        // variants appear in this layout; they carry empty `field_tys`.
-                        let variants: Vec<crate::model::MachineVariantLayout> = decl
-                            .unit_variants
-                            .iter()
-                            .map(|name| crate::model::MachineVariantLayout {
-                                name: name.clone(),
-                                field_tys: vec![],
-                            })
-                            .collect();
-                        enum_layouts.push(crate::model::EnumLayout {
-                            name: decl.name.clone(),
-                            tag_width,
-                            variants,
-                        });
-                    }
+                // Enum-kind type decls: register a tagged-union layout for
+                // every monomorphic enum, walking ALL variants (unit, tuple,
+                // struct) in declaration order. Variant index in the layout
+                // matches the index assigned by the HIR ctor pre-pass
+                // (`hew_hir::lower` walks `td.body` in the same order), so
+                // ctor sites and match-arm dispatch agree on tag values.
+                if !decl.variants.is_empty() {
+                    let variant_count =
+                        u32::try_from(decl.variants.len().max(1)).unwrap_or(u32::MAX);
+                    let tag_width = u32::max(1, variant_count.next_power_of_two().trailing_zeros());
+                    let variants: Vec<crate::model::MachineVariantLayout> = decl
+                        .variants
+                        .iter()
+                        .map(|v| crate::model::MachineVariantLayout {
+                            name: v.name.clone(),
+                            field_tys: v.field_tys(),
+                        })
+                        .collect();
+                    enum_layouts.push(crate::model::EnumLayout {
+                        name: decl.name.clone(),
+                        tag_width,
+                        variants,
+                    });
                 }
             }
             HirItem::Actor(actor) => {
@@ -554,7 +555,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             HirItem::Machine(md) => {
                 vec![md.name.clone(), format!("{}Event", md.name)]
             }
-            HirItem::TypeDecl(decl) if !decl.unit_variants.is_empty() => {
+            HirItem::TypeDecl(decl) if !decl.variants.is_empty() && decl.type_params.is_empty() => {
                 vec![decl.name.clone()]
             }
             _ => vec![],
@@ -5470,9 +5471,45 @@ impl Builder {
             });
         }
 
-        // Variant arm body blocks.
+        // Variant arm body blocks. Per-arm payload bindings (e.g.
+        // `Shape::Line(x) => x + 1`) are materialised at the top of each
+        // body block via `Move { dest: <binding_local>, src:
+        // Place::EnumVariant { local: scrutinee, variant_idx, field_idx } }`.
+        // Tag-dominance invariant: the per-arm move is downstream of the
+        // tag-branch jump that selected this block, so the payload bytes
+        // belong to the active variant. The `binding_locals` registration
+        // mirrors how `select`/`let` bindings resolve `BindingRef` reads.
         for (i, arm) in variant_arms.iter().enumerate() {
             self.start_block(body_bbs[i]);
+            let variant_idx = arm.variant_idx.expect(
+                "variant arm must carry variant_idx — verified during dispatch chain build",
+            );
+            for pb in &arm.payload_bindings {
+                let binding_local = self.alloc_local(pb.ty.clone());
+                let Place::Local(_) = binding_local else {
+                    unreachable!("alloc_local returns Place::Local");
+                };
+                self.binding_locals.insert(pb.binding, binding_local);
+                // Register the binding with the move-checker dataflow so
+                // arm-body reads transition from `Uninit` → `Live`.
+                // Sentinel `SiteId(0)` because payload-binding sites are
+                // synthesised here, not at any checker-recorded site (same
+                // pattern as the for-range loop binding emit).
+                self.statements.push(MirStatement::Bind {
+                    binding: pb.binding,
+                    name: pb.name.clone(),
+                    site: hew_hir::SiteId(0),
+                    ty: pb.ty.clone(),
+                });
+                self.instructions.push(Instr::Move {
+                    dest: binding_local,
+                    src: Place::EnumVariant {
+                        local: scrutinee_local,
+                        variant_idx,
+                        field_idx: pb.field_idx,
+                    },
+                });
+            }
             let value = self.lower_value(&arm.body);
             if let Some(src) = value {
                 self.instructions.push(Instr::Move {
@@ -11182,9 +11219,11 @@ mod enum_layout_tests {
 
     use super::lower_hir_module;
     use crate::model::MirDiagnosticKind;
-    use hew_hir::{HirItem, HirModule, HirNodeId, HirTypeDecl, ItemId, SiteId};
+    use hew_hir::{
+        HirItem, HirModule, HirNodeId, HirTypeDecl, HirVariant, HirVariantKind, ItemId, SiteId,
+    };
     use hew_parser::ast::ResourceMarker;
-    use hew_types::ChildSlot;
+    use hew_types::{ChildSlot, ResolvedTy};
 
     fn minimal_module(items: Vec<HirItem>) -> HirModule {
         HirModule {
@@ -11197,53 +11236,137 @@ mod enum_layout_tests {
         }
     }
 
+    fn unit_variant(name: &str) -> HirVariant {
+        HirVariant {
+            name: name.to_string(),
+            kind: HirVariantKind::Unit,
+        }
+    }
+
+    fn tuple_variant(name: &str, tys: Vec<ResolvedTy>) -> HirVariant {
+        HirVariant {
+            name: name.to_string(),
+            kind: HirVariantKind::Tuple(tys),
+        }
+    }
+
+    fn struct_variant(name: &str, fields: Vec<(&str, ResolvedTy)>) -> HirVariant {
+        HirVariant {
+            name: name.to_string(),
+            kind: HirVariantKind::Struct(
+                fields
+                    .into_iter()
+                    .map(|(n, t)| (n.to_string(), t))
+                    .collect(),
+            ),
+        }
+    }
+
     fn mixed_enum_decl() -> HirTypeDecl {
-        // `enum Option { Some(i64); None; }` — one payload variant, one unit variant.
+        // `enum Shape { Point; Line(i64); Box { w: i64, h: i64 } }` — one
+        // variant of each shape. Used to verify monomorphic mixed-enum
+        // layout registration end-to-end.
         HirTypeDecl {
             id: ItemId(0),
             node: HirNodeId(0),
-            name: "Option".to_string(),
+            name: "Shape".to_string(),
             marker: ResourceMarker::None,
             consuming_methods: vec![],
             type_params: vec![],
             fields: vec![],
-            // `None` is the only unit variant
-            unit_variants: vec!["None".to_string()],
-            // `Some(i64)` is the payload-bearing variant
-            payload_variant_count: 1,
+            variants: vec![
+                unit_variant("Point"),
+                tuple_variant("Line", vec![ResolvedTy::I64]),
+                struct_variant("Box", vec![("w", ResolvedTy::I64), ("h", ResolvedTy::I64)]),
+            ],
             span: 0..0,
         }
     }
 
     #[test]
-    fn mixed_enum_emits_typed_diagnostic_and_skips_layout() {
+    fn monomorphic_mixed_enum_registers_full_layout_without_diagnostic() {
+        // Substrate-anchor test: the previous `mixed_enum_emits_typed_diagnostic`
+        // shape is gone — monomorphic mixed enums now lower end-to-end with
+        // per-variant `field_tys` populated. Variant-index ordering is
+        // declaration-order (HIR ctor pre-pass authoritative — lane-plan D2).
         let module = minimal_module(vec![HirItem::TypeDecl(mixed_enum_decl())]);
         let pipeline = lower_hir_module(&module);
 
-        // Exactly one diagnostic emitted for the mixed enum.
+        assert!(
+            pipeline.diagnostics.is_empty(),
+            "no diagnostics expected for monomorphic mixed enum; got: {:?}",
+            pipeline.diagnostics
+        );
+        assert_eq!(
+            pipeline.enum_layouts.len(),
+            1,
+            "expected one EnumLayout for Shape"
+        );
+        let layout = &pipeline.enum_layouts[0];
+        assert_eq!(layout.name, "Shape");
+        assert_eq!(layout.variants.len(), 3);
+        // Declaration order is load-bearing: Point=0, Line=1, Box=2. MIR's
+        // match-arm dispatch uses these tag values, so any drift from the
+        // HIR ctor pre-pass would silently mis-route arms.
+        assert_eq!(layout.variants[0].name, "Point");
+        assert!(layout.variants[0].field_tys.is_empty());
+        assert_eq!(layout.variants[1].name, "Line");
+        assert_eq!(layout.variants[1].field_tys, vec![ResolvedTy::I64]);
+        assert_eq!(layout.variants[2].name, "Box");
+        assert_eq!(
+            layout.variants[2].field_tys,
+            vec![ResolvedTy::I64, ResolvedTy::I64]
+        );
+    }
+
+    #[test]
+    fn generic_enum_emits_typed_diagnostic_and_skips_layout() {
+        // Generic enums (e.g. `enum Maybe<T> { Just(T); Nothing }`) need a
+        // monomorphisation-keyed registry — out of scope for this lane.
+        // Strictly narrower than the previous mixed-enum surface.
+        let decl = HirTypeDecl {
+            id: ItemId(2),
+            node: HirNodeId(2),
+            name: "Maybe".to_string(),
+            marker: ResourceMarker::None,
+            consuming_methods: vec![],
+            type_params: vec!["T".to_string()],
+            fields: vec![],
+            variants: vec![
+                tuple_variant(
+                    "Just",
+                    vec![ResolvedTy::Named {
+                        name: "T".to_string(),
+                        args: vec![],
+                    }],
+                ),
+                unit_variant("Nothing"),
+            ],
+            span: 0..0,
+        };
+        let module = minimal_module(vec![HirItem::TypeDecl(decl)]);
+        let pipeline = lower_hir_module(&module);
+
         assert_eq!(
             pipeline.diagnostics.len(),
             1,
-            "expected exactly one diagnostic for mixed enum; got: {:?}",
+            "expected exactly one diagnostic for generic enum; got: {:?}",
             pipeline.diagnostics
         );
         let kind = &pipeline.diagnostics[0].kind;
         assert!(
             matches!(
                 kind,
-                MirDiagnosticKind::MixedEnumNotYetSupported {
+                MirDiagnosticKind::GenericEnumNotYetSupported {
                     enum_name,
-                    payload_variant_count: 1,
-                } if enum_name == "Option"
+                    type_param_count: 1,
+                } if enum_name == "Maybe"
             ),
-            "expected MixedEnumNotYetSupported for Option; got: {kind:?}"
+            "expected GenericEnumNotYetSupported for Maybe; got: {kind:?}"
         );
-
-        // No EnumLayout registered — a partial layout with wrong tag offsets
-        // must never reach codegen.
         assert!(
             pipeline.enum_layouts.is_empty(),
-            "enum_layouts must be empty for a mixed enum; got: {:?}",
+            "enum_layouts must be empty for a generic enum; got: {:?}",
             pipeline.enum_layouts
         );
     }
@@ -11259,8 +11382,11 @@ mod enum_layout_tests {
             consuming_methods: vec![],
             type_params: vec![],
             fields: vec![],
-            unit_variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
-            payload_variant_count: 0,
+            variants: vec![
+                unit_variant("Red"),
+                unit_variant("Green"),
+                unit_variant("Blue"),
+            ],
             span: 0..0,
         };
         let module = minimal_module(vec![HirItem::TypeDecl(decl)]);

@@ -273,3 +273,109 @@ fn run_colour_match_let_fixture_executes() {
     let stdout = String::from_utf8(output.stdout).expect("stdout utf-8");
     assert_eq!(stdout, expected, "run_colour_match_let stdout mismatch");
 }
+
+/// End-to-end signal for tuple-payload variant construction and match
+/// destructuring. Runs the in-tree `hew` binary on
+/// `examples/enums/run_shape_tuple_ctor.hew` and diffs stdout against the
+/// `.expected` file. Verifies that `Shape::Line(7)` constructs the
+/// tagged-union value with the payload at the right offset and that
+/// `match s { Shape::Line(x) => x; _ => 0 }` binds and reads `x` correctly.
+#[test]
+fn run_shape_tuple_ctor_fixture_executes() {
+    run_enum_fixture_executes("run_shape_tuple_ctor");
+}
+
+/// End-to-end signal for struct-payload variant construction and match
+/// destructuring. Runs `run_shape_struct_ctor.hew`: constructs
+/// `Shape::Box { w: 3, h: 4 }`, matches it, multiplies the bound payload
+/// fields, and prints the result.
+#[test]
+fn run_shape_struct_ctor_fixture_executes() {
+    run_enum_fixture_executes("run_shape_struct_ctor");
+}
+
+/// End-to-end signal for a mixed-shape enum (unit + tuple + struct
+/// variants in one declaration) dispatched through a single `match`
+/// expression. Verifies the per-variant tag, payload offset, and payload
+/// destructure all agree across declaration-order indices 0/1/2.
+#[test]
+fn run_shape_mixed_match_fixture_executes() {
+    run_enum_fixture_executes("run_shape_mixed_match");
+}
+
+/// Pins the fail-closed surface for generic enums. The compiler must emit
+/// `GenericEnumNotYetSupported` (classified as `E_NOT_YET_IMPLEMENTED`)
+/// rather than silently registering a layout with under-specified payload
+/// types. Confirms strictly narrower behaviour than the old "mixed enum"
+/// surface this lane replaced.
+#[test]
+fn run_generic_enum_rejected_fixture_emits_diagnostic() {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let hew_bin = std::path::PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .join("target")
+        .join("debug")
+        .join("hew");
+    let fixture = std::path::PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join("enums")
+        .join("run_generic_enum_rejected.hew");
+    let output = std::process::Command::new(&hew_bin)
+        .arg("run")
+        .arg(&fixture)
+        .output()
+        .expect("spawn hew run");
+    assert!(
+        !output.status.success(),
+        "hew run must reject generic enum; got success exit"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
+    assert!(
+        combined.contains("GenericEnumNotYetSupported")
+            || combined.contains("E_NOT_YET_IMPLEMENTED"),
+        "expected GenericEnumNotYetSupported diagnostic; got:\nstderr: {stderr}\nstdout: {stdout}"
+    );
+    assert!(
+        combined.contains("Maybe"),
+        "diagnostic must name the offending enum (`Maybe`); got: {combined}"
+    );
+}
+
+/// Shared helper: run `examples/enums/<name>.hew` through the in-tree
+/// `hew` binary and diff stdout against `<name>.expected`.
+fn run_enum_fixture_executes(name: &str) {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let hew_bin = std::path::PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .join("target")
+        .join("debug")
+        .join("hew");
+    let fixture = std::path::PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join("enums")
+        .join(format!("{name}.hew"));
+    let expected_path = fixture.with_extension("expected");
+    let expected = std::fs::read_to_string(&expected_path).expect("read .expected");
+
+    let output = std::process::Command::new(&hew_bin)
+        .arg("run")
+        .arg(&fixture)
+        .output()
+        .expect("spawn hew run");
+    assert!(
+        output.status.success(),
+        "hew run exited non-zero (status={:?}); stderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf-8");
+    assert_eq!(stdout, expected, "{name} stdout mismatch");
+}

@@ -81,6 +81,41 @@ fn binding_name_for_pattern(pattern: &Pattern) -> Option<String> {
     }
 }
 
+/// Classify the payload subpattern kind label for use in
+/// `UnsupportedPayloadSubpattern` diagnostics.
+///
+/// Returns `None` when the subpattern is a supported binding or wildcard.
+/// Returns `Some(label)` for unsupported forms that must be rejected.
+fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static str> {
+    match pattern {
+        // Plain binding or wildcard — both are supported.
+        Pattern::Wildcard => None,
+        Pattern::Identifier(name) => {
+            let is_constructor_like =
+                name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
+            if is_constructor_like {
+                // An uppercase/qualified name in payload position is a nested
+                // constructor (unit variant), e.g. `Shape::Line(Other::Foo)`.
+                Some("nested constructor")
+            } else {
+                // Plain lowercase identifier — a binding.  Supported.
+                None
+            }
+        }
+        Pattern::Literal(_) => Some("literal"),
+        Pattern::Constructor { .. } => Some("nested constructor"),
+        Pattern::Struct { .. } => Some("struct destructure"),
+        // An empty tuple `()` is the unit type — it has only one value and
+        // acts as a wildcard (no predicate is needed to test it).  Allow it
+        // so that `Ok(())` / `Err(())` patterns remain legal.
+        // Non-empty tuples introduce sub-bindings that the substrate does not
+        // yet lower; those remain unsupported.
+        Pattern::Tuple(pats) if pats.is_empty() => None,
+        Pattern::Tuple(_) => Some("tuple destructure"),
+        Pattern::Or(_, _) => Some("or-pattern"),
+    }
+}
+
 impl Checker {
     pub(super) fn or_pattern_bindings_match(
         &self,
@@ -496,6 +531,30 @@ impl Checker {
                 let payload_tys = self
                     .lookup_variant_types(name, scrutinee_ty, patterns.len())
                     .unwrap_or_else(|| vec![Ty::Error; patterns.len()]);
+                // Reject payload subpatterns that are not a plain binding or
+                // wildcard.  Accepting them silently produces an incorrect
+                // wildcard match (the predicate literal/nested-ctor is never
+                // compared at runtime).  Nested-predicate lowering is a future
+                // substrate lane; the compiler must fail closed here.
+                for (sub_pat, sub_span) in patterns {
+                    if let Some(label) = unsupported_payload_subpattern_label(sub_pat) {
+                        self.report_error_with_note(
+                            crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
+                                variant_name: short_name.to_string(),
+                                kind_label: label.to_string(),
+                            },
+                            sub_span,
+                            format!(
+                                "payload subpattern `{label}` in `{short_name}(...)` is not yet supported"
+                            ),
+                            pattern_span,
+                            "v0.5 payload subpatterns must be a plain binding (`x`) or wildcard (`_`); \
+                             literal tests and nested patterns are reserved for a future substrate lane"
+                                .to_string(),
+                        );
+                        return;
+                    }
+                }
                 let payload_bindings: Vec<PayloadBinding> = patterns
                     .iter()
                     .zip(payload_tys.iter())
@@ -594,6 +653,34 @@ impl Checker {
                 };
 
                 let is_enum_variant = variant_match.is_some();
+                // Reject unsupported payload subpatterns in enum struct-variant
+                // arms.  Plain record struct patterns are out of scope.  A field
+                // with no explicit subpattern (e.g. `Shape::Move { x, y }`) is
+                // a shorthand binding and is always supported.
+                if is_enum_variant {
+                    for pf in fields {
+                        if let Some((sub_pat, sub_span)) = &pf.pattern {
+                            if let Some(label) = unsupported_payload_subpattern_label(sub_pat) {
+                                self.report_error_with_note(
+                                    crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
+                                        variant_name: short_name.to_string(),
+                                        kind_label: label.to_string(),
+                                    },
+                                    sub_span,
+                                    format!(
+                                        "payload subpattern `{label}` in `{short_name} {{ {} }}` is not yet supported",
+                                        pf.name
+                                    ),
+                                    pattern_span,
+                                    "v0.5 payload subpatterns must be a plain binding (`x`) or wildcard (`_`); \
+                                     literal tests and nested patterns are reserved for a future substrate lane"
+                                        .to_string(),
+                                );
+                                return;
+                            }
+                        }
+                    }
+                }
                 // Compute field_idx using declaration order when available (enum
                 // struct-variants), otherwise fall back to alphabetical sort (plain
                 // records, where td.fields is a HashMap with no preserved order).

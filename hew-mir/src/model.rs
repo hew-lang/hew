@@ -2385,15 +2385,17 @@ pub enum MirDiagnosticKind {
         existing: String,
         duplicate: String,
     },
-    /// A user-defined enum has both unit variants and payload-bearing variants
-    /// (Tuple or Struct form). Mixed enums cannot be safely lowered until
-    /// match-arm payload support is complete — registering a partial layout
-    /// would assign wrong tag offsets to unit variants and silently mis-route
-    /// match-arm dispatch. Fail-closed: emit this diagnostic and skip layout
-    /// registration. Will be lifted when the match-arm lane lands.
-    MixedEnumNotYetSupported {
+    /// A user-defined enum declares one or more type parameters
+    /// (`enum Maybe<T> { Just(T); Nothing }`). Generic enums require a
+    /// monomorphisation-keyed layout registry that the next-stage
+    /// `EnumLayoutRegistry` lane will land; until then the substrate
+    /// fail-closes and skips layout registration so codegen never sees a
+    /// generic enum with an under-specified payload type. Strictly narrower
+    /// than the previous "mixed enum" surface — monomorphic enums of any
+    /// variant shape (unit, tuple, struct) now lower end-to-end.
+    GenericEnumNotYetSupported {
         enum_name: String,
-        payload_variant_count: usize,
+        type_param_count: usize,
     },
 }
 

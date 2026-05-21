@@ -452,21 +452,23 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/yield_outside_gen.hew" >"
 fi
 grep -q 'outside of generator' "${reject_output}"
 
-# Reject: mixed-variant enum (unit + payload) — MixedEnumNotYetSupported.
-# A partial layout with wrong tag offsets would silently mis-route match-arm
-# dispatch; fail-closed with a typed diagnostic until payload lowering lands.
+# Reject: generic enum — GenericEnumNotYetSupported.
+# Generic enums need a monomorphisation-keyed layout registry that the
+# next-stage substrate will land; fail-closed with a typed diagnostic
+# until then. Monomorphic mixed-variant enums (the previous reject case)
+# now lower successfully end-to-end.
 set +e
-"${HEW}" compile "${ROOT}/tests/vertical-slice/reject/mixed_enum_not_supported.hew" >"${reject_output}" 2>&1
-mixed_enum_exit=$?
+"${HEW}" compile "${ROOT}/tests/vertical-slice/reject/generic_enum_not_supported.hew" >"${reject_output}" 2>&1
+generic_enum_exit=$?
 set -e
-if [ "${mixed_enum_exit}" -ne 1 ]; then
-  echo "expected mixed-enum-not-supported fixture to exit 1, got ${mixed_enum_exit}" >&2
+if [ "${generic_enum_exit}" -ne 1 ]; then
+  echo "expected generic-enum-not-supported fixture to exit 1, got ${generic_enum_exit}" >&2
   exit 1
 fi
-grep -q 'MixedEnumNotYetSupported' "${reject_output}"
+grep -q 'GenericEnumNotYetSupported' "${reject_output}"
 grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
 if grep -q 'panicked at' "${reject_output}"; then
-  echo "mixed-enum-not-supported fixture panicked instead of reporting a diagnostic" >&2
+  echo "generic-enum-not-supported fixture panicked instead of reporting a diagnostic" >&2
   exit 1
 fi
 
@@ -491,3 +493,17 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/sink_non_wire_payload.hew
   exit 1
 fi
 grep -qF 'Encode + Decode' "${reject_output}"
+
+# Reject: literal payload subpattern in a constructor match arm.
+# Shape::Line(1) must be rejected at check time with UnsupportedPayloadSubpattern
+# rather than silently lowered as a wildcard that matches any payload value.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/enum_payload_literal_subpattern.hew" >"${reject_output}" 2>&1; then
+  echo "expected enum-payload-literal-subpattern fixture to fail" >&2
+  exit 1
+fi
+grep -q 'payload subpattern' "${reject_output}"
+grep -q 'literal' "${reject_output}"
+if grep -q 'panicked at' "${reject_output}"; then
+  echo "enum-payload-literal-subpattern fixture panicked instead of reporting a diagnostic" >&2
+  exit 1
+fi

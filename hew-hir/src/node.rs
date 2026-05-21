@@ -453,23 +453,73 @@ pub struct HirTypeDecl {
     pub type_params: Vec<String>,
     /// Struct-form field types in declaration order. Empty for enum-kind
     /// type decls (enums have no struct fields; their variants are in
-    /// `unit_variants`).
+    /// `variants`).
     pub fields: Vec<HirField>,
-    /// Unit-variant names for enum-kind type decls, in declaration order.
-    /// Only the NAMES are kept here; the tag ordinal for each unit variant
-    /// is its position within this vec (0-based). Empty for struct-kind type decls.
+    /// All enum variants in declaration order — unit, tuple, and struct shapes.
+    /// Empty for struct-kind type decls. The tag ordinal for each variant is
+    /// its position within this vec (0-based) and matches the index assigned
+    /// in `LowerCtx::machine_ctor_registry` for the qualified `Type::Variant`
+    /// key, so MIR's `EnumLayout.variants` lines up 1:1 with this list.
     ///
-    /// MIR/codegen consumes this to construct `EnumLayout.variants` without
-    /// re-reading the parser AST. For MIXED enums (unit + payload variants),
-    /// MIR emits `MirDiagnosticKind::MixedEnumNotYetSupported` and skips
-    /// layout registration — see `payload_variant_count`.
-    pub unit_variants: Vec<String>,
-    /// Number of payload-bearing variants (Tuple or Struct form) in this enum.
-    /// Zero for all-unit enums and for struct-kind type decls. When non-zero
-    /// together with a non-empty `unit_variants`, the enum is MIXED and cannot
-    /// be safely lowered until match-arm payload support is complete.
-    pub payload_variant_count: usize,
+    /// MIR consumes this to populate `EnumLayout.variants` (including
+    /// `field_tys` per variant) without re-reading the parser AST. Generic
+    /// enums (those with non-empty `type_params`) are fail-closed at MIR
+    /// lowering — they require monomorphisation-keyed layouts which the
+    /// next-stage `EnumLayoutRegistry` lane will land.
+    pub variants: Vec<HirVariant>,
     pub span: Span,
+}
+
+/// One variant of an enum-kind `HirTypeDecl`. Mirrors the shape distinctions
+/// in `hew_parser::ast::VariantKind` but with payload types fully resolved
+/// against the module's type scope so MIR/codegen never re-walk the parser AST.
+///
+/// `tag_idx` is implicit: it is this variant's position within
+/// `HirTypeDecl.variants` and matches the MIR/codegen `EnumLayout.variants`
+/// ordering.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirVariant {
+    pub name: String,
+    pub kind: HirVariantKind,
+}
+
+/// Payload shape of an `HirVariant`. Unit variants carry no payload (tag
+/// only); tuple variants carry positional payload types in declaration order;
+/// struct variants carry `(name, ty)` pairs in declaration order.
+///
+/// MIR's `EnumLayout` builder flattens both `Tuple` and `Struct` into a single
+/// positional `field_tys` list — variant field NAMES are MIR-irrelevant (see
+/// D1 in the lane plan). Names are retained here for diagnostics and for the
+/// `Expr::StructInit` lowering path which validates source-declared field
+/// names against the variant's declared field set before emitting payload
+/// store instructions.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirVariantKind {
+    Unit,
+    Tuple(Vec<ResolvedTy>),
+    Struct(Vec<(String, ResolvedTy)>),
+}
+
+impl HirVariant {
+    /// Positional payload types in declaration order. Empty for `Unit`,
+    /// returns the tuple element types directly for `Tuple`, and projects
+    /// `(_, ty)` from each struct field for `Struct`. MIR's `EnumLayout`
+    /// builder consumes this to populate `MachineVariantLayout.field_tys`.
+    #[must_use]
+    pub fn field_tys(&self) -> Vec<ResolvedTy> {
+        match &self.kind {
+            HirVariantKind::Unit => Vec::new(),
+            HirVariantKind::Tuple(tys) => tys.clone(),
+            HirVariantKind::Struct(fields) => fields.iter().map(|(_, ty)| ty.clone()).collect(),
+        }
+    }
+
+    /// True for `Unit` variants. Used by the ctor-arity gate in the call /
+    /// struct-init lowering paths.
+    #[must_use]
+    pub fn is_unit(&self) -> bool {
+        matches!(self.kind, HirVariantKind::Unit)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -876,9 +926,13 @@ pub enum HirExprKind {
     ///   layout in the shared `MachineLayoutMap` / `EnumLayout` registry by this name.
     /// `state_idx`: zero-based ordinal of this variant within the tagged union.
     ///   For machine states: index into `HirMachineDecl.states` (declaration order).
-    ///   For user enum variants: position within `HirTypeDecl.unit_variants` (declaration
-    ///   order, all-unit enums only — mixed enums are rejected at MIR lowering).
-    /// `payload`: `None` for unit states/variants; `Some(fields)` for states with payload.
+    ///   For user enum variants: position within `HirTypeDecl.variants` (declaration
+    ///   order across unit + tuple + struct shapes — same index the
+    ///   ctor-registry pre-pass assigns).
+    /// `payload`: `None` for unit states/variants; `Some(fields)` for states
+    ///   and variants with payload. For tuple variants the field NAMES are
+    ///   synthetic `"0"`, `"1"`, ... — MIR discards them and indexes by
+    ///   position (see lane-plan D1).
     ///
     /// MIR consumers: build a tagged-union value with the given tag and store payload
     /// fields via `Place::MachineTag` / `Place::MachineVariant` primitives.
@@ -947,13 +1001,15 @@ pub enum HirExprKind {
     /// checker has resolved each accepted arm's pattern via the
     /// `pattern_resolutions` side table.
     ///
-    /// **Scope (v0.5 substrate slice)**: only unit-variant patterns
-    /// (`Colour::Red`) and wildcard arms (`_`) are lowered here. Pattern
-    /// guards, payload-bearing constructor patterns (`Some(x)`), literal
-    /// patterns, struct/tuple patterns, and or-patterns are all rejected
-    /// at HIR lowering with a structured `NotYetImplemented` diagnostic.
-    /// Payload-bearing variant lowering grows on top of this substrate via
-    /// the `Place::EnumVariant` MIR primitive (Option<T> slice 2).
+    /// **Scope (v0.5 monomorphic enum substrate)**: unit-variant patterns
+    /// (`Colour::Red`), payload-bearing constructor patterns over monomorphic
+    /// enums (`Shape::Line(x)`, `Shape::Box { w, h }`), and wildcard arms
+    /// (`_`) are lowered here. Pattern guards, literal patterns,
+    /// tuple-without-ctor patterns, and or-patterns are still rejected at HIR
+    /// lowering with a structured `NotYetImplemented` diagnostic. Generic
+    /// enums (`Option<T>`, `Result<T,E>`) are blocked at MIR with
+    /// `GenericEnumNotYetSupported` until the `EnumLayoutRegistry` lane
+    /// lands.
     ///
     /// **Exhaustiveness**: enforced by the type checker at
     /// `hew-types/src/check/diagnostics.rs::check_exhaustiveness`. A
@@ -975,10 +1031,17 @@ pub enum HirExprKind {
 /// One arm of an `HirExprKind::Match` expression.
 ///
 /// `variant_match` carries the checker-resolved enum variant identity for
-/// constructor-pattern arms (e.g. `Colour::Red`). `None` denotes a wildcard
-/// arm (`_`). Payload-bearing patterns and guards never produce a
-/// `HirMatchArm` — they are rejected at HIR lowering with a structured
-/// diagnostic so the slice's substrate stays honest.
+/// constructor-pattern arms (e.g. `Colour::Red`, `Shape::Line(x)`). `None`
+/// denotes a wildcard arm (`_`). Pattern guards are still rejected at HIR
+/// lowering with a structured diagnostic.
+///
+/// `payload_bindings` carries one entry per source-named binding in a
+/// payload-bearing pattern (`Shape::Line(x)` → one entry, `field_idx = 0`,
+/// `binding_id = <fresh>`). Empty for unit-variant and wildcard arms. MIR
+/// consumes these to emit per-arm `Move { dest: <binding_local>, src:
+/// Place::EnumVariant { local: scrutinee, variant_idx, field_idx } }`
+/// instructions at arm-body entry; codegen GEPs through the tagged-union
+/// payload-byte array.
 ///
 /// `body` is the arm's right-hand-side expression. The arm's source span
 /// is preserved for diagnostics.
@@ -988,18 +1051,47 @@ pub struct HirMatchArm {
     /// `None` for a wildcard arm. See `pattern_resolutions` in the
     /// `hew-types` side table for the producer.
     pub variant_match: Option<VariantMatch>,
-    /// HIR-resolved zero-based variant index. `Some(idx)` for unit-variant
-    /// constructor arms; `None` for wildcard arms. The index matches the
-    /// declaration order in `HirTypeDecl.unit_variants` and the
-    /// `EnumLayout.variants` ordering MIR/codegen consume, so MIR's
-    /// `lower_match` can emit the tag-comparison constant directly
-    /// without re-resolving against the type registry. Resolved at HIR
-    /// lowering time from `LowerCtx.machine_ctor_registry`.
+    /// HIR-resolved zero-based variant index. `Some(idx)` for variant
+    /// constructor arms (unit or payload-bearing); `None` for wildcard arms.
+    /// The index matches the declaration order in `HirTypeDecl.variants` and
+    /// the `EnumLayout.variants` ordering MIR/codegen consume, so MIR's
+    /// `lower_match` can emit the tag-comparison constant directly without
+    /// re-resolving against the type registry. Resolved at HIR lowering time
+    /// from `LowerCtx.machine_ctor_registry`.
     pub variant_idx: Option<u32>,
+    /// Per-arm payload bindings introduced by a constructor pattern, in
+    /// source order. Each entry binds a fresh `BindingId` to one positional
+    /// payload slot of the matched variant; arm-body identifier references
+    /// resolve to these ids via the normal scope-lookup path. Empty for unit
+    /// variant arms and wildcard arms.
+    pub payload_bindings: Vec<HirMatchArmBinding>,
     /// Arm body expression. Evaluates only when this arm's predicate wins.
     pub body: HirExpr,
     /// Source span of the arm (pattern through body).
     pub span: std::ops::Range<usize>,
+}
+
+/// One named payload binding introduced by a constructor-pattern match arm.
+///
+/// MIR's `lower_match` walks these per arm and emits
+/// `Move { dest: <binding_local>, src: Place::EnumVariant { local:
+/// scrutinee, variant_idx, field_idx } }` at arm-body entry, registering the
+/// `binding_id → local` pair in `binding_locals` so the arm body's identifier
+/// reads resolve correctly.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirMatchArmBinding {
+    /// Fresh binding id allocated for this slot. Same shape as a `let`
+    /// binding's id — references in the arm body resolve to it via
+    /// `lookup`/`BindingRef`.
+    pub binding: BindingId,
+    /// 0-based index of the payload slot within the variant's `field_tys`
+    /// list. Matches the checker's `PayloadBinding.field_idx`.
+    pub field_idx: u32,
+    /// Surface binding name. Retained for diagnostics and HIR dumps; MIR
+    /// does not look bindings up by name.
+    pub name: String,
+    /// Fully resolved type of the payload slot.
+    pub ty: ResolvedTy,
 }
 
 /// One captured binding inside an `HirExprKind::SpawnLambdaActor`

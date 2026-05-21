@@ -23,9 +23,10 @@ use crate::node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
     HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
     HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
-    HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirModule, HirRecordDecl,
-    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind,
-    HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
+    HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding,
+    HirModule, HirRecordDecl, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt,
+    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
+    HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ValueClass};
@@ -325,11 +326,13 @@ pub fn lower_program_with_mono_cap(
                     }
                 }
                 Item::TypeDecl(td) if td.kind == TypeDeclKind::Enum => {
+                    // Count every variant — unit, tuple, struct — so the
+                    // ambiguity guard fires across all surface forms (e.g. a
+                    // bare `Line` is ambiguous with a `Line(i64)` variant on
+                    // another enum just as it is with a unit variant).
                     for body_item in &td.body {
                         if let TypeBodyItem::Variant(v) = body_item {
-                            if matches!(v.kind, VariantKind::Unit) {
-                                *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
-                            }
+                            *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
                         }
                     }
                 }
@@ -360,24 +363,25 @@ pub fn lower_program_with_mono_cap(
                     }
                 }
                 Item::TypeDecl(td) if td.kind == TypeDeclKind::Enum => {
-                    // Register unit variants only. Payload-bearing variants
-                    // (`VariantKind::Tuple` / `VariantKind::Struct`) are
-                    // constructed via `Call` / `StructInit` expressions, not
-                    // identifier references, so they are not registered here.
-                    // The variant index is the ordinal among ALL variants
-                    // (including payload-bearing ones) to match the order
-                    // `EnumLayout.variants` will use in MIR/codegen.
+                    // Register every variant — unit, tuple, struct — under
+                    // the qualified `Type::Variant` key. The variant index is
+                    // the ordinal in declaration order across all shapes; it
+                    // matches the order `EnumLayout.variants` uses in
+                    // MIR/codegen (see lane-plan D2 — variant-index ordering
+                    // is HIR-pre-pass authoritative). Tuple variants are
+                    // resolved by `Expr::Call` lowering; struct variants by
+                    // `Expr::StructInit` lowering; unit variants by
+                    // identifier-resolution. All three paths consult this
+                    // registry and dispatch on the variant's `HirVariantKind`.
                     let mut variant_idx: usize = 0;
                     for body_item in &td.body {
                         if let TypeBodyItem::Variant(v) = body_item {
-                            if matches!(v.kind, VariantKind::Unit) {
-                                let qualified = format!("{}::{}", td.name, v.name);
+                            let qualified = format!("{}::{}", td.name, v.name);
+                            ctx.machine_ctor_registry
+                                .insert(qualified, (td.name.clone(), variant_idx));
+                            if bare_counts.get(&v.name).copied().unwrap_or(0) == 1 {
                                 ctx.machine_ctor_registry
-                                    .insert(qualified, (td.name.clone(), variant_idx));
-                                if bare_counts.get(&v.name).copied().unwrap_or(0) == 1 {
-                                    ctx.machine_ctor_registry
-                                        .insert(v.name.clone(), (td.name.clone(), variant_idx));
-                                }
+                                    .insert(v.name.clone(), (td.name.clone(), variant_idx));
                             }
                             variant_idx += 1;
                         }
@@ -414,6 +418,13 @@ pub fn lower_program_with_mono_cap(
             };
             ctx.type_classes
                 .insert(hir_decl.name.clone(), (hir_decl.marker, close_method));
+            // Snapshot the enum's variant descriptors so call/struct-init
+            // lowering can resolve payload ctors to `MachineVariantCtor`
+            // without re-walking the parser AST.
+            if !hir_decl.variants.is_empty() {
+                ctx.enum_variants_by_name
+                    .insert(hir_decl.name.clone(), hir_decl.variants.clone());
+            }
             type_decl_cache.insert(decl as *const _, hir_decl);
         }
     }
@@ -1153,6 +1164,15 @@ struct LowerCtx {
     /// constructor at module scope (`var light = Red;`, `light.step(Tick);`,
     /// `let next = TrafficLight::Green;`, `let c = Colour::Red;`).
     machine_ctor_registry: HashMap<String, (String, usize)>,
+    /// Per-enum variant descriptors keyed by the enum's type name. Populated
+    /// between the type-decl second pass and the source-order third pass so
+    /// `Expr::Call` (tuple variant ctors like `Shape::Line(5)`) and
+    /// `Expr::StructInit` (struct variant ctors like `Shape::Box { w, h }`)
+    /// lowering can dispatch on the variant's `HirVariantKind` without
+    /// re-walking the parser AST. The vec is in declaration order, so
+    /// `machine_ctor_registry`'s `(type_name, variant_idx)` indexes directly
+    /// into it.
+    enum_variants_by_name: HashMap<String, Vec<HirVariant>>,
     /// Checker-resolved per-arm pattern classifications. Cloned from
     /// `tc_output.pattern_resolutions` at construction. Keyed by the
     /// `SpanKey` of each match arm's pattern span. Consumed by
@@ -1207,6 +1227,7 @@ impl LowerCtx {
             current_machine_states: None,
             current_machine_source_state: None,
             machine_ctor_registry: HashMap::new(),
+            enum_variants_by_name: HashMap::new(),
             pattern_resolutions: tc_output.pattern_resolutions.clone(),
         }
     }
@@ -1870,23 +1891,33 @@ impl LowerCtx {
             // on `HirTypeDecl.consuming_methods`.
         }
 
-        // For enum-kind type decls, collect unit-variant names in declaration
-        // order and count payload-bearing variants separately.
-        // Payload-bearing variants (`Tuple` / `Struct`) are not registered in
-        // `unit_variants` — their constructors are handled by `Call` /
-        // `StructInit` lowering paths. `payload_variant_count` lets MIR detect
-        // MIXED enums (unit + payload) and fail-closed rather than registering
-        // a partial layout with wrong tag offsets.
-        let mut unit_variants: Vec<String> = Vec::new();
-        let mut payload_variant_count: usize = 0;
+        // For enum-kind type decls, lower every variant (unit, tuple, struct)
+        // into `HirVariant` carrying fully resolved payload types. MIR
+        // consumes the resulting `variants` vec to populate `EnumLayout`
+        // including per-variant `field_tys`. The index assigned here matches
+        // the order the ctor pre-pass walks `TypeBodyItem::Variant` entries,
+        // so the HIR registry key and MIR layout index agree (see lane plan
+        // D2 — variant-index ordering is HIR-pre-pass authoritative).
+        let mut variants: Vec<HirVariant> = Vec::new();
         if decl.kind == TypeDeclKind::Enum {
             for body_item in &decl.body {
                 if let TypeBodyItem::Variant(v) = body_item {
-                    if matches!(v.kind, VariantKind::Unit) {
-                        unit_variants.push(v.name.clone());
-                    } else {
-                        payload_variant_count += 1;
-                    }
+                    let kind = match &v.kind {
+                        VariantKind::Unit => HirVariantKind::Unit,
+                        VariantKind::Tuple(tys) => HirVariantKind::Tuple(
+                            tys.iter().map(|ty| self.lower_type(ty)).collect(),
+                        ),
+                        VariantKind::Struct(fields) => HirVariantKind::Struct(
+                            fields
+                                .iter()
+                                .map(|(name, ty)| (name.clone(), self.lower_type(ty)))
+                                .collect(),
+                        ),
+                    };
+                    variants.push(HirVariant {
+                        name: v.name.clone(),
+                        kind,
+                    });
                 }
             }
         }
@@ -1910,8 +1941,7 @@ impl LowerCtx {
             consuming_methods: decl.consuming_methods.clone(),
             type_params,
             fields,
-            unit_variants,
-            payload_variant_count,
+            variants,
             span,
         }
     }
@@ -3339,12 +3369,32 @@ impl LowerCtx {
                 )
             }
             Expr::Call { function, args, .. } => {
-                let args = args
+                let mut args = args
                     .iter()
                     .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
                     .collect::<Vec<_>>();
                 if let Expr::Identifier(name) = &function.0 {
-                    if stdlib_catalog::is_overloaded_builtin(name) {
+                    // Intercept payload-bearing variant constructors written
+                    // as calls (`Shape::Line(5)`, bare `Line(5)`). The bare
+                    // identifier path produces `MachineVariantCtor { payload:
+                    // None }`; the call form must capture the args into
+                    // `payload: Some(...)`. Mismatched ctor shape (calling a
+                    // unit variant with args, or calling a struct variant
+                    // positionally) emits a structured diagnostic and falls
+                    // through to the regular-call path so checker-stream
+                    // coverage is preserved.
+                    let variant_kind_for_call = self
+                        .lookup_variant_ctor(name)
+                        .map(|(_, _, kind)| kind.clone());
+                    if let Some(HirVariantKind::Tuple(_)) = &variant_kind_for_call {
+                        let taken = std::mem::take(&mut args);
+                        self.lower_variant_ctor_tuple_call(name, taken, &span)
+                    } else if let Some(kind) = &variant_kind_for_call {
+                        self.report_variant_ctor_call_shape_mismatch(name, kind, &span);
+                        // Fall through to regular-call to keep checker-stream
+                        // coverage for the malformed source.
+                        self.lower_regular_call(function, args, &span, site)
+                    } else if stdlib_catalog::is_overloaded_builtin(name) {
                         let arg_tys = args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>();
                         if let Some(entry) = stdlib_catalog::resolve_overload(name, &arg_tys) {
                             let result_ty = entry.return_ty.to_resolved();
@@ -3473,7 +3523,112 @@ impl LowerCtx {
                 // Payload fields are validated structurally (field names matched against
                 // the state's declared fields). The `base` functional-update form is not
                 // supported for machine state ctors and is rejected below if present.
-                if let Some((machine_name, state_idx)) = self.resolve_machine_state_name(name) {
+                // Enum struct-variant ctor (`Shape::Box { w: 3, h: 4 }`).
+                // Looks like a struct literal but resolves to a registered
+                // enum variant in `enum_variants_by_name`. Resolved before
+                // the machine-state path so a qualified `Shape::Box` is
+                // routed correctly even outside any machine body.
+                let enum_struct_variant = if let Some((type_name, variant_idx, kind)) =
+                    self.lookup_variant_ctor(name)
+                {
+                    match kind {
+                        HirVariantKind::Struct(_) => Some((type_name, variant_idx, kind.clone())),
+                        // Unit / tuple variants written with struct-literal
+                        // syntax are a shape mismatch; report and let the
+                        // regular-record path handle the fallthrough so
+                        // downstream diagnostics still surface.
+                        HirVariantKind::Unit | HirVariantKind::Tuple(_) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "variant `{name}` initialised with struct-literal syntax"
+                                    ),
+                                    owning_pass: "variant ctor shape".to_string(),
+                                },
+                                span.clone(),
+                                "this variant has no named fields; use the matching call or identifier form",
+                            ));
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                if let Some((type_name, variant_idx, HirVariantKind::Struct(field_decls))) =
+                    enum_struct_variant
+                {
+                    if base.is_some() {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::NotYetImplemented {
+                                construct: "functional-update syntax on enum variant constructors"
+                                    .to_string(),
+                                owning_pass: "variant ctor validation".to_string(),
+                            },
+                            span.clone(),
+                            "enum variant constructors do not support `..base` syntax",
+                        ));
+                    }
+                    // Validate source-declared field names against the
+                    // variant's declared field set (mirrors the
+                    // assignment-target-authority LESSONS row: HIR does not
+                    // re-derive type identity from the AST, but it does
+                    // validate field-name coverage against the lowered
+                    // descriptor). MIR stores by `field_idx`, so we reorder
+                    // source fields into declaration order.
+                    let mut hir_payload: Vec<(String, HirExpr)> =
+                        Vec::with_capacity(field_decls.len());
+                    for (field_name, _field_ty) in &field_decls {
+                        if let Some((_, src_expr)) = fields.iter().find(|(n, _)| n == field_name) {
+                            hir_payload.push((
+                                field_name.clone(),
+                                self.lower_expr(src_expr, IntentKind::Read),
+                            ));
+                        } else {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "variant `{name}` missing field `{field_name}`"
+                                    ),
+                                    owning_pass: "variant ctor field coverage".to_string(),
+                                },
+                                span.clone(),
+                                "enum struct-variant constructor must initialise every declared field",
+                            ));
+                        }
+                    }
+                    // Flag unknown field names for checker-stream coverage;
+                    // the canonical struct-init expr's checker entry covers
+                    // most cases but the variant-ctor branch is HIR-side.
+                    for (fname, src_expr) in fields {
+                        if !field_decls.iter().any(|(n, _)| n == fname) {
+                            // Lower the expression for coverage even though
+                            // we discard it.
+                            let _ = self.lower_expr(src_expr, IntentKind::Read);
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::NotYetImplemented {
+                                    construct: format!("variant `{name}` has no field `{fname}`"),
+                                    owning_pass: "variant ctor field coverage".to_string(),
+                                },
+                                span.clone(),
+                                "extra field in enum struct-variant constructor",
+                            ));
+                        }
+                    }
+                    let result_ty = ResolvedTy::Named {
+                        name: type_name.clone(),
+                        args: Vec::new(),
+                    };
+                    (
+                        HirExprKind::MachineVariantCtor {
+                            machine_name: type_name,
+                            state_idx: variant_idx,
+                            payload: Some(hir_payload),
+                        },
+                        result_ty,
+                    )
+                } else if let Some((machine_name, state_idx)) =
+                    self.resolve_machine_state_name(name)
+                {
                     // Reject functional-update syntax (`SynReceived { ..base }`) on
                     // machine state constructors — the semantics differ from records.
                     if base.is_some() {
@@ -5544,6 +5699,110 @@ impl LowerCtx {
             .find_map(|scope| scope.get(name).map(|(id, ty, _)| (*id, ty.clone())))
     }
 
+    /// Look up an enum variant constructor by surface name (bare or
+    /// qualified). Returns `(type_name, variant_idx, &HirVariantKind)` when
+    /// `name` resolves to a registered enum variant. `None` for unknown
+    /// names, machine-state names (whose layout lives in machine descriptors
+    /// rather than `enum_variants_by_name`), and registry hits that point at
+    /// an enum which somehow has no recorded variant at that index (should
+    /// never happen — same-source ordering invariant).
+    fn lookup_variant_ctor(&self, name: &str) -> Option<(String, usize, &HirVariantKind)> {
+        let (type_name, idx) = self.machine_ctor_registry.get(name)?;
+        let variants = self.enum_variants_by_name.get(type_name)?;
+        let variant = variants.get(*idx)?;
+        Some((type_name.clone(), *idx, &variant.kind))
+    }
+
+    /// Build the `HirExprKind::MachineVariantCtor` node for a tuple-variant
+    /// constructor call. Synthetic field names "0", "1", ... are used —
+    /// MIR/codegen discard names and index payload slots by position (lane
+    /// plan D1).
+    fn lower_variant_ctor_tuple_call(
+        &mut self,
+        name: &str,
+        args: Vec<HirExpr>,
+        span: &std::ops::Range<usize>,
+    ) -> (HirExprKind, ResolvedTy) {
+        let Some((type_name, variant_idx, variant_kind)) = self.lookup_variant_ctor(name) else {
+            unreachable!("lower_variant_ctor_tuple_call called without registry hit");
+        };
+        let HirVariantKind::Tuple(field_tys) = variant_kind else {
+            unreachable!("lower_variant_ctor_tuple_call called with non-tuple variant");
+        };
+        let field_count = field_tys.len();
+        let type_name_owned = type_name;
+        let variant_idx_owned = variant_idx;
+        if args.len() != field_count {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::NotYetImplemented {
+                    construct: format!(
+                        "variant ctor `{name}` arity mismatch: expected {field_count}, got {}",
+                        args.len()
+                    ),
+                    owning_pass: "variant ctor arity".to_string(),
+                },
+                span.clone(),
+                "tuple-variant constructor called with the wrong number of arguments",
+            ));
+        }
+        let payload: Vec<(String, HirExpr)> = args
+            .into_iter()
+            .enumerate()
+            .map(|(idx, expr)| (idx.to_string(), expr))
+            .collect();
+        let result_ty = ResolvedTy::Named {
+            name: type_name_owned.clone(),
+            args: Vec::new(),
+        };
+        (
+            HirExprKind::MachineVariantCtor {
+                machine_name: type_name_owned,
+                state_idx: variant_idx_owned,
+                payload: Some(payload),
+            },
+            result_ty,
+        )
+    }
+
+    /// Emit a structured diagnostic when a variant constructor is called in
+    /// the wrong shape (unit variant invoked positionally, or struct variant
+    /// invoked positionally). Caller falls through to the regular-call path
+    /// to preserve checker-stream coverage.
+    fn report_variant_ctor_call_shape_mismatch(
+        &mut self,
+        name: &str,
+        kind: &HirVariantKind,
+        span: &std::ops::Range<usize>,
+    ) {
+        match kind {
+            HirVariantKind::Unit => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::NotYetImplemented {
+                        construct: format!("unit variant `{name}` called as a function"),
+                        owning_pass: "variant ctor arity".to_string(),
+                    },
+                    span.clone(),
+                    "unit-variant constructors are referenced as identifiers, not called",
+                ));
+            }
+            HirVariantKind::Struct(_) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::NotYetImplemented {
+                        construct: format!("struct variant `{name}` called positionally"),
+                        owning_pass: "variant ctor arity".to_string(),
+                    },
+                    span.clone(),
+                    "struct-variant constructors require named-field syntax (e.g. `Shape::Box { w: ..., h: ... }`)",
+                ));
+            }
+            HirVariantKind::Tuple(_) => {
+                // Tuple shape is the happy path handled by
+                // `lower_variant_ctor_tuple_call`; this arm is unreachable in
+                // production but kept exhaustive for the match.
+            }
+        }
+    }
+
     /// Resolve an identifier to a machine state constructor if `name` is a
     /// declared state of the currently-enclosing machine.
     ///
@@ -5771,16 +6030,12 @@ impl LowerCtx {
         let mut result_ty: Option<ResolvedTy> = None;
 
         for arm in arms {
-            // Walk the body unconditionally so all sub-expressions accumulate
-            // diagnostics even when an arm is being rejected. This mirrors
-            // existing fail-closed sites that lower sub-expressions for
-            // checker-stream coverage before emitting `Unsupported`.
-            let body_hir = self.lower_expr(&arm.body, IntentKind::Read);
-
-            // Guard expression: also walked unconditionally for coverage,
-            // then rejected. v0.5 does not lower pattern guards.
+            // Guard expression: walked for coverage, then rejected. v0.5
+            // does not lower pattern guards.
             if let Some(guard) = &arm.guard {
                 let _ = self.lower_expr(guard, IntentKind::Read);
+                // Also walk the body so checker-stream coverage stays full.
+                let _ = self.lower_expr(&arm.body, IntentKind::Read);
                 self.unsupported(
                     arm.pattern.1.clone(),
                     "pattern guards in match arms",
@@ -5797,6 +6052,7 @@ impl LowerCtx {
                 // intentionally omits these) or a checker-rejected arm that
                 // still reached HIR. Fail closed — the only correct shape
                 // here is to reject and let the user fix the source.
+                let _ = self.lower_expr(&arm.body, IntentKind::Read);
                 self.unsupported(
                     pattern_span.clone(),
                     "or-pattern / unsupported pattern in match arm",
@@ -5806,26 +6062,13 @@ impl LowerCtx {
                 continue;
             };
 
-            if !resolution.payload_bindings.is_empty() {
-                self.unsupported(
-                    pattern_span.clone(),
-                    "payload-bearing patterns in match arms",
-                    "match-expression-substrate",
-                );
-                rejected = true;
-                continue;
-            }
-
-            let (variant_match, variant_idx) = match resolution.pattern_kind {
+            // Resolve variant identity first; this gates whether payload
+            // binding can be wired even before we look at `payload_bindings`.
+            let (variant_match, variant_idx_opt) = match resolution.pattern_kind {
                 PatternKind::Wildcard => (None, None),
                 PatternKind::VariantCtor => {
-                    // Unit-variant constructor arm. `variant_match` is the
-                    // checker's resolved (type_name, variant_name) identity.
-                    // The absence of payload bindings (rejected above) is
-                    // the unit-variant proof.
-                    let Some(vm) = resolution.variant_match else {
-                        // VariantCtor without a VariantMatch entry is a
-                        // checker contract violation — fail closed.
+                    let Some(vm) = resolution.variant_match.clone() else {
+                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
                         self.unsupported(
                             pattern_span.clone(),
                             "variant pattern missing variant-match resolution",
@@ -5842,6 +6085,7 @@ impl LowerCtx {
                     let qualified = format!("{}::{}", vm.type_name, vm.variant_name);
                     let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned()
                     else {
+                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
                         self.unsupported(
                             pattern_span.clone(),
                             "match arm variant not registered in machine/enum ctor registry",
@@ -5858,6 +6102,7 @@ impl LowerCtx {
                 | PatternKind::Binding
                 | PatternKind::StructPattern
                 | PatternKind::TuplePattern => {
+                    let _ = self.lower_expr(&arm.body, IntentKind::Read);
                     self.unsupported(
                         pattern_span.clone(),
                         "literal / binding / struct / tuple pattern in match arm",
@@ -5868,13 +6113,54 @@ impl LowerCtx {
                 }
             };
 
+            // Allocate per-arm payload bindings (if any), register them in a
+            // fresh scope, then lower the body. The scope is popped after the
+            // body so payload names are invisible to sibling arms and to
+            // surrounding code (mirrors the `select` arm pattern).
+            self.push_scope();
+            let mut hir_payload_bindings: Vec<HirMatchArmBinding> =
+                Vec::with_capacity(resolution.payload_bindings.len());
+            for pb in &resolution.payload_bindings {
+                let resolved_ty = match ResolvedTy::from_ty(&pb.ty) {
+                    Ok(t) => t,
+                    Err(err) => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: pb.binding_name.clone(),
+                                reason: err.to_string(),
+                            },
+                            pattern_span.clone(),
+                            "match arm payload binding type failed boundary conversion",
+                        ));
+                        ResolvedTy::Unit
+                    }
+                };
+                let binding = self.bind(
+                    pb.binding_name.clone(),
+                    resolved_ty.clone(),
+                    false,
+                    pattern_span.clone(),
+                );
+                let field_idx = u32::try_from(pb.field_idx)
+                    .expect("payload field index exceeds u32::MAX — impossible in Hew");
+                hir_payload_bindings.push(HirMatchArmBinding {
+                    binding: binding.id,
+                    field_idx,
+                    name: pb.binding_name.clone(),
+                    ty: resolved_ty,
+                });
+            }
+            let body_hir = self.lower_expr(&arm.body, IntentKind::Read);
+            self.pop_scope();
+
             if result_ty.is_none() {
                 result_ty = Some(body_hir.ty.clone());
             }
 
             hir_arms.push(HirMatchArm {
                 variant_match,
-                variant_idx,
+                variant_idx: variant_idx_opt,
+                payload_bindings: hir_payload_bindings,
                 body: body_hir,
                 span: arm.pattern.1.start..arm.body.1.end,
             });

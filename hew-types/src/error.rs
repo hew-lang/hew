@@ -577,6 +577,25 @@ pub enum TypeErrorKind {
         /// `"Decode"`, or both).
         missing_traits: Vec<String>,
     },
+    /// A constructor or struct-variant match arm contains a payload subpattern
+    /// that is not a plain binding (`x`) or wildcard (`_`).
+    ///
+    /// The v0.5 payload subpattern surface is binding/wildcard-only.  Literal
+    /// tests (`Shape::Line(1)`), nested constructors (`Shape::Line(Other::Foo)`),
+    /// tuple/struct destructures inside a payload, and or-patterns inside a
+    /// payload are not yet lowered.  Accepting them silently would produce an
+    /// incorrect wildcard match; the checker rejects them with this diagnostic
+    /// until the substrate lane adds full nested-predicate support.
+    ///
+    /// Envelope code: `E_UNSUPPORTED_PAYLOAD_SUBPATTERN`.
+    UnsupportedPayloadSubpattern {
+        /// Variant constructor whose payload subpattern was rejected.
+        variant_name: String,
+        /// Short human-readable label for the rejected subpattern kind,
+        /// e.g. `"literal"`, `"nested constructor"`, `"tuple"`, `"struct"`,
+        /// or `"or-pattern"`.
+        kind_label: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -637,6 +656,7 @@ impl TypeErrorKind {
             Self::EmptyGenerator => "EmptyGenerator",
             Self::ClosureRecursive { .. } => "ClosureRecursive",
             Self::SinkPayloadNotWire { .. } => "SinkPayloadNotWire",
+            Self::UnsupportedPayloadSubpattern { .. } => "UnsupportedPayloadSubpattern",
         }
     }
 }

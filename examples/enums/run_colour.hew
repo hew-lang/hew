@@ -5,8 +5,8 @@
 //   2. Bare constructor `Green` resolves when unambiguous across all enums.
 //   3. Enum-typed values can be passed to and returned from functions.
 //
-// Match-arm lowering over user enums is sequenced as a follow-on lane;
-// this fixture uses integer-returning helpers to produce observable output.
+// This fixture focuses on construction; see `run_colour_match.hew`
+// for match-expression dispatch over the same enum types.
 enum Colour {
     Red;
     Green;

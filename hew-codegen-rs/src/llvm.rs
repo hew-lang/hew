@@ -1723,7 +1723,15 @@ fn place_pointer<'ctx>(
         // to the active variant's struct pointer and GEPs to its field
         // `field_idx`. See the layout-invariants block above
         // `register_machine_layouts` for the load-bearing struct shape.
-        Place::MachineTag(local) => {
+        //
+        // User-declared enums (`Place::EnumTag` / `Place::EnumVariant`)
+        // share the same LLVM layout: `register_enum_layouts` installs
+        // each `EnumLayout` into `machine_layout_map` keyed by the enum's
+        // name, so `machine_layout_for_local` resolves enum-typed locals
+        // through the same path. The Place variants are typed-distinct in
+        // MIR so future enum-only drop / lifecycle policies have a
+        // separate surface to attach to, but the codegen seam is one GEP.
+        Place::MachineTag(local) | Place::EnumTag(local) => {
             let layout = machine_layout_for_local(fn_ctx, local)?;
             let (slot, _slot_ty) = fn_ctx.locals.get(&local).copied().ok_or_else(|| {
                 CodegenError::FailClosed(format!(
@@ -1738,6 +1746,11 @@ fn place_pointer<'ctx>(
             Ok((tag_ptr, layout.tag_int_ty.into()))
         }
         Place::MachineVariant {
+            local,
+            variant_idx,
+            field_idx,
+        }
+        | Place::EnumVariant {
             local,
             variant_idx,
             field_idx,
@@ -1822,7 +1835,7 @@ fn place_resolved_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, place: Place) -> CodegenResu
         // signature stays `&ResolvedTy` (a borrow). For tag widths up
         // through 64 we route to the standard I8/I16/I32/I64 buckets;
         // narrower widths (1, 2, 4, …) round up to the smallest holder.
-        Place::MachineTag(_) => {
+        Place::MachineTag(_) | Place::EnumTag(_) => {
             // Map to the smallest standard integer that fits any tag.
             // Currently `lower_hir_module` derives `tag_width` from the
             // state count via `next_power_of_two().trailing_zeros()` so
@@ -1839,11 +1852,17 @@ fn place_resolved_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, place: Place) -> CodegenResu
             // static value with the appropriate width. Long-term, an
             // `i<W>` `ResolvedTy` variant would let this surface the
             // exact width; for v0.5 the I64-shaped reads via Move
-            // cover every use site.
+            // cover every use site. `EnumTag` shares the same layout as
+            // `MachineTag` (see `register_enum_layouts`).
             const TAG_TY: ResolvedTy = ResolvedTy::I64;
             Ok(&TAG_TY)
         }
         Place::MachineVariant {
+            local,
+            variant_idx,
+            field_idx,
+        }
+        | Place::EnumVariant {
             local,
             variant_idx,
             field_idx,
@@ -6555,6 +6574,7 @@ fn lower_terminator<'ctx>(
             const HEW_TRAP_INDEX_OUT_OF_BOUNDS: u64 = 205;
             const HEW_TRAP_ACTOR_SEND_FAILED: u64 = 206;
             const HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE: u64 = 207;
+            const HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH: u64 = 208;
             let code: u64 = match *kind {
                 TrapKind::IntegerOverflow => HEW_TRAP_INTEGER_OVERFLOW,
                 TrapKind::DivideByZero => HEW_TRAP_DIVIDE_BY_ZERO,
@@ -6563,6 +6583,7 @@ fn lower_terminator<'ctx>(
                 TrapKind::IndexOutOfBounds => HEW_TRAP_INDEX_OUT_OF_BOUNDS,
                 TrapKind::SupervisorChildUnavailable => HEW_TRAP_ACTOR_SEND_FAILED,
                 TrapKind::MachineDispatchUnreachable => HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE,
+                TrapKind::ExhaustivenessFallthrough => HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH,
             };
             emit_trap_with_code(fn_ctx, code, "trap")?;
         }

@@ -2725,6 +2725,12 @@ fn collect_unknown_self_fields_in_expr(
             collect_unknown_self_fields_in_expr(end, state_fields, seen, unknown);
             collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
         }
+        HirExprKind::Match { scrutinee, arms } => {
+            collect_unknown_self_fields_in_expr(scrutinee, state_fields, seen, unknown);
+            for arm in arms {
+                collect_unknown_self_fields_in_expr(&arm.body, state_fields, seen, unknown);
+            }
+        }
     }
 }
 
@@ -3476,12 +3482,15 @@ impl Builder {
                         // WHY not a MirDiagnostic: the invariant is imposed
                         // by the producer, not by user code; a panic is the
                         // correct fail-closed signal for a producer bug.
-                        Place::MachineTag(_) | Place::MachineVariant { .. } => {
+                        Place::MachineTag(_)
+                        | Place::MachineVariant { .. }
+                        | Place::EnumTag(_)
+                        | Place::EnumVariant { .. } => {
                             panic!(
                                 "builder invariant: `Let` binding may not bind directly to a \
-                                 MachineTag or MachineVariant place; these are projection \
-                                 primitives into a machine value, not independent bindings. \
-                                 Binding {:?}, src {:?}",
+                                 MachineTag / MachineVariant / EnumTag / EnumVariant place; \
+                                 these are projection primitives into a tagged-union value, \
+                                 not independent bindings. Binding {:?}, src {:?}",
                                 binding.id, src
                             );
                         }
@@ -4528,6 +4537,7 @@ impl Builder {
                 inclusive,
                 body,
             } => self.lower_for_range(binding, start, end, *inclusive, body),
+            HirExprKind::Match { scrutinee, arms } => self.lower_match(scrutinee, arms, &expr.ty),
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
                 // NotYetImplemented and the driver should have stopped
@@ -5289,6 +5299,191 @@ impl Builder {
         // Join. Subsequent lowering continues in this block; the If
         // expression's value Place is the result_local (loads happen
         // through the same Place that both arms wrote into).
+        self.start_block(join_bb);
+        Some(result_place)
+    }
+
+    /// Lower an `HirExprKind::Match` expression to a tag-dispatch CFG.
+    ///
+    /// Emits the following block topology over `Place::EnumTag(scrutinee)`:
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   scrutinee_local = lower(scrutinee)
+    ///   tag_local = Move from Place::EnumTag(scrutinee_local)
+    ///   Goto check_bb_0
+    ///
+    /// check_bb_i (one per non-wildcard arm i):
+    ///   k = ConstI64(variant_idx_i)
+    ///   cond_i = IntCmp(Eq, tag_local, k)
+    ///   Branch { cond_i, then: body_bb_i, else: check_bb_{i+1} }
+    ///
+    /// body_bb_i:
+    ///   result_local = lower(arm_i.body)
+    ///   Goto join_bb
+    ///
+    /// (last check falls through to either the wildcard body or the
+    /// fail-closed trap block)
+    ///
+    /// wildcard_bb (when a wildcard arm exists):
+    ///   result_local = lower(wildcard.body)
+    ///   Goto join_bb
+    ///
+    /// fallthrough_bb (when no wildcard arm — emitted as a runtime guard
+    /// even though the checker pre-gates non-exhaustive matches per
+    /// LESSONS `match-fail-closed`):
+    ///   Trap { kind: ExhaustivenessFallthrough }
+    ///
+    /// join_bb:
+    ///   (subsequent lowering continues here; result is result_local)
+    /// ```
+    ///
+    /// Returns the result `Place::Local` that every arm body's value is
+    /// moved into. For a Unit-valued match the result local is allocated
+    /// but never read by codegen.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single coherent CFG builder for the match dispatch chain; splitting would hide block-allocation ordering"
+    )]
+    fn lower_match(
+        &mut self,
+        scrutinee: &HirExpr,
+        arms: &[hew_hir::HirMatchArm],
+        result_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        // Result local first so every arm's Move dominates it.
+        let result_place = self.alloc_local(result_ty.clone());
+
+        // Partition arms: ordered non-wildcard checks followed by an
+        // optional wildcard. The exhaustiveness checker prevents two
+        // wildcards or a wildcard followed by a variant arm reaching
+        // here, but we treat the first wildcard as the catch-all and
+        // ignore any trailing arms (which would be dead per the
+        // checker's reachability rule).
+        let mut variant_arms: Vec<&hew_hir::HirMatchArm> = Vec::new();
+        let mut wildcard_arm: Option<&hew_hir::HirMatchArm> = None;
+        for arm in arms {
+            if arm.variant_match.is_some() {
+                variant_arms.push(arm);
+            } else if wildcard_arm.is_none() {
+                wildcard_arm = Some(arm);
+            }
+        }
+
+        // Lower the scrutinee in the entry block. A failure propagates
+        // via `?`; the half-built match leaves no dangling block.
+        let scrutinee_place = self.lower_value(scrutinee)?;
+        let scrutinee_local = match scrutinee_place {
+            Place::Local(n) => n,
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "match scrutinee place shape".to_string(),
+                        site: scrutinee.site,
+                    },
+                    note: format!(
+                        "match scrutinee must lower to Place::Local; got {other:?}. The HIR \
+                         producer should only emit Match for enum-typed scrutinees backed by \
+                         a local slot"
+                    ),
+                });
+                return None;
+            }
+        };
+
+        // Load the tag into a fresh i64 local. `Place::EnumTag(local)`
+        // is the substrate primitive; codegen GEPs to outer-struct
+        // field 0 and the Move arm widens the iW tag to i64 as needed.
+        let tag_local = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::Move {
+            dest: tag_local,
+            src: Place::EnumTag(scrutinee_local),
+        });
+
+        // Allocate join block up front so every arm body can target it.
+        let join_bb = self.alloc_block();
+
+        // Reserve one body block per variant arm and one block for the
+        // wildcard (or the fail-closed trap when no wildcard exists).
+        let body_bbs: Vec<u32> = (0..variant_arms.len())
+            .map(|_| self.alloc_block())
+            .collect();
+        let tail_bb = self.alloc_block();
+
+        // Chain: emit one Branch per variant arm. The first compare lives
+        // in the entry block (current block immediately after the tag
+        // load); subsequent compares are in their own blocks linked
+        // through `else_target`.
+        for (i, arm) in variant_arms.iter().enumerate() {
+            // Allocate a constant local for the variant index and an
+            // i1 result local for the equality compare.
+            let k_local = self.alloc_local(ResolvedTy::I64);
+            let variant_idx = arm.variant_idx.expect(
+                "HIR producer must set variant_idx for every non-wildcard arm; \
+                 lower_match_expr is the contract owner",
+            );
+            self.instructions.push(Instr::ConstI64 {
+                dest: k_local,
+                value: i64::from(variant_idx),
+            });
+            let cond_local = self.alloc_local(ResolvedTy::Bool);
+            self.instructions.push(Instr::IntCmp {
+                pred: crate::model::CmpPred::Eq,
+                lhs: tag_local,
+                rhs: k_local,
+                dest: cond_local,
+            });
+
+            let next_target = if i + 1 < variant_arms.len() {
+                self.alloc_block()
+            } else {
+                tail_bb
+            };
+            self.finish_current_block(Terminator::Branch {
+                cond: cond_local,
+                then_target: body_bbs[i],
+                else_target: next_target,
+            });
+            // Open the next check block (or the tail). For the last
+            // variant arm we leave the cursor in `tail_bb` so the
+            // wildcard / trap emission below can append to it.
+            self.start_block(next_target);
+        }
+
+        // Tail block: either the wildcard body or the fail-closed trap.
+        if let Some(wildcard) = wildcard_arm {
+            let value = self.lower_value(&wildcard.body);
+            if let Some(src) = value {
+                self.instructions.push(Instr::Move {
+                    dest: result_place,
+                    src,
+                });
+            }
+            self.finish_current_block(Terminator::Goto { target: join_bb });
+        } else {
+            // Belt-and-braces runtime guard per LESSONS `match-fail-closed`
+            // (P0). The checker rejects non-exhaustive enum matches at
+            // compile time so this block is dead in well-typed programs;
+            // the trap proves the property at runtime.
+            self.finish_current_block(Terminator::Trap {
+                kind: crate::model::TrapKind::ExhaustivenessFallthrough,
+            });
+        }
+
+        // Variant arm body blocks.
+        for (i, arm) in variant_arms.iter().enumerate() {
+            self.start_block(body_bbs[i]);
+            let value = self.lower_value(&arm.body);
+            if let Some(src) = value {
+                self.instructions.push(Instr::Move {
+                    dest: result_place,
+                    src,
+                });
+            }
+            self.finish_current_block(Terminator::Goto { target: join_bb });
+        }
+
+        // Join. Subsequent lowering continues here.
         self.start_block(join_bb);
         Some(result_place)
     }
@@ -8368,9 +8563,12 @@ fn duplex_parent_local(place: Place) -> Option<u32> {
         | Place::ReturnSlot
         // Machine sub-structure places are not Duplex-family; they have no
         // parent Duplex local. MachineTag and MachineVariant are part of the
-        // machine tagged-union, not the M2 duplex substrate.
+        // machine tagged-union, not the M2 duplex substrate. EnumTag and
+        // EnumVariant share the same shape for user-declared enums.
         | Place::MachineTag(_)
-        | Place::MachineVariant { .. } => None,
+        | Place::MachineVariant { .. }
+        | Place::EnumTag(_)
+        | Place::EnumVariant { .. } => None,
     }
 }
 
@@ -9002,7 +9200,9 @@ fn drop_kind_for(place: Place, ty: &ResolvedTy) -> DropKind {
         | Place::Local(_)
         | Place::ReturnSlot
         | Place::MachineTag(_)
-        | Place::MachineVariant { .. } => DropKind::Resource,
+        | Place::MachineVariant { .. }
+        | Place::EnumTag(_)
+        | Place::EnumVariant { .. } => DropKind::Resource,
     }
 }
 

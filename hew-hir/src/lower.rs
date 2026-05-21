@@ -9,7 +9,7 @@ use hew_parser::ast::{
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildSlot,
     ClosureCaptureFact, ExecutionContextReader, LoweringFact, MethodCallReceiverKind,
-    MethodCallRewrite, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
+    MethodCallRewrite, PatternKind, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -23,7 +23,7 @@ use crate::node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
     HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
     HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
-    HirMachineEvent, HirMachineState, HirMachineTransition, HirModule, HirRecordDecl,
+    HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirModule, HirRecordDecl,
     HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind,
     HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
 };
@@ -791,6 +791,12 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
             collect_call_sites_in_expr(end, out);
             collect_call_sites_in_block(body, out);
         }
+        HirExprKind::Match { scrutinee, arms } => {
+            collect_call_sites_in_expr(scrutinee, out);
+            for arm in arms {
+                collect_call_sites_in_expr(&arm.body, out);
+            }
+        }
         _ => {}
     }
 }
@@ -1147,6 +1153,12 @@ struct LowerCtx {
     /// constructor at module scope (`var light = Red;`, `light.step(Tick);`,
     /// `let next = TrafficLight::Green;`, `let c = Colour::Red;`).
     machine_ctor_registry: HashMap<String, (String, usize)>,
+    /// Checker-resolved per-arm pattern classifications. Cloned from
+    /// `tc_output.pattern_resolutions` at construction. Keyed by the
+    /// `SpanKey` of each match arm's pattern span. Consumed by
+    /// `Expr::Match` lowering to map arms to their resolved enum variant
+    /// (or wildcard) without re-resolving names against the type registry.
+    pattern_resolutions: HashMap<SpanKey, hew_types::ArmResolution>,
 }
 
 impl LowerCtx {
@@ -1195,6 +1207,7 @@ impl LowerCtx {
             current_machine_states: None,
             current_machine_source_state: None,
             machine_ctor_registry: HashMap::new(),
+            pattern_resolutions: tc_output.pattern_resolutions.clone(),
         }
     }
 
@@ -4097,6 +4110,7 @@ impl LowerCtx {
                     )
                 }
             }
+            Expr::Match { scrutinee, arms } => self.lower_match_expr(scrutinee, arms, &span),
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -5704,6 +5718,201 @@ impl LowerCtx {
         }
     }
 
+    /// Lower a surface `match` expression to `HirExprKind::Match`.
+    ///
+    /// **Substrate scope (v0.5 match-expression slice)**: this lane lowers
+    /// only unit-variant constructor arms (e.g. `Colour::Red`) and wildcard
+    /// arms (`_`). The following are rejected with a structured
+    /// `NotYetImplemented` diagnostic and lower to `HirExprKind::Unsupported`,
+    /// per LESSONS `match-fail-closed` (P0) and
+    /// `exhaustive-traversal-and-lowering` (P1):
+    ///
+    /// - Pattern guards (`Red if cond => ...`).
+    /// - Payload-bearing constructor patterns (`Some(x)`, `Ok(v)`). Their
+    ///   substrate (`Place::EnumVariant`) lands here but is consumed by the
+    ///   Option<T> destructure slice; this lane reserves it.
+    /// - Literal patterns (`1`, `"hello"`). Different lowering shape
+    ///   (chained equality), separate plan.
+    /// - Plain bindings (`n => ...`) and struct/tuple patterns. Substrate
+    ///   for these is also future work.
+    /// - Or-patterns (`Red | Blue => ...`). The pattern-resolutions
+    ///   side-table intentionally omits or-pattern arms; a missing entry
+    ///   here is treated as a fail-closed reject, never a silent
+    ///   fallthrough.
+    ///
+    /// The type checker has already enforced exhaustiveness for enum
+    /// scrutinees (`hew-types/src/check/diagnostics.rs::check_exhaustiveness`).
+    /// MIR adds a runtime `Terminator::Trap { ExhaustivenessFallthrough }`
+    /// as belt-and-braces; this HIR producer assumes the checker pre-gate
+    /// holds.
+    ///
+    /// Returns `(HirExprKind, ResolvedTy)`. The expression type is the
+    /// first-arm body type (all arms must share a type — the type checker
+    /// has already verified this; a mismatch would be a checker bug).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one reject branch per unsupported pattern shape; splitting would scatter the fail-closed audit"
+    )]
+    fn lower_match_expr(
+        &mut self,
+        scrutinee: &Spanned<Expr>,
+        arms: &[hew_parser::ast::MatchArm],
+        span: &std::ops::Range<usize>,
+    ) -> (HirExprKind, ResolvedTy) {
+        let scrutinee_hir = self.lower_expr(scrutinee, IntentKind::Read);
+
+        // Track whether any arm has been rejected; if so we still walk the
+        // arm bodies (for checker-stream coverage) but produce
+        // `HirExprKind::Unsupported` rather than a partial `Match` node.
+        // A fail-closed shape keeps MIR lowering simple and prevents a
+        // half-built Match from reaching codegen.
+        let mut rejected = false;
+        let mut hir_arms: Vec<HirMatchArm> = Vec::with_capacity(arms.len());
+        let mut result_ty: Option<ResolvedTy> = None;
+
+        for arm in arms {
+            // Walk the body unconditionally so all sub-expressions accumulate
+            // diagnostics even when an arm is being rejected. This mirrors
+            // existing fail-closed sites that lower sub-expressions for
+            // checker-stream coverage before emitting `Unsupported`.
+            let body_hir = self.lower_expr(&arm.body, IntentKind::Read);
+
+            // Guard expression: also walked unconditionally for coverage,
+            // then rejected. v0.5 does not lower pattern guards.
+            if let Some(guard) = &arm.guard {
+                let _ = self.lower_expr(guard, IntentKind::Read);
+                self.unsupported(
+                    arm.pattern.1.clone(),
+                    "pattern guards in match arms",
+                    "match-expression-substrate",
+                );
+                rejected = true;
+                continue;
+            }
+
+            let pattern_span = &arm.pattern.1;
+            let key = SpanKey::from(pattern_span);
+            let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
+                // Missing resolution: either an or-pattern arm (the checker
+                // intentionally omits these) or a checker-rejected arm that
+                // still reached HIR. Fail closed — the only correct shape
+                // here is to reject and let the user fix the source.
+                self.unsupported(
+                    pattern_span.clone(),
+                    "or-pattern / unsupported pattern in match arm",
+                    "match-expression-substrate",
+                );
+                rejected = true;
+                continue;
+            };
+
+            if !resolution.payload_bindings.is_empty() {
+                self.unsupported(
+                    pattern_span.clone(),
+                    "payload-bearing patterns in match arms",
+                    "match-expression-substrate",
+                );
+                rejected = true;
+                continue;
+            }
+
+            let (variant_match, variant_idx) = match resolution.pattern_kind {
+                PatternKind::Wildcard => (None, None),
+                PatternKind::VariantCtor => {
+                    // Unit-variant constructor arm. `variant_match` is the
+                    // checker's resolved (type_name, variant_name) identity.
+                    // The absence of payload bindings (rejected above) is
+                    // the unit-variant proof.
+                    let Some(vm) = resolution.variant_match else {
+                        // VariantCtor without a VariantMatch entry is a
+                        // checker contract violation — fail closed.
+                        self.unsupported(
+                            pattern_span.clone(),
+                            "variant pattern missing variant-match resolution",
+                            "match-expression-substrate",
+                        );
+                        rejected = true;
+                        continue;
+                    };
+                    // Resolve variant_idx via `machine_ctor_registry`
+                    // (qualified key) — the HIR-side registry populated
+                    // from `Item::TypeDecl` body order. The index matches
+                    // `EnumLayout.variants` ordering so MIR/codegen don't
+                    // re-derive it.
+                    let qualified = format!("{}::{}", vm.type_name, vm.variant_name);
+                    let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned()
+                    else {
+                        self.unsupported(
+                            pattern_span.clone(),
+                            "match arm variant not registered in machine/enum ctor registry",
+                            "match-expression-substrate",
+                        );
+                        rejected = true;
+                        continue;
+                    };
+                    let idx = u32::try_from(idx_usize)
+                        .expect("variant index exceeds u32::MAX — impossible in Hew");
+                    (Some(vm), Some(idx))
+                }
+                PatternKind::Literal
+                | PatternKind::Binding
+                | PatternKind::StructPattern
+                | PatternKind::TuplePattern => {
+                    self.unsupported(
+                        pattern_span.clone(),
+                        "literal / binding / struct / tuple pattern in match arm",
+                        "match-expression-substrate",
+                    );
+                    rejected = true;
+                    continue;
+                }
+            };
+
+            if result_ty.is_none() {
+                result_ty = Some(body_hir.ty.clone());
+            }
+
+            hir_arms.push(HirMatchArm {
+                variant_match,
+                variant_idx,
+                body: body_hir,
+                span: arm.pattern.1.start..arm.body.1.end,
+            });
+        }
+
+        if rejected {
+            return (
+                HirExprKind::Unsupported(
+                    "match expression contains an unsupported arm shape".into(),
+                ),
+                ResolvedTy::Unit,
+            );
+        }
+
+        // Empty arms list is rejected by the parser/checker before reaching
+        // here; treat the unexpected case as fail-closed.
+        if hir_arms.is_empty() {
+            self.unsupported(
+                span.clone(),
+                "match expression with no arms",
+                "match-expression-substrate",
+            );
+            return (
+                HirExprKind::Unsupported("match expression with no arms".into()),
+                ResolvedTy::Unit,
+            );
+        }
+
+        let ty = result_ty.unwrap_or(ResolvedTy::Unit);
+        (
+            HirExprKind::Match {
+                scrutinee: Box::new(scrutinee_hir),
+                arms: hir_arms,
+            },
+            ty,
+        )
+    }
+
     /// Lower the body block of a `scope{}` expression. This is separate from
     /// `lower_block` because statements inside a scope body follow different
     /// rules:
@@ -6129,6 +6338,12 @@ fn collect_captures_walk(
             collect_captures_walk(end, param_ids, seen, captures, self_id);
             collect_captures_walk_block(body, param_ids, seen, captures, self_id);
         }
+        HirExprKind::Match { scrutinee, arms } => {
+            collect_captures_walk(scrutinee, param_ids, seen, captures, self_id);
+            for arm in arms {
+                collect_captures_walk(&arm.body, param_ids, seen, captures, self_id);
+            }
+        }
     }
 }
 
@@ -6336,6 +6551,12 @@ fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk(start, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(end, outer_bindings, seen, captures);
             collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            collect_general_closure_captures_walk(scrutinee, outer_bindings, seen, captures);
+            for arm in arms {
+                collect_general_closure_captures_walk(&arm.body, outer_bindings, seen, captures);
+            }
         }
     }
 }
@@ -6743,6 +6964,12 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
             collect_hir_emitted_events_walk(callee, event_names, out);
             for a in args {
                 collect_hir_emitted_events_walk(a, event_names, out);
+            }
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            collect_hir_emitted_events_walk(scrutinee, event_names, out);
+            for arm in arms {
+                collect_hir_emitted_events_walk(&arm.body, event_names, out);
             }
         }
         _ => {}

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{BinaryOp, OverflowPolicy, ResourceMarker, Span};
-use hew_types::{ChildSlot, ExecutionContextReader, ResolvedTy};
+use hew_types::{ChildSlot, ExecutionContextReader, ResolvedTy, VariantMatch};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::monomorph::{MonomorphizedFn, RecordLayout};
@@ -942,7 +942,64 @@ pub enum HirExprKind {
         /// Loop body.
         body: HirBlock,
     },
+    /// `match scrutinee { arm; arm; ... }` — tag-dispatch over an enum-typed
+    /// scrutinee. Produced exclusively from `Expr::Match` when the type
+    /// checker has resolved each accepted arm's pattern via the
+    /// `pattern_resolutions` side table.
+    ///
+    /// **Scope (v0.5 substrate slice)**: only unit-variant patterns
+    /// (`Colour::Red`) and wildcard arms (`_`) are lowered here. Pattern
+    /// guards, payload-bearing constructor patterns (`Some(x)`), literal
+    /// patterns, struct/tuple patterns, and or-patterns are all rejected
+    /// at HIR lowering with a structured `NotYetImplemented` diagnostic.
+    /// Payload-bearing variant lowering grows on top of this substrate via
+    /// the `Place::EnumVariant` MIR primitive (Option<T> slice 2).
+    ///
+    /// **Exhaustiveness**: enforced by the type checker at
+    /// `hew-types/src/check/diagnostics.rs::check_exhaustiveness`. A
+    /// non-exhaustive enum match is a hard error before HIR lowering
+    /// produces this node. The MIR producer additionally emits a
+    /// `Terminator::Trap { kind: ExhaustivenessFallthrough }` block at the
+    /// chain's tail as a fail-closed runtime guard
+    /// (LESSONS `match-fail-closed`).
+    Match {
+        /// The matched expression. Its `ty` is the resolved enum type.
+        scrutinee: Box<HirExpr>,
+        /// Arms in source order. Each arm's `variant_match` is `None` for
+        /// a wildcard arm or `Some(VariantMatch)` for a unit-variant arm.
+        arms: Vec<HirMatchArm>,
+    },
     Unsupported(String),
+}
+
+/// One arm of an `HirExprKind::Match` expression.
+///
+/// `variant_match` carries the checker-resolved enum variant identity for
+/// constructor-pattern arms (e.g. `Colour::Red`). `None` denotes a wildcard
+/// arm (`_`). Payload-bearing patterns and guards never produce a
+/// `HirMatchArm` — they are rejected at HIR lowering with a structured
+/// diagnostic so the slice's substrate stays honest.
+///
+/// `body` is the arm's right-hand-side expression. The arm's source span
+/// is preserved for diagnostics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirMatchArm {
+    /// `Some(VariantMatch)` for a unit variant constructor pattern;
+    /// `None` for a wildcard arm. See `pattern_resolutions` in the
+    /// `hew-types` side table for the producer.
+    pub variant_match: Option<VariantMatch>,
+    /// HIR-resolved zero-based variant index. `Some(idx)` for unit-variant
+    /// constructor arms; `None` for wildcard arms. The index matches the
+    /// declaration order in `HirTypeDecl.unit_variants` and the
+    /// `EnumLayout.variants` ordering MIR/codegen consume, so MIR's
+    /// `lower_match` can emit the tag-comparison constant directly
+    /// without re-resolving against the type registry. Resolved at HIR
+    /// lowering time from `LowerCtx.machine_ctor_registry`.
+    pub variant_idx: Option<u32>,
+    /// Arm body expression. Evaluates only when this arm's predicate wins.
+    pub body: HirExpr,
+    /// Source span of the arm (pattern through body).
+    pub span: std::ops::Range<usize>,
 }
 
 /// One captured binding inside an `HirExprKind::SpawnLambdaActor`

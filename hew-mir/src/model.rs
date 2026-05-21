@@ -699,6 +699,14 @@ pub enum TrapKind {
     /// that future codegen grows into when the state×event dispatch tree
     /// replaces the synthesised step function's single-block stub.
     MachineDispatchUnreachable,
+    /// `match` expression dispatch fell through every arm at runtime. Per
+    /// LESSONS `match-fail-closed` (P0), MIR emits a belt-and-braces trap
+    /// after the last arm's check even though the type checker already
+    /// rejects non-exhaustive enum matches at compile time. The trap is
+    /// dead code in well-typed programs; it proves the property at runtime
+    /// and absorbs any future producer bug that lets an unreached value
+    /// reach the dispatch chain. Producer: match-expression substrate.
+    ExhaustivenessFallthrough,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -955,6 +963,50 @@ pub enum Place {
     /// WHEN-OBSOLETE: never — permanent MIR primitive paired with
     /// `MachineTag`.
     MachineVariant {
+        local: u32,
+        variant_idx: u32,
+        field_idx: u32,
+    },
+    /// Discriminant tag of a user-defined enum value held in `local`.
+    ///
+    /// Addresses the integer tag field of the tagged-union representation
+    /// of a user enum (declared via `type T { enum A; B; ... }`). The tag
+    /// encodes the active variant as a zero-based ordinal matching the
+    /// declaration order in the enum's `unit_variants` list (and the
+    /// `MachineVariantLayout` entries inside the corresponding `EnumLayout`).
+    ///
+    /// Substrate-distinct from `MachineTag` so future enum-specific drop
+    /// and lifecycle policies (which differ from machine entry/exit hooks)
+    /// have a typed surface to attach to. The codegen seam delegates to
+    /// the same outer-struct field-0 GEP that `MachineTag` uses today —
+    /// both enums and machines share the
+    /// `{ tag: iW, payload: [N x i8] }` layout — but the MIR primitive
+    /// keeps the producer authority typed.
+    ///
+    /// **Tag-dominance authority**: any `Place::EnumVariant` access is
+    /// only legal when the corresponding `EnumTag` value has been
+    /// compared and the matching branch has been taken. Slice 2 of the
+    /// match-expression substrate enforces this structurally — branch
+    /// chains over `EqI32(tag, k)` dominate every load of a payload
+    /// projected through `EnumVariant`.
+    ///
+    /// WHEN-OBSOLETE: never — permanent MIR primitive for user enum
+    /// tag-dispatch lowering.
+    EnumTag(u32),
+    /// Active variant payload field of a user enum value held in `local`,
+    /// dominated by `Place::EnumTag(local)`.
+    ///
+    /// `variant_idx` is the zero-based variant ordinal (declaration order
+    /// in the enum's `unit_variants` / `EnumLayout.variants`). `field_idx`
+    /// is the zero-based field ordinal within that variant's payload.
+    ///
+    /// This lane's substrate slice introduces the primitive but does not
+    /// emit loads through it — only unit-variant matching is supported
+    /// here. Payload-bearing variant destructuring (e.g. `Some(x)`,
+    /// `Ok(v)`) lands as a follow-on consumer of this primitive (Option<T>
+    /// substrate slice 2), so the dominance contract is documented once
+    /// and reused unchanged.
+    EnumVariant {
         local: u32,
         variant_idx: u32,
         field_idx: u32,

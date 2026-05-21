@@ -157,3 +157,119 @@ fn enum_unit_ctor_module_verifies() {
     emit_module(&pipeline, &options)
         .expect("emit_module with user-enum layout must verify cleanly");
 }
+
+/// End-to-end signal for match-arm dispatch over a unit enum. Runs the
+/// in-tree `hew` binary on `examples/enums/run_colour_match.hew` and
+/// diffs stdout against the `.expected` file. The fixture exercises a
+/// three-arm `match c { Red => 1, Green => 2, Blue => 3 }` and asserts
+/// each scrutinee dispatches to its named variant body.
+#[test]
+fn run_colour_match_fixture_executes() {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let hew_bin = std::path::PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .join("target")
+        .join("debug")
+        .join("hew");
+    let fixture = std::path::PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join("enums")
+        .join("run_colour_match.hew");
+    let expected_path = fixture.with_extension("expected");
+    let expected = std::fs::read_to_string(&expected_path).expect("read .expected");
+
+    let output = std::process::Command::new(&hew_bin)
+        .arg("run")
+        .arg(&fixture)
+        .output()
+        .expect("spawn hew run");
+    assert!(
+        output.status.success(),
+        "hew run exited non-zero (status={:?}); stderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf-8");
+    assert_eq!(stdout, expected, "run_colour_match stdout mismatch");
+}
+
+/// End-to-end signal for wildcard arms in match-arm dispatch. Runs the
+/// in-tree `hew` binary on `examples/enums/run_colour_match_wildcard.hew`
+/// and diffs stdout against the `.expected` file. The fixture exercises
+/// a single named arm followed by a `_` wildcard arm, asserting both
+/// the named path and the catch-all path produce the expected outputs.
+#[test]
+fn run_colour_match_wildcard_fixture_executes() {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let hew_bin = std::path::PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .join("target")
+        .join("debug")
+        .join("hew");
+    let fixture = std::path::PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join("enums")
+        .join("run_colour_match_wildcard.hew");
+    let expected_path = fixture.with_extension("expected");
+    let expected = std::fs::read_to_string(&expected_path).expect("read .expected");
+
+    let output = std::process::Command::new(&hew_bin)
+        .arg("run")
+        .arg(&fixture)
+        .output()
+        .expect("spawn hew run");
+    assert!(
+        output.status.success(),
+        "hew run exited non-zero (status={:?}); stderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf-8");
+    assert_eq!(
+        stdout, expected,
+        "run_colour_match_wildcard stdout mismatch"
+    );
+}
+
+/// End-to-end signal for `let n = match ...` — match-as-expression
+/// in a binding position. Runs the in-tree `hew` binary on
+/// `examples/enums/run_colour_match_let.hew` and diffs stdout against
+/// the `.expected` file.
+#[test]
+fn run_colour_match_let_fixture_executes() {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let hew_bin = std::path::PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .join("target")
+        .join("debug")
+        .join("hew");
+    let fixture = std::path::PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join("enums")
+        .join("run_colour_match_let.hew");
+    let expected_path = fixture.with_extension("expected");
+    let expected = std::fs::read_to_string(&expected_path).expect("read .expected");
+
+    let output = std::process::Command::new(&hew_bin)
+        .arg("run")
+        .arg(&fixture)
+        .output()
+        .expect("spawn hew run");
+    assert!(
+        output.status.success(),
+        "hew run exited non-zero (status={:?}); stderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf-8");
+    assert_eq!(stdout, expected, "run_colour_match_let stdout mismatch");
+}

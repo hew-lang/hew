@@ -259,6 +259,16 @@ pub const HEW_TRAP_ACTOR_SEND_FAILED: i32 = 206;
 /// programs; the trap proves the property at runtime.
 pub const HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE: i32 = 207;
 
+/// Discriminator for a `Terminator::Trap { kind: ExhaustivenessFallthrough }`.
+///
+/// Fires when a `match`-expression dispatch chain falls through every arm at
+/// runtime. The type checker pre-gates this code path by rejecting
+/// non-exhaustive enum matches; this trap is the belt-and-braces fail-closed
+/// surface mandated by LESSONS `match-fail-closed` (P0) — dead in well-typed
+/// programs, observable if a producer regression ever lets an unreached value
+/// reach the dispatch chain.
+pub const HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH: i32 = 208;
+
 /// Convert a canonical Hew trap discriminator into the WASI process exit code
 /// used when a trap escapes outside actor dispatch.
 ///
@@ -275,7 +285,8 @@ pub fn canonical_trap_wasi_exit_code(code: i32) -> Option<i32> {
         | HEW_TRAP_SHIFT_OUT_OF_RANGE
         | HEW_TRAP_INDEX_OUT_OF_BOUNDS
         | HEW_TRAP_ACTOR_SEND_FAILED
-        | HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE => Some(code),
+        | HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE
+        | HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH => Some(code),
         _ => None,
     }
 }
@@ -305,6 +316,11 @@ pub enum ExitReason {
     /// Actor crashed because a synthesised machine `<Name>__step` dispatch
     /// reached a state×event combination with no transition (error code 207).
     MachineDispatchUnreachable,
+    /// Actor crashed because a `match` expression dispatch chain fell through
+    /// every arm at runtime (error code 208). The checker pre-gates this with
+    /// exhaustiveness errors; reaching this trap indicates a producer-side
+    /// regression in match-arm lowering.
+    ExhaustivenessFallthrough,
     /// Actor crashed with a hardware signal or via `hew_panic`. The raw
     /// signal number is preserved.
     Signal(i32),
@@ -327,6 +343,7 @@ impl ExitReason {
             HEW_TRAP_INDEX_OUT_OF_BOUNDS => ExitReason::IndexOutOfBounds,
             HEW_TRAP_ACTOR_SEND_FAILED => ExitReason::ActorSendFailed,
             HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE => ExitReason::MachineDispatchUnreachable,
+            HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH => ExitReason::ExhaustivenessFallthrough,
             sig => ExitReason::Signal(sig),
         }
     }

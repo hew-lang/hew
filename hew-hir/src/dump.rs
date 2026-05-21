@@ -706,6 +706,18 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             dump_expr(out, end, indent + 4);
             dump_block(out, body, indent + 4);
         }
+        HirExprKind::Match { scrutinee, arms } => {
+            writeln!(out, "{pad}  match ({} arms)", arms.len()).expect("write to string");
+            dump_expr(out, scrutinee, indent + 4);
+            for arm in arms {
+                let label = match &arm.variant_match {
+                    Some(vm) => format!("{}::{}", vm.type_name, vm.variant_name),
+                    None => "_".to_string(),
+                };
+                writeln!(out, "{pad}    arm {label}").expect("write to string");
+                dump_expr(out, &arm.body, indent + 6);
+            }
+        }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");
         }

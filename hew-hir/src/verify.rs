@@ -315,6 +315,12 @@ impl Verifier {
                 self.expr(condition);
                 self.block(body);
             }
+            HirExprKind::Match { scrutinee, arms } => {
+                self.expr(scrutinee);
+                for arm in arms {
+                    self.expr(&arm.body);
+                }
+            }
             HirExprKind::ForRange {
                 binding,
                 start,

@@ -296,6 +296,56 @@ pub fn lower_program_with_mono_cap(
             _ => {}
         }
     }
+    // Pre-pass: register module-scope machine state and machine event
+    // constructors so `lower_identifier` can lower `Red`, `Tick`,
+    // `TrafficLight::Red`, and `TrafficLightEvent::Tick` to
+    // `MachineVariantCtor` regardless of declaration order relative to the
+    // function that uses them.
+    //
+    // Bare names are registered only when unambiguous across every machine
+    // declared in the module. The qualified form (always prefixed with the
+    // tagged-union typename) is always registered. See the doc on
+    // `LowerCtx::machine_ctor_registry` for the consumer contract.
+    {
+        // First scan: count bare-name occurrences across all machines' states
+        // and events. A bare name with count > 1 is ambiguous and only the
+        // qualified form is registered for it.
+        let mut bare_counts: HashMap<String, usize> = HashMap::new();
+        for (item, _) in &program.items {
+            if let Item::Machine(md) = item {
+                for state in &md.states {
+                    *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
+                }
+                for event in &md.events {
+                    *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+        for (item, _) in &program.items {
+            if let Item::Machine(md) = item {
+                let event_type_name = format!("{}Event", md.name);
+                for (idx, state) in md.states.iter().enumerate() {
+                    let qualified = format!("{}::{}", md.name, state.name);
+                    ctx.machine_ctor_registry
+                        .insert(qualified, (md.name.clone(), idx));
+                    if bare_counts.get(&state.name).copied().unwrap_or(0) == 1 {
+                        ctx.machine_ctor_registry
+                            .insert(state.name.clone(), (md.name.clone(), idx));
+                    }
+                }
+                for (idx, event) in md.events.iter().enumerate() {
+                    let qualified = format!("{}::{}", event_type_name, event.name);
+                    ctx.machine_ctor_registry
+                        .insert(qualified, (event_type_name.clone(), idx));
+                    if bare_counts.get(&event.name).copied().unwrap_or(0) == 1 {
+                        ctx.machine_ctor_registry
+                            .insert(event.name.clone(), (event_type_name.clone(), idx));
+                    }
+                }
+            }
+        }
+    }
+
     // Discard pre-pass diagnostics from `lower_type`; the third pass re-emits
     // any real ones when it produces the canonical HirTypeDecl/HirRecordDecl.
     ctx.diagnostics.clear();
@@ -1018,6 +1068,33 @@ struct LowerCtx {
     /// are in scope. Set per-transition inside `lower_machine`; restored after
     /// each `lower_machine_expr_filtered` call.
     current_machine_source_state: Option<usize>,
+    /// Module-scope registry of machine state and machine event constructors,
+    /// keyed by the surface identifier the user writes at the construction
+    /// site. Built by a pre-pass over `program.items` before any function body
+    /// is lowered so a function defined above its machine still resolves the
+    /// machine's state/event names without source-order coupling.
+    ///
+    /// Two key shapes are stored for every constructor:
+    ///   - **Qualified**: `"<TaggedUnionType>::<Variant>"` (always registered).
+    ///     For machine states the prefix is the machine name (`TrafficLight::Red`);
+    ///     for events the prefix is the synthesised companion enum
+    ///     (`TrafficLightEvent::Tick`).
+    ///   - **Bare**: `"<Variant>"`, registered only when the variant name is
+    ///     **unambiguous** across all machine states + machine events declared
+    ///     in the module. Ambiguous bare names are intentionally omitted so the
+    ///     usual lexical/`fn_registry` fall-through preserves user-binding
+    ///     precedence (e.g. a local `let Red = ...`).
+    ///
+    /// Each value is `(tagged_union_typename, variant_idx)`. `variant_idx` is
+    /// the declaration-order index of the variant in `HirMachineDecl.states` /
+    /// `HirMachineDecl.events`, which is the same index MIR/codegen use as the
+    /// tagged-union tag.
+    ///
+    /// Consumed by `lower_identifier` to produce `HirExprKind::MachineVariantCtor`
+    /// instead of an unresolved `BindingRef` when the user names a unit
+    /// constructor at module scope (`var light = Red;`, `light.step(Tick);`,
+    /// `let next = TrafficLight::Green;`).
+    machine_ctor_registry: HashMap<String, (String, usize)>,
 }
 
 impl LowerCtx {
@@ -1065,6 +1142,7 @@ impl LowerCtx {
             current_machine_name: None,
             current_machine_states: None,
             current_machine_source_state: None,
+            machine_ctor_registry: HashMap::new(),
         }
     }
 
@@ -4675,14 +4753,56 @@ impl LowerCtx {
             }
         }
         if let Some((id, ty)) = self.lookup(name) {
-            (
+            return (
                 HirExprKind::BindingRef {
                     name: name.to_string(),
                     resolved: ResolvedRef::Binding(id),
                 },
                 ty,
-            )
-        } else if let Some(entry) = self.fn_registry.get(name) {
+            );
+        }
+        // Module-scope machine state / event unit constructor: `Red`,
+        // `Tick`, `TrafficLight::Red`, `TrafficLightEvent::Tick`. The
+        // pre-pass over `program.items` populated `machine_ctor_registry`
+        // with both qualified and unambiguous-bare entries (see registry
+        // doc). Consulted after lexical lookup so a user binding shadows
+        // a same-named ctor (preserves the usual lexical-scope rule).
+        //
+        // Checker-authority cross-check: when the type checker has recorded
+        // an `expr_types` entry for this span (which it does for any
+        // accepted unit-ctor reference via `resolve_identifier_variant`),
+        // the registered tagged-union name must match the type the checker
+        // selected. This guarantees HIR follows checker authority across
+        // bare-name collisions (e.g. an `enum Colour { Red }` plus a
+        // `machine M { state Red }` where the checker's `type_defs` map
+        // iteration order picked one of them). When the checker has no
+        // entry — pure HIR-side resolution at a span the checker did not
+        // type (rare; mostly synthesised code) — we accept the registry
+        // hit unconditionally.
+        if let Some((tagged_union_name, variant_idx)) =
+            self.machine_ctor_registry.get(name).cloned()
+        {
+            let key = SpanKey::from(&span);
+            let checker_agrees = match self.expr_types.get(&key) {
+                None => true,
+                Some(Ty::Named { name: n, .. }) => n == &tagged_union_name,
+                Some(_) => false,
+            };
+            if checker_agrees {
+                return (
+                    HirExprKind::MachineVariantCtor {
+                        machine_name: tagged_union_name.clone(),
+                        state_idx: variant_idx,
+                        payload: None,
+                    },
+                    ResolvedTy::Named {
+                        name: tagged_union_name,
+                        args: Vec::new(),
+                    },
+                );
+            }
+        }
+        if let Some(entry) = self.fn_registry.get(name) {
             // Known function item — expose as a function-typed reference so
             // callers can extract the return type from the call expression.
             let fn_ty = ResolvedTy::Function {

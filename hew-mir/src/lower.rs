@@ -493,6 +493,25 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         .map(|layout| (layout.name.clone(), layout))
         .collect();
 
+    // Recognised tagged-union type names: every machine plus its synthesised
+    // `<Machine>Event` companion. Walks `module.items` directly because the
+    // `machine_layouts` Vec is not populated until the second item loop
+    // below (the `HirItem::Machine` arm); we need this set ready BEFORE any
+    // Builder is constructed for a fn/actor that may reference a machine
+    // type. Threaded into every Builder construction site so
+    // `push_unknown_type_diagnostics` and `is_known_actor_runtime_ty` accept
+    // machine-typed sites without a per-name SHIM. See
+    // `Builder::machine_layout_names` doc.
+    let machine_layout_names: HashSet<String> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Machine(md) => Some(md.name.clone()),
+            _ => None,
+        })
+        .flat_map(|name| [format!("{name}Event"), name])
+        .collect();
+
     // Collect the names every user-defined function will use as its
     // emitted MIR symbol. For non-generic functions this is the
     // source-declared name. For generic functions this is the set of
@@ -554,6 +573,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &record_field_orders,
                     &actor_layout_map,
                     &supervisor_layout_map,
+                    &machine_layout_names,
                     None,
                     &module_fn_names,
                     &module.call_site_type_args,
@@ -581,6 +601,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &module.type_classes,
                     &record_field_orders,
                     &actor_layout_map,
+                    &machine_layout_names,
                     &module_fn_names,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
@@ -611,6 +632,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &module.type_classes,
                     &record_field_orders,
                     &actor_layout_map,
+                    &machine_layout_names,
                     &module_fn_names,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
@@ -651,6 +673,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &record_field_orders,
                     &actor_layout_map,
                     &supervisor_layout_map,
+                    &machine_layout_names,
                     &module_fn_names,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
@@ -737,6 +760,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             &record_field_orders,
             &actor_layout_map,
             &supervisor_layout_map,
+            &machine_layout_names,
             None,
             &module_fn_names,
             &module.call_site_type_args,
@@ -781,6 +805,7 @@ fn lower_actor_receive_handlers(
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: &HashMap<String, ActorLayout>,
+    machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -861,6 +886,7 @@ fn lower_actor_receive_handlers(
             record_field_orders,
             actor_layouts,
             &HashMap::new(),
+            machine_layout_names,
             Some(&actor.name),
             module_fn_names,
             call_site_type_args,
@@ -881,6 +907,7 @@ fn lower_actor_body_handlers(
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: &HashMap<String, ActorLayout>,
+    machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -895,6 +922,7 @@ fn lower_actor_body_handlers(
             type_classes,
             record_field_orders,
             actor_layouts,
+            machine_layout_names,
             module_fn_names,
             call_site_type_args,
             supervisor_child_slots,
@@ -909,6 +937,7 @@ fn lower_actor_body_handlers(
         type_classes,
         record_field_orders,
         actor_layouts,
+        machine_layout_names,
         module_fn_names,
         call_site_type_args,
         supervisor_child_slots,
@@ -920,6 +949,7 @@ fn lower_actor_body_handlers(
         type_classes,
         record_field_orders,
         actor_layouts,
+        machine_layout_names,
         module_fn_names,
         call_site_type_args,
         supervisor_child_slots,
@@ -939,6 +969,7 @@ fn lower_actor_init_handler(
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: &HashMap<String, ActorLayout>,
+    machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -979,6 +1010,7 @@ fn lower_actor_init_handler(
         record_field_orders,
         actor_layouts,
         &HashMap::new(),
+        machine_layout_names,
         Some(&actor.name),
         module_fn_names,
         call_site_type_args,
@@ -1000,6 +1032,7 @@ fn lower_actor_lifecycle_handlers(
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: &HashMap<String, ActorLayout>,
+    machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -1045,6 +1078,7 @@ fn lower_actor_lifecycle_handlers(
                     record_field_orders,
                     actor_layouts,
                     &HashMap::new(),
+                    machine_layout_names,
                     Some(&actor.name),
                     module_fn_names,
                     call_site_type_args,
@@ -1081,6 +1115,7 @@ fn lower_actor_lifecycle_handlers(
                     record_field_orders,
                     actor_layouts,
                     &HashMap::new(),
+                    machine_layout_names,
                     Some(&actor.name),
                     module_fn_names,
                     call_site_type_args,
@@ -1256,6 +1291,7 @@ fn lower_actor_lifecycle_handlers(
                     record_field_orders,
                     actor_layouts,
                     &HashMap::new(),
+                    machine_layout_names,
                     Some(&actor.name),
                     module_fn_names,
                     call_site_type_args,
@@ -1454,6 +1490,7 @@ fn synthesize_machine_step_fn(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: &HashMap<String, ActorLayout>,
     supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
+    machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -1501,6 +1538,7 @@ fn synthesize_machine_step_fn(
         record_field_orders: record_field_orders.clone(),
         actor_layouts: actor_layouts.clone(),
         supervisor_layout_map: supervisor_layout_map.clone(),
+        machine_layout_names: machine_layout_names.clone(),
         module_fn_names: module_fn_names.clone(),
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
@@ -2149,6 +2187,7 @@ fn lower_supervisor_bootstrap(
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: &HashMap<String, ActorLayout>,
+    machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -2363,6 +2402,7 @@ fn lower_supervisor_bootstrap(
         record_field_orders,
         actor_layouts,
         supervisor_layouts,
+        machine_layout_names,
         // Supervisors have no actor state. `lower_actor_init_handler`
         // passes `Some(&actor.name)` for the same role; here we pass
         // `None` because there's no state-field table to lift into the
@@ -2676,6 +2716,7 @@ fn lower_function(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: &HashMap<String, ActorLayout>,
     supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
+    machine_layout_names: &HashSet<String>,
     current_actor_name: Option<&str>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -2686,6 +2727,7 @@ fn lower_function(
         type_classes: type_classes.clone(),
         record_field_orders: record_field_orders.clone(),
         actor_layouts: actor_layouts.clone(),
+        machine_layout_names: machine_layout_names.clone(),
         supervisor_layout_map: supervisor_layout_map.clone(),
         current_actor_state_fields: current_actor_name
             .and_then(|name| actor_layouts.get(name))
@@ -2909,6 +2951,7 @@ fn push_unknown_type_diagnostics(
             || matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor")
             || builder.actor_layouts.contains_key(&name)
             || builder.supervisor_layout_map.contains_key(&name)
+            || builder.machine_layout_names.contains(&name)
         {
             continue;
         }
@@ -3037,6 +3080,14 @@ struct Builder {
     /// functions whose call context cannot reference supervisor types (actor
     /// handlers, closure shims).
     supervisor_layout_map: HashMap<String, crate::model::SupervisorLayout>,
+    /// Set of recognised tagged-union type names — every machine type plus
+    /// the synthesised `<Machine>Event` companion enum for each. Used by
+    /// `push_unknown_type_diagnostics` to silence `UnknownType` on these
+    /// names and by `is_known_actor_runtime_ty` to classify their values
+    /// as `BitCopy` so the decision-map check accepts the site. Populated
+    /// from `module.machine_layouts` in `lower_hir_module` and threaded
+    /// through every Builder construction site.
+    machine_layout_names: HashSet<String>,
     current_actor_state_fields: HashMap<String, (FieldOffset, ResolvedTy)>,
     /// Names of every user-defined function declared in the module. Used by
     /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
@@ -7286,6 +7337,7 @@ impl Builder {
         let mut builder = Builder {
             type_classes: self.type_classes.clone(),
             record_field_orders: self.record_field_orders.clone(),
+            machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
@@ -7551,6 +7603,7 @@ impl Builder {
             }
             ResolvedTy::Named { name, args } if args.is_empty() => {
                 self.actor_layouts.contains_key(name)
+                    || self.machine_layout_names.contains(name)
             }
             _ => actor_name_from_handle_ty(ty).is_some(),
         }
@@ -9039,6 +9092,7 @@ mod slice3_invariants {
                 &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
+                &HashSet::new(),
                 None,
                 &HashSet::new(),
                 &HashMap::new(),

@@ -302,10 +302,6 @@ fn machine_state_name_table_population_persists_to_emit_module() {
 }
 
 #[test]
-#[ignore = "blocked on HIR module-scope ctor resolution for enum unit \
-            variants and machine state/event ctors; see \
-            examples/machine/run_traffic_light.hew header. Re-enable \
-            once the precursor lane lands."]
 fn run_traffic_light_fixture_executes() {
     // End-to-end milestone signal: `hew run` on the run_traffic_light
     // fixture exits 0 and prints the expected state sequence.
@@ -343,4 +339,43 @@ fn run_traffic_light_fixture_executes() {
     );
     let stdout = String::from_utf8(output.stdout).expect("stdout utf-8");
     assert_eq!(stdout, expected, "run_traffic_light stdout mismatch");
+}
+
+#[test]
+fn run_counter_qualified_fixture_executes() {
+    // Companion to `run_traffic_light_fixture_executes` that exercises
+    // the *qualified* form of machine state and event constructors
+    // (`Counter::Idle`, `CounterEvent::Tick`) instead of bare names.
+    // Both forms route through the same HIR module-scope ctor registry,
+    // and both must reach codegen without `UnresolvedSymbol` for the
+    // resolution pass to count as complete.
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let hew_bin = std::path::PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .join("target")
+        .join("debug")
+        .join("hew");
+    let fixture = std::path::PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join("machine")
+        .join("run_counter_qualified.hew");
+    let expected_path = fixture.with_extension("expected");
+    let expected = std::fs::read_to_string(&expected_path).expect("read .expected");
+
+    let output = std::process::Command::new(&hew_bin)
+        .arg("run")
+        .arg(&fixture)
+        .output()
+        .expect("spawn hew run");
+    assert!(
+        output.status.success(),
+        "hew run exited non-zero (status={:?}); stderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf-8");
+    assert_eq!(stdout, expected, "run_counter_qualified stdout mismatch");
 }

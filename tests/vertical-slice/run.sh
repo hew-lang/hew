@@ -459,3 +459,25 @@ if grep -q 'panicked at' "${reject_output}"; then
   echo "mixed-enum-not-supported fixture panicked instead of reporting a diagnostic" >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Sink<T> / Stream<T> Wire-capability admissibility gate
+# ---------------------------------------------------------------------------
+
+# Accept: Sink<i64> and Stream<i64> pass the Wire-capability checker.
+# i64 derives Encode + Decode (primitive Wire type); the admissibility gate
+# must not reject these declarations.
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/sink_i64_typed.hew" >"${reject_output}" 2>&1; then
+  echo "expected sink_i64_typed fixture to pass hew check; got:" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Reject: Sink<LocalPid<Foo>> payload does not implement Encode + Decode.
+# LocalPid derives Send + Sync + Copy + Clone but is not Wire-serialisable.
+# The Wire-capability admissibility gate must emit SinkPayloadNotWire.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/sink_non_wire_payload.hew" >"${reject_output}" 2>&1; then
+  echo "expected sink_non_wire_payload fixture to fail" >&2
+  exit 1
+fi
+grep -qF 'Encode + Decode' "${reject_output}"

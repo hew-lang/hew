@@ -825,7 +825,25 @@ impl Checker {
                                     "next",
                                     &iterable.1,
                                 ) {
-                                    Some(validated_inner) => validated_inner,
+                                    Some(validated_inner) => {
+                                        let resolved = self.subst.resolve(&validated_inner);
+                                        if Self::runtime_stream_element_name(&resolved).is_none() {
+                                            self.report_error(
+                                                TypeErrorKind::InvalidOperation,
+                                                &iterable.1,
+                                                format!(
+                                                    "`Stream<{}>` is not supported in \
+                                                     `for await`; runtime lowering is \
+                                                     currently implemented only for \
+                                                     string and bytes",
+                                                    validated_inner.user_facing()
+                                                ),
+                                            );
+                                            Ty::Error
+                                        } else {
+                                            validated_inner
+                                        }
+                                    }
                                     None => Ty::Error,
                                 }
                             }

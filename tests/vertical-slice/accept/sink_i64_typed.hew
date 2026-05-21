@@ -1,0 +1,6 @@
+// Sink<i64> and Stream<i64> are accepted by the Wire-capability checker.
+// i64 implements Encode + Decode (primitive Wire type), so the admissibility
+// gate passes.  This is declaration-only; method lowering is a follow-on.
+fn _accepts_sink(s: Sink<i64>) {}
+
+fn _accepts_stream(s: Stream<i64>) {}

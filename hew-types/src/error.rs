@@ -563,6 +563,20 @@ pub enum TypeErrorKind {
         /// The name of the binding the closure attempted to capture recursively.
         name: String,
     },
+    /// `Sink<T>` or `Stream<T>` payload type does not implement both `Encode`
+    /// and `Decode` marker traits, which are required for wire transport.
+    ///
+    /// Closures, raw pointers, `dyn Trait` objects, and other non-serialisable
+    /// types cannot cross actor message boundaries via a channel.
+    ///
+    /// Envelope code: `E_SINK_PAYLOAD_NOT_WIRE`.
+    SinkPayloadNotWire {
+        /// User-facing representation of the rejected payload type.
+        payload_ty: String,
+        /// Marker trait names that the payload type is missing (`"Encode"`,
+        /// `"Decode"`, or both).
+        missing_traits: Vec<String>,
+    },
 }
 
 impl TypeErrorKind {
@@ -622,6 +636,7 @@ impl TypeErrorKind {
             Self::GenBlockInActorReceive => "GenBlockInActorReceive",
             Self::EmptyGenerator => "EmptyGenerator",
             Self::ClosureRecursive { .. } => "ClosureRecursive",
+            Self::SinkPayloadNotWire { .. } => "SinkPayloadNotWire",
         }
     }
 }

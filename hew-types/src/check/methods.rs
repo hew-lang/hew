@@ -699,7 +699,7 @@ impl Checker {
         }
     }
 
-    fn runtime_stream_element_name(ty: &Ty) -> Option<&'static str> {
+    pub(super) fn runtime_stream_element_name(ty: &Ty) -> Option<&'static str> {
         match ty {
             Ty::String => Some("string"),
             Ty::Bytes => Some("bytes"),
@@ -920,6 +920,23 @@ impl Checker {
                 method,
                 span,
             );
+        }
+        // Gate 2: lowering-capability check.  Only string and bytes have a
+        // runtime symbol; other Wire-capable types pass gate 1 but cannot be
+        // lowered yet.  Emit a user-facing diagnostic rather than the ICE-
+        // flavoured "missing runtime rewrite metadata" from require_builtin_runtime_symbol.
+        let resolved_inner = self.subst.resolve(&inner);
+        if Self::runtime_stream_element_name(&resolved_inner).is_none() {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`Stream<{}>` is not supported; \
+                     runtime lowering is currently implemented only for string and bytes",
+                    inner.user_facing()
+                ),
+            );
+            return Ty::Error;
         }
         let receiver_ty = Ty::stream(inner.clone());
         let Some(sig) = lookup_builtin_method_sig(&receiver_ty, method) else {
@@ -3015,6 +3032,24 @@ impl Checker {
                         method,
                         span,
                     );
+                }
+                // Gate 2: lowering-capability check.  Only string and bytes have
+                // runtime symbols; other Wire-capable types pass gate 1 but cannot
+                // be lowered yet.  Emit a user-facing diagnostic rather than the
+                // ICE-flavoured "missing runtime rewrite metadata" from
+                // require_builtin_runtime_symbol.
+                let resolved_inner = self.subst.resolve(&inner);
+                if Self::runtime_stream_element_name(&resolved_inner).is_none() {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "`Sink<{}>` is not supported; \
+                             runtime lowering is currently implemented only for string and bytes",
+                            inner.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
                 }
                 let receiver_ty = Ty::sink(inner.clone());
                 match method {

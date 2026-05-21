@@ -66,6 +66,19 @@ pub struct IrPipeline {
     /// `tag_width` and `variants` to emit tag-dominant field drops at
     /// transition sites.
     pub machine_layouts: Vec<MachineLayout>,
+    /// Layout descriptors for every user-defined `enum` declaration in the
+    /// module. Populated by `lower_hir_module` from `HirItem::TypeDecl` items
+    /// with `TypeDeclKind::Enum`, in declaration order.
+    ///
+    /// User enums share the same tagged-union substrate as machines.
+    /// `Place::MachineTag` / `Place::MachineVariant` address both forms;
+    /// codegen registers enum layouts via `register_enum_layouts` alongside
+    /// `register_machine_layouts`.
+    ///
+    /// Only unit variants appear in `EnumLayout.variants` for this slice.
+    /// Payload-bearing variants (`VariantKind::Tuple` / `VariantKind::Struct`)
+    /// are not yet supported and will emit a `CodegenError::FailClosed`.
+    pub enum_layouts: Vec<EnumLayout>,
 }
 
 /// Layout descriptor for a named-form `record` declaration. The codegen
@@ -322,6 +335,32 @@ pub struct MachineLayout {
     /// layout keeps both halves of the step-fn surface together for
     /// codegen consumption.
     pub events: Vec<MachineVariantLayout>,
+}
+
+/// Layout descriptor for a user-defined `enum` declaration.
+///
+/// User enums share the tagged-union substrate (`{ tag: iW, payload: [N x i8] }`)
+/// with machine states and event companions. `EnumLayout` is a distinct type
+/// (not a sub-case of `MachineLayout`) to avoid carrying the `events` field,
+/// which has no meaning for user-declared enums.
+///
+/// `variants` lists all variants in declaration order (matching the index
+/// `machine_ctor_registry` assigned as `variant_idx`). Each `MachineVariantLayout`
+/// entry carries the variant name and its payload field types; only unit variants
+/// have empty `field_tys` in the current slice. Payload-bearing variants are
+/// allowed in the layout but their construction is not yet lowered — an attempt
+/// to construct them produces `CodegenError::FailClosed`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumLayout {
+    /// Enum type name. Matches `ResolvedTy::Named { name, .. }` for
+    /// an enum-typed local.
+    pub name: String,
+    /// Bit width of the discriminant tag. Computed as
+    /// `u32::max(1, (variant_count as f64).log2().ceil() as u32)`.
+    pub tag_width: u32,
+    /// Per-variant layouts in declaration order. Index `i` matches the
+    /// `variant_idx` stored in `machine_ctor_registry` for this enum's ctors.
+    pub variants: Vec<MachineVariantLayout>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2293,6 +2332,16 @@ pub enum MirDiagnosticKind {
         symbol: String,
         existing: String,
         duplicate: String,
+    },
+    /// A user-defined enum has both unit variants and payload-bearing variants
+    /// (Tuple or Struct form). Mixed enums cannot be safely lowered until
+    /// match-arm payload support is complete — registering a partial layout
+    /// would assign wrong tag offsets to unit variants and silently mis-route
+    /// match-arm dispatch. Fail-closed: emit this diagnostic and skip layout
+    /// registration. Will be lifted when the match-arm lane lands.
+    MixedEnumNotYetSupported {
+        enum_name: String,
+        payload_variant_count: usize,
     },
 }
 

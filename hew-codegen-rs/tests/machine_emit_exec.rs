@@ -176,6 +176,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         actor_layouts: Vec::new(),
         supervisor_layouts: Vec::new(),
         machine_layouts: vec![machine_layout],
+        enum_layouts: Vec::new(),
     }
 }
 

@@ -61,7 +61,7 @@ use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy, Pri
 use hew_hir::{HirRestartPolicy, HirSupervisorStrategy};
 use hew_mir::{
     validate_context_markers, ActorLayout, CheckedMirFunction, CmpPred, CooperateKind,
-    CooperateSite, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth,
+    CooperateSite, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth,
     FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, MachineLayout,
     MachineVariantLayout, Place, RawMirFunction, RecordLayout, SupervisorChildLayout,
     SupervisorLayout, Terminator, TrapKind,
@@ -1253,6 +1253,41 @@ fn register_machine_layouts<'ctx>(
         map.insert(event_name, event_cg);
     }
     Ok(map)
+}
+
+/// Register every user-defined enum from `pipeline.enum_layouts` as a named
+/// LLVM tagged-union struct, inserting into the shared `machine_layouts` map
+/// so that `Place::MachineTag` / `Place::MachineVariant` codegen can look up
+/// enum-typed locals by their type name.
+///
+/// User enums share the tagged-union substrate (`{ tag: iW, payload: [N x i8] }`)
+/// with machine states and event companions. Only unit-variant enums are
+/// supported in this slice; payload-bearing variants are not yet registered
+/// and will produce `CodegenError::FailClosed` if a construction site is
+/// reached.
+fn register_enum_layouts<'ctx>(
+    ctx: &'ctx Context,
+    enum_layouts: &[EnumLayout],
+    record_layout_map: &mut RecordLayoutMap<'ctx>,
+    machine_layout_map: &mut MachineLayoutMap<'ctx>,
+) -> CodegenResult<()> {
+    for layout in enum_layouts {
+        // Convert `EnumLayout.variants` (which are `MachineVariantLayout`)
+        // directly — they share the same shape (`name`, `field_tys`).
+        let enum_cg = build_tagged_union_layout(
+            ctx,
+            &layout.name,
+            layout.tag_width,
+            &layout.variants,
+            record_layout_map,
+        )?;
+        // Register the outer struct so `resolve_ty` resolves
+        // `ResolvedTy::Named { name: "<EnumName>" }` the same way as a
+        // machine-typed or record-typed local.
+        record_layout_map.insert(layout.name.clone(), enum_cg.outer_struct);
+        machine_layout_map.insert(layout.name.clone(), enum_cg);
+    }
+    Ok(())
 }
 
 /// Shared builder for the machine-value and event-companion tagged-union
@@ -8703,11 +8738,22 @@ fn build_module<'ctx>(
     // resolves `ResolvedTy::Named { name: "Foo" }` to the machine's outer
     // struct the same way it resolves a record. The richer per-variant
     // metadata (inner structs, tag int type) lives in `machine_layouts`.
-    let machine_layouts = register_machine_layouts(
+    let mut machine_layouts = register_machine_layouts(
         ctx,
         &llvm_mod,
         &pipeline.machine_layouts,
         &mut record_layouts,
+    )?;
+    // Register user-defined enum layouts into the same `machine_layouts` map.
+    // Enum-typed locals use the same `Place::MachineTag` / `Place::MachineVariant`
+    // addressing as machine-typed locals; the map lookup in
+    // `machine_layout_for_local` is keyed by type name and does not
+    // distinguish surface form.
+    register_enum_layouts(
+        ctx,
+        &pipeline.enum_layouts,
+        &mut record_layouts,
+        &mut machine_layouts,
     )?;
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;
@@ -8885,6 +8931,7 @@ mod tests {
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
             machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
         }
     }
 
@@ -8929,6 +8976,7 @@ mod tests {
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
             machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -8991,6 +9039,7 @@ mod tests {
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
             machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -9047,6 +9096,7 @@ mod tests {
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
             machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m =
@@ -9088,6 +9138,7 @@ mod tests {
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
             machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let err =
@@ -9145,6 +9196,7 @@ mod tests {
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
             machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
         }
     }
 
@@ -9336,6 +9388,7 @@ mod tests {
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
             machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
         }
     }
 

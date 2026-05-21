@@ -4,7 +4,7 @@ use hew_parser::ast::{
     ActorDecl, AttributeArg, BinaryOp, Block, CompoundAssignOp, Expr, FnDecl, Item, LambdaParam,
     Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind,
     ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
+    SupervisorStrategy, TimeoutClause, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, VariantKind,
 };
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildSlot,
@@ -296,52 +296,94 @@ pub fn lower_program_with_mono_cap(
             _ => {}
         }
     }
-    // Pre-pass: register module-scope machine state and machine event
-    // constructors so `lower_identifier` can lower `Red`, `Tick`,
-    // `TrafficLight::Red`, and `TrafficLightEvent::Tick` to
-    // `MachineVariantCtor` regardless of declaration order relative to the
-    // function that uses them.
+    // Pre-pass: register module-scope tagged-union constructors so
+    // `lower_identifier` can lower variant references to `MachineVariantCtor`
+    // regardless of declaration order relative to the function that uses them.
     //
-    // Bare names are registered only when unambiguous across every machine
-    // declared in the module. The qualified form (always prefixed with the
-    // tagged-union typename) is always registered. See the doc on
+    // Three surface forms share one tagged-union substrate:
+    //   1. Machine states: `TrafficLight::Red`, bare `Red`.
+    //   2. Machine event companions: `TrafficLightEvent::Tick`, bare `Tick`.
+    //   3. User-defined enum unit variants: `Colour::Red`, bare `Red`.
+    //
+    // Bare names are registered only when unambiguous across ALL three forms
+    // (machines + events + user enums). The qualified form (always prefixed
+    // with the tagged-union typename) is always registered. See the doc on
     // `LowerCtx::machine_ctor_registry` for the consumer contract.
     {
-        // First scan: count bare-name occurrences across all machines' states
-        // and events. A bare name with count > 1 is ambiguous and only the
-        // qualified form is registered for it.
+        // First scan: count bare-name occurrences across machines' states,
+        // machine events, and user enum unit variants. A bare name with
+        // count > 1 is ambiguous and only the qualified form is registered.
         let mut bare_counts: HashMap<String, usize> = HashMap::new();
         for (item, _) in &program.items {
-            if let Item::Machine(md) = item {
-                for state in &md.states {
-                    *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
+            match item {
+                Item::Machine(md) => {
+                    for state in &md.states {
+                        *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
+                    }
+                    for event in &md.events {
+                        *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
+                    }
                 }
-                for event in &md.events {
-                    *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
+                Item::TypeDecl(td) if td.kind == TypeDeclKind::Enum => {
+                    for body_item in &td.body {
+                        if let TypeBodyItem::Variant(v) = body_item {
+                            if matches!(v.kind, VariantKind::Unit) {
+                                *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
+                            }
+                        }
+                    }
                 }
+                _ => {}
             }
         }
         for (item, _) in &program.items {
-            if let Item::Machine(md) = item {
-                let event_type_name = format!("{}Event", md.name);
-                for (idx, state) in md.states.iter().enumerate() {
-                    let qualified = format!("{}::{}", md.name, state.name);
-                    ctx.machine_ctor_registry
-                        .insert(qualified, (md.name.clone(), idx));
-                    if bare_counts.get(&state.name).copied().unwrap_or(0) == 1 {
+            match item {
+                Item::Machine(md) => {
+                    let event_type_name = format!("{}Event", md.name);
+                    for (idx, state) in md.states.iter().enumerate() {
+                        let qualified = format!("{}::{}", md.name, state.name);
                         ctx.machine_ctor_registry
-                            .insert(state.name.clone(), (md.name.clone(), idx));
+                            .insert(qualified, (md.name.clone(), idx));
+                        if bare_counts.get(&state.name).copied().unwrap_or(0) == 1 {
+                            ctx.machine_ctor_registry
+                                .insert(state.name.clone(), (md.name.clone(), idx));
+                        }
+                    }
+                    for (idx, event) in md.events.iter().enumerate() {
+                        let qualified = format!("{}::{}", event_type_name, event.name);
+                        ctx.machine_ctor_registry
+                            .insert(qualified, (event_type_name.clone(), idx));
+                        if bare_counts.get(&event.name).copied().unwrap_or(0) == 1 {
+                            ctx.machine_ctor_registry
+                                .insert(event.name.clone(), (event_type_name.clone(), idx));
+                        }
                     }
                 }
-                for (idx, event) in md.events.iter().enumerate() {
-                    let qualified = format!("{}::{}", event_type_name, event.name);
-                    ctx.machine_ctor_registry
-                        .insert(qualified, (event_type_name.clone(), idx));
-                    if bare_counts.get(&event.name).copied().unwrap_or(0) == 1 {
-                        ctx.machine_ctor_registry
-                            .insert(event.name.clone(), (event_type_name.clone(), idx));
+                Item::TypeDecl(td) if td.kind == TypeDeclKind::Enum => {
+                    // Register unit variants only. Payload-bearing variants
+                    // (`VariantKind::Tuple` / `VariantKind::Struct`) are
+                    // constructed via `Call` / `StructInit` expressions, not
+                    // identifier references, so they are not registered here.
+                    // The variant index is the ordinal among ALL variants
+                    // (including payload-bearing ones) to match the order
+                    // `EnumLayout.variants` will use in MIR/codegen.
+                    let mut variant_idx: usize = 0;
+                    for body_item in &td.body {
+                        if let TypeBodyItem::Variant(v) = body_item {
+                            if matches!(v.kind, VariantKind::Unit) {
+                                let qualified = format!("{}::{}", td.name, v.name);
+                                ctx.machine_ctor_registry
+                                    .insert(qualified, (td.name.clone(), variant_idx));
+                                if bare_counts.get(&v.name).copied().unwrap_or(0) == 1 {
+                                    ctx.machine_ctor_registry
+                                        .insert(v.name.clone(), (td.name.clone(), variant_idx));
+                                }
+                            }
+                            variant_idx += 1;
+                        }
                     }
                 }
+                _ => {}
             }
         }
     }
@@ -1068,32 +1110,31 @@ struct LowerCtx {
     /// are in scope. Set per-transition inside `lower_machine`; restored after
     /// each `lower_machine_expr_filtered` call.
     current_machine_source_state: Option<usize>,
-    /// Module-scope registry of machine state and machine event constructors,
-    /// keyed by the surface identifier the user writes at the construction
-    /// site. Built by a pre-pass over `program.items` before any function body
-    /// is lowered so a function defined above its machine still resolves the
-    /// machine's state/event names without source-order coupling.
+    /// Module-scope registry of tagged-union unit constructors, keyed by the
+    /// surface identifier the user writes at the construction site. Covers
+    /// three surface forms that share one tagged-union substrate:
+    ///   1. Machine states (`TrafficLight::Red`, bare `Red`).
+    ///   2. Machine event companions (`TrafficLightEvent::Tick`, bare `Tick`).
+    ///   3. User-defined enum unit variants (`Colour::Red`, bare `Red`).
     ///
-    /// Two key shapes are stored for every constructor:
+    /// Built by a pre-pass over `program.items` before any function body is
+    /// lowered so declaration order does not constrain resolution.
+    ///
+    /// Two key shapes are stored for every unit constructor:
     ///   - **Qualified**: `"<TaggedUnionType>::<Variant>"` (always registered).
-    ///     For machine states the prefix is the machine name (`TrafficLight::Red`);
-    ///     for events the prefix is the synthesised companion enum
-    ///     (`TrafficLightEvent::Tick`).
     ///   - **Bare**: `"<Variant>"`, registered only when the variant name is
-    ///     **unambiguous** across all machine states + machine events declared
-    ///     in the module. Ambiguous bare names are intentionally omitted so the
-    ///     usual lexical/`fn_registry` fall-through preserves user-binding
-    ///     precedence (e.g. a local `let Red = ...`).
+    ///     **unambiguous** across all three surface forms in the module.
+    ///     Ambiguous bare names are omitted so the lexical/`fn_registry`
+    ///     fall-through preserves user-binding precedence.
     ///
     /// Each value is `(tagged_union_typename, variant_idx)`. `variant_idx` is
-    /// the declaration-order index of the variant in `HirMachineDecl.states` /
-    /// `HirMachineDecl.events`, which is the same index MIR/codegen use as the
-    /// tagged-union tag.
+    /// the declaration-order index among all variants of that type (including
+    /// payload-bearing ones, which are not registered here but occupy slots).
     ///
     /// Consumed by `lower_identifier` to produce `HirExprKind::MachineVariantCtor`
     /// instead of an unresolved `BindingRef` when the user names a unit
     /// constructor at module scope (`var light = Red;`, `light.step(Tick);`,
-    /// `let next = TrafficLight::Green;`).
+    /// `let next = TrafficLight::Green;`, `let c = Colour::Red;`).
     machine_ctor_registry: HashMap<String, (String, usize)>,
 }
 
@@ -1802,8 +1843,28 @@ impl LowerCtx {
             // method-call expression form has no HIR/MIR lowering yet, so
             // method bodies cannot be exercised. Their *declared names* are
             // captured upstream as `TypeDecl.consuming_methods` and travel
-            // on `HirTypeDecl.consuming_methods`. `TypeBodyItem::Variant`
-            // belongs to enum bodies and is similarly out of slice scope.
+            // on `HirTypeDecl.consuming_methods`.
+        }
+
+        // For enum-kind type decls, collect unit-variant names in declaration
+        // order and count payload-bearing variants separately.
+        // Payload-bearing variants (`Tuple` / `Struct`) are not registered in
+        // `unit_variants` — their constructors are handled by `Call` /
+        // `StructInit` lowering paths. `payload_variant_count` lets MIR detect
+        // MIXED enums (unit + payload) and fail-closed rather than registering
+        // a partial layout with wrong tag offsets.
+        let mut unit_variants: Vec<String> = Vec::new();
+        let mut payload_variant_count: usize = 0;
+        if decl.kind == TypeDeclKind::Enum {
+            for body_item in &decl.body {
+                if let TypeBodyItem::Variant(v) = body_item {
+                    if matches!(v.kind, VariantKind::Unit) {
+                        unit_variants.push(v.name.clone());
+                    } else {
+                        payload_variant_count += 1;
+                    }
+                }
+            }
         }
 
         // Reuse the stable ItemId pre-allocated during the record/
@@ -1825,6 +1886,8 @@ impl LowerCtx {
             consuming_methods: decl.consuming_methods.clone(),
             type_params,
             fields,
+            unit_variants,
+            payload_variant_count,
             span,
         }
     }
@@ -4761,12 +4824,14 @@ impl LowerCtx {
                 ty,
             );
         }
-        // Module-scope machine state / event unit constructor: `Red`,
-        // `Tick`, `TrafficLight::Red`, `TrafficLightEvent::Tick`. The
-        // pre-pass over `program.items` populated `machine_ctor_registry`
-        // with both qualified and unambiguous-bare entries (see registry
-        // doc). Consulted after lexical lookup so a user binding shadows
-        // a same-named ctor (preserves the usual lexical-scope rule).
+        // Module-scope tagged-union unit constructor: machine states
+        // (`TrafficLight::Red`, bare `Red`), machine events
+        // (`TrafficLightEvent::Tick`, bare `Tick`), and user-defined enum
+        // unit variants (`Colour::Red`, bare `Red`). The pre-pass over
+        // `program.items` populated `machine_ctor_registry` with both
+        // qualified and unambiguous-bare entries (see registry doc).
+        // Consulted after lexical lookup so a user binding shadows a
+        // same-named ctor (preserves the usual lexical-scope rule).
         //
         // Checker-authority cross-check: when the type checker has recorded
         // an `expr_types` entry for this span (which it does for any

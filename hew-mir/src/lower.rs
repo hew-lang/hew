@@ -263,6 +263,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     let mut actor_layouts: Vec<crate::model::ActorLayout> = Vec::new();
     let mut supervisor_layouts: Vec<crate::model::SupervisorLayout> = Vec::new();
     let mut machine_layouts: Vec<crate::model::MachineLayout> = Vec::new();
+    let mut enum_layouts: Vec<crate::model::EnumLayout> = Vec::new();
     for item in &module.items {
         match item {
             HirItem::Record(decl) => {
@@ -316,6 +317,51 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
                     });
                     record_field_orders.insert(decl.name.clone(), fields);
+                }
+                // Enum-kind type decls: register a tagged-union layout so
+                // codegen can allocate + tag unit-variant construction sites.
+                // MIXED enums (unit + payload variants) cannot be safely
+                // lowered yet: registering only unit variants would assign
+                // wrong tag offsets (a unit variant at body-position N would
+                // get layout-index 0..K instead of runtime tag N). Fail-closed
+                // and skip registration — the diagnostic surfaces via `hew check`.
+                if !decl.unit_variants.is_empty() {
+                    if decl.payload_variant_count > 0 {
+                        diagnostics.push(crate::model::MirDiagnostic {
+                            kind: crate::model::MirDiagnosticKind::MixedEnumNotYetSupported {
+                                enum_name: decl.name.clone(),
+                                payload_variant_count: decl.payload_variant_count,
+                            },
+                            note: format!(
+                                "enum `{}` mixes unit variants with {} payload-bearing variant(s); \
+                                 mixed-variant enums require match-arm payload lowering (not yet \
+                                 supported). Declare all-unit or all-payload enums for now.",
+                                decl.name, decl.payload_variant_count
+                            ),
+                        });
+                        // Skip layout registration — a partial layout with wrong
+                        // tag offsets would silently mis-route match-arm dispatch.
+                    } else {
+                        let variant_count =
+                            u32::try_from(decl.unit_variants.len().max(1)).unwrap_or(u32::MAX);
+                        let tag_width =
+                            u32::max(1, variant_count.next_power_of_two().trailing_zeros());
+                        // Build variant entries in declaration order. Only unit
+                        // variants appear in this layout; they carry empty `field_tys`.
+                        let variants: Vec<crate::model::MachineVariantLayout> = decl
+                            .unit_variants
+                            .iter()
+                            .map(|name| crate::model::MachineVariantLayout {
+                                name: name.clone(),
+                                field_tys: vec![],
+                            })
+                            .collect();
+                        enum_layouts.push(crate::model::EnumLayout {
+                            name: decl.name.clone(),
+                            tag_width,
+                            variants,
+                        });
+                    }
                 }
             }
             HirItem::Actor(actor) => {
@@ -498,18 +544,21 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     // `machine_layouts` Vec is not populated until the second item loop
     // below (the `HirItem::Machine` arm); we need this set ready BEFORE any
     // Builder is constructed for a fn/actor that may reference a machine
-    // type. Threaded into every Builder construction site so
-    // `push_unknown_type_diagnostics` and `is_known_actor_runtime_ty` accept
-    // machine-typed sites without a per-name SHIM. See
-    // `Builder::machine_layout_names` doc.
+    // type. Also includes user-defined enum type names so `push_unknown_type_diagnostics`
+    // and `is_known_actor_runtime_ty` accept enum-typed sites. Threaded into
+    // every Builder construction site. See `Builder::machine_layout_names` doc.
     let machine_layout_names: HashSet<String> = module
         .items
         .iter()
-        .filter_map(|item| match item {
-            HirItem::Machine(md) => Some(md.name.clone()),
-            _ => None,
+        .flat_map(|item| match item {
+            HirItem::Machine(md) => {
+                vec![md.name.clone(), format!("{}Event", md.name)]
+            }
+            HirItem::TypeDecl(decl) if !decl.unit_variants.is_empty() => {
+                vec![decl.name.clone()]
+            }
+            _ => vec![],
         })
-        .flat_map(|name| [format!("{name}Event"), name])
         .collect();
 
     // Collect the names every user-defined function will use as its
@@ -793,6 +842,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         actor_layouts,
         supervisor_layouts,
         machine_layouts,
+        enum_layouts,
     }
 }
 
@@ -10666,5 +10716,110 @@ mod slice35_cross_block_proptests {
             prop_assert_eq!(on_block_1, 1, "block 1 (split path) must reject the unified drop");
             prop_assert_eq!(on_block_2, 0, "block 2 (no-split path) must accept the unified drop");
         }
+    }
+}
+
+#[cfg(test)]
+mod enum_layout_tests {
+    use std::collections::HashMap;
+
+    use super::lower_hir_module;
+    use crate::model::MirDiagnosticKind;
+    use hew_hir::{HirItem, HirModule, HirNodeId, HirTypeDecl, ItemId, SiteId};
+    use hew_parser::ast::ResourceMarker;
+    use hew_types::ChildSlot;
+
+    fn minimal_module(items: Vec<HirItem>) -> HirModule {
+        HirModule {
+            items,
+            type_classes: hew_hir::TypeClassTable::default(),
+            monomorphisations: vec![],
+            call_site_type_args: HashMap::<SiteId, _>::default(),
+            record_layouts: vec![],
+            supervisor_child_slots: HashMap::<SiteId, ChildSlot>::default(),
+        }
+    }
+
+    fn mixed_enum_decl() -> HirTypeDecl {
+        // `enum Option { Some(i64); None; }` — one payload variant, one unit variant.
+        HirTypeDecl {
+            id: ItemId(0),
+            node: HirNodeId(0),
+            name: "Option".to_string(),
+            marker: ResourceMarker::None,
+            consuming_methods: vec![],
+            type_params: vec![],
+            fields: vec![],
+            // `None` is the only unit variant
+            unit_variants: vec!["None".to_string()],
+            // `Some(i64)` is the payload-bearing variant
+            payload_variant_count: 1,
+            span: 0..0,
+        }
+    }
+
+    #[test]
+    fn mixed_enum_emits_typed_diagnostic_and_skips_layout() {
+        let module = minimal_module(vec![HirItem::TypeDecl(mixed_enum_decl())]);
+        let pipeline = lower_hir_module(&module);
+
+        // Exactly one diagnostic emitted for the mixed enum.
+        assert_eq!(
+            pipeline.diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for mixed enum; got: {:?}",
+            pipeline.diagnostics
+        );
+        let kind = &pipeline.diagnostics[0].kind;
+        assert!(
+            matches!(
+                kind,
+                MirDiagnosticKind::MixedEnumNotYetSupported {
+                    enum_name,
+                    payload_variant_count: 1,
+                } if enum_name == "Option"
+            ),
+            "expected MixedEnumNotYetSupported for Option; got: {kind:?}"
+        );
+
+        // No EnumLayout registered — a partial layout with wrong tag offsets
+        // must never reach codegen.
+        assert!(
+            pipeline.enum_layouts.is_empty(),
+            "enum_layouts must be empty for a mixed enum; got: {:?}",
+            pipeline.enum_layouts
+        );
+    }
+
+    #[test]
+    fn all_unit_enum_registers_layout_without_diagnostic() {
+        // `enum Colour { Red; Green; Blue; }` — three unit variants, no payload.
+        let decl = HirTypeDecl {
+            id: ItemId(1),
+            node: HirNodeId(1),
+            name: "Colour".to_string(),
+            marker: ResourceMarker::None,
+            consuming_methods: vec![],
+            type_params: vec![],
+            fields: vec![],
+            unit_variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
+            payload_variant_count: 0,
+            span: 0..0,
+        };
+        let module = minimal_module(vec![HirItem::TypeDecl(decl)]);
+        let pipeline = lower_hir_module(&module);
+
+        assert!(
+            pipeline.diagnostics.is_empty(),
+            "no diagnostics expected for all-unit enum; got: {:?}",
+            pipeline.diagnostics
+        );
+        assert_eq!(
+            pipeline.enum_layouts.len(),
+            1,
+            "expected one EnumLayout for Colour"
+        );
+        assert_eq!(pipeline.enum_layouts[0].name, "Colour");
+        assert_eq!(pipeline.enum_layouts[0].variants.len(), 3);
     }
 }

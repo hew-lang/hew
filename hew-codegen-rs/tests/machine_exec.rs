@@ -192,6 +192,7 @@ fn traffic_light_pipeline() -> IrPipeline {
         actor_layouts: Vec::new(),
         supervisor_layouts: Vec::new(),
         machine_layouts: vec![machine_layout],
+        enum_layouts: Vec::new(),
     }
 }
 

@@ -1,0 +1,20 @@
+// Reject fixture: MixedEnumNotYetSupported
+//
+// An enum with both unit and payload-bearing variants cannot be safely lowered
+// until match-arm payload support is complete. Registering a partial layout
+// would assign wrong tag offsets to the unit variants, silently mis-routing
+// match-arm dispatch.
+//
+// Note: the enum is named `MixedShape` (not `Option`) to avoid any overlap
+// with the builtin generic `Option<T>` type. The diagnostic fires at enum
+// declaration — no constructor reference is needed.
+//
+// Expected: E_NOT_YET_IMPLEMENTED MixedEnumNotYetSupported
+enum MixedShape {
+    WithPayload(i64);
+    WithoutPayload;
+}
+
+fn main() {
+    println("test");
+}

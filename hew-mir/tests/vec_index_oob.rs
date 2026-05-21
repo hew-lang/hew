@@ -347,6 +347,7 @@ fn vec_index_mir_wraps_in_pipeline_without_errors() {
         actor_layouts: vec![],
         supervisor_layouts: vec![],
         machine_layouts: vec![],
+        enum_layouts: vec![],
     };
     // No diagnostics from the hand-built MIR (it is already valid).
     assert!(

@@ -441,3 +441,21 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/yield_outside_gen.hew" >"
   exit 1
 fi
 grep -q 'outside of generator' "${reject_output}"
+
+# Reject: mixed-variant enum (unit + payload) — MixedEnumNotYetSupported.
+# A partial layout with wrong tag offsets would silently mis-route match-arm
+# dispatch; fail-closed with a typed diagnostic until payload lowering lands.
+set +e
+"${HEW}" compile "${ROOT}/tests/vertical-slice/reject/mixed_enum_not_supported.hew" >"${reject_output}" 2>&1
+mixed_enum_exit=$?
+set -e
+if [ "${mixed_enum_exit}" -ne 1 ]; then
+  echo "expected mixed-enum-not-supported fixture to exit 1, got ${mixed_enum_exit}" >&2
+  exit 1
+fi
+grep -q 'MixedEnumNotYetSupported' "${reject_output}"
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+if grep -q 'panicked at' "${reject_output}"; then
+  echo "mixed-enum-not-supported fixture panicked instead of reporting a diagnostic" >&2
+  exit 1
+fi

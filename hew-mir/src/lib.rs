@@ -25,10 +25,11 @@ pub fn drop_kind_for_test(place: Place, ty: &hew_types::ResolvedTy) -> DropKind 
 pub use model::{
     validate_context_markers, ActorLayout, BasicBlock, BlockKind, BorrowKind, CaptureKind,
     CheckedMirFunction, CmpPred, CooperateKind, CooperateSite, CoroutineSchema, DecisionFact,
-    Direction, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath,
-    FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline,
-    LambdaCapture, MachineLayout, MachineVariantLayout, MirCheck, MirDiagnostic, MirDiagnosticKind,
-    MirStatement, Place, RawMirFunction, RecordLayout, RuntimeCall, SelectArm, SelectArmKind,
-    Strategy, SupervisorChildLayout, SupervisorLayout, Terminator, ThirFunction, TrapKind,
+    Direction, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, EnumLayout,
+    ExitPath, FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness,
+    IrPipeline, LambdaCapture, MachineLayout, MachineVariantLayout, MirCheck, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, Place, RawMirFunction, RecordLayout, RuntimeCall, SelectArm,
+    SelectArmKind, Strategy, SupervisorChildLayout, SupervisorLayout, Terminator, ThirFunction,
+    TrapKind,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;

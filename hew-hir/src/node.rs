@@ -451,7 +451,24 @@ pub struct HirTypeDecl {
     /// per-instantiation layout and (b) substitute field types when
     /// constructing one.
     pub type_params: Vec<String>,
+    /// Struct-form field types in declaration order. Empty for enum-kind
+    /// type decls (enums have no struct fields; their variants are in
+    /// `unit_variants`).
     pub fields: Vec<HirField>,
+    /// Unit-variant names for enum-kind type decls, in declaration order.
+    /// Only the NAMES are kept here; the tag ordinal for each unit variant
+    /// is its position within this vec (0-based). Empty for struct-kind type decls.
+    ///
+    /// MIR/codegen consumes this to construct `EnumLayout.variants` without
+    /// re-reading the parser AST. For MIXED enums (unit + payload variants),
+    /// MIR emits `MirDiagnosticKind::MixedEnumNotYetSupported` and skips
+    /// layout registration — see `payload_variant_count`.
+    pub unit_variants: Vec<String>,
+    /// Number of payload-bearing variants (Tuple or Struct form) in this enum.
+    /// Zero for all-unit enums and for struct-kind type decls. When non-zero
+    /// together with a non-empty `unit_variants`, the enum is MIXED and cannot
+    /// be safely lowered until match-arm payload support is complete.
+    pub payload_variant_count: usize,
     pub span: Span,
 }
 
@@ -829,27 +846,39 @@ pub enum HirExprKind {
         machine_name: String,
         receiver: Box<HirExpr>,
     },
-    /// State-value constructor inside a machine transition body.
+    /// Tagged-union variant constructor — shared by machine states and user-defined
+    /// enum unit variants.
     ///
-    /// Produced by HIR lowering when an `Expr::Identifier` or `Expr::StructInit`
-    /// names a declared state of the enclosing machine — either a bare state
-    /// reference like `Green` (unit state, no payload) or a struct-init form
-    /// like `SynReceived { remote_port: remote_port }` (state with payload).
+    /// **Machine states**: produced by HIR lowering when an `Expr::Identifier` or
+    /// `Expr::StructInit` names a declared state of the enclosing machine — either
+    /// a bare state reference like `Green` (unit state, no payload) or a struct-init
+    /// form like `SynReceived { remote_port: remote_port }` (state with payload).
+    ///
+    /// **User-defined enum unit variants**: produced by HIR lowering when an
+    /// `Expr::Identifier` resolves to a unit variant of an enum type declared with
+    /// `type Colour { enum Red; Green; Blue; }`. The same tagged-union substrate
+    /// (`Place::MachineTag` / `EnumLayout`) handles both surface forms.
     ///
     /// Unlike a record `StructInit`, this is HIR-side-resolved: the checker did
-    /// not assign a side-table type for this site (machine state names are not
-    /// in the checker's record or type scope). HIR derives the result type as
-    /// `ResolvedTy::Named { name: machine_name, args: [] }` — the machine's
-    /// own nominal type — because a state constructor IS the machine value at
-    /// that state. This is intentional deviation from the `checker-authority`
-    /// pattern and is documented here to make it findable.
+    /// not assign a side-table type for this site (machine state names and user
+    /// enum variant names are not in the checker's record or type scope). HIR
+    /// derives the result type as `ResolvedTy::Named { name: machine_name, args: [] }`
+    /// because a state/variant constructor IS the tagged-union value at that variant.
+    /// This is intentional deviation from the `checker-authority` pattern and is
+    /// documented here to make it findable.
     ///
-    /// `machine_name`: unqualified machine type name (e.g. `"TrafficLight"`).
-    /// `state_idx`: zero-based index into `HirMachineDecl.states` (declaration order).
-    /// `payload`: `None` for unit states; `Some(fields)` for states with payload.
+    /// `machine_name`: the unqualified tagged-union type name. For machine states
+    ///   this is the machine type (e.g. `"TrafficLight"`). For user enum variants
+    ///   this is the enum type (e.g. `"Colour"`). The MIR consumer looks up the
+    ///   layout in the shared `MachineLayoutMap` / `EnumLayout` registry by this name.
+    /// `state_idx`: zero-based ordinal of this variant within the tagged union.
+    ///   For machine states: index into `HirMachineDecl.states` (declaration order).
+    ///   For user enum variants: position within `HirTypeDecl.unit_variants` (declaration
+    ///   order, all-unit enums only — mixed enums are rejected at MIR lowering).
+    /// `payload`: `None` for unit states/variants; `Some(fields)` for states with payload.
     ///
-    /// MIR consumers: build a machine value with the given tag and store payload
-    /// fields via `Place::MachineTag` / `Place::MachineVariant` primitives (Slice 4b).
+    /// MIR consumers: build a tagged-union value with the given tag and store payload
+    /// fields via `Place::MachineTag` / `Place::MachineVariant` primitives.
     MachineVariantCtor {
         machine_name: String,
         state_idx: usize,

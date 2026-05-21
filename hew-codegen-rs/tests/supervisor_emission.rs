@@ -146,6 +146,7 @@ fn supervisor_pipeline() -> IrPipeline {
         actor_layouts: vec![worker_layout],
         supervisor_layouts: vec![supervisor_layout],
         machine_layouts: vec![],
+        enum_layouts: vec![],
     }
 }
 
@@ -339,6 +340,7 @@ fn on_crash_pipeline() -> IrPipeline {
         actor_layouts: vec![crasher_layout],
         supervisor_layouts: vec![supervisor_layout],
         machine_layouts: vec![],
+        enum_layouts: vec![],
     }
 }
 

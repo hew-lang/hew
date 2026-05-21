@@ -95,6 +95,7 @@ fn select_stream_i64_pipeline() -> IrPipeline {
         actor_layouts: vec![],
         supervisor_layouts: vec![],
         machine_layouts: vec![],
+        enum_layouts: vec![],
     }
 }
 

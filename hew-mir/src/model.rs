@@ -1614,6 +1614,37 @@ pub enum Instr {
         /// Empty for unit events (no payload).
         payload: Vec<Place>,
     },
+    /// Load the discriminant tag of an enum-typed value into an integer dest.
+    ///
+    /// `src` must reference a local whose `ResolvedTy` is a `Named` enum
+    /// (e.g. the machine event companion `TrafficLightEvent`). The tag is
+    /// the zero-based variant ordinal in declaration order — for the
+    /// machine event companion, this matches `HirMachineDecl.events`
+    /// declaration order.
+    ///
+    /// `dest` is an integer-typed local (`ResolvedTy::I64` in Slice 4b);
+    /// codegen widens the LLVM enum tag to the dest's width via `zext`.
+    ///
+    /// # Why declared here
+    ///
+    /// Slice 4b's machine step function dispatches on `(state_tag, event_tag)`
+    /// pairs and needs an event-tag-load primitive symmetric with
+    /// `Place::MachineTag`. The event companion is a `TypeDefKind::Enum`
+    /// with no MIR-side tag-load surface prior to this slice, so the
+    /// dispatch tree would otherwise have no way to compare the event
+    /// parameter against a constant event index.
+    ///
+    /// Codegen lowering lands alongside the Slice 5 tagged-union work that
+    /// wires the LLVM enum layout. Until then, codegen fails closed if
+    /// this instruction reaches it — matching the existing fail-closed
+    /// stub for `Place::MachineTag` / `Place::MachineVariant`.
+    EnumTagLoad {
+        /// Local holding an enum value (`Ty::Named { name, .. }` where
+        /// the named type is a `TypeDefKind::Enum`).
+        src: Place,
+        /// Integer-typed destination for the tag ordinal.
+        dest: Place,
+    },
 }
 
 /// 0-based declaration-order index of a field within a `record` type.

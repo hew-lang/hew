@@ -3504,6 +3504,18 @@ fn lower_instruction(
                  the emit-queue ABI must be wired before codegen can lower this instruction"
             )));
         }
+        Instr::EnumTagLoad { .. } => {
+            // Loading the discriminant tag of an enum-typed value requires the
+            // codegen-side enum layout (machine event companion + general enum
+            // tagged-union). Slice 5 wires this alongside `Place::MachineTag` /
+            // `Place::MachineVariant`. Fail closed until then — LESSONS P0
+            // boundary-fail-closed.
+            return Err(CodegenError::Llvm(
+                "Instr::EnumTagLoad reached LLVM codegen; tagged-union enum \
+                 layout is wired in Slice 5 alongside Place::MachineTag"
+                    .to_string(),
+            ));
+        }
     }
     Ok(())
 }

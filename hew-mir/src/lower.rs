@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use hew_hir::stdlib_catalog;
 use hew_hir::{
     named_type_names, BindingId, HirActorDecl, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn,
-    HirItem, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirModule, HirNodeId, HirSelect,
-    HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, IntentKind,
-    ResolvedRef, ScopeId, SiteId, ValueClass,
+    HirItem, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineTransition, HirModule,
+    HirNodeId, HirSelect, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild,
+    HirSupervisorDecl, IntentKind, ResolvedRef, ScopeId, SiteId, ValueClass,
 };
 use hew_parser::ast::BinaryOp;
 use hew_types::{ChildKind, ChildSlot, ExecutionContextReader, ResolvedTy};
@@ -645,7 +645,16 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 // codegen-side tagged-union layout work (plan §5). Until
                 // then, every reachable call traps with a typed exit code
                 // rather than silently no-op'ing or fabricating a state.
-                let lowered = synthesize_machine_step_fn(md);
+                let lowered = synthesize_machine_step_fn(
+                    md,
+                    &module.type_classes,
+                    &record_field_orders,
+                    &actor_layout_map,
+                    &supervisor_layout_map,
+                    &module_fn_names,
+                    &module.call_site_type_args,
+                    &module.supervisor_child_slots,
+                );
                 thir.push(lowered.thir);
                 raw_mir.push(lowered.raw);
                 checked_mir.push(lowered.checked);
@@ -1372,7 +1381,76 @@ fn mangle_machine_step(name: &str) -> String {
 /// emitted once per machine declaration (not per monomorphisation);
 /// monomorphisation-aware codegen for generic machines arrives with the
 /// stdlib machine catalogue.
-fn synthesize_machine_step_fn(md: &HirMachineDecl) -> LoweredFunction {
+/// Synthesise the `<Name>__step(self, event) -> Name` MIR function for a
+/// machine declaration with the full state×event dispatch tree.
+///
+/// # Dispatch shape (Slice 4b)
+///
+/// The entry block loads the state tag (`Place::MachineTag(self_binding)`)
+/// and event tag (`Instr::EnumTagLoad` from the event parameter), then
+/// cascades a chain of state-equality checks. Each matched state-block
+/// cascades event-equality checks for that state's declared transitions
+/// (in source order). Wildcard transitions (`_ -> Target`) are appended
+/// to every state's cascade after the specific arms. Undeclared
+/// `(state, event)` pairs fall through to `Terminator::Trap { kind:
+/// TrapKind::MachineDispatchUnreachable }`. HIR exhaustiveness checks
+/// already guarantee the trap is dead code in well-typed programs;
+/// surfacing it is the fail-closed runtime backstop (LESSONS P0
+/// `fail-closed-not-pretend`).
+///
+/// # Transition body lowering
+///
+/// Each matched arm lowers the transition's HIR body via the shared
+/// `Builder::lower_value` path. Bodies typed `Ty::Named { machine_name }`
+/// reach the `HirExprKind::MachineVariantCtor` producer arm, which writes
+/// the next-state tag and payload fields via `Place::MachineTag` /
+/// `Place::MachineVariant`. The arm writes the produced value into the
+/// `ReturnSlot` and emits `Terminator::Return`.
+///
+/// `self.field` reads inside the body resolve via `HirExprKind::MachineFieldAccess`
+/// against `Builder::current_machine_self_binding`, addressing
+/// `Place::MachineVariant { binding: self_binding, variant_idx: source_state_idx,
+/// field_idx }`.
+///
+/// # Entry/exit hooks
+///
+/// `HirMachineState.entry` / `.exit` blocks fire as follows:
+///
+/// - Non-self transitions: emit `source_state.exit` before the transition
+///   body, then `target_state.entry` after the body constructs the next
+///   value. Both blocks are HIR-lowered through the same `Builder` walk
+///   used for the body itself.
+/// - Self-transitions: hooks fire only when `transition.reenter` is true.
+///   Non-reenter self-transitions do not fire entry/exit (Moore semantics).
+/// - Wildcard source (`_`): the source state is resolved per concrete arm
+///   that matches; the wildcard's expanded arm uses the dispatching state
+///   as the source for hook firing.
+///
+/// Self-field writes inside entry/exit blocks (`self.field = X`) are
+/// not yet lowered — Slice 4c (drop-elaboration / hook side effects)
+/// owns that path; for now a `MirDiagnostic` surfaces at lowering time
+/// rather than silently dropping the write. The Lane A fixtures
+/// `traffic_light.hew` and `tcp_handshake.hew` only use `println` in
+/// entry/exit blocks, which falls through the standard call lowering
+/// path.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "module context plumbing mirrors lower_function; threading individually keeps \
+              parity with the rest of the lowering surface. The dispatch tree synthesis \
+              keeps the entry / state-cascade / event-cascade / arm-body / hook / trap \
+              control flow in one place for review"
+)]
+fn synthesize_machine_step_fn(
+    md: &HirMachineDecl,
+    type_classes: &hew_hir::TypeClassTable,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
+    module_fn_names: &HashSet<String>,
+    call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
+) -> LoweredFunction {
     let emit_name = mangle_machine_step(&md.name);
 
     // For generic machines, build the self-type with each type-param as a
@@ -1396,25 +1474,255 @@ fn synthesize_machine_step_fn(md: &HirMachineDecl) -> LoweredFunction {
     };
     let return_ty = self_ty.clone();
 
-    // Param locals: self at index 0, event at index 1. Standard parameter
-    // prologue (LESSONS `parameter-locals-occupy-low-indices`): codegen
-    // emits one alloca per parameter and stores each `get_nth_param(i)`
-    // into `Place::Local(i)` before the first user instruction.
-    let locals = vec![self_ty.clone(), event_ty.clone()];
-    let params = vec![self_ty.clone(), event_ty.clone()];
+    // Synthetic BindingIds for the step fn's two parameters. We use the
+    // top of the u32 range so a real user binding (allocated monotonically
+    // from 0 by the module IdGen) can never collide with these IDs even in
+    // pathologically large modules. Slice 4c (drop-elaborator) will key
+    // tag-dominance facts on these IDs and a collision would silently
+    // alias a real binding into the machine-tag slot — making the IDs
+    // distinguishable by construction.
+    let self_binding = BindingId(u32::MAX);
+    let event_binding = BindingId(u32::MAX - 1);
 
-    // Body: a single block that traps immediately with a typed exit code.
-    // No instructions — the trap is the terminator and codegen emits
-    // `llvm.trap` followed by `unreachable` with no preceding ops.
-    let entry_block = BasicBlock {
-        id: 0,
-        statements: Vec::new(),
-        instructions: Vec::new(),
-        terminator: Terminator::Trap {
-            kind: TrapKind::MachineDispatchUnreachable,
-        },
+    // Construct a Builder with full module context so transition bodies
+    // can reach the same lowering surface (HirExprKind::Call, FieldAccess,
+    // StructInit, etc.) as user functions. `current_machine_self_binding`
+    // is set before each transition body is lowered so MachineFieldAccess
+    // resolves to Place::MachineVariant.
+    let mut builder = Builder {
+        type_classes: type_classes.clone(),
+        record_field_orders: record_field_orders.clone(),
+        actor_layouts: actor_layouts.clone(),
+        supervisor_layout_map: supervisor_layout_map.clone(),
+        module_fn_names: module_fn_names.clone(),
+        call_site_type_args: call_site_type_args.clone(),
+        supervisor_child_slots: supervisor_child_slots.clone(),
+        current_function_symbol: emit_name.clone(),
+        current_machine_self_binding: Some(self_binding),
+        ..Builder::default()
     };
-    let blocks = vec![entry_block];
+
+    // Allocate parameter locals. `self` → Local(0), `event` → Local(1).
+    let self_place = builder.alloc_local(self_ty.clone());
+    let event_place = builder.alloc_local(event_ty.clone());
+    builder.binding_locals.insert(self_binding, self_place);
+    builder.binding_locals.insert(event_binding, event_place);
+
+    // Entry block: load state tag and event tag into integer scratch locals,
+    // then enter the state-cascade.
+    let state_tag = builder.alloc_local(ResolvedTy::I64);
+    builder.instructions.push(Instr::Move {
+        dest: state_tag,
+        src: Place::MachineTag(self_binding),
+    });
+    let event_tag = builder.alloc_local(ResolvedTy::I64);
+    builder.instructions.push(Instr::EnumTagLoad {
+        src: event_place,
+        dest: event_tag,
+    });
+
+    // Collect wildcard transitions (source_state == "_") once — they apply
+    // to every concrete state's event cascade after the specific arms.
+    let wildcard_transitions: Vec<&HirMachineTransition> = md
+        .transitions
+        .iter()
+        .filter(|t| t.source_state == "_")
+        .collect();
+
+    // Pre-allocate the trap block id (default fall-through) and the
+    // per-state-check block ids. The CFG shape is:
+    //   entry -> state_check_0 -> state_check_1 -> ... -> state_check_N -> trap
+    //                |               |                       |
+    //              state_body_0   state_body_1            state_body_N
+    //              (event cascade)
+    //
+    // Each state_body_i terminates at the dispatching arm's Return, or
+    // falls through to `trap` if no event matches.
+    let trap_block = builder.alloc_block();
+
+    // Allocate state-check and state-body blocks in pairs.
+    let state_check_blocks: Vec<u32> = (0..md.states.len())
+        .map(|_| builder.alloc_block())
+        .collect();
+    let state_body_blocks: Vec<u32> = (0..md.states.len())
+        .map(|_| builder.alloc_block())
+        .collect();
+
+    // Entry block flows into the first state-check (or the trap if there
+    // are no states, which HIR rejects but we handle defensively).
+    let first_check = state_check_blocks.first().copied().unwrap_or(trap_block);
+    builder.finish_current_block(Terminator::Goto {
+        target: first_check,
+    });
+
+    // Build each state's check and body block.
+    for (state_idx, state) in md.states.iter().enumerate() {
+        // ── state_check_i: compare state_tag against this state's index.
+        builder.start_block(state_check_blocks[state_idx]);
+        let state_const = builder.alloc_local(ResolvedTy::I64);
+        builder.instructions.push(Instr::ConstI64 {
+            dest: state_const,
+            value: i64::try_from(state_idx).unwrap_or(i64::MAX),
+        });
+        let state_eq = builder.alloc_local(ResolvedTy::Bool);
+        builder.instructions.push(Instr::IntCmp {
+            dest: state_eq,
+            pred: CmpPred::Eq,
+            lhs: state_tag,
+            rhs: state_const,
+        });
+        let next_check = state_check_blocks
+            .get(state_idx + 1)
+            .copied()
+            .unwrap_or(trap_block);
+        builder.finish_current_block(Terminator::Branch {
+            cond: state_eq,
+            then_target: state_body_blocks[state_idx],
+            else_target: next_check,
+        });
+
+        // ── state_body_i: event cascade. Concrete (state==this) transitions
+        // first in source order, then wildcard transitions in source order.
+        // Both groups are filtered by event so each event_idx is matched at
+        // most once per state.
+        builder.start_block(state_body_blocks[state_idx]);
+        let mut arms: Vec<(usize, &HirMachineTransition, bool)> = Vec::new();
+        for t in &md.transitions {
+            if t.source_state == state.name {
+                if let Some(ev_idx) = md.events.iter().position(|ev| ev.name == t.event_name) {
+                    arms.push((ev_idx, t, false));
+                }
+            }
+        }
+        for t in &wildcard_transitions {
+            if let Some(ev_idx) = md.events.iter().position(|ev| ev.name == t.event_name) {
+                // Skip if the same event was already matched by a specific arm
+                // in this state — HIR's duplicate-transition guard already
+                // forbids that, but we belt-and-brace here for determinism.
+                if !arms.iter().any(|(idx, _, _)| *idx == ev_idx) {
+                    arms.push((ev_idx, t, true));
+                }
+            }
+        }
+
+        // Emit the event cascade. Each arm: ConstI64(event_idx), IntCmp,
+        // Branch(then=arm_body, else=next_arm_check). Last arm's else
+        // points at the trap.
+        let arm_check_blocks: Vec<u32> = (0..arms.len()).map(|_| builder.alloc_block()).collect();
+        let arm_body_blocks: Vec<u32> = (0..arms.len()).map(|_| builder.alloc_block()).collect();
+        // state_body cascades directly to first arm_check (or trap if no arms).
+        let first_arm_check = arm_check_blocks.first().copied().unwrap_or(trap_block);
+        builder.finish_current_block(Terminator::Goto {
+            target: first_arm_check,
+        });
+
+        for (arm_idx, (ev_idx, transition, is_wildcard)) in arms.iter().enumerate() {
+            // ── arm_check_j: compare event_tag against this arm's event_idx.
+            builder.start_block(arm_check_blocks[arm_idx]);
+            let ev_const = builder.alloc_local(ResolvedTy::I64);
+            builder.instructions.push(Instr::ConstI64 {
+                dest: ev_const,
+                value: i64::try_from(*ev_idx).unwrap_or(i64::MAX),
+            });
+            let ev_eq = builder.alloc_local(ResolvedTy::Bool);
+            builder.instructions.push(Instr::IntCmp {
+                dest: ev_eq,
+                pred: CmpPred::Eq,
+                lhs: event_tag,
+                rhs: ev_const,
+            });
+            let next_arm = arm_check_blocks
+                .get(arm_idx + 1)
+                .copied()
+                .unwrap_or(trap_block);
+            builder.finish_current_block(Terminator::Branch {
+                cond: ev_eq,
+                then_target: arm_body_blocks[arm_idx],
+                else_target: next_arm,
+            });
+
+            // ── arm_body_j: lower the transition body and return.
+            builder.start_block(arm_body_blocks[arm_idx]);
+
+            // Resolve the effective source state index for HIR-side
+            // `self.field` reads. For non-wildcard arms, it's this state;
+            // for wildcard expansions it's also this state (the dispatching
+            // state at runtime). The HIR lowerer already resolved the field's
+            // (state_idx, field_idx) on MachineFieldAccess nodes inside the
+            // body using `current_machine_source_state` — but for wildcard
+            // transitions, HIR set `current_machine_source_state = None`,
+            // which means `self.field` inside a wildcard body would have been
+            // rejected by HIR's MachineFieldAccess resolution. So we never
+            // see MachineFieldAccess in a wildcard body; the only reads
+            // through `self` in a wildcard body are well-typed by
+            // construction.
+            let _ = is_wildcard;
+
+            // Lower source-state exit hook (non-self-transition, or
+            // self-transition with @reenter).
+            let fires_exit = !transition.is_self_transition || transition.reenter;
+            if fires_exit && state.has_exit {
+                lower_machine_hook_block(&mut builder, state, /*is_exit=*/ true);
+            }
+
+            // Lower the transition body. For wildcard arms the HIR-side
+            // source-state context was None when lowering the body — so the
+            // body cannot reference self.field. The MIR-side
+            // current_machine_self_binding remains set so the dispatching
+            // state's tag dominance still holds for any (defensively
+            // accepted) self.field read.
+            let body_place = builder.lower_value(&transition.body);
+
+            // Fire target-state entry hook (non-self-transition, or
+            // self-transition with @reenter). For wildcard transitions the
+            // target is a literal state name in source — resolve via name.
+            if fires_exit {
+                if let Some(target_state) =
+                    md.states.iter().find(|s| s.name == transition.target_state)
+                {
+                    if target_state.has_entry {
+                        lower_machine_hook_block(
+                            &mut builder,
+                            target_state,
+                            /*is_exit=*/ false,
+                        );
+                    }
+                }
+            }
+
+            if let Some(src) = body_place {
+                builder.instructions.push(Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src,
+                });
+            }
+            builder.finish_current_block(Terminator::Return);
+        }
+    }
+
+    // Default fall-through: trap with MachineDispatchUnreachable.
+    builder.start_block(trap_block);
+    builder.finish_current_block(Terminator::Trap {
+        kind: TrapKind::MachineDispatchUnreachable,
+    });
+
+    // Drain pending blocks into the function's final blocks vec. The
+    // builder's current block is the trap (already finished); there is no
+    // dangling cursor. We allocate a sentinel empty entry to satisfy
+    // `finalize_blocks` (which seals the current cursor with a terminator);
+    // start_block to a fresh id and immediately finalize with a benign
+    // Goto-to-trap that will be unreachable, OR just collect the pending
+    // blocks directly.
+    //
+    // Inline the drain: take pending_blocks directly, sort by id. Equivalent
+    // to finalize_blocks but without adding a phantom block for the cursor.
+    let mut blocks = std::mem::take(&mut builder.pending_blocks);
+    blocks.sort_by_key(|b| b.id);
+
+    // Locals + diagnostics drained from the builder.
+    let locals = builder.locals.clone();
+    let params = vec![self_ty.clone(), event_ty.clone()];
+    let diagnostics = std::mem::take(&mut builder.diagnostics);
 
     let raw = RawMirFunction {
         name: emit_name.clone(),
@@ -1441,21 +1749,24 @@ fn synthesize_machine_step_fn(md: &HirMachineDecl) -> LoweredFunction {
         cooperate_sites: Vec::new(),
     };
 
-    // Trap-only function: no `@resource` locals, no drop edges, no
-    // cleanup blocks. The elaborated form mirrors the raw CFG with a
-    // single `Normal` block and no drop plans (the trap path is
-    // `ExitPath::Panic`-equivalent — codegen never returns from a trap).
+    // Elaborated: mirror raw blocks as Normal kind with no drops. The
+    // step fn has no @resource locals (machine values are BitCopy at this
+    // slice; payload-field drops are Slice 4c's responsibility).
+    let elab_blocks: Vec<ElabBlock> = blocks
+        .iter()
+        .map(|b| ElabBlock {
+            id: b.id,
+            kind: BlockKind::Normal,
+            drops: Vec::new(),
+            successor: None,
+        })
+        .collect();
     let elaborated = ElaboratedMirFunction {
         name: emit_name,
         return_ty,
         statements: Vec::new(),
         decisions: Vec::new(),
-        blocks: vec![ElabBlock {
-            id: 0,
-            kind: BlockKind::Normal,
-            drops: Vec::new(),
-            successor: None,
-        }],
+        blocks: elab_blocks,
         drop_plans: Vec::new(),
         coroutine: None,
         lambda_captures: Vec::new(),
@@ -1466,9 +1777,37 @@ fn synthesize_machine_step_fn(md: &HirMachineDecl) -> LoweredFunction {
         raw,
         checked,
         elaborated,
-        diagnostics: Vec::new(),
+        diagnostics,
         generated: Vec::new(),
         record_layouts: Vec::new(),
+    }
+}
+
+/// Lower a machine state's entry or exit hook block in-place into the
+/// builder's current basic block. Hooks fire alongside transitions; their
+/// HIR is a `HirBlock` whose statements are walked through the standard
+/// `Builder::stmt` path, and whose tail (if any) is evaluated for
+/// side-effects only — hook blocks have a Unit-typed result.
+///
+/// Self-field writes (`self.field = X`) inside hook blocks are not yet
+/// lowered — Slice 4c (drop-elaboration / hook side effects) owns that
+/// path. Lane A fixtures `traffic_light.hew` and `tcp_handshake.hew` only
+/// use `println` in entry/exit blocks, which falls through the standard
+/// call lowering path.
+fn lower_machine_hook_block(
+    builder: &mut Builder,
+    state: &hew_hir::HirMachineState,
+    is_exit: bool,
+) {
+    let block = if is_exit { &state.exit } else { &state.entry };
+    let Some(block) = block.as_ref() else {
+        return;
+    };
+    for stmt in &block.statements {
+        builder.stmt(stmt);
+    }
+    if let Some(tail) = &block.tail {
+        let _ = builder.lower_value(tail);
     }
 }
 
@@ -2604,6 +2943,21 @@ struct Builder {
     generated_functions: Vec<LoweredFunction>,
     closure_record_layouts: Vec<crate::model::RecordLayout>,
     capture_env_sources: HashMap<BindingId, CaptureEnvSource>,
+    /// `Some(self_binding)` while lowering a machine transition body inside
+    /// the synthesised `<Name>__step` function. The `BindingId` identifies
+    /// the `self` parameter slot — used by `HirExprKind::MachineFieldAccess`
+    /// to address payload reads via `Place::MachineVariant { binding:
+    /// self_binding, variant_idx, field_idx }`.
+    ///
+    /// `None` outside a machine step body. This is the MIR analogue of the
+    /// HIR-side `current_machine_self_binding` / `current_machine_source_state`
+    /// context — HIR already resolves the field's `state_idx` and `field_idx`
+    /// at lowering time, so MIR only needs the addressing binding.
+    ///
+    /// Set by the step-fn synthesiser before lowering each transition body;
+    /// restored on return. Slice 4b substrate; Slice 4c (drop-elaboration)
+    /// reads this through the emitted `Place::MachineVariant` places.
+    current_machine_self_binding: Option<BindingId>,
 }
 
 #[derive(Debug, Clone)]
@@ -3681,50 +4035,110 @@ impl Builder {
                 state_idx,
                 payload,
             } => {
-                // Walk payload sub-expressions for diagnostic coverage.
+                // Construct a machine value of `Ty::Named { machine_name }` at
+                // the given state variant. The dest local is allocated with
+                // the machine's nominal type; codegen sizes the tagged-union
+                // layout at LLVM time (Slice 5 wires the LLVM struct + GEP).
+                //
+                // Tag-dominance invariant (Place doc, `MachineVariant`): the
+                // `Place::MachineTag` store dominates every `Place::MachineVariant`
+                // field store because they are emitted in straight-line order
+                // within the same block, and Slice 4c (drop-elaborator) reads the
+                // tag store first when computing per-variant drop plans.
+                let dest_ty = ResolvedTy::Named {
+                    name: machine_name.clone(),
+                    args: Vec::new(),
+                };
+                let dest = self.alloc_local(dest_ty);
+                // Synthesise a BindingId for this freshly constructed machine
+                // value. We use a high-bit-set u32 to make the synthetic
+                // binding distinguishable from real HIR BindingIds (which are
+                // assigned monotonically from 0 by the module's IdGen). The
+                // counter is local-index-derived so two ctors in the same
+                // function don't collide.
+                let Place::Local(local_idx) = dest else {
+                    unreachable!("alloc_local returns Place::Local");
+                };
+                let dest_binding = BindingId(u32::MAX - local_idx);
+                // Tag store: Place::MachineTag(dest_binding) = state_idx.
+                let tag_const = self.alloc_local(ResolvedTy::I64);
+                self.instructions.push(Instr::ConstI64 {
+                    dest: tag_const,
+                    value: i64::try_from(*state_idx).unwrap_or(i64::MAX),
+                });
+                self.instructions.push(Instr::Move {
+                    dest: Place::MachineTag(dest_binding),
+                    src: tag_const,
+                });
+                // Per-payload-field store via Place::MachineVariant. HIR has
+                // already resolved field-name -> field_idx via the
+                // declaration-order layout of HirMachineState.fields; we honour
+                // the source-declared order here for determinism.
                 if let Some(fields) = payload {
-                    for (_, field_expr) in fields {
-                        let _ = self.lower_value(field_expr);
+                    for (field_idx, (_field_name, field_expr)) in fields.iter().enumerate() {
+                        let Some(src) = self.lower_value(field_expr) else {
+                            continue;
+                        };
+                        let field_idx_u32 =
+                            u32::try_from(field_idx).expect("field index exceeds u32::MAX");
+                        let variant_idx_u32 =
+                            u32::try_from(*state_idx).expect("state index exceeds u32::MAX");
+                        self.instructions.push(Instr::Move {
+                            dest: Place::MachineVariant {
+                                binding: dest_binding,
+                                variant_idx: variant_idx_u32,
+                                field_idx: field_idx_u32,
+                            },
+                            src,
+                        });
                     }
                 }
-                // Fail closed: constructing a machine value requires tagged-union
-                // layout and a binding allocator for Place::MachineTag, which are
-                // Slice 4b concerns. A machine body reaching MIR lowering through
-                // this expression path is an unanticipated code path — diagnose
-                // rather than silently produce no-op code.
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::UnsupportedNode {
-                        reason: format!(
-                            "MachineVariantCtor({machine_name}[{state_idx}]) — \
-                             machine state construction not yet lowered to MIR"
-                        ),
-                    },
-                    note: "machine state constructors in expression position require \
-                           tagged-union layout; wired in a later slice"
-                        .to_string(),
-                });
-                None
+                Some(dest)
             }
             HirExprKind::MachineFieldAccess {
                 machine_name,
                 state_idx,
+                field_idx,
                 field_name,
-                ..
             } => {
-                // Fail closed: loading a machine payload field via Place::MachineVariant
-                // requires a dominating Place::MachineTag, which is a Slice 4b concern.
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::UnsupportedNode {
-                        reason: format!(
-                            "MachineFieldAccess({machine_name}[{state_idx}].{field_name}) — \
-                             self-field read not yet lowered to MIR"
-                        ),
+                // Load a payload field from the `self` machine binding
+                // dominated by the transition's source state. The HIR has
+                // already resolved `state_idx` (the source state) and
+                // `field_idx` (declaration-order index within that state's
+                // HirMachineState.fields). MIR addresses the field via
+                // `Place::MachineVariant { binding: self_binding, variant_idx,
+                // field_idx }`; the dominating `Place::MachineTag` was
+                // proven equal to `state_idx` by the dispatch tree that
+                // entered this transition arm.
+                let Some(self_binding) = self.current_machine_self_binding else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "MachineFieldAccess({machine_name}[{state_idx}].{field_name}) — \
+                                 outside a machine transition body"
+                            ),
+                        },
+                        note: "machine self-field reads only legal inside a \
+                               transition body where the step fn's self binding \
+                               is in scope"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                let dest = self.alloc_local(expr.ty.clone());
+                let variant_idx_u32 =
+                    u32::try_from(*state_idx).expect("state index exceeds u32::MAX");
+                let field_idx_u32 =
+                    u32::try_from(*field_idx).expect("field index exceeds u32::MAX");
+                self.instructions.push(Instr::Move {
+                    dest,
+                    src: Place::MachineVariant {
+                        binding: self_binding,
+                        variant_idx: variant_idx_u32,
+                        field_idx: field_idx_u32,
                     },
-                    note: "machine self-field reads require Place::MachineVariant \
-                           with a dominating tag; wired in a later slice"
-                        .to_string(),
                 });
-                None
+                Some(dest)
             }
             HirExprKind::MachineStep { .. } => {
                 // `machine.step(event)` is valid HIR (Slice 3), but MIR
@@ -7904,6 +8318,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             places
         }
         Instr::MachineEmitPlaceholder { payload, .. } => payload.clone(),
+        Instr::EnumTagLoad { src, dest } => vec![*src, *dest],
     }
 }
 

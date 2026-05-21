@@ -321,6 +321,12 @@ impl ContextFlowState {
     }
 }
 
+#[allow(
+    clippy::match_same_arms,
+    reason = "semantically distinct Instr variants share an extraction shape (e.g. \
+              Move and EnumTagLoad both surface src→dest dataflow); merging arms by \
+              pattern would obscure their distinct producer semantics"
+)]
 fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
     match instr {
         Instr::EnterContext | Instr::ExitContext | Instr::CheckCancellation => (vec![], vec![]),
@@ -411,6 +417,7 @@ fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             // (emit is void — the result is dispatched to the event queue).
             (payload.clone(), vec![])
         }
+        Instr::EnumTagLoad { src, dest } => (vec![*src], vec![*dest]),
     }
 }
 

@@ -3679,7 +3679,15 @@ impl LowerCtx {
                 // HIR-side authority: the checker does not produce `expr_types` entries
                 // for `self.field` inside machine bodies. The result type and field_idx
                 // are derived from `current_machine_states[source_state_idx].fields`.
-                if matches!(object.0, Expr::This) {
+                // The parser emits `Expr::This` for the dedicated `this`
+                // keyword and `Expr::Identifier("self")` for the bare `self`
+                // identifier (the conventional machine-body receiver). Both
+                // forms route to the same machine-self-field resolver inside
+                // a machine transition body.
+                let is_self_receiver = matches!(&object.0, Expr::This)
+                    || matches!(&object.0, Expr::Identifier(name) if name == "self")
+                        && self.current_machine_name.is_some();
+                if is_self_receiver {
                     if let Some(hir_expr) =
                         self.try_lower_machine_self_field_access(field, &span, site, intent)
                     {

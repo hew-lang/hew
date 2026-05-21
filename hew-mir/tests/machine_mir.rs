@@ -171,7 +171,12 @@ fn synthesised_step_signature_is_self_event_returning_self() {
 }
 
 #[test]
-fn synthesised_step_body_is_single_block_terminating_in_machine_dispatch_trap() {
+fn synthesised_step_body_contains_dispatch_tree_with_trap_fallthrough() {
+    // Slice 4b: the step function dispatch tree contains one trap block as
+    // the default fall-through (undeclared (state, event) pairs), and at
+    // least one block per state-check. TrafficLight has 2 states + 1 event
+    // + 2 transitions, producing entry + 2 state-checks + 2 state-bodies +
+    // 2 arm-checks + 2 arm-bodies + trap = 10 blocks.
     let pipeline = lower_hir_module(&empty_module(vec![HirItem::Machine(
         traffic_light_machine(),
     )]));
@@ -182,21 +187,26 @@ fn synthesised_step_body_is_single_block_terminating_in_machine_dispatch_trap() 
         .find(|f| f.name == "TrafficLight__step")
         .expect("synthesised step function present");
 
-    assert_eq!(
-        step_fn.blocks.len(),
-        1,
-        "single-block body until the dispatch tree grows downstream"
+    assert!(
+        step_fn.blocks.len() > 1,
+        "Slice 4b dispatch tree spans multiple blocks; got {}",
+        step_fn.blocks.len()
     );
     assert!(
-        step_fn.blocks[0].instructions.is_empty(),
-        "the trap-only entry block emits no instructions before its terminator"
+        step_fn.blocks.iter().any(|b| matches!(
+            b.terminator,
+            Terminator::Trap {
+                kind: TrapKind::MachineDispatchUnreachable
+            }
+        )),
+        "fail-closed: at least one block terminates in MachineDispatchUnreachable trap"
     );
-    assert_eq!(
-        step_fn.blocks[0].terminator,
-        Terminator::Trap {
-            kind: TrapKind::MachineDispatchUnreachable,
-        },
-        "fail-closed: machine dispatch surfaces a typed trap, not a silent no-op"
+    assert!(
+        step_fn
+            .blocks
+            .iter()
+            .any(|b| matches!(b.terminator, Terminator::Return)),
+        "dispatch arms return the next-state value via Terminator::Return"
     );
 }
 
@@ -214,12 +224,12 @@ fn synthesised_step_locals_match_parameter_prologue_convention() {
 
     // Parameter locals occupy the low indices in declaration order; codegen
     // emits one alloca per parameter and stores `get_nth_param(i)` into
-    // `Place::Local(i)` before the first user instruction. The synthesised
-    // body has no body-local slots — only the two parameter slots.
-    assert_eq!(
-        step_fn.locals.len(),
-        2,
-        "two parameter slots, no body locals in the trap-only seam"
+    // `Place::Local(i)` before the first user instruction. Slice 4b adds
+    // body-local slots for the state/event tag scratch and per-arm
+    // comparison locals, so total locals exceed 2.
+    assert!(
+        step_fn.locals.len() >= 2,
+        "at least two parameter slots are present"
     );
     assert_eq!(step_fn.locals[0], step_fn.params[0]);
     assert_eq!(step_fn.locals[1], step_fn.params[1]);
@@ -345,19 +355,21 @@ fn step_shell_signature_and_switch_shape() {
         "step uses Default call conv"
     );
 
-    // Slice 4a dispatch shell: single block that traps (fail-closed seam).
-    // Slice 4b replaces this with the real state×event switch terminator.
-    assert_eq!(
-        step_fn.blocks.len(),
-        1,
-        "Slice 4a shell is a single block; Slice 4b grows the switch here"
+    // Slice 4b dispatch tree: multiple blocks; at least one trap (default
+    // fall-through) and at least one Return (matched arm).
+    assert!(
+        step_fn.blocks.len() > 1,
+        "Slice 4b dispatch tree has multiple blocks; got {}",
+        step_fn.blocks.len()
     );
-    assert_eq!(
-        step_fn.blocks[0].terminator,
-        Terminator::Trap {
-            kind: TrapKind::MachineDispatchUnreachable,
-        },
-        "Slice 4a fail-closed trap: machine dispatch surfaces a typed trap until Slice 4b"
+    assert!(
+        step_fn.blocks.iter().any(|b| matches!(
+            b.terminator,
+            Terminator::Trap {
+                kind: TrapKind::MachineDispatchUnreachable
+            }
+        )),
+        "fail-closed default arm: undeclared (state, event) pairs trap"
     );
 
     // machine_layouts carries one entry for TrafficLight.

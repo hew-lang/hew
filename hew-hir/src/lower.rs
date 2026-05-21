@@ -5206,13 +5206,19 @@ impl LowerCtx {
                 for arg in args {
                     lowered_args.push(self.lower_expr(arg.expr(), IntentKind::Read));
                 }
-                // Synthetic callee: a runtime-symbol reference.  The function type
-                // uses `Unit` return (runtime send/recv return unit in the Rust MIR
-                // pipeline; future slices thread expr_types for richer return types).
+                // Read the actual return type from the checker's expr_types table.
+                // Unit-returning methods (e.g. channel send/recv) record Unit there,
+                // so the fallback is safe and this path remains correct for all callers.
                 // `params` is empty — the call arg list carries the real args.
+                let ret_ty = self
+                    .expr_types
+                    .get(&key)
+                    .cloned()
+                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
+                    .unwrap_or(ResolvedTy::Unit);
                 let callee_ty = ResolvedTy::Function {
                     params: Vec::new(),
-                    ret: Box::new(ResolvedTy::Unit),
+                    ret: Box::new(ret_ty.clone()),
                 };
                 let callee = HirExpr {
                     node: self.ids.node(),
@@ -5231,7 +5237,7 @@ impl LowerCtx {
                         callee: Box::new(callee),
                         args: lowered_args,
                     },
-                    ResolvedTy::Unit,
+                    ret_ty,
                 )
             }
             Some(MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol }) => {

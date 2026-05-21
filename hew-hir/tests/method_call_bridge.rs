@@ -5,10 +5,12 @@
 //!      with the runtime-symbol callee and the receiver prepended to args.
 //!   2. A missing entry for a method-call span produces a `MethodCallNoRewrite`
 //!      diagnostic and no silently-wrong HIR.
+//!   3. A `RewriteToFunction` entry for a non-Unit-returning method (e.g. `len`)
+//!      preserves the return type from the checker's `expr_types` table.
 
 use hew_hir::{lower_program, HirDiagnosticKind, HirExprKind, HirStmtKind, ResolutionCtx};
 use hew_types::module_registry::ModuleRegistry;
-use hew_types::{Checker, TypeCheckOutput};
+use hew_types::{Checker, ResolvedTy, TypeCheckOutput};
 
 fn typecheck_and_lower(source: &str) -> (hew_hir::LowerOutput, TypeCheckOutput) {
     let parsed = hew_parser::parse(source);
@@ -92,6 +94,74 @@ fn method_call_with_rewrite_produces_hir_call() {
     // intentional property of the bridge.  E2 (MIR lowering) detects synthetic
     // runtime callees by their `hew_` prefix convention rather than by resolved
     // binding ids.
+}
+
+/// `s.len()` on a `string` binding is rewritten to `HirExprKind::Call` with
+/// callee `len_str` and the receiver prepended as the first argument.  The
+/// expression node must carry `ty == ResolvedTy::I64` — not `ResolvedTy::Unit`.
+///
+/// This is a regression test for the bug where the `RewriteToFunction` arm in
+/// HIR lowering hardcoded `ResolvedTy::Unit` as the return type, silently
+/// discarding the checker's `expr_types` annotation for the call site.
+#[test]
+fn rewrite_to_function_preserves_return_type() {
+    let source = r#"
+        fn main() -> i64 {
+            let s = "hello";
+            let n = s.len();
+            return n;
+        }
+    "#;
+    let (lower_output, _tc) = typecheck_and_lower(source);
+
+    let method_call_errors: Vec<_> = lower_output
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.kind, HirDiagnosticKind::MethodCallNoRewrite { .. }))
+        .collect();
+    assert!(
+        method_call_errors.is_empty(),
+        "s.len() must not emit MethodCallNoRewrite; got: {method_call_errors:#?}"
+    );
+
+    let fn_item = lower_output
+        .module
+        .items
+        .iter()
+        .find_map(|item| {
+            if let hew_hir::HirItem::Function(f) = item {
+                if f.name == "main" {
+                    return Some(f);
+                }
+            }
+            None
+        })
+        .expect("main function must be present");
+
+    // Walk all statements and find the `let n = s.len()` assignment.
+    // Its initialiser must be a Call whose `ty` is `ResolvedTy::I64`.
+    let len_call_ty = fn_item.body.statements.iter().find_map(|stmt| {
+        if let HirStmtKind::Let(_binding, Some(expr)) = &stmt.kind {
+            if let HirExprKind::Call { callee, .. } = &expr.kind {
+                if let HirExprKind::BindingRef { name, .. } = &callee.kind {
+                    if name == "len_str" {
+                        return Some(expr.ty.clone());
+                    }
+                }
+            }
+        }
+        None
+    });
+
+    let ty = len_call_ty.expect(
+        "s.len() must lower to HirExprKind::Call { callee: len_str, .. }; \
+         body statements: {:#?}",
+    );
+    assert_eq!(
+        ty,
+        ResolvedTy::I64,
+        "s.len() call node must have ty == ResolvedTy::I64, not {ty:?}"
+    );
 }
 
 /// A method call with no checker-produced rewrite entry emits

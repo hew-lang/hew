@@ -1396,6 +1396,10 @@ impl Checker {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "String has many methods to type-check"
+    )]
     pub(super) fn check_string_method(
         &mut self,
         method: &str,
@@ -1403,21 +1407,56 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         match method {
-            "len" => Ty::I64,
-            "contains" | "starts_with" | "ends_with" => {
+            "len" => {
+                self.record_runtime_method_call_rewrite(span, "len_str");
+                Ty::I64
+            }
+            "contains" => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::String);
                 }
+                self.record_runtime_method_call_rewrite(span, "contains_str");
                 Ty::Bool
             }
-            "is_digit" | "is_alpha" | "is_alphanumeric" | "is_empty" => {
+            "starts_with" => {
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &Ty::String);
+                }
+                self.record_runtime_method_call_rewrite(span, "starts_with_str");
+                Ty::Bool
+            }
+            "ends_with" => {
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &Ty::String);
+                }
+                self.record_runtime_method_call_rewrite(span, "ends_with_str");
+                Ty::Bool
+            }
+            "is_empty" => {
+                self.check_arity(args, 0, "`String::is_empty`", span);
+                self.record_runtime_method_call_rewrite(span, "is_empty_str");
+                Ty::Bool
+            }
+            "is_digit" | "is_alpha" | "is_alphanumeric" => {
                 self.check_arity(args, 0, &format!("`String::{method}`"), span);
                 Ty::Bool
             }
-            "to_uppercase" | "to_lowercase" | "to_upper" | "to_lower" | "trim" | "clone" => {
+            "to_uppercase" | "to_upper" => {
+                self.record_runtime_method_call_rewrite(span, "to_uppercase_str");
                 Ty::String
             }
+            "to_lowercase" | "to_lower" => {
+                self.record_runtime_method_call_rewrite(span, "to_lowercase_str");
+                Ty::String
+            }
+            "trim" => {
+                self.record_runtime_method_call_rewrite(span, "trim_str");
+                Ty::String
+            }
+            "clone" => Ty::String,
             "replace" => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
@@ -1827,7 +1866,10 @@ impl Checker {
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
                 elem_ty.clone()
             }
-            "len" => Ty::I64,
+            "len" => {
+                self.record_runtime_method_call_rewrite(span, "len_vec");
+                Ty::I64
+            }
             "get" | "remove" => {
                 self.check_arity(args, 1, &format!("`Vec::{method}`"), span);
                 if let Some(arg) = args.first() {

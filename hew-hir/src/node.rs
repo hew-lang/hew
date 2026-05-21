@@ -520,7 +520,10 @@ pub struct HirStmt {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirStmtKind {
     Let(HirBinding, Option<HirExpr>),
-    Assign { target: HirExpr, value: HirExpr },
+    Assign {
+        target: HirExpr,
+        value: Box<HirExpr>,
+    },
     Expr(HirExpr),
     Return(Option<HirExpr>),
 }
@@ -905,6 +908,39 @@ pub enum HirExprKind {
         state_idx: usize,
         field_idx: usize,
         field_name: String,
+    },
+    /// `while cond { body }` — loops until `cond` evaluates to false.
+    ///
+    /// The expression type is always `Unit`; a while loop never produces
+    /// a value.  MIR lowering emits a header block (condition test) and
+    /// a body block with a back-edge to the header.
+    While {
+        condition: Box<HirExpr>,
+        body: HirBlock,
+    },
+    /// `for binding in start..end { body }` — Range iteration
+    /// (exclusive or inclusive) over an integer range.
+    ///
+    /// This node is produced only for `Range`-typed iterables; other
+    /// iterable types (Vec, Stream, etc.) are not yet implemented and
+    /// cause HIR lowering to emit `NotYetImplemented`.
+    ///
+    /// The expression type is always `Unit`.  MIR lowering emits a
+    /// counter local (typed `i64`), a header block (bounds check), a
+    /// body block, and a back-edge.
+    ForRange {
+        /// The loop-variable binding.  Immutable, scoped to each
+        /// iteration; MIR lowering overwrites the backing local on every
+        /// iteration rather than allocating a new one each time.
+        binding: HirBinding,
+        /// Resolved start expression (the left side of `..`).
+        start: Box<HirExpr>,
+        /// Resolved end expression (the right side of `..` / `..=`).
+        end: Box<HirExpr>,
+        /// `true` for `..=` (inclusive upper bound).
+        inclusive: bool,
+        /// Loop body.
+        body: HirBlock,
     },
     Unsupported(String),
 }

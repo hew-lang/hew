@@ -780,6 +780,17 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
         HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
             collect_call_sites_in_expr(body, out);
         }
+        HirExprKind::While { condition, body } => {
+            collect_call_sites_in_expr(condition, out);
+            collect_call_sites_in_block(body, out);
+        }
+        HirExprKind::ForRange {
+            start, end, body, ..
+        } => {
+            collect_call_sites_in_expr(start, out);
+            collect_call_sites_in_expr(end, out);
+            collect_call_sites_in_block(body, out);
+        }
         _ => {}
     }
 }
@@ -2940,7 +2951,10 @@ impl LowerCtx {
                 } else {
                     let target = self.lower_expr(target, IntentKind::Modify);
                     let value = self.lower_expr(value, IntentKind::Consume);
-                    HirStmtKind::Assign { target, value }
+                    HirStmtKind::Assign {
+                        target,
+                        value: Box::new(value),
+                    }
                 }
             }
             Stmt::Expression(expr) => {
@@ -3070,6 +3084,130 @@ impl LowerCtx {
                 };
                 HirStmtKind::Expr(if_expr)
             }
+            Stmt::While {
+                label: _,
+                condition,
+                body,
+            } => {
+                // `while cond { body }` — lowered to a HIR `While` expression
+                // so that MIR can build the header/body/exit CFG shape.
+                // Labels and `break`/`continue` are out of scope for this slice;
+                // the label is dropped here because MIR does not yet wire
+                // break/continue targets.
+                let cond_hir = self.lower_expr(condition, IntentKind::Read);
+                let body_block = self.lower_block(body, &ResolvedTy::Unit);
+                let while_expr = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: ResolvedTy::Unit,
+                    value_class: ValueClass::BitCopy,
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::While {
+                        condition: Box::new(cond_hir),
+                        body: body_block,
+                    },
+                    span: span.clone(),
+                };
+                HirStmtKind::Expr(while_expr)
+            }
+            Stmt::For {
+                label: _,
+                pattern,
+                iterable,
+                body,
+                is_await: _,
+            } => {
+                // Lower `for pat in iterable { body }`.
+                // Only `Range`-typed iterables are supported in this slice:
+                // `Expr::Range { start, end, inclusive }` where the iterable
+                // expression is syntactically a range literal.  For all other
+                // iterable shapes (Vec, Stream, HashMap, trait-Iterator, etc.)
+                // a `NotYetImplemented` diagnostic is emitted and the statement
+                // is replaced with an `Unsupported` placeholder so the pipeline
+                // fails closed without fabricating a value.
+                //
+                // Only simple identifier patterns (`for i in …`) are supported;
+                // tuple or struct patterns over a range are rejected the same
+                // way.
+                let kind = match (&iterable.0, &pattern.0) {
+                    (
+                        Expr::Binary {
+                            op: op @ (BinaryOp::Range | BinaryOp::RangeInclusive),
+                            left: range_start,
+                            right: range_end,
+                        },
+                        Pattern::Identifier(var_name),
+                    ) => {
+                        // `for i in a..b` / `for i in a..=b` — the parser
+                        // represents range literals as `Expr::Binary` with
+                        // `BinaryOp::Range` or `BinaryOp::RangeInclusive`,
+                        // NOT as `Expr::Range` (which is the slice-index form
+                        // `xs[a..b]` inside bracket expressions only).
+                        let inclusive = *op == BinaryOp::RangeInclusive;
+
+                        // Range element type is always `i64` for integer ranges.
+                        let elem_ty = ResolvedTy::I64;
+
+                        // Lower start and end expressions.
+                        let start_hir = self.lower_expr(range_start, IntentKind::Read);
+                        let end_hir = self.lower_expr(range_end, IntentKind::Read);
+
+                        // Bind the loop variable inside a fresh scope so it is
+                        // scoped to the body but visible during body lowering.
+                        self.push_scope();
+                        let binding =
+                            self.bind(var_name.clone(), elem_ty, false, pattern.1.clone());
+                        let body_block = self.lower_block(body, &ResolvedTy::Unit);
+                        self.pop_scope();
+
+                        HirExprKind::ForRange {
+                            binding,
+                            start: Box::new(start_hir),
+                            end: Box::new(end_hir),
+                            inclusive,
+                            body: body_block,
+                        }
+                    }
+                    (_, Pattern::Identifier(_)) => {
+                        // Non-Range iterable with a valid pattern: emit a typed
+                        // diagnostic and produce an Unsupported placeholder so
+                        // the pipeline fails closed (no fabricated value).
+                        self.unsupported(
+                            iterable.1.clone(),
+                            "for-in over non-Range iterable; only integer Range (a..b) is supported in this version",
+                            "for-while-lowering",
+                        );
+                        // Lower the body for checker-stream coverage.
+                        self.push_scope();
+                        let _ = self.lower_block(body, &ResolvedTy::Unit);
+                        self.pop_scope();
+                        HirExprKind::Unsupported("for-in over unsupported iterable type".into())
+                    }
+                    _ => {
+                        // Non-identifier pattern: not supported in this slice.
+                        self.unsupported(
+                            pattern.1.clone(),
+                            "for-in with non-identifier binding pattern",
+                            "for-while-lowering",
+                        );
+                        self.push_scope();
+                        let _ = self.lower_block(body, &ResolvedTy::Unit);
+                        self.pop_scope();
+                        HirExprKind::Unsupported("for-in with non-identifier pattern".into())
+                    }
+                };
+
+                let for_expr = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: ResolvedTy::Unit,
+                    value_class: ValueClass::BitCopy,
+                    intent: IntentKind::Read,
+                    kind,
+                    span: span.clone(),
+                };
+                HirStmtKind::Expr(for_expr)
+            }
             _ => {
                 self.unsupported(span.clone(), "statement", "slice-2");
                 HirStmtKind::Expr(self.unsupported_expr(span.clone(), "unsupported statement"))
@@ -3108,7 +3246,7 @@ impl LowerCtx {
         };
         HirStmtKind::Assign {
             target: target_write,
-            value,
+            value: Box::new(value),
         }
     }
 
@@ -5980,6 +6118,17 @@ fn collect_captures_walk(
                 }
             }
         }
+        HirExprKind::While { condition, body } => {
+            collect_captures_walk(condition, param_ids, seen, captures, self_id);
+            collect_captures_walk_block(body, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::ForRange {
+            start, end, body, ..
+        } => {
+            collect_captures_walk(start, param_ids, seen, captures, self_id);
+            collect_captures_walk(end, param_ids, seen, captures, self_id);
+            collect_captures_walk_block(body, param_ids, seen, captures, self_id);
+        }
     }
 }
 
@@ -6176,6 +6325,17 @@ fn collect_general_closure_captures_walk(
                     collect_general_closure_captures_walk(val, outer_bindings, seen, captures);
                 }
             }
+        }
+        HirExprKind::While { condition, body } => {
+            collect_general_closure_captures_walk(condition, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
+        }
+        HirExprKind::ForRange {
+            start, end, body, ..
+        } => {
+            collect_general_closure_captures_walk(start, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(end, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
         }
     }
 }

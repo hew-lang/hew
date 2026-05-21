@@ -684,6 +684,28 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             )
             .expect("write to string");
         }
+        HirExprKind::While { condition, body } => {
+            writeln!(out, "{pad}  while").expect("write to string");
+            dump_expr(out, condition, indent + 4);
+            dump_block(out, body, indent + 4);
+        }
+        HirExprKind::ForRange {
+            binding,
+            start,
+            end,
+            inclusive,
+            body,
+        } => {
+            writeln!(
+                out,
+                "{pad}  for-range {} (inclusive={inclusive})",
+                binding.name
+            )
+            .expect("write to string");
+            dump_expr(out, start, indent + 4);
+            dump_expr(out, end, indent + 4);
+            dump_block(out, body, indent + 4);
+        }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");
         }

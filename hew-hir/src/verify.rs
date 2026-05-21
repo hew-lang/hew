@@ -311,6 +311,22 @@ impl Verifier {
                     }
                 }
             }
+            HirExprKind::While { condition, body } => {
+                self.expr(condition);
+                self.block(body);
+            }
+            HirExprKind::ForRange {
+                binding,
+                start,
+                end,
+                body,
+                ..
+            } => {
+                self.binding(binding.id, binding.span.clone());
+                self.expr(start);
+                self.expr(end);
+                self.block(body);
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive
                 // to verification without a prior NotYetImplemented diagnostic.

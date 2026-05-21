@@ -119,6 +119,17 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 }
             }
         }
+        HirExprKind::While { condition, body } => {
+            visit_expr(condition, out);
+            visit_block(body, out);
+        }
+        HirExprKind::ForRange {
+            start, end, body, ..
+        } => {
+            visit_expr(start, out);
+            visit_expr(end, out);
+            visit_block(body, out);
+        }
         HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::Select(_)
         | HirExprKind::AwaitTask { .. }

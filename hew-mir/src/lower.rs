@@ -2714,6 +2714,17 @@ fn collect_unknown_self_fields_in_expr(
                 }
             }
         }
+        HirExprKind::While { condition, body } => {
+            collect_unknown_self_fields_in_expr(condition, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
+        }
+        HirExprKind::ForRange {
+            start, end, body, ..
+        } => {
+            collect_unknown_self_fields_in_expr(start, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_expr(end, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
+        }
     }
 }
 
@@ -4509,6 +4520,14 @@ impl Builder {
                 });
                 Some(dest)
             }
+            HirExprKind::While { condition, body } => self.lower_while(condition, body),
+            HirExprKind::ForRange {
+                binding,
+                start,
+                end,
+                inclusive,
+                body,
+            } => self.lower_for_range(binding, start, end, *inclusive, body),
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
                 // NotYetImplemented and the driver should have stopped
@@ -5272,6 +5291,244 @@ impl Builder {
         // through the same Place that both arms wrote into).
         self.start_block(join_bb);
         Some(result_place)
+    }
+
+    /// Lower `while cond { body }` to a three-block CFG:
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   Goto header_bb
+    ///
+    /// header_bb:
+    ///   cond_place = lower(condition)
+    ///   Branch { cond: cond_place, then: body_bb, else: exit_bb }
+    ///
+    /// body_bb:
+    ///   lower(body statements)
+    ///   Goto header_bb          ← back-edge
+    ///
+    /// exit_bb:
+    ///   (subsequent lowering continues here)
+    /// ```
+    ///
+    /// The while expression always has type Unit; `None` is returned
+    /// (no value Place) matching the semantics of a statement-level loop.
+    fn lower_while(&mut self, condition: &HirExpr, body: &hew_hir::HirBlock) -> Option<Place> {
+        let header_bb = self.alloc_block();
+        let body_bb = self.alloc_block();
+        let exit_bb = self.alloc_block();
+
+        // Entry: unconditional jump to the header (condition check).
+        self.finish_current_block(Terminator::Goto { target: header_bb });
+
+        // Header: evaluate condition and branch.
+        self.start_block(header_bb);
+        let cond_place = self.lower_value(condition)?;
+        self.finish_current_block(Terminator::Branch {
+            cond: cond_place,
+            then_target: body_bb,
+            else_target: exit_bb,
+        });
+
+        // Body: lower statements then loop back.
+        self.start_block(body_bb);
+        for stmt in &body.statements {
+            self.stmt(stmt);
+        }
+        if let Some(tail) = &body.tail {
+            let _ = self.lower_value(tail);
+        }
+        self.finish_current_block(Terminator::Goto { target: header_bb });
+
+        // Exit: subsequent lowering continues here.
+        self.start_block(exit_bb);
+        None
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single coherent CFG builder for the for-range loop; splitting would require passing many intermediate block IDs across helper boundaries"
+    )]
+    /// Lower `for binding in start..end { body }` (or `start..=end`) to a
+    /// four-block CFG:
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   counter = lower(start)
+    ///   end_val = lower(end)
+    ///   [inclusive?]  end_val = IntArithChecked(Add, end_val, 1)
+    ///                   → on overflow → trap_bb { IntegerOverflow }
+    ///                   → on success → header_bb
+    ///   [exclusive?]  Goto header_bb
+    ///
+    /// header_bb:
+    ///   cond = IntCmp(SignedLess, counter, end_val)
+    ///   Branch { cond, then: body_bb, else: exit_bb }
+    ///
+    /// body_bb:
+    ///   binding ← counter       (Move)
+    ///   lower(body statements)
+    ///   counter = IntArithChecked(Add, counter, 1) → trap on overflow
+    ///   Goto header_bb           ← back-edge
+    ///
+    /// exit_bb:
+    ///   (subsequent lowering continues here)
+    /// ```
+    ///
+    /// The inclusive form `start..=end` adjusts `end_val` by +1 before the
+    /// loop header so the header's strict-less-than predicate covers the
+    /// inclusive endpoint.  Overflow on +1 traps as `IntegerOverflow`,
+    /// matching B-2 discipline.
+    ///
+    /// The counter increment also uses `IntArithChecked` with a
+    /// `TrapKind::IntegerOverflow` guard.  A loop iterating to `i64::MAX`
+    /// would try to increment past it and trap rather than silently wrapping
+    /// — fail-closed per the reliability tenet.
+    fn lower_for_range(
+        &mut self,
+        binding: &hew_hir::HirBinding,
+        start: &HirExpr,
+        end: &HirExpr,
+        inclusive: bool,
+        body: &hew_hir::HirBlock,
+    ) -> Option<Place> {
+        // Allocate the counter (i64) and a place for the (exclusive) upper
+        // bound.  Both are written in the entry block before the loop header.
+        let counter = self.alloc_local(ResolvedTy::I64);
+        let end_val = self.alloc_local(ResolvedTy::I64);
+
+        // Initialise counter = start.
+        let start_place = self.lower_value(start)?;
+        self.instructions.push(Instr::Move {
+            dest: counter,
+            src: start_place,
+        });
+
+        // Compute the exclusive upper bound.
+        // Exclusive (`a..b`)  → end_val = raw_end (simple move).
+        // Inclusive (`a..=b`) → end_val = raw_end + 1 (checked; trap on
+        //                       overflow so `a..=i64::MAX` fails closed).
+        let raw_end = self.lower_value(end)?;
+        if inclusive {
+            let one = self.alloc_local(ResolvedTy::I64);
+            self.instructions.push(Instr::ConstI64 {
+                dest: one,
+                value: 1,
+            });
+            let overflow_flag = self.alloc_local(ResolvedTy::Bool);
+            self.instructions.push(Instr::IntArithChecked {
+                op: IntArithOp::Add,
+                signed: IntSignedness::Signed,
+                dest: end_val,
+                lhs: raw_end,
+                rhs: one,
+                overflow_flag,
+            });
+            // On overflow: trap.  On success: fall through to header.
+            let trap_bb = self.alloc_block();
+            let pre_header_bb = self.alloc_block();
+            self.finish_current_block(Terminator::Branch {
+                cond: overflow_flag,
+                then_target: trap_bb,
+                else_target: pre_header_bb,
+            });
+            self.start_block(trap_bb);
+            self.finish_current_block(Terminator::Trap {
+                kind: TrapKind::IntegerOverflow,
+            });
+            // Continue building in pre_header_bb; the loop header is
+            // allocated below and we Goto it from here.
+            self.start_block(pre_header_bb);
+        } else {
+            self.instructions.push(Instr::Move {
+                dest: end_val,
+                src: raw_end,
+            });
+        }
+
+        // Allocate loop structure blocks.
+        let header_bb = self.alloc_block();
+        let body_bb = self.alloc_block();
+        let exit_bb = self.alloc_block();
+
+        // Jump from entry (or post-inclusive-overflow-check) to the header.
+        self.finish_current_block(Terminator::Goto { target: header_bb });
+
+        // Header: if counter < end_val then body else exit.
+        self.start_block(header_bb);
+        let cond = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            dest: cond,
+            pred: CmpPred::SignedLess,
+            lhs: counter,
+            rhs: end_val,
+        });
+        self.finish_current_block(Terminator::Branch {
+            cond,
+            then_target: body_bb,
+            else_target: exit_bb,
+        });
+
+        // Body: expose binding → counter, lower body statements, then
+        // increment counter and loop back to the header.
+        self.start_block(body_bb);
+
+        // Register the loop variable so body BindingRef nodes resolve to
+        // `counter`.  The Bind statement is required by MIR move-check
+        // bookkeeping; it carries a sentinel SiteId(0) because the loop
+        // variable has no checker-recorded call site.
+        self.binding_locals.insert(binding.id, counter);
+        self.statements.push(MirStatement::Bind {
+            binding: binding.id,
+            name: binding.name.clone(),
+            site: hew_hir::SiteId(0),
+            ty: ResolvedTy::I64,
+        });
+
+        for stmt in &body.statements {
+            self.stmt(stmt);
+        }
+        if let Some(tail) = &body.tail {
+            let _ = self.lower_value(tail);
+        }
+
+        // Increment: counter = counter + 1 (checked; trap on overflow).
+        // WHY checked: a loop that reaches i64::MAX and tries to step past it
+        // should trap as IntegerOverflow rather than silently wrapping to the
+        // minimum and potentially running forever.
+        // WHEN obsolete: when Hew introduces explicit wrapping loops or
+        // explicit index-type annotations that allow unsigned indices.
+        let one = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: one,
+            value: 1,
+        });
+        let overflow_flag = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntArithChecked {
+            op: IntArithOp::Add,
+            signed: IntSignedness::Signed,
+            dest: counter,
+            lhs: counter,
+            rhs: one,
+            overflow_flag,
+        });
+        let overflow_trap = self.alloc_block();
+        let after_inc = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: overflow_flag,
+            then_target: overflow_trap,
+            else_target: after_inc,
+        });
+        self.start_block(overflow_trap);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::IntegerOverflow,
+        });
+        self.start_block(after_inc);
+        self.finish_current_block(Terminator::Goto { target: header_bb });
+
+        // Exit: subsequent lowering continues here.
+        self.start_block(exit_bb);
+        None
     }
 
     /// Lower `lhs && rhs` with short-circuit semantics.

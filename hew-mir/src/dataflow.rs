@@ -53,12 +53,17 @@
 //!
 //! ## Fixpoint
 //!
-//! Worklist over `BlockId`. `entry[bb] = ⊓ exit[p] for p in preds(bb)`.
+//! Worklist over `BlockId`. `entry[bb] = ⊓ exit[p] for p in visited_preds(bb)`.
 //! Initial `entry[entry_block] = {}` (empty map = every binding
-//! implicitly `Uninit`). The CFGs constructed by Slice 2 are acyclic
-//! (no loops in v0.5; `R-CFG.X-loops` defers them), so fixpoint
-//! terminates in one RPO pass. The worklist shape is a
-//! forward-compatibility hatch for the loop cluster.
+//! implicitly `Uninit`). CFGs may contain back-edges (while/for loop
+//! bodies loop back to the header). The meet in `meet_predecessors`
+//! skips unvisited predecessors (back-edges on the first pass) so that
+//! bindings live before a loop header are not falsely flagged as
+//! `InitialisedBeforeUse`. After the body block is processed its exit
+//! state is recorded; the header is re-queued and the back-edge
+//! contribution is included on subsequent visits. Convergence is
+//! guaranteed because the binding-state lattice is finite and the meet
+//! is monotone.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
@@ -229,8 +234,34 @@ fn meet_predecessors(
     if preds.is_empty() {
         return BTreeMap::new();
     }
+    // Only consider predecessors that have already been processed
+    // (i.e., have an entry in `exit_states`). Unvisited predecessors
+    // are back-edges (loop back-edges, specifically) that have not yet
+    // established their exit state during the first worklist sweep.
+    // Treating an unvisited predecessor as `Uninit` would cause a
+    // false-positive `InitialisedBeforeUse` for bindings declared
+    // before a loop header that are live on every acyclic path.
+    //
+    // The worklist fixpoint converges correctly because once the
+    // body block is processed its exit state is recorded; on the
+    // subsequent re-visit of the header the meet includes the body's
+    // contribution. The `changed` guard (line above the `for succ`
+    // loop) ensures re-visits only propagate when state actually
+    // changes, so fixpoint terminates.
+    let visited_preds: Vec<u32> = preds
+        .iter()
+        .copied()
+        .filter(|p| exit_states.contains_key(p))
+        .collect();
+
+    if visited_preds.is_empty() {
+        // No visited predecessors yet (first visit of an unreachable
+        // or not-yet-reached block). Return empty (implicitly Uninit).
+        return BTreeMap::new();
+    }
+
     let mut all_bindings: HashSet<BindingId> = HashSet::new();
-    for p in preds {
+    for p in &visited_preds {
         if let Some(s) = exit_states.get(p) {
             for k in s.keys() {
                 all_bindings.insert(*k);
@@ -239,11 +270,12 @@ fn meet_predecessors(
     }
     let mut entry = BTreeMap::new();
     for binding in all_bindings {
-        // Meet across predecessors. Absent-from-map = `Uninit` on
-        // that path. Order is deterministic on `preds` slice order;
-        // meet is commutative + associative (property-tested), so
-        // any permutation produces the same result.
-        let acc = preds
+        // Meet across visited predecessors only. A binding absent from
+        // a visited predecessor's exit state is `Uninit` on that path.
+        // Order is deterministic on `preds` slice order; meet is
+        // commutative + associative (property-tested), so any
+        // permutation produces the same result.
+        let acc = visited_preds
             .iter()
             .map(|p| {
                 exit_states
@@ -302,6 +334,65 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
         | Terminator::Ask { next, .. }
         | Terminator::Select { next, .. } => vec![*next],
     }
+}
+
+/// Compute the reverse post-order (RPO) of blocks reachable from block 0.
+///
+/// RPO ensures that every block's dominators are processed before the
+/// block itself — which means that on the first worklist sweep, all
+/// "acyclic" predecessors of a block have already been processed before
+/// the block is reached.  Back-edges (loop back-edges) remain unvisited
+/// on the first sweep, which is correctly handled by the
+/// `meet_predecessors` visited-only filter.
+///
+/// Unreachable blocks (not reachable from block 0) are appended at the
+/// end in ID order so they still receive an exit-state entry.
+fn compute_rpo(blocks: &[BasicBlock]) -> Vec<u32> {
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
+    let mut visited: HashSet<u32> = HashSet::new();
+    let mut post_order: Vec<u32> = Vec::with_capacity(blocks.len());
+
+    // Iterative DFS to avoid stack overflow on large CFGs.
+    let mut stack: Vec<(u32, usize)> = Vec::new(); // (block_id, next_succ_index)
+    if by_id.contains_key(&0) {
+        stack.push((0, 0));
+        visited.insert(0);
+    }
+    while let Some((cur_id, succ_idx)) = stack.last_mut() {
+        let cur_id = *cur_id;
+        let Some(block) = by_id.get(&cur_id) else {
+            stack.pop();
+            continue;
+        };
+        let succs = successors(block);
+        if *succ_idx < succs.len() {
+            let next = succs[*succ_idx];
+            *succ_idx += 1;
+            if visited.insert(next) {
+                stack.push((next, 0));
+            }
+        } else {
+            post_order.push(cur_id);
+            stack.pop();
+        }
+    }
+
+    // RPO = reverse of post-order.
+    post_order.reverse();
+
+    // Append unreachable blocks in ID order so they get exit_states entries.
+    let all_ids: Vec<u32> = {
+        let mut v: Vec<u32> = blocks.iter().map(|b| b.id).collect();
+        v.sort_unstable();
+        v
+    };
+    for id in all_ids {
+        if !visited.contains(&id) {
+            post_order.push(id);
+        }
+    }
+
+    post_order
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -498,14 +589,14 @@ fn check_context_flow(blocks: &[BasicBlock]) -> Vec<MirCheck> {
     let mut worklist: VecDeque<u32> = VecDeque::from([entry_id]);
     entry_states.insert(entry_id, ContextFlowState::default());
 
-    while let Some(bb_id) = worklist.pop_front() {
-        let Some(block) = by_id.get(&bb_id).copied() else {
+    while let Some(cur_id) = worklist.pop_front() {
+        let Some(block) = by_id.get(&cur_id).copied() else {
             continue;
         };
-        let entry = entry_states.get(&bb_id).cloned().unwrap_or_default();
+        let entry = entry_states.get(&cur_id).cloned().unwrap_or_default();
         let exit = transfer_context_flow(entry, block, &mut checks, &mut seen);
-        let changed = exit_states.get(&bb_id) != Some(&exit);
-        exit_states.insert(bb_id, exit.clone());
+        let changed = exit_states.get(&cur_id) != Some(&exit);
+        exit_states.insert(cur_id, exit.clone());
         if changed {
             for succ in successors(block) {
                 let next = entry_states
@@ -554,6 +645,10 @@ pub fn check_blocks(blocks: &[BasicBlock], type_classes: &TypeClassTable) -> Vec
 /// zero-parameter functions and for hand-built test pipelines where no
 /// parameters exist.
 #[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "two-phase dataflow (fixpoint + diagnostic sweep); splitting would require shared mutable state across functions"
+)]
 pub fn analyze(
     blocks: &[BasicBlock],
     type_classes: &TypeClassTable,
@@ -569,21 +664,42 @@ pub fn analyze(
     // `lower::Builder::finalize_blocks`).
     let entry_id = 0;
 
+    // ── Phase 1: fixpoint ──────────────────────────────────────────────
+    //
+    // Compute per-block exit states to fixpoint WITHOUT emitting
+    // diagnostics. Separating state propagation from diagnostic emission
+    // prevents false-positive `InitialisedBeforeUse` reports for blocks
+    // whose predecessor appears later in block-ID order (which happens
+    // when a checked-arithmetic expression inside a while condition
+    // allocates new blocks after `body_bb` in ID space, making
+    // `body_bb`'s predecessor ID > `body_bb`'s own ID).
+    //
+    // During fixpoint, every block that is processed before some of its
+    // predecessors would see an incomplete entry state. Deferring
+    // diagnostics to Phase 2 — after all exit states are stable — means
+    // we only evaluate `Use` nodes against states that reflect every
+    // reachable path.
     let mut exit_states: HashMap<u32, BTreeMap<BindingId, BindingState>> = HashMap::new();
     let mut linear_bindings: BTreeMap<BindingId, (String, ResolvedTy)> = BTreeMap::new();
-    let mut checks: Vec<MirCheck> = Vec::new();
-    let mut use_after_consume_seen: HashSet<(BindingId, SiteId)> = HashSet::new();
-    let mut init_before_use_seen: HashSet<(BindingId, SiteId)> = HashSet::new();
 
-    // Worklist seeded with every block, processed in id order so the
-    // first sweep matches RPO on the acyclic CFGs Slice 2 builds.
-    let mut worklist: VecDeque<u32> = blocks.iter().map(|b| b.id).collect();
+    // Worklist seeded in Reverse Post-Order (RPO). RPO ensures every
+    // block's dominators on the acyclic spanning tree are processed
+    // before the block itself. This means that on the first worklist
+    // sweep, all "forward-edge" predecessors have been visited before
+    // the block is processed — so `meet_predecessors`'s visited-only
+    // filter produces a sound entry state without skipping any path that
+    // could genuinely deliver `Uninit`. Only true back-edges (loop
+    // back-edges) are skipped on the first sweep; those get picked up
+    // on subsequent re-visits when the fixpoint propagates the body's
+    // exit state back through the back-edge.
+    let rpo = compute_rpo(blocks);
+    let mut worklist: VecDeque<u32> = rpo.into_iter().collect();
 
-    while let Some(bb_id) = worklist.pop_front() {
-        let Some(block) = by_id.get(&bb_id) else {
+    while let Some(cur_id) = worklist.pop_front() {
+        let Some(block) = by_id.get(&cur_id) else {
             continue;
         };
-        let entry = if bb_id == entry_id {
+        let entry = if cur_id == entry_id {
             // Seed parameters as `Live` at function entry. Parameters are
             // initialised by the calling convention (their values arrive via
             // LLVM function arguments + the parameter prologue in codegen);
@@ -597,14 +713,67 @@ pub fn analyze(
             entry_state
         } else {
             let empty = Vec::new();
-            let preds_of_bb = preds.get(&bb_id).unwrap_or(&empty);
+            let preds_of_bb = preds.get(&cur_id).unwrap_or(&empty);
+            // Phase 1 uses the visited-only meet so back-edges don't
+            // contribute `Uninit` before they are processed.
             meet_predecessors(preds_of_bb, &exit_states)
         };
-        // Clear per-block diagnostic dedupe state? No — the seen-sets
-        // are function-wide so re-visits during fixpoint don't
-        // duplicate. The transfer function checks-then-inserts into
-        // the seen set.
+        // In Phase 1 we only propagate state — diagnostics are discarded.
+        let mut phase1_checks: Vec<MirCheck> = Vec::new();
+        let mut phase1_use_seen: HashSet<(BindingId, SiteId)> = HashSet::new();
+        let mut phase1_init_seen: HashSet<(BindingId, SiteId)> = HashSet::new();
         let new_exit = transfer_block(
+            entry,
+            block,
+            type_classes,
+            &mut linear_bindings,
+            &mut phase1_checks,
+            &mut phase1_use_seen,
+            &mut phase1_init_seen,
+        );
+        drop(phase1_checks);
+        drop(phase1_use_seen);
+        drop(phase1_init_seen);
+        let changed = exit_states
+            .get(&cur_id)
+            .is_none_or(|prev| *prev != new_exit);
+        exit_states.insert(cur_id, new_exit);
+        if changed {
+            for succ in successors(block) {
+                worklist.push_back(succ);
+            }
+        }
+    }
+
+    // ── Phase 2: diagnostic sweep ─────────────────────────────────────
+    //
+    // Now that exit_states is stable (fixpoint reached), do one more
+    // pass over every reachable block in ID order to collect diagnostics
+    // using the correct, fully-converged entry states. This guarantees
+    // that every `Use` is checked against the state that reflects all
+    // predecessor paths — including loop back-edges.
+    let mut checks: Vec<MirCheck> = Vec::new();
+    let mut use_after_consume_seen: HashSet<(BindingId, SiteId)> = HashSet::new();
+    let mut init_before_use_seen: HashSet<(BindingId, SiteId)> = HashSet::new();
+    // Reset linear_bindings for the diagnostic pass (Phase 1 populated it
+    // as a side-effect; resetting avoids double-registration).
+    linear_bindings.clear();
+
+    for block in blocks {
+        let blk_id = block.id;
+        let entry = if blk_id == entry_id {
+            let mut entry_state: BTreeMap<BindingId, BindingState> = BTreeMap::new();
+            for &id in param_bindings {
+                entry_state.insert(id, BindingState::Live);
+            }
+            entry_state
+        } else {
+            let empty = Vec::new();
+            let preds_of_bb = preds.get(&blk_id).unwrap_or(&empty);
+            // Phase 2 uses ALL predecessors (all are now in exit_states).
+            meet_predecessors(preds_of_bb, &exit_states)
+        };
+        transfer_block(
             entry,
             block,
             type_classes,
@@ -613,13 +782,8 @@ pub fn analyze(
             &mut use_after_consume_seen,
             &mut init_before_use_seen,
         );
-        let changed = exit_states.get(&bb_id).is_none_or(|prev| *prev != new_exit);
-        exit_states.insert(bb_id, new_exit);
-        if changed {
-            for succ in successors(block) {
-                worklist.push_back(succ);
-            }
-        }
+        // We don't update exit_states in Phase 2 — they're already
+        // stable from Phase 1 and we're only collecting diagnostics.
     }
 
     // Per-exit MustConsume + MaybeConsumed-at-Return error. For every

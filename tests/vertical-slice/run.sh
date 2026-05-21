@@ -376,6 +376,16 @@ grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
 grep -qF 'scope deadline body' "${reject_output}"
 grep -qF 'non-empty timeout bodies remain fail-closed' "${reject_output}"
 
+# Reject: `for x in non_range_iterable` — only integer Range (a..b, a..=b) is
+# supported in the current vertical slice.  Pins the fail-closed boundary at
+# hew-hir/src/lower.rs non-range iterable arm.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/for_non_range_iterable.hew" >"${reject_output}" 2>&1; then
+  echo "expected for-non-range-iterable fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF 'non-Range iterable' "${reject_output}"
+
 # ---------------------------------------------------------------------------
 # gen{} checker — typed generator blocks
 # ---------------------------------------------------------------------------

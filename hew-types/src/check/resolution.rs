@@ -1021,7 +1021,9 @@ impl Checker {
                 // Removed aliases: suggest the replacement before the
                 // general unknown-type path swallows the name.
                 match name.as_str() {
-                    "int" | "Int" => {
+                    "int" => {
+                        // Lowercase `int` was never a valid v0.3/v0.4 user-facing
+                        // spelling; treat it as an unknown type.
                         self.report_error(
                             TypeErrorKind::UndefinedType,
                             &te.1,
@@ -1031,6 +1033,30 @@ impl Checker {
                             ),
                         );
                         return Ty::Error;
+                    }
+                    "Int" => {
+                        // `Int` was the v0.3/v0.4 spelling for i64.  Resolve it
+                        // so external code continues to type-check, but emit a
+                        // deprecation warning so users know to migrate to `i64`.
+                        // Dedup by span: the checker visits type expressions
+                        // multiple times during inference; emit at most once per
+                        // source token.
+                        let span_key = SpanKey::from(&te.1);
+                        if self.deprecated_alias_spans.insert(span_key) {
+                            self.warnings.push(crate::error::TypeError {
+                                severity: crate::error::Severity::Warning,
+                                kind: TypeErrorKind::DeprecatedTypeAlias {
+                                    alias: "Int".to_string(),
+                                    canonical: "i64".to_string(),
+                                },
+                                span: te.1.clone(),
+                                message: "`Int` is deprecated; use `i64` instead".to_string(),
+                                notes: vec![],
+                                suggestions: vec!["Replace `Int` with `i64`.".to_string()],
+                                source_module: self.current_module.clone(),
+                            });
+                        }
+                        return Ty::I64;
                     }
                     "uint" => {
                         self.report_error(

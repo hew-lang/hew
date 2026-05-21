@@ -1401,6 +1401,44 @@ fn removed_alias_uint_emits_suggestion_for_u64_or_usize() {
     );
 }
 
+/// `Int` (capital I) was the v0.3/v0.4 spelling; it resolves to `i64` with
+/// a deprecation warning so external code continues to type-check.
+#[test]
+fn deprecated_alias_int_resolves_to_i64_with_warning() {
+    let result = hew_parser::parse("fn main() { let x: Int = 5; }");
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+
+    // Must not be an error — the code should type-check.
+    assert!(
+        output.errors.is_empty(),
+        "Int should resolve cleanly (as i64); got errors: {:?}",
+        output.errors
+    );
+
+    // Must emit a deprecation warning pointing to i64.
+    let warn = output
+        .warnings
+        .iter()
+        .find(|w| {
+            matches!(
+                &w.kind,
+                TypeErrorKind::DeprecatedTypeAlias { alias, .. } if alias == "Int"
+            )
+        })
+        .expect("expected a DeprecatedTypeAlias warning for `Int`");
+    assert!(
+        warn.message.contains("i64"),
+        "warning should suggest i64; got: {}",
+        warn.message
+    );
+}
+
 #[test]
 fn typecheck_error_type_mismatch() {
     let source = concat!(

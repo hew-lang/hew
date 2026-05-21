@@ -577,6 +577,17 @@ pub enum TypeErrorKind {
         /// `"Decode"`, or both).
         missing_traits: Vec<String>,
     },
+    /// A type name from a previous Hew version (v0.3/v0.4) was used in source.
+    ///
+    /// The alias still resolves so external code continues to type-check, but
+    /// a warning is emitted pointing to the canonical v0.5 spelling.  Code
+    /// should be migrated before the alias is removed in a future release.
+    DeprecatedTypeAlias {
+        /// The deprecated name as written in source (e.g. `"Int"`).
+        alias: String,
+        /// The canonical v0.5 spelling to migrate to (e.g. `"i64"`).
+        canonical: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -637,6 +648,7 @@ impl TypeErrorKind {
             Self::EmptyGenerator => "EmptyGenerator",
             Self::ClosureRecursive { .. } => "ClosureRecursive",
             Self::SinkPayloadNotWire { .. } => "SinkPayloadNotWire",
+            Self::DeprecatedTypeAlias { .. } => "DeprecatedTypeAlias",
         }
     }
 }

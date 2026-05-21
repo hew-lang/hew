@@ -4,7 +4,7 @@ use hew_parser::ast::{BinaryOp, OverflowPolicy, ResourceMarker, Span};
 use hew_types::{ChildSlot, ExecutionContextReader, ResolvedTy, VariantMatch};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
-use crate::monomorph::{MonomorphizedFn, RecordLayout};
+use crate::monomorph::{EnumLayout, MonomorphizedFn, RecordLayout};
 use crate::value_class::TypeClassTable;
 use crate::{IntentKind, ValueClass};
 
@@ -72,6 +72,22 @@ pub struct HirModule {
     /// LESSONS: `producer-bridge-before-codegen` (P1),
     /// `checker-authority` (P0).
     pub record_layouts: Vec<RecordLayout>,
+    /// Distinct generic-enum instantiations observed at enum-ctor sites
+    /// and match scrutinees in this module. Populated from the HIR mono
+    /// pass discovery walker during HIR lowering. Each entry pairs a
+    /// generic origin `ItemId` with concrete `Vec<ResolvedTy>` args, a
+    /// mangled symbol name, and the variant shape after type-parameter
+    /// substitution. Insertion-ordered for deterministic codegen.
+    ///
+    /// Empty when no user generic enum instantiation sites exist. Downstream
+    /// MIR and codegen consumers iterate this list to emit one `EnumLayout`
+    /// per entry under the mangled name. The registry is the substrate that
+    /// replaces the `GenericEnumNotYetSupported` fail-closed branch in MIR
+    /// layout-gather (Cluster B, slice 3).
+    ///
+    /// LESSONS: `producer-bridge-before-codegen` (P1),
+    /// `checker-authority` (P0).
+    pub enum_layouts: Vec<EnumLayout>,
     /// Per-field-access `SiteId` → `ChildSlot` for supervisor child accessor
     /// expressions. Populated during HIR lowering from the checker's
     /// `supervisor_child_slots` side-table (keyed by span) by translating each

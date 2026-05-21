@@ -11232,6 +11232,7 @@ mod enum_layout_tests {
             monomorphisations: vec![],
             call_site_type_args: HashMap::<SiteId, _>::default(),
             record_layouts: vec![],
+            enum_layouts: vec![],
             supervisor_child_slots: HashMap::<SiteId, ChildSlot>::default(),
         }
     }

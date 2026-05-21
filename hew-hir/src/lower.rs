@@ -16,8 +16,9 @@ use crate::builtin_type_classes::seed_builtin_type_classes;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef, SiteId};
 use crate::monomorph::{
-    contains_recursive_polymorphic_self, substitute_type_params, MonoKey, MonoRegistry,
-    RecordLayoutRegistry, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,
+    contains_recursive_polymorphic_self, substitute_type_params, EnumLayoutRegistry, EnumMonoKey,
+    EnumVariantLayout, MonoKey, MonoRegistry, RecordLayoutRegistry, RecordMonoKey,
+    MONOMORPHISATION_REGISTRY_CAP,
 };
 use crate::node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
@@ -425,6 +426,13 @@ pub fn lower_program_with_mono_cap(
                 ctx.enum_variants_by_name
                     .insert(hir_decl.name.clone(), hir_decl.variants.clone());
             }
+            // Snapshot type-params and ItemId for the enum-layout discovery
+            // pass (slice 2). Needed to substitute variant payload types and
+            // to build EnumMonoKey.origin. Stored even for non-generic enums
+            // (empty type_params) so discovery can safely skip them.
+            ctx.enum_type_params
+                .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
+            ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
             type_decl_cache.insert(decl as *const _, hir_decl);
         }
     }
@@ -563,6 +571,7 @@ pub fn lower_program_with_mono_cap(
     let mut monomorphisations = ctx.mono_registry.into_vec();
     let call_site_type_args = ctx.call_site_type_args;
     let record_layouts = ctx.record_layout_registry.into_vec();
+    let enum_layouts = ctx.enum_layout_registry.into_vec();
     let supervisor_child_slots = ctx.supervisor_child_slots;
 
     // Closure under substitution: walk every monomorphisation's origin
@@ -585,6 +594,7 @@ pub fn lower_program_with_mono_cap(
             monomorphisations,
             call_site_type_args,
             record_layouts,
+            enum_layouts,
             supervisor_child_slots,
         },
         diagnostics: ctx.diagnostics,
@@ -1093,6 +1103,22 @@ struct LowerCtx {
     /// Tracks whether the `RecordLayoutCapExceeded` diagnostic has
     /// already been emitted for this lowering invocation.
     record_layout_cap_diag_emitted: bool,
+    /// Per-enum type-parameter names, keyed by enum type name. Populated
+    /// during the type-decl second pass alongside `enum_variants_by_name`.
+    /// Consumed by the enum-layout discovery pass to know which names in a
+    /// variant's field types are type-parameter symbols vs. concrete named
+    /// types, so `substitute_type_params` can substitute correctly.
+    enum_type_params: HashMap<String, Vec<String>>,
+    /// Per-enum `ItemId`, keyed by enum type name. Populated alongside
+    /// `enum_type_params` so the `EnumMonoKey.origin` field can be set to
+    /// the HIR-allocated `ItemId` of the originating enum declaration rather
+    /// than a synthetic value.
+    enum_item_ids: HashMap<String, ItemId>,
+    /// Distinct user-enum instantiations observed at enum-ctor sites and
+    /// match scrutinees, accumulated during HIR lowering. Drained into
+    /// `HirModule.enum_layouts` at the end of `lower_program`. Cap is
+    /// shared with the fn and record registries.
+    enum_layout_registry: EnumLayoutRegistry,
     /// Checker-authoritative mapping from qualified function name to the
     /// intrinsic catalog key declared via `#[intrinsic("key")]`. Functions
     /// present here must be validated against `stdlib_catalog` and must have
@@ -1219,6 +1245,9 @@ impl LowerCtx {
             record_init_type_args: tc_output.record_init_type_args.clone(),
             record_layout_registry: RecordLayoutRegistry::with_cap(mono_cap),
             record_layout_cap_diag_emitted: false,
+            enum_type_params: HashMap::new(),
+            enum_item_ids: HashMap::new(),
+            enum_layout_registry: EnumLayoutRegistry::with_cap(mono_cap),
             intrinsic_declarations: tc_output.intrinsic_declarations.clone(),
             supervisor_child_slots_checker: tc_output.supervisor_child_slots.clone(),
             supervisor_child_slots: HashMap::new(),
@@ -5713,6 +5742,103 @@ impl LowerCtx {
         Some((type_name.clone(), *idx, &variant.kind))
     }
 
+    /// Register one concrete instantiation of a generic enum in the
+    /// `enum_layout_registry`.
+    ///
+    /// Called from every lowering site that establishes a concrete enum type:
+    /// tuple-variant ctor calls (`Option::Some(42)`) and match scrutinee
+    /// lowering. The span is the source span of the expression whose checker-
+    /// produced type carries the full `Named { name, args }` type.
+    ///
+    /// The method is a no-op when:
+    /// - The span has no `expr_types` entry (checker never assigned a type).
+    /// - The type is not `Named` — not an enum instantiation.
+    /// - The enum has no type params (monomorphic enum — skip).
+    /// - The registry already contains this `(origin, type_args)` key.
+    /// - The cap is exceeded (emits `EnumLayoutCapExceeded` diagnostic
+    ///   once per module lowering).
+    ///
+    /// Transitive expansion: after registering a key, this method recurses
+    /// into each type arg that is itself a generic enum, running to a fixed
+    /// point bounded by the registry cap.
+    fn try_register_enum_instantiation(&mut self, span: &std::ops::Range<usize>) {
+        // Collect concrete Named types reachable from the expression type at
+        // this span. Uses a worklist to avoid recursion depth issues.
+        let Some(checker_ty) = self.expr_types.get(&SpanKey::from(span)).cloned() else {
+            return;
+        };
+        let Ok(resolved) = ResolvedTy::from_ty(&checker_ty) else {
+            return;
+        };
+        // Flatten `resolved` into all Named types that could be generic-enum
+        // instantiations, including nested ones inside the type args.
+        let mut worklist: Vec<ResolvedTy> = vec![resolved];
+        while let Some(ty) = worklist.pop() {
+            let ResolvedTy::Named { ref name, ref args } = ty else {
+                continue;
+            };
+            // Only act if this enum has type params and this call provides args.
+            let Some(type_params) = self.enum_type_params.get(name).cloned() else {
+                continue;
+            };
+            if type_params.is_empty() || args.is_empty() {
+                // Enqueue nested Named types even if this one is monomorphic,
+                // in case a type arg contains a generic enum.
+                for arg in args {
+                    worklist.push(arg.clone());
+                }
+                continue;
+            }
+            // Enqueue type args for transitive expansion.
+            for arg in args {
+                worklist.push(arg.clone());
+            }
+            // Retrieve the origin ItemId for this enum.
+            let Some(&origin) = self.enum_item_ids.get(name) else {
+                continue;
+            };
+            let key = EnumMonoKey {
+                origin,
+                origin_name: name.clone(),
+                type_args: args.clone(),
+            };
+            // Build the substituted variant list from the unsubstituted HIR
+            // variant descriptors stored in `enum_variants_by_name`.
+            let Some(variants_proto) = self.enum_variants_by_name.get(name).cloned() else {
+                continue;
+            };
+            let variant_layouts: Vec<EnumVariantLayout> = variants_proto
+                .iter()
+                .map(|v| {
+                    let raw_field_tys = v.field_tys();
+                    let subst_field_tys = raw_field_tys
+                        .iter()
+                        .map(|ft| substitute_type_params(ft, &type_params, args))
+                        .collect();
+                    EnumVariantLayout {
+                        name: v.name.clone(),
+                        field_tys: subst_field_tys,
+                    }
+                })
+                .collect();
+            if self
+                .enum_layout_registry
+                .insert(key, variant_layouts)
+                .is_err()
+            {
+                // Cap exceeded — emit diagnostic and abort further expansion.
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::EnumLayoutCapExceeded {
+                        cap: self.enum_layout_registry.cap(),
+                    },
+                    span.clone(),
+                    "enum monomorphisation cap exceeded; increase `mono_cap` or reduce generic enum instantiation count",
+                ));
+                return;
+            }
+        }
+    }
+
     /// Build the `HirExprKind::MachineVariantCtor` node for a tuple-variant
     /// constructor call. Synthetic field names "0", "1", ... are used —
     /// MIR/codegen discard names and index payload slots by position (lane
@@ -5750,6 +5876,12 @@ impl LowerCtx {
             .enumerate()
             .map(|(idx, expr)| (idx.to_string(), expr))
             .collect();
+        // Register the generic-enum instantiation if this ctor produces one.
+        // The checker-authoritative type at `span` carries the full
+        // `Named { name: "Option", args: [I64] }`; the `result_ty` below drops
+        // the args (monomorphic Named node). Discovery must happen before
+        // `result_ty` is built so we still own `span` immutably.
+        self.try_register_enum_instantiation(span);
         let result_ty = ResolvedTy::Named {
             name: type_name_owned.clone(),
             args: Vec::new(),
@@ -6019,6 +6151,11 @@ impl LowerCtx {
         span: &std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
         let scrutinee_hir = self.lower_expr(scrutinee, IntentKind::Read);
+        // Register a generic-enum instantiation if the scrutinee's type is
+        // a parameterised enum. The checker-authoritative type at the scrutinee
+        // span carries the full `Named { name, args }` including concrete type
+        // args; `try_register_enum_instantiation` is a no-op for monomorphic enums.
+        self.try_register_enum_instantiation(&scrutinee.1);
 
         // Track whether any arm has been rejected; if so we still walk the
         // arm bodies (for checker-stream coverage) but produce
@@ -7788,6 +7925,157 @@ mod tests {
         assert_ne!(
             reply_id, verdict_id,
             "distinct arm bindings must have distinct BindingIds"
+        );
+    }
+
+    // ── Enum-layout discovery tests ──────────────────────────────────────────
+
+    /// Lower the §0 probe (`Option<i64>` instantiated at a call site and
+    /// matched) and assert that the HIR enum-layout registry contains exactly
+    /// the expected entry. The `Some` variant's payload field must be
+    /// `ResolvedTy::I64` (not `ResolvedTy::Named { name: "T", args: [] }` —
+    /// the raw type-param symbol). This pins the substitution contract.
+    ///
+    /// LESSONS: `type-info-survival` (P0) — read type from `expr_types`,
+    /// not the un-substituted HIR node type. `checker-authority` (P0).
+    #[test]
+    fn generic_enum_option_i64_registered_in_enum_layouts() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            enum Option<T> { Some(T); None }
+            fn main() -> i64 {
+                let x: Option<i64> = Option::Some(42);
+                match x {
+                    Option::Some(v) => v,
+                    Option::None => 0,
+                }
+            }
+            ",
+        );
+
+        let layouts = &lowered.module.enum_layouts;
+        assert_eq!(
+            layouts.len(),
+            1,
+            "exactly one enum-layout entry expected for Option<i64>; got {layouts:#?}"
+        );
+
+        let layout = &layouts[0];
+        assert_eq!(
+            layout.key.origin_name, "Option",
+            "enum origin name must be 'Option'"
+        );
+        assert_eq!(
+            layout.key.type_args,
+            vec![ResolvedTy::I64],
+            "type_args must be [I64]"
+        );
+        assert_eq!(
+            layout.mangled_name, "Option$$i64",
+            "mangled name must follow shared scheme"
+        );
+
+        // Two variants: Some(T→i64) and None.
+        assert_eq!(layout.variants.len(), 2, "Option has two variants");
+        let some_variant = layout
+            .variants
+            .iter()
+            .find(|v| v.name == "Some")
+            .expect("Some variant must be present");
+        assert_eq!(
+            some_variant.field_tys,
+            vec![ResolvedTy::I64],
+            "Some variant payload must be substituted to I64, not a type-param symbol"
+        );
+        let none_variant = layout
+            .variants
+            .iter()
+            .find(|v| v.name == "None")
+            .expect("None variant must be present");
+        assert!(
+            none_variant.field_tys.is_empty(),
+            "None variant must have no payload fields"
+        );
+    }
+
+    /// A plain monomorphic enum must NOT appear in `enum_layouts` — the
+    /// registry is only for generic-enum instantiations.
+    #[test]
+    fn monomorphic_enum_does_not_appear_in_enum_layouts() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            enum Colour { Red; Green; Blue }
+            fn main() -> i64 {
+                let c: Colour = Colour::Red;
+                match c {
+                    Colour::Red => 1,
+                    Colour::Green => 2,
+                    Colour::Blue => 3,
+                }
+            }
+            ",
+        );
+
+        assert!(
+            lowered.module.enum_layouts.is_empty(),
+            "monomorphic enums must not appear in enum_layouts; got {:#?}",
+            lowered.module.enum_layouts
+        );
+    }
+
+    /// Nested generic instantiation: `Option<Option<i64>>` must produce two
+    /// registry entries — one for `Option<Option<i64>>` and one for
+    /// `Option<i64>`. The worklist transitively expands type args so that the
+    /// inner instantiation is discovered even though only the outer type
+    /// appears at the call site.
+    ///
+    /// This exercises the fixpoint path in `try_register_enum_instantiation`.
+    #[test]
+    fn nested_generic_enum_option_option_i64_registers_both_instantiations() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            enum Option<T> { Some(T); None }
+            fn main() -> i64 {
+                let inner: Option<i64> = Option::Some(5);
+                let outer: Option<Option<i64>> = Option::Some(inner);
+                match outer {
+                    Option::Some(v) => match v {
+                        Option::Some(n) => n,
+                        Option::None => 0,
+                    },
+                    Option::None => -1,
+                }
+            }
+            ",
+        );
+
+        let layouts = &lowered.module.enum_layouts;
+        // Both Option<i64> and Option<Option<i64>> must be registered.
+        assert!(
+            layouts.len() >= 2,
+            "expected at least two enum-layout entries for Option<i64> and \
+             Option<Option<i64>>; got {layouts:#?}"
+        );
+
+        let has_option_i64 = layouts
+            .iter()
+            .any(|l| l.key.origin_name == "Option" && l.key.type_args == vec![ResolvedTy::I64]);
+        let has_option_option_i64 = layouts.iter().any(|l| {
+            l.key.origin_name == "Option"
+                && l.key.type_args
+                    == vec![ResolvedTy::Named {
+                        name: "Option".to_string(),
+                        args: vec![ResolvedTy::I64],
+                    }]
+        });
+
+        assert!(
+            has_option_i64,
+            "registry must contain Option<i64>; got {layouts:#?}"
+        );
+        assert!(
+            has_option_option_i64,
+            "registry must contain Option<Option<i64>>; got {layouts:#?}"
         );
     }
 }

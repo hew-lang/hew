@@ -4300,27 +4300,113 @@ impl Builder {
                 });
                 Some(dest)
             }
-            HirExprKind::MachineStep { .. } => {
-                // `machine.step(event)` is valid HIR (Slice 3), but MIR
-                // lowering for machine step dispatch is deferred to a later slice.
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::UnsupportedNode {
-                        reason: "MachineStep (MIR lowering not yet wired)".to_string(),
-                    },
-                    note: "machine step expressions are not yet lowered to MIR".to_string(),
+            HirExprKind::MachineStep {
+                machine_name,
+                receiver,
+                event,
+            } => {
+                // `m.step(event)` lowers to a call into the synthesised
+                // `<Name>__step(self, event) -> <Name>` helper followed by an
+                // unconditional store-back of the returned value into the
+                // receiver's binding slot.
+                //
+                // The store-back is what makes `step` look like in-place
+                // mutation at the user surface even though the helper
+                // returns a fresh machine value (immutable internal
+                // representation). The HIR checker verified the receiver is
+                // a mutable binding (HirExprKind::MachineStep doc), so we
+                // pattern-match `BindingRef { resolved: Binding(id), .. }`
+                // and fail-closed otherwise.
+                let HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(binding_id),
+                    name: receiver_name,
+                } = &receiver.kind
+                else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "MachineStep on `{machine_name}` has non-binding receiver \
+                                 {:?}; checker should have rejected this",
+                                receiver.kind
+                            ),
+                        },
+                        note: "machine step receivers must be a mutable local binding so \
+                               the call's return value can be stored back in place"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                let Some(receiver_slot) = self.binding_locals.get(binding_id).copied() else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnresolvedPlace {
+                            binding: *binding_id,
+                            name: receiver_name.clone(),
+                            site: receiver.site,
+                        },
+                        note: "machine step receiver binding has no MIR place".to_string(),
+                    });
+                    return None;
+                };
+                // Lower receiver (load the current machine value) and event
+                // arguments as by-value reads.
+                let self_arg = self.lower_value(receiver)?;
+                let event_arg = self.lower_value(event)?;
+                let ret_ty = ResolvedTy::Named {
+                    name: machine_name.clone(),
+                    args: Vec::new(),
+                };
+                let ret_local = self.alloc_local(ret_ty.clone());
+                let next = self.alloc_block();
+                self.finish_current_block(Terminator::Call {
+                    callee: mangle_machine_step(machine_name),
+                    args: vec![self_arg, event_arg],
+                    dest: Some(ret_local),
+                    next,
                 });
+                self.start_block(next);
+                // Store-back: write the call's return into the receiver's
+                // binding slot. The MIR producer emits this unconditionally;
+                // even when the transition was a self-transition the value
+                // is consistent with the helper's return.
+                self.instructions.push(Instr::Move {
+                    dest: receiver_slot,
+                    src: ret_local,
+                });
+                // `m.step(ev)` is typed Unit at the call site (HIR
+                // lower.rs:4949). No value is produced for the surrounding
+                // expression; HIR-side evaluation of the assignment-like
+                // statement records the call as `Unit`.
                 None
             }
-            HirExprKind::MachineStateName { .. } => {
-                // `machine.state_name()` is valid HIR (Slice 3), but MIR
-                // lowering for machine state-tag lookup is deferred to a later slice.
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::UnsupportedNode {
-                        reason: "MachineStateName (MIR lowering not yet wired)".to_string(),
-                    },
-                    note: "machine state name expressions are not yet lowered to MIR".to_string(),
+            HirExprKind::MachineStateName {
+                machine_name,
+                receiver,
+            } => {
+                // `m.state_name()` reads the machine's discriminant tag and
+                // looks the state name up in a per-machine static string
+                // table. The receiver must be a binding so codegen can read
+                // its slot's tag field via `Place::MachineTag`.
+                let src_place = self.lower_value(receiver)?;
+                let Place::Local(src_local) = src_place else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "MachineStateName receiver did not lower to a Place::Local; \
+                                 got {src_place:?}"
+                            ),
+                        },
+                        note: "state_name needs a stable alloca slot to read the tag from"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                let dest = self.alloc_local(ResolvedTy::String);
+                self.instructions.push(Instr::MachineStateName {
+                    machine_name: machine_name.clone(),
+                    src_local,
+                    dest,
                 });
-                None
+                Some(dest)
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
@@ -8366,9 +8452,11 @@ fn transfer_block_split(
 /// locals participate in the dataflow.
 #[allow(
     clippy::match_same_arms,
+    clippy::too_many_lines,
     reason = "i64 and float arithmetic arms share the same place-extraction shape but \
               represent semantically distinct ops; consolidating would force a later \
-              re-split when codegen needs per-op dispatch"
+              re-split when codegen needs per-op dispatch. The match must remain exhaustive \
+              across the full Instr surface, so line count grows with every new variant"
 )]
 fn instr_places(instr: &Instr) -> Vec<Place> {
     match instr {
@@ -8479,6 +8567,9 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         }
         Instr::MachineEmitPlaceholder { payload, .. } => payload.clone(),
         Instr::EnumTagLoad { src, dest } => vec![*src, *dest],
+        Instr::MachineStateName {
+            src_local, dest, ..
+        } => vec![Place::Local(*src_local), *dest],
     }
 }
 

@@ -1,0 +1,52 @@
+// Runnable fixture: traffic light state machine executed end-to-end.
+//
+// Drives the user-visible machine substrate via `hew run`:
+//   1. Construct a `TrafficLight` machine at its initial state.
+//   2. Read the current state name via `m.state_name()`.
+//   3. Advance the machine with `m.step(Tick)` and observe the next
+//      state name.
+//
+// BLOCKED: this fixture cannot compile via `hew run` today because HIR
+// `lower_identifier` does not resolve module-scope unit ctors for
+// enums or machine states/events — neither bare names (`Red`, `Tick`)
+// nor qualified paths (`TrafficLight::Red`,
+// `TrafficLightEvent::Tick`) reach the HIR ctor table. The same gap
+// blocks `examples/progressive/07_enums.hew`, so the proper fix is a
+// general HIR module-scope ctor-resolution pass that covers both
+// `enum` unit variants and machine state/event ctors.
+//
+// The MIR producer + codegen for `m.step(ev)` and `m.state_name()` is
+// already wired and exercised by `tests/machine_exec.rs`, which builds
+// a representative MIR by hand and verifies the emitted LLVM IR
+// carries the call+store-back sequence and the state-name table.
+// When the HIR ctor-resolution precursor lands, the fixture below
+// becomes runnable and the `#[ignore]` on the end-to-end test can be
+// removed.
+machine TrafficLight {
+    state Red;
+    state Green;
+    state Yellow;
+
+    event Tick;
+
+    on Tick: Red -> Green {
+        Green
+    }
+    on Tick: Green -> Yellow {
+        Yellow
+    }
+    on Tick: Yellow -> Red {
+        Red
+    }
+}
+
+fn main() {
+    var light = Red;
+    println(light.state_name());
+    light.step(Tick);
+    println(light.state_name());
+    light.step(Tick);
+    println(light.state_name());
+    light.step(Tick);
+    println(light.state_name());
+}

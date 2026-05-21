@@ -1117,6 +1117,11 @@ struct MachineCodegenLayout<'ctx> {
     /// the LLVM type back to a Hew type. Index `i` matches
     /// `MachineLayout.variants[i].field_tys`.
     variant_field_tys: Vec<Vec<ResolvedTy>>,
+    /// Static `[N x ptr]` table of state-name strings for `Instr::MachineStateName`.
+    /// `state_name_table[i]` is a pointer to a private NUL-terminated read-only
+    /// global holding `variants[i].name`. Populated only for the state-side
+    /// machine layout; the `<Name>Event` companion layout entry has `None`.
+    state_name_table: Option<inkwell::values::GlobalValue<'ctx>>,
 }
 
 /// Return the native host data-layout string, initialising LLVM's native
@@ -1198,19 +1203,30 @@ fn host_target_data() -> TargetData {
 /// silent fallback to variant 0 or a zero-sized payload.
 fn register_machine_layouts<'ctx>(
     ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
     machine_layouts: &[MachineLayout],
     record_layout_map: &mut RecordLayoutMap<'ctx>,
 ) -> CodegenResult<MachineLayoutMap<'ctx>> {
     let mut map: MachineLayoutMap<'ctx> = HashMap::new();
     for layout in machine_layouts {
         // The state-side machine value: `<Name>` with state-variant payloads.
-        let machine_cg = build_tagged_union_layout(
+        let mut machine_cg = build_tagged_union_layout(
             ctx,
             &layout.name,
             layout.tag_width,
             &layout.variants,
             record_layout_map,
         )?;
+        // Build the per-machine state-name string table. Each entry is a
+        // pointer to a private NUL-terminated read-only global; the table
+        // itself is a private `[N x ptr]` constant. `Instr::MachineStateName`
+        // reads the machine's tag and GEPs into this table.
+        machine_cg.state_name_table = Some(build_state_name_table(
+            ctx,
+            llvm_mod,
+            &layout.name,
+            &layout.variants,
+        )?);
         // Register the outer struct in the shared layout map so
         // `resolve_ty` finds `ResolvedTy::Named { name: "<Name>" }`
         // naturally — the alloca slot for a `self: <Name>` parameter
@@ -1359,7 +1375,53 @@ fn build_tagged_union_layout<'ctx>(
         tag_int_ty,
         variant_struct_tys,
         variant_field_tys,
+        state_name_table: None,
     })
+}
+
+/// Emit a private `[N x ptr]` LLVM global containing pointers to each
+/// state's NUL-terminated read-only name string. The address of this
+/// global is what `Instr::MachineStateName` GEPs into using the machine's
+/// tag as the array index. Each per-state string is itself a separate
+/// private global (so the table holds opaque `ptr` values, matching
+/// `ResolvedTy::String`'s ABI in LLVM IR).
+fn build_state_name_table<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    machine_name: &str,
+    variants: &[MachineVariantLayout],
+) -> CodegenResult<inkwell::values::GlobalValue<'ctx>> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let mut entry_ptrs: Vec<inkwell::values::PointerValue<'ctx>> =
+        Vec::with_capacity(variants.len());
+    for variant in variants {
+        // Per-state name string: private, internal-linkage, NUL-terminated,
+        // unnamed_addr so LLVM may merge with other identical literals.
+        let str_global_name = format!("__hew_state_name__{machine_name}__{}", variant.name);
+        let bytes_with_nul: Vec<u8> = variant.name.bytes().chain(std::iter::once(0u8)).collect();
+        let i8_ty = ctx.i8_type();
+        let arr_ty = i8_ty.array_type(u32::try_from(bytes_with_nul.len()).unwrap_or(u32::MAX));
+        let str_global = llvm_mod.add_global(arr_ty, None, &str_global_name);
+        let initial: Vec<inkwell::values::IntValue<'ctx>> = bytes_with_nul
+            .iter()
+            .map(|b| i8_ty.const_int(u64::from(*b), false))
+            .collect();
+        let arr_init = i8_ty.const_array(&initial);
+        str_global.set_initializer(&arr_init);
+        str_global.set_linkage(Linkage::Private);
+        str_global.set_constant(true);
+        str_global.set_unnamed_addr(true);
+        entry_ptrs.push(str_global.as_pointer_value());
+    }
+    // The table itself: `[N x ptr]` private constant.
+    let table_ty = ptr_ty.array_type(u32::try_from(entry_ptrs.len()).unwrap_or(u32::MAX));
+    let table_global_name = format!("__hew_state_name_table__{machine_name}");
+    let table_global = llvm_mod.add_global(table_ty, None, &table_global_name);
+    let table_init = ptr_ty.const_array(&entry_ptrs);
+    table_global.set_initializer(&table_init);
+    table_global.set_linkage(Linkage::Private);
+    table_global.set_constant(true);
+    Ok(table_global)
 }
 
 /// Locate a machine's tagged-union codegen layout for an MIR local known
@@ -4115,6 +4177,97 @@ fn lower_instruction(
                 .builder
                 .build_store(dest_ptr, widened)
                 .map_err(|e| CodegenError::Llvm(format!("store enum tag: {e:?}")))?;
+        }
+        Instr::MachineStateName {
+            machine_name,
+            src_local,
+            dest,
+        } => {
+            // 1. Load the machine's discriminant tag from its outer struct
+            //    field 0 (same shape as `Place::MachineTag` and
+            //    `Instr::EnumTagLoad`).
+            // 2. Widen the iW tag to i64 for use as a GEP index.
+            // 3. GEP into the per-machine `__hew_state_name_table` global
+            //    using `[i32 0, i64 tag]`.
+            // 4. Load the pointer entry and store it into `dest`.
+            let layout = fn_ctx.machine_layouts.get(machine_name).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "Instr::MachineStateName references machine `{machine_name}` which is \
+                     not in the layout map — register_machine_layouts must populate it"
+                ))
+            })?;
+            let table_global = layout.state_name_table.ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "Instr::MachineStateName: machine `{machine_name}` has no state-name \
+                     table; only state-side machine layouts carry one (event companion \
+                     layouts do not)"
+                ))
+            })?;
+            let (src_slot, _src_slot_ty) =
+                fn_ctx.locals.get(src_local).copied().ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "Instr::MachineStateName src local {src_local} has no alloca slot"
+                    ))
+                })?;
+            // GEP field 0 (tag) of the outer struct, then load the iW tag.
+            let tag_ptr = fn_ctx
+                .builder
+                .build_struct_gep(layout.outer_struct, src_slot, 0, "machine_tag_ptr")
+                .map_err(|e| CodegenError::Llvm(format!("GEP state-name tag: {e:?}")))?;
+            let tag_loaded = fn_ctx
+                .builder
+                .build_load(layout.tag_int_ty, tag_ptr, "state_name_tag")
+                .map_err(|e| CodegenError::Llvm(format!("load state-name tag: {e:?}")))?
+                .into_int_value();
+            let i64_ty = ctx.i64_type();
+            let tag_i64 = if layout.tag_int_ty.get_bit_width() == 64 {
+                tag_loaded
+            } else {
+                fn_ctx
+                    .builder
+                    .build_int_z_extend(tag_loaded, i64_ty, "state_name_tag_zext")
+                    .map_err(|e| CodegenError::Llvm(format!("zext state-name tag: {e:?}")))?
+            };
+            // GEP into `[N x ptr]` table using [i32 0, i64 tag]. The element
+            // type is `ptr` and the load yields the state-name pointer.
+            let table_ptr = table_global.as_pointer_value();
+            // Reconstruct the table type: `[N x ptr]` where N is the
+            // declared variant count. `register_machine_layouts` built the
+            // global with this exact shape, and `variant_field_tys.len()`
+            // is the same N (one entry per declared state).
+            let n_variants = u32::try_from(layout.variant_field_tys.len()).unwrap_or(u32::MAX);
+            let table_ty = ctx.ptr_type(AddressSpace::default()).array_type(n_variants);
+            let i32_zero = ctx.i32_type().const_zero();
+            // SAFETY: build_in_bounds_gep with a constant base + tag index;
+            // tag is in-range by construction (machine dispatch + HIR
+            // exhaustiveness; an out-of-range tag would already have
+            // tripped Trap::MachineDispatchUnreachable on a step).
+            let entry_ptr = unsafe {
+                fn_ctx
+                    .builder
+                    .build_in_bounds_gep(
+                        table_ty,
+                        table_ptr,
+                        &[i32_zero, tag_i64],
+                        "state_name_entry_ptr",
+                    )
+                    .map_err(|e| CodegenError::Llvm(format!("GEP state-name entry: {e:?}")))?
+            };
+            let ptr_ty = ctx.ptr_type(AddressSpace::default());
+            let name_ptr = fn_ctx
+                .builder
+                .build_load(ptr_ty, entry_ptr, "state_name_ptr")
+                .map_err(|e| CodegenError::Llvm(format!("load state-name ptr: {e:?}")))?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::MachineStateName dest is not a pointer type: {dest_ty:?}"
+                )));
+            }
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, name_ptr)
+                .map_err(|e| CodegenError::Llvm(format!("store state-name ptr: {e:?}")))?;
         }
     }
     Ok(())
@@ -8497,8 +8650,12 @@ fn build_module<'ctx>(
     // resolves `ResolvedTy::Named { name: "Foo" }` to the machine's outer
     // struct the same way it resolves a record. The richer per-variant
     // metadata (inner structs, tag int type) lives in `machine_layouts`.
-    let machine_layouts =
-        register_machine_layouts(ctx, &pipeline.machine_layouts, &mut record_layouts)?;
+    let machine_layouts = register_machine_layouts(
+        ctx,
+        &llvm_mod,
+        &pipeline.machine_layouts,
+        &mut record_layouts,
+    )?;
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;
     for func in &pipeline.raw_mir {

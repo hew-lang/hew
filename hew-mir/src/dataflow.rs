@@ -418,6 +418,9 @@ fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             (payload.clone(), vec![])
         }
         Instr::EnumTagLoad { src, dest } => (vec![*src], vec![*dest]),
+        Instr::MachineStateName {
+            src_local, dest, ..
+        } => (vec![Place::Local(*src_local)], vec![*dest]),
     }
 }
 

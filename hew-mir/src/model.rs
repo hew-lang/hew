@@ -1670,6 +1670,25 @@ pub enum Instr {
         /// Integer-typed destination for the tag ordinal.
         dest: Place,
     },
+    /// `dest = state-name-table[<tag of src>]`.
+    ///
+    /// Lowers the user-visible `m.state_name()` surface for a machine
+    /// receiver. Codegen reads `Place::MachineTag(src_local)` and uses it
+    /// to index a per-machine static string table populated alongside the
+    /// machine's tagged-union layout in `register_machine_layouts`. Each
+    /// table entry is the address of a private read-only NUL-terminated
+    /// global string. `hew_string_drop` skips static-segment pointers via
+    /// `is_static_string`, so no clone or heap allocation is needed —
+    /// matches `Instr::StringLit`.
+    ///
+    /// `machine_name` carries the unqualified machine type name so codegen
+    /// can look up the layout (which owns the state-name globals) without
+    /// re-deriving it from the local's resolved type.
+    MachineStateName {
+        machine_name: String,
+        src_local: u32,
+        dest: Place,
+    },
 }
 
 /// 0-based declaration-order index of a field within a `record` type.

@@ -17,13 +17,13 @@
 machine TcpHandshake {
     state Closed;
     state SynReceived {
-        remote_port: Int;
+        remote_port: u16;
         entry {
             println("SYN received — sent SYN-ACK");
         }
     }
     state Established {
-        remote_port: Int;
+        remote_port: u16;
         entry {
             println("connection established");
         }
@@ -36,7 +36,7 @@ machine TcpHandshake {
         }
     }
 
-    event SynReceive { remote_port: Int; }
+    event SynReceive { remote_port: u16; }
     event AckReceive;
     event FinReceive;
     event Reset;

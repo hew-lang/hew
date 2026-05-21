@@ -2603,6 +2603,41 @@ impl Checker {
                     self.check_expr_is_rc_param_return(e, s, scopes);
                 }
             }
+            // Promoted tail-position if/if-let/match: each branch can return an Rc
+            // param.  Scan each arm's body the same way scan_stmts_for_rc_param_return
+            // does for the Stmt::If / Stmt::IfLet / Stmt::Match variants.
+            Expr::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                // then_block is Box<Spanned<Expr>> wrapping Expr::Block
+                self.check_expr_is_rc_param_return(&then_block.0, &then_block.1, scopes);
+                if let Some(else_expr) = else_block {
+                    self.check_expr_is_rc_param_return(&else_expr.0, &else_expr.1, scopes);
+                }
+            }
+            Expr::IfLet {
+                pattern,
+                body,
+                else_body,
+                ..
+            } => {
+                let mut then_scopes = scopes.to_vec();
+                Self::shadow_pattern_bindings(&pattern.0, &mut then_scopes);
+                self.scan_block_for_rc_param_return(body, &mut then_scopes);
+                if let Some(else_blk) = else_body {
+                    let mut else_scopes = scopes.to_vec();
+                    self.scan_block_for_rc_param_return(else_blk, &mut else_scopes);
+                }
+            }
+            Expr::Match { arms, .. } => {
+                for arm in arms {
+                    let mut arm_scopes = scopes.to_vec();
+                    Self::shadow_pattern_bindings(&arm.pattern.0, &mut arm_scopes);
+                    self.check_expr_is_rc_param_return(&arm.body.0, &arm.body.1, &arm_scopes);
+                }
+            }
             _ => {}
         }
     }
@@ -4348,6 +4383,21 @@ impl Checker {
                 self.scan_expr_for_stack_hints(&then_block.0);
                 if let Some(eb) = else_block {
                     self.scan_expr_for_stack_hints(&eb.0);
+                }
+            }
+            Expr::IfLet {
+                expr,
+                body,
+                else_body,
+                ..
+            } => {
+                // Mirrors the `Stmt::IfLet` arm in `scan_stmt_for_stack_hints`.
+                // `body` and `else_body` are bare `Block` values (not `Spanned<Expr>`),
+                // so we call `scan_block_for_stack_hints` directly.
+                self.scan_expr_for_stack_hints(&expr.0);
+                self.scan_block_for_stack_hints(body);
+                if let Some(b) = else_body {
+                    self.scan_block_for_stack_hints(b);
                 }
             }
             Expr::Match { scrutinee, arms } => {

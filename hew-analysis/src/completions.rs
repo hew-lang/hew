@@ -444,6 +444,11 @@ fn collect_locals_from_block(block: &Block, offset: usize, locals: &mut Vec<Comp
         }
         collect_locals_from_stmt(stmt, span, offset, locals);
     }
+    // Also walk the trailing expression — an `if`/`match` in tail position is
+    // value-bearing and may introduce local bindings visible at `offset`.
+    if let Some(trailing) = &block.trailing_expr {
+        collect_locals_from_spanned_expr(trailing, offset, locals);
+    }
 }
 
 fn collect_locals_from_stmt(
@@ -1222,6 +1227,89 @@ impl Box {
             items.len() > 5,
             "should fall through to keyword/snippet completions when no actors exist, got {} items",
             items.len()
+        );
+    }
+
+    // ── Span-parity: tail-promoted if/if-let branch blocks ───────────────────
+    //
+    // When `Stmt::If` or `Stmt::IfLet` are promoted to `trailing_expr`, their
+    // branch blocks are wrapped in `Expr::Block` nodes with empty (zero-length)
+    // spans.  `span_contains_offset` returns `true` for any empty span
+    // (conservative approximation), so completions walk both branches
+    // regardless of cursor position — matching the pre-promotion behaviour where
+    // `collect_locals_from_stmt` for `Stmt::If` also walks both branches
+    // unconditionally.
+    //
+    // WHY empty spans: `Stmt::If` does not store individual block spans; they
+    // are consumed inside `parse_block`.  Recovering them would require adding
+    // span fields to the `Stmt::If` AST node, which propagates through HIR/MIR
+    // and serialisers — out of scope for this fix.
+    // WHEN obsolete: once `Stmt::If { then_block_span, else_block_span }` are
+    // added to the AST and `promote_stmt_to_trailing_expr` can thread the real
+    // spans through.
+    // WHAT the real solution looks like: capture `peek_span()` before calling
+    // `parse_block()` at each branch site and store the `start..end` range on
+    // `Stmt::If`.
+
+    #[test]
+    fn completions_inside_tail_promoted_if_then_branch_include_outer_locals() {
+        let labels = labels_at_cursor(
+            r"fn example(cond: bool) {
+    let outer = 1;
+    if cond {
+        let inner = 2;
+        /*cursor*/
+        inner
+    } else {
+        0
+    }
+}",
+        );
+        assert!(
+            labels.iter().any(|l| l == "outer"),
+            "outer local must be visible inside tail-promoted if then-branch; got: {labels:?}",
+        );
+    }
+
+    #[test]
+    fn completions_inside_tail_promoted_if_else_branch_include_outer_locals() {
+        let labels = labels_at_cursor(
+            r"fn example(cond: bool) {
+    let outer = 1;
+    if cond {
+        0
+    } else {
+        let inner = 2;
+        /*cursor*/
+        inner
+    }
+}",
+        );
+        assert!(
+            labels.iter().any(|l| l == "outer"),
+            "outer local must be visible inside tail-promoted if else-branch; got: {labels:?}",
+        );
+    }
+
+    /// A local declared INSIDE the tail-promoted then-branch must be visible at
+    /// the cursor.  This exercises the empty-span universal-containment rule:
+    /// `span_contains_offset` returns true for the empty wrapper span, causing
+    /// `collect_locals_from_expr` to descend and find `inner`.  Without descent
+    /// (or without universal containment), `inner` would not appear.
+    #[test]
+    fn completions_inside_tail_promoted_if_branch_see_locals_declared_in_branch() {
+        let labels = labels_at_cursor(
+            r"fn example(cond: bool) {
+    if cond {
+        let inner = 2;
+        /*cursor*/
+        inner
+    } else { 0 }
+}",
+        );
+        assert!(
+            labels.iter().any(|l| l == "inner"),
+            "local declared inside tail-promoted then-branch must be visible at cursor; got: {labels:?}",
         );
     }
 }

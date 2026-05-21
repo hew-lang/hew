@@ -101,6 +101,9 @@ pub fn collect_calls_in_block(block: &Block, calls: &mut Vec<CallSite>) {
     for (stmt, _span) in &block.stmts {
         collect_calls_in_stmt(stmt, calls);
     }
+    if let Some(trailing) = &block.trailing_expr {
+        collect_calls_in_expr(trailing, calls);
+    }
 }
 
 fn collect_calls_in_stmt(stmt: &Stmt, calls: &mut Vec<CallSite>) {

@@ -534,8 +534,9 @@ mod tests {
             "fn example(cond: bool) -> int { match cond { true => { return expensive_call(); }, false => { return other_call(); } } }",
         );
 
-        let Stmt::Match { arms, .. } = &function.body.stmts[0].0 else {
-            panic!("expected match statement");
+        // A bare `match` as the last item in a block is a trailing expression.
+        let Some((Expr::Match { arms, .. }, _)) = function.body.trailing_expr.as_deref() else {
+            panic!("expected trailing match expression");
         };
 
         for arm in arms {

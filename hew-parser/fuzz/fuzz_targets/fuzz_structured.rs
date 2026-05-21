@@ -1,6 +1,6 @@
 #![no_main]
 
-use arbitrary::Arbitrary;
+use arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 
 #[derive(Debug, Arbitrary)]
@@ -127,10 +127,8 @@ actor CoreActor {
     }
 }
 
-gen fn core_numbers() -> i64 {
-    yield 1;
-    yield 2;
-    yield 3;
+fn core_numbers() {
+    let _g = gen { yield 1; yield 2; 3 };
 }
 "#,
         );
@@ -244,7 +242,7 @@ impl FunctionSpec {
 impl RecordSpec {
     fn to_source(&self, idx: usize) -> String {
         let count = usize::from(self.fields % 3) + 1;
-        let mut out = format!("record FuzzType{idx} {{\n");
+        let mut out = format!("type FuzzType{idx} {{\n");
         for i in 0..count {
             let ty = match i % 3 {
                 0 => "i64",
@@ -345,11 +343,11 @@ impl ActorSpec {
 impl GeneratorSpec {
     fn to_source(&self, idx: usize) -> String {
         let count = usize::from(self.count % 4) + 1;
-        let mut out = format!("gen fn fuzz_gen_{idx}() -> i64 {{\n");
+        let mut out = format!("fn fuzz_gen_{idx}() {{\n    let _g = gen {{\n");
         for i in 0..count {
-            out.push_str(&format!("    yield {i};\n"));
+            out.push_str(&format!("        yield {i};\n"));
         }
-        out.push_str("}\n");
+        out.push_str("        0\n    };\n}\n");
         out
     }
 }
@@ -357,16 +355,17 @@ impl GeneratorSpec {
 impl WireSpec {
     fn to_source(&self, idx: usize) -> String {
         let count = usize::from(self.fields % 3) + 1;
-        let mut out = format!("wire type FuzzWire{idx} {{\n");
+        let mut out = format!("#[wire]\nstruct FuzzWire{idx} {{\n");
         for i in 0..count {
             let ty = match i % 5 {
                 0 => "i64",
                 1 => "string",
-                2 => "bytes",
+                2 => "u8",
                 3 => "bool",
                 _ => "duration",
             };
-            out.push_str(&format!("    field{i}: {ty} = {};\n", i + 1));
+            let sep = if i + 1 == count { "" } else { "," };
+            out.push_str(&format!("    field{i}: {ty} @{}{sep}\n", i + 1));
         }
         out.push_str("}\n");
         out
@@ -405,7 +404,12 @@ fn fuzz_intrinsic_{idx}(x: i64) -> i64 {{}}
     }
 }
 
-fuzz_target!(|program: HewProgram| {
-    let source = program.to_source();
-    let _ = hew_parser::parse(&source);
+fuzz_target!(|data: &[u8]| {
+    if let Ok(source) = std::str::from_utf8(data) {
+        let _ = hew_parser::parse(source);
+    }
+    if let Ok(program) = HewProgram::arbitrary(&mut Unstructured::new(data)) {
+        let source = program.to_source();
+        let _ = hew_parser::parse(&source);
+    }
 });

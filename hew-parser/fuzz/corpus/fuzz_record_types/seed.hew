@@ -1,0 +1,13 @@
+type SeedPoint {
+    x: i32;
+    y: i32;
+}
+
+type SeedPair(i32, i32);
+
+fn seed_record_types() -> i32 {
+    let base = SeedPoint { x: 1, y: 2 };
+    let updated = SeedPoint { x: 3, ..base };
+    let _pair = SeedPair(updated.x, updated.y);
+    updated.x + updated.y
+}

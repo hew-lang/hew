@@ -48,3 +48,33 @@ doc = false
 name = "fuzz_mir"
 path = "fuzz_targets/fuzz_mir.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_machine_decls"
+path = "fuzz_targets/fuzz_machine_decls.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_gen_blocks"
+path = "fuzz_targets/fuzz_gen_blocks.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_record_types"
+path = "fuzz_targets/fuzz_record_types.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_actor_decls"
+path = "fuzz_targets/fuzz_actor_decls.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_supervisor_decls"
+path = "fuzz_targets/fuzz_supervisor_decls.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_qualified_ctor_resolution"
+path = "fuzz_targets/fuzz_qualified_ctor_resolution.rs"
+doc = false

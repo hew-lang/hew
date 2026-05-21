@@ -1,0 +1,11 @@
+#[max_heap(4096)]
+actor SeedWorker {
+    receive fn ping(n: i64) -> i64 {
+        n
+    }
+}
+
+fn seed_actor_decls() {
+    let worker = actor |n: i64| -> i64 { n * 2 };
+    let _reply = worker(5);
+}

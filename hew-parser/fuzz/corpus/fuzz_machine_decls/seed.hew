@@ -1,0 +1,14 @@
+machine SeedMachine {
+    state Idle;
+    state Active { tag_byte: i8; value: i64; }
+    event Activate;
+    event Deactivate;
+    on Activate: Idle -> Active { Active { tag_byte: 0, value: 42 } }
+    on Deactivate: Active -> Idle { Idle }
+}
+
+fn seed_machine_calls() {
+    var m = Idle;
+    m.step(Activate);
+    let _name = m.state_name();
+}

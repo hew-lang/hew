@@ -406,6 +406,11 @@ fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             let writes = dest.iter().copied().collect();
             (reads, writes)
         }
+        Instr::MachineEmitPlaceholder { payload, .. } => {
+            // The placeholder reads all payload places; no write destination
+            // (emit is void — the result is dispatched to the event queue).
+            (payload.clone(), vec![])
+        }
     }
 }
 

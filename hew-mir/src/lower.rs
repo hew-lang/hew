@@ -2009,6 +2009,7 @@ fn collect_unknown_self_fields_in_expr(
         | HirExprKind::BindingRef { .. }
         | HirExprKind::AwaitTask { .. }
         | HirExprKind::ContextReader { .. }
+        | HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_unknown_self_fields_in_expr(left, state_fields, seen, unknown);
@@ -2137,6 +2138,13 @@ fn collect_unknown_self_fields_in_expr(
         }
         HirExprKind::MachineStateName { receiver, .. } => {
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
+        }
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            if let Some(fields) = payload {
+                for (_, val) in fields {
+                    collect_unknown_self_fields_in_expr(val, state_fields, seen, unknown);
+                }
+            }
         }
     }
 }
@@ -3643,17 +3651,78 @@ impl Builder {
                 });
                 dest
             }
-            HirExprKind::MachineEmit { .. } => {
-                // `emit` expressions are valid HIR (Slice 2), but MIR
-                // lowering for machine bodies is deferred to Lane B Slice 4b.
-                // Fail closed so that a machine body reaching MIR via an
-                // unanticipated path is rejected rather than silently
-                // producing no-op code.
+            HirExprKind::MachineEmit { event_idx, fields } => {
+                // Lower each payload field expression to a Place. Collect
+                // even if some fail (return None) to maximise diagnostic
+                // coverage across the expression tree.
+                let mut payload: Vec<Place> = Vec::with_capacity(fields.len());
+                for (_, field_expr) in fields {
+                    if let Some(p) = self.lower_value(field_expr) {
+                        payload.push(p);
+                    }
+                }
+                // Emit a typed placeholder that records the event index and
+                // lowered payload places. The actual emit-queue runtime call
+                // sequence is wired in a later slice when the ABI is finalised.
+                //
+                // WHY placeholder: the emit-queue ABI (hew_machine_emit) is not
+                // yet defined. Emitting a recognised placeholder keeps MIR
+                // pipeline stages type-correct without silently dropping the
+                // emit. WHEN-OBSOLETE: replaced by CallRuntimeAbi once the
+                // emit-queue ABI lands (see Instr::MachineEmitPlaceholder doc).
+                self.instructions.push(Instr::MachineEmitPlaceholder {
+                    event_idx: *event_idx,
+                    payload,
+                });
+                None
+            }
+            HirExprKind::MachineVariantCtor {
+                machine_name,
+                state_idx,
+                payload,
+            } => {
+                // Walk payload sub-expressions for diagnostic coverage.
+                if let Some(fields) = payload {
+                    for (_, field_expr) in fields {
+                        let _ = self.lower_value(field_expr);
+                    }
+                }
+                // Fail closed: constructing a machine value requires tagged-union
+                // layout and a binding allocator for Place::MachineTag, which are
+                // Slice 4b concerns. A machine body reaching MIR lowering through
+                // this expression path is an unanticipated code path — diagnose
+                // rather than silently produce no-op code.
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::UnsupportedNode {
-                        reason: "MachineEmit (Lane B Slice 4b not yet wired)".to_string(),
+                        reason: format!(
+                            "MachineVariantCtor({machine_name}[{state_idx}]) — \
+                             machine state construction not yet lowered to MIR"
+                        ),
                     },
-                    note: "machine emit expressions are not yet lowered to MIR".to_string(),
+                    note: "machine state constructors in expression position require \
+                           tagged-union layout; wired in a later slice"
+                        .to_string(),
+                });
+                None
+            }
+            HirExprKind::MachineFieldAccess {
+                machine_name,
+                state_idx,
+                field_name,
+                ..
+            } => {
+                // Fail closed: loading a machine payload field via Place::MachineVariant
+                // requires a dominating Place::MachineTag, which is a Slice 4b concern.
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UnsupportedNode {
+                        reason: format!(
+                            "MachineFieldAccess({machine_name}[{state_idx}].{field_name}) — \
+                             self-field read not yet lowered to MIR"
+                        ),
+                    },
+                    note: "machine self-field reads require Place::MachineVariant \
+                           with a dominating tag; wired in a later slice"
+                        .to_string(),
                 });
                 None
             }
@@ -7834,6 +7903,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             }
             places
         }
+        Instr::MachineEmitPlaceholder { payload, .. } => payload.clone(),
     }
 }
 

@@ -999,6 +999,25 @@ struct LowerCtx {
     /// `None` outside of any machine body; `Some(names)` inside. Restored
     /// via `mem::replace` at the end of each machine-body lowering.
     current_machine_events: Option<Vec<String>>,
+    /// Name of the machine currently being lowered, set at the same boundaries
+    /// as `current_machine_events`. Used by `MachineVariantCtor` and
+    /// `MachineFieldAccess` resolution to carry the machine type name.
+    current_machine_name: Option<String>,
+    /// Ordered state descriptors for the machine currently being lowered.
+    /// Each entry is `(state_name, fields)` in declaration order, matching
+    /// `HirMachineDecl.states` indices. Used by bare state-name resolution
+    /// (`MachineVariantCtor`) and `self.field` resolution (`MachineFieldAccess`).
+    ///
+    /// `None` outside a machine body. Set alongside `current_machine_events`.
+    current_machine_states: Option<Vec<(String, Vec<HirField>)>>,
+    /// Source-state index for the transition currently being lowered.
+    /// `Some(idx)` inside a transition body; `None` inside entry/exit blocks
+    /// (where `self.field` reads are not valid surface syntax today).
+    ///
+    /// Used by `MachineFieldAccess` to identify which variant's payload fields
+    /// are in scope. Set per-transition inside `lower_machine`; restored after
+    /// each `lower_machine_expr_filtered` call.
+    current_machine_source_state: Option<usize>,
 }
 
 impl LowerCtx {
@@ -1043,6 +1062,9 @@ impl LowerCtx {
             supervisor_child_slots_checker: tc_output.supervisor_child_slots.clone(),
             supervisor_child_slots: HashMap::new(),
             current_machine_events: None,
+            current_machine_name: None,
+            current_machine_states: None,
+            current_machine_source_state: None,
         }
     }
 
@@ -1855,18 +1877,49 @@ impl LowerCtx {
         // resolve its event_idx by position lookup during body lowering.
         let event_names: Vec<String> = decl.events.iter().map(|ev| ev.name.clone()).collect();
 
+        // Pre-lower state field types and build the `current_machine_states`
+        // descriptor table. This is used during transition-body and entry/exit-block
+        // lowering to resolve bare state-name identifiers (`MachineVariantCtor`)
+        // and `self.field` accesses (`MachineFieldAccess`) without re-reading the
+        // AST during expression lowering.
+        //
+        // WHY HIR-side authority: the type checker does not produce side-table
+        // entries for machine state-name identifier references or self-field
+        // accesses inside transition bodies. HIR derives these types from the
+        // machine declaration itself, which is local to this pass.
+        let machine_state_descriptors: Vec<(String, Vec<HirField>)> = decl
+            .states
+            .iter()
+            .map(|s| {
+                let fields: Vec<HirField> = s
+                    .fields
+                    .iter()
+                    .map(|(name, ty)| HirField {
+                        name: name.clone(),
+                        ty: self.lower_type(ty),
+                        span: ty.1.clone(),
+                    })
+                    .collect();
+                (s.name.clone(), fields)
+            })
+            .collect();
+
+        // Install machine context so nested `lower_expr` calls can resolve
+        // state-name references and self-field accesses. Restored at the end
+        // of `lower_machine` via `mem::replace`.
+        let prev_machine_name = self.current_machine_name.replace(decl.name.clone());
+        let prev_machine_states = self
+            .current_machine_states
+            .replace(machine_state_descriptors.clone());
+
         // Lower states.
         let mut hir_states = Vec::new();
         for state in &decl.states {
-            let fields: Vec<HirField> = state
-                .fields
+            let fields: Vec<HirField> = machine_state_descriptors
                 .iter()
-                .map(|(name, ty)| HirField {
-                    name: name.clone(),
-                    ty: self.lower_type(ty),
-                    span: ty.1.clone(),
-                })
-                .collect();
+                .find(|(name, _)| name == &state.name)
+                .map(|(_, fields)| fields.clone())
+                .unwrap_or_default();
 
             // Shallow-scan the entry and exit blocks for field-assignment targets.
             // Body-level effect-parity checking still uses the AST summary
@@ -1938,8 +1991,18 @@ impl LowerCtx {
         for tr in &decl.transitions {
             let is_self_transition = tr.source_state == tr.target_state && tr.source_state != "_";
             let body_writes = collect_assigned_field_names_expr(&tr.body.0);
+            // Set the source-state index so `lower_expr` can resolve `self.field`
+            // accesses to `MachineFieldAccess` nodes. Wildcard source `_` has no
+            // concrete state index, so leave it as `None` — `self.field` access
+            // inside a wildcard transition body cannot resolve to a specific
+            // variant's fields and will be rejected by the `MachineFieldAccess`
+            // producer with a diagnostic.
+            let src_state_idx = decl.states.iter().position(|s| s.name == tr.source_state);
+            let prev_source_state = self.current_machine_source_state;
+            self.current_machine_source_state = src_state_idx;
             let body =
                 self.lower_machine_expr_filtered(&tr.body, &state_names, event_names.clone());
+            self.current_machine_source_state = prev_source_state;
             // body_emits is now derived from the lowered HIR body rather than
             // the AST summary walk so that emit expressions nested inside
             // conditionals or match arms are correctly detected.
@@ -1989,6 +2052,10 @@ impl LowerCtx {
                         decl.name
                     ),
                 ));
+                // Restore machine context before early return so the next
+                // top-level item lowers in a clean context.
+                self.current_machine_name = prev_machine_name;
+                self.current_machine_states = prev_machine_states;
                 return None;
             }
         }
@@ -2131,8 +2198,15 @@ impl LowerCtx {
             )
         });
         if has_machine_errors {
+            // Restore machine context before early return.
+            self.current_machine_name = prev_machine_name;
+            self.current_machine_states = prev_machine_states;
             return None;
         }
+
+        // Restore machine context before returning.
+        self.current_machine_name = prev_machine_name;
+        self.current_machine_states = prev_machine_states;
 
         Some(HirMachineDecl {
             id: self.ids.item(),
@@ -2932,7 +3006,33 @@ impl LowerCtx {
         let site = self.ids.site();
         let (kind, ty) = match &expr.0 {
             Expr::Literal(lit) => Self::lower_literal(lit),
-            Expr::Identifier(name) => self.lower_identifier(name, span.clone()),
+            Expr::Identifier(name) => {
+                // Inside a machine body, check if the identifier names one of the
+                // enclosing machine's states (unit state ctor, e.g. `Green`).
+                // If so, produce `MachineVariantCtor` rather than going through
+                // `lower_identifier` (which would emit `UnresolvedSymbol` because
+                // state names are not in the HIR scope).
+                //
+                // HIR-side authority: the type checker does not record a side-table
+                // entry for this expression; the result type is derived from the
+                // machine declaration context held in `current_machine_states`.
+                if let Some((machine_name, state_idx)) = self.resolve_machine_state_name(name) {
+                    let machine_ty = ResolvedTy::Named {
+                        name: machine_name.clone(),
+                        args: Vec::new(),
+                    };
+                    (
+                        HirExprKind::MachineVariantCtor {
+                            machine_name,
+                            state_idx,
+                            payload: None,
+                        },
+                        machine_ty,
+                    )
+                } else {
+                    self.lower_identifier(name, span.clone())
+                }
+            }
             Expr::Binary { left, op, right } => {
                 let left = self.lower_expr(left, IntentKind::Read);
                 let right = self.lower_expr(right, IntentKind::Read);
@@ -3072,37 +3172,91 @@ impl LowerCtx {
                 type_args: _,
                 base,
             } => {
-                // Record the per-instantiation `RecordLayout` for
-                // generic user records and capture the concrete type-args
-                // for propagation onto this expression's resolved type.
-                // `None` indicates a monomorphic record or builtin; for
-                // those, the resulting `Named` carries `args: []` as before.
-                let resolved_type_args = self.record_record_layout(name, &span).unwrap_or_default();
-                let hir_fields = fields
-                    .iter()
-                    .map(|(fname, expr)| (fname.clone(), self.lower_expr(expr, IntentKind::Read)))
-                    .collect();
-                // Lower the functional-update base if present. The checker has
-                // already validated type-compatibility and field coverage; HIR
-                // carries it verbatim so MIR lowering (A-7) can read the
-                // un-overridden fields from the base value.
-                let hir_base = base.as_deref().map(|(base_expr, base_span)| {
-                    Box::new(
-                        self.lower_expr(&(base_expr.clone(), base_span.clone()), IntentKind::Read),
+                // Inside a machine body, check if the struct-init name is a state
+                // with payload fields (e.g. `SynReceived { remote_port: remote_port }`).
+                // Resolve to `MachineVariantCtor` before the record-layout path.
+                //
+                // HIR-side authority: same deviation as `MachineVariantCtor` for bare
+                // identifiers — the checker has no side-table for state-ctor sites.
+                // Payload fields are validated structurally (field names matched against
+                // the state's declared fields). The `base` functional-update form is not
+                // supported for machine state ctors and is rejected below if present.
+                if let Some((machine_name, state_idx)) = self.resolve_machine_state_name(name) {
+                    // Reject functional-update syntax (`SynReceived { ..base }`) on
+                    // machine state constructors — the semantics differ from records.
+                    if base.is_some() {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::NotYetImplemented {
+                                construct: "functional-update syntax on machine state constructors"
+                                    .to_string(),
+                                owning_pass: "machine state constructor validation".to_string(),
+                            },
+                            span.clone(),
+                            "machine state constructors do not support `..base` syntax",
+                        ));
+                    }
+                    // Resolve payload field expressions against the state's declared fields.
+                    // Field order follows source declaration; unknown field names are
+                    // carried through (MIR validates against the state schema at Slice 4b).
+                    let hir_payload: Vec<(String, HirExpr)> = fields
+                        .iter()
+                        .map(|(fname, expr)| {
+                            (fname.clone(), self.lower_expr(expr, IntentKind::Read))
+                        })
+                        .collect();
+                    let machine_ty = ResolvedTy::Named {
+                        name: machine_name.clone(),
+                        args: Vec::new(),
+                    };
+                    // Break out of the match to let the outer wrapper build the HirExpr.
+                    // We use a nested block that evaluates to `(kind, ty)`.
+                    (
+                        HirExprKind::MachineVariantCtor {
+                            machine_name,
+                            state_idx,
+                            payload: Some(hir_payload),
+                        },
+                        machine_ty,
                     )
-                });
-                (
-                    HirExprKind::StructInit {
-                        name: name.clone(),
-                        type_args: resolved_type_args.clone(),
-                        fields: hir_fields,
-                        base: hir_base,
-                    },
-                    ResolvedTy::Named {
-                        name: name.clone(),
-                        args: resolved_type_args,
-                    },
-                )
+                } else {
+                    // Not a machine state — regular record init path.
+                    // Record the per-instantiation `RecordLayout` for
+                    // generic user records and capture the concrete type-args
+                    // for propagation onto this expression's resolved type.
+                    // `None` indicates a monomorphic record or builtin; for
+                    // those, the resulting `Named` carries `args: []` as before.
+                    let resolved_type_args =
+                        self.record_record_layout(name, &span).unwrap_or_default();
+                    let hir_fields = fields
+                        .iter()
+                        .map(|(fname, expr)| {
+                            (fname.clone(), self.lower_expr(expr, IntentKind::Read))
+                        })
+                        .collect();
+                    // Lower the functional-update base if present. The checker has
+                    // already validated type-compatibility and field coverage; HIR
+                    // carries it verbatim so MIR lowering (A-7) can read the
+                    // un-overridden fields from the base value.
+                    let hir_base =
+                        base.as_deref().map(|(base_expr, base_span)| {
+                            Box::new(self.lower_expr(
+                                &(base_expr.clone(), base_span.clone()),
+                                IntentKind::Read,
+                            ))
+                        });
+                    (
+                        HirExprKind::StructInit {
+                            name: name.clone(),
+                            type_args: resolved_type_args.clone(),
+                            fields: hir_fields,
+                            base: hir_base,
+                        },
+                        ResolvedTy::Named {
+                            name: name.clone(),
+                            args: resolved_type_args,
+                        },
+                    )
+                }
             }
             Expr::Scope { body } => {
                 // A `scope{}` block lowers to `HirExprKind::Scope`. Inside the
@@ -3518,6 +3672,23 @@ impl LowerCtx {
                 )
             }
             Expr::FieldAccess { object, field } => {
+                // Inside a machine transition body, `self.field` accesses are
+                // `Expr::FieldAccess { object: Expr::This, field }`. Resolve to
+                // `MachineFieldAccess` using the source state's declared payload fields.
+                //
+                // HIR-side authority: the checker does not produce `expr_types` entries
+                // for `self.field` inside machine bodies. The result type and field_idx
+                // are derived from `current_machine_states[source_state_idx].fields`.
+                if matches!(object.0, Expr::This) {
+                    if let Some(hir_expr) =
+                        self.try_lower_machine_self_field_access(field, &span, site, intent)
+                    {
+                        return hir_expr;
+                    }
+                    // If we're not in a machine body with a known source state, fall
+                    // through to the catch-all below (which will emit `NotYetImplemented`
+                    // because `Expr::This` is not otherwise handled).
+                }
                 let missing_import = if let Expr::Identifier(module_name) = &object.0 {
                     self.missing_stdlib_module_import(module_name)
                         .map(|module| (module_name, module))
@@ -5022,6 +5193,124 @@ impl LowerCtx {
             .find_map(|scope| scope.get(name).map(|(id, ty, _)| (*id, ty.clone())))
     }
 
+    /// Resolve an identifier to a machine state constructor if `name` is a
+    /// declared state of the currently-enclosing machine.
+    ///
+    /// Returns `Some((machine_name, state_idx))` when both conditions hold:
+    /// - `current_machine_name` / `current_machine_states` are set (inside a
+    ///   machine lowering), AND
+    /// - `name` matches one of the state names in declaration order.
+    ///
+    /// Returns `None` otherwise; the caller falls through to `lower_identifier`.
+    fn resolve_machine_state_name(&self, name: &str) -> Option<(String, usize)> {
+        let machine_name = self.current_machine_name.as_ref()?;
+        let states = self.current_machine_states.as_ref()?;
+        let idx = states.iter().position(|(n, _)| n == name)?;
+        Some((machine_name.clone(), idx))
+    }
+
+    /// Attempt to lower a `self.<field>` access inside a machine transition body.
+    ///
+    /// Called when the `Expr::FieldAccess` arm detects `object == Expr::This`.
+    ///
+    /// Returns `Some(HirExpr)` on both the happy path (resolved to
+    /// `HirExprKind::MachineFieldAccess`) and the error paths (diagnostic pushed,
+    /// `HirExprKind::Unsupported` returned wrapped in `Some`). Returns `None` only
+    /// when `self` is outside a machine body entirely, signalling the caller to
+    /// fall through to the generic `Expr::This` handler (which will emit
+    /// `NotYetImplemented`).
+    fn try_lower_machine_self_field_access(
+        &mut self,
+        field: &str,
+        span: &std::ops::Range<usize>,
+        site: SiteId,
+        intent: IntentKind,
+    ) -> Option<HirExpr> {
+        let machine_name = self.current_machine_name.as_ref()?.clone();
+
+        // We are in a machine body.  Now check whether the source state is known.
+        let Some(src_state_idx) = self.current_machine_source_state else {
+            // Wildcard (`_`) transition body — no concrete source state.
+            // `self.field` access has no unique variant to read from.
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::NotYetImplemented {
+                    construct: format!("`self.{field}` inside a wildcard (`_`) transition body"),
+                    owning_pass: "machine typed self-field access in wildcard transitions"
+                        .to_string(),
+                },
+                span.clone(),
+                "self-field reads inside wildcard transitions have no concrete source \
+                 state; refactor to use a named source state or match on the state first",
+            ));
+            return Some(HirExpr {
+                node: self.ids.node(),
+                site,
+                ty: ResolvedTy::Unit,
+                value_class: ValueClass::BitCopy,
+                intent,
+                kind: HirExprKind::Unsupported(format!(
+                    "self.{field} in wildcard transition (no source state)"
+                )),
+                span: span.clone(),
+            });
+        };
+
+        // Look up the field by name in the source state's payload.
+        let states = self.current_machine_states.as_ref()?;
+        let state_fields = &states[src_state_idx].1;
+        let state_name = states[src_state_idx].0.clone();
+        if let Some((field_idx, hir_field)) = state_fields
+            .iter()
+            .enumerate()
+            .find(|(_, f)| f.name == field)
+        {
+            let field_ty = hir_field.ty.clone();
+            let vc = ValueClass::of_ty(&field_ty, &self.type_classes);
+            Some(HirExpr {
+                node: self.ids.node(),
+                site,
+                ty: field_ty,
+                value_class: vc,
+                intent,
+                kind: HirExprKind::MachineFieldAccess {
+                    machine_name,
+                    state_idx: src_state_idx,
+                    field_idx,
+                    field_name: field.to_string(),
+                },
+                span: span.clone(),
+            })
+        } else {
+            // Field name not declared on this state.
+            let available: Vec<String> = state_fields.iter().map(|f| f.name.clone()).collect();
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::NotYetImplemented {
+                    construct: format!(
+                        "`self.{field}` — field not declared on state `{state_name}` \
+                         of machine `{machine_name}`"
+                    ),
+                    owning_pass: "machine state payload field validation".to_string(),
+                },
+                span.clone(),
+                format!(
+                    "state `{state_name}` has fields: [{}]; `{field}` is not one of them",
+                    available.join(", ")
+                ),
+            ));
+            Some(HirExpr {
+                node: self.ids.node(),
+                site,
+                ty: ResolvedTy::Unit,
+                value_class: ValueClass::BitCopy,
+                intent,
+                kind: HirExprKind::Unsupported(format!(
+                    "self.{field} not found on state {state_name}"
+                )),
+                span: span.clone(),
+            })
+        }
+    }
+
     fn missing_stdlib_module_import(&self, name: &str) -> Option<&'static str> {
         if self.lookup(name).is_none() && !self.fn_registry.contains_key(name) {
             stdlib_catalog::missing_import_module(name)
@@ -5335,11 +5624,13 @@ fn collect_captures_walk(
         //   - SpawnLambdaActor (nested): its captures belong to its own
         //     frame and were classified when the inner lambda lowered.
         //   - Unsupported: nothing to walk.
+        //   - MachineFieldAccess: implicit `self` receiver, no sub-expressions.
         HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
         | HirExprKind::SpawnLambdaActor { .. }
         | HirExprKind::Closure { .. }
+        | HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_captures_walk(left, param_ids, seen, captures, self_id);
@@ -5481,6 +5772,15 @@ fn collect_captures_walk(
         HirExprKind::MachineStateName { receiver, .. } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
         }
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            // Machine state constructors are not expected inside lambda bodies.
+            // Walk payload fields defensively for exhaustiveness.
+            if let Some(fields) = payload {
+                for (_, val) in fields {
+                    collect_captures_walk(val, param_ids, seen, captures, self_id);
+                }
+            }
+        }
     }
 }
 
@@ -5524,6 +5824,7 @@ fn collect_general_closure_captures_walk(
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
         | HirExprKind::SpawnLambdaActor { .. }
+        | HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_general_closure_captures_walk(left, outer_bindings, seen, captures);
@@ -5667,6 +5968,15 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::MachineStateName { receiver, .. } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
+        }
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            // Machine state constructors cannot appear inside closure bodies.
+            // Walk payload fields defensively for exhaustiveness.
+            if let Some(fields) = payload {
+                for (_, val) in fields {
+                    collect_general_closure_captures_walk(val, outer_bindings, seen, captures);
+                }
+            }
         }
     }
 }

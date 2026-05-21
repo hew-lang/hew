@@ -829,6 +829,54 @@ pub enum HirExprKind {
         machine_name: String,
         receiver: Box<HirExpr>,
     },
+    /// State-value constructor inside a machine transition body.
+    ///
+    /// Produced by HIR lowering when an `Expr::Identifier` or `Expr::StructInit`
+    /// names a declared state of the enclosing machine — either a bare state
+    /// reference like `Green` (unit state, no payload) or a struct-init form
+    /// like `SynReceived { remote_port: remote_port }` (state with payload).
+    ///
+    /// Unlike a record `StructInit`, this is HIR-side-resolved: the checker did
+    /// not assign a side-table type for this site (machine state names are not
+    /// in the checker's record or type scope). HIR derives the result type as
+    /// `ResolvedTy::Named { name: machine_name, args: [] }` — the machine's
+    /// own nominal type — because a state constructor IS the machine value at
+    /// that state. This is intentional deviation from the `checker-authority`
+    /// pattern and is documented here to make it findable.
+    ///
+    /// `machine_name`: unqualified machine type name (e.g. `"TrafficLight"`).
+    /// `state_idx`: zero-based index into `HirMachineDecl.states` (declaration order).
+    /// `payload`: `None` for unit states; `Some(fields)` for states with payload.
+    ///
+    /// MIR consumers: build a machine value with the given tag and store payload
+    /// fields via `Place::MachineTag` / `Place::MachineVariant` primitives (Slice 4b).
+    MachineVariantCtor {
+        machine_name: String,
+        state_idx: usize,
+        payload: Option<Vec<(String, HirExpr)>>,
+    },
+    /// Read a payload field from the machine value bound to `self` inside a
+    /// transition body. Resolved when `Expr::FieldAccess { object: Expr::This, field }`
+    /// appears inside a machine transition body.
+    ///
+    /// `machine_name`: enclosing machine type name.
+    /// `state_idx`: source state index (the transition's `from` state), which
+    ///   determines which variant's payload fields are in scope. Tag dominance
+    ///   is guaranteed by the transition dispatch context (Slice 4b).
+    /// `field_idx`: zero-based index into that state's `HirMachineState.fields`.
+    /// `field_name`: the field name for diagnostics and dump output.
+    ///
+    /// HIR derives the result type from `HirMachineState.fields[field_idx].ty`
+    /// (same HIR-side-authority deviation as `MachineVariantCtor`).
+    ///
+    /// MIR consumers: load via `Place::MachineVariant { binding: <self-binding>,
+    /// variant_idx: state_idx, field_idx }` (Slice 4b).
+    MachineFieldAccess {
+        machine_name: String,
+        state_idx: usize,
+        field_idx: usize,
+        field_name: String,
+    },
     Unsupported(String),
 }
 

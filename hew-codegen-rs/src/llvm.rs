@@ -3495,6 +3495,15 @@ fn lower_instruction(
                  before the TO-4 vtable-dispatch slice landed"
             )));
         }
+        Instr::MachineEmitPlaceholder { event_idx, .. } => {
+            // The emit-queue ABI is not yet wired. A placeholder reaching codegen
+            // is a compiler gap — fail closed rather than silently dropping the
+            // emit.
+            return Err(CodegenError::Llvm(format!(
+                "Instr::MachineEmitPlaceholder(event_idx={event_idx}) reached LLVM codegen; \
+                 the emit-queue ABI must be wired before codegen can lower this instruction"
+            )));
+        }
     }
     Ok(())
 }

@@ -655,6 +655,35 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             writeln!(out, "{pad}  machine-state-name {machine_name}").expect("write to string");
             dump_expr(out, receiver, indent + 4);
         }
+        HirExprKind::MachineVariantCtor {
+            machine_name,
+            state_idx,
+            payload,
+        } => {
+            writeln!(
+                out,
+                "{pad}  machine-variant-ctor {machine_name}[{state_idx}]"
+            )
+            .expect("write to string");
+            if let Some(fields) = payload {
+                for (name, val) in fields {
+                    writeln!(out, "{pad}    field {name}:").expect("write to string");
+                    dump_expr(out, val, indent + 6);
+                }
+            }
+        }
+        HirExprKind::MachineFieldAccess {
+            machine_name,
+            state_idx,
+            field_idx,
+            field_name,
+        } => {
+            writeln!(
+                out,
+                "{pad}  machine-field-access {machine_name}[{state_idx}].{field_name}[{field_idx}]"
+            )
+            .expect("write to string");
+        }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");
         }

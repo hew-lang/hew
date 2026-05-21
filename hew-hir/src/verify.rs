@@ -179,7 +179,9 @@ impl Verifier {
             HirExprKind::FieldAccess { object, .. } => {
                 self.expr(object);
             }
-            HirExprKind::ContextReader { .. } | HirExprKind::Literal(_) => {}
+            HirExprKind::ContextReader { .. }
+            | HirExprKind::Literal(_)
+            | HirExprKind::MachineFieldAccess { .. } => {}
             HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => self.block(body),
             HirExprKind::ScopeDeadline { duration, body } => {
                 self.expr(duration);
@@ -301,6 +303,13 @@ impl Verifier {
             }
             HirExprKind::MachineStateName { receiver, .. } => {
                 self.expr(receiver);
+            }
+            HirExprKind::MachineVariantCtor { payload, .. } => {
+                if let Some(fields) = payload {
+                    for (_, val) in fields {
+                        self.expr(val);
+                    }
+                }
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive

@@ -1591,6 +1591,29 @@ pub enum Instr {
         /// `fat_pointer.data` and is NOT included here).
         args: Vec<Place>,
     },
+    /// Typed placeholder for a machine `emit(Event { ... })` expression
+    /// inside a transition body.
+    ///
+    /// WHY this placeholder exists: the emit-queue runtime ABI (async event
+    /// delivery from a state-machine transition to its own event queue) is
+    /// wired in a later slice. Recording the intent here preserves
+    /// type-correct MIR through pipeline stages that would otherwise skip the
+    /// expression.
+    ///
+    /// WHEN-OBSOLETE: replaced by a real runtime-call sequence when the
+    /// emit-queue ABI lands. This variant must be searched and replaced at
+    /// that time — its presence in final codegen-input MIR is an error.
+    ///
+    /// WHAT the real solution looks like: `Instr::CallRuntimeAbi` to
+    /// `hew_machine_emit` with the machine binding, event-index constant,
+    /// and serialised payload — wired when the emit-queue ABI is finalised.
+    MachineEmitPlaceholder {
+        /// Zero-based index into `HirMachineDecl.events` (declaration order).
+        event_idx: usize,
+        /// Lowered payload field places in source-declaration order.
+        /// Empty for unit events (no payload).
+        payload: Vec<Place>,
+    },
 }
 
 /// 0-based declaration-order index of a field within a `record` type.

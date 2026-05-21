@@ -18,6 +18,10 @@ fn lower_checked(source: &str) -> hew_hir::LowerOutput {
     lower_program(&parsed.program, &tc_output, &ResolutionCtx)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "single exhaustive walker over HirExprKind variants; splitting risks traversal gaps"
+)]
 fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
     out.push(expr);
     match &expr.kind {
@@ -108,7 +112,15 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         HirExprKind::MachineStateName { receiver, .. } => {
             visit_expr(receiver, out);
         }
-        HirExprKind::Select(_)
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            if let Some(fields) = payload {
+                for (_, val) in fields {
+                    visit_expr(val, out);
+                }
+            }
+        }
+        HirExprKind::MachineFieldAccess { .. }
+        | HirExprKind::Select(_)
         | HirExprKind::AwaitTask { .. }
         | HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }

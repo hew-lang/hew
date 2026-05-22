@@ -122,6 +122,42 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
 }
 
 impl Checker {
+    fn machine_event_type_outside_transition(&self, ty: &Ty) -> Option<String> {
+        let type_name = ty.type_name()?;
+        let machine_name = type_name.strip_suffix("Event")?;
+        if !self
+            .type_defs
+            .get(machine_name)
+            .is_some_and(|td| td.kind == TypeDefKind::Machine)
+        {
+            return None;
+        }
+        if self
+            .current_machine_transition
+            .as_ref()
+            .is_some_and(|(current_machine, _, _)| current_machine == machine_name)
+        {
+            return None;
+        }
+        Some(type_name.to_string())
+    }
+
+    fn reject_machine_event_pattern_outside_transition(&mut self, ty: &Ty, span: &Span) -> bool {
+        let Some(event_type_name) = self.machine_event_type_outside_transition(ty) else {
+            return false;
+        };
+        // Slice 3 exposes companion event nominals for construction and `.step()`;
+        // general event-enum matching is reserved for transition-body lowering.
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "matching machine event enum `{event_type_name}` outside a transition body is not supported"
+            ),
+        );
+        true
+    }
+
     pub(super) fn or_pattern_bindings_match(
         &self,
         left_env: &crate::env::TypeEnv,
@@ -178,11 +214,21 @@ impl Checker {
         match pattern {
             Pattern::Wildcard | Pattern::Literal(_) => {}
             Pattern::Identifier(name) => {
+                let is_constructor_like =
+                    name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
+                if is_constructor_like
+                    && self.reject_machine_event_pattern_outside_transition(ty, span)
+                {
+                    return;
+                }
                 self.check_shadowing(name, span);
                 self.env
                     .define_with_span(name.clone(), ty.clone(), is_mutable, span.clone());
             }
             Pattern::Constructor { name, patterns } => {
+                if self.reject_machine_event_pattern_outside_transition(ty, span) {
+                    return;
+                }
                 // Look up variant in enum definition
                 if let Some(payload_tys) = self.lookup_variant_types(name, ty, patterns.len()) {
                     for (p, pty) in patterns.iter().zip(payload_tys.iter()) {
@@ -230,6 +276,9 @@ impl Checker {
                 }
             }
             Pattern::Struct { name, fields } => {
+                if self.reject_machine_event_pattern_outside_transition(ty, span) {
+                    return;
+                }
                 // Bind field patterns to field types
                 let type_name_opt = ty.type_name();
                 if let Some(type_name) = type_name_opt {

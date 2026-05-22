@@ -3,8 +3,9 @@
 use hew_parser::ast::*;
 mod common;
 
-use common::isolated_checker;
-use hew_types::TypeCheckOutput;
+use common::{isolated_checker, typecheck_isolated};
+use hew_types::error::TypeErrorKind;
+use hew_types::{MachineMethodKind, Ty, TypeCheckOutput};
 
 fn check_items(items: Vec<Spanned<Item>>) -> TypeCheckOutput {
     let program = Program {
@@ -664,5 +665,250 @@ fn non_generic_machine_type_params_empty() {
         td.type_params.is_empty(),
         "non-generic machine must have empty type_params, got: {:?}",
         td.type_params
+    );
+}
+
+#[test]
+fn machine_step_dispatch() {
+    let output = typecheck_isolated(
+        r"
+        machine Light {
+            state Off;
+            state On;
+            event Toggle;
+            on Toggle: Off -> On;
+            on Toggle: On -> Off;
+        }
+
+        fn main() {
+            var light: Light = Light::Off;
+            light.step(LightEvent::Toggle);
+            let name: string = light.state_name();
+            let _ = name;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "machine step/state_name dispatch should type-check, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output.machine_method_dispatch.values().any(|kind| {
+            matches!(
+                kind,
+                MachineMethodKind::Step { machine_name } if machine_name == "Light"
+            )
+        }),
+        "expected a checker-owned Light::step dispatch entry, got: {:?}",
+        output.machine_method_dispatch
+    );
+    assert!(
+        output.machine_method_dispatch.values().any(|kind| {
+            matches!(
+                kind,
+                MachineMethodKind::StateName { machine_name } if machine_name == "Light"
+            )
+        }),
+        "expected a checker-owned Light::state_name dispatch entry, got: {:?}",
+        output.machine_method_dispatch
+    );
+
+    let step_sig = &output.type_defs["Light"].methods["step"];
+    assert_eq!(
+        step_sig.params,
+        vec![Ty::Named {
+            builtin: None,
+            name: "LightEvent".to_string(),
+            args: vec![],
+        }],
+        "step must dispatch through the nominal companion event type"
+    );
+    assert_eq!(
+        output.type_defs["Light"].methods["state_name"].return_type,
+        Ty::String
+    );
+}
+
+#[test]
+fn machine_state_pattern_match_uses_variant_infrastructure() {
+    let output = typecheck_isolated(
+        r"
+        machine TcpState {
+            state Closed;
+            state Established { seq: i64; }
+            event Connect;
+            event Disconnect;
+            on Connect: Closed -> Established { seq: 1 }
+            on Connect: Established -> Established { seq: state.seq }
+            on Disconnect: Closed -> Closed;
+            on Disconnect: Established -> Closed;
+        }
+
+        fn seq_or_zero(state: TcpState) -> i64 {
+            match state {
+                TcpState::Closed => 0,
+                TcpState::Established { seq } => seq,
+            }
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "machine state pattern match should type-check, got: {:?}",
+        output.errors
+    );
+    let matched_variants: Vec<_> = output
+        .pattern_resolutions
+        .values()
+        .filter_map(|resolution| resolution.variant_match.as_ref())
+        .filter(|variant_match| variant_match.type_name == "TcpState")
+        .map(|variant_match| variant_match.variant_name.as_str())
+        .collect();
+    assert!(
+        matched_variants.contains(&"Closed") && matched_variants.contains(&"Established"),
+        "expected machine state variants to resolve through enum-pattern metadata, got: {:?}",
+        output.pattern_resolutions
+    );
+}
+
+#[test]
+fn generic_machine_threads_type_params_into_state_event_and_step() {
+    let output = typecheck_isolated(
+        r"
+        machine Lifecycle<T> {
+            state Empty;
+            state Loaded { value: T; }
+            event Load { value: T; }
+            event Reset;
+            on Load: Empty -> Loaded { value: event.value }
+            on Load: Loaded -> Loaded { value: event.value }
+            on Reset: Empty -> Empty;
+            on Reset: Loaded -> Empty;
+        }
+
+        fn main() {
+            var lifecycle: Lifecycle<i64> = Lifecycle::Loaded { value: 1 };
+            lifecycle.step(LifecycleEvent::Load { value: 2 });
+            let value: i64 = match lifecycle {
+                Lifecycle::Empty => 0,
+                Lifecycle::Loaded { value } => value,
+            };
+            let _ = value;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "generic machine state/event threading should type-check, got: {:?}",
+        output.errors
+    );
+
+    let machine_td = &output.type_defs["Lifecycle"];
+    assert_eq!(machine_td.type_params, vec!["T".to_string()]);
+    match &machine_td.variants["Loaded"] {
+        hew_types::VariantDef::Struct(fields) => assert_eq!(
+            fields,
+            &vec![(
+                "value".to_string(),
+                Ty::Named {
+                    builtin: None,
+                    name: "T".to_string(),
+                    args: vec![],
+                },
+            )]
+        ),
+        other => panic!("expected Loaded to be a struct variant, got: {other:?}"),
+    }
+
+    let event_td = &output.type_defs["LifecycleEvent"];
+    assert_eq!(event_td.type_params, vec!["T".to_string()]);
+    match &event_td.variants["Load"] {
+        hew_types::VariantDef::Struct(fields) => assert_eq!(
+            fields,
+            &vec![(
+                "value".to_string(),
+                Ty::Named {
+                    builtin: None,
+                    name: "T".to_string(),
+                    args: vec![],
+                },
+            )]
+        ),
+        other => panic!("expected Load to be a struct variant, got: {other:?}"),
+    }
+
+    assert_eq!(
+        machine_td.methods["step"].params,
+        vec![Ty::Named {
+            builtin: None,
+            name: "LifecycleEvent".to_string(),
+            args: vec![Ty::Named {
+                builtin: None,
+                name: "T".to_string(),
+                args: vec![],
+            }],
+        }]
+    );
+}
+
+#[test]
+fn user_defined_type_does_not_inherit_machine_methods() {
+    let output = typecheck_isolated(
+        r"
+        type Light {
+            value: i64
+        }
+
+        fn main() {
+            let light: Light = Light { value: 1 };
+            light.state_name();
+        }
+        ",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UndefinedMethod),
+        "plain user-defined types must not inherit the machine method surface, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn machine_event_match_outside_transition_rejected() {
+    let output = typecheck_isolated(
+        r"
+        machine Light {
+            state Off;
+            state On;
+            event Toggle;
+            on Toggle: Off -> On;
+            on Toggle: On -> Off;
+        }
+
+        fn main() {
+            let event: LightEvent = LightEvent::Toggle;
+            let _: i64 = match event {
+                LightEvent::Toggle => 1,
+            };
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::InvalidOperation
+                && error
+                    .message
+                    .contains("outside a transition body is not supported")
+        }),
+        "event enum matching outside transition bodies is out of scope for this slice; got: {:?}",
+        output.errors
     );
 }

@@ -1756,16 +1756,13 @@ impl Checker {
                 args: vec![],
             })
             .collect();
-        let machine_ty = Ty::normalize_named(md.name.clone(), machine_generic_args);
+        let machine_ty = Ty::normalize_named(md.name.clone(), machine_generic_args.clone());
 
         let event_type_name = format!("{}Event", md.name);
-        // The companion event enum is always non-generic: v0.5 generic machine
-        // values are not codegen-supported (see MachineDecl.type_params doc
-        // comment). Events carry concrete payload fields only.
         let event_ty = Ty::Named {
             builtin: None,
             name: event_type_name.clone(),
-            args: vec![],
+            args: machine_generic_args.clone(),
         };
 
         // Build state variants
@@ -1807,7 +1804,7 @@ impl Checker {
         let type_def = TypeDef {
             kind: TypeDefKind::Machine,
             name: md.name.clone(),
-            type_params: type_param_names,
+            type_params: type_param_names.clone(),
             fields: HashMap::new(),
             variants,
             methods: HashMap::new(),
@@ -1853,7 +1850,7 @@ impl Checker {
         let event_type_def = TypeDef {
             kind: TypeDefKind::Enum,
             name: event_type_name.clone(),
-            type_params: vec![],
+            type_params: type_param_names.clone(),
             fields: HashMap::new(),
             variants: event_variants,
             methods: HashMap::new(),
@@ -2017,7 +2014,15 @@ impl Checker {
                 Ty::Named {
                     builtin: None,
                     name: event_type_name,
-                    args: vec![],
+                    args: md
+                        .type_params
+                        .iter()
+                        .map(|name| Ty::Named {
+                            builtin: None,
+                            name: name.clone(),
+                            args: vec![],
+                        })
+                        .collect(),
                 },
                 false,
             );

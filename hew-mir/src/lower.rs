@@ -5,7 +5,7 @@ use hew_hir::{
     named_type_names, BindingId, HirActorDecl, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn,
     HirItem, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineTransition, HirModule,
     HirNodeId, HirSelect, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild,
-    HirSupervisorDecl, IntentKind, ResolvedRef, ScopeId, SiteId, ValueClass,
+    HirSupervisorDecl, IntentKind, ResolvedRef, ResourceMarker, ScopeId, SiteId, ValueClass,
 };
 use hew_parser::ast::BinaryOp;
 use hew_types::{ChildKind, ChildSlot, ExecutionContextReader, ResolvedTy};
@@ -157,6 +157,85 @@ fn actor_name_from_handle_ty(ty: &ResolvedTy) -> Option<&str> {
             }
         }
         _ => None,
+    }
+}
+
+fn named_type_marker(
+    ty: &ResolvedTy,
+    type_classes: &hew_hir::TypeClassTable,
+) -> Option<ResourceMarker> {
+    match ty {
+        ResolvedTy::Named { name, .. } => hew_hir::lookup_type_marker(name, type_classes),
+        _ => None,
+    }
+}
+
+fn builtin_registration_fields_match(
+    actual: &[(String, ResolvedTy)],
+    expected: &[hew_hir::builtin_type_classes::BuiltinTypeField],
+) -> bool {
+    actual.len() == expected.len()
+        && actual
+            .iter()
+            .zip(expected)
+            .all(|((name, ty), field)| name == field.name && *ty == field.ty.to_resolved_ty())
+}
+
+fn is_crash_info_payload_ty(
+    ty: &ResolvedTy,
+    type_classes: &hew_hir::TypeClassTable,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+) -> bool {
+    let ResolvedTy::Named { name, args } = ty else {
+        return false;
+    };
+    if !args.is_empty() || named_type_marker(ty, type_classes) != Some(ResourceMarker::BitCopy) {
+        return false;
+    }
+
+    let Some(registration) = hew_hir::builtin_type_classes::builtin_type_registration(name) else {
+        return false;
+    };
+    if registration.role != Some(hew_hir::builtin_type_classes::BuiltinTypeRole::CrashInfo) {
+        return false;
+    }
+    let hew_hir::builtin_type_classes::BuiltinTypeShape::Struct(expected_fields) =
+        registration.shape
+    else {
+        return false;
+    };
+    record_field_orders.get(name).is_some_and(|actual_fields| {
+        builtin_registration_fields_match(actual_fields, expected_fields)
+    })
+}
+
+fn register_builtin_record_layouts(
+    record_layouts: &mut Vec<crate::model::RecordLayout>,
+    record_field_orders: &mut HashMap<String, Vec<(String, ResolvedTy)>>,
+) {
+    for registration in hew_hir::builtin_type_classes::builtin_type_registrations() {
+        let hew_hir::builtin_type_classes::BuiltinTypeShape::Struct(fields) = registration.shape
+        else {
+            continue;
+        };
+        if let Some(existing_fields) = record_field_orders.get(registration.name) {
+            debug_assert!(
+                builtin_registration_fields_match(existing_fields, fields),
+                "builtin record registration for `{}` disagrees with existing record layout",
+                registration.name
+            );
+            continue;
+        }
+
+        let fields: Vec<(String, ResolvedTy)> = fields
+            .iter()
+            .map(|field| (field.name.to_string(), field.ty.to_resolved_ty()))
+            .collect();
+        record_layouts.push(crate::model::RecordLayout {
+            name: registration.name.to_string(),
+            field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+        });
+        record_field_orders.insert(registration.name.to_string(), fields);
     }
 }
 
@@ -499,36 +578,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     });
     record_field_orders.insert(CHILD_LOOKUP_RESULT_TY_NAME.to_string(), child_lookup_fields);
 
-    // `PanicInfo` — the argument type of `#[on(crash)]` hooks in std/failure.hew.
-    //
-    // WHY registered here unconditionally: user programs do not `import std.failure`
-    // explicitly; `PanicInfo` is seeded into the HIR TypeClassTable via
-    // `builtin_type_classes` and into the checker's `known_types` via
-    // `register_builtin_failure_surface`. Neither path inserts a `HirItem::TypeDecl`
-    // into `module.items`, so the normal item-loop above never sees it.
-    //
-    // The on_crash MIR prologue injector (in `lower_lifecycle_hooks`) synthesises a
-    // `HirExprKind::StructInit { name: "PanicInfo", fields: [("code", __crash_code)] }`
-    // expression and prepends it to the handler body. That StructInit lowering looks up
-    // "PanicInfo" in `record_field_orders`; without this unconditional registration the
-    // lookup fails for any program that does not import std.failure explicitly.
-    //
-    // WHEN-OBSOLETE: when std/failure.hew is loaded through the module graph and emits
-    // a `HirItem::TypeDecl` that the item-loop above already handles; at that point
-    // this sentinel insert produces a harmless duplicate that the later module-graph
-    // path overwrites with the same value.
-    //
-    // WHAT-REAL-SOLUTION: module-graph loading of std/*.hew so all stdlib types enter
-    // the HIR item stream naturally.
-    if !record_field_orders.contains_key("PanicInfo") {
-        let panic_info_fields: Vec<(String, ResolvedTy)> =
-            vec![("code".to_string(), ResolvedTy::I64)];
-        record_layouts.push(crate::model::RecordLayout {
-            name: "PanicInfo".to_string(),
-            field_tys: vec![ResolvedTy::I64],
-        });
-        record_field_orders.insert("PanicInfo".to_string(), panic_info_fields);
-    }
+    // Compiler-known struct-shaped builtins are registered from the HIR builtin
+    // type registry. The normal item loop above remains authoritative when a
+    // module-graph-loaded stdlib TypeDecl is present; this fills only missing
+    // substrate records needed by synthetic MIR construction.
+    register_builtin_record_layouts(&mut record_layouts, &mut record_field_orders);
 
     let actor_layout_map: HashMap<String, ActorLayout> = actor_layouts
         .iter()
@@ -1238,20 +1292,20 @@ fn lower_actor_lifecycle_handlers(
                 }
                 emitted_symbols.insert(emit_name.clone(), duplicate_label);
 
-                // ABI PROLOGUE — PanicInfo parameter injection:
+                // ABI PROLOGUE — crash-info payload parameter injection:
                 //
                 // The runtime ABI for `HewOnCrashFn` passes the crash code as
                 // `i64` in the second argument register (updated from `c_int`
                 // in this slice; see hew-runtime/src/internal/types.rs).
                 //
-                // User sources declare `info: PanicInfo` and access `info.code`.
+                // User sources declare a crash-info payload and access its `code`.
                 // To bridge the raw `i64` wire value to the user-visible struct,
                 // we inject a synthetic prologue into the function body:
                 //
                 //   let __crash_code: i64 = <ABI param>;   // sentinel BindingId
-                //   let info: PanicInfo = PanicInfo { code: __crash_code };
+                //   let info = <crash-info-type> { code: __crash_code };
                 //
-                // The original user-visible `info: PanicInfo` param is replaced
+                // The original user-visible crash-info param is replaced
                 // with `__crash_code: I64` in `abi_params`; the original binding
                 // ID for `info` is preserved in the `Let` statement so that every
                 // `BindingRef { resolved: Binding(info_id) }` in the user body
@@ -1272,22 +1326,27 @@ fn lower_actor_lifecycle_handlers(
                 // remove the I32 return coercion and let the HIR type flow through.
                 // The prologue injection itself stays (the ABI wire remains i64).
 
-                // Find the `info: PanicInfo` param (if present) and build ABI params.
-                // The PanicInfo param is replaced with `__crash_code: I64`; every
-                // other param passes through unchanged.
-                let panic_info_param: Option<HirBinding> = hook
-                    .params
-                    .iter()
-                    .find(
-                        |p| matches!(&p.ty, ResolvedTy::Named { name, .. } if name == "PanicInfo"),
-                    )
-                    .cloned();
+                // Find the crash-info payload param (if present) and build ABI
+                // params. The payload param is replaced with `__crash_code: I64`;
+                // every other param passes through unchanged. Classification is
+                // marker/shape driven so the user-visible type name is not
+                // load-bearing here.
+                let crash_info_param: Option<(HirBinding, String)> =
+                    hook.params.iter().find_map(|p| {
+                        if !is_crash_info_payload_ty(&p.ty, type_classes, record_field_orders) {
+                            return None;
+                        }
+                        let ResolvedTy::Named { name, .. } = &p.ty else {
+                            return None;
+                        };
+                        Some((p.clone(), name.clone()))
+                    });
 
                 let abi_params: Vec<HirBinding> = hook
                     .params
                     .iter()
                     .map(|p| {
-                        if matches!(&p.ty, ResolvedTy::Named { name, .. } if name == "PanicInfo") {
+                        if is_crash_info_payload_ty(&p.ty, type_classes, record_field_orders) {
                             HirBinding {
                                 id: SENTINEL_CRASH_CODE_BINDING,
                                 name: "__crash_code".to_string(),
@@ -1301,10 +1360,11 @@ fn lower_actor_lifecycle_handlers(
                     })
                     .collect();
 
-                // Inject a synthetic `let info = PanicInfo { code: __crash_code }`
+                // Inject a synthetic `let info = <payload> { code: __crash_code }`
                 // at the front of the body when the original signature had a
-                // `PanicInfo` param (which is always the case for `on(crash)`).
-                let body = if let Some(info_param) = panic_info_param {
+                // crash-info payload param (the normal `on(crash)` shape).
+                let body = if let Some((info_param, crash_info_type_name)) = crash_info_param {
+                    let crash_info_ty = info_param.ty.clone();
                     // Build the `__crash_code` BindingRef expression.
                     let crash_code_ref = HirExpr {
                         node: SENTINEL_CRASH_CODE_NODE,
@@ -1319,18 +1379,15 @@ fn lower_actor_lifecycle_handlers(
                         span: info_param.span.clone(),
                     };
 
-                    // Build `PanicInfo { code: __crash_code }` StructInit expression.
+                    // Build `<payload> { code: __crash_code }` StructInit expression.
                     let struct_init = HirExpr {
                         node: SENTINEL_CRASH_CODE_NODE,
                         site: SENTINEL_CRASH_CODE_SITE,
-                        ty: ResolvedTy::Named {
-                            name: "PanicInfo".to_string(),
-                            args: Vec::new(),
-                        },
+                        ty: crash_info_ty.clone(),
                         value_class: ValueClass::BitCopy,
                         intent: IntentKind::Unknown,
                         kind: HirExprKind::StructInit {
-                            name: "PanicInfo".to_string(),
+                            name: crash_info_type_name,
                             type_args: Vec::new(),
                             fields: vec![("code".to_string(), crash_code_ref)],
                             base: None,
@@ -1338,7 +1395,7 @@ fn lower_actor_lifecycle_handlers(
                         span: info_param.span.clone(),
                     };
 
-                    // Build `let info: PanicInfo = PanicInfo { code: __crash_code }`.
+                    // Build `let info = <payload> { code: __crash_code }`.
                     // Preserve `info_param.id` so user `BindingRef { resolved: Binding(id) }` resolves.
                     let let_info_stmt = HirStmt {
                         node: SENTINEL_CRASH_CODE_NODE,
@@ -1346,10 +1403,7 @@ fn lower_actor_lifecycle_handlers(
                             HirBinding {
                                 id: info_param.id,
                                 name: info_param.name.clone(),
-                                ty: ResolvedTy::Named {
-                                    name: "PanicInfo".to_string(),
-                                    args: Vec::new(),
-                                },
+                                ty: crash_info_ty,
                                 mutable: false,
                                 span: info_param.span.clone(),
                             },
@@ -2067,7 +2121,7 @@ fn emit_machine_resource_field_drops(
                         reason: format!(
                             "machine state `{}` field `{}` has unknown value class for type \
                              `{:?}`; drop-elaboration requires the type to be in the \
-                             type_classes table (ResourceMarker::Resource or None). \
+                             type_classes table (ResourceMarker::Resource, BitCopy, or None). \
                              This indicates a checker/HIR invariant violation.",
                             state.name, field.name, field.ty
                         ),
@@ -3051,7 +3105,7 @@ fn collect_unknown_type_diagnostics(
 
 /// Emit `UnknownType` diagnostics for each Named type in `ty` that is absent
 /// from `type_classes`. Names present in the registry are known — they carry
-/// an `@linear` or `@resource` marker — and must not be treated as unknown.
+/// a HIR marker — and must not be treated as unknown.
 /// This implements §3.1 "Checker authority survives downstream": the MIR layer
 /// consumes the HIR checker's `type_classes` decision rather than re-deriving
 /// Named-type knownness independently.
@@ -8778,26 +8832,18 @@ impl Builder {
 
     fn is_known_actor_runtime_ty(&self, ty: &ResolvedTy) -> bool {
         match ty {
+            ResolvedTy::Named { .. }
+                if named_type_marker(ty, &self.type_classes) == Some(ResourceMarker::BitCopy) =>
+            {
+                true
+            }
             ResolvedTy::Named { name, .. }
-                // SHIM: "PanicInfo" is added here to classify it as BitCopy so
-                // the MIR decision map does not block on ValueClass::Unknown.
-                // WHY: PanicInfo is registered in builtin_type_classes with
-                // ResourceMarker::None → Unknown, but the injected prologue and
-                // field-access lowering require it to be treated as a plain
-                // value type (one i64 field, stack-allocated).
-                // WHEN OBSOLETE: when PanicInfo is assigned a proper BitCopy
-                // ResourceMarker in builtin_type_classes (or when that
-                // classification mechanism is replaced by a richer type system
-                // that infers value-semantics from struct shape).
-                // REAL SOLUTION: ResourceMarker::BitCopy for PanicInfo in the
-                // type-class registry, or a type-system query on struct shape.
-                if matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor" | "PanicInfo") =>
+                if matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor") =>
             {
                 true
             }
             ResolvedTy::Named { name, args } if args.is_empty() => {
-                self.actor_layouts.contains_key(name)
-                    || self.machine_layout_names.contains(name)
+                self.actor_layouts.contains_key(name) || self.machine_layout_names.contains(name)
             }
             // Generic enum applications (`Named { name: "Option", args: [I64] }`):
             // the origin name is in `machine_layout_names` if the HIR mono pass
@@ -11883,9 +11929,8 @@ mod enum_layout_tests {
     use super::lower_hir_module;
     use hew_hir::{
         EnumLayout, EnumMonoKey, EnumVariantLayout, HirItem, HirModule, HirNodeId, HirTypeDecl,
-        HirVariant, HirVariantKind, ItemId, SiteId,
+        HirVariant, HirVariantKind, ItemId, ResourceMarker, SiteId,
     };
-    use hew_parser::ast::ResourceMarker;
     use hew_types::{ChildSlot, ResolvedTy};
 
     fn minimal_module(items: Vec<HirItem>) -> HirModule {

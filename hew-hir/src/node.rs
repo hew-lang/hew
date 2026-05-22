@@ -1,25 +1,27 @@
 use std::collections::HashMap;
 
-use hew_parser::ast::{BinaryOp, OverflowPolicy, ResourceMarker, Span};
+use hew_parser::ast::{BinaryOp, OverflowPolicy, Span};
 use hew_types::{ChildSlot, ExecutionContextReader, ResolvedTy, VariantMatch};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::monomorph::{EnumLayout, MonomorphizedFn, RecordLayout};
-use crate::value_class::TypeClassTable;
+use crate::value_class::{ResourceMarker, TypeClassTable};
 use crate::{IntentKind, ValueClass};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirModule {
     pub items: Vec<HirItem>,
     /// Per-named-type classification table populated during HIR lowering from
-    /// each `Item::TypeDecl` carrying a `#[resource]` or `#[linear]` marker.
+    /// each `Item::TypeDecl` carrying a user marker and from compiler-known
+    /// substrate registrations.
     /// Keyed by type name; value is `(marker, close_method_name)` where
     /// `close_method_name` is `Some(name)` for `@resource` types (the
     /// consuming method named `close`) and `None` for `@linear` and `None`-
-    /// marked types.
+    /// marked types. `BitCopy` substrate registrations are resolved through
+    /// `lookup_type_marker`.
     ///
     /// This is the single authority for downstream phases asking "is this
-    /// Named type a resource/linear?" — `ValueClass::of_ty(ty, &type_classes)`
+    /// Named type resource/linear/`BitCopy`?" — `ValueClass::of_ty(ty, &type_classes)`
     /// reads from here. No phase re-derives the answer by walking the parser
     /// AST. LESSONS: `type-info-survival`.
     pub type_classes: TypeClassTable,
@@ -278,8 +280,8 @@ pub enum HirLifecycleHookKind {
     /// `#[on(stop)]` — runs during actor shutdown. May appear multiple
     /// times per actor; runs in lexical declaration order.
     Stop,
-    /// `#[on(crash)]` — runs when the actor body traps. Takes a
-    /// `PanicInfo` parameter and returns `CrashAction`.
+    /// `#[on(crash)]` — runs when the actor body traps. Takes the stdlib
+    /// crash-info payload parameter and returns the stdlib crash action enum.
     Crash,
     /// `#[on(upgrade)]` — reserved marker for hot-upgrade flows. No
     /// runtime invocation in v0.5.

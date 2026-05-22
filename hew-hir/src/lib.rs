@@ -34,7 +34,10 @@ pub use node::{
     HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy,
     HirTypeDecl, HirVariant, HirVariantKind,
 };
-pub use value_class::{contains_named_type, named_type_names, TypeClassTable, ValueClass};
+pub use value_class::{
+    contains_named_type, lookup_type_marker, named_type_names, ResourceMarker, TypeClassTable,
+    ValueClass,
+};
 pub use verify::verify_hir;
 
 /// Convert a dotted module-qualified name to a native-object-safe symbol.

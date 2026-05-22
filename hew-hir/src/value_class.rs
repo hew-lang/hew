@@ -1,16 +1,65 @@
 use std::collections::HashMap;
 
-use hew_parser::ast::ResourceMarker;
+use hew_parser::ast::ResourceMarker as AstResourceMarker;
 use hew_types::ResolvedTy;
+
+/// HIR-owned type classification marker.
+///
+/// Parser-level markers only represent user-written ownership attributes
+/// (`#[resource]` / `#[linear]`). HIR also needs substrate registrations for
+/// compiler-known value types that are not user-authored attributes, such as
+/// `BitCopy` crash-hook payload records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ResourceMarker {
+    #[default]
+    None,
+    BitCopy,
+    Resource,
+    Linear,
+}
+
+impl From<hew_parser::ast::ResourceMarker> for ResourceMarker {
+    fn from(marker: hew_parser::ast::ResourceMarker) -> Self {
+        match marker {
+            AstResourceMarker::None => Self::None,
+            AstResourceMarker::Resource => Self::Resource,
+            AstResourceMarker::Linear => Self::Linear,
+        }
+    }
+}
+
+impl ResourceMarker {
+    #[must_use]
+    pub fn to_ast_marker(self) -> Option<AstResourceMarker> {
+        match self {
+            Self::None => Some(AstResourceMarker::None),
+            Self::Resource => Some(AstResourceMarker::Resource),
+            Self::Linear => Some(AstResourceMarker::Linear),
+            Self::BitCopy => None,
+        }
+    }
+}
 
 /// Per-named-type classification table consumed by `ValueClass::of_ty`.
 ///
 /// Construction-site authority: the table is populated by HIR lowering
-/// from every `Item::TypeDecl`'s `#[resource]` / `#[linear]` marker, and
-/// is the single fact about whether a Named type participates in the
-/// ownership-discipline surface. Downstream phases read; they never
-/// re-derive by walking the parser AST. LESSONS: `type-info-survival`.
-pub type TypeClassTable = HashMap<String, (ResourceMarker, Option<String>)>;
+/// from every `Item::TypeDecl`'s `#[resource]` / `#[linear]` marker and
+/// compiler-known substrate registrations. Parser-level storage is retained
+/// for compatibility with existing HIR/MIR construction sites; callers must use
+/// `lookup_type_marker` so `BitCopy` registrations that have no parser spelling
+/// are still observed. LESSONS: `type-info-survival`.
+pub type TypeClassTable = HashMap<String, (AstResourceMarker, Option<String>)>;
+
+#[must_use]
+pub fn lookup_type_marker(name: &str, type_classes: &TypeClassTable) -> Option<ResourceMarker> {
+    crate::builtin_type_classes::builtin_type_registration(name)
+        .map(|registration| registration.marker)
+        .or_else(|| {
+            type_classes
+                .get(name)
+                .map(|(marker, _)| ResourceMarker::from(*marker))
+        })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValueClass {
@@ -35,6 +84,7 @@ impl ValueClass {
     ///
     /// For `ResolvedTy::Named { name, .. }`, looks up the marker in the
     /// supplied `TypeClassTable`:
+    /// - `Some((BitCopy, _))` → `Self::BitCopy`
     /// - `Some((Resource, _))` → `Self::AffineResource`
     /// - `Some((Linear, _))` → `Self::Linear`
     /// - `Some((None, _))` or absent → `Self::Unknown` (preserved fallback;
@@ -70,10 +120,11 @@ impl ValueClass {
             ResolvedTy::Function { .. }
             | ResolvedTy::Closure { .. }
             | ResolvedTy::TraitObject { .. } => Self::PersistentShare,
-            ResolvedTy::Named { name, .. } => match type_classes.get(name) {
-                Some((ResourceMarker::Resource, _)) => Self::AffineResource,
-                Some((ResourceMarker::Linear, _)) => Self::Linear,
-                Some((ResourceMarker::None, _)) | None => Self::Unknown,
+            ResolvedTy::Named { name, .. } => match lookup_type_marker(name, type_classes) {
+                Some(ResourceMarker::BitCopy) => Self::BitCopy,
+                Some(ResourceMarker::Resource) => Self::AffineResource,
+                Some(ResourceMarker::Linear) => Self::Linear,
+                Some(ResourceMarker::None) | None => Self::Unknown,
             },
             // Task handles are consume-once: MirCheck::MustConsume fires if a
             // ForkTaskHandle binding is live at an exit without being consumed

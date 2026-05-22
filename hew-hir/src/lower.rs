@@ -3,8 +3,9 @@ use std::collections::{HashMap, HashSet};
 use hew_parser::ast::{
     ActorDecl, AttributeArg, BinaryOp, Block, CompoundAssignOp, Expr, FnDecl, Item, LambdaParam,
     Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind,
-    ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, VariantKind,
+    ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt,
+    SupervisorDecl, SupervisorStrategy, TimeoutClause, TypeBodyItem, TypeDecl, TypeDeclKind,
+    TypeExpr, VariantKind,
 };
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildSlot,
@@ -30,7 +31,7 @@ use crate::node::{
     HirSupervisorStrategy, HirTypeDecl, HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
-use crate::{IntentKind, ValueClass};
+use crate::{IntentKind, ResourceMarker, ValueClass};
 
 type ScopeBinding = (BindingId, ResolvedTy, std::ops::Range<usize>);
 type ScopeMap = HashMap<String, ScopeBinding>;
@@ -205,10 +206,10 @@ pub fn lower_program_with_mono_cap(
                         // Register pub type declarations from imported modules
                         // into `record_registry` so `Expr::StructInit` and
                         // `Expr::FieldAccess` lowering can resolve their field
-                        // layouts. Without this, `PanicInfo.code` in an
+                        // layouts. Without this, crash-info field access in an
                         // `#[on(crash)]` body fails with `NotYetImplemented`
-                        // because the layout is missing from `record_field_orders`
-                        // at MIR time.
+                        // because the layout is missing from
+                        // `record_field_orders` at MIR time.
                         //
                         // All pub TypeDecls from non-root modules are registered,
                         // not just monomorphic ones; the generic case is filtered
@@ -408,17 +409,29 @@ pub fn lower_program_with_mono_cap(
     for (item, span) in &program.items {
         if let Item::TypeDecl(decl) = item {
             let hir_decl = ctx.lower_type_decl(decl, span.clone());
-            let close_method = if hir_decl.marker == ResourceMarker::Resource {
-                hir_decl
-                    .consuming_methods
-                    .iter()
-                    .find(|m| m.as_str() == "close")
-                    .cloned()
+            let builtin_registration =
+                crate::builtin_type_classes::builtin_type_registration(&hir_decl.name);
+            let marker = builtin_or_hir_marker(&hir_decl.name, hir_decl.marker);
+            let close_method = if marker == ResourceMarker::Resource {
+                builtin_registration
+                    .and_then(|registration| registration.close_method.map(str::to_string))
+                    .or_else(|| {
+                        hir_decl
+                            .consuming_methods
+                            .iter()
+                            .find(|m| m.as_str() == "close")
+                            .cloned()
+                    })
             } else {
                 None
             };
-            ctx.type_classes
-                .insert(hir_decl.name.clone(), (hir_decl.marker, close_method));
+            ctx.type_classes.insert(
+                hir_decl.name.clone(),
+                (
+                    marker.to_ast_marker().unwrap_or(AstResourceMarker::None),
+                    close_method,
+                ),
+            );
             // Snapshot the enum's variant descriptors so call/struct-init
             // lowering can resolve payload ctors to `MachineVariantCtor`
             // without re-walking the parser AST.
@@ -534,12 +547,12 @@ pub fn lower_program_with_mono_cap(
     // imported user module contributes exactly one `HirFn` per pub fn,
     // keyed by the same mangled name registered in the pre-pass above.
     //
-    // Pub TypeDecls are emitted here for the same reason: `PanicInfo` (and any
-    // other pub type from an imported module) must appear as `HirItem::TypeDecl`
-    // so that `hew-mir`'s layout pass (which walks `module.items`) can populate
-    // `record_field_orders` and emit a `RecordLayout`.  Without this, field
-    // accesses like `info.code` in `#[on(crash)]` bodies fail at MIR time
-    // because `PanicInfo` is absent from `record_field_orders`.
+    // Pub TypeDecls are emitted here for the same reason: imported stdlib
+    // record types must appear as `HirItem::TypeDecl` so that `hew-mir`'s layout
+    // pass (which walks `module.items`) can populate `record_field_orders` and
+    // emit a `RecordLayout`. Without this, field accesses like `info.code` in
+    // `#[on(crash)]` bodies fail at MIR time because the payload record layout
+    // is absent from `record_field_orders`.
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root {
@@ -868,6 +881,15 @@ pub fn substitute_ty<S: std::hash::BuildHasher>(
         ResolvedTy::Task(inner) => ResolvedTy::Task(Box::new(substitute_ty(inner, subst))),
         _ => ty.clone(),
     }
+}
+
+fn builtin_or_hir_marker(name: &str, fallback: ResourceMarker) -> ResourceMarker {
+    crate::builtin_type_classes::builtin_type_registration(name)
+        .map_or(fallback, |registration| registration.marker)
+}
+
+fn builtin_or_decl_marker(name: &str, fallback: AstResourceMarker) -> ResourceMarker {
+    builtin_or_hir_marker(name, ResourceMarker::from(fallback))
 }
 
 fn contains_abstract_symbol(
@@ -1885,7 +1907,7 @@ impl LowerCtx {
         // keyed by name, not by instantiation. This rule belongs at the
         // checker boundary (LESSONS `checker-output-boundary`); HIR is the
         // first place the marker is durable, so the check lands here.
-        if decl.resource_marker != ResourceMarker::None && decl.type_params.is_some() {
+        if decl.resource_marker != AstResourceMarker::None && decl.type_params.is_some() {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ResourceGenericUnsupported {
                     name: decl.name.clone(),
@@ -1896,7 +1918,7 @@ impl LowerCtx {
         }
 
         match decl.resource_marker {
-            ResourceMarker::Resource => {
+            AstResourceMarker::Resource => {
                 // `#[resource]` must declare `close(consuming self)`.
                 let has_close = decl
                     .consuming_methods
@@ -1913,7 +1935,7 @@ impl LowerCtx {
                     ));
                 }
             }
-            ResourceMarker::Linear => {
+            AstResourceMarker::Linear => {
                 // `#[linear]` must declare at least one consuming method.
                 if decl.consuming_methods.is_empty() {
                     self.diagnostics.push(HirDiagnostic::new(
@@ -1926,7 +1948,7 @@ impl LowerCtx {
                     ));
                 }
             }
-            ResourceMarker::None => {}
+            AstResourceMarker::None => {}
         }
 
         // Carry the field set so dump-hir and future analysis have something
@@ -2000,7 +2022,7 @@ impl LowerCtx {
             id,
             node: self.ids.node(),
             name: decl.name.clone(),
-            marker: decl.resource_marker,
+            marker: builtin_or_decl_marker(&decl.name, decl.resource_marker),
             consuming_methods: decl.consuming_methods.clone(),
             type_params,
             fields,

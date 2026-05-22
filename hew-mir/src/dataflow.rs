@@ -418,7 +418,7 @@ impl ContextFlowState {
               Move and EnumTagLoad both surface src→dest dataflow); merging arms by \
               pattern would obscure their distinct producer semantics"
 )]
-fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
+pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
     match instr {
         Instr::EnterContext | Instr::ExitContext | Instr::CheckCancellation => (vec![], vec![]),
         Instr::ContextField { dest, .. }

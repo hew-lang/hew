@@ -107,6 +107,7 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
     }
 }
 
@@ -170,6 +171,7 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
     }
 }
 
@@ -237,6 +239,7 @@ fn pipeline_no_duplex() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
     }
 }
 

@@ -106,6 +106,7 @@ fn pipeline_with_elab_drop_plan() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
     }
 }
 
@@ -255,6 +256,7 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
     };
     let dir = out_dir("elab-drop-unknown-fail-closed");
     let options = EmitOptions {

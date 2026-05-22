@@ -1882,6 +1882,16 @@ fn place_pointer<'ctx>(
                 })?;
             Ok((field_ptr, field_llvm_ty))
         }
+        // Generator state-record projection. The S3b MIR pass produces
+        // these places at every cross-yield bookend Move; S4 wires the
+        // LLVM struct GEP path that backs them. Until then, fail-closed
+        // matches the existing `Terminator::Yield` rejection so generator
+        // codegen stays gated on the S4 state-machine substrate.
+        Place::GenState { local, field } => Err(CodegenError::FailClosed(format!(
+            "Place::GenState {{ local: {local}, field: {field} }} — generator state-record \
+             projection codegen lands in S4 (state-machine LLVM lowering); S3b emits these \
+             places in MIR but codegen rejects them until the state-machine prologue exists"
+        ))),
     }
 }
 
@@ -1972,6 +1982,15 @@ fn place_resolved_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, place: Place) -> CodegenResu
                 ))
             })
         }
+        // Generator state-record projection: see `place_pointer` for the
+        // matching surface. Type resolution for the LLVM struct fields
+        // lands alongside S4's state-machine substrate; until then,
+        // codegen rejects the place via `Unsupported` (mirrors the
+        // existing `Terminator::Yield` rejection).
+        Place::GenState { local, field } => Err(CodegenError::FailClosed(format!(
+            "Place::GenState {{ local: {local}, field: {field} }} — generator state-record \
+             type lookup lands in S4 (state-machine LLVM lowering)"
+        ))),
     }
 }
 
@@ -9869,6 +9888,7 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
         }
     }
 
@@ -9915,6 +9935,7 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -9979,6 +10000,7 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -10037,6 +10059,7 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
         };
         let ctx = Context::create();
         let m =
@@ -10080,6 +10103,7 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
         };
         let ctx = Context::create();
         let err =
@@ -10139,6 +10163,7 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
         }
     }
 
@@ -10332,6 +10357,7 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
         }
     }
 
@@ -11016,6 +11042,7 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: vec![enum_layout],
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
         };
 
         let ctx = Context::create();

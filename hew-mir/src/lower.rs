@@ -361,6 +361,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     let mut supervisor_layouts: Vec<crate::model::SupervisorLayout> = Vec::new();
     let mut machine_layouts: Vec<crate::model::MachineLayout> = Vec::new();
     let mut enum_layouts: Vec<crate::model::EnumLayout> = Vec::new();
+    let mut gen_state_layouts: Vec<crate::model::GenStateLayout> = Vec::new();
     for item in &module.items {
         match item {
             HirItem::Record(decl) => {
@@ -742,6 +743,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 checked_mir.push(lowered.checked);
                 elaborated_mir.push(lowered.elaborated);
                 record_layouts.extend(lowered.record_layouts);
+                gen_state_layouts.extend(lowered.gen_state_layouts.clone());
                 for generated in lowered.generated {
                     thir.push(generated.thir);
                     raw_mir.push(generated.raw);
@@ -749,6 +751,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     elaborated_mir.push(generated.elaborated);
                     diagnostics.extend(generated.diagnostics);
                     record_layouts.extend(generated.record_layouts);
+                    gen_state_layouts.extend(generated.gen_state_layouts.clone());
                 }
                 diagnostics.extend(lowered.diagnostics);
             }
@@ -771,6 +774,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     checked_mir.push(lowered.checked);
                     elaborated_mir.push(lowered.elaborated);
                     record_layouts.extend(lowered.record_layouts);
+                    gen_state_layouts.extend(lowered.gen_state_layouts.clone());
                     for generated in lowered.generated {
                         thir.push(generated.thir);
                         raw_mir.push(generated.raw);
@@ -778,6 +782,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         elaborated_mir.push(generated.elaborated);
                         diagnostics.extend(generated.diagnostics);
                         record_layouts.extend(generated.record_layouts);
+                        gen_state_layouts.extend(generated.gen_state_layouts.clone());
                     }
                     diagnostics.extend(lowered.diagnostics);
                 }
@@ -801,6 +806,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     checked_mir.push(lowered.checked);
                     elaborated_mir.push(lowered.elaborated);
                     record_layouts.extend(lowered.record_layouts);
+                    gen_state_layouts.extend(lowered.gen_state_layouts.clone());
                     for generated in lowered.generated {
                         thir.push(generated.thir);
                         raw_mir.push(generated.raw);
@@ -808,6 +814,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         elaborated_mir.push(generated.elaborated);
                         diagnostics.extend(generated.diagnostics);
                         record_layouts.extend(generated.record_layouts);
+                        gen_state_layouts.extend(generated.gen_state_layouts.clone());
                     }
                     diagnostics.extend(lowered.diagnostics);
                 }
@@ -929,6 +936,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         checked_mir.push(lowered.checked);
         elaborated_mir.push(lowered.elaborated);
         record_layouts.extend(lowered.record_layouts);
+        gen_state_layouts.extend(lowered.gen_state_layouts.clone());
         for generated in lowered.generated {
             thir.push(generated.thir);
             raw_mir.push(generated.raw);
@@ -936,6 +944,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             elaborated_mir.push(generated.elaborated);
             diagnostics.extend(generated.diagnostics);
             record_layouts.extend(generated.record_layouts);
+            gen_state_layouts.extend(generated.gen_state_layouts.clone());
         }
         diagnostics.extend(lowered.diagnostics);
     }
@@ -965,6 +974,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         machine_layouts,
         enum_layouts,
         regex_literals,
+        gen_state_layouts,
     }
 }
 
@@ -1906,6 +1916,7 @@ fn synthesize_machine_step_fn(
         diagnostics,
         generated: Vec::new(),
         record_layouts: Vec::new(),
+        gen_state_layouts: Vec::new(),
     }
 }
 
@@ -2773,6 +2784,11 @@ struct LoweredFunction {
     diagnostics: Vec<MirDiagnostic>,
     generated: Vec<LoweredFunction>,
     record_layouts: Vec<crate::model::RecordLayout>,
+    /// Generator state-record layouts synthesised inside this function or
+    /// any of its `generated` children. `lower_hir_module` flattens these
+    /// into `IrPipeline.gen_state_layouts`. Empty on every function that
+    /// contains no `gen { … }` block.
+    gen_state_layouts: Vec<crate::model::GenStateLayout>,
 }
 
 /// Insert execution-context carrier markers into a context-bearing CFG.
@@ -2994,6 +3010,7 @@ fn lower_function(
         diagnostics,
         generated: builder.generated_functions,
         record_layouts: builder.closure_record_layouts,
+        gen_state_layouts: builder.gen_state_layouts,
     }
 }
 
@@ -3261,6 +3278,12 @@ struct Builder {
     /// S3b will extend this context with the cross-yield live-set
     /// accumulator once liveness analysis lands.
     in_gen_body: bool,
+    /// State-record layouts synthesised by `lower_gen_block` while
+    /// lowering this function body. Each entry corresponds to one
+    /// generator body function pushed onto `generated_functions`.
+    /// `lower_hir_module` flattens them into `IrPipeline.gen_state_layouts`
+    /// so codegen consumes them by gen-body function name.
+    gen_state_layouts: Vec<crate::model::GenStateLayout>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3455,6 +3478,12 @@ impl Builder {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "HIR statement dispatch keeps every kind's lowering in one match so the \
+                  fail-closed arms surface together; splitting per-kind helpers would \
+                  scatter the panic discipline across helper boundaries"
+    )]
     fn stmt(&mut self, stmt: &hew_hir::HirStmt) {
         match &stmt.kind {
             HirStmtKind::Let(binding, Some(value)) => {
@@ -3553,12 +3582,13 @@ impl Builder {
                         Place::MachineTag(_)
                         | Place::MachineVariant { .. }
                         | Place::EnumTag(_)
-                        | Place::EnumVariant { .. } => {
+                        | Place::EnumVariant { .. }
+                        | Place::GenState { .. } => {
                             panic!(
                                 "builder invariant: `Let` binding may not bind directly to a \
-                                 MachineTag / MachineVariant / EnumTag / EnumVariant place; \
-                                 these are projection primitives into a tagged-union value, \
-                                 not independent bindings. Binding {:?}, src {:?}",
+                                 MachineTag / MachineVariant / EnumTag / EnumVariant / GenState \
+                                 place; these are projection primitives into a tagged-union \
+                                 value, not independent bindings. Binding {:?}, src {:?}",
                                 binding.id, src
                             );
                         }
@@ -8771,6 +8801,7 @@ impl Builder {
             diagnostics,
             generated: builder.generated_functions,
             record_layouts: builder.closure_record_layouts,
+            gen_state_layouts: builder.gen_state_layouts,
         }
     }
 
@@ -8872,6 +8903,14 @@ impl Builder {
     /// checker state, the lowering succeeds structurally (the placeholder
     /// place still has type `Generator<Y, R>`) and S3b/S4 detect the
     /// inconsistency when they interrogate the state-record.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "gen-block lowering keeps body-builder construction, S3b synthesis-pass \
+                  invocation, raw/checked/elaborated triple assembly, and dataflow \
+                  dispatch in one routine so the surface a regression touches is \
+                  contiguous; helper-splitting would scatter the gen-body invariants \
+                  across functions that each only see half of the contract"
+    )]
     fn lower_gen_block(
         &mut self,
         expr: &HirExpr,
@@ -8930,7 +8969,27 @@ impl Builder {
         // Seal the last block with `Terminator::Return`. For a gen body
         // this represents the generator completing (returns `return_ty` which
         // S5 maps to `None` on the Iterator impl side).
-        let blocks = body_builder.finalize_blocks(Terminator::Return);
+        let raw_blocks = body_builder.finalize_blocks(Terminator::Return);
+
+        // S3b cross-yield liveness + state-record synthesis pass. Runs on
+        // the sealed gen-body CFG; mutates the block list to insert
+        // bookend Move instructions around every yield/resume boundary
+        // and appends a synthetic state-record local at the end of the
+        // body's locals vector. Records a `GenStateLayout` on the
+        // enclosing builder so `lower_hir_module` surfaces it in the
+        // `IrPipeline.gen_state_layouts` vec.
+        let (blocks, body_locals_with_state, gen_state_layout_opt) =
+            match crate::gen_state::synthesise(
+                &body_name,
+                raw_blocks.clone(),
+                body_builder.locals.clone(),
+            ) {
+                Some(synth) => (synth.blocks, synth.locals, Some(synth.layout)),
+                None => (raw_blocks, body_builder.locals.clone(), None),
+            };
+        if let Some(layout) = gen_state_layout_opt.clone() {
+            self.gen_state_layouts.push(layout);
+        }
 
         // Build the THIR/raw/checked/elaborated triple for the body function.
         let thir_stmts: Vec<MirStatement> = blocks
@@ -8944,8 +9003,11 @@ impl Builder {
         };
 
         // The gen-body function's parameter is the generator state record
-        // (populated by S3b). For S3a the param list is empty so the raw
-        // function is self-consistent at the MIR level.
+        // (the state-record local synthesised by `gen_state::synthesise`
+        // sits at the END of `body_locals_with_state`; S4 will lift it
+        // into the formal parameter list when the state-machine prologue
+        // lands). The param list stays empty here so the raw function is
+        // self-consistent at the MIR level.
         //
         // WHY FunctionCallConv::Default: S4 adds GeneratorNext convention
         // when the state-machine switch-prologue lands. Using Default here
@@ -8956,7 +9018,7 @@ impl Builder {
             return_ty: return_ty.clone(),
             call_conv: crate::model::FunctionCallConv::Default,
             params: Vec::new(),
-            locals: body_builder.locals.clone(),
+            locals: body_locals_with_state.clone(),
             blocks: blocks.clone(),
             decisions: body_builder.decisions.clone(),
         };
@@ -9009,6 +9071,13 @@ impl Builder {
             diagnostics: body_diagnostics,
             generated: body_builder.generated_functions,
             record_layouts: body_builder.closure_record_layouts,
+            // The state-record layout this body owns sits on the
+            // enclosing builder (pushed above); the LoweredFunction
+            // itself carries only nested layouts from any nested
+            // generated functions. Today gen bodies cannot nest
+            // gen-blocks (HIR rejects the construct), so this stays
+            // empty.
+            gen_state_layouts: body_builder.gen_state_layouts,
         };
         self.generated_functions.push(body_lowered);
 
@@ -9650,7 +9719,10 @@ fn duplex_parent_local(place: Place) -> Option<u32> {
         | Place::MachineTag(_)
         | Place::MachineVariant { .. }
         | Place::EnumTag(_)
-        | Place::EnumVariant { .. } => None,
+        | Place::EnumVariant { .. }
+        // GenState fields are generator state-record projections, not
+        // Duplex-family handles. They have no parent Duplex local.
+        | Place::GenState { .. } => None,
     }
 }
 
@@ -10283,7 +10355,14 @@ fn drop_kind_for(place: Place, ty: &ResolvedTy) -> DropKind {
         | Place::MachineTag(_)
         | Place::MachineVariant { .. }
         | Place::EnumTag(_)
-        | Place::EnumVariant { .. } => DropKind::Resource,
+        | Place::EnumVariant { .. }
+        // Generator state-record projections are not drop bindings on
+        // their own — drop discipline for the state record runs via the
+        // per-state `__drop_in_state` shim that S3b2 synthesises, not
+        // through the per-Place drop-kind dispatcher. Fail-closed to
+        // `Resource` so any accidental reach-through surfaces a
+        // diagnostic rather than a silent no-op.
+        | Place::GenState { .. } => DropKind::Resource,
     }
 }
 

@@ -113,6 +113,7 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
     };
     let tmp = std::env::temp_dir().join(format!("hew-trap-kind-{module_name}"));
     std::fs::create_dir_all(&tmp).expect("create out_dir");

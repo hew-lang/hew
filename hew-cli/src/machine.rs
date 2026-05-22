@@ -223,19 +223,7 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
 // ── HIR-backed renderers (used when --check is active) ──────────────────────
 
 fn print_mermaid_hir(machine: &HirMachineDecl) {
-    // Mermaid YAML frontmatter title carries the generic-params signature
-    // when present (e.g. `Lifecycle<T>`). Omitted entirely for monomorphic
-    // machines so existing snapshot tests and consumer pipelines are
-    // unaffected.
-    if !machine.type_params.is_empty() {
-        println!("---");
-        println!(
-            "title: {}<{}>",
-            machine.name,
-            machine.type_params.join(", ")
-        );
-        println!("---");
-    }
+    print_mermaid_title(&machine.name, &machine.type_params);
     println!("stateDiagram-v2");
 
     if let Some(first) = machine.states.first() {
@@ -288,6 +276,20 @@ fn print_mermaid_hir(machine: &HirMachineDecl) {
     }
 
     println!();
+}
+
+fn print_mermaid_title(name: &str, type_params: &[String]) {
+    // Mermaid YAML frontmatter title carries the generic-params signature
+    // when present (e.g. `Lifecycle<T>`). Omitted entirely for monomorphic
+    // machines so existing snapshot tests and consumer pipelines are
+    // unaffected.
+    if type_params.is_empty() {
+        return;
+    }
+
+    println!("---");
+    println!("title: {}<{}>", name, type_params.join(", "));
+    println!("---");
 }
 
 fn print_dot_hir(machine: &HirMachineDecl) {
@@ -398,6 +400,7 @@ fn print_json_hir(machine: &HirMachineDecl) {
 // ── AST-backed renderers (used with --no-check) ──────────────────────────────
 
 fn print_mermaid(md: &MachineDecl) {
+    print_mermaid_title(&md.name, &md.type_params);
     println!("stateDiagram-v2");
 
     if let Some(first) = md.states.first() {

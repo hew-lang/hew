@@ -331,73 +331,10 @@ fn main() {}
 }
 
 #[test]
-fn parse_machine_generic_decl() {
+fn machine_generic_decl() {
     // `machine Name<T, U> { ... }` parses with the type-param names
     // threaded onto `MachineDecl::type_params`. No bounds, no defaults,
     // no machine-over-machine generics — those are not supported in v0.5.
-    let source = r"
-machine Lifecycle<T> {
-    state Created;
-    state Running;
-
-    event Start;
-
-    on Start: Created -> Running {
-        Running
-    }
-}
-";
-    let result = hew_parser::parse(source);
-    assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
-        result.errors
-    );
-    assert_eq!(result.program.items.len(), 1);
-
-    if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
-        assert_eq!(m.name, "Lifecycle");
-        assert_eq!(m.type_params, vec!["T".to_string()]);
-        assert_eq!(m.states.len(), 2);
-        assert_eq!(m.events.len(), 1);
-        assert_eq!(m.transitions.len(), 1);
-    } else {
-        panic!("expected Machine item, got {:?}", result.program.items[0].0);
-    }
-}
-
-#[test]
-fn parse_machine_generic_decl_multiple_params() {
-    let source = r"
-machine Pair<K, V> {
-    state Empty;
-    state Filled;
-
-    event Insert;
-
-    on Insert: Empty -> Filled {
-        Filled
-    }
-}
-";
-    let result = hew_parser::parse(source);
-    assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
-        result.errors
-    );
-
-    let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 else {
-        panic!("expected Machine item, got {:?}", result.program.items[0].0);
-    };
-    assert_eq!(m.name, "Pair");
-    assert_eq!(m.type_params, vec!["K".to_string(), "V".to_string()]);
-}
-
-#[test]
-fn parse_machine_monomorphic_has_empty_type_params() {
-    // Existing monomorphic machines must continue to parse and carry an
-    // empty `type_params` vector — no implicit single-param sugar.
     let source = r"
 machine Light {
     state Off;
@@ -408,6 +345,32 @@ machine Light {
     on Toggle: Off -> On { On }
     on Toggle: On -> Off { Off }
 }
+
+machine Lifecycle<T> {
+    state Created;
+    state Running;
+
+    event Start;
+
+    on Start: Created -> Running {
+        Running
+    }
+}
+
+machine Triple<T, U, V> {
+    state Empty;
+    state Filled;
+
+    event Insert;
+
+    on Insert: Empty -> Filled {
+        Filled
+    }
+}
+
+machine Collision<T> {
+    state T;
+}
 ";
     let result = hew_parser::parse(source);
     assert!(
@@ -415,10 +378,40 @@ machine Light {
         "parse errors: {:?}",
         result.errors
     );
-    let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 else {
-        panic!("expected Machine item");
-    };
-    assert!(m.type_params.is_empty());
+    assert_eq!(result.program.items.len(), 4);
+
+    let machines: Vec<&hew_parser::ast::MachineDecl> = result
+        .program
+        .items
+        .iter()
+        .map(|(item, _)| {
+            let hew_parser::ast::Item::Machine(machine) = item else {
+                panic!("expected Machine item, got {item:?}");
+            };
+            machine
+        })
+        .collect();
+
+    assert_eq!(machines[0].name, "Light");
+    assert!(machines[0].type_params.is_empty());
+
+    assert_eq!(machines[1].name, "Lifecycle");
+    assert_eq!(machines[1].type_params, vec!["T".to_string()]);
+    assert_eq!(machines[1].states.len(), 2);
+    assert_eq!(machines[1].events.len(), 1);
+    assert_eq!(machines[1].transitions.len(), 1);
+
+    assert_eq!(machines[2].name, "Triple");
+    assert_eq!(
+        machines[2].type_params,
+        vec!["T".to_string(), "U".to_string(), "V".to_string()]
+    );
+
+    // Parser accepts a type-param/state-name collision because name binding is
+    // not a parser concern; later semantic passes may reject it if needed.
+    assert_eq!(machines[3].name, "Collision");
+    assert_eq!(machines[3].type_params, vec!["T".to_string()]);
+    assert_eq!(machines[3].states[0].name, "T");
 }
 
 #[test]

@@ -968,7 +968,9 @@ fn walk_expr_collect_lambdas<'a>(expr: &'a hew_hir::HirExpr, out: &mut Vec<&'a h
         HirExprKind::SpawnLambdaActor { body, .. } => {
             walk_expr_collect_lambdas(body, out);
         }
-        HirExprKind::Block(block) | HirExprKind::Scope { body: block } => {
+        HirExprKind::Block(block)
+        | HirExprKind::Scope { body: block }
+        | HirExprKind::GenBlock { body: block, .. } => {
             for s in &block.statements {
                 if let HirStmtKind::Let(_, Some(e)) = &s.kind {
                     walk_expr_collect_lambdas(e, out);
@@ -1002,6 +1004,9 @@ fn walk_expr_collect_lambdas<'a>(expr: &'a hew_hir::HirExpr, out: &mut Vec<&'a h
                 walk_expr_collect_lambdas(a, out);
             }
         }
+        HirExprKind::Yield {
+            value: Some(value), ..
+        } => walk_expr_collect_lambdas(value, out),
         _ => {}
     }
 }

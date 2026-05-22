@@ -19,7 +19,7 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
 fn first_machine_emit(expr: &HirExpr) -> Option<(usize, &[(String, HirExpr)])> {
     match &expr.kind {
         HirExprKind::MachineEmit { event_idx, fields } => Some((*event_idx, fields.as_slice())),
-        HirExprKind::Block(block) => {
+        HirExprKind::Block(block) | HirExprKind::GenBlock { body: block, .. } => {
             for stmt in &block.statements {
                 let found = match &stmt.kind {
                     HirStmtKind::Expr(expr)
@@ -34,6 +34,7 @@ fn first_machine_emit(expr: &HirExpr) -> Option<(usize, &[(String, HirExpr)])> {
             }
             block.tail.as_deref().and_then(first_machine_emit)
         }
+        HirExprKind::Yield { value, .. } => value.as_deref().and_then(first_machine_emit),
         HirExprKind::If {
             condition,
             then_expr,

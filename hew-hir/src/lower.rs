@@ -768,6 +768,10 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
             collect_call_sites_in_expr(right, out);
         }
         HirExprKind::Block(b) => collect_call_sites_in_block(b, out),
+        HirExprKind::GenBlock { body, .. } => collect_call_sites_in_block(body, out),
+        HirExprKind::Yield {
+            value: Some(value), ..
+        } => collect_call_sites_in_expr(value, out),
         HirExprKind::If {
             condition,
             then_expr,
@@ -996,6 +1000,9 @@ struct LowerCtx {
     /// literal span. HIR consumes this ledger fail-closed when materialising
     /// `HirExprKind::Closure`; it does not infer capture legality from syntax.
     closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+    /// Stack of checker-inferred generator Yield parameters while lowering
+    /// nested `gen {}` bodies. `Expr::Yield` consumes the innermost entry.
+    generator_yield_tys: Vec<ResolvedTy>,
     /// Depth counter for nested `scope{}` bodies. When > 0, statement-expression
     /// calls are inferred as child-task spawns (TI-1); outside any scope body
     /// all calls are synchronous (TI-3). Using a depth counter rather than a
@@ -1270,6 +1277,7 @@ impl LowerCtx {
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
+            generator_yield_tys: Vec::new(),
             scope_depth: 0,
             statement_position: false,
             current_actor_self: None,
@@ -4074,34 +4082,26 @@ impl LowerCtx {
                 body,
                 ..
             } => self.lower_closure(params, return_type.as_ref(), body, span.clone()),
-            Expr::GenBlock { .. } => {
-                // WHY: `gen { }` expression-position generator blocks are a
-                //      v0.5 surface that requires HIR/MIR coroutine support.
-                //      That support is not yet implemented.
-                // WHEN OBSOLETE: when generator lowering wires up
-                //      HirExprKind::GenResume and the coroutine scheduler.
-                // REAL SOLUTION: lower to HirExprKind::GenBlock carrying a
-                //      HirBlock body, yield points converted to
-                //      HirExprKind::GenYield nodes; the MIR scheduler then
-                //      desugars those into coroutine state machines.
-                //
-                // Fail-closed: emit a typed diagnostic and return Unit so
-                // the rest of the program continues to be lowered (diagnosing
-                // as many errors as possible in one pass).
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::UnresolvedSymbol {
-                        name: "E_GEN_BLOCK_PENDING: generator block lowering is not yet \
-                               implemented; generator blocks are parsed but cannot be compiled \
-                               in this version"
-                            .to_string(),
-                    },
-                    span.clone(),
-                    "gen {} blocks require coroutine lowering (not yet implemented)",
-                ));
-                (
-                    HirExprKind::Literal(crate::HirLiteral::Unit),
-                    ResolvedTy::Unit,
-                )
+            Expr::GenBlock { body } => self.lower_gen_block(body, span.clone()),
+            Expr::Yield(value) => {
+                let value = value
+                    .as_deref()
+                    .map(|value| Box::new(self.lower_expr(value, IntentKind::Read)));
+                let yield_ty = if let Some(yield_ty) = self.generator_yield_tys.last() {
+                    yield_ty.clone()
+                } else {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "yield".to_string(),
+                            reason: "yield expression lowered outside an enclosing gen block"
+                                .to_string(),
+                        },
+                        span.clone(),
+                        "yield expression has no enclosing generator yield type",
+                    ));
+                    ResolvedTy::Unit
+                };
+                (HirExprKind::Yield { value, yield_ty }, ResolvedTy::Unit)
             }
             Expr::MethodCall {
                 receiver,
@@ -4750,6 +4750,76 @@ impl LowerCtx {
             .into_iter()
             .map(|(name, (id, ty, span))| (id, (name, ty, span)))
             .collect()
+    }
+
+    fn lower_gen_block(
+        &mut self,
+        body: &Block,
+        span: std::ops::Range<usize>,
+    ) -> (HirExprKind, ResolvedTy) {
+        let checker_key = SpanKey::from(&span);
+        let gen_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+            match ResolvedTy::from_ty(&ty) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "gen block".to_string(),
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "gen block type failed checker-boundary conversion",
+                    ));
+                    ResolvedTy::Named {
+                        name: "Generator".to_string(),
+                        args: vec![ResolvedTy::Unit, ResolvedTy::Unit],
+                    }
+                }
+            }
+        } else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "gen block".to_string(),
+                    reason: "expr_types has no entry for gen block site".to_string(),
+                },
+                span.clone(),
+                "checker did not provide a Generator<Yield, Return> type for this gen block",
+            ));
+            ResolvedTy::Named {
+                name: "Generator".to_string(),
+                args: vec![ResolvedTy::Unit, ResolvedTy::Unit],
+            }
+        };
+
+        let (yield_ty, return_ty) = match &gen_ty {
+            ResolvedTy::Named { name, args } if name == "Generator" && args.len() == 2 => {
+                (args[0].clone(), args[1].clone())
+            }
+            other => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "gen block".to_string(),
+                        reason: format!("expected Generator<Yield, Return>, got {other:?}"),
+                    },
+                    span.clone(),
+                    "gen block checker type did not have Generator<Yield, Return> shape",
+                ));
+                (ResolvedTy::Unit, ResolvedTy::Unit)
+            }
+        };
+
+        self.generator_yield_tys.push(yield_ty.clone());
+        let lowered_body = self.lower_block(body, &return_ty);
+        self.generator_yield_tys.pop();
+
+        (
+            HirExprKind::GenBlock {
+                body: lowered_body,
+                yield_ty,
+                return_ty,
+            },
+            gen_ty,
+        )
     }
 
     fn lower_closure(
@@ -6992,8 +7062,14 @@ fn collect_captures_walk(
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
-        | HirExprKind::ForkBlock { body: block, .. } => {
+        | HirExprKind::ForkBlock { body: block, .. }
+        | HirExprKind::GenBlock { body: block, .. } => {
             collect_captures_walk_block(block, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::Yield { value, .. } => {
+            if let Some(value) = value {
+                collect_captures_walk(value, param_ids, seen, captures, self_id);
+            }
         }
         HirExprKind::ScopeDeadline { duration, body } => {
             collect_captures_walk(duration, param_ids, seen, captures, self_id);
@@ -7208,8 +7284,14 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
-        | HirExprKind::ForkBlock { body: block, .. } => {
+        | HirExprKind::ForkBlock { body: block, .. }
+        | HirExprKind::GenBlock { body: block, .. } => {
             collect_general_closure_captures_walk_block(block, outer_bindings, seen, captures);
+        }
+        HirExprKind::Yield { value, .. } => {
+            if let Some(value) = value {
+                collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
+            }
         }
         HirExprKind::ScopeDeadline { duration, body } => {
             collect_general_closure_captures_walk(duration, outer_bindings, seen, captures);
@@ -7739,6 +7821,27 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                 collect_hir_emitted_events_walk(tail, event_names, out);
             }
         }
+        HirExprKind::GenBlock { body, .. } => {
+            for stmt in &body.statements {
+                match &stmt.kind {
+                    HirStmtKind::Expr(e)
+                    | HirStmtKind::Let(_, Some(e))
+                    | HirStmtKind::Return(Some(e)) => {
+                        collect_hir_emitted_events_walk(e, event_names, out);
+                    }
+                    HirStmtKind::Assign { value, .. } => {
+                        collect_hir_emitted_events_walk(value, event_names, out);
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(tail) = &body.tail {
+                collect_hir_emitted_events_walk(tail, event_names, out);
+            }
+        }
+        HirExprKind::Yield {
+            value: Some(value), ..
+        } => collect_hir_emitted_events_walk(value, event_names, out),
         HirExprKind::If {
             condition,
             then_expr,

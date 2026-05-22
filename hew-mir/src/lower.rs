@@ -2628,8 +2628,14 @@ fn collect_unknown_self_fields_in_expr(
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
-        | HirExprKind::ForkBlock { body: block, .. } => {
+        | HirExprKind::ForkBlock { body: block, .. }
+        | HirExprKind::GenBlock { body: block, .. } => {
             collect_unknown_self_fields_in_block(block, state_fields, seen, unknown);
+        }
+        HirExprKind::Yield { value, .. } => {
+            if let Some(value) = value {
+                collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
+            }
         }
         HirExprKind::If {
             condition,
@@ -4643,6 +4649,18 @@ impl Builder {
                     },
                     note: "standalone regex literal expression lowering — not yet wired; \
                            match-arm regex patterns are lowered via HirMatchArmPredicate::Regex"
+                        .to_string(),
+                });
+                None
+            }
+            HirExprKind::GenBlock { .. } | HirExprKind::Yield { .. } => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "generator block MIR lowering".to_string(),
+                        site: expr.site,
+                    },
+                    note: "gen{} and yield HIR nodes are intentionally fail-closed at MIR; \
+                           generator state-machine lowering lands in the generator MIR slice"
                         .to_string(),
                 });
                 None

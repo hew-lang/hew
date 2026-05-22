@@ -568,6 +568,27 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             }
             dump_expr(out, body, indent + 4);
         }
+        HirExprKind::GenBlock {
+            body,
+            yield_ty,
+            return_ty,
+        } => {
+            writeln!(
+                out,
+                "{pad}  gen-block yield_ty={} return_ty={}",
+                yield_ty.user_facing(),
+                return_ty.user_facing()
+            )
+            .expect("write to string");
+            dump_block(out, body, indent + 4);
+        }
+        HirExprKind::Yield { value, yield_ty } => {
+            writeln!(out, "{pad}  yield yield_ty={}", yield_ty.user_facing())
+                .expect("write to string");
+            if let Some(value) = value {
+                dump_expr(out, value, indent + 4);
+            }
+        }
         HirExprKind::TupleIndex { tuple, index } => {
             writeln!(out, "{pad}  tuple-index .{index}").expect("write to string");
             dump_expr(out, tuple, indent + 4);

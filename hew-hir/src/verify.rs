@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, HirNodeId, ResolvedRef, SiteId};
 use crate::node::{HirBlock, HirExpr, HirExprKind, HirItem, HirModule, HirStmtKind};
+use hew_types::ResolvedTy;
 
 #[must_use]
 pub fn verify_hir(module: &HirModule) -> Vec<HirDiagnostic> {
@@ -267,6 +268,77 @@ impl Verifier {
                             },
                             expr.span.clone(),
                             "closure capture list contains the same binding more than once",
+                        ));
+                    }
+                }
+            }
+            HirExprKind::GenBlock {
+                body,
+                yield_ty,
+                return_ty,
+            } => {
+                match &expr.ty {
+                    ResolvedTy::Named { name, args } if name == "Generator" && args.len() == 2 => {
+                        if args[0] != *yield_ty || args[1] != *return_ty {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: "gen block".to_string(),
+                                    reason: format!(
+                                        "GenBlock carries Yield={}, Return={} but expr type is {}",
+                                        yield_ty.user_facing(),
+                                        return_ty.user_facing(),
+                                        expr.ty.user_facing()
+                                    ),
+                                },
+                                expr.span.clone(),
+                                "gen block HIR metadata disagrees with its expression type",
+                            ));
+                        }
+                    }
+                    other => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "gen block".to_string(),
+                                reason: format!(
+                                    "expected Generator<Yield, Return>, got {}",
+                                    other.user_facing()
+                                ),
+                            },
+                            expr.span.clone(),
+                            "gen block HIR expression does not have Generator type",
+                        ));
+                    }
+                }
+                self.block(body);
+            }
+            HirExprKind::Yield { value, yield_ty } => {
+                if expr.ty != ResolvedTy::Unit {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "yield".to_string(),
+                            reason: format!(
+                                "yield expression has non-unit result type {}",
+                                expr.ty.user_facing()
+                            ),
+                        },
+                        expr.span.clone(),
+                        "yield HIR expression result type must be unit",
+                    ));
+                }
+                if let Some(value) = value {
+                    self.expr(value);
+                    if value.ty != *yield_ty {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "yield".to_string(),
+                                reason: format!(
+                                    "yield value type {} disagrees with enclosing Yield {}",
+                                    value.ty.user_facing(),
+                                    yield_ty.user_facing()
+                                ),
+                            },
+                            value.span.clone(),
+                            "yield value type does not match enclosing generator Yield type",
                         ));
                     }
                 }

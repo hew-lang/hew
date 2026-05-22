@@ -810,6 +810,25 @@ pub enum HirExprKind {
         body: Box<HirExpr>,
         captures: Vec<HirClosureCapture>,
     },
+    /// `gen { ... }` generator literal.
+    ///
+    /// The checker owns `Generator<Yield, Return>` inference. HIR carries the
+    /// lowered body plus the extracted yield/return parameters so MIR can later
+    /// build the generator state machine without re-inferring the signature.
+    GenBlock {
+        body: HirBlock,
+        yield_ty: ResolvedTy,
+        return_ty: ResolvedTy,
+    },
+    /// `yield` inside a generator body.
+    ///
+    /// `yield_ty` is the enclosing generator's checker-inferred Yield
+    /// parameter, not the expression's own result type (`yield` evaluates to
+    /// unit in the body).
+    Yield {
+        value: Option<Box<HirExpr>>,
+        yield_ty: ResolvedTy,
+    },
     /// Project one element out of a tuple value: `expr.<index>`.
     ///
     /// Produced exclusively by tuple-let lowering (`let (a, b) = …`) — not a

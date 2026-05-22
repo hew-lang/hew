@@ -2537,6 +2537,7 @@ impl LowerCtx {
         walk_expr_for_machine_allowlist(body, state_names, &mut allowlist);
         let diag_snapshot = self.diagnostics.len();
         self.push_scope();
+        self.bind_machine_transition_implicits(body.1.clone());
         let prev_events = self.current_machine_events.replace(event_names);
         let expr = self.lower_expr(body, IntentKind::Read);
         self.current_machine_events = prev_events;
@@ -6354,6 +6355,22 @@ impl LowerCtx {
                 span: span.clone(),
             })
         }
+    }
+
+    fn bind_machine_transition_implicits(&mut self, span: std::ops::Range<usize>) {
+        let Some(machine_name) = self.current_machine_name.clone() else {
+            return;
+        };
+        let machine_ty = ResolvedTy::Named {
+            name: machine_name.clone(),
+            args: Vec::new(),
+        };
+        let event_ty = ResolvedTy::Named {
+            name: format!("{machine_name}Event"),
+            args: Vec::new(),
+        };
+        let _state = self.bind("state".to_string(), machine_ty, false, span.clone());
+        let _event = self.bind("event".to_string(), event_ty, false, span);
     }
 
     fn missing_stdlib_module_import(&self, name: &str) -> Option<&'static str> {

@@ -70,6 +70,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
+use crate::cluster::PartitionRegistry;
 use crate::util::{CondvarExt, MutexExt};
 
 // ── Error discriminants ────────────────────────────────────────────────────
@@ -136,9 +137,9 @@ pub enum RecvError {
     /// in tests). Unlike `Closed`, the partition may heal — the
     /// application layer decides whether to retry or escalate.
     ///
-    /// In v0.5 (single-node), this variant is only reachable via
-    /// [`Queue::force_partition_for_test`] (cfg(test)) or future
-    /// multi-node peer machinery.
+    /// In v0.5, reachable via [`Queue::force_partition`] directly or
+    /// through the `PartitionRegistry` cluster-membership seam when a
+    /// peer is declared DEAD.
     ///
     /// WHY unit variant: `#[repr(i32)]` + stable ABI discriminants
     /// mean a payload (peer-id) would require a separate out-parameter
@@ -182,10 +183,13 @@ pub struct Queue {
     /// authoritative state is recomputed under the mutex.
     closed_for_send: AtomicBool,
     closed_for_recv: AtomicBool,
-    /// Test-injection flag: when set, `recv`/`try_recv` return
+    /// Partition flag: when set, `recv`/`try_recv` return
     /// `RecvError::PartitionDetected` instead of blocking or delivering.
-    /// Only compiled in `cfg(test)`. Set via `force_partition_for_test`.
-    #[cfg(test)]
+    ///
+    /// Set by the partition-injection seam (`PartitionRegistry::on_member_dead`)
+    /// when the cluster declares a peer node DEAD, or directly in tests via
+    /// `force_partition`. Once set, it is not cleared — the caller decides
+    /// whether to retry or escalate.
     partitioned: AtomicBool,
 }
 
@@ -210,21 +214,22 @@ impl Queue {
             receivers: AtomicUsize::new(0),
             closed_for_send: AtomicBool::new(false),
             closed_for_recv: AtomicBool::new(false),
-            #[cfg(test)]
             partitioned: AtomicBool::new(false),
         })
     }
 
-    /// Inject a simulated partition: the next `recv` or `try_recv` will
-    /// return `RecvError::PartitionDetected` instead of blocking.
+    /// Inject a partition signal: the next `recv` or `try_recv` will return
+    /// `RecvError::PartitionDetected` instead of blocking or delivering.
     ///
-    /// Wakes any blocked receiver so it observes the partition immediately.
+    /// Wakes any blocked receiver immediately. Called by the
+    /// `PartitionRegistry` fan-out when a cluster peer is declared DEAD,
+    /// and directly by tests.
     ///
-    /// Only available in `cfg(test)`. v0.5 single-node runtimes trigger
-    /// `PartitionDetected` exclusively via this path; multi-node peer
-    /// machinery (M3+) will set the flag from a real heartbeat timeout.
-    #[cfg(test)]
-    pub(crate) fn force_partition_for_test(&self) {
+    /// Fail-closed: if no receiver is blocked, the flag persists so the
+    /// next call to `recv`/`try_recv` observes the partition without delay.
+    /// The flag is never cleared once set — the caller owns the decision
+    /// to retry or escalate (per `RecvError::PartitionDetected` semantics).
+    pub(crate) fn force_partition(&self) {
         self.partitioned.store(true, Ordering::Release);
         let _g = self.state.lock_or_recover();
         self.not_empty.notify_all();
@@ -317,15 +322,14 @@ impl Queue {
     /// Blocking recv. Returns the next buffered message, or
     /// `RecvError::Closed` once the queue is drained AND `senders`
     /// has reached zero, or `RecvError::PartitionDetected` if a
-    /// partition was injected via [`Self::force_partition_for_test`]
-    /// (cfg(test)) or future heartbeat machinery.
+    /// partition was injected via [`Self::force_partition`]
+    /// or the `PartitionRegistry` cluster-membership seam.
     fn recv(&self) -> Result<Vec<u8>, RecvError> {
         let mut state = self.state.lock_or_recover();
         loop {
             // Partition check takes priority over buffered messages:
             // once a partition is detected, the connection is considered
             // degraded and the caller decides whether to retry.
-            #[cfg(test)]
             if self.partitioned.load(Ordering::Acquire) {
                 return Err(RecvError::PartitionDetected);
             }
@@ -348,7 +352,6 @@ impl Queue {
     fn try_recv(&self) -> Result<Vec<u8>, RecvError> {
         // Partition check before acquiring the mutex: avoids holding the
         // lock for a fast-path rejection.
-        #[cfg(test)]
         if self.partitioned.load(Ordering::Acquire) {
             return Err(RecvError::PartitionDetected);
         }
@@ -503,14 +506,38 @@ impl HewDuplex {
         (Arc::clone(&self.s_queue), Arc::clone(&self.r_queue))
     }
 
-    /// Inject a simulated partition on the R-direction (recv side).
+    /// Inject a partition signal on the R-direction (recv side).
     /// The next `recv` or `try_recv` on this handle will return
     /// `RecvError::PartitionDetected`. Wakes any blocked receiver.
     ///
-    /// Only available in `cfg(test)`. See [`Queue::force_partition_for_test`].
-    #[cfg(test)]
-    pub(crate) fn force_partition_for_test(&self) {
-        self.r_queue.force_partition_for_test();
+    /// See [`Queue::force_partition`].
+    // WHY: force_partition is called in duplex unit tests and through the
+    // register_recv_with_partition_registry seam. Clippy sees it as dead in
+    // --lib mode (no tests); #[allow] suppresses without erroring in
+    // --all-targets mode where tests make it live.
+    #[allow(
+        dead_code,
+        reason = "called in unit tests and via register_recv_with_partition_registry seam; \
+                  not invoked from crate lib code in non-test compilation"
+    )]
+    pub(crate) fn force_partition(&self) {
+        self.r_queue.force_partition();
+    }
+
+    /// Register this handle's R-direction queue with a `PartitionRegistry`.
+    ///
+    /// When the cluster declares `node_id` DEAD, the registry will call
+    /// `force_partition` on this queue, waking any blocked `recv` with
+    /// `RecvError::PartitionDetected`.
+    ///
+    /// Only a `Weak` reference is stored — the registry does not extend
+    /// the queue's lifetime. Dead refs are pruned automatically.
+    pub fn register_recv_with_partition_registry(
+        &self,
+        registry: &PartitionRegistry,
+        node_id: u16,
+    ) {
+        registry.register_remote_queue(node_id, Arc::downgrade(&self.r_queue));
     }
 
     /// Refcount-bump clone. Both directions get a new capability,
@@ -588,13 +615,30 @@ impl HewRecvHalf {
         }
     }
 
-    /// Inject a simulated partition: the next `recv` or `try_recv` will
+    /// Inject a partition signal: the next `recv` or `try_recv` will
     /// return `RecvError::PartitionDetected`. Wakes any blocked receiver.
     ///
-    /// Only available in `cfg(test)`. See [`Queue::force_partition_for_test`].
-    #[cfg(test)]
-    pub(crate) fn force_partition_for_test(&self) {
-        self.r_queue.force_partition_for_test();
+    /// See [`Queue::force_partition`].
+    // WHY: see the matching comment on HewDuplex::force_partition above.
+    #[allow(
+        dead_code,
+        reason = "called in unit tests and via register_recv_with_partition_registry seam; \
+                  not invoked from crate lib code in non-test compilation"
+    )]
+    pub(crate) fn force_partition(&self) {
+        self.r_queue.force_partition();
+    }
+
+    /// Register this recv half's queue with a `PartitionRegistry`.
+    ///
+    /// When the cluster declares `node_id` DEAD, the registry will call
+    /// `force_partition` on this queue. Only a `Weak` ref is stored.
+    pub fn register_recv_with_partition_registry(
+        &self,
+        registry: &PartitionRegistry,
+        node_id: u16,
+    ) {
+        registry.register_remote_queue(node_id, Arc::downgrade(&self.r_queue));
     }
 }
 
@@ -2396,13 +2440,13 @@ mod tests {
         assert_eq!(RecvError::PartitionDetected as i32, 3);
     }
 
-    /// `force_partition_for_test` on `HewDuplex` causes the next `recv`
+    /// `force_partition` on `HewDuplex` causes the next `recv`
     /// to return `RecvError::PartitionDetected` without blocking.
     #[test]
     fn recv_partition_detected_via_duplex_injection() {
         let (a, b) = HewDuplex::new_pair(4, 4);
         // Inject partition on b's recv side before any send.
-        b.force_partition_for_test();
+        b.force_partition();
         assert!(
             matches!(b.recv(), Err(RecvError::PartitionDetected)),
             "expected PartitionDetected after injection on Duplex"
@@ -2419,7 +2463,7 @@ mod tests {
         );
     }
 
-    /// `force_partition_for_test` on `HewRecvHalf` causes the next `recv`
+    /// `force_partition` on `HewRecvHalf` causes the next `recv`
     /// to return `RecvError::PartitionDetected` and wakes a blocked receiver.
     #[test]
     fn recv_partition_detected_via_recv_half_injection() {
@@ -2432,7 +2476,7 @@ mod tests {
             // the pointer was cast from a live reference.
             let half = unsafe { &*(b_recv_addr as *const HewRecvHalf) };
             std::thread::sleep(std::time::Duration::from_millis(20));
-            half.force_partition_for_test();
+            half.force_partition();
         });
         // Block on recv — injector will wake us with PartitionDetected.
         let result = b_recv.recv();

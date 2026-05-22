@@ -45,12 +45,13 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use crate::duplex::Queue;
 use crate::phi_accrual::PhiAccrualDetector;
 use crate::util::MutexExt;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 // ── Member states ──────────────────────────────────────────────────────
 
@@ -365,6 +366,15 @@ pub struct HewCluster {
     /// in `compute_tick_transitions`, but the detector itself is owned
     /// here, not by the protocol.
     detectors: Mutex<HashMap<u16, PhiAccrualDetector>>,
+    /// Partition registry for the partition-injection seam.
+    ///
+    /// When a peer transitions to `MEMBER_DEAD`, the cluster calls
+    /// `partition_registry.on_member_dead(node_id)` to fan out
+    /// `RecvError::PartitionDetected` to all registered queues.
+    ///
+    /// `None` (the default) means no queues are registered and the
+    /// fan-out is a no-op — backward-compatible with all existing callers.
+    partition_registry: Option<Arc<PartitionRegistry>>,
 }
 
 /// Maximum number of gossip events to retain.
@@ -467,6 +477,109 @@ pub trait ClusterProtocol: Send + Sync + std::fmt::Debug {
     ///
     /// Returns `None` when the live set is empty.
     fn next_ping_target(&mut self, alive_members: &[u16]) -> Option<u16>;
+
+    /// Called when a peer node transitions to DEAD.
+    ///
+    /// Implementations use this to drive the partition-injection seam:
+    /// any local resources (e.g. duplexes registered in a `PartitionRegistry`)
+    /// bound to `node_id` should be signalled with
+    /// [`RecvError::PartitionDetected`] so blocked receivers wake with a
+    /// typed failure.
+    ///
+    /// Default: no-op. Implementors that need partition fan-out override this
+    /// method or register a `PartitionRegistry` on `HewCluster` directly.
+    ///
+    /// # Contract
+    ///
+    /// - Called exactly once per DEAD transition per node.
+    /// - Called outside any cluster mutex.
+    /// - Must not re-enter the cluster.
+    fn on_member_dead(&self, _node_id: u16) {}
+}
+
+// ── PartitionRegistry ──────────────────────────────────────────────────
+
+/// Maps remote `node_id`s to queues that receive on behalf of that node.
+///
+/// When the cluster declares a node DEAD, `on_member_dead` walks the
+/// registry for that node, upgrades each `Weak<Queue>` (dropping dead ones),
+/// and calls `Queue::force_partition()` on the live ones. Blocked receivers
+/// wake with `RecvError::PartitionDetected`.
+///
+/// # Fail-closed contract
+///
+/// - Dead `Weak` refs are pruned on every `register_remote_queue` and
+///   `on_member_dead` pass — no unbounded memory growth.
+/// - `force_partition` on a live queue MUST resolve any pending `recv`
+///   to `Err(RecvError::PartitionDetected)` (enforced by `Queue`).
+/// - A `force_partition` on an already-dropped queue is silently discarded
+///   (the `Weak` upgrade fails; that is the correct no-op path).
+/// - If the registry has no entry for a dead node (no queues were bound),
+///   `on_member_dead` is a no-op — not an error.
+///
+/// # CP-3 forward flag
+///
+/// C3 (SWIM driver, Phase 5) calls `on_member_dead` through
+/// `ClusterProtocol::on_member_dead`; A5 (Phase 3) plugs in the datagram
+/// transport that drives SWIM events. C2 owns only the seam shape.
+#[derive(Debug, Default)]
+pub struct PartitionRegistry {
+    /// Node-ID → weak refs to all queues receiving from that node.
+    queues: Mutex<HashMap<u16, Vec<Weak<Queue>>>>,
+}
+
+impl PartitionRegistry {
+    /// Create a new, empty registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a queue as receiving data from `node_id`.
+    ///
+    /// When `node_id` is declared DEAD, `force_partition` will be called
+    /// on this queue. The registry holds only a `Weak` ref — it does not
+    /// extend the queue's lifetime.
+    ///
+    /// Dead weak refs for this `node_id` are pruned on entry.
+    pub fn register_remote_queue(&self, node_id: u16, queue: Weak<Queue>) {
+        let mut map = self.queues.lock_or_recover();
+        let slot = map.entry(node_id).or_default();
+        // Prune dead refs before appending; keeps the slot compact.
+        slot.retain(|w| w.strong_count() > 0);
+        slot.push(queue);
+    }
+
+    /// Fan out a partition signal to every live queue registered for `node_id`.
+    ///
+    /// Dead `Weak` refs are pruned from the slot as a side effect.
+    /// If no queues are registered for `node_id`, this is a no-op (not an error).
+    ///
+    /// This is the core partition-injection seam: call it from
+    /// `ClusterProtocol::on_member_dead` or from the `MEMBER_DEAD` callback
+    /// in [`HewCluster`].
+    pub fn on_member_dead(&self, node_id: u16) {
+        let upgraded = {
+            let mut map = self.queues.lock_or_recover();
+            let Some(slot) = map.get_mut(&node_id) else {
+                return;
+            };
+            // Upgrade live refs and prune dead ones atomically under the lock.
+            let live: Vec<Arc<Queue>> = slot.iter().filter_map(Weak::upgrade).collect();
+            slot.retain(|w| w.strong_count() > 0);
+            live
+        };
+        // Call force_partition outside the lock so the queue's own mutex
+        // is not nested under the registry mutex.
+        if upgraded.is_empty() {
+            eprintln!(
+                "[partition] MEMBER_DEAD node_id={node_id}: no live queues registered (no-op)"
+            );
+        }
+        for queue in &upgraded {
+            queue.force_partition();
+        }
+    }
 }
 
 // ── SimpleSwim: the v0.5 ClusterProtocol implementation ───────────────
@@ -633,7 +746,18 @@ impl HewCluster {
             last_tick_ms: 0,
             protocol: Box::new(SimpleSwim::new()),
             detectors: Mutex::new(HashMap::new()),
+            partition_registry: None,
         }
+    }
+
+    /// Install a `PartitionRegistry` on this cluster.
+    ///
+    /// Once installed, every `MEMBER_DEAD` transition fans out
+    /// `RecvError::PartitionDetected` to all queues registered in the
+    /// registry for the dead node. Installing a second registry replaces
+    /// the first.
+    pub fn set_partition_registry(&mut self, registry: Arc<PartitionRegistry>) {
+        self.partition_registry = Some(registry);
     }
 
     /// Add or update a member in the membership list.
@@ -811,6 +935,14 @@ impl HewCluster {
             let _ = self.with_membership_callback_dispatch(|callback, user_data| {
                 callback(transition.node_id, event, user_data);
             });
+        }
+        // Partition-injection seam: fan out PartitionDetected to all queues
+        // registered for this node when it transitions to DEAD.
+        if transition.state == MEMBER_DEAD {
+            if let Some(registry) = &self.partition_registry {
+                registry.on_member_dead(transition.node_id);
+            }
+            self.protocol.on_member_dead(transition.node_id);
         }
     }
 
@@ -1072,6 +1204,12 @@ impl HewCluster {
             // Prune the detector once the peer has left the live set.
             if change.new_state == MEMBER_DEAD {
                 self.detectors.lock_or_recover().remove(&change.node_id);
+                // Partition-injection seam: fan out PartitionDetected to all
+                // queues registered for the dead node.
+                if let Some(registry) = &self.partition_registry {
+                    registry.on_member_dead(change.node_id);
+                }
+                self.protocol.on_member_dead(change.node_id);
             }
         }
     }
@@ -1622,6 +1760,28 @@ pub(crate) unsafe fn hew_cluster_test_fire_membership_callback(
     let _ = cluster.with_membership_callback_dispatch(|callback, user_data| {
         callback(node_id, event, user_data);
     });
+}
+
+/// Install a [`PartitionRegistry`] on the cluster.
+///
+/// After installation, every `MEMBER_DEAD` transition fans out
+/// `RecvError::PartitionDetected` to all queues registered in `registry`
+/// for the dead node. Passing the same registry to multiple clusters is
+/// allowed; each cluster holds an `Arc` clone.
+///
+/// # Safety
+///
+/// `cluster` must be a valid pointer returned by [`hew_cluster_new`].
+pub unsafe fn hew_cluster_set_partition_registry(
+    cluster: *mut HewCluster,
+    registry: Arc<PartitionRegistry>,
+) {
+    if cluster.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &mut *cluster };
+    cluster.set_partition_registry(registry);
 }
 
 /// Register a callback for registry gossip events.

@@ -257,6 +257,11 @@ pub mod bytes;
 mod channel_common;
 pub mod duration;
 pub mod machine_emit;
+pub use machine_emit::{
+    hew_machine_emit_push, hew_machine_emit_step_enter, hew_machine_emit_step_exit,
+    DrainError as MachineEmitDrainError, EmitEvent, EmitQueue, EmitQueueAppend,
+    MachineEmitReentrancyExceeded,
+};
 pub mod parse_error_slot;
 
 pub mod internal;

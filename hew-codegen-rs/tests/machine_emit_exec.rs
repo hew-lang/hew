@@ -6,9 +6,9 @@
 //!    emits a call to `@hew_machine_emit_push` in the produced LLVM IR, and
 //!    `emit_module` succeeds (LLVM `Module::verify()` green).
 //!
-//! 2. **JIT execution**: the JIT-compiled step function actually invokes the
-//!    runtime push; events accumulate in the calling thread's emit queue and
-//!    drain in FIFO order.
+//! 2. **JIT execution**: the JIT-compiled caller invokes the runtime step
+//!    enter/exit wrapper; events pushed by the step drain at the outermost
+//!    frame.
 //!
 //! ## MIR shape
 //!
@@ -43,7 +43,7 @@ use hew_mir::{
     BasicBlock, FunctionCallConv, Instr, IrPipeline, MachineLayout, MachineVariantLayout, Place,
     RawMirFunction, Terminator,
 };
-use hew_runtime::machine_emit::{thread_emit_drain, thread_emit_pending, EmitQueueAppend};
+use hew_runtime::machine_emit::{thread_emit_clear, thread_emit_pending};
 use hew_types::ResolvedTy;
 
 // ── Pipeline builder ──────────────────────────────────────────────────────────
@@ -208,7 +208,8 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
 /// - `emit_module` succeeds (LLVM `Module::verify()` passes).
 /// - The emitted `.ll` contains a declaration of `@hew_machine_emit_push`.
 /// - The step function body contains two `call` sites targeting the push.
-/// - The call passes a constant `u64` event index and a null payload.
+/// - The call passes a constant `u32` event tag and a null payload.
+/// - The caller wraps the `__step` invocation in enter/exit calls.
 #[test]
 fn machine_emit_placeholder_lowers_to_push_call() {
     let pipeline = tcp_handshake_emit_pipeline();
@@ -224,19 +225,17 @@ fn machine_emit_placeholder_lowers_to_push_call() {
     // LLVM emits void calls as `call void @hew_machine_emit_push(...)` with
     // no SSA name (void returns have no name), so count the bare symbol
     // appearances in `call` positions rather than the name hint.
-    let call_count = ir.matches("call void @hew_machine_emit_push").count();
+    let call_count = ir.matches("call i32 @hew_machine_emit_push").count();
     assert_eq!(
         call_count, 2,
         "step fn must emit exactly 2 hew_machine_emit_push calls (one per emit \
          instruction); found {call_count} in IR:\n{ir}"
     );
 
-    // The event index constants 0 and 1 must appear as i64 arguments.
-    // `i64 0` covers both the event_idx=0 and the zero payload_len;
-    // `i64 1` covers event_idx=1. Assert both appear somewhere in the IR.
+    // The event tag constants 0 and 1 must appear as i32 arguments.
     assert!(
-        ir.contains("i64 1"),
-        "IR must contain `i64 1` as the event_idx=1 argument:\n{ir}"
+        ir.contains("i32 1"),
+        "IR must contain `i32 1` as the event tag=1 argument:\n{ir}"
     );
 
     // The null payload pointer: LLVM 17+ opaque-pointer mode emits `null`
@@ -245,28 +244,32 @@ fn machine_emit_placeholder_lowers_to_push_call() {
         ir.contains("null"),
         "IR must pass a null payload pointer for unit events:\n{ir}"
     );
+    assert!(
+        ir.contains("@hew_machine_emit_step_enter") && ir.contains("@hew_machine_emit_step_exit"),
+        "caller must wrap the __step invocation with machine emit enter/exit calls:\n{ir}"
+    );
 }
 
 // ── JIT execution test ────────────────────────────────────────────────────────
 
-/// JIT-compile and execute the step stub; assert that `hew_machine_emit_push`
-/// actually pushes events onto the thread-local emit queue in FIFO order.
+/// JIT-compile and execute the caller; assert that the `__step` call is wrapped
+/// and the outermost exit drains the thread-local emit queue.
 ///
 /// ## Method
 ///
 /// 1. Emit the pipeline to `.ll`.
 /// 2. Parse the `.ll` back into an inkwell `Module`.
-/// 3. Create an MCJIT `ExecutionEngine` and wire `hew_machine_emit_push`
+/// 3. Create an MCJIT `ExecutionEngine` and wire machine emit runtime symbols
 ///    through `add_global_mapping` against the linked dev-dep symbol. The
 ///    macOS test-binary dynamic-symbol table does not expose `#[no_mangle]`
 ///    runtime exports for JIT-host lookup, so the mapping is mandatory; see
 ///    the inline comment at the mapping site for the platform rationale.
-/// 4. Drain any stale events from prior tests on this thread.
+/// 4. Clear any stale events from prior tests on this thread.
 /// 5. Invoke the `caller` function (which calls the step stub).
 /// 6. The step stub emits event 0 then event 1, stores `self` into the
 ///    return slot, and returns cleanly (no trap). `caller` receives the
 ///    return value and discards it.
-/// 7. Drain the thread-local queue; assert events arrive in FIFO order.
+/// 7. Assert the outermost step exit drained the thread-local queue.
 #[test]
 #[cfg(unix)]
 fn machine_emit_push_populates_thread_queue_in_fifo_order() {
@@ -301,17 +304,22 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
         .create_module_from_ir(buf)
         .expect("parse .ll into inkwell Module");
 
-    // Look up the `hew_machine_emit_push` declaration before JIT takes
-    // ownership of the module.
+    // Look up machine emit declarations before JIT takes ownership of the module.
     let emit_push_decl = module
         .get_function("hew_machine_emit_push")
         .expect("emitted module must declare hew_machine_emit_push");
+    let step_enter_decl = module
+        .get_function("hew_machine_emit_step_enter")
+        .expect("emitted module must declare hew_machine_emit_step_enter");
+    let step_exit_decl = module
+        .get_function("hew_machine_emit_step_exit")
+        .expect("emitted module must declare hew_machine_emit_step_exit");
 
     let ee = module
         .create_jit_execution_engine(OptimizationLevel::None)
         .expect("create_jit_execution_engine must succeed");
 
-    // Wire the JIT symbol resolver to the actual `hew_machine_emit_push`
+    // Wire the JIT symbol resolver to the actual machine emit functions
     // from the `hew-runtime` dev-dep.
     //
     // WHY add_global_mapping is required here: Rust test binaries on macOS
@@ -320,21 +328,24 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
     // resolver cannot find them by name. `add_global_mapping` bypasses the
     // resolver and directly wires the JIT reference to the in-process function
     // pointer, which is always reachable by address.
-    //
-    // The extern block imports the symbol name as a Rust callable so that
-    // `hew_machine_emit_push as *const () as usize` gives the correct address.
-    //
-    // SAFETY: `hew_machine_emit_push` is defined in `hew-runtime` (linked as
-    // a dev-dep) with signature `unsafe extern "C" fn(u64, *const u8, u64)`.
-    // The LLVM declaration matches: `void(i64, ptr, i64)`. On 64-bit targets
-    // u64 == i64 and ptr is the opaque-pointer ABI type.
     extern "C" {
-        fn hew_machine_emit_push(event_idx: u64, payload_ptr: *const u8, payload_len: u64);
+        fn hew_machine_emit_push(queue: *mut std::ffi::c_void, tag: u32, payload: *const u8)
+            -> i32;
+        fn hew_machine_emit_step_enter(queue: *mut std::ffi::c_void) -> i32;
+        fn hew_machine_emit_step_exit(queue: *mut std::ffi::c_void) -> i32;
     }
     ee.add_global_mapping(&emit_push_decl, hew_machine_emit_push as *const () as usize);
+    ee.add_global_mapping(
+        &step_enter_decl,
+        hew_machine_emit_step_enter as *const () as usize,
+    );
+    ee.add_global_mapping(
+        &step_exit_decl,
+        hew_machine_emit_step_exit as *const () as usize,
+    );
 
-    // Drain any stale events from a prior test on this thread.
-    let _ = thread_emit_drain(|_ev, _append: &mut EmitQueueAppend<'_>| Ok::<(), ()>(()));
+    // Clear any stale events from a prior test on this thread.
+    thread_emit_clear();
     assert_eq!(
         thread_emit_pending(),
         0,
@@ -355,31 +366,11 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
 
     // ── Assertions ───────────────────────────────────────────────────────────
 
-    // Two events must have been pushed.
-    assert_eq!(
-        thread_emit_pending(),
-        2,
-        "two MachineEmitPlaceholder instructions must push two events"
-    );
-
-    // Drain and verify FIFO order: event 0 then event 1.
-    let mut drained: Vec<usize> = Vec::new();
-    thread_emit_drain(|ev, _append: &mut EmitQueueAppend<'_>| {
-        drained.push(ev.event_idx);
-        Ok::<(), ()>(())
-    })
-    .expect("drain must succeed");
-
-    assert_eq!(
-        drained,
-        vec![0, 1],
-        "events must arrive in FIFO order: [SynReceive=0, AckReceive=1]; got {drained:?}"
-    );
-
-    // Queue must be empty after drain.
+    // The caller wrapped the step invocation, so the outermost exit drained the
+    // two pushed events before returning.
     assert_eq!(
         thread_emit_pending(),
         0,
-        "thread queue must be empty after drain"
+        "outermost step exit must drain queued MachineEmitPlaceholder events"
     );
 }

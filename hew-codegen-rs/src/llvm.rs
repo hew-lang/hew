@@ -4532,8 +4532,8 @@ fn lower_instruction(
         Instr::MachineEmitPlaceholder { event_idx, payload } => {
             // Lower a machine emit expression to a call to `hew_machine_emit_push`.
             //
-            // ABI: `hew_machine_emit_push(event_idx: u64, payload_ptr: *const u8,
-            //                             payload_len: u64) -> void`
+            // ABI: `hew_machine_emit_push(queue: *mut EmitQueue, tag: u32,
+            //                             payload_ptr: *const u8) -> i32`
             //
             // The per-thread emit queue (a `thread_local!` `EmitQueue` in
             // `hew-runtime/src/machine_emit.rs`) receives the push. After the
@@ -4559,34 +4559,23 @@ fn lower_instruction(
                     payload.len()
                 )));
             }
-            let i64_ty = fn_ctx.ctx.i64_type();
+            let i32_ty = fn_ctx.ctx.i32_type();
             let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-            // Intern (or reuse) the extern declaration for `hew_machine_emit_push`.
-            // ABI: (u64, *const u8, u64) -> void
-            let emit_push_fn = match fn_ctx.llvm_mod.get_function("hew_machine_emit_push") {
-                Some(fv) => fv,
-                None => {
-                    let fn_ty = fn_ctx
-                        .ctx
-                        .void_type()
-                        .fn_type(&[i64_ty.into(), ptr_ty.into(), i64_ty.into()], false);
-                    fn_ctx.llvm_mod.add_function(
-                        "hew_machine_emit_push",
-                        fn_ty,
-                        Some(Linkage::External),
-                    )
-                }
-            };
-            // event_idx as u64 constant.
-            let idx_val = i64_ty.const_int(*event_idx as u64, false);
-            // null payload pointer and zero length for unit events.
+            let emit_push_fn = get_or_declare_machine_emit_push(fn_ctx);
+            let queue_ptr = ptr_ty.const_null();
+            let tag = u32::try_from(*event_idx).map_err(|_| {
+                CodegenError::FailClosed(format!(
+                    "Instr::MachineEmitPlaceholder event_idx {event_idx} exceeds u32::MAX"
+                ))
+            })?;
+            let tag_val = i32_ty.const_int(u64::from(tag), false);
+            // Null payload pointer for unit events.
             let null_ptr = ptr_ty.const_null();
-            let zero_len = i64_ty.const_int(0, false);
             fn_ctx
                 .builder
                 .build_call(
                     emit_push_fn,
-                    &[idx_val.into(), null_ptr.into(), zero_len.into()],
+                    &[queue_ptr.into(), tag_val.into(), null_ptr.into()],
                     "machine_emit_push_call",
                 )
                 .map_err(|e| CodegenError::Llvm(format!("hew_machine_emit_push call: {e:?}")))?;
@@ -6987,6 +6976,75 @@ fn get_or_declare_free<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> FunctionValue<'ctx> {
     )
 }
 
+fn get_or_declare_machine_emit_push<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> FunctionValue<'ctx> {
+    if let Some(fv) = fn_ctx.llvm_mod.get_function("hew_machine_emit_push") {
+        return fv;
+    }
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    fn_ctx.llvm_mod.add_function(
+        "hew_machine_emit_push",
+        fn_ctx.ctx.i32_type().fn_type(
+            &[ptr_ty.into(), fn_ctx.ctx.i32_type().into(), ptr_ty.into()],
+            false,
+        ),
+        Some(Linkage::External),
+    )
+}
+
+fn get_or_declare_machine_emit_step_enter<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> FunctionValue<'ctx> {
+    if let Some(fv) = fn_ctx.llvm_mod.get_function("hew_machine_emit_step_enter") {
+        return fv;
+    }
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    fn_ctx.llvm_mod.add_function(
+        "hew_machine_emit_step_enter",
+        fn_ctx.ctx.i32_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::External),
+    )
+}
+
+fn get_or_declare_machine_emit_step_exit<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> FunctionValue<'ctx> {
+    if let Some(fv) = fn_ctx.llvm_mod.get_function("hew_machine_emit_step_exit") {
+        return fv;
+    }
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    fn_ctx.llvm_mod.add_function(
+        "hew_machine_emit_step_exit",
+        fn_ctx.ctx.i32_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::External),
+    )
+}
+
+fn emit_machine_step_enter_call<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    queue: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let step_enter_fn = get_or_declare_machine_emit_step_enter(fn_ctx);
+    fn_ctx
+        .builder
+        .build_call(step_enter_fn, &[queue.into()], "machine_emit_step_enter")
+        .map_err(|e| CodegenError::Llvm(format!("hew_machine_emit_step_enter call: {e:?}")))?;
+    Ok(())
+}
+
+fn emit_machine_step_exit_call<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    queue: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let step_exit_fn = get_or_declare_machine_emit_step_exit(fn_ctx);
+    fn_ctx
+        .builder
+        .build_call(step_exit_fn, &[queue.into()], "machine_emit_step_exit")
+        .map_err(|e| CodegenError::Llvm(format!("hew_machine_emit_step_exit call: {e:?}")))?;
+    Ok(())
+}
+
+fn is_machine_step_symbol(callee: &str) -> bool {
+    callee
+        .strip_suffix("__step")
+        .is_some_and(|prefix| !prefix.is_empty())
+}
+
 fn emit_trap_with_code(fn_ctx: &FnCtx<'_, '_>, code: u64, label: &str) -> CodegenResult<()> {
     let trap_with_code_fn = match fn_ctx.llvm_mod.get_function("hew_trap_with_code") {
         Some(fv) => fv,
@@ -7116,6 +7174,13 @@ fn lower_terminator<'ctx>(
                     return_ty,
                     returns_unit,
                 } => {
+                    let machine_step_queue = if is_machine_step_symbol(callee) {
+                        let queue = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
+                        emit_machine_step_enter_call(fn_ctx, queue)?;
+                        Some(queue)
+                    } else {
+                        None
+                    };
                     let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
                         Vec::with_capacity(args.len());
                     for arg in args {
@@ -7157,6 +7222,9 @@ fn lower_terminator<'ctx>(
                         return Err(CodegenError::FailClosed(format!(
                             "Call to value-returning fn `{callee}` must carry a Terminator::Call dest"
                         )));
+                    }
+                    if let Some(queue) = machine_step_queue {
+                        emit_machine_step_exit_call(fn_ctx, queue)?;
                     }
                 }
             }

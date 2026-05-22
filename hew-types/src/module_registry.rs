@@ -33,8 +33,13 @@ pub struct ModuleRegistry {
 /// The search order is:
 /// 1. `HEWPATH` environment variable (colon-separated; each entry is the parent of `std/`)
 /// 2. `HEW_STD` environment variable (path to the `std/` directory itself)
-/// 3. FHS installed location: `<prefix>/share/hew` relative to the compiler binary
-/// 4. Dev fallback: repo root (when `std/` exists two levels above the binary)
+/// 3. cwd-based: the current working directory, when it contains a `std/` subdirectory
+/// 4. FHS installed location: `<prefix>/share/hew` relative to the compiler binary
+/// 5. Dev fallback: repo root (when `std/` exists two levels above the binary)
+///
+/// Placing cwd before the exe-dir-based paths ensures that a worktree's own `std/`
+/// takes precedence over the main checkout's `std/` when the binary is shared via a
+/// symlinked `target/` directory. This matches the resolution order in `hew-compile`.
 #[must_use]
 pub fn build_module_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -60,6 +65,15 @@ pub fn build_module_search_paths() -> Vec<PathBuf> {
                     paths.push(parent);
                 }
             }
+        }
+    }
+
+    // cwd-based: prefer the current working directory when it contains std/.
+    // This ensures a worktree's own std/ wins over the binary's exe_dir/../..
+    // (which points at the main checkout when target/ is symlinked).
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd.join("std").exists() && !paths.contains(&cwd) {
+            paths.push(cwd);
         }
     }
 

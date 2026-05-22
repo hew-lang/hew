@@ -227,7 +227,7 @@ impl Checker {
         // Expected: outer = "LocalPid", inner = expected_sibling_type.
         // RemotePid is intentionally rejected here: supervisors are local, and a
         // wired_to child param typed `RemotePid<Sibling>` is semantically invalid.
-        let type_ok = outer_type == "LocalPid"
+        let type_ok = crate::lookup_builtin_type(outer_type) == Some(crate::BuiltinType::LocalPid)
             && first_inner_type
                 .as_deref()
                 .is_some_and(|t| t == expected_sibling_type);
@@ -401,6 +401,7 @@ impl Checker {
             if i == 0 && self.is_receiver_param(p) {
                 if let Some((self_name, self_args)) = &self.current_self_type {
                     ty = Ty::Named {
+                        builtin: None,
                         name: self_name.clone(),
                         args: self_args.clone(),
                     };
@@ -539,6 +540,7 @@ impl Checker {
 
     pub(super) fn check_actor(&mut self, ad: &ActorDecl) {
         let actor_ty = Ty::Named {
+            builtin: None,
             name: ad.name.clone(),
             args: vec![],
         };
@@ -953,7 +955,11 @@ impl Checker {
                 let pty = self.resolve_type_expr(&p.ty);
                 let is_crash_info = matches!(
                     &pty,
-                    Ty::Named { name, args } if name == "CrashInfo" && args.is_empty()
+                    Ty::Named {
+                        builtin: Some(crate::BuiltinType::CrashInfo),
+                        args,
+                        ..
+                    } if args.is_empty()
                 );
                 if !is_crash_info {
                     self.errors.push(TypeError::new(
@@ -994,8 +1000,14 @@ impl Checker {
     ) -> Ty {
         if let Some(rt) = &hook.return_type {
             let ty = self.resolve_type_expr(rt);
-            if !matches!(&ty, Ty::Named { name, args } if name == "CrashAction" && args.is_empty())
-            {
+            if !matches!(
+                &ty,
+                Ty::Named {
+                    builtin: Some(crate::BuiltinType::CrashAction),
+                    args,
+                    ..
+                } if args.is_empty()
+            ) {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::InvalidOperation,
                     rt.1.clone(),
@@ -1018,6 +1030,7 @@ impl Checker {
                 ),
             ));
             Ty::Named {
+                builtin: None,
                 name: "CrashAction".to_string(),
                 args: vec![],
             }
@@ -1192,6 +1205,7 @@ impl Checker {
                 generic_bindings.insert(
                     tp.name.clone(),
                     Ty::Named {
+                        builtin: None,
                         name: tp.name.clone(),
                         args: vec![],
                     },
@@ -1336,6 +1350,7 @@ impl Checker {
                     generic_bindings.insert(
                         tp.name.clone(),
                         Ty::Named {
+                            builtin: None,
                             name: tp.name.clone(),
                             args: vec![],
                         },

@@ -3,6 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::BuiltinType;
 
 /// Embedded source for `std/io/closable.hew`.
 ///
@@ -181,7 +182,7 @@ impl Checker {
             Ty::Array(element_ty, _) | Ty::Slice(element_ty) => {
                 self.ty_contains_owned_handle(element_ty, visiting)
             }
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 self.canonical_owned_handle_type_name(name).is_some()
                     || args
                         .iter()
@@ -289,6 +290,7 @@ impl Checker {
             vec!["T".to_string()],
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
             vec![Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             }],
@@ -299,6 +301,7 @@ impl Checker {
             vec!["T".to_string()],
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
             vec![Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             }],
@@ -320,6 +323,7 @@ impl Checker {
             vec!["T".to_string()],
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
             vec![Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             }],
@@ -384,10 +388,12 @@ impl Checker {
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
             vec![
                 Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
                 Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
@@ -400,10 +406,12 @@ impl Checker {
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
             vec![
                 Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
                 Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
@@ -421,6 +429,7 @@ impl Checker {
             "Vec::new",
             vec![],
             Ty::Named {
+                builtin: Some(BuiltinType::Vec),
                 name: "Vec".to_string(),
                 args: vec![Ty::Var(TypeVar::fresh())],
             },
@@ -429,6 +438,7 @@ impl Checker {
             "Vec::with_capacity",
             vec![Ty::I64],
             Ty::Named {
+                builtin: Some(BuiltinType::Vec),
                 name: "Vec".to_string(),
                 args: vec![Ty::Var(TypeVar::fresh())],
             },
@@ -437,6 +447,7 @@ impl Checker {
             "HashMap::new",
             vec![],
             Ty::Named {
+                builtin: Some(BuiltinType::HashMap),
                 name: "HashMap".to_string(),
                 args: vec![Ty::Var(TypeVar::fresh()), Ty::Var(TypeVar::fresh())],
             },
@@ -445,6 +456,7 @@ impl Checker {
             "HashSet::new",
             vec![],
             Ty::Named {
+                builtin: Some(BuiltinType::HashSet),
                 name: "HashSet".to_string(),
                 args: vec![Ty::Var(TypeVar::fresh())],
             },
@@ -475,6 +487,7 @@ impl Checker {
             "string_split",
             vec![Ty::String, Ty::String],
             Ty::Named {
+                builtin: Some(BuiltinType::Vec),
                 name: "Vec".to_string(),
                 args: vec![Ty::String],
             },
@@ -569,20 +582,24 @@ impl Checker {
             Ty::Tuple(vec![
                 Ty::duplex(
                     Ty::Named {
+                        builtin: None,
                         name: "S".to_string(),
                         args: vec![],
                     },
                     Ty::Named {
+                        builtin: None,
                         name: "R".to_string(),
                         args: vec![],
                     },
                 ),
                 Ty::duplex(
                     Ty::Named {
+                        builtin: None,
                         name: "R".to_string(),
                         args: vec![],
                     },
                     Ty::Named {
+                        builtin: None,
                         name: "S".to_string(),
                         args: vec![],
                     },
@@ -604,10 +621,12 @@ impl Checker {
             vec![Ty::I64],
             Ty::duplex(
                 Ty::Named {
+                    builtin: None,
                     name: "S".to_string(),
                     args: vec![],
                 },
                 Ty::Named {
+                    builtin: None,
                     name: "R".to_string(),
                     args: vec![],
                 },
@@ -623,10 +642,12 @@ impl Checker {
             vec![Ty::I64],
             Ty::Tuple(vec![
                 Ty::sink(Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 }),
                 Ty::stream(Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 }),
@@ -903,9 +924,11 @@ impl Checker {
                     // inside field type resolution does not inject fresh type vars
                     // on handle types from this module.
                     let saved_local_type_defs = self.local_type_defs.clone();
+                    let saved_source_type_defs = self.source_type_defs.clone();
                     for (item, _) in &module.items {
                         if let Item::TypeDecl(td) = item {
                             self.local_type_defs.insert(td.name.clone());
+                            self.source_type_defs.insert(td.name.clone());
                         }
                     }
                     let err_before = self.errors.len();
@@ -926,6 +949,7 @@ impl Checker {
                         }
                     }
                     self.local_type_defs = saved_local_type_defs;
+                    self.source_type_defs = saved_source_type_defs;
                 }
             }
         }
@@ -940,18 +964,21 @@ impl Checker {
                     }
                     self.register_type_decl(td);
                     self.local_type_defs.insert(td.name.clone());
+                    self.source_type_defs.insert(td.name.clone());
                 }
                 Item::Actor(ad) => {
                     if !self.register_type_namespace_name(&ad.name, span) {
                         continue;
                     }
                     self.register_actor_decl(ad);
+                    self.source_type_defs.insert(ad.name.clone());
                 }
                 Item::Wire(wd) => {
                     if !self.register_type_namespace_name(&wd.name, span) {
                         continue;
                     }
                     self.register_wire_decl(wd);
+                    self.source_type_defs.insert(wd.name.clone());
                 }
                 Item::TypeAlias(ta) => {
                     if !self.register_type_namespace_name(&ta.name, span) {
@@ -961,6 +988,7 @@ impl Checker {
                     let resolved = self.resolve_type_expr_tracking_holes(&ta.ty, &mut hole_vars);
                     self.type_aliases.insert(ta.name.clone(), resolved);
                     self.record_type_def_inference_holes(&ta.name, hole_vars);
+                    self.source_type_defs.insert(ta.name.clone());
                 }
                 Item::Trait(td) => {
                     if !self.register_type_namespace_name(&td.name, span) {
@@ -1004,6 +1032,7 @@ impl Checker {
                     }
                     self.register_machine_decl(md);
                     self.local_type_defs.insert(md.name.clone());
+                    self.source_type_defs.insert(md.name.clone());
                 }
                 Item::Record(rd) => {
                     if !self.register_type_namespace_name(&rd.name, span) {
@@ -1011,6 +1040,7 @@ impl Checker {
                     }
                     self.register_record_decl(rd);
                     self.local_type_defs.insert(rd.name.clone());
+                    self.source_type_defs.insert(rd.name.clone());
                 }
                 Item::Import(_)
                 | Item::Const(_)
@@ -1070,6 +1100,7 @@ impl Checker {
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::Named {
+                builtin: None,
                 name: name.clone(),
                 args: vec![],
             })
@@ -1083,6 +1114,7 @@ impl Checker {
                 }
                 TypeBodyItem::Variant(variant) => {
                     let return_type = Ty::Named {
+                        builtin: None,
                         name: td.name.clone(),
                         args: enum_return_args.clone(),
                     };
@@ -1241,6 +1273,7 @@ impl Checker {
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::Named {
+                builtin: None,
                 name: name.clone(),
                 args: vec![],
             })
@@ -1254,6 +1287,7 @@ impl Checker {
                 }
                 TypeBodyItem::Variant(variant) => {
                     let return_type = Ty::Named {
+                        builtin: None,
                         name: td.name.clone(),
                         args: enum_return_args.clone(),
                     };
@@ -1382,11 +1416,13 @@ impl Checker {
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::Named {
+                builtin: None,
                 name: name.clone(),
                 args: vec![],
             })
             .collect();
         let return_type = Ty::Named {
+            builtin: None,
             name: rd.name.clone(),
             args: enum_return_args,
         };
@@ -1469,6 +1505,7 @@ impl Checker {
     /// - Wire enums expose JSON/YAML helpers.
     pub(super) fn register_wire_methods(&mut self, type_name: &str) {
         let self_ty = Ty::Named {
+            builtin: None,
             name: type_name.to_string(),
             args: vec![],
         };
@@ -1560,6 +1597,7 @@ impl Checker {
     /// expected kind for the format.
     pub(super) fn register_encode_methods(&mut self, type_name: &str) {
         let self_ty = Ty::Named {
+            builtin: None,
             name: type_name.to_string(),
             args: vec![],
         };
@@ -1713,6 +1751,7 @@ impl Checker {
         let machine_generic_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::Named {
+                builtin: None,
                 name: name.clone(),
                 args: vec![],
             })
@@ -1724,6 +1763,7 @@ impl Checker {
         // values are not codegen-supported (see MachineDecl.type_params doc
         // comment). Events carry concrete payload fields only.
         let event_ty = Ty::Named {
+            builtin: None,
             name: event_type_name.clone(),
             args: vec![],
         };
@@ -1959,6 +1999,7 @@ impl Checker {
                 .type_params
                 .iter()
                 .map(|name| Ty::Named {
+                    builtin: None,
                     name: name.clone(),
                     args: vec![],
                 })
@@ -1974,6 +2015,7 @@ impl Checker {
             self.env.define(
                 "event".to_string(),
                 Ty::Named {
+                    builtin: None,
                     name: event_type_name,
                     args: vec![],
                 },
@@ -2087,6 +2129,7 @@ impl Checker {
         let mut fields = HashMap::new();
         for field in &wd.fields {
             let ty = Ty::from_name(&field.ty).unwrap_or_else(|| Ty::Named {
+                builtin: None,
                 name: field.ty.clone(),
                 args: vec![],
             });
@@ -2501,9 +2544,11 @@ impl Checker {
                     // like Receiver, and locally_non_generic suppresses
                     // fresh-var injection for handle types like Sender.
                     let saved_local_type_defs = self.local_type_defs.clone();
+                    let saved_source_type_defs = self.source_type_defs.clone();
                     for (item, _) in &module.items {
                         if let Item::TypeDecl(td) = item {
                             self.local_type_defs.insert(td.name.clone());
+                            self.source_type_defs.insert(td.name.clone());
                         }
                     }
 
@@ -2531,6 +2576,7 @@ impl Checker {
                     }
 
                     self.local_type_defs = saved_local_type_defs;
+                    self.source_type_defs = saved_source_type_defs;
                 }
             }
         }
@@ -2652,6 +2698,7 @@ impl Checker {
                                 self.register_trait_method_sig(&tb.name, &m, span);
                                 let trait_method_key = format!("{}::{}", tb.name, m.name);
                                 let concrete_self = Ty::Named {
+                                    builtin: None,
                                     name: type_name.clone(),
                                     args: self_type_args.clone(),
                                 };
@@ -3201,9 +3248,13 @@ impl Checker {
         if let Some(canonical) = ty.canonical_lowering_name() {
             return Some(canonical.to_string());
         }
-        if let Ty::Named { name, .. } = ty {
-            if matches!(name.as_str(), "Vec" | "HashMap" | "HashSet") {
-                return Some(name.clone());
+        if let Ty::Named {
+            builtin: Some(builtin),
+            ..
+        } = ty
+        {
+            if builtin.is_collection() {
+                return Some(builtin.canonical_name().to_string());
             }
         }
         None
@@ -3218,7 +3269,7 @@ impl Checker {
         if let Some(prim) = Ty::from_name(name) {
             return Self::canonical_primitive_or_builtin_key(&prim);
         }
-        if matches!(name, "Vec" | "HashMap" | "HashSet") {
+        if crate::lookup_builtin_type(name).is_some_and(crate::BuiltinType::is_collection) {
             return Some(name.to_string());
         }
         None
@@ -3273,6 +3324,7 @@ impl Checker {
                 generic_bindings.insert(
                     tp.name.clone(),
                     Ty::Named {
+                        builtin: None,
                         name: tp.name.clone(),
                         args: vec![],
                     },
@@ -3442,6 +3494,7 @@ impl Checker {
         }
 
         let receiver_ty = Ty::Named {
+            builtin: None,
             name: "Receiver".to_string(),
             args: vec![],
         };
@@ -3744,9 +3797,11 @@ impl Checker {
         // (module_graph traversal) use bare Sender — causing a type mismatch
         // when body-checking the non-root module.
         let saved_local_type_defs = self.local_type_defs.clone();
+        let saved_source_type_defs = self.source_type_defs.clone();
         for (item, _) in items {
             if let Item::TypeDecl(td) = item {
                 self.local_type_defs.insert(td.name.clone());
+                self.source_type_defs.insert(td.name.clone());
             }
         }
 
@@ -3881,6 +3936,7 @@ impl Checker {
             }
         }
         self.local_type_defs = saved_local_type_defs;
+        self.source_type_defs = saved_source_type_defs;
     }
 
     /// Register items from a file-based import as top-level names (no module namespace).
@@ -4090,9 +4146,11 @@ impl Checker {
         // suppresses fresh-var injection for handle types defined in this
         // module, matching the resolution context used during collect_functions.
         let saved_local_type_defs = self.local_type_defs.clone();
+        let saved_source_type_defs = self.source_type_defs.clone();
         for (item, _) in items {
             if let Item::TypeDecl(td) = item {
                 self.local_type_defs.insert(td.name.clone());
+                self.source_type_defs.insert(td.name.clone());
             }
         }
 
@@ -4260,6 +4318,7 @@ impl Checker {
             }
         }
         self.local_type_defs = saved_local_type_defs;
+        self.source_type_defs = saved_source_type_defs;
     }
 
     /// Build a `FnSig` from a function declaration (used for user module registration).

@@ -4,6 +4,7 @@
 //! and user-defined traits with methods.
 
 use crate::ty::Ty;
+use crate::BuiltinType;
 use std::collections::{HashMap, HashSet};
 
 /// Built-in marker traits that are automatically derived.
@@ -220,24 +221,29 @@ impl TraitRegistry {
 
     fn implements_rc_free(&self, ty: &Ty, visiting: &mut HashSet<String>) -> RcFreeStatus {
         match ty {
-            Ty::Named { name, args } if name == "Rc" => {
+            Ty::Named {
+                builtin: Some(BuiltinType::Rc),
+                args,
+                ..
+            } => {
                 if args.is_empty() {
                     RcFreeStatus::RcFree
                 } else {
                     RcFreeStatus::ContainsRc
                 }
             }
-            // ActorRef<T> lowers to *mut HewActor with no ref-counted fields.
-            // T is a phantom dispatch type, and actor graph cycles are handled
-            // separately by cycle.rs.
-            Ty::Named { name, .. } if name == "ActorRef" => RcFreeStatus::RcFree,
-            // LocalPid<T> lowers to a pid-shaped scalar with no ref-counted fields;
-            // T is a phantom dispatch type, treated like ActorRef.
-            Ty::Named { name, .. } if name == "LocalPid" => RcFreeStatus::RcFree,
-            // RemotePid<T> lowers to (node_id, serial) scalars; no ref-counted fields,
-            // T is a phantom dispatch type.
-            Ty::Named { name, .. } if name == "RemotePid" => RcFreeStatus::RcFree,
-            Ty::Named { name, args } => {
+            // ActorRef<T>/LocalPid<T>/RemotePid<T> are opaque identity references;
+            // their T parameter is phantom for rc-free structural checks.
+            Ty::Named {
+                builtin:
+                    Some(BuiltinType::ActorRef | BuiltinType::LocalPid | BuiltinType::RemotePid),
+                ..
+            } => RcFreeStatus::RcFree,
+            Ty::Named {
+                name,
+                args,
+                builtin: _,
+            } => {
                 match self.combine_rc_free_status(args.iter().cloned(), visiting) {
                     RcFreeStatus::RcFree => {}
                     outcome => return outcome,
@@ -411,7 +417,10 @@ impl TraitRegistry {
             ),
 
             // ActorRef: always Send + Sync + Frozen + Copy (identity reference)
-            Ty::Named { name, .. } if name == "ActorRef" => matches!(
+            Ty::Named {
+                builtin: Some(BuiltinType::ActorRef),
+                ..
+            } => matches!(
                 marker,
                 MarkerTrait::Send
                     | MarkerTrait::Sync
@@ -423,7 +432,10 @@ impl TraitRegistry {
 
             // LocalPid<T>: process-local actor pid returned by `spawn`.
             // Same marker set as ActorRef — an opaque identity reference, not a resource.
-            Ty::Named { name, .. } if name == "LocalPid" => matches!(
+            Ty::Named {
+                builtin: Some(BuiltinType::LocalPid),
+                ..
+            } => matches!(
                 marker,
                 MarkerTrait::Send
                     | MarkerTrait::Sync
@@ -435,7 +447,10 @@ impl TraitRegistry {
 
             // RemotePid<T>: remote actor pid, from peer-discovery or explicit construction.
             // Same marker set as LocalPid — the pid value itself is an opaque u64.
-            Ty::Named { name, .. } if name == "RemotePid" => matches!(
+            Ty::Named {
+                builtin: Some(BuiltinType::RemotePid),
+                ..
+            } => matches!(
                 marker,
                 MarkerTrait::Send
                     | MarkerTrait::Sync
@@ -447,20 +462,25 @@ impl TraitRegistry {
 
             // Actor<T>: the built-in lambda-actor handle; always Send + Sync + Clone + Debug.
             // Actor references are channel handles — safe to capture in spawned actors.
-            Ty::Named { name, .. } if name == "Actor" => matches!(
+            Ty::Named {
+                builtin: Some(BuiltinType::Actor),
+                ..
+            } => matches!(
                 marker,
                 MarkerTrait::Send | MarkerTrait::Sync | MarkerTrait::Clone | MarkerTrait::Debug
             ),
 
             // Stream<T> and Sink<T>: Send/Sync iff T: Send; NOT Clone, Copy, or Frozen (move-only)
-            Ty::Named { name, args } if (name == "Stream" || name == "Sink") && args.len() == 1 => {
-                match marker {
-                    MarkerTrait::Send | MarkerTrait::Sync => {
-                        self.implements_marker(&args[0], MarkerTrait::Send)
-                    }
-                    _ => false,
+            Ty::Named {
+                builtin: Some(BuiltinType::Stream | BuiltinType::Sink),
+                args,
+                ..
+            } if args.len() == 1 => match marker {
+                MarkerTrait::Send | MarkerTrait::Sync => {
+                    self.implements_marker(&args[0], MarkerTrait::Send)
                 }
-            }
+                _ => false,
+            },
 
             // Duplex<S, R>: bidirectional lambda-actor handle.
             // Send/Sync iff BOTH S: Send AND R: Send.
@@ -469,7 +489,11 @@ impl TraitRegistry {
             // NOT Frozen (mutable internal queue state).
             // Resource: yes — dropping the last Duplex handle closes both I/O directions
             //   (@resource design contract D3; consumed by drop-elaboration in slice 3).
-            Ty::Named { name, args } if name == "Duplex" && args.len() == 2 => match marker {
+            Ty::Named {
+                builtin: Some(BuiltinType::Duplex),
+                args,
+                ..
+            } if args.len() == 2 => match marker {
                 MarkerTrait::Send | MarkerTrait::Sync => {
                     self.implements_marker(&args[0], MarkerTrait::Send)
                         && self.implements_marker(&args[1], MarkerTrait::Send)
@@ -494,7 +518,11 @@ impl TraitRegistry {
             }
 
             // Named types: check all fields
-            Ty::Named { name, args } => {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
                 // Check negative impls first
                 if let Some(negatives) = self.negative_impls.get(name) {
                     if negatives.contains(&marker) {
@@ -534,7 +562,7 @@ impl TraitRegistry {
                 }
                 // Built-in generic collections: Send/Clone/Debug if elements are,
                 // but NOT Copy or Frozen (heap-allocated, mutable)
-                if name == "Vec" || name == "HashMap" || name == "HashSet" {
+                if builtin.is_some_and(BuiltinType::is_collection) {
                     return match marker {
                         MarkerTrait::Copy | MarkerTrait::Frozen => false,
                         _ => args.iter().all(|a| self.implements_marker(a, marker)),
@@ -542,7 +570,7 @@ impl TraitRegistry {
                 }
                 // Rc<T>: reference-counted, single-threaded — explicitly NOT Send or Sync.
                 // Supports Clone (inc ref-count) and Drop (dec ref-count); NOT Copy or Frozen.
-                if name == "Rc" {
+                if *builtin == Some(BuiltinType::Rc) {
                     return matches!(marker, MarkerTrait::Clone | MarkerTrait::Drop);
                 }
                 // Record types: value types declared with `record`. Markers are
@@ -684,6 +712,7 @@ mod tests {
     fn test_actor_ref_is_send_and_frozen() {
         let registry = TraitRegistry::new();
         let actor_ref = Ty::actor_ref(Ty::Named {
+            builtin: None,
             name: "MyActor".to_string(),
             args: vec![],
         });
@@ -697,6 +726,7 @@ mod tests {
         // be captured inside another spawned actor (pipeline pattern).
         let registry = TraitRegistry::new();
         let actor_int = Ty::Named {
+            builtin: Some(BuiltinType::Actor),
             name: "Actor".to_string(),
             args: vec![Ty::I32],
         };
@@ -716,6 +746,7 @@ mod tests {
         let mut registry = TraitRegistry::new();
         registry.register_type("Point".to_string(), vec![Ty::I32, Ty::I32]);
         let point = Ty::Named {
+            builtin: None,
             name: "Point".to_string(),
             args: vec![],
         };
@@ -729,6 +760,7 @@ mod tests {
         registry.register_type("Handle".to_string(), vec![Ty::I32]);
         registry.register_negative_impl("Handle".to_string(), MarkerTrait::Send);
         let handle = Ty::Named {
+            builtin: None,
             name: "Handle".to_string(),
             args: vec![],
         };
@@ -775,6 +807,7 @@ mod tests {
         let mut registry = TraitRegistry::new();
         registry.register_type("Point".to_string(), vec![Ty::I32, Ty::I32]);
         let point = Ty::Named {
+            builtin: None,
             name: "Point".to_string(),
             args: vec![],
         };
@@ -795,6 +828,7 @@ mod tests {
     fn test_actor_ref_is_sync() {
         let registry = TraitRegistry::new();
         let actor_ref = Ty::actor_ref(Ty::Named {
+            builtin: None,
             name: "MyActor".to_string(),
             args: vec![],
         });
@@ -805,6 +839,7 @@ mod tests {
     fn test_vec_is_send_when_element_is_send() {
         let registry = TraitRegistry::new();
         let vec_i32 = Ty::Named {
+            builtin: Some(BuiltinType::Vec),
             name: "Vec".to_string(),
             args: vec![Ty::I32],
         };
@@ -819,6 +854,7 @@ mod tests {
     fn test_hashmap_is_send_when_elements_are_send() {
         let registry = TraitRegistry::new();
         let map = Ty::Named {
+            builtin: Some(BuiltinType::HashMap),
             name: "HashMap".to_string(),
             args: vec![Ty::String, Ty::I32],
         };
@@ -830,6 +866,7 @@ mod tests {
     fn test_hashset_is_send_when_element_is_send() {
         let registry = TraitRegistry::new();
         let set = Ty::Named {
+            builtin: Some(BuiltinType::HashSet),
             name: "HashSet".to_string(),
             args: vec![Ty::String],
         };
@@ -848,6 +885,7 @@ mod tests {
             is_mutable: false,
         };
         let set_ptr = Ty::Named {
+            builtin: None,
             name: "HashSet".to_string(),
             args: vec![ptr],
         };
@@ -861,10 +899,12 @@ mod tests {
         // the element-propagation path with Rc rather than a raw pointer.
         let registry = TraitRegistry::new();
         let rc_i32 = Ty::Named {
+            builtin: None,
             name: "Rc".to_string(),
             args: vec![Ty::I32],
         };
         let set_rc = Ty::Named {
+            builtin: None,
             name: "HashSet".to_string(),
             args: vec![rc_i32],
         };
@@ -877,6 +917,7 @@ mod tests {
         let mut registry = TraitRegistry::new();
         registry.register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I32)]);
         let holder = Ty::Named {
+            builtin: None,
             name: "Holder".to_string(),
             args: vec![],
         };
@@ -892,6 +933,7 @@ mod tests {
         let mut registry = TraitRegistry::new();
         registry.register_rcfree_members("Worker".to_string(), vec![Ty::rc(Ty::I32)]);
         let actor_ref = Ty::actor_ref(Ty::Named {
+            builtin: None,
             name: "Worker".to_string(),
             args: vec![],
         });
@@ -905,6 +947,7 @@ mod tests {
         let mut registry = TraitRegistry::new();
         registry.register_rcfree_members("SimpleActor".to_string(), vec![Ty::I32, Ty::Bool]);
         let actor_ref = Ty::actor_ref(Ty::Named {
+            builtin: None,
             name: "SimpleActor".to_string(),
             args: vec![],
         });
@@ -917,6 +960,7 @@ mod tests {
     fn vec_rc_in_named_still_contains_rc() {
         let registry = TraitRegistry::new();
         let vec_rc = Ty::Named {
+            builtin: None,
             name: "Vec".to_string(),
             args: vec![Ty::rc(Ty::I32)],
         };
@@ -929,10 +973,12 @@ mod tests {
     fn mutual_actorref_cycle_is_rc_free_not_recursive() {
         let mut registry = TraitRegistry::new();
         let a = Ty::Named {
+            builtin: None,
             name: "A".to_string(),
             args: vec![],
         };
         let b = Ty::Named {
+            builtin: None,
             name: "B".to_string(),
             args: vec![],
         };
@@ -952,6 +998,7 @@ mod tests {
     fn test_rcfree_rejects_recursive_named_types_without_proof() {
         let mut registry = TraitRegistry::new();
         let list = Ty::Named {
+            builtin: None,
             name: "List".to_string(),
             args: vec![],
         };
@@ -968,10 +1015,12 @@ mod tests {
     fn test_rcfree_rejects_mutually_recursive_named_types_without_proof() {
         let mut registry = TraitRegistry::new();
         let a = Ty::Named {
+            builtin: None,
             name: "A".to_string(),
             args: vec![],
         };
         let b = Ty::Named {
+            builtin: None,
             name: "B".to_string(),
             args: vec![],
         };
@@ -995,6 +1044,7 @@ mod tests {
         let mut registry = TraitRegistry::new();
         registry.register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I32)]);
         let qualified_holder = Ty::Named {
+            builtin: None,
             name: "widgets.Holder".to_string(),
             args: vec![],
         };
@@ -1049,6 +1099,7 @@ mod tests {
             is_mutable: false,
         };
         let vec_ptr = Ty::Named {
+            builtin: None,
             name: "Vec".to_string(),
             args: vec![ptr],
         };

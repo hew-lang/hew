@@ -21,3 +21,6 @@ stacker.workspace = true
 # std/text/regex runtime). Checker rejects syntactically invalid patterns
 # before any code generation runs.
 regex = "1"
+
+[dev-dependencies]
+serde_json.workspace = true

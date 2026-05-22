@@ -1506,6 +1506,8 @@ pub struct Checker {
     pub(super) current_module: Option<String>,
     /// Tracks which types are defined locally (in the current compilation unit).
     pub(super) local_type_defs: HashSet<String>,
+    /// Tracks source-authored type definitions that can shadow builtin names.
+    pub(super) source_type_defs: HashSet<String>,
     /// Tracks which traits are defined locally (in the current compilation unit).
     pub(super) local_trait_defs: HashSet<String>,
     /// The type name and args of the current impl block target (for resolving `Self`).
@@ -1701,6 +1703,7 @@ impl Checker {
             in_unsafe: false,
             current_module: None,
             local_type_defs: HashSet::new(),
+            source_type_defs: HashSet::new(),
             local_trait_defs: HashSet::new(),
             current_self_type: None,
             current_actor_type: None,

@@ -418,6 +418,7 @@ impl Checker {
                             self.env.define_with_span(
                                 capture_name.to_string(),
                                 Ty::Named {
+                                    builtin: None,
                                     name: "string".to_string(),
                                     args: vec![],
                                 },

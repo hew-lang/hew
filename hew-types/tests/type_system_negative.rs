@@ -6,6 +6,7 @@ use hew_types::Ty;
 
 fn generic_param(name: &str) -> Ty {
     Ty::Named {
+        builtin: None,
         name: name.to_string(),
         args: vec![],
     }

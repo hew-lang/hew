@@ -210,6 +210,7 @@ fn centralized_hashset_admissibility_rejects_nested_rc_elements() {
         .register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I64)]);
 
     let holder_ty = Ty::Named {
+        builtin: None,
         name: "Holder".to_string(),
         args: vec![],
     };
@@ -252,6 +253,7 @@ fn centralized_hashset_admissibility_rejects_named_enum_with_rc_payload() {
         .register_rcfree_members("MaybeHolder".to_string(), vec![Ty::rc(Ty::I64)]);
 
     let enum_ty = Ty::Named {
+        builtin: None,
         name: "MaybeHolder".to_string(),
         args: vec![],
     };
@@ -262,10 +264,12 @@ fn centralized_hashset_admissibility_rejects_named_enum_with_rc_payload() {
 fn centralized_hashset_admissibility_rejects_recursive_rcfree_cycle() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let a_ty = Ty::Named {
+        builtin: None,
         name: "A".to_string(),
         args: vec![],
     };
     let b_ty = Ty::Named {
+        builtin: None,
         name: "B".to_string(),
         args: vec![],
     };
@@ -295,6 +299,7 @@ fn centralized_hashset_admissibility_rejects_module_qualified_named_rc_payload()
         .register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I64)]);
 
     let holder_ty = Ty::Named {
+        builtin: None,
         name: "widgets.Holder".to_string(),
         args: vec![],
     };
@@ -349,6 +354,7 @@ fn concrete_vec_validation_reaches_function_wrapped_vec() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let ty = Ty::Function {
         params: vec![Ty::Named {
+            builtin: Some(crate::BuiltinType::Vec),
             name: "Vec".to_string(),
             args: vec![Ty::Array(Box::new(Ty::I64), 4)],
         }],
@@ -368,6 +374,7 @@ fn concrete_hashset_validation_reaches_pointer_wrapped_hashset() {
     let ty = Ty::Pointer {
         is_mutable: false,
         pointee: Box::new(Ty::Named {
+            builtin: Some(crate::BuiltinType::HashSet),
             name: "HashSet".to_string(),
             args: vec![Ty::Bool],
         }),
@@ -384,6 +391,7 @@ fn concrete_hashmap_validation_reaches_tuple_wrapped_hashmap() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let ty = Ty::Tuple(vec![
         Ty::Named {
+            builtin: Some(crate::BuiltinType::HashMap),
             name: "HashMap".to_string(),
             args: vec![Ty::I64, Ty::String],
         },
@@ -467,6 +475,7 @@ fn actor_decl_registers_rcfree_members_for_collection_checks() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let _ = checker.check_program(&parsed.program);
     let actor_ref_ty = Ty::actor_ref(Ty::Named {
+        builtin: None,
         name: "Worker".to_string(),
         args: vec![],
     });
@@ -530,6 +539,7 @@ fn expr_output_contract_rechecks_normalized_unresolved_subset() {
         span.clone(),
         Ty::Tuple(vec![
             Ty::Named {
+                builtin: None,
                 name: "Sender".to_string(),
                 args: vec![Ty::Var(sender_var)],
             },
@@ -1192,6 +1202,7 @@ fn test_actor_stream_name_no_longer_aliases_stream() {
     assert_eq!(
         output.fn_sigs["bar"].return_type,
         Ty::Named {
+            builtin: None,
             name: "ActorStream".to_string(),
             args: vec![Ty::I32],
         },
@@ -1280,7 +1291,11 @@ fn test_qualified_builtin_type_names_canonicalize_in_signatures() {
     assert_eq!(output.fn_sigs["stream_id"].return_type, Ty::stream(Ty::I64));
     assert!(matches!(
         &output.fn_sigs["close_sender"].params[0],
-        Ty::Named { name, args } if name == "Sender" && args.len() == 1
+        Ty::Named {
+            builtin: Some(crate::BuiltinType::Sender),
+            args,
+            ..
+        } if args.len() == 1
     ));
 }
 
@@ -2060,6 +2075,7 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
     assert_eq!(
         sig.params[0],
         Ty::Named {
+            builtin: None,
             name: "Result".to_string(),
             args: vec![],
         }
@@ -4124,6 +4140,7 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
     assert_eq!(
         inferred,
         &vec![Ty::Named {
+            builtin: None,
             name: "Label".to_string(),
             args: vec![],
         }]
@@ -6743,7 +6760,7 @@ fn test_self_with_generics_in_impl() {
         .fn_sigs
         .get("Pair::new")
         .expect("Pair::new should exist");
-    if let Ty::Named { name, args } = &new_sig.return_type {
+    if let Ty::Named { name, args, .. } = &new_sig.return_type {
         assert_eq!(name, "Pair", "return type should be Pair");
         assert_eq!(args.len(), 1, "Pair should have one type argument");
     } else {
@@ -7209,6 +7226,7 @@ fn typecheck_await_close_actor_ref() {
     checker.env.define(
         "g".to_string(),
         Ty::actor_ref(Ty::Named {
+            builtin: None,
             name: "Greeter".to_string(),
             args: vec![],
         }),
@@ -7246,6 +7264,7 @@ fn typecheck_await_close_lambda_actor() {
     checker.env.define(
         "worker".to_string(),
         Ty::Named {
+            builtin: Some(crate::BuiltinType::Actor),
             name: "Actor".to_string(),
             args: vec![Ty::I64],
         },
@@ -7996,6 +8015,7 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
                 (
                     "first".to_string(),
                     Ty::Named {
+                        builtin: None,
                         name: "T".to_string(),
                         args: vec![],
                     },
@@ -8003,6 +8023,7 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
                 (
                     "second".to_string(),
                     Ty::Named {
+                        builtin: None,
                         name: "U".to_string(),
                         args: vec![],
                     },
@@ -8030,6 +8051,7 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
             ],
         },
         &Ty::Named {
+            builtin: None,
             name: "Pair".to_string(),
             args: vec![Ty::I64, Ty::Bool],
         },
@@ -8088,6 +8110,7 @@ fn struct_pattern_missing_type_def_emits_diagnostic() {
             }],
         },
         &Ty::Named {
+            builtin: None,
             name: "Ghost".to_string(),
             args: vec![],
         },
@@ -8120,6 +8143,7 @@ fn register_generic_wrapper(checker: &mut Checker) {
     fields.insert(
         "value".to_string(),
         Ty::Named {
+            builtin: None,
             name: "T".to_string(),
             args: vec![],
         },
@@ -8155,6 +8179,7 @@ fn struct_init_coerces_literal_to_expected_type_arg() {
         0..20,
     );
     let expected = Ty::Named {
+        builtin: None,
         name: "Wrapper".to_string(),
         args: vec![Ty::I32],
     };
@@ -8187,6 +8212,7 @@ fn struct_init_infers_type_param_from_literal() {
     assert_eq!(
         ty,
         Ty::Named {
+            builtin: None,
             name: "Wrapper".to_string(),
             args: vec![Ty::IntLiteral],
         }
@@ -8214,6 +8240,7 @@ fn struct_init_overflow_in_expected_type() {
         0..20,
     );
     let expected = Ty::Named {
+        builtin: None,
         name: "Wrapper".to_string(),
         args: vec![Ty::U8],
     };
@@ -8386,6 +8413,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
         VariantDef::Struct(vec![(
             "value".to_string(),
             Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             },
@@ -8421,6 +8449,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
         base: None,
     };
     let expected = Ty::Named {
+        builtin: None,
         name: "Keeper".to_string(),
         args: vec![Ty::I64],
     };
@@ -8444,6 +8473,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
         VariantDef::Struct(vec![(
             "value".to_string(),
             Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             },
@@ -8596,6 +8626,7 @@ fn record_init_type_args_generic_in_generic_user_user() {
     assert_eq!(
         entries[0],
         vec![Ty::Named {
+            builtin: None,
             name: "Inner".to_string(),
             args: vec![Ty::I64],
         }]
@@ -9983,6 +10014,7 @@ fn trait_method_where_clause_bound_enforced_positive() {
     assert!(
         output.call_type_args.values().any(|args| args
             == &vec![crate::ty::Ty::Named {
+                builtin: None,
                 name: "Page".to_string(),
                 args: vec![]
             }]),
@@ -10034,6 +10066,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
             param_names: vec!["index".to_string()],
             params: vec![Ty::I64],
             return_type: Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             },
@@ -10047,6 +10080,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
     checker.env.define(
         "boxy".to_string(),
         Ty::Named {
+            builtin: None,
             name: "Boxy".to_string(),
             args: vec![Ty::String],
         },
@@ -10090,6 +10124,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
             param_names: vec!["index".to_string()],
             params: vec![Ty::I64],
             return_type: Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             },
@@ -10099,6 +10134,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
     checker.env.define(
         "wrapper".to_string(),
         Ty::Named {
+            builtin: None,
             name: "Wrapper".to_string(),
             args: vec![Ty::String],
         },
@@ -10137,8 +10173,10 @@ fn hashmap_bracket_index_is_a_compile_error() {
     // Register HashMap with a string-keyed .get() method (as the stdlib defines it).
     // Return type is Option<V>, represented as the Named form.
     let option_v = Ty::Named {
+        builtin: Some(crate::BuiltinType::Option),
         name: "Option".to_string(),
         args: vec![Ty::Named {
+            builtin: None,
             name: "V".to_string(),
             args: vec![],
         }],
@@ -10160,6 +10198,7 @@ fn hashmap_bracket_index_is_a_compile_error() {
     checker.env.define(
         "m".to_string(),
         Ty::Named {
+            builtin: None,
             name: "HashMap".to_string(),
             args: vec![Ty::String, Ty::I64],
         },
@@ -10267,10 +10306,12 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
         FnSig {
             param_names: vec!["next".to_string()],
             params: vec![Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             }],
             return_type: Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             },
@@ -10930,6 +10971,7 @@ fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
     checker.enforce_type_param_bounds(
         &sig,
         &[Ty::Named {
+            builtin: None,
             name: "Thing".to_string(),
             args: vec![],
         }],
@@ -15516,6 +15558,7 @@ mod for_loop_iterable_fail_closed {
     #[test]
     fn vec_with_empty_type_args_emits_diagnostic_not_fresh_var() {
         let errors = check_for_over(Ty::Named {
+            builtin: Some(crate::BuiltinType::Vec),
             name: "Vec".to_string(),
             args: vec![],
         });
@@ -15532,6 +15575,7 @@ mod for_loop_iterable_fail_closed {
     #[test]
     fn stream_with_empty_type_args_emits_diagnostic_not_fresh_var() {
         let errors = check_for_over(Ty::Named {
+            builtin: None,
             name: "Stream".to_string(),
             args: vec![],
         });
@@ -15548,6 +15592,7 @@ mod for_loop_iterable_fail_closed {
     #[test]
     fn vec_with_type_arg_is_valid() {
         let errors = check_for_over(Ty::Named {
+            builtin: Some(crate::BuiltinType::Vec),
             name: "Vec".to_string(),
             args: vec![Ty::I64],
         });
@@ -15571,6 +15616,7 @@ mod for_loop_iterable_fail_closed {
     #[test]
     fn range_iterable_is_valid() {
         let errors = check_for_over(Ty::Named {
+            builtin: Some(crate::BuiltinType::Range),
             name: "Range".to_string(),
             args: vec![Ty::I64],
         });

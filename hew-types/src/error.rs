@@ -849,6 +849,7 @@ mod tests {
         let err = TypeError::undefined_field(
             10..20,
             &Ty::Named {
+                builtin: None,
                 name: "Point".into(),
                 args: vec![],
             },
@@ -1213,6 +1214,7 @@ mod tests {
     #[test]
     fn test_undefined_field_on_generic_type() {
         let ty = Ty::Named {
+            builtin: None,
             name: "HashMap".into(),
             args: vec![Ty::String, Ty::I32],
         };

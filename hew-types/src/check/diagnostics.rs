@@ -335,7 +335,10 @@ impl Checker {
         }
 
         match scrutinee_ty {
-            Ty::Named { name, .. } if name == "Option" => {
+            Ty::Named {
+                builtin: Some(crate::BuiltinType::Option),
+                ..
+            } => {
                 let missing: Vec<String> = Self::missing_constructor_variants(arms, "Some", "None")
                     .into_iter()
                     .map(str::to_string)
@@ -348,7 +351,10 @@ impl Checker {
                     });
                 }
             }
-            Ty::Named { name, .. } if name == "Result" => {
+            Ty::Named {
+                builtin: Some(crate::BuiltinType::Result),
+                ..
+            } => {
                 let missing: Vec<String> = Self::missing_constructor_variants(arms, "Ok", "Err")
                     .into_iter()
                     .map(str::to_string)

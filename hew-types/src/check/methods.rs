@@ -9,6 +9,7 @@ use crate::method_resolution::{
     collect_method_sigs_for_receiver, lookup_builtin_method_sig,
     lookup_named_method_sig as shared_lookup_named_method_sig,
 };
+use crate::BuiltinType;
 
 impl Checker {
     fn numeric_method_signedness(ty: &Ty) -> Option<NumericSignedness> {
@@ -796,6 +797,7 @@ impl Checker {
         let Ty::Named {
             name,
             args: type_args,
+            ..
         } = receiver_ty
         else {
             return None;
@@ -1655,6 +1657,7 @@ impl Checker {
                     return Ty::Error;
                 }
                 Ty::Named {
+                    builtin: Some(BuiltinType::HashMap),
                     name: "HashMap".to_string(),
                     args: vec![key_ty.clone(), val_ty.clone()],
                 }
@@ -1675,6 +1678,7 @@ impl Checker {
                 // Receiver kind for impl table lookup: bare `HashMap` (the
                 // canonical_primitive_or_builtin_key strips type args).
                 let receiver = Ty::Named {
+                    builtin: Some(BuiltinType::HashMap),
                     name: "HashMap".to_string(),
                     args: vec![],
                 };
@@ -1742,6 +1746,7 @@ impl Checker {
                 }
                 self.record_hashset_lowering_fact(span, &elem_ty);
                 Ty::Named {
+                    builtin: Some(BuiltinType::HashSet),
                     name: "HashSet".to_string(),
                     args: vec![elem_ty.clone()],
                 }
@@ -1769,6 +1774,7 @@ impl Checker {
             }
             _ => {
                 let receiver = Ty::Named {
+                    builtin: Some(BuiltinType::HashSet),
                     name: "HashSet".to_string(),
                     args: vec![],
                 };
@@ -2002,6 +2008,7 @@ impl Checker {
             }
             _ => {
                 let receiver = Ty::Named {
+                    builtin: Some(BuiltinType::Vec),
                     name: "Vec".to_string(),
                     args: vec![],
                 };
@@ -2360,33 +2367,38 @@ impl Checker {
             // Vec methods
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Vec),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if name == "Vec" => {
-                self.check_vec_method(type_args, &receiver_ty, &resolved, method, args, span)
-            }
+            ) => self.check_vec_method(type_args, &receiver_ty, &resolved, method, args, span),
             // HashMap methods
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::HashMap),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if name == "HashMap" => self.check_hashmap_method(type_args, method, args, span),
+            ) => self.check_hashmap_method(type_args, method, args, span),
             // HashSet methods
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::HashSet),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if name == "HashSet" => {
+            ) => {
                 // Preserve the receiver's original inference vars so a later non-literal insert
                 // can refine an earlier `IntLiteral` element before we validate lowerability.
                 let original_type_args = match &receiver_ty {
-                    Ty::Named { name, args } if name == "HashSet" => args.as_slice(),
+                    Ty::Named {
+                        builtin: Some(BuiltinType::HashSet),
+                        args,
+                        ..
+                    } => args.as_slice(),
                     _ => type_args,
                 };
                 self.check_hashset_method(original_type_args, method, args, span)
@@ -2394,11 +2406,12 @@ impl Checker {
             // Rc<T> methods
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Rc),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if name == "Rc" => self.check_rc_method(type_args, method, args, span),
+            ) => self.check_rc_method(type_args, method, args, span),
             // bytes methods (ref-counted byte buffer)
             (Ty::Bytes, _) => match method {
                 "push" => {
@@ -3020,47 +3033,45 @@ impl Checker {
             // runtime symbol (`hew_duplex_send`).
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Duplex),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if name == "Duplex" => {
-                self.check_duplex_method(type_args, &receiver_ty, receiver, method, args, span)
-            }
+            ) => self.check_duplex_method(type_args, &receiver_ty, receiver, method, args, span),
             // SendHalf<S>: send-direction half of a split Duplex<S, R>.
             //
             // Methods: .send(msg) / .close()
             // Produced by `Duplex<S, R>::send_half()`.
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::SendHalf),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if name == "SendHalf" => {
-                self.check_send_half_method(type_args, receiver, method, args, span)
-            }
+            ) => self.check_send_half_method(type_args, receiver, method, args, span),
             // RecvHalf<R>: receive-direction half of a split Duplex<S, R>.
             //
             // Methods: .recv() / .close()
             // Produced by `Duplex<S, R>::recv_half()`.
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::RecvHalf),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if name == "RecvHalf" => {
-                self.check_recv_half_method(type_args, receiver, method, args, span)
-            }
+            ) => self.check_recv_half_method(type_args, receiver, method, args, span),
             // Named types that have built-in methods (Actor<T> from lambda actors)
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Actor),
                     args: type_args,
+                    ..
                 },
                 "send",
-            ) if name == "Actor" => {
+            ) => {
                 for arg in args {
                     let (expr, sp) = arg.expr();
                     let ty = if let Some(param_ty) = type_args.first() {
@@ -3078,11 +3089,12 @@ impl Checker {
             // .next() returns Option<yielded type>.
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
                     args: type_args,
+                    ..
                 },
                 "next",
-            ) if name == "Generator" || name == "AsyncGenerator" => Ty::option(
+            ) => Ty::option(
                 type_args
                     .first()
                     .cloned()
@@ -3099,11 +3111,12 @@ impl Checker {
             // now codegen will fail if the type is actually used.
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Stream),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if builtin_named_type(name) == Some(BuiltinNamedType::Stream) => {
+            ) => {
                 // Stream<T> methods are not supported on wasm32: the stream
                 // runtime module is not compiled for wasm32.
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Streams);
@@ -3112,11 +3125,12 @@ impl Checker {
             // Sink<T> methods
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Sink),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if builtin_named_type(name) == Some(BuiltinNamedType::Sink) => {
+            ) => {
                 let Some(inner) = self.validate_stream_sink_element_type(
                     type_args,
                     BuiltinNamedType::Sink.canonical_name(),
@@ -3231,11 +3245,12 @@ impl Checker {
             // Sender<T> methods
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Sender),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if builtin_named_type(name) == Some(BuiltinNamedType::Sender) => {
+            ) => {
                 let inner = type_args
                     .first()
                     .cloned()
@@ -3335,11 +3350,12 @@ impl Checker {
             // Receiver<T> methods
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Receiver),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if builtin_named_type(name) == Some(BuiltinNamedType::Receiver) => {
+            ) => {
                 let inner = type_args
                     .first()
                     .cloned()
@@ -3472,6 +3488,7 @@ impl Checker {
                 Ty::Named {
                     name,
                     args: type_args,
+                    ..
                 },
                 _,
             ) => {
@@ -3800,6 +3817,7 @@ mod tests {
         );
         assert_eq!(
             Checker::runtime_stream_element_name(&Ty::Named {
+                builtin: None,
                 name: "string".into(),
                 args: vec![],
             }),
@@ -3807,6 +3825,7 @@ mod tests {
         );
         assert_eq!(
             Checker::runtime_stream_element_name(&Ty::Named {
+                builtin: None,
                 name: "str".into(),
                 args: vec![],
             }),
@@ -3820,6 +3839,7 @@ mod tests {
         assert_eq!(Checker::stream_receiver_element_kind(&Ty::Bytes), "bytes");
         assert_eq!(
             Checker::stream_receiver_element_kind(&Ty::Named {
+                builtin: None,
                 name: "String".into(),
                 args: vec![],
             }),
@@ -4047,6 +4067,7 @@ mod tests {
         // Nest Ty::Error inside a Vec element to exercise the contains_error() path,
         // not just a bare Ty::Error match.
         let elem_ty = Ty::Named {
+            builtin: None,
             name: "Result".into(),
             args: vec![Ty::Error, Ty::I64],
         };

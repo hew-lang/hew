@@ -9,6 +9,7 @@ use hew_types::ty::{Substitution, TraitObjectBound, Ty, TypeVar};
 
 fn named(n: &str) -> Ty {
     Ty::Named {
+        builtin: None,
         name: n.to_string(),
         args: vec![],
     }
@@ -68,6 +69,7 @@ fn display_named_no_args() {
 #[test]
 fn display_named_multiple_args() {
     let ty = Ty::Named {
+        builtin: None,
         name: "HashMap".to_string(),
         args: vec![Ty::String, Ty::I64],
     };
@@ -198,6 +200,7 @@ fn display_trait_object_multi_trait_with_args() {
 #[test]
 fn display_machine() {
     let ty = Ty::Named {
+        builtin: None,
         name: "MyMachine".to_string(),
         args: vec![],
     };
@@ -374,6 +377,7 @@ fn actor_handle_accessor() {
 
     // Actor<T> is also an actor handle
     let actor = Ty::Named {
+        builtin: Some(hew_types::BuiltinType::Actor),
         name: "Actor".to_string(),
         args: vec![Ty::Bool],
     };
@@ -433,6 +437,7 @@ fn range_constructor_and_accessor() {
 fn accessor_wrong_arity_returns_none() {
     // Option with wrong number of args
     let bad_option = Ty::Named {
+        builtin: None,
         name: "Option".to_string(),
         args: vec![Ty::I32, Ty::Bool],
     };
@@ -440,6 +445,7 @@ fn accessor_wrong_arity_returns_none() {
 
     // Result with wrong arity
     let bad_result = Ty::Named {
+        builtin: None,
         name: "Result".to_string(),
         args: vec![Ty::I32],
     };
@@ -447,6 +453,7 @@ fn accessor_wrong_arity_returns_none() {
 
     // Generator with wrong arity
     let bad_gen = Ty::Named {
+        builtin: None,
         name: "Generator".to_string(),
         args: vec![Ty::I32],
     };
@@ -454,6 +461,7 @@ fn accessor_wrong_arity_returns_none() {
 
     // AsyncGenerator with wrong arity
     let bad_async_gen = Ty::Named {
+        builtin: None,
         name: "AsyncGenerator".to_string(),
         args: vec![Ty::I32, Ty::Bool],
     };
@@ -461,6 +469,7 @@ fn accessor_wrong_arity_returns_none() {
 
     // ActorRef with wrong arity
     let bad_actor = Ty::Named {
+        builtin: None,
         name: "ActorRef".to_string(),
         args: vec![Ty::I32, Ty::Bool],
     };
@@ -469,11 +478,13 @@ fn accessor_wrong_arity_returns_none() {
 
     // Stream/Sink with wrong arity
     let bad_stream = Ty::Named {
+        builtin: None,
         name: "Stream".to_string(),
         args: vec![],
     };
     assert_eq!(bad_stream.as_stream(), None);
     let bad_sink = Ty::Named {
+        builtin: None,
         name: "Sink".to_string(),
         args: vec![Ty::I32, Ty::Bool],
     };
@@ -481,6 +492,7 @@ fn accessor_wrong_arity_returns_none() {
 
     // Range with wrong arity
     let bad_range = Ty::Named {
+        builtin: None,
         name: "Range".to_string(),
         args: vec![],
     };
@@ -497,6 +509,7 @@ fn normalize_named_produces_named() {
     assert_eq!(
         ty,
         Ty::Named {
+            builtin: None,
             name: "Foo".to_string(),
             args: vec![Ty::I32],
         }
@@ -731,6 +744,7 @@ fn contains_var_in_trait_object() {
 fn contains_var_in_named_machine_and_error() {
     let v = TypeVar(5050);
     assert!(!Ty::Named {
+        builtin: None,
         name: "M".to_string(),
         args: vec![],
     }
@@ -852,6 +866,7 @@ fn substitute_in_function() {
 fn substitute_in_named_machine_is_identity() {
     let v = TypeVar(6060);
     let ty = Ty::Named {
+        builtin: None,
         name: "SM".to_string(),
         args: vec![],
     };
@@ -859,6 +874,7 @@ fn substitute_in_named_machine_is_identity() {
     assert_eq!(
         result,
         Ty::Named {
+            builtin: None,
             name: "SM".to_string(),
             args: vec![],
         }
@@ -1138,12 +1154,14 @@ fn apply_subst_named_machine_unchanged() {
     subst.insert(v, &Ty::I32).unwrap();
 
     let ty = Ty::Named {
+        builtin: None,
         name: "SM".to_string(),
         args: vec![],
     };
     assert_eq!(
         ty.apply_subst(&subst),
         Ty::Named {
+            builtin: None,
             name: "SM".to_string(),
             args: vec![],
         }

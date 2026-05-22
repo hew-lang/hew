@@ -423,7 +423,7 @@ impl<'a> PackageEmitter<'a> {
                 "duration".to_string(),
                 Vec::new(),
             ),
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 let params: Vec<_> = args.iter().map(|arg| self.type_id_for_ty(arg)).collect();
                 let named_id = self.type_id_for_named(name, args);
                 let kind = if name == "Vec" {
@@ -820,6 +820,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     &Ty::Named {
                         name: "Regex".to_string(),
                         args: Vec::new(),
+                        builtin: None,
                     },
                     Some(span.clone()),
                 );
@@ -1242,6 +1243,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                             &Ty::Named {
                                 name: "Regex".to_string(),
                                 args: Vec::new(),
+                                builtin: None,
                             },
                             Some(span.clone()),
                         );
@@ -1311,6 +1313,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 &Ty::Named {
                     name: "Regex".to_string(),
                     args: Vec::new(),
+                    builtin: None,
                 },
                 Some(span.clone()),
             );

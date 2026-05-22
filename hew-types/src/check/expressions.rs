@@ -5,6 +5,7 @@ use super::types::GenericLambdaSig;
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::BuiltinType;
 
 type DangerousRcBinding = (String, String);
 type DangerousRcScope = HashMap<String, Option<DangerousRcBinding>>;
@@ -15,12 +16,18 @@ impl Checker {
             Ty::Var(v) => generic_param_names.get(&v.0).map_or_else(
                 || ty.clone(),
                 |name| Ty::Named {
+                    builtin: None,
                     name: name.clone(),
                     args: vec![],
                 },
             ),
-            Ty::Named { name, args } => Ty::Named {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => Ty::Named {
                 name: name.clone(),
+                builtin: *builtin,
                 args: args
                     .iter()
                     .map(|arg| Self::lambda_generic_schema_ty(arg, generic_param_names))
@@ -149,6 +156,7 @@ impl Checker {
                     );
                 }
                 Ty::Named {
+                    builtin: None,
                     name: "regex.Pattern".to_string(),
                     args: vec![],
                 }
@@ -632,6 +640,7 @@ impl Checker {
             let k = TypeVar::fresh();
             let v = TypeVar::fresh();
             Ty::Named {
+                builtin: Some(BuiltinType::HashMap),
                 name: "HashMap".to_string(),
                 args: vec![Ty::Var(k), Ty::Var(v)],
             }
@@ -646,6 +655,7 @@ impl Checker {
             }
             self.validate_hashmap_key_value_types(&first_key_ty, &first_val_ty, span);
             Ty::Named {
+                builtin: Some(BuiltinType::HashMap),
                 name: "HashMap".to_string(),
                 args: vec![first_key_ty, first_val_ty],
             }
@@ -762,7 +772,7 @@ impl Checker {
         // without flipping the marker. The alias path's sender-side drop
         // suppression is unsafe for user destructors until receiver-side
         // coordination is in place, so any user `impl Drop` stays Copy.
-        if let Ty::Named { name, .. } = ty {
+        if let Ty::Named { name, builtin, .. } = ty {
             if self
                 .trait_impls_set
                 .contains(&(name.clone(), "Drop".to_string()))
@@ -779,7 +789,7 @@ impl Checker {
             // backing buffer.  Classify them as `Copy(StdlibDrop)` so the
             // legacy `deepCopyOwnedArgs` clone fires and the receiver
             // gets an independent copy.
-            if matches!(name.as_str(), "Vec" | "HashMap" | "HashSet") {
+            if builtin.is_some_and(BuiltinType::is_collection) {
                 return ActorSendAliasing::Copy(ActorSendCopyReason::StdlibDrop);
             }
         }
@@ -1071,7 +1081,11 @@ impl Checker {
                 self.check_against(&e.0, &e.1, &Ty::I64);
             }
             return match &obj_ty {
-                Ty::Named { name, args } if name == "Vec" && !args.is_empty() => obj_ty.clone(),
+                Ty::Named {
+                    builtin: Some(BuiltinType::Vec),
+                    args,
+                    ..
+                } if !args.is_empty() => obj_ty.clone(),
                 _ => {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -1116,11 +1130,15 @@ impl Checker {
             // Vec keeps the existing runtime-backed indexing ABI. The std
             // `Index` impl exposes the trait surface, but MIR still owns the
             // bounds-check + hew_vec_get_T lowering and that ABI takes i64.
-            Ty::Named { name, args } if name == "Vec" && !args.is_empty() => {
+            Ty::Named {
+                builtin: Some(BuiltinType::Vec),
+                args,
+                ..
+            } if !args.is_empty() => {
                 self.check_against(&index.0, &index.1, &Ty::I64);
                 args[0].clone()
             }
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 if self.type_satisfies_trait_bound(&resolved_obj, "Index") {
                     let expected_key = self
                         .lookup_named_method_sig(name, args, "at")
@@ -1714,11 +1732,12 @@ impl Checker {
                     op: op @ (BinaryOp::Range | BinaryOp::RangeInclusive),
                     right,
                 },
-                Ty::Named { name, args },
-            ) if name == "Range"
-                && args.len() == 1
-                && !matches!(&args[0], Ty::Error | Ty::Var(_)) =>
-            {
+                Ty::Named {
+                    builtin: Some(BuiltinType::Range),
+                    args,
+                    ..
+                },
+            ) if args.len() == 1 && !matches!(&args[0], Ty::Error | Ty::Var(_)) => {
                 let elem_ty = args[0].clone();
                 self.check_against(&left.0, &left.1, &elem_ty);
                 self.check_against(&right.0, &right.1, &elem_ty);
@@ -1788,7 +1807,14 @@ impl Checker {
             }
 
             // Array literal can coerce to Vec<T> when expected
-            (Expr::Array(elems), Ty::Named { name, args }) if name == "Vec" => {
+            (
+                Expr::Array(elems),
+                Ty::Named {
+                    builtin: Some(BuiltinType::Vec),
+                    args,
+                    ..
+                },
+            ) => {
                 let elem_ty = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
                 for elem in elems {
                     let (expr, sp) = (&elem.0, &elem.1);
@@ -1799,7 +1825,14 @@ impl Checker {
             }
 
             // Map literal can coerce to HashMap<K,V> when expected
-            (Expr::MapLiteral { entries }, Ty::Named { name, args }) if name == "HashMap" => {
+            (
+                Expr::MapLiteral { entries },
+                Ty::Named {
+                    builtin: Some(BuiltinType::HashMap),
+                    args,
+                    ..
+                },
+            ) => {
                 let key_ty = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
                 let val_ty = args.get(1).cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
                 for (k, v) in entries {
@@ -1811,9 +1844,13 @@ impl Checker {
             }
 
             // Empty block {} coerces to HashMap<K,V> when expected
-            (Expr::Block(block), Ty::Named { name, .. })
-                if name == "HashMap" && block.stmts.is_empty() && block.trailing_expr.is_none() =>
-            {
+            (
+                Expr::Block(block),
+                Ty::Named {
+                    builtin: Some(BuiltinType::HashMap),
+                    ..
+                },
+            ) if block.stmts.is_empty() && block.trailing_expr.is_none() => {
                 self.record_type(span, expected);
                 expected.clone()
             }
@@ -1936,6 +1973,7 @@ impl Checker {
                 Ty::Named {
                     name: expected_name,
                     args: expected_args,
+                    ..
                 },
             ) if name == expected_name => {
                 // If the literal carries explicit type args, validate that they agree
@@ -2001,6 +2039,7 @@ impl Checker {
                                     if !type_arg_map.contains_key(tp)
                                         && *declared_ty
                                             == (Ty::Named {
+                                                builtin: None,
                                                 name: tp.clone(),
                                                 args: vec![],
                                             })
@@ -2088,6 +2127,7 @@ impl Checker {
                 Ty::Named {
                     name: expected_enum_name,
                     args: expected_args,
+                    ..
                 },
             ) => {
                 // Fail-closed: explicit type args on enum variant struct forms are not
@@ -2148,6 +2188,7 @@ impl Checker {
                                             if !type_arg_map.contains_key(tp)
                                                 && declared_ty
                                                     == (Ty::Named {
+                                                        builtin: None,
                                                         name: tp.clone(),
                                                         args: vec![],
                                                     })
@@ -2590,7 +2631,13 @@ impl Checker {
             .iter()
             .filter_map(|p| {
                 let ty = self.resolve_type_expr(&p.ty);
-                if matches!(ty, Ty::Named { ref name, .. } if name == "Rc") {
+                if matches!(
+                    ty,
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Rc),
+                        ..
+                    }
+                ) {
                     return Some((p.name.clone(), Some((p.name.clone(), "Rc".to_string()))));
                 }
                 None
@@ -3470,7 +3517,7 @@ impl Checker {
         let obj_ty = self.synthesize(&object.0, &object.1);
         let resolved = self.subst.resolve(&obj_ty);
         match &resolved {
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 // Named supervisor child access: sup.child_name → LocalPid<ChildType>
                 // Accepts local actor handles via as_actor_handle().
                 if let Some(Ty::Named { name: sup_name, .. }) = resolved.as_actor_handle() {
@@ -3525,6 +3572,7 @@ impl Checker {
                             self.supervisor_child_slots
                                 .insert(SpanKey::from(span), slot);
                             return Ty::local_pid(Ty::Named {
+                                builtin: None,
                                 name: child_type,
                                 args: vec![],
                             });
@@ -3981,6 +4029,7 @@ impl Checker {
                         !type_arg_map.contains_key(tp)
                             && expected
                                 == (Ty::Named {
+                                    builtin: None,
                                     name: tp.clone(),
                                     args: vec![],
                                 })
@@ -3996,6 +4045,7 @@ impl Checker {
                         if !type_arg_map.contains_key(tp)
                             && *declared_ty
                                 == (Ty::Named {
+                                    builtin: None,
                                     name: tp.clone(),
                                     args: vec![],
                                 })
@@ -4073,6 +4123,7 @@ impl Checker {
             // `validate_record_init_type_args_output_contract` in `admissibility.rs`.
             self.record_concrete_record_init_type_args(span, &type_args);
             Ty::Named {
+                builtin: None,
                 name: name.to_string(),
                 args: type_args,
             }
@@ -4134,6 +4185,7 @@ impl Checker {
                         !type_arg_map.contains_key(tp)
                             && expected
                                 == (Ty::Named {
+                                    builtin: None,
                                     name: tp.clone(),
                                     args: vec![],
                                 })
@@ -4149,6 +4201,7 @@ impl Checker {
                         if !type_arg_map.contains_key(tp)
                             && *declared_ty
                                 == (Ty::Named {
+                                    builtin: None,
                                     name: tp.clone(),
                                     args: vec![],
                                 })
@@ -4193,6 +4246,7 @@ impl Checker {
             // boundary-prune rationale and validator location.
             self.record_concrete_record_init_type_args(span, &type_args);
             Ty::Named {
+                builtin: None,
                 name: enum_name,
                 args: type_args,
             }
@@ -4246,7 +4300,11 @@ impl Checker {
                 let ty_raw = self.synthesize(arg, as_);
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
             }
-            Ty::local_pid(Ty::Named { name, args: vec![] })
+            Ty::local_pid(Ty::Named {
+                builtin: None,
+                name,
+                args: vec![],
+            })
         } else {
             Ty::local_pid(Ty::Error)
         }
@@ -4615,14 +4673,14 @@ impl Checker {
 
             // Named types: actor handles, collection builtins, and any user
             // `TypeDef` whose kind carries heap/reference identity.
-            Ty::Named { name, .. } => {
+            Ty::Named { name, builtin, .. } => {
                 // Actor handles (`ActorRef<T>` / `Actor<T>`).
                 if ty.as_actor_handle().is_some() {
                     return true;
                 }
                 // Heap-backed builtin collections — kept name-keyed since they
                 // have no `TypeDef` entry.
-                if matches!(name.as_str(), "Vec" | "HashMap" | "HashSet") {
+                if builtin.is_some_and(BuiltinType::is_collection) {
                     return true;
                 }
                 // User type declarations: machines, actors, and user

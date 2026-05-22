@@ -12,6 +12,7 @@ use hew_types::ty::Ty;
 
 fn named(name: &str) -> Ty {
     Ty::Named {
+        builtin: None,
         name: name.to_string(),
         args: vec![],
     }
@@ -19,6 +20,7 @@ fn named(name: &str) -> Ty {
 
 fn named_with(name: &str, args: Vec<Ty>) -> Ty {
     Ty::Named {
+        builtin: None,
         name: name.to_string(),
         args,
     }

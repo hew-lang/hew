@@ -263,7 +263,11 @@ impl Checker {
         let hole_var_set: std::collections::HashSet<TypeVar> = hole_vars.iter().copied().collect();
         self.record_deferred_inference_holes(annotation, context, hole_vars);
         match &ty {
-            Ty::Named { name, args } if name == "Vec" && args.len() == 1 => {
+            Ty::Named {
+                builtin: Some(crate::BuiltinType::Vec),
+                args,
+                ..
+            } if args.len() == 1 => {
                 let elem = self.subst.resolve(&args[0]);
                 let mut unresolved_vars = HashSet::new();
                 collect_unresolved_inference_vars(&elem, &mut unresolved_vars);
@@ -272,7 +276,11 @@ impl Checker {
                     self.validate_vec_element_type(&args[0], &annotation.1);
                 }
             }
-            Ty::Named { name, args } if name == "HashSet" && args.len() == 1 => {
+            Ty::Named {
+                builtin: Some(crate::BuiltinType::HashSet),
+                args,
+                ..
+            } if args.len() == 1 => {
                 // Skip if element is a fresh inference hole — inference-holes
                 // path is the authority; admission runs at method-call sites.
                 let elem = self.subst.resolve(&args[0]);
@@ -280,7 +288,11 @@ impl Checker {
                     self.validate_hashset_element_type(&args[0], &annotation.1);
                 }
             }
-            Ty::Named { name, args } if name == "HashMap" && args.len() == 2 => {
+            Ty::Named {
+                builtin: Some(crate::BuiltinType::HashMap),
+                args,
+                ..
+            } if args.len() == 2 => {
                 // Skip if either key or value is a fresh inference hole.
                 let key = self.subst.resolve(&args[0]);
                 let val = self.subst.resolve(&args[1]);
@@ -622,8 +634,13 @@ impl Checker {
     /// Range and any derived bindings (loop induction variable) resolve.
     pub(super) fn default_unconstrained_range_types(&mut self, expr_types: &HashMap<SpanKey, Ty>) {
         for ty in expr_types.values() {
-            if let Ty::Named { name, args } = ty {
-                if name == "Range" && args.len() == 1 {
+            if let Ty::Named {
+                builtin: Some(crate::BuiltinType::Range),
+                args,
+                ..
+            } = ty
+            {
+                if args.len() == 1 {
                     if let Ty::Var(v) = &args[0] {
                         if self.subst.lookup(*v).is_none() {
                             self.subst.insert(*v, &Ty::I64).expect(
@@ -776,6 +793,7 @@ impl Checker {
                 let trait_name = matches.into_iter().next().expect("len==1");
                 Some(Ty::AssocType {
                     base: Box::new(Ty::Named {
+                        builtin: None,
                         name: base_name.to_string(),
                         args: vec![],
                     }),
@@ -870,7 +888,7 @@ impl Checker {
                 // Resolve via the substitution so a `Ty::Var` bound to a
                 // concrete type also collapses.
                 let resolved_base = self.subst.resolve(&projected_base);
-                if let Ty::Named { name, args } = &resolved_base {
+                if let Ty::Named { name, args, .. } = &resolved_base {
                     let key = (name.clone(), trait_name.to_string(), assoc_name.to_string());
                     if let Some(binding) = self.impl_assoc_type_bindings.get(&key) {
                         // The binding may itself reference impl-level type
@@ -937,6 +955,7 @@ impl Checker {
                         if let Some(trait_name) = self.current_trait_for_self_projection.clone() {
                             return Ty::AssocType {
                                 base: Box::new(Ty::Named {
+                                    builtin: None,
                                     name: "Self".to_string(),
                                     args: vec![],
                                 }),
@@ -1128,7 +1147,9 @@ impl Checker {
                     }
                     _ => args,
                 };
-                if resolved_name == "Rc" {
+                if crate::lookup_builtin_type(resolved_name.as_str())
+                    == Some(crate::BuiltinType::Rc)
+                {
                     if let Some(type_args) = type_args.as_ref() {
                         if let (Some(payload_ty), Some((_, payload_span))) =
                             (args.first(), type_args.first())
@@ -1137,7 +1158,21 @@ impl Checker {
                         }
                     }
                 }
-                Ty::normalize_named(resolved_name, args)
+                let builtin = crate::lookup_builtin_type(resolved_name.as_str());
+                let local_source_type_def = self.source_type_defs.contains(resolved_name.as_str())
+                    && !matches!(
+                        builtin,
+                        Some(
+                            crate::BuiltinType::Vec
+                                | crate::BuiltinType::HashMap
+                                | crate::BuiltinType::HashSet
+                        )
+                    );
+                if builtin.is_some() && !local_source_type_def {
+                    Ty::normalize_named(resolved_name, args)
+                } else {
+                    Ty::named(resolved_name, args)
+                }
             }
             TypeExpr::Result { ok, err } => Ty::result(
                 self.resolve_type_expr_tracking_holes(ok, hole_vars),

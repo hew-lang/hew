@@ -64,7 +64,7 @@ impl Checker {
         arity: usize,
     ) -> Option<Vec<Ty>> {
         match expected {
-            Ty::Named { name, args }
+            Ty::Named { name, args, .. }
                 if Ty::names_match_qualified(name, type_name) && args.len() == arity =>
             {
                 Some(args.clone())
@@ -592,6 +592,7 @@ impl Checker {
                             if i < statics.len() {
                                 let child_type = &statics[i].1;
                                 return Ty::local_pid(Ty::Named {
+                                    builtin: None,
                                     name: child_type.clone(),
                                     args: vec![],
                                 });
@@ -681,7 +682,7 @@ impl Checker {
             }
 
             if resolved_fn_name == "len" {
-                if let Some(Ty::Named { name, args }) =
+                if let Some(Ty::Named { name, args, .. }) =
                     applied_sig.params.first().map(|ty| self.subst.resolve(ty))
                 {
                     if Ty::names_match_qualified(&name, "HashSet") {
@@ -821,9 +822,10 @@ impl Checker {
             // Exactly one argument required (the message). The message type must match
             // the Duplex send-side type (S). The message must be Send (crosses actor boundary).
             Ty::Named {
-                name,
                 args: ref type_args,
-            } if name == "Duplex" && type_args.len() == 2 => {
+                builtin: Some(crate::BuiltinType::Duplex),
+                ..
+            } if type_args.len() == 2 => {
                 let msg_ty = type_args[0].clone();
                 let reply_ty = type_args[1].clone();
                 // Arity: exactly one call argument (the message).

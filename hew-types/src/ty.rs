@@ -4,9 +4,8 @@
 //! the type checker. Types are structural and support substitution for
 //! type inference variables.
 
-use crate::builtin_names::{
-    builtin_named_type, canonical_builtin_named_type_name, BuiltinNamedType,
-};
+use crate::builtin_names::BuiltinNamedType;
+use crate::builtin_type::{lookup_builtin_type, BuiltinType};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -17,6 +16,54 @@ pub struct TypeVar(pub u32);
 
 /// Counter for generating fresh type variables.
 static NEXT_TYPE_VAR: AtomicU32 = AtomicU32::new(0);
+
+fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<BuiltinNamedType> {
+    match builtin {
+        Some(BuiltinType::Sender) => Some(BuiltinNamedType::Sender),
+        Some(BuiltinType::Receiver) => Some(BuiltinNamedType::Receiver),
+        Some(BuiltinType::Stream) => Some(BuiltinNamedType::Stream),
+        Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
+        Some(BuiltinType::Duplex) => Some(BuiltinNamedType::Duplex),
+        Some(BuiltinType::LocalPid) => Some(BuiltinNamedType::LocalPid),
+        Some(BuiltinType::RemotePid) => Some(BuiltinNamedType::RemotePid),
+        Some(
+            BuiltinType::Option
+            | BuiltinType::Result
+            | BuiltinType::Vec
+            | BuiltinType::HashMap
+            | BuiltinType::HashSet
+            | BuiltinType::ActorRef
+            | BuiltinType::Actor
+            | BuiltinType::Task
+            | BuiltinType::StreamPair
+            | BuiltinType::Generator
+            | BuiltinType::AsyncGenerator
+            | BuiltinType::Range
+            | BuiltinType::Rc
+            | BuiltinType::SendHalf
+            | BuiltinType::RecvHalf
+            | BuiltinType::LambdaActorHandle
+            | BuiltinType::CrashInfo
+            | BuiltinType::CrashAction
+            | BuiltinType::SendError
+            | BuiltinType::AskError
+            | BuiltinType::RecvError
+            | BuiltinType::LinkError
+            | BuiltinType::MonitorRef
+            | BuiltinType::NarrowError
+            | BuiltinType::CloseError
+            | BuiltinType::Iterator
+            | BuiltinType::String
+            | BuiltinType::Map
+            | BuiltinType::Char
+            | BuiltinType::Unit
+            | BuiltinType::Duration
+            | BuiltinType::Float
+            | BuiltinType::Trap,
+        )
+        | None => None,
+    }
+}
 
 impl TypeVar {
     /// Create a fresh, globally unique type variable.
@@ -125,6 +172,9 @@ pub enum Ty {
         name: String,
         /// Generic type arguments
         args: Vec<Ty>,
+        /// Compiler-known builtin discriminator, when this name comes from a
+        /// canonical builtin source rather than user-defined source.
+        builtin: Option<BuiltinType>,
     },
 
     /// Function type: `fn(T1, T2) -> R`
@@ -216,6 +266,10 @@ impl Substitution {
     /// # Errors
     /// Returns an occurs-check error when the resolved mapping would introduce
     /// an infinite type or substitution cycle.
+    #[allow(
+        clippy::result_large_err,
+        reason = "UnifyError intentionally carries concrete Ty values for diagnostics"
+    )]
     pub fn insert(&mut self, var: TypeVar, ty: &Ty) -> Result<(), crate::unify::UnifyError> {
         let resolved = ty.apply_subst(self);
         if resolved.contains_var(var) {
@@ -487,7 +541,7 @@ impl Ty {
                 elem.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 write!(f, "]")
             }
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 write!(f, "{name}")?;
                 if !args.is_empty() {
                     write!(f, "<")?;
@@ -597,29 +651,7 @@ impl Ty {
 
     #[must_use]
     fn canonical_named_builtin(name: &str) -> Option<&'static str> {
-        if let Some(canonical) = canonical_builtin_named_type_name(name) {
-            return Some(canonical);
-        }
-        Some(match name {
-            "Option" => "Option",
-            "Result" => "Result",
-            "Vec" => "Vec",
-            "HashMap" => "HashMap",
-            "ActorRef" => "ActorRef",
-            "Actor" => "Actor",
-            "Task" => "Task",
-            "StreamPair" => "StreamPair",
-            "Generator" => "Generator",
-            "AsyncGenerator" => "AsyncGenerator",
-            "Range" => "Range",
-            "Rc" => "Rc",
-            // Duplex<S, R>: bidirectional lambda-actor handle (M2 substrate).
-            "Duplex" => "Duplex",
-            // Error types for lambda-actor call sites.
-            "SendError" => "SendError",
-            "AskError" => "AskError",
-            _ => return None,
-        })
+        lookup_builtin_type(name).map(BuiltinType::canonical_name)
     }
 
     #[must_use]
@@ -714,67 +746,55 @@ impl Ty {
     /// Construct `Option<inner>`.
     #[must_use]
     pub fn option(inner: Ty) -> Ty {
-        Self::normalize_named("Option".to_string(), vec![inner])
+        Self::builtin_named(BuiltinType::Option, vec![inner])
     }
 
     /// Construct `Result<ok, err>`.
     #[must_use]
     pub fn result(ok: Ty, err: Ty) -> Ty {
-        Self::normalize_named("Result".to_string(), vec![ok, err])
+        Self::builtin_named(BuiltinType::Result, vec![ok, err])
     }
 
     /// Construct `ActorRef<inner>`.
     #[must_use]
     pub fn actor_ref(inner: Ty) -> Ty {
-        Self::normalize_named("ActorRef".to_string(), vec![inner])
+        Self::builtin_named(BuiltinType::ActorRef, vec![inner])
     }
 
     /// Construct `LocalPid<inner>` — actor pid in this process, returned by `spawn`.
     #[must_use]
     pub fn local_pid(inner: Ty) -> Ty {
-        Self::normalize_named("LocalPid".to_string(), vec![inner])
+        Self::builtin_named(BuiltinType::LocalPid, vec![inner])
     }
 
     /// Construct `RemotePid<inner>` — actor pid on a remote node.
     #[must_use]
     pub fn remote_pid(inner: Ty) -> Ty {
-        Self::normalize_named("RemotePid".to_string(), vec![inner])
+        Self::builtin_named(BuiltinType::RemotePid, vec![inner])
     }
 
     /// Construct `Sender<inner>`.
     #[must_use]
     pub fn sender(inner: Ty) -> Ty {
-        Self::normalize_named(
-            BuiltinNamedType::Sender.canonical_name().to_string(),
-            vec![inner],
-        )
+        Self::builtin_named(BuiltinType::Sender, vec![inner])
     }
 
     /// Construct `Receiver<inner>`.
     #[must_use]
     pub fn receiver(inner: Ty) -> Ty {
-        Self::normalize_named(
-            BuiltinNamedType::Receiver.canonical_name().to_string(),
-            vec![inner],
-        )
+        Self::builtin_named(BuiltinType::Receiver, vec![inner])
     }
 
     /// Construct `Stream<inner>`.
     #[must_use]
     pub fn stream(inner: Ty) -> Ty {
-        Self::normalize_named(
-            BuiltinNamedType::Stream.canonical_name().to_string(),
-            vec![inner],
-        )
+        Self::builtin_named(BuiltinType::Stream, vec![inner])
     }
 
     /// Construct `Sink<inner>`.
     #[must_use]
     pub fn sink(inner: Ty) -> Ty {
-        Self::normalize_named(
-            BuiltinNamedType::Sink.canonical_name().to_string(),
-            vec![inner],
-        )
+        Self::builtin_named(BuiltinType::Sink, vec![inner])
     }
 
     /// Construct `Duplex<S, R>` — bidirectional lambda-actor handle.
@@ -783,19 +803,18 @@ impl Ty {
     /// (reply type, or `()` for tell-shaped actors).  Send iff both S and R are Send.
     #[must_use]
     pub fn duplex(send: Ty, reply: Ty) -> Ty {
-        Self::normalize_named(
-            BuiltinNamedType::Duplex.canonical_name().to_string(),
-            vec![send, reply],
-        )
+        Self::builtin_named(BuiltinType::Duplex, vec![send, reply])
     }
 
     /// Extract `(S, R)` from `Duplex<S, R>`, or `None` if not a Duplex.
     #[must_use]
     pub fn as_duplex(&self) -> Option<(&Ty, &Ty)> {
         match self {
-            Ty::Named { name, args } if name == "Duplex" && args.len() == 2 => {
-                Some((&args[0], &args[1]))
-            }
+            Ty::Named {
+                builtin: Some(BuiltinType::Duplex),
+                args,
+                ..
+            } if args.len() == 2 => Some((&args[0], &args[1])),
             _ => None,
         }
     }
@@ -803,28 +822,19 @@ impl Ty {
     /// Construct `SendError` — error type for tell-shaped lambda-actor calls.
     #[must_use]
     pub fn send_error() -> Ty {
-        Ty::Named {
-            name: "SendError".to_string(),
-            args: vec![],
-        }
+        Self::builtin_named(BuiltinType::SendError, vec![])
     }
 
     /// Construct `AskError` — error type for ask-shaped lambda-actor calls.
     #[must_use]
     pub fn ask_error() -> Ty {
-        Ty::Named {
-            name: "AskError".to_string(),
-            args: vec![],
-        }
+        Self::builtin_named(BuiltinType::AskError, vec![])
     }
 
     /// Construct `RecvError` — error type for `Duplex::recv` / half-recv calls.
     #[must_use]
     pub fn recv_error() -> Ty {
-        Ty::Named {
-            name: "RecvError".to_string(),
-            args: vec![],
-        }
+        Self::builtin_named(BuiltinType::RecvError, vec![])
     }
 
     /// Construct `LinkError` — error type for `link(handle)` calls.
@@ -834,10 +844,7 @@ impl Ty {
     /// layer this is a named-type marker, consistent with `SendError`/`RecvError`.
     #[must_use]
     pub fn link_error() -> Ty {
-        Ty::Named {
-            name: "LinkError".to_string(),
-            args: vec![],
-        }
+        Self::builtin_named(BuiltinType::LinkError, vec![])
     }
 
     /// Construct `MonitorRef` — handle returned by `monitor(handle)`.
@@ -847,20 +854,14 @@ impl Ty {
     /// named-type marker, consistent with how `SendError`/`AskError` are encoded.
     #[must_use]
     pub fn monitor_ref() -> Ty {
-        Ty::Named {
-            name: "MonitorRef".to_string(),
-            args: vec![],
-        }
+        Self::builtin_named(BuiltinType::MonitorRef, vec![])
     }
 
     /// Construct `NarrowError` — error type returned by `.try_to_<W>()` width-conversion
     /// methods when the source value does not fit in the target integer width.
     #[must_use]
     pub fn narrow_error() -> Ty {
-        Ty::Named {
-            name: "NarrowError".to_string(),
-            args: vec![],
-        }
+        Self::builtin_named(BuiltinType::NarrowError, vec![])
     }
 
     /// Return the fixed bit-width of this integer type, or `None` for
@@ -890,10 +891,7 @@ impl Ty {
     /// unify them under a single `CloseError` enum.
     #[must_use]
     pub fn duplex_close_error() -> Ty {
-        Ty::Named {
-            name: "CloseError".to_string(),
-            args: vec![],
-        }
+        Self::builtin_named(BuiltinType::CloseError, vec![])
     }
 
     /// Construct `SendHalf<S>` — send-direction half of a split `Duplex<S, R>`.
@@ -901,7 +899,7 @@ impl Ty {
     /// Returned by `Duplex<S, R>::send_half()`; consumes the source handle.
     #[must_use]
     pub fn send_half(s: Ty) -> Ty {
-        Self::normalize_named("SendHalf".to_string(), vec![s])
+        Self::builtin_named(BuiltinType::SendHalf, vec![s])
     }
 
     /// Construct `RecvHalf<R>` — receive-direction half of a split `Duplex<S, R>`.
@@ -909,14 +907,18 @@ impl Ty {
     /// Returned by `Duplex<S, R>::recv_half()`; consumes the source handle.
     #[must_use]
     pub fn recv_half(r: Ty) -> Ty {
-        Self::normalize_named("RecvHalf".to_string(), vec![r])
+        Self::builtin_named(BuiltinType::RecvHalf, vec![r])
     }
 
     /// Extract `S` from `SendHalf<S>`, or `None` if not a `SendHalf`.
     #[must_use]
     pub fn as_send_half(&self) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args } if name == "SendHalf" && args.len() == 1 => Some(&args[0]),
+            Ty::Named {
+                builtin: Some(BuiltinType::SendHalf),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }
@@ -925,7 +927,11 @@ impl Ty {
     #[must_use]
     pub fn as_recv_half(&self) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args } if name == "RecvHalf" && args.len() == 1 => Some(&args[0]),
+            Ty::Named {
+                builtin: Some(BuiltinType::RecvHalf),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }
@@ -933,25 +939,25 @@ impl Ty {
     /// Construct `Generator<yields, returns>`.
     #[must_use]
     pub fn generator(yields: Ty, returns: Ty) -> Ty {
-        Self::normalize_named("Generator".to_string(), vec![yields, returns])
+        Self::builtin_named(BuiltinType::Generator, vec![yields, returns])
     }
 
     /// Construct `AsyncGenerator<yields>`.
     #[must_use]
     pub fn async_generator(yields: Ty) -> Ty {
-        Self::normalize_named("AsyncGenerator".to_string(), vec![yields])
+        Self::builtin_named(BuiltinType::AsyncGenerator, vec![yields])
     }
 
     /// Construct `Range<inner>`.
     #[must_use]
     pub fn range(inner: Ty) -> Ty {
-        Self::normalize_named("Range".to_string(), vec![inner])
+        Self::builtin_named(BuiltinType::Range, vec![inner])
     }
 
     /// Construct `Rc<inner>`.
     #[must_use]
     pub fn rc(inner: Ty) -> Ty {
-        Self::normalize_named("Rc".to_string(), vec![inner])
+        Self::builtin_named(BuiltinType::Rc, vec![inner])
     }
 
     // -- Accessor helpers: match on Named patterns --
@@ -960,7 +966,11 @@ impl Ty {
     #[must_use]
     pub fn as_option(&self) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args } if name == "Option" && args.len() == 1 => Some(&args[0]),
+            Ty::Named {
+                builtin: Some(BuiltinType::Option),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }
@@ -969,9 +979,11 @@ impl Ty {
     #[must_use]
     pub fn as_result(&self) -> Option<(&Ty, &Ty)> {
         match self {
-            Ty::Named { name, args } if name == "Result" && args.len() == 2 => {
-                Some((&args[0], &args[1]))
-            }
+            Ty::Named {
+                builtin: Some(BuiltinType::Result),
+                args,
+                ..
+            } if args.len() == 2 => Some((&args[0], &args[1])),
             _ => None,
         }
     }
@@ -980,7 +992,11 @@ impl Ty {
     #[must_use]
     pub fn as_actor_ref(&self) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args } if name == "ActorRef" && args.len() == 1 => Some(&args[0]),
+            Ty::Named {
+                builtin: Some(BuiltinType::ActorRef),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }
@@ -989,7 +1005,11 @@ impl Ty {
     #[must_use]
     pub fn as_local_pid(&self) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args } if name == "LocalPid" && args.len() == 1 => Some(&args[0]),
+            Ty::Named {
+                builtin: Some(BuiltinType::LocalPid),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }
@@ -998,7 +1018,11 @@ impl Ty {
     #[must_use]
     pub fn as_remote_pid(&self) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args } if name == "RemotePid" && args.len() == 1 => Some(&args[0]),
+            Ty::Named {
+                builtin: Some(BuiltinType::RemotePid),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }
@@ -1012,20 +1036,19 @@ impl Ty {
     #[must_use]
     pub fn as_actor_handle(&self) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args }
-                if (name == "ActorRef" || name == "Actor" || name == "LocalPid")
-                    && args.len() == 1 =>
-            {
-                Some(&args[0])
-            }
+            Ty::Named {
+                builtin: Some(BuiltinType::ActorRef | BuiltinType::Actor | BuiltinType::LocalPid),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }
 
     fn as_single_arg_builtin_named(&self, kind: BuiltinNamedType) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args }
-                if builtin_named_type(name) == Some(kind) && args.len() == 1 =>
+            Ty::Named { builtin, args, .. }
+                if builtin_named_type_from_builtin(*builtin) == Some(kind) && args.len() == 1 =>
             {
                 Some(&args[0])
             }
@@ -1061,9 +1084,11 @@ impl Ty {
     #[must_use]
     pub fn as_generator(&self) -> Option<(&Ty, &Ty)> {
         match self {
-            Ty::Named { name, args } if name == "Generator" && args.len() == 2 => {
-                Some((&args[0], &args[1]))
-            }
+            Ty::Named {
+                builtin: Some(BuiltinType::Generator),
+                args,
+                ..
+            } if args.len() == 2 => Some((&args[0], &args[1])),
             _ => None,
         }
     }
@@ -1072,9 +1097,11 @@ impl Ty {
     #[must_use]
     pub fn as_async_generator(&self) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args } if name == "AsyncGenerator" && args.len() == 1 => {
-                Some(&args[0])
-            }
+            Ty::Named {
+                builtin: Some(BuiltinType::AsyncGenerator),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }
@@ -1083,7 +1110,11 @@ impl Ty {
     #[must_use]
     pub fn as_range(&self) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args } if name == "Range" && args.len() == 1 => Some(&args[0]),
+            Ty::Named {
+                builtin: Some(BuiltinType::Range),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }
@@ -1103,12 +1134,35 @@ impl Ty {
     /// Canonicalize known named builtins to their shared spelling before
     /// constructing `Ty::Named`.
     #[must_use]
+    pub fn named(name: impl Into<String>, args: Vec<Ty>) -> Ty {
+        Ty::Named {
+            name: name.into(),
+            args,
+            builtin: None,
+        }
+    }
+
+    #[must_use]
+    pub fn builtin_named(kind: BuiltinType, args: Vec<Ty>) -> Ty {
+        Ty::Named {
+            name: kind.canonical_name().to_string(),
+            args,
+            builtin: Some(kind),
+        }
+    }
+
+    #[must_use]
     pub fn normalize_named(name: String, args: Vec<Ty>) -> Ty {
         let name = match Self::canonical_named_builtin(&name) {
             Some(canonical) if canonical != name => canonical.to_string(),
             _ => name,
         };
-        Ty::Named { name, args }
+        let builtin = lookup_builtin_type(&name);
+        Ty::Named {
+            name,
+            args,
+            builtin,
+        }
     }
 
     /// Check if this is a numeric type (integer or float).
@@ -1270,8 +1324,13 @@ impl Ty {
                 Ty::Array(Box::new(elem.apply_subst_inner(subst, visited)), *size)
             }
             Ty::Slice(elem) => Ty::Slice(Box::new(elem.apply_subst_inner(subst, visited))),
-            Ty::Named { name, args } => Ty::Named {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => Ty::Named {
                 name: name.clone(),
+                builtin: *builtin,
                 args: args
                     .iter()
                     .map(|arg| arg.apply_subst_inner(subst, visited))
@@ -1354,8 +1413,13 @@ impl Ty {
             Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(f).collect()),
             Ty::Array(elem, size) => Ty::Array(Box::new(f(elem)), *size),
             Ty::Slice(elem) => Ty::Slice(Box::new(f(elem))),
-            Ty::Named { name, args } => Ty::Named {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => Ty::Named {
                 name: name.clone(),
+                builtin: *builtin,
                 args: args.iter().map(f).collect(),
             },
             Ty::Function { params, ret } => Ty::Function {
@@ -1433,11 +1497,16 @@ impl Ty {
     #[must_use]
     pub fn substitute_named_param(&self, param_name: &str, replacement: &Ty) -> Ty {
         match self {
-            Ty::Named { name, args } if args.is_empty() && name == param_name => {
+            Ty::Named { name, args, .. } if args.is_empty() && name == param_name => {
                 replacement.clone()
             }
-            Ty::Named { name, args } => Ty::Named {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => Ty::Named {
                 name: name.clone(),
+                builtin: *builtin,
                 args: args
                     .iter()
                     .map(|a| a.substitute_named_param(param_name, replacement))
@@ -1600,11 +1669,13 @@ mod tests {
     fn test_substitute_named_param() {
         let ty = Ty::Function {
             params: vec![Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             }],
             ret: Box::new(Ty::Tuple(vec![
                 Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
@@ -1654,6 +1725,7 @@ mod tests {
             format!(
                 "{}",
                 Ty::Named {
+                    builtin: None,
                     name: "Vec".to_string(),
                     args: vec![Ty::I32],
                 }
@@ -1685,6 +1757,7 @@ mod tests {
         let ty = Ty::Function {
             params: vec![
                 Ty::Named {
+                    builtin: None,
                     name: "Vec".to_string(),
                     args: vec![Ty::I64],
                 },
@@ -1693,6 +1766,7 @@ mod tests {
             ret: Box::new(Ty::result(
                 Ty::I64,
                 Ty::Named {
+                    builtin: None,
                     name: "HashMap".to_string(),
                     args: vec![Ty::String, Ty::I64],
                 },
@@ -1739,6 +1813,7 @@ mod tests {
         let ty = Ty::Tuple(vec![
             Ty::IntLiteral,
             Ty::Named {
+                builtin: None,
                 name: "Option".to_string(),
                 args: vec![Ty::FloatLiteral],
             },
@@ -1748,6 +1823,7 @@ mod tests {
             Ty::Tuple(vec![
                 Ty::I64,
                 Ty::Named {
+                    builtin: None,
                     name: "Option".to_string(),
                     args: vec![Ty::F64],
                 },
@@ -1796,6 +1872,7 @@ mod tests {
         TypeVar::reset();
         let v = TypeVar::fresh();
         let ty = Ty::Named {
+            builtin: None,
             name: "Vec".to_string(),
             args: vec![Ty::Tuple(vec![Ty::Var(v), Ty::Bool])],
         };
@@ -1803,6 +1880,7 @@ mod tests {
         assert_eq!(
             result,
             Ty::Named {
+                builtin: None,
                 name: "Vec".to_string(),
                 args: vec![Ty::Tuple(vec![Ty::String, Ty::Bool])],
             }

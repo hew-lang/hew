@@ -10,11 +10,10 @@ use hew_parser::ast::{
     Param, Program, Span, Spanned, Stmt, TraitBound, TypeExpr,
 };
 use hew_types::builtin_names::{
-    QUALIFIED_RECEIVER, QUALIFIED_SENDER, QUALIFIED_SINK, QUALIFIED_STREAM, RECEIVER, SENDER, SINK,
-    STREAM,
+    QUALIFIED_RECEIVER, QUALIFIED_SENDER, RECEIVER, SENDER, SINK, STREAM,
 };
 use hew_types::check::{MethodCallRewrite, SpanKey, TypeCheckOutput};
-use hew_types::Ty;
+use hew_types::{BuiltinType, Ty};
 use std::fmt;
 
 use crate::msgpack::ExprTypeEntry;
@@ -203,7 +202,10 @@ pub fn build_expr_type_map(tco: &TypeCheckOutput) -> ExprTypeMapBuild {
 
 fn is_internal_generator_handle_type(ty: &Ty) -> bool {
     match ty {
-        Ty::Named { name, .. } if name == "Generator" || name == "AsyncGenerator" => true,
+        Ty::Named {
+            builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
+            ..
+        } => true,
         Ty::Named { args, .. } => args.iter().any(is_internal_generator_handle_type),
         Ty::Tuple(elems) => elems.iter().any(is_internal_generator_handle_type),
         Ty::Array(elem, _) | Ty::Slice(elem) => is_internal_generator_handle_type(elem),
@@ -229,7 +231,7 @@ fn ty_has_ownership_sensitive_bindings(
         // never appears in user-declared struct fields (no surface annotation),
         // but explicit here so the sweep is honest.
         Ty::String | Ty::Bytes | Ty::Task(_) => true,
-        Ty::Named { name, args } => {
+        Ty::Named { name, args, .. } => {
             matches!(name.as_str(), "string" | "bytes")
                 || registry.is_drop_type(name)
                 || registry.is_handle_type(name)
@@ -321,7 +323,7 @@ fn refine_channel_runtime_rewrite(
     c_symbol: &str,
     receiver_ty: Option<&Ty>,
 ) -> Option<&'static str> {
-    let Some(Ty::Named { name, args }) = receiver_ty else {
+    let Some(Ty::Named { name, args, .. }) = receiver_ty else {
         return None;
     };
     let is_channel_receiver = matches!(
@@ -444,12 +446,16 @@ pub(crate) fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConv
         TypeExpr::Tuple(Vec::new())
     } else {
         match ty {
-            Ty::Named { name, args } => match (name.as_str(), args.len()) {
-                ("Option", 1) => {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => match (*builtin, args.len()) {
+                (Some(BuiltinType::Option), 1) => {
                     let inner_expr = require_converted(&args[0], "Option inner type")?;
                     TypeExpr::Option(Box::new(inner_expr))
                 }
-                ("Result", 2) => {
+                (Some(BuiltinType::Result), 2) => {
                     let ok_expr = require_converted(&args[0], "Result ok type")?;
                     let err_expr = require_converted(&args[1], "Result error type")?;
                     TypeExpr::Result {
@@ -457,13 +463,13 @@ pub(crate) fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConv
                         err: Box::new(err_expr),
                     }
                 }
-                ("Generator" | "AsyncGenerator", _) => {
+                (Some(BuiltinType::Generator | BuiltinType::AsyncGenerator), _) => {
                     return Err(TypeExprConversionError::unsupported(
                         ty,
                         "generator type is not representable in serialized TypeExpr",
                     ));
                 }
-                ("Range", 1) => {
+                (Some(BuiltinType::Range), 1) => {
                     let inner_expr = require_converted(&args[0], "Range element type")?;
                     TypeExpr::Named {
                         name: "Range".into(),
@@ -1989,7 +1995,13 @@ fn enrich_method_call(
     // Rewrite ownership for builtin/channel/handle receivers now lives in the
     // checker. Serialization only validates the contract fail-closed.
     match receiver_ty {
-        Some(recv_ty @ Ty::Named { name, args }) if name == STREAM || name == QUALIFIED_STREAM => {
+        Some(
+            recv_ty @ Ty::Named {
+                builtin: Some(BuiltinType::Stream),
+                args,
+                ..
+            },
+        ) => {
             let elem = args.first().and_then(ty_element_name);
             let context = missing_stream_lowering_metadata_context(STREAM, method, elem)
                 .unwrap_or_else(|| format!("unknown method `{method}` on `Stream`"));
@@ -1999,7 +2011,13 @@ fn enrich_method_call(
                     .with_span(expr.1.clone()),
             );
         }
-        Some(recv_ty @ Ty::Named { name, args }) if name == SINK || name == QUALIFIED_SINK => {
+        Some(
+            recv_ty @ Ty::Named {
+                builtin: Some(BuiltinType::Sink),
+                args,
+                ..
+            },
+        ) => {
             let elem = args.first().and_then(ty_element_name);
             let context = missing_stream_lowering_metadata_context(SINK, method, elem)
                 .unwrap_or_else(|| format!("unknown method `{method}` on `Sink`"));
@@ -2009,16 +2027,24 @@ fn enrich_method_call(
                     .with_span(expr.1.clone()),
             );
         }
-        Some(recv_ty @ Ty::Named { name, .. }) if name == SENDER || name == QUALIFIED_SENDER => {
+        Some(
+            recv_ty @ Ty::Named {
+                builtin: Some(BuiltinType::Sender),
+                ..
+            },
+        ) => {
             diagnostics.push(
                 TypeExprConversionError::unresolvable_method_call(recv_ty)
                     .with_context(format!("unknown method `{method}` on `Sender`"))
                     .with_span(expr.1.clone()),
             );
         }
-        Some(recv_ty @ Ty::Named { name, .. })
-            if name == RECEIVER || name == QUALIFIED_RECEIVER =>
-        {
+        Some(
+            recv_ty @ Ty::Named {
+                builtin: Some(BuiltinType::Receiver),
+                ..
+            },
+        ) => {
             diagnostics.push(
                 TypeExprConversionError::unresolvable_method_call(recv_ty)
                     .with_context(format!("unknown method `{method}` on `Receiver`"))
@@ -2857,6 +2883,7 @@ mod tests {
         let ty = Ty::Named {
             name: "Vec".to_string(),
             args: vec![Ty::I32],
+            builtin: None,
         };
         let result = unwrap_converted(ty_to_type_expr(&ty));
         if let TypeExpr::Named { name, type_args } = &result.0 {
@@ -4132,6 +4159,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: "quic.QUICEndpoint".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         record_runtime_method_call_rewrite_for_span(&mut tco, 0..10, "endpoint_observe");
@@ -4173,6 +4201,7 @@ mod tests {
         let receiver_ty = hew_types::Ty::Named {
             name: "QUICEvent".to_string(),
             args: vec![],
+            builtin: None,
         };
 
         assert!(
@@ -4187,6 +4216,7 @@ mod tests {
         let receiver_ty = hew_types::Ty::Named {
             name: "Pattern".to_string(),
             args: vec![],
+            builtin: None,
         };
 
         assert!(
@@ -4202,6 +4232,7 @@ mod tests {
         let receiver_ty = hew_types::Ty::Named {
             name: "regex.Pattern".to_string(),
             args: vec![],
+            builtin: None,
         };
 
         assert!(
@@ -4218,6 +4249,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: "quic.QUICEndpoint".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         tco.method_call_receiver_kinds.insert(
@@ -4267,6 +4299,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: "QUICEvent".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         tco.method_call_receiver_kinds.insert(
@@ -4316,6 +4349,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: "json.Value".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         tco.method_call_receiver_kinds.insert(
@@ -4355,6 +4389,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: RECEIVER.to_string(),
                 args: vec![hew_types::Ty::I64],
+                builtin: Some(BuiltinType::Receiver),
             },
         );
         record_runtime_method_call_rewrite_for_span(&mut tco, 0..10, "hew_channel_recv");
@@ -4396,6 +4431,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: "QUICEndpoint".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         record_runtime_method_call_rewrite_for_span(&mut tco, 0..10, "endpoint_observe");
@@ -4854,6 +4890,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: STREAM.to_string(),
                 args: vec![hew_types::Ty::String],
+                builtin: Some(BuiltinType::Stream),
             },
         );
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
@@ -4887,6 +4924,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: SINK.to_string(),
                 args: vec![hew_types::Ty::String],
+                builtin: Some(BuiltinType::Sink),
             },
         );
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
@@ -4908,6 +4946,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: SENDER.to_string(),
                 args: vec![hew_types::Ty::String],
+                builtin: Some(BuiltinType::Sender),
             },
         );
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
@@ -4929,6 +4968,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: RECEIVER.to_string(),
                 args: vec![hew_types::Ty::String],
+                builtin: Some(BuiltinType::Receiver),
             },
         );
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
@@ -4951,6 +4991,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: STREAM.to_string(),
                 args: vec![hew_types::Ty::String],
+                builtin: Some(BuiltinType::Stream),
             },
         );
         record_runtime_method_call_rewrite(&mut tco, "hew_stream_next");
@@ -4976,6 +5017,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: STREAM.to_string(),
                 args: vec![],
+                builtin: Some(BuiltinType::Stream),
             },
         );
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
@@ -5005,6 +5047,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: STREAM.to_string(),
                 args: vec![hew_types::Ty::Bytes],
+                builtin: Some(BuiltinType::Stream),
             },
         );
         record_deferred_method_call_rewrite(&mut tco);
@@ -5064,6 +5107,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: STREAM.to_string(),
                 args: vec![hew_types::Ty::Bytes],
+                builtin: Some(BuiltinType::Stream),
             },
         );
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
@@ -5093,6 +5137,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: SINK.to_string(),
                 args: vec![hew_types::Ty::Bytes],
+                builtin: Some(BuiltinType::Sink),
             },
         );
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
@@ -5122,6 +5167,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: SINK.to_string(),
                 args: vec![],
+                builtin: Some(BuiltinType::Sink),
             },
         );
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
@@ -5151,6 +5197,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: SENDER.to_string(),
                 args: vec![hew_types::Ty::String],
+                builtin: Some(BuiltinType::Sender),
             },
         );
         record_runtime_method_call_rewrite(&mut tco, "hew_channel_send");
@@ -5191,6 +5238,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: "quic.QUICEndpoint".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         let mut expr = make_method_call_expr("ep", 2, "nonexistent_quic_method");
@@ -5218,6 +5266,7 @@ mod tests {
             hew_types::Ty::Named {
                 name: "UserStruct".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         let mut expr = make_method_call_expr("obj", 3, "some_method");
@@ -5237,6 +5286,7 @@ mod tests {
         let diag = TypeExprConversionError::unresolvable_method_call(&hew_types::Ty::Named {
             name: STREAM.to_string(),
             args: vec![],
+            builtin: Some(BuiltinType::Stream),
         });
         assert_eq!(diag.kind(), TypeExprConversionKind::MethodCallRewriteFailed);
         // Confirm it is distinct from the Unsupported kind (both are now fatal).
@@ -5263,8 +5313,9 @@ mod tests {
         let tco = make_tco_with_receiver_ty(
             2,
             hew_types::Ty::Named {
-                name: QUALIFIED_STREAM.to_string(),
+                name: hew_types::builtin_names::QUALIFIED_STREAM.to_string(),
                 args: vec![hew_types::Ty::String],
+                builtin: Some(BuiltinType::Stream),
             },
         );
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
@@ -5412,6 +5463,7 @@ mod tests {
         let ty = Ty::Named {
             name: "TrafficLight".into(),
             args: vec![],
+            builtin: None,
         };
         let (te, _span) = unwrap_converted(ty_to_type_expr(&ty));
         match te {

@@ -4,6 +4,7 @@
 )]
 use super::*;
 use crate::traits::RcFreeStatus;
+use crate::BuiltinType;
 
 pub(crate) fn signature_contains_error_type(params: &[Ty], ret: &Ty) -> bool {
     params.iter().any(ty_contains_error) || ty_contains_error(ret)
@@ -64,7 +65,7 @@ fn ty_contains_error(ty: &Ty) -> bool {
 
 fn normalize_synthetic_channel_handle_type(ty: &Ty) -> Ty {
     match ty {
-        Ty::Named { name, args } => {
+        Ty::Named { name, args, .. } => {
             let normalized_args: Vec<Ty> = args
                 .iter()
                 .map(normalize_synthetic_channel_handle_type)
@@ -187,15 +188,15 @@ impl ConcreteCollectionKind {
     fn validate_named_collection(
         self,
         checker: &mut Checker,
-        name: &str,
+        builtin: Option<BuiltinType>,
         args: &[Ty],
         span: &Span,
     ) -> Option<bool> {
         match self {
-            Self::Vec if name == "Vec" && args.len() == 1 => {
+            Self::Vec if builtin == Some(BuiltinType::Vec) && args.len() == 1 => {
                 Some(checker.validate_vec_element_type(&args[0], span))
             }
-            Self::HashSet if name == "HashSet" && args.len() == 1 => {
+            Self::HashSet if builtin == Some(BuiltinType::HashSet) && args.len() == 1 => {
                 // Skip admission when the element type is still unresolved or
                 // erroneous: Ty::Var is not yet decidable (inference may
                 // resolve it), and Ty::Error already has an upstream
@@ -209,7 +210,7 @@ impl ConcreteCollectionKind {
                 }
                 Some(checker.validate_hashset_element_type(&args[0], span))
             }
-            Self::HashMap if name == "HashMap" && args.len() == 2 => {
+            Self::HashMap if builtin == Some(BuiltinType::HashMap) && args.len() == 2 => {
                 // Same: skip admission for undecidable/erroneous args.
                 let resolved_key = checker.subst.resolve(&args[0]);
                 let resolved_val = checker.subst.resolve(&args[1]);
@@ -835,11 +836,14 @@ impl Checker {
             Ty::Tuple(elems) => elems
                 .iter()
                 .any(|elem| self.vec_element_contains_structural_array(elem, visiting)),
-            Ty::Named { name, args } if matches!(name.as_str(), "Range" | "Option" | "Result") => {
-                args.iter()
-                    .any(|arg| self.vec_element_contains_structural_array(arg, visiting))
-            }
-            Ty::Named { name, args } => {
+            Ty::Named {
+                builtin: Some(BuiltinType::Range | BuiltinType::Option | BuiltinType::Result),
+                args,
+                ..
+            } => args
+                .iter()
+                .any(|arg| self.vec_element_contains_structural_array(arg, visiting)),
+            Ty::Named { name, args, .. } => {
                 let Some(type_def) = self.lookup_type_def(name) else {
                     return false;
                 };
@@ -923,9 +927,9 @@ impl Checker {
     ) -> bool {
         let resolved = self.subst.resolve(ty);
         match &resolved {
-            Ty::Named { name, args } => {
+            Ty::Named { builtin, args, .. } => {
                 if let Some(result) =
-                    collection.validate_named_collection(self, name.as_str(), args, span)
+                    collection.validate_named_collection(self, *builtin, args, span)
                 {
                     return result;
                 }
@@ -987,6 +991,7 @@ impl Checker {
 
     pub(super) fn make_vec_type(&mut self, elem_ty: Ty, span: &Span) -> Ty {
         let ty = Ty::Named {
+            builtin: Some(BuiltinType::Vec),
             name: "Vec".to_string(),
             args: vec![elem_ty],
         };
@@ -1008,9 +1013,11 @@ impl Checker {
         }
         match &resolved {
             Ty::String | Ty::Bytes => true,
-            Ty::Named { name, args } if name == "Rc" && args.len() == 1 => {
-                self.rc_payload_drop_supported(&args[0])
-            }
+            Ty::Named {
+                builtin: Some(BuiltinType::Rc),
+                args,
+                ..
+            } if args.len() == 1 => self.rc_payload_drop_supported(&args[0]),
             Ty::Named { name, .. } if self.type_implements_trait(name, "Drop") => false,
             _ => self
                 .registry
@@ -1205,11 +1212,19 @@ mod tests {
         );
         assert!(matches!(
             &fn_sigs["normalized_param_fn"].params[0],
-            Ty::Named { name, args } if name == "Sender" && args.len() == 1
+            Ty::Named {
+                builtin: Some(BuiltinType::Sender),
+                args,
+                ..
+            } if args.len() == 1
         ));
         assert!(matches!(
             fn_sigs["normalized_return_fn"].return_type,
-            Ty::Named { ref name, ref args } if name == "Receiver" && args.len() == 1
+            Ty::Named {
+                builtin: Some(BuiltinType::Receiver),
+                ref args,
+                ..
+            } if args.len() == 1
         ));
         assert!(
             !fn_sigs.contains_key("leaked_param_fn"),
@@ -1339,16 +1354,31 @@ mod tests {
         );
         assert!(matches!(
             &type_defs["NormalizedHandles"].fields["tx"],
-            Ty::Named { name, args } if name == "Sender" && args.len() == 1
+            Ty::Named {
+                builtin: Some(BuiltinType::Sender),
+                args,
+                ..
+            } if args.len() == 1
         ));
         assert!(matches!(
             &type_defs["NormalizedHandles"].variants["Recv"],
             VariantDef::Tuple(fields)
-                if matches!(fields.as_slice(), [Ty::Named { name, args }] if name == "Receiver" && args.len() == 1)
+                if matches!(
+                    fields.as_slice(),
+                    [Ty::Named {
+                        builtin: Some(BuiltinType::Receiver),
+                        args,
+                        ..
+                    }] if args.len() == 1
+                )
         ));
         assert!(matches!(
             &type_defs["NormalizedHandles"].methods["close"].params[0],
-            Ty::Named { name, args } if name == "Sender" && args.len() == 1
+            Ty::Named {
+                builtin: Some(BuiltinType::Sender),
+                args,
+                ..
+            } if args.len() == 1
         ));
         assert!(
             !type_defs.contains_key("LeakedField"),
@@ -1582,6 +1612,7 @@ mod tests {
                 type_param_bounds: HashMap::new(),
                 param_names: vec!["item".to_string()],
                 params: vec![Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 }],

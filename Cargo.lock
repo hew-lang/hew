@@ -2010,6 +2010,7 @@ dependencies = [
  "hew-parser",
  "regex",
  "serde",
+ "serde_json",
  "siphasher",
  "stacker",
 ]

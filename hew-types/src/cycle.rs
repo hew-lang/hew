@@ -86,8 +86,15 @@ fn collect_actor_refs<'a>(
                 collect_actor_refs(elem, type_defs, out, visited_structs);
             }
         }
-        Ty::Named { name, args } => {
-            if name == "ActorRef" || name == "LocalPid" {
+        Ty::Named {
+            name,
+            args,
+            builtin,
+        } => {
+            if matches!(
+                builtin,
+                Some(crate::BuiltinType::ActorRef | crate::BuiltinType::LocalPid)
+            ) {
                 // ActorRef<X> / LocalPid<X> — record X if it's a known actor
                 if let Some(Ty::Named {
                     name: actor_name, ..
@@ -251,6 +258,7 @@ mod tests {
 
     fn actor_ref(name: &str) -> Ty {
         Ty::actor_ref(Ty::Named {
+            builtin: None,
             name: name.to_string(),
             args: vec![],
         })
@@ -320,6 +328,7 @@ mod tests {
                 HashMap::from([(
                     "s".to_string(),
                     Ty::Named {
+                        builtin: None,
                         name: "S".to_string(),
                         args: vec![],
                     },
@@ -365,6 +374,7 @@ mod tests {
                 HashMap::from([(
                     "bs".to_string(),
                     Ty::Named {
+                        builtin: None,
                         name: "Vec".to_string(),
                         args: vec![actor_ref("B")],
                     },
@@ -445,6 +455,7 @@ mod tests {
                 HashMap::from([(
                     "s".to_string(),
                     Ty::Named {
+                        builtin: None,
                         name: "S".to_string(),
                         args: vec![],
                     },
@@ -471,6 +482,7 @@ mod tests {
                 fields: HashMap::from([(
                     "target".to_string(),
                     Ty::actor_ref(Ty::Named {
+                        builtin: None,
                         name: "T".to_string(),
                         args: vec![],
                     }),
@@ -488,8 +500,10 @@ mod tests {
                 HashMap::from([(
                     "wrapper".to_string(),
                     Ty::Named {
+                        builtin: None,
                         name: "Wrapper".to_string(),
                         args: vec![Ty::Named {
+                            builtin: None,
                             name: "B".to_string(),
                             args: vec![],
                         }],
@@ -528,6 +542,7 @@ mod tests {
                 fields: HashMap::from([(
                     "target".to_string(),
                     Ty::actor_ref(Ty::Named {
+                        builtin: None,
                         name: "T".to_string(),
                         args: vec![],
                     }),
@@ -546,15 +561,19 @@ mod tests {
                     "combo".to_string(),
                     Ty::Tuple(vec![
                         Ty::Named {
+                            builtin: None,
                             name: "Wrapper".to_string(),
                             args: vec![Ty::Named {
+                                builtin: None,
                                 name: "B".to_string(),
                                 args: vec![],
                             }],
                         },
                         Ty::Named {
+                            builtin: None,
                             name: "Wrapper".to_string(),
                             args: vec![Ty::Named {
+                                builtin: None,
                                 name: "C".to_string(),
                                 args: vec![],
                             }],

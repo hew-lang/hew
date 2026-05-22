@@ -351,6 +351,7 @@ mod tests {
             Ty::Named {
                 name: "ChannelModule".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
 
@@ -432,6 +433,7 @@ mod tests {
             Ty::Named {
                 name: "Widget".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
 

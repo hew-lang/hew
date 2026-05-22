@@ -5,7 +5,7 @@
 //! qualified and unqualified spellings converge on one model.
 
 use crate::check::{FnSig, TypeDef, TypeDefKind};
-use crate::Ty;
+use crate::{BuiltinType, Ty};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -325,10 +325,51 @@ pub const fn builtin_named_types() -> &'static [BuiltinNamedTypeInfo] {
 
 #[must_use]
 pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
-    builtin_named_types()
-        .iter()
-        .find(|info| name == info.canonical_name || name == info.qualified_name)
-        .map(|info| info.kind)
+    match crate::lookup_builtin_type(name) {
+        Some(BuiltinType::Sender) => Some(BuiltinNamedType::Sender),
+        Some(BuiltinType::Receiver) => Some(BuiltinNamedType::Receiver),
+        Some(BuiltinType::Stream) => Some(BuiltinNamedType::Stream),
+        Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
+        Some(BuiltinType::Duplex) => Some(BuiltinNamedType::Duplex),
+        Some(BuiltinType::LocalPid) => Some(BuiltinNamedType::LocalPid),
+        Some(BuiltinType::RemotePid) => Some(BuiltinNamedType::RemotePid),
+        Some(
+            BuiltinType::Option
+            | BuiltinType::Result
+            | BuiltinType::Vec
+            | BuiltinType::HashMap
+            | BuiltinType::HashSet
+            | BuiltinType::ActorRef
+            | BuiltinType::Actor
+            | BuiltinType::Task
+            | BuiltinType::StreamPair
+            | BuiltinType::Generator
+            | BuiltinType::AsyncGenerator
+            | BuiltinType::Range
+            | BuiltinType::Rc
+            | BuiltinType::SendHalf
+            | BuiltinType::RecvHalf
+            | BuiltinType::LambdaActorHandle
+            | BuiltinType::CrashInfo
+            | BuiltinType::CrashAction
+            | BuiltinType::SendError
+            | BuiltinType::AskError
+            | BuiltinType::RecvError
+            | BuiltinType::LinkError
+            | BuiltinType::MonitorRef
+            | BuiltinType::NarrowError
+            | BuiltinType::CloseError
+            | BuiltinType::Iterator
+            | BuiltinType::String
+            | BuiltinType::Map
+            | BuiltinType::Char
+            | BuiltinType::Unit
+            | BuiltinType::Duration
+            | BuiltinType::Float
+            | BuiltinType::Trap,
+        )
+        | None => None,
+    }
 }
 
 #[must_use]
@@ -346,6 +387,7 @@ pub fn builtin_method_info(
 
 fn type_param_ty() -> Ty {
     Ty::Named {
+        builtin: None,
         name: "T".to_string(),
         args: vec![],
     }

@@ -1,5 +1,5 @@
 use hew_parser::ast::ResourceMarker as AstResourceMarker;
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 
 use crate::value_class::{ResourceMarker, TypeClassTable};
 
@@ -37,11 +37,19 @@ pub enum BuiltinTypeShape {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuiltinTypeRegistration {
+    pub builtin: BuiltinType,
     pub name: &'static str,
     pub marker: ResourceMarker,
     pub close_method: Option<&'static str>,
     pub shape: BuiltinTypeShape,
     pub role: Option<BuiltinTypeRole>,
+}
+
+impl BuiltinTypeRegistration {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        self.builtin.canonical_name()
+    }
 }
 
 const CRASH_INFO_FIELDS: &[BuiltinTypeField] = &[BuiltinTypeField {
@@ -53,56 +61,64 @@ const CRASH_ACTION_VARIANTS: &[&str] = &["Restart", "Escalate", "Kill"];
 
 const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     BuiltinTypeRegistration {
-        name: "Duplex",
+        builtin: BuiltinType::Duplex,
+        name: BuiltinType::Duplex.canonical_name(),
         marker: ResourceMarker::Resource,
         close_method: Some("close"),
         shape: BuiltinTypeShape::Opaque,
         role: None,
     },
     BuiltinTypeRegistration {
-        name: "Sink",
+        builtin: BuiltinType::Sink,
+        name: BuiltinType::Sink.canonical_name(),
         marker: ResourceMarker::Resource,
         close_method: Some("close"),
         shape: BuiltinTypeShape::Opaque,
         role: None,
     },
     BuiltinTypeRegistration {
-        name: "Stream",
+        builtin: BuiltinType::Stream,
+        name: BuiltinType::Stream.canonical_name(),
         marker: ResourceMarker::Resource,
         close_method: Some("close"),
         shape: BuiltinTypeShape::Opaque,
         role: None,
     },
     BuiltinTypeRegistration {
-        name: "LambdaActorHandle",
+        builtin: BuiltinType::LambdaActorHandle,
+        name: BuiltinType::LambdaActorHandle.canonical_name(),
         marker: ResourceMarker::Resource,
         close_method: Some("close"),
         shape: BuiltinTypeShape::Opaque,
         role: None,
     },
     BuiltinTypeRegistration {
-        name: "SendHalf",
+        builtin: BuiltinType::SendHalf,
+        name: BuiltinType::SendHalf.canonical_name(),
         marker: ResourceMarker::Resource,
         close_method: Some("close"),
         shape: BuiltinTypeShape::Opaque,
         role: None,
     },
     BuiltinTypeRegistration {
-        name: "RecvHalf",
+        builtin: BuiltinType::RecvHalf,
+        name: BuiltinType::RecvHalf.canonical_name(),
         marker: ResourceMarker::Resource,
         close_method: Some("close"),
         shape: BuiltinTypeShape::Opaque,
         role: None,
     },
     BuiltinTypeRegistration {
-        name: "CrashInfo",
+        builtin: BuiltinType::CrashInfo,
+        name: BuiltinType::CrashInfo.canonical_name(),
         marker: ResourceMarker::BitCopy,
         close_method: None,
         shape: BuiltinTypeShape::Struct(CRASH_INFO_FIELDS),
         role: Some(BuiltinTypeRole::CrashInfo),
     },
     BuiltinTypeRegistration {
-        name: "CrashAction",
+        builtin: BuiltinType::CrashAction,
+        name: BuiltinType::CrashAction.canonical_name(),
         marker: ResourceMarker::None,
         close_method: None,
         shape: BuiltinTypeShape::Enum(CRASH_ACTION_VARIANTS),
@@ -119,7 +135,7 @@ pub fn builtin_type_registrations() -> &'static [BuiltinTypeRegistration] {
 pub fn builtin_type_registration(name: &str) -> Option<&'static BuiltinTypeRegistration> {
     BUILTIN_TYPE_REGISTRATIONS
         .iter()
-        .find(|registration| registration.name == name)
+        .find(|registration| registration.name() == name)
 }
 
 /// Return the compiler-known crash-info payload registration.
@@ -167,7 +183,7 @@ pub fn seed_builtin_type_classes(type_classes: &mut TypeClassTable) {
             "BitCopy builtin types must not register close methods"
         );
         type_classes.insert(
-            registration.name.to_string(),
+            registration.name().to_string(),
             (
                 registration
                     .marker
@@ -282,7 +298,7 @@ mod tests {
     #[test]
     fn crash_info_shape_is_registered_as_crash_info_payload() {
         let registration = crash_info_type_registration();
-        assert_eq!(registration.name, "CrashInfo");
+        assert_eq!(registration.name(), "CrashInfo");
         assert_eq!(registration.marker, ResourceMarker::BitCopy);
         assert_eq!(registration.role, Some(BuiltinTypeRole::CrashInfo));
         assert_eq!(

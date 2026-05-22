@@ -167,11 +167,13 @@ impl Checker {
                     // this module so orphan-rule checks see module-local
                     // definitions and locally_non_generic works correctly.
                     let saved_local_type_defs = self.local_type_defs.clone();
+                    let saved_source_type_defs = self.source_type_defs.clone();
                     let saved_local_trait_defs = self.local_trait_defs.clone();
                     for (item, _) in &module.items {
                         match item {
                             Item::TypeDecl(td) => {
                                 self.local_type_defs.insert(td.name.clone());
+                                self.source_type_defs.insert(td.name.clone());
                             }
                             Item::Trait(tr) => {
                                 self.local_trait_defs.insert(tr.name.clone());
@@ -205,6 +207,7 @@ impl Checker {
                     }
 
                     self.local_type_defs = saved_local_type_defs;
+                    self.source_type_defs = saved_source_type_defs;
                     self.local_trait_defs = saved_local_trait_defs;
                 }
             }

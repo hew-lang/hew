@@ -43,6 +43,7 @@ Key boundary checks most contributors encounter:
 
 - **Rust:** Follow standard `rustfmt` conventions. Run `cargo clippy --workspace` before submitting.
 - **Commit messages:** Use imperative mood ("Add feature" not "Added feature"). Keep the first line under 72 characters.
+- **Commit style:** Follow [COMMIT_STYLE.md](COMMIT_STYLE.md) for the required Conventional Commit header shape, imperative subject voice, and rationale-first body style.
 - **Stdlib integer surface:** Every `pub fn` parameter and return type in `std/**/*.hew` uses an explicit-width integer (`i64`, `u64`, `isize`, etc.). The removed aliases `int`/`uint` are not valid type names. See [`docs/stdlib-style-contract.md`](docs/stdlib-style-contract.md) for the full contract and examples.
 
 ## Formatting

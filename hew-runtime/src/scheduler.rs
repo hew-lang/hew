@@ -25,8 +25,11 @@ use std::sync::{Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use rand::RngExt;
+
 use crate::actor::{self, HewActor, HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET};
 use crate::deque::{GlobalQueue, WorkDeque, WorkStealer};
+use crate::deterministic::hew_deterministic_set_seed;
 use crate::execution_context::HewExecutionContext;
 use crate::internal::types::HewActorState;
 use crate::lifetime::poison_safe::PoisonSafe;
@@ -235,6 +238,15 @@ unsafe impl Sync for Scheduler {}
 
 // ── Xorshift64 PRNG for victim selection ────────────────────────────────
 
+fn randomized_scheduler_seed() -> u64 {
+    let seed = rand::rng().random::<u64>();
+    if seed == 0 {
+        1
+    } else {
+        seed
+    }
+}
+
 /// Minimal xorshift64 PRNG — one per worker thread.
 struct Xorshift64(u64);
 
@@ -277,6 +289,20 @@ pub extern "C" fn hew_sched_init() -> c_int {
         Err(_) => default_count,
     }
     .clamp(1, crate::actor::HEW_MAX_WORKERS);
+
+    match std::env::var("HEW_SEED") {
+        Ok(seed_str) => {
+            if let Ok(seed) = seed_str.parse::<u64>() {
+                hew_deterministic_set_seed(seed);
+            } else {
+                eprintln!(
+                    "hew-runtime: HEW_SEED='{seed_str}' not parseable as u64; using randomized seed"
+                );
+                hew_deterministic_set_seed(randomized_scheduler_seed());
+            }
+        }
+        Err(_) => hew_deterministic_set_seed(randomized_scheduler_seed()),
+    }
 
     // Phase 1: Create all deques and collect stealers BEFORE spawning
     // threads. Workers steal from each other's deques, so every deque

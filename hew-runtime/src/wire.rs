@@ -3,6 +3,35 @@
 //! Implements varint (unsigned LEB128), zigzag encoding, TLV field encoding,
 //! an HBF header, and actor-message envelopes. All types use `#[repr(C)]` to
 //! match the C runtime layout exactly.
+//!
+//! # HBF retirement inventory (R62 CBOR migration)
+//!
+//! This entire module is scheduled for replacement by CBOR (ciborium) under
+//! the R62 clean-break migration. See `hew-runtime/Cargo.toml` for the
+//! `ciborium` dependency added in W0 of that migration.
+//!
+//! Every public symbol is tagged `// HBF-RETIRE` for systematic removal in
+//! slices W1-W6. Search `// HBF-RETIRE` to find all 46 annotated sites.
+//!
+//! ## HBF consumers in hew-runtime (W4 call-site swap targets)
+//!
+//! The following source files call into this module and must be updated when
+//! the replacement CBOR encoder/decoder is ready (W4 scope):
+//!
+//! - `src/connection.rs` — imports `hew_wire_buf_free`, `hew_wire_buf_init`,
+//!   `hew_wire_buf_init_read`, `hew_wire_decode_envelope`,
+//!   `hew_wire_encode_envelope`, `HewWireBuf`, `HewWireEnvelope`,
+//!   `HBF_FLAG_COMPRESSED`, `HBF_MAGIC`, `HBF_VERSION`,
+//!   `HEW_WIRE_FIXED32`, `HEW_WIRE_LENGTH_DELIMITED`, `HEW_WIRE_VARINT`
+//! - `src/transport.rs` — imports `wire::{self, HewWireBuf, HewWireEnvelope}`;
+//!   calls `hew_wire_buf_init`, `hew_wire_encode_envelope`, `hew_wire_buf_free`
+//! - `src/hew_node.rs` — calls `crate::wire::HewWireEnvelope`,
+//!   `crate::wire::HewWireBuf`, `crate::wire::hew_wire_buf_init`,
+//!   `crate::wire::hew_wire_encode_envelope`, `crate::wire::hew_wire_buf_free`
+//!   (three separate call-sites at lines ~955, ~1032, ~2121)
+//! - `src/lib.rs` — `pub mod wire;` declaration (remove when module deleted)
+//!
+//! No direct HBF usage found in `hew-runtime/tests/` or `hew-runtime-testkit/`.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
@@ -17,30 +46,31 @@ use crate::set_last_error;
 // ---------------------------------------------------------------------------
 
 /// Wire type: unsigned LEB128 varint.
-pub const HEW_WIRE_VARINT: u32 = 0;
+pub const HEW_WIRE_VARINT: u32 = 0; // HBF-RETIRE
 /// Wire type: 64-bit little-endian fixed.
-pub const HEW_WIRE_FIXED64: u32 = 1;
+pub const HEW_WIRE_FIXED64: u32 = 1; // HBF-RETIRE
 /// Wire type: length-delimited bytes.
-pub const HEW_WIRE_LENGTH_DELIMITED: u32 = 2;
+pub const HEW_WIRE_LENGTH_DELIMITED: u32 = 2; // HBF-RETIRE
 /// Wire type: 32-bit little-endian fixed.
-pub const HEW_WIRE_FIXED32: u32 = 5;
+pub const HEW_WIRE_FIXED32: u32 = 5; // HBF-RETIRE
 
 const INITIAL_BUF_CAP: usize = 64;
 const HBF_HEADER_LEN: usize = 10;
 const MAX_MSG_TYPE: i64 = 65_535;
 
 /// HBF message magic bytes (`"HEW1"`).
-pub const HBF_MAGIC: [u8; 4] = *b"HEW1";
+pub const HBF_MAGIC: [u8; 4] = *b"HEW1"; // HBF-RETIRE
 /// HBF wire format version.
-pub const HBF_VERSION: u8 = 0x01;
+pub const HBF_VERSION: u8 = 0x01; // HBF-RETIRE
 /// HBF compressed payload flag (bit 0).
-pub const HBF_FLAG_COMPRESSED: u8 = 0x01;
+pub const HBF_FLAG_COMPRESSED: u8 = 0x01; // HBF-RETIRE
 
 // ---------------------------------------------------------------------------
 // Wire buffer
 // ---------------------------------------------------------------------------
 
 /// Growable byte buffer used for encoding and decoding wire data.
+// HBF-RETIRE
 #[repr(C)]
 #[derive(Debug)]
 pub struct HewWireBuf {
@@ -152,6 +182,7 @@ impl HewWireBuf {
 /// # Safety
 ///
 /// `buf` must point to a valid, writable [`HewWireBuf`].
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_init(buf: *mut HewWireBuf) {
     cabi_guard!(buf.is_null());
@@ -171,6 +202,7 @@ pub unsafe extern "C" fn hew_wire_buf_init(buf: *mut HewWireBuf) {
 /// # Safety
 ///
 /// The returned pointer must be released with [`hew_wire_buf_destroy`].
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_new() -> *mut HewWireBuf {
     // SAFETY: malloc is called with the exact size of HewWireBuf.
@@ -189,6 +221,7 @@ pub unsafe extern "C" fn hew_wire_buf_new() -> *mut HewWireBuf {
 ///
 /// `buf` must point to a valid [`HewWireBuf`] whose `data` was allocated by
 /// `libc::malloc`/`libc::realloc` (or is null).
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_free(buf: *mut HewWireBuf) {
     cabi_guard!(buf.is_null());
@@ -211,6 +244,7 @@ pub unsafe extern "C" fn hew_wire_buf_free(buf: *mut HewWireBuf) {
 /// # Safety
 ///
 /// `buf` must be either null or a pointer returned by [`hew_wire_buf_new`].
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_destroy(buf: *mut HewWireBuf) {
     cabi_guard!(buf.is_null());
@@ -227,6 +261,7 @@ pub unsafe extern "C" fn hew_wire_buf_destroy(buf: *mut HewWireBuf) {
 /// # Safety
 ///
 /// `buf` must point to a valid [`HewWireBuf`].
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_reset(buf: *mut HewWireBuf) {
     cabi_guard!(buf.is_null());
@@ -243,6 +278,7 @@ pub unsafe extern "C" fn hew_wire_buf_reset(buf: *mut HewWireBuf) {
 ///
 /// `buf` must point to a valid [`HewWireBuf`]. `data` must be valid for `len`
 /// bytes and must outlive the buffer's use.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_init_read(buf: *mut HewWireBuf, data: *const u8, len: usize) {
     cabi_guard!(buf.is_null());
@@ -266,6 +302,7 @@ pub unsafe extern "C" fn hew_wire_buf_init_read(buf: *mut HewWireBuf, data: *con
 /// # Safety
 ///
 /// `buf` must point to a valid, writable [`HewWireBuf`] with malloc-backed data.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_encode_varint(buf: *mut HewWireBuf, value: u64) -> c_int {
     cabi_guard!(buf.is_null(), -1);
@@ -297,6 +334,7 @@ pub unsafe extern "C" fn hew_wire_encode_varint(buf: *mut HewWireBuf, value: u64
 ///
 /// `buf` must point to a valid [`HewWireBuf`]. `out` must be non-null and
 /// writable.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_decode_varint(buf: *mut HewWireBuf, out: *mut u64) -> c_int {
     cabi_guard!(buf.is_null() || out.is_null(), -1);
@@ -342,12 +380,14 @@ pub unsafe extern "C" fn hew_wire_decode_varint(buf: *mut HewWireBuf, out: *mut 
 // ---------------------------------------------------------------------------
 
 /// Zigzag-encode a signed 64-bit integer.
+// HBF-RETIRE
 #[no_mangle]
 pub extern "C" fn hew_wire_zigzag_encode(n: i64) -> u64 {
     ((n << 1) ^ (n >> 63)).cast_unsigned()
 }
 
 /// Zigzag-decode an unsigned 64-bit integer back to signed.
+// HBF-RETIRE
 #[no_mangle]
 pub extern "C" fn hew_wire_zigzag_decode(n: u64) -> i64 {
     (n >> 1).cast_signed() ^ (-((n & 1).cast_signed()))
@@ -371,6 +411,7 @@ fn make_tag(field_num: c_int, wire_type: u32) -> u64 {
 /// # Safety
 ///
 /// `buf` must point to a valid, writable [`HewWireBuf`].
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_encode_field_varint(
     buf: *mut HewWireBuf,
@@ -390,6 +431,7 @@ pub unsafe extern "C" fn hew_wire_encode_field_varint(
 /// # Safety
 ///
 /// `buf` must point to a valid, writable [`HewWireBuf`].
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_encode_field_fixed32(
     buf: *mut HewWireBuf,
@@ -416,6 +458,7 @@ pub unsafe extern "C" fn hew_wire_encode_field_fixed32(
 /// # Safety
 ///
 /// `buf` must point to a valid, writable [`HewWireBuf`].
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_encode_field_fixed64(
     buf: *mut HewWireBuf,
@@ -443,6 +486,7 @@ pub unsafe extern "C" fn hew_wire_encode_field_fixed64(
 ///
 /// `buf` must point to a valid, writable [`HewWireBuf`]. `data` must be valid
 /// for `len` bytes (or null when `len` is 0).
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_encode_field_bytes(
     buf: *mut HewWireBuf,
@@ -477,6 +521,7 @@ pub unsafe extern "C" fn hew_wire_encode_field_bytes(
 ///
 /// `buf` must point to a valid, writable [`HewWireBuf`]. `str_ptr` must be a
 /// valid NUL-terminated C string.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_encode_field_string(
     buf: *mut HewWireBuf,
@@ -499,6 +544,7 @@ pub unsafe extern "C" fn hew_wire_encode_field_string(
 /// # Safety
 ///
 /// `buf` and `out` must be valid, non-null pointers.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_decode_fixed32(buf: *mut HewWireBuf, out: *mut u32) -> c_int {
     cabi_guard!(buf.is_null() || out.is_null(), -1);
@@ -523,6 +569,7 @@ pub unsafe extern "C" fn hew_wire_decode_fixed32(buf: *mut HewWireBuf, out: *mut
 /// # Safety
 ///
 /// `buf` and `out` must be valid, non-null pointers.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_decode_fixed64(buf: *mut HewWireBuf, out: *mut u64) -> c_int {
     cabi_guard!(buf.is_null() || out.is_null(), -1);
@@ -550,6 +597,7 @@ pub unsafe extern "C" fn hew_wire_decode_fixed64(buf: *mut HewWireBuf, out: *mut
 /// # Safety
 ///
 /// `buf`, `out`, and `out_len` must be valid, non-null pointers.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_decode_bytes(
     buf: *mut HewWireBuf,
@@ -584,6 +632,7 @@ pub unsafe extern "C" fn hew_wire_decode_bytes(
 // ---------------------------------------------------------------------------
 
 /// Decoded HBF message header fields.
+// HBF-RETIRE
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HewWireHeader {
@@ -604,6 +653,7 @@ pub struct HewWireHeader {
 /// # Safety
 ///
 /// The returned pointer must be freed by the caller using `libc::free`.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_encode_header(payload_len: u32, flags: u8) -> *mut u8 {
     // SAFETY: malloc is called with a positive byte size.
@@ -630,6 +680,7 @@ pub unsafe extern "C" fn hew_wire_encode_header(payload_len: u32, flags: u8) -> 
 /// # Safety
 ///
 /// `data` must be valid for `len` bytes.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_decode_header(data: *const u8, len: usize) -> HewWireHeader {
     // SAFETY: forwarded pointer validity contract.
@@ -653,6 +704,7 @@ pub unsafe extern "C" fn hew_wire_decode_header(data: *const u8, len: usize) -> 
 /// # Safety
 ///
 /// `data` must be valid for `len` bytes.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_validate_header(data: *const u8, len: usize) -> i32 {
     if data.is_null() || len < HBF_HEADER_LEN {
@@ -679,6 +731,7 @@ pub unsafe extern "C" fn hew_wire_validate_header(data: *const u8, len: usize) -
 /// # Safety
 ///
 /// `buf` must point to a valid, writable [`HewWireBuf`].
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_write_hbf_header(
     buf: *mut HewWireBuf,
@@ -710,6 +763,7 @@ pub unsafe extern "C" fn hew_wire_write_hbf_header(
 // ---------------------------------------------------------------------------
 
 /// Actor-message envelope for wire transport.
+// HBF-RETIRE
 #[repr(C)]
 #[derive(Debug)]
 pub struct HewWireEnvelope {
@@ -741,6 +795,7 @@ pub struct HewWireEnvelope {
 ///
 /// `buf` and `env` must be valid, non-null pointers. `env.payload` must be
 /// valid for `env.payload_size` bytes (or null when size is 0).
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_encode_envelope(
     buf: *mut HewWireBuf,
@@ -803,6 +858,7 @@ pub unsafe extern "C" fn hew_wire_encode_envelope(
 /// # Safety
 ///
 /// `buf` and `env` must be valid, non-null pointers.
+// HBF-RETIRE
 #[no_mangle]
 #[expect(
     clippy::too_many_lines,
@@ -980,6 +1036,7 @@ pub unsafe extern "C" fn hew_wire_decode_envelope(
 ///
 /// `buf` must point to a valid, initialized `HewWireBuf`.
 /// `field_num` and `wire_type` must be valid pointers.
+// HBF-RETIRE
 #[expect(
     clippy::cast_possible_truncation,
     reason = "wire tag field_num and wire_type fit in u32"
@@ -1011,6 +1068,7 @@ pub unsafe extern "C" fn hew_wire_decode_tag(
 /// # Safety
 ///
 /// `buf` must point to a valid, initialized `HewWireBuf`.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_skip_field(buf: *mut HewWireBuf, wire_type: u32) -> c_int {
     match wire_type {
@@ -1068,6 +1126,7 @@ pub unsafe extern "C" fn hew_wire_skip_field(buf: *mut HewWireBuf, wire_type: u3
 /// # Safety
 ///
 /// `buf` must point to a valid, initialized `HewWireBuf`.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_data(buf: *const HewWireBuf) -> *const u8 {
     // SAFETY: caller guarantees `buf` is valid.
@@ -1079,6 +1138,7 @@ pub unsafe extern "C" fn hew_wire_buf_data(buf: *const HewWireBuf) -> *const u8 
 /// # Safety
 ///
 /// `buf` must point to a valid, initialized `HewWireBuf`.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_len(buf: *const HewWireBuf) -> usize {
     // SAFETY: caller guarantees `buf` is valid.
@@ -1091,6 +1151,7 @@ pub unsafe extern "C" fn hew_wire_buf_len(buf: *const HewWireBuf) -> usize {
 /// # Safety
 ///
 /// `buf` must point to a valid, initialized `HewWireBuf`.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_has_remaining(buf: *const HewWireBuf) -> i32 {
     // SAFETY: caller guarantees `buf` is valid.
@@ -1110,6 +1171,7 @@ pub unsafe extern "C" fn hew_wire_buf_has_remaining(buf: *const HewWireBuf) -> i
 /// # Safety
 ///
 /// None — all memory is managed by the runtime allocator.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_encode_header_hew(
     payload_len: i32,
@@ -1142,6 +1204,7 @@ pub unsafe extern "C" fn hew_wire_encode_header_hew(
 /// # Safety
 ///
 /// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_decode_header_hew(v: *mut crate::vec::HewVec) -> i64 {
     // SAFETY: v validity forwarded to hwvec_to_u8.
@@ -1161,6 +1224,7 @@ pub unsafe extern "C" fn hew_wire_decode_header_hew(v: *mut crate::vec::HewVec) 
 /// # Safety
 ///
 /// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_validate_header_hew(v: *mut crate::vec::HewVec) -> i32 {
     // SAFETY: v validity forwarded to hwvec_to_u8.
@@ -1181,6 +1245,7 @@ pub unsafe extern "C" fn hew_wire_validate_header_hew(v: *mut crate::vec::HewVec
 /// # Safety
 ///
 /// `buf` must be a valid, non-null pointer to a [`HewWireBuf`].
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_decode_string(buf: *mut HewWireBuf) -> *const c_char {
     cabi_guard!(buf.is_null(), std::ptr::null());
@@ -1229,6 +1294,7 @@ pub unsafe extern "C" fn hew_wire_decode_string(buf: *mut HewWireBuf) -> *const 
 ///
 /// `buf` must be a valid, non-null pointer returned by [`hew_wire_buf_new`].
 /// After this call, `buf` is freed and must not be used.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_to_bytes(buf: *mut HewWireBuf) -> *mut crate::vec::HewVec {
     // SAFETY: `hew_vec_new` allocates a fresh empty vec; always safe to call.
@@ -1256,6 +1322,7 @@ pub unsafe extern "C" fn hew_wire_buf_to_bytes(buf: *mut HewWireBuf) -> *mut cra
 /// # Safety
 ///
 /// `vec` must be a valid, non-null pointer to a `HewVec` with i32 elements.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_bytes_to_buf(vec: *mut crate::vec::HewVec) -> *mut HewWireBuf {
     // SAFETY: `vec` is a valid `HewVec` pointer per the caller's contract.
@@ -1289,6 +1356,7 @@ pub unsafe extern "C" fn hew_wire_bytes_to_buf(vec: *mut crate::vec::HewVec) -> 
 ///
 /// `data` must point to at least `len` readable bytes, or be null when
 /// `len` is 0.
+// HBF-RETIRE
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_from_raw_bytes(
     data: *const u8,

@@ -1,0 +1,18 @@
+machine Door {
+    state Closed;
+    state Open;
+
+    event Toggle;
+
+    on Toggle: Closed -> Open {
+        gen { yield Open; }
+    }
+
+    on Toggle: Open -> Closed {
+        Closed
+    }
+}
+
+fn gen_transition_rejection_probe() -> i32 {
+    7
+}

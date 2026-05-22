@@ -6038,6 +6038,69 @@ machine Traffic {
         );
     }
 
+    fn assert_lsp_rejection_diagnostic(
+        fixture_name: &str,
+        source: &str,
+        expected_code: &str,
+        expected_kind: &str,
+        expected_line: u32,
+    ) {
+        let uri = Url::parse(&v05_fixture_path(fixture_name)).unwrap();
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        let published = refresh_document_and_dependents(&uri, source, &documents);
+        let diagnostics = published
+            .iter()
+            .find(|(published_uri, _)| published_uri == &uri)
+            .map_or(&[] as &[Diagnostic], |(_, diagnostics)| {
+                diagnostics.as_slice()
+            });
+
+        let matches: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.source.as_deref() == Some("hew-types")
+                    && diagnostic.message.starts_with(&format!("{expected_code}:"))
+                    && diagnostic
+                        .data
+                        .as_ref()
+                        .and_then(|data| data.get("kind"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some(expected_kind)
+            })
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "expected exactly one {expected_code}/{expected_kind} diagnostic in {fixture_name}; got {diagnostics:?}"
+        );
+        assert_eq!(
+            matches[0].range.start.line, expected_line,
+            "{fixture_name} {expected_code} diagnostic should point at the rejected transition expression"
+        );
+    }
+
+    #[test]
+    fn lsp_reject_gen_in_transition_diagnostic_code() {
+        assert_lsp_rejection_diagnostic(
+            "lsp_reject_gen_in_transition",
+            include_str!("../../tests/fixtures/lsp_reject_gen_in_transition.hew"),
+            "E_GENBLOCK_IN_MACHINE_TRANSITION",
+            "GenBlockInMachineTransition",
+            7,
+        );
+    }
+
+    #[test]
+    fn lsp_reject_await_in_transition_diagnostic_code() {
+        assert_lsp_rejection_diagnostic(
+            "lsp_reject_await_in_transition",
+            include_str!("../../tests/fixtures/lsp_reject_await_in_transition.hew"),
+            "E_AWAIT_IN_MACHINE_TRANSITION",
+            "AwaitInMachineTransition",
+            7,
+        );
+    }
+
     #[test]
     fn v05_record_literals_lsp_coverage() {
         assert_v05_lsp_fixture(
@@ -6138,6 +6201,23 @@ machine Traffic {
                 "Idle",
                 "Running",
                 "machine_states_probe",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_machine_methods_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_machine_methods",
+            include_str!("../../tests/fixtures/v05_machine_methods.hew"),
+            "machine_methods_probe",
+            &[
+                "Turnstile",
+                "Coin",
+                "Push",
+                "Locked",
+                "Unlocked",
+                "machine_methods_probe",
             ],
         );
     }

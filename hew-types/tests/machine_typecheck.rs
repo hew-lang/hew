@@ -75,13 +75,18 @@ fn unit_event(name: &str) -> MachineEvent {
 }
 
 fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
-    // Body is a boolean literal — a placeholder that always typechecks.
+    // Body is a bare `state` identifier — the implicit self-binding that is
+    // always in scope in a transition body and always has the machine type.
+    // Previously this used `true` (a bool literal), which passed through
+    // synthesize (result discarded).  Now that transition bodies are
+    // check_against'd against the machine type, the body must actually have
+    // the machine type.
     MachineTransition {
         event_name: event.to_string(),
         source_state: source.to_string(),
         target_state: target.to_string(),
         guard: None,
-        body: (Expr::Literal(Literal::Bool(true)), 0..0),
+        body: (Expr::Identifier("state".to_string()), 0..0),
         reenter: false,
     }
 }

@@ -2408,7 +2408,26 @@ impl Checker {
                 self.check_against(guard_expr, guard_span, &Ty::Bool);
             }
             if !transition_has_forbidden_expr {
-                self.synthesize(&transition.body.0, &transition.body.1);
+                // Check the transition body against the machine type so that the
+                // expected-type context flows into struct-variant pre-seeding
+                // (expressions.rs enum-struct-variant arm).  Without an expected
+                // type, `synthesize` cannot seed the type-params for generic
+                // machines and bare state constructors like `Faulted { error: … }`
+                // fail to resolve when the state has a generic field.
+                let expected_machine_ty = Ty::Named {
+                    builtin: None,
+                    name: md.name.clone(),
+                    args: md
+                        .type_params
+                        .iter()
+                        .map(|name| Ty::Named {
+                            builtin: None,
+                            name: name.clone(),
+                            args: vec![],
+                        })
+                        .collect(),
+                };
+                self.check_against(&transition.body.0, &transition.body.1, &expected_machine_ty);
             }
             self.current_machine_transition = None;
             self.env.pop_scope();

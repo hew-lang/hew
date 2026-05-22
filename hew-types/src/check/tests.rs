@@ -18710,3 +18710,144 @@ fn foo(s: Shape) -> i64 {
         output.errors
     );
 }
+
+// ── Generic machine transition-body inference (Lane B S8 prerequisite) ────
+
+/// Bare struct-state constructor in a generic machine transition body must
+/// type-check when the machine has type params and the state has a generic
+/// field.  `Faulted { error: event.error }` must resolve without errors.
+#[test]
+fn generic_machine_struct_state_bare_constructor_infers() {
+    let output = check_source(
+        r"
+        machine Work<T> {
+            state Running { handle: T; }
+            state Faulted { code: i64; }
+
+            event Crash { code: i64; }
+
+            on Crash: Running -> Faulted {
+                Faulted { code: event.code }
+            }
+            on Crash: Faulted -> Faulted {
+                state
+            }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "bare struct-state constructor in generic machine transition must type-check; \
+         got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Qualified struct-state constructor `Machine::State { … }` inside a
+/// generic machine transition body must also type-check.
+#[test]
+fn generic_machine_struct_state_qualified_constructor_infers() {
+    let output = check_source(
+        r"
+        machine Work<T> {
+            state Running { handle: T; }
+            state Faulted { code: i64; }
+
+            event Crash { code: i64; }
+
+            on Crash: Running -> Faulted {
+                Work::Faulted { code: event.code }
+            }
+            on Crash: Faulted -> Faulted {
+                state
+            }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "qualified struct-state constructor in generic machine transition must type-check; \
+         got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Non-generic machine struct-state constructors must continue to work
+/// (regression guard for the `synthesize`→`check_against` change).
+#[test]
+fn non_generic_machine_struct_state_constructor_regression_free() {
+    let output = check_source(
+        r"
+        machine Door {
+            state Closed;
+            state Opened { handle: i64; }
+
+            event OpenDoor { id: i64; }
+            event CloseDoor;
+
+            on OpenDoor: Closed -> Opened {
+                Door::Opened { handle: event.id }
+            }
+            on CloseDoor: Opened -> Closed {
+                Closed
+            }
+            on OpenDoor: Opened -> Opened {
+                state
+            }
+            on CloseDoor: Closed -> Closed {
+                state
+            }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "non-generic machine struct-state constructor must stay green (regression); \
+         got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// `step()` on a concretely-typed generic machine instance must accept a
+/// bare event name — the receiver's generic args must substitute through the
+/// registered event param.
+#[test]
+fn generic_machine_step_bare_event_propagates_receiver_args() {
+    let output = check_source(
+        r"
+        machine Work<T> {
+            state Created;
+            state Running { handle: T; }
+
+            event Initialise;
+            event Started { handle: T; }
+
+            on Initialise: Created -> Created {
+                Created
+            }
+            on Initialise: Running -> Running {
+                state
+            }
+            on Started: Created -> Running {
+                Running { handle: event.handle }
+            }
+            on Started: Running -> Running {
+                state
+            }
+        }
+        fn main() {
+            var w: Work<i64> = Created;
+            w.step(Initialise);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "step() with bare unit event on generic machine must type-check; \
+         got errors: {:#?}",
+        output.errors
+    );
+}

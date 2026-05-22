@@ -2284,6 +2284,45 @@ impl Checker {
                 }
             }
 
+            // Unit enum-variant identifier under a known expected named type:
+            // when the identifier names a unit variant of the expected type,
+            // return the expected type directly (with its generic args already
+            // in place).  This is the generic-machine event arm: passing a bare
+            // `Initialise` to `step()` on `Machine<i64>` must produce
+            // `MachineEvent<i64>`, not `MachineEvent<>` (which synthesize returns
+            // from `resolve_identifier_variant`, which has no expected-type context).
+            //
+            // Guard: only fire when the expected type is a user-defined enum/machine
+            // event type that actually contains the named unit variant.  The check is
+            // purely additive — the existing synthesize+unify fallback handles all
+            // other shapes.
+            (
+                Expr::Identifier(name),
+                Ty::Named {
+                    name: expected_type_name,
+                    ..
+                },
+            ) => {
+                let is_unit_variant = self
+                    .lookup_type_def(expected_type_name)
+                    .and_then(|td| td.variants.get(name.as_str()).cloned())
+                    .is_some_and(|v| matches!(v, VariantDef::Unit));
+                if is_unit_variant {
+                    self.record_type(span, expected);
+                    expected.clone()
+                } else {
+                    // Not a unit variant of this type — synthesize and unify.
+                    let actual = self.synthesize(expr, span);
+                    let n = self.errors.len();
+                    self.expect_type(expected, &actual, span);
+                    if self.errors.len() > n {
+                        Ty::Error
+                    } else {
+                        actual
+                    }
+                }
+            }
+
             // Default: synthesize and unify
             _ => {
                 let actual = self.synthesize(expr, span);

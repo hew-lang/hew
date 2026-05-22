@@ -236,7 +236,17 @@ impl Session {
 
     /// Build a program that just type-checks an expression and returns its type.
     #[must_use]
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "compatibility wrapper used by eval unit tests")
+    )]
     pub fn build_type_query(&self, expr: &str) -> String {
+        self.build_type_query_program(expr).source
+    }
+
+    /// Build a program that just type-checks an expression and returns its type.
+    #[must_use]
+    pub fn build_type_query_program(&self, expr: &str) -> SyntheticProgram {
         let mut source = String::new();
         for item in &self.items {
             source.push_str(&item.source);
@@ -249,9 +259,20 @@ impl Session {
             source.push('\n');
         }
         let trimmed = expr.trim().strip_suffix(';').unwrap_or(expr.trim());
-        let _ = writeln!(source, "    let __repl_type_query = {trimmed};");
+        source.push_str("    let __repl_type_query = ");
+        let input_start = source.len();
+        source.push_str(trimmed);
+        let input_end = source.len();
+        source.push_str(";\n");
         source.push_str("}\n");
-        source
+        SyntheticProgram {
+            source,
+            kind: InputKind::Expression,
+            diagnostic_view: Some(SyntheticDiagnosticView {
+                source: trimmed.to_string(),
+                input_span: input_start..input_end,
+            }),
+        }
     }
 }
 

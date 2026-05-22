@@ -231,6 +231,114 @@ fn statement_replay_repl_does_not_repeat_one_shot_statement() {
     assert!(stdout.contains("2\n"), "stdout: {stdout}");
 }
 
+#[test]
+fn repl_loads_and_runs_hello_world_file() {
+    require_codegen();
+
+    let output = run_eval_with_stdin(
+        &["eval"],
+        ":load examples/playground/basics/hello_world.hew\n:quit\n",
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Hello, World!\n"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("Loaded examples/playground/basics/hello_world.hew"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn repl_accepts_multiline_function_and_keeps_it_in_session() {
+    require_codegen();
+
+    let output = run_eval_with_stdin(
+        &["eval"],
+        "fn foo() -> i64 {\n    41\n}\nfoo() + 1\n:quit\n",
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("42\n"), "stdout: {stdout}");
+}
+
+#[test]
+fn repl_type_command_reads_interactive_session_binding() {
+    require_codegen();
+
+    let output = run_eval_with_stdin(&["eval"], "var x = 10;\n:type x\n:quit\n");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("i64\n"), "stdout: {stdout}");
+}
+
+#[test]
+fn repl_displays_typed_generator_description() {
+    let output = run_eval_with_stdin(&["eval"], "gen { yield 1; yield 2; }\n:quit\n");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("<generator yielding i64, returning ()>\n"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("<generator>\n"),
+        "stdout must include typed generator details, not a placeholder: {stdout}"
+    );
+}
+
+#[test]
+fn repl_type_command_surfaces_diagnostic_when_no_type_info() {
+    let output = run_eval_with_stdin(&["eval"], ":type None\n:quit\n");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("could not determine type: no type information for expression"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("could not determine type"),
+        "diagnostic must be emitted on stderr, not stdout: {stdout}"
+    );
+    assert!(!stdout.contains("unknown"), "stdout: {stdout}");
+    assert!(!stderr.contains("unknown"), "stderr: {stderr}");
+}
+
 #[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
 #[test]
 fn eval_timeout_exit_code_is_non_zero() {

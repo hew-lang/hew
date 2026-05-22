@@ -61,6 +61,9 @@ pub const ACTIONABLE_TRACE_EVENT_TYPES: &[&str] = &[
 ];
 
 pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
+    // Runtime-emitted v0.5 trace events. GenBlockInMachineTransition,
+    // AwaitInMachineTransition, and MachineDispatchUnreachable are diagnostics
+    // or crash kinds, not trace event types; they remain under "crash".
     TraceEventMeta {
         name: "send",
         label: "send",
@@ -181,6 +184,124 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         group: TraceEventGroup::Internal,
         actionable: false,
     },
+    // SHIM: pending native-M3 producer-side emission. These are intentionally
+    // non-actionable until the runtime emits QUIC lifecycle trace spans.
+    TraceEventMeta {
+        name: "quic_endpoint_lifecycle",
+        label: "quic endpoint lifecycle",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Primary,
+        group: TraceEventGroup::Channel,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "quic_connection_lifecycle",
+        label: "quic connection lifecycle",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Primary,
+        group: TraceEventGroup::Channel,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "quic_stream_open",
+        label: "quic stream open",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Primary,
+        group: TraceEventGroup::Channel,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "quic_stream_close",
+        label: "quic stream close",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Primary,
+        group: TraceEventGroup::Channel,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "quic_datagram_send",
+        label: "quic datagram send",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Primary,
+        group: TraceEventGroup::Channel,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "quic_datagram_recv",
+        label: "quic datagram recv",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Primary,
+        group: TraceEventGroup::Channel,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "quic_error_raise",
+        label: "quic error raise",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Primary,
+        group: TraceEventGroup::Channel,
+        actionable: false,
+    },
+    // SHIM: pending native-M3 producer-side emission. D24-2 cancellation token
+    // substrate exists, but cancel/check points do not emit trace spans yet.
+    TraceEventMeta {
+        name: "cancellation_fired",
+        label: "cancellation fired",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Primary,
+        group: TraceEventGroup::Internal,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "cancellation_scope_cancelled",
+        label: "cancellation scope cancelled",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Primary,
+        group: TraceEventGroup::Internal,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "cancellation_cooperate_checked",
+        label: "cancellation cooperate checked",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Primary,
+        group: TraceEventGroup::Internal,
+        actionable: false,
+    },
+    // SHIM: pending native-M3 producer-side emission. Auto-injected lock
+    // substrate is tracked for v0.5 observability, but lock spans are absent.
+    TraceEventMeta {
+        name: "lock_acquire",
+        label: "lock acquire",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Primary,
+        group: TraceEventGroup::Internal,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "lock_release",
+        label: "lock release",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Primary,
+        group: TraceEventGroup::Internal,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "lock_poison",
+        label: "lock poison",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Primary,
+        group: TraceEventGroup::Internal,
+        actionable: false,
+    },
+    // SHIM: pending native-M3 producer-side emission. WHY: supervisor
+    // restart/circuit, partition detection, max_heap enforcement, and
+    // link/monitor substrates have no runtime trace spans yet
+    // (SPAN_SUPERVISOR*, SPAN_PARTITION, SPAN_MAX_HEAP, SPAN_LINK, or
+    // SPAN_MONITOR). WHEN obsolete: after the native-M3 supervisor runtime
+    // emission milestone lands canonical substrate trace events. WHAT: add
+    // concrete TraceEventMeta rows only for runtime-emitted event names, keeping
+    // them non-actionable until the observe UI has deliberate handling.
 ];
 
 pub const UNKNOWN_TRACE_EVENT_META: TraceEventMeta = TraceEventMeta {
@@ -224,6 +345,39 @@ mod tests {
             assert!(
                 !meta.is_actionable(),
                 "{event_type} should not be promoted into the trace UI"
+            );
+        }
+    }
+
+    #[test]
+    fn deferred_future_trace_categories_are_present_but_not_actionable() {
+        let deferred_events = [
+            "quic_endpoint_lifecycle",
+            "quic_connection_lifecycle",
+            "quic_stream_open",
+            "quic_stream_close",
+            "quic_datagram_send",
+            "quic_datagram_recv",
+            "quic_error_raise",
+            "cancellation_fired",
+            "cancellation_scope_cancelled",
+            "cancellation_cooperate_checked",
+            "lock_acquire",
+            "lock_release",
+            "lock_poison",
+        ];
+
+        for event_type in deferred_events {
+            let meta = trace_event_meta(event_type);
+            assert_eq!(meta.name, event_type);
+            assert_ne!(meta.label, UNKNOWN_TRACE_EVENT_META.label);
+            assert!(
+                !meta.is_actionable(),
+                "{event_type} must remain non-actionable until producer emission lands"
+            );
+            assert!(
+                !ACTIONABLE_TRACE_EVENT_TYPES.contains(&event_type),
+                "{event_type} must not be promoted into the actionable set"
             );
         }
     }

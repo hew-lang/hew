@@ -3348,6 +3348,7 @@ mod rest_for_one_tests {
                     mailbox_capacity: -1,
                     overflow: OVERFLOW_DROP_NEW,
                     arena_cap_bytes: 0,
+                    cycle_capable: 0,
                     on_crash: None,
                 };
                 assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
@@ -3507,6 +3508,7 @@ mod supervisor_escalation_tests {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
+            cycle_capable: 0,
             on_crash: None,
         };
 
@@ -3560,6 +3562,7 @@ mod supervisor_escalation_tests {
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
+                cycle_capable: 0,
                 on_crash: None,
             };
             assert_eq!(hew_supervisor_add_child_spec(child, &raw const spec), 0);
@@ -3636,6 +3639,7 @@ mod supervisor_escalation_tests {
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
+                cycle_capable: 0,
                 on_crash: None,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
@@ -3739,6 +3743,7 @@ mod supervisor_escalation_tests {
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
+                cycle_capable: 0,
                 on_crash: None,
             };
             assert_eq!(
@@ -3893,6 +3898,7 @@ mod circuit_breaker_tests {
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
+                cycle_capable: 0,
                 on_crash: None,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const child_spec), 0);
@@ -3965,6 +3971,7 @@ mod dynamic_supervision_tests {
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
+                cycle_capable: 0,
                 on_crash: None,
             };
 
@@ -3995,6 +4002,7 @@ mod dynamic_supervision_tests {
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
+                cycle_capable: 0,
                 on_crash: None,
             };
 
@@ -4039,6 +4047,7 @@ mod dynamic_supervision_tests {
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
+                cycle_capable: 0,
                 on_crash: None,
             };
 
@@ -4068,6 +4077,7 @@ mod dynamic_supervision_tests {
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
+                cycle_capable: 0,
                 on_crash: None,
             };
 

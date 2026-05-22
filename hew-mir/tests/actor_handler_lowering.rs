@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use hew_hir::{
     ids::IdGen, HirActorDecl, HirActorReceiveFn, HirActorStateGuard, HirBinding, HirBlock, HirExpr,
     HirExprKind, HirField, HirFn, HirItem, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
-    HirModule, HirStmt, HirStmtKind, IntentKind, ResolvedRef, ScopeId, ValueClass,
+    HirModule, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, IntentKind,
+    ResolvedRef, ScopeId, ValueClass,
 };
 use hew_mir::{lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, Terminator};
 use hew_types::{ActorHandlerSpec, ActorProtocolDescriptor, ResolvedTy};
@@ -67,6 +68,16 @@ fn literal_expr(ids: &mut IdGen, literal: HirLiteral, ty: ResolvedTy) -> HirExpr
     }
 }
 
+fn local_pid_of(actor_name: &str) -> ResolvedTy {
+    ResolvedTy::Named {
+        name: "LocalPid".to_string(),
+        args: vec![ResolvedTy::Named {
+            name: actor_name.to_string(),
+            args: vec![],
+        }],
+    }
+}
+
 fn self_field_expr(ids: &mut IdGen, actor_name: &str, field: &str) -> HirExpr {
     let self_expr = HirExpr {
         node: ids.node(),
@@ -92,6 +103,26 @@ fn self_field_expr(ids: &mut IdGen, actor_name: &str, field: &str) -> HirExpr {
         kind: HirExprKind::FieldAccess {
             object: Box::new(self_expr),
             field: field.to_string(),
+        },
+        span: 0..0,
+    }
+}
+
+fn spawn_expr(
+    ids: &mut IdGen,
+    actor_name: &str,
+    args: Vec<(String, HirExpr)>,
+    ty: ResolvedTy,
+) -> HirExpr {
+    HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::Spawn {
+            actor_name: actor_name.to_string(),
+            args,
         },
         span: 0..0,
     }
@@ -166,6 +197,167 @@ fn actor(ids: &mut IdGen, name: &str, receive_handlers: Vec<HirActorReceiveFn>) 
         protocol_descriptor,
         span: 0..0,
     }
+}
+
+#[test]
+fn actor_cycle_capable_threads_to_layout_and_spawn_instr() {
+    let mut ids = IdGen::default();
+    let mut actor = actor(&mut ids, "Counter", vec![]);
+    actor.cycle_capable = true;
+
+    let pid_ty = local_pid_of("Counter");
+    let initial = literal_expr(&mut ids, HirLiteral::Integer(0), ResolvedTy::I64);
+    let spawn = spawn_expr(
+        &mut ids,
+        "Counter",
+        vec![("initial".to_string(), initial)],
+        pid_ty.clone(),
+    );
+    let main = HirFn {
+        id: ids.item(),
+        node: ids.node(),
+        name: "main".to_string(),
+        type_params: vec![],
+        params: vec![],
+        return_ty: pid_ty,
+        body: block(&mut ids, vec![], Some(spawn), local_pid_of("Counter")),
+        span: 0..0,
+    };
+
+    let pipeline = lower_hir_module(&empty_module(vec![
+        HirItem::Actor(actor),
+        HirItem::Function(main),
+    ]));
+
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "cycle-capable actor spawn should lower without diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    assert_eq!(pipeline.actor_layouts.len(), 1);
+    assert!(
+        pipeline.actor_layouts[0].cycle_capable,
+        "ActorLayout must preserve HirActorDecl.cycle_capable"
+    );
+    let main = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "main")
+        .expect("main lowered");
+    assert!(main
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .any(|instr| {
+            matches!(
+                instr,
+                Instr::SpawnActor {
+                    actor_name,
+                    cycle_capable: true,
+                    ..
+                } if actor_name == "Counter"
+            )
+        }));
+}
+
+#[test]
+fn non_cycle_actor_keeps_false_layout_and_spawn_default() {
+    let mut ids = IdGen::default();
+    let actor = actor(&mut ids, "Counter", vec![]);
+
+    let pid_ty = local_pid_of("Counter");
+    let initial = literal_expr(&mut ids, HirLiteral::Integer(0), ResolvedTy::I64);
+    let spawn = spawn_expr(
+        &mut ids,
+        "Counter",
+        vec![("initial".to_string(), initial)],
+        pid_ty.clone(),
+    );
+    let main = HirFn {
+        id: ids.item(),
+        node: ids.node(),
+        name: "main".to_string(),
+        type_params: vec![],
+        params: vec![],
+        return_ty: pid_ty,
+        body: block(&mut ids, vec![], Some(spawn), local_pid_of("Counter")),
+        span: 0..0,
+    };
+
+    let pipeline = lower_hir_module(&empty_module(vec![
+        HirItem::Actor(actor),
+        HirItem::Function(main),
+    ]));
+
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "non-cycle actor spawn should lower without diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    assert!(!pipeline.actor_layouts[0].cycle_capable);
+    let main = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "main")
+        .expect("main lowered");
+    assert!(main
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .any(|instr| {
+            matches!(
+                instr,
+                Instr::SpawnActor {
+                    actor_name,
+                    cycle_capable: false,
+                    ..
+                } if actor_name == "Counter"
+            )
+        }));
+}
+
+#[test]
+fn supervisor_child_layout_mirrors_cycle_capable_actor_metadata() {
+    let mut ids = IdGen::default();
+    let mut worker = actor(&mut ids, "Worker", vec![]);
+    worker.state_fields.clear();
+    worker.init = None;
+    worker.cycle_capable = true;
+
+    let sup = HirSupervisorDecl {
+        id: ids.item(),
+        node: ids.node(),
+        name: "App".to_string(),
+        strategy: None,
+        max_restarts: None,
+        window: None,
+        children: vec![HirSupervisorChild {
+            name: "worker".to_string(),
+            ty: "Worker".to_string(),
+            restart_policy: None,
+            wired_to: None,
+            is_pool: false,
+            slot_index: 0,
+        }],
+        span: 0..0,
+    };
+
+    // Put the supervisor before the actor to exercise the post-loop mirror.
+    let pipeline = lower_hir_module(&empty_module(vec![
+        HirItem::Supervisor(sup),
+        HirItem::Actor(worker),
+    ]));
+
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "supervisor child metadata mirror should not emit diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let child = &pipeline.supervisor_layouts[0].children[0];
+    assert!(
+        child.cycle_capable,
+        "SupervisorChildLayout must mirror the child's ActorLayout.cycle_capable"
+    );
 }
 
 #[test]

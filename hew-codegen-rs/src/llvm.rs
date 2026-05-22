@@ -2318,6 +2318,7 @@ fn emit_spawn_actor(
     init_args: &[Place],
     dest: Place,
     max_heap_bytes: Option<u64>,
+    cycle_capable: bool,
 ) -> CodegenResult<()> {
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
     let i32_ty = fn_ctx.ctx.i32_type();
@@ -2362,13 +2363,13 @@ fn emit_spawn_actor(
         .map_err(|e| CodegenError::Llvm(format!("hew_sched_init call: {e:?}")))?;
     emit_wasm_actor_metadata_registration(fn_ctx, actor_name)?;
 
-    let spawned = if let Some(cap) = max_heap_bytes {
-        // `#[max_heap(N)]` is set — route through `hew_actor_spawn_opts` so
-        // the runtime applies the per-dispatch arena cap. The `HewActorOpts`
-        // struct is stack-allocated, populated with the minimal fields, and
-        // passed by pointer.
+    let spawned = if max_heap_bytes.is_some() || cycle_capable {
+        // `#[max_heap(N)]` and/or `cycle_capable` is set — route through
+        // `hew_actor_spawn_opts` so the runtime applies all spawn policy bits.
+        // The `HewActorOpts` struct is stack-allocated, populated with the
+        // minimal fields, and passed by pointer.
         //
-        // `HewActorOpts` `#[repr(C)]` field order (hew-runtime/src/actor.rs:1418):
+        // `HewActorOpts` `#[repr(C)]` field order (hew-runtime/src/actor.rs:1456):
         //   0  init_state:       *mut c_void   → ptr
         //   1  state_size:       usize         → i64
         //   2  dispatch:         Option<fn>    → ptr
@@ -2378,6 +2379,9 @@ fn emit_spawn_actor(
         //   6  coalesce_fallback: i32          → i32
         //   7  budget:           i32           → i32
         //   8  arena_cap_bytes:  usize         → i64
+        //   9  cycle_capable:    i32           → i32
+        let arena_cap = max_heap_bytes.unwrap_or(0);
+        let cycle_flag = if cycle_capable { 1 } else { 0 };
         let opts_ty = fn_ctx.ctx.struct_type(
             &[
                 ptr_ty.into(), // init_state
@@ -2389,6 +2393,7 @@ fn emit_spawn_actor(
                 i32_ty.into(), // coalesce_fallback
                 i32_ty.into(), // budget
                 i64_ty.into(), // arena_cap_bytes
+                i32_ty.into(), // cycle_capable
             ],
             false,
         );
@@ -2396,7 +2401,7 @@ fn emit_spawn_actor(
             .builder
             .build_alloca(opts_ty, "actor_spawn_opts")
             .map_err(|e| CodegenError::Llvm(format!("HewActorOpts alloca: {e:?}")))?;
-        let opts_fields: [(u32, BasicValueEnum<'_>); 9] = [
+        let opts_fields: [(u32, BasicValueEnum<'_>); 10] = [
             (0, state_ptr.into()),
             (1, state_size.into()),
             (2, dispatch.as_global_value().as_pointer_value().into()),
@@ -2405,7 +2410,8 @@ fn emit_spawn_actor(
             (5, ptr_ty.const_null().into()),
             (6, i32_ty.const_zero().into()),
             (7, i32_ty.const_zero().into()),
-            (8, i64_ty.const_int(cap, false).into()),
+            (8, i64_ty.const_int(arena_cap, false).into()),
+            (9, i32_ty.const_int(cycle_flag, false).into()),
         ];
         for (field_idx, value) in opts_fields {
             let gep = fn_ctx
@@ -2505,7 +2511,7 @@ fn restart_policy_to_int(policy: HirRestartPolicy) -> i32 {
 /// Build the LLVM struct type for `HewChildSpec`.
 ///
 /// The struct mirrors the `#[repr(C)]` Rust layout at
-/// `hew-runtime/src/supervisor.rs:409-422` exactly. Field order MUST match;
+/// `hew-runtime/src/supervisor.rs::HewChildSpec` exactly. Field order MUST match;
 /// drift here is wrong-code at the FFI boundary.
 ///
 /// Field map (Rust → LLVM):
@@ -2517,10 +2523,12 @@ fn restart_policy_to_int(policy: HirRestartPolicy) -> i32 {
 /// - `mailbox_capacity: c_int`              → `i32`
 /// - `overflow: c_int`                      → `i32`
 /// - `arena_cap_bytes: usize`               → `i64`
+/// - `cycle_capable: c_int`                 → `i32`
+/// - `on_crash: Option<HewOnCrashFn>`       → `ptr`
 ///
-/// The three consecutive `i32` fields followed by `i64` produce 4 bytes of
-/// natural padding before `arena_cap_bytes` under `#[repr(C)]`; LLVM's
-/// default (non-packed) struct alignment generates the same padding.
+/// The three consecutive `i32` fields followed by `i64`, and the trailing
+/// `cycle_capable: i32` followed by a pointer, produce natural padding under
+/// `#[repr(C)]`; LLVM's default (non-packed) struct alignment matches it.
 fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i32_ty = ctx.i32_type();
@@ -2535,6 +2543,7 @@ fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
             i32_ty.into(), // mailbox_capacity
             i32_ty.into(), // overflow
             i64_ty.into(), // arena_cap_bytes (alignment introduces 4B pad after `overflow`)
+            i32_ty.into(), // cycle_capable
             ptr_ty.into(), // on_crash fn-pointer: null when child's actor has no #[on(crash)]; otherwise pointer to `{actor_name}__on_crash`
         ],
         false,
@@ -2732,9 +2741,11 @@ fn emit_supervisor_bootstrap_body<'ctx>(
 ///   helper. Fail-closed if missing.
 /// - `restart_policy` — child's policy via `restart_policy_to_int`; `None`
 ///   defaults to `RESTART_PERMANENT` (`0`) to match runtime defaults.
-/// - `mailbox_capacity` / `overflow` / `arena_cap_bytes` — `0` for all,
-///   which the runtime maps to its bounded defaults. Richer per-child
-///   overrides are deferred.
+/// - `mailbox_capacity` / `overflow` — `0` for both, which the runtime maps
+///   to its bounded defaults. Richer per-child overrides are deferred.
+/// - `arena_cap_bytes` / `cycle_capable` — mirrored from the child's
+///   `ActorLayout` through `SupervisorChildLayout` so restarts preserve the
+///   same spawn policy bits as direct spawn.
 #[allow(clippy::too_many_arguments)]
 fn emit_supervisor_child_spec_and_register<'ctx>(
     ctx: &'ctx Context,
@@ -2799,8 +2810,9 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     // annotation (mirrored into SupervisorChildLayout.max_heap_bytes by the
     // MIR post-loop pass). Zero means unbounded — matches runtime default.
     let arena_cap = child.max_heap_bytes.unwrap_or(0);
+    let cycle_flag = if child.cycle_capable { 1 } else { 0 };
 
-    let field_values: [(u32, BasicValueEnum<'ctx>); 9] = [
+    let field_values: [(u32, BasicValueEnum<'ctx>); 10] = [
         (0, name_ptr.into()),
         (1, ptr_ty.const_null().into()),
         (2, i64_ty.const_zero().into()),
@@ -2809,7 +2821,8 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         (5, i32_ty.const_zero().into()),
         (6, i32_ty.const_zero().into()),
         (7, i64_ty.const_int(arena_cap, false).into()), // arena_cap_bytes from #[max_heap(N)]
-        (8, on_crash_ptr), // on_crash: fn-pointer when child's actor has #[on(crash)], null otherwise
+        (8, i32_ty.const_int(cycle_flag, false).into()), // cycle_capable from checker side-table
+        (9, on_crash_ptr), // on_crash: fn-pointer when child's actor has #[on(crash)], null otherwise
     ];
     for (field_idx, value) in field_values {
         let gep = builder
@@ -4203,6 +4216,7 @@ fn lower_instruction(
             init_args,
             dest,
             max_heap_bytes,
+            cycle_capable,
         } => {
             emit_spawn_actor(
                 fn_ctx,
@@ -4211,6 +4225,7 @@ fn lower_instruction(
                 init_args,
                 *dest,
                 *max_heap_bytes,
+                *cycle_capable,
             )?;
             let _ = ctx;
         }

@@ -45,6 +45,7 @@ fn spawn_pipeline() -> IrPipeline {
                     init_args: vec![],
                     dest: Place::Local(0),
                     max_heap_bytes: None,
+                    cycle_capable: false,
                 },
                 Instr::Move {
                     dest: Place::ReturnSlot,
@@ -82,6 +83,7 @@ fn spawn_pipeline() -> IrPipeline {
         on_stop_symbols: vec![],
         on_crash_symbol: None,
         max_heap_bytes: None,
+        cycle_capable: false,
         handlers: vec![ActorHandlerLayout {
             name: "handle_ping".to_string(),
             symbol: handler_symbol,

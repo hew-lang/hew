@@ -163,6 +163,10 @@ pub struct ActorLayout {
     /// `arena_cap_bytes = N` (Some). Mirrored into `SupervisorChildLayout`
     /// for the supervisor restart path.
     pub max_heap_bytes: Option<u64>,
+    /// Whether the checker determined this actor participates in an actor-ref
+    /// cycle. Codegen serializes this into spawn opts for the future
+    /// cycle-detection / Machine Lane B runtime consumer.
+    pub cycle_capable: bool,
     /// Receive handlers in message-type order.
     pub handlers: Vec<ActorHandlerLayout>,
 }
@@ -296,6 +300,10 @@ pub struct SupervisorChildLayout {
     /// Codegen populates `HewChildSpec.arena_cap_bytes` from this field so
     /// the supervisor restart path preserves the cap across crashes.
     pub max_heap_bytes: Option<u64>,
+    /// Mirrored from `ActorLayout.cycle_capable` for supervised-child spawn
+    /// planning. Codegen serializes this into `HewChildSpec` so the runtime
+    /// preserves the bit across supervisor restarts.
+    pub cycle_capable: bool,
 }
 
 /// Layout descriptor for one state variant in a `machine` declaration.
@@ -1413,6 +1421,10 @@ pub enum Instr {
         /// routes `Some(N)` through `hew_actor_spawn_opts`; `None` uses
         /// the plain `hew_actor_spawn` path.
         max_heap_bytes: Option<u64>,
+        /// Checker-derived cycle capability from the target actor layout.
+        /// Codegen routes `true` through spawn opts even without `#[max_heap]`
+        /// so the runtime receives the Machine Lane B policy bit.
+        cycle_capable: bool,
     },
     /// Call a first-class callable pair. Codegen loads the function pointer and
     /// environment pointer from `callee`, then emits an indirect call with the

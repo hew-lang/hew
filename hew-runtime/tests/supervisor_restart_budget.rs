@@ -126,6 +126,7 @@ fn concurrent_crashes_decrement_budget_correctly() {
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
+                cycle_capable: 0,
                 on_crash: None,
             };
             assert_eq!(
@@ -197,6 +198,7 @@ fn budget_exhaustion_stops_supervisor() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
+            cycle_capable: 0,
             on_crash: None,
         };
         assert_eq!(
@@ -276,6 +278,7 @@ fn delayed_restart_processed_via_mailbox() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
+            cycle_capable: 0,
             on_crash: None,
         };
         assert_eq!(
@@ -344,6 +347,7 @@ fn multiple_delayed_restarts_budget_consistent() {
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
+                cycle_capable: 0,
                 on_crash: None,
             };
             assert_eq!(

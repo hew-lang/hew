@@ -486,6 +486,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         .find(|hook| hook.kind == HirLifecycleHookKind::Crash)
                         .map(|_| mangle_actor_crash_handler(&actor.name)),
                     max_heap_bytes: actor.max_heap_bytes,
+                    cycle_capable: actor.cycle_capable,
                     handlers: lower_actor_handler_layouts(actor),
                 });
             }
@@ -590,8 +591,9 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         .map(|layout| (layout.name.clone(), layout))
         .collect();
 
-    // Post-loop pass: populate on_crash_symbol and max_heap_bytes on each
-    // SupervisorChildLayout using the now-complete actor_layout_map.
+    // Post-loop pass: populate on_crash_symbol, max_heap_bytes, and
+    // cycle_capable on each SupervisorChildLayout using the now-complete
+    // actor_layout_map.
     // build_supervisor_layout runs inside the single-pass item loop, so actor
     // declarations that follow a supervisor in source order would not have been
     // visible yet. Deferring the lookup here makes ordering irrelevant.
@@ -600,6 +602,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             let al = actor_layout_map.get(&child.actor_name);
             child.on_crash_symbol = al.and_then(|al| al.on_crash_symbol.clone());
             child.max_heap_bytes = al.and_then(|al| al.max_heap_bytes);
+            child.cycle_capable = al.is_some_and(|al| al.cycle_capable);
         }
     }
 
@@ -2267,6 +2270,7 @@ fn build_supervisor_layout(
             // here so build_supervisor_layout needs no actor-layout parameter.
             on_crash_symbol: None,
             max_heap_bytes: None,
+            cycle_capable: false,
         })
         .collect();
 
@@ -8293,6 +8297,7 @@ impl Builder {
             init_args,
             dest,
             max_heap_bytes: layout.max_heap_bytes,
+            cycle_capable: layout.cycle_capable,
         });
         Some(dest)
     }

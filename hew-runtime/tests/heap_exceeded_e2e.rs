@@ -229,6 +229,7 @@ fn max_heap_actor_crash_routes_through_heap_exceeded_supervisor_exit() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             arena_cap_bytes: ARENA_CAP_BYTES,
+            cycle_capable: 0,
             on_crash: None,
         };
         assert_eq!(

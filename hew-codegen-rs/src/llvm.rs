@@ -1086,9 +1086,12 @@ fn register_record_layouts<'ctx>(
 // drop-elaborator, and forthcoming `m.step(ev)` ABI all rely on these):
 //
 // 1. The outer machine struct is a non-packed LLVM struct
-//    `{ tag: iW, payload: [N x i8] }` where:
+//    `{ tag: iN, payload: [N x iA] }` where:
+//      - `tag` is `i8` for up to 256 variants and `i16` for up to
+//        65,536 variants. Larger machines fail closed with
+//        `CodegenError::Unsupported`.
 //      - `tag` is at struct field index 0 (offset 0 bytes — natural
-//        alignment for an integer of width `W = layout.tag_width`).
+//        alignment for the selected tag integer width).
 //      - `payload` is a fixed-size byte array sized to fit the largest
 //        per-variant payload struct. The byte size is `TargetData::get_abi_size`
 //        of the variant's LLVM struct — ABI-correct, including inter-field
@@ -1139,7 +1142,8 @@ struct MachineCodegenLayout<'ctx> {
     /// (payload).
     outer_struct: StructType<'ctx>,
     /// LLVM integer type for the discriminant tag (`iW` where
-    /// `W = layout.tag_width`). Cached so `Place::MachineTag` loads use
+    /// `i8`/`i16` selected from the declared variant count. Cached so
+    /// `Place::MachineTag` loads use
     /// the same type the alloca was declared with.
     tag_int_ty: inkwell::types::IntType<'ctx>,
     /// Per-variant anonymous struct types in declaration order. Index
@@ -1246,13 +1250,8 @@ fn register_machine_layouts<'ctx>(
     let mut map: MachineLayoutMap<'ctx> = HashMap::new();
     for layout in machine_layouts {
         // The state-side machine value: `<Name>` with state-variant payloads.
-        let mut machine_cg = build_tagged_union_layout(
-            ctx,
-            &layout.name,
-            layout.tag_width,
-            &layout.variants,
-            record_layout_map,
-        )?;
+        let mut machine_cg =
+            build_tagged_union_layout(ctx, &layout.name, &layout.variants, record_layout_map)?;
         // Build the per-machine state-name string table. Each entry is a
         // pointer to a private NUL-terminated read-only global; the table
         // itself is a private `[N x ptr]` constant. `Instr::MachineStateName`
@@ -1272,19 +1271,9 @@ fn register_machine_layouts<'ctx>(
 
         // The companion event enum: `<Name>Event` with event-variant
         // payloads. Tag bit width is derived from the event count
-        // identically to `lower_hir_module`'s machine-tag derivation —
-        // a single source for the same invariant means a future change
-        // in tag-width policy lands in one place.
-        let event_count = u32::try_from(layout.events.len().max(1)).unwrap_or(u32::MAX);
-        let event_tag_width = u32::max(1, event_count.next_power_of_two().trailing_zeros());
         let event_name = format!("{}Event", layout.name);
-        let event_cg = build_tagged_union_layout(
-            ctx,
-            &event_name,
-            event_tag_width,
-            &layout.events,
-            record_layout_map,
-        )?;
+        let event_cg =
+            build_tagged_union_layout(ctx, &event_name, &layout.events, record_layout_map)?;
         record_layout_map.insert(event_name.clone(), event_cg.outer_struct);
         map.insert(event_name, event_cg);
     }
@@ -1313,13 +1302,8 @@ fn register_enum_layouts<'ctx>(
     for layout in enum_layouts {
         // Convert `EnumLayout.variants` (which are `MachineVariantLayout`)
         // directly — they share the same shape (`name`, `field_tys`).
-        let enum_cg = build_tagged_union_layout(
-            ctx,
-            &layout.name,
-            layout.tag_width,
-            &layout.variants,
-            record_layout_map,
-        )?;
+        let enum_cg =
+            build_tagged_union_layout(ctx, &layout.name, &layout.variants, record_layout_map)?;
         // Register the outer struct so `resolve_ty` resolves
         // `ResolvedTy::Named { name: "<EnumName>" }` the same way as a
         // machine-typed or record-typed local.
@@ -1342,7 +1326,6 @@ fn register_enum_layouts<'ctx>(
 fn build_tagged_union_layout<'ctx>(
     ctx: &'ctx Context,
     outer_name: &str,
-    tag_width: u32,
     variants: &[MachineVariantLayout],
     record_layout_map: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<MachineCodegenLayout<'ctx>> {
@@ -1430,15 +1413,7 @@ fn build_tagged_union_layout<'ctx>(
         .custom_width_int_type(element_bits_nz)
         .map_err(|e| CodegenError::Llvm(format!("custom_width_int_type({element_bits}): {e}")))?;
 
-    let tag_width_nz = std::num::NonZeroU32::new(tag_width).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "machine `{outer_name}` has zero tag_width — lower_hir_module guarantees \
-             tag_width >= 1; this indicates substrate corruption"
-        ))
-    })?;
-    let tag_int_ty = ctx
-        .custom_width_int_type(tag_width_nz)
-        .map_err(|e| CodegenError::Llvm(format!("custom_width_int_type({tag_width}): {e}")))?;
+    let tag_int_ty = tag_int_type_for_variant_count(ctx, outer_name, variants.len())?;
     let payload_arr_ty = payload_element_int_ty.array_type(element_count_u32);
 
     let outer_struct = ctx.opaque_struct_type(outer_name);
@@ -1451,6 +1426,22 @@ fn build_tagged_union_layout<'ctx>(
         variant_field_tys,
         state_name_table: None,
     })
+}
+
+fn tag_int_type_for_variant_count<'ctx>(
+    ctx: &'ctx Context,
+    _outer_name: &str,
+    variant_count: usize,
+) -> CodegenResult<inkwell::types::IntType<'ctx>> {
+    if variant_count <= 256 {
+        Ok(ctx.i8_type())
+    } else if variant_count <= 65_536 {
+        Ok(ctx.i16_type())
+    } else {
+        Err(CodegenError::Unsupported(
+            "machine tagged-union layout supports at most 65,536 variants",
+        ))
+    }
 }
 
 /// Emit a private `[N x ptr]` LLVM global containing pointers to each
@@ -1960,7 +1951,7 @@ fn place_resolved_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, place: Place) -> CodegenResu
                         return Err(CodegenError::FailClosed(format!(
                             "Place::MachineVariant references local {local} which is not a \
                          machine-typed local"
-                        )))
+                        )));
                     }
                 })
                 .ok_or_else(|| {
@@ -3372,7 +3363,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
                         "ConstI64 dest is not an i64: dest_ty={dest_ty:?}"
-                    )))
+                    )));
                 }
             };
             // `value` is i64 in MIR. Truncate/extend at the LLVM level to
@@ -3447,7 +3438,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IntDiv/IntRem lhs is not an i64".into(),
-                    ))
+                    ));
                 }
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
@@ -3579,7 +3570,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IntBitwise lhs is not an i64".into(),
-                    ))
+                    ));
                 }
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
@@ -3639,7 +3630,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IntArithChecked lhs is not an i64".into(),
-                    ))
+                    ));
                 }
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
@@ -3652,7 +3643,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IntArithChecked overflow_flag is not an i64".into(),
-                    ))
+                    ));
                 }
             };
             // Choose the intrinsic family by op + signedness. Six
@@ -3745,7 +3736,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IntArithCheckedOption lhs is not an integer".into(),
-                    ))
+                    ));
                 }
             };
             if rhs_ty != lhs_ty {
@@ -3765,7 +3756,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IntArithCheckedOption enum tag is not an integer".into(),
-                    ))
+                    ));
                 }
             };
             let some_payload = Place::EnumVariant {
@@ -3860,7 +3851,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IntArithSaturating lhs is not an integer".into(),
-                    ))
+                    ));
                 }
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
@@ -4016,7 +4007,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IdentityCompare dest is not an i64".into(),
-                    ))
+                    ));
                 }
             };
             // Load the pointer/handle value from each alloca.
@@ -4047,7 +4038,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IdentityCompare lhs must be a pointer or integer value".into(),
-                    ))
+                    ));
                 }
             };
             let rhs_int = match rhs_val {
@@ -4062,7 +4053,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IdentityCompare rhs must be a pointer or integer value".into(),
-                    ))
+                    ));
                 }
             };
             let _ = (ptr_ty, lhs_ty, rhs_ty);
@@ -4316,7 +4307,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
                         "FloatLit dest is not a float type: dest_ty={dest_ty:?}"
-                    )))
+                    )));
                 }
             };
             // Reconstruct the IEEE 754 value from its stored bit pattern.
@@ -4351,7 +4342,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "float arithmetic lhs is not a float type".into(),
-                    ))
+                    ));
                 }
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
@@ -4405,7 +4396,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
                         "CharLit dest is not an i64: dest_ty={dest_ty:?}"
-                    )))
+                    )));
                 }
             };
             let v = int_ty.const_int(*value as u64, false);
@@ -4426,7 +4417,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
                         "UnitLit dest is not an i64 (expected i8 stand-in): dest_ty={dest_ty:?}"
-                    )))
+                    )));
                 }
             };
             let v = int_ty.const_int(0, false);
@@ -4445,7 +4436,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
                         "DurationLit dest is not an i64: dest_ty={dest_ty:?}"
-                    )))
+                    )));
                 }
             };
             #[allow(clippy::cast_sign_loss)]
@@ -4891,7 +4882,7 @@ fn lower_record_field_load(
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "RecordFieldLoad record place has non-struct slot type: {other:?}"
-            )))
+            )));
         }
     };
     let idx = field_offset.0;
@@ -5075,7 +5066,7 @@ fn lower_make_closure(
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "MakeClosure dest must be the two-pointer closure pair, got {other:?}"
-            )))
+            )));
         }
     };
     let shim = fn_ctx
@@ -5294,7 +5285,7 @@ fn lower_call_closure(
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "CallClosure callee must be the two-pointer closure pair, got {other:?}"
-            )))
+            )));
         }
     };
     let pair = fn_ctx
@@ -5381,7 +5372,7 @@ fn lower_tuple_field_load(
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "TupleFieldLoad tuple place has non-struct slot type: {other:?}"
-            )))
+            )));
         }
     };
     let idx = field_index;
@@ -6899,7 +6890,7 @@ fn emit_print_value_call<'ctx>(
             other => {
                 return Err(CodegenError::FailClosed(format!(
                     "print f64 payload must be a float value, got {other:?}"
-                )))
+                )));
             }
         },
         PrintKind::Str => match loaded {
@@ -6910,7 +6901,7 @@ fn emit_print_value_call<'ctx>(
             other => {
                 return Err(CodegenError::FailClosed(format!(
                     "print string payload must be a pointer value, got {other:?}"
-                )))
+                )));
             }
         },
     };
@@ -7064,7 +7055,7 @@ fn lower_terminator<'ctx>(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "Branch cond is not an integer".into(),
-                    ))
+                    ));
                 }
             };
             let cond_loaded = fn_ctx
@@ -8677,7 +8668,7 @@ fn emit_cancel_trap_or_return(fn_ctx: &FnCtx<'_, '_>) -> CodegenResult<()> {
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "cancel exit cannot synthesize return for {other:?}"
-            )))
+            )));
         }
     }
     Ok(())

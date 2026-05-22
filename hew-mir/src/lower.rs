@@ -3049,6 +3049,14 @@ fn push_unknown_type_diagnostics(
             || builder.actor_layouts.contains_key(&name)
             || builder.supervisor_layout_map.contains_key(&name)
             || builder.machine_layout_names.contains(&name)
+            // `Generator<Y, R>` is the checker-supplied type for gen-block
+            // expressions. The S3a shell uses it as a placeholder; S3b/S4
+            // replace the shell with a real state-record type. Silence the
+            // UnknownType diagnostic so gen-block lowering compiles cleanly
+            // at S3a without requiring a full type-class registration.
+            // WHEN-OBSOLETE: when S3b synthesises the GenN nominal and
+            // registers it in the type-class table, this arm is unreachable.
+            || name == "Generator"
         {
             continue;
         }
@@ -3244,6 +3252,15 @@ struct Builder {
     /// not lowered. Slice 4b sets it while walking transition bodies; Slice
     /// 4c reads the emitted `Place::MachineVariant` places.
     current_machine_self_binding: Option<BindingId>,
+    /// Set to `true` inside a gen-block body builder to enable
+    /// `HirExprKind::Yield` → `Terminator::Yield` construction.
+    /// The parent builder's field stays `false` (the `Default`).
+    /// A `Yield` node encountered when `in_gen_body` is `false` is a
+    /// checker invariant violation (HIR should never surface `yield`
+    /// outside a gen block) — fail-closed with `UnsupportedNode`.
+    /// S3b will extend this context with the cross-yield live-set
+    /// accumulator once liveness analysis lands.
+    in_gen_body: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4653,17 +4670,13 @@ impl Builder {
                 });
                 None
             }
-            HirExprKind::GenBlock { .. } | HirExprKind::Yield { .. } => {
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "generator block MIR lowering".to_string(),
-                        site: expr.site,
-                    },
-                    note: "gen{} and yield HIR nodes are intentionally fail-closed at MIR; \
-                           generator state-machine lowering lands in the generator MIR slice"
-                        .to_string(),
-                });
-                None
+            HirExprKind::GenBlock {
+                body,
+                yield_ty,
+                return_ty,
+            } => Some(self.lower_gen_block(expr, body, yield_ty, return_ty)),
+            HirExprKind::Yield { value, yield_ty: _ } => {
+                self.lower_yield_expr(expr, value.as_deref())
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
@@ -8834,6 +8847,255 @@ impl Builder {
         handle
     }
 
+    /// Lower `HirExprKind::GenBlock { body, yield_ty, return_ty }` to a MIR
+    /// generator shell.
+    ///
+    /// The enclosing function receives a `Place::Local` typed as
+    /// `Generator<Y, R>` — this is a placeholder for S3b, which synthesises
+    /// the state-record struct and fills in cross-yield live fields.
+    ///
+    /// The gen-block body is lowered into a separate synthetic function
+    /// (name: `__hew_gen_body_{owner}_{id}`) and registered in
+    /// `self.generated_functions` so `lower_hir_module` surfaces it in the
+    /// `IrPipeline`. Inside the body, `HirExprKind::Yield { value }` lowers
+    /// to `Terminator::Yield { value: <place>, next: <resume_block> }`.
+    ///
+    /// # S3b cross-yield liveness stub
+    /// This function does NOT compute which locals are live across yield sites.
+    /// S3b adds the cross-yield liveness pass that lifts live locals to
+    /// state-record fields. The generated body's blocks contain the correct
+    /// CFG shape (yield terminators, resume blocks) for S3b to consume without
+    /// any re-lowering.
+    ///
+    /// # Fail-closed invariant
+    /// If the HIR `yield_ty` or `return_ty` is unreachable in the current
+    /// checker state, the lowering succeeds structurally (the placeholder
+    /// place still has type `Generator<Y, R>`) and S3b/S4 detect the
+    /// inconsistency when they interrogate the state-record.
+    fn lower_gen_block(
+        &mut self,
+        expr: &HirExpr,
+        body: &HirBlock,
+        _yield_ty: &ResolvedTy,
+        return_ty: &ResolvedTy,
+    ) -> Place {
+        // Mint a unique generator-body function name via the shared closure
+        // id counter so multiple gen blocks in one function do not collide.
+        let gen_id = self.next_closure_id;
+        self.next_closure_id = self
+            .next_closure_id
+            .checked_add(1)
+            .expect("generator id overflow — closure id counter exhausted");
+        let owner = Self::sanitize_symbol_component(&self.current_function_symbol);
+        let body_name = format!("__hew_gen_body_{owner}_{gen_id}");
+
+        // Allocate a place in the ENCLOSING function typed as
+        // `Generator<yield_ty, return_ty>`.  S3b will replace this with the
+        // real state-record type; for S3a it is purely a checker-authority
+        // token so the binding in the enclosing scope has the right type.
+        let gen_place = self.alloc_local(expr.ty.clone());
+
+        // Build a child Builder that lowers the gen-block body.
+        // `in_gen_body: true` enables `HirExprKind::Yield` → `Terminator::Yield`
+        // construction inside the body.
+        let mut body_builder = Builder {
+            type_classes: self.type_classes.clone(),
+            record_field_orders: self.record_field_orders.clone(),
+            machine_layout_names: self.machine_layout_names.clone(),
+            module_fn_names: self.module_fn_names.clone(),
+            subst: self.subst.clone(),
+            call_site_type_args: self.call_site_type_args.clone(),
+            supervisor_child_slots: self.supervisor_child_slots.clone(),
+            current_function_symbol: body_name.clone(),
+            in_gen_body: true,
+            ..Builder::default()
+        };
+
+        // Lower all statements in the gen-block body. Yields inside the body
+        // call `lower_yield_expr` which emits `Terminator::Yield` and advances
+        // the cursor to a fresh resume block.
+        for stmt in &body.statements {
+            body_builder.stmt(stmt);
+        }
+        // Lower the tail expression (the implicit return value of the block).
+        if let Some(tail) = &body.tail {
+            if let Some(src) = body_builder.lower_value(tail) {
+                body_builder.instructions.push(Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src,
+                });
+            }
+        }
+
+        // Seal the last block with `Terminator::Return`. For a gen body
+        // this represents the generator completing (returns `return_ty` which
+        // S5 maps to `None` on the Iterator impl side).
+        let blocks = body_builder.finalize_blocks(Terminator::Return);
+
+        // Build the THIR/raw/checked/elaborated triple for the body function.
+        let thir_stmts: Vec<MirStatement> = blocks
+            .iter()
+            .flat_map(|b| b.statements.iter().cloned())
+            .collect();
+        let thir = ThirFunction {
+            name: body_name.clone(),
+            return_ty: return_ty.clone(),
+            statements: thir_stmts,
+        };
+
+        // The gen-body function's parameter is the generator state record
+        // (populated by S3b). For S3a the param list is empty so the raw
+        // function is self-consistent at the MIR level.
+        //
+        // WHY FunctionCallConv::Default: S4 adds GeneratorNext convention
+        // when the state-machine switch-prologue lands. Using Default here
+        // keeps hew-codegen-rs compiling (it sees Unsupported("Terminator::Yield")
+        // before reaching the call-conv check). S4 replaces this.
+        let raw = RawMirFunction {
+            name: body_name.clone(),
+            return_ty: return_ty.clone(),
+            call_conv: crate::model::FunctionCallConv::Default,
+            params: Vec::new(),
+            locals: body_builder.locals.clone(),
+            blocks: blocks.clone(),
+            decisions: body_builder.decisions.clone(),
+        };
+
+        // A synthetic HirFn shell so `check_function` has a valid fn descriptor.
+        // The body is empty — dataflow runs on the raw blocks directly.
+        let synthetic_fn = HirFn {
+            id: hew_hir::ItemId(0),
+            node: hew_hir::HirNodeId(0),
+            name: body_name.clone(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_ty: return_ty.clone(),
+            body: hew_hir::HirBlock {
+                node: hew_hir::HirNodeId(0),
+                scope: hew_hir::ScopeId(0),
+                statements: Vec::new(),
+                tail: None,
+                ty: return_ty.clone(),
+                span: expr.span.clone(),
+            },
+            span: expr.span.clone(),
+        };
+
+        let dataflow_result = check_function(&body_builder, &raw.blocks, &synthetic_fn);
+        let mut body_diagnostics: Vec<MirDiagnostic> = dataflow_result
+            .checks
+            .iter()
+            .filter_map(check_to_diagnostic)
+            .collect();
+        body_diagnostics.append(&mut body_builder.diagnostics);
+        collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
+
+        let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
+        let checked = CheckedMirFunction {
+            name: body_name.clone(),
+            return_ty: return_ty.clone(),
+            blocks: raw.blocks.clone(),
+            decisions: body_builder.decisions.clone(),
+            checks: dataflow_result.checks.clone(),
+            cooperate_sites,
+        };
+        let elaborated = elaborate(&checked, &body_builder, &thir.statements, &dataflow_result);
+
+        let body_lowered = LoweredFunction {
+            thir,
+            raw,
+            checked,
+            elaborated,
+            diagnostics: body_diagnostics,
+            generated: body_builder.generated_functions,
+            record_layouts: body_builder.closure_record_layouts,
+        };
+        self.generated_functions.push(body_lowered);
+
+        // The gen-block expression evaluates to the generator-shell place in
+        // the enclosing function.  S3b replaces this with a real constructor
+        // call that allocates the state record.
+        gen_place
+    }
+
+    /// Lower `HirExprKind::Yield { value, yield_ty }` inside a gen-block body.
+    ///
+    /// Must only be called from a `Builder` with `in_gen_body = true`. If
+    /// `in_gen_body` is `false`, a `yield` expression appeared outside a
+    /// generator body — this is a checker invariant violation. Fail-closed:
+    /// emit `UnsupportedNode` and return `None` rather than fabricating a
+    /// value.
+    ///
+    /// Emits `Terminator::Yield { value: <place>, next: <resume_block_id> }` on
+    /// the CURRENT block, then advances the cursor to the fresh resume block.
+    /// The yield expression evaluates to unit in the body (the caller ignores
+    /// the `None` return).
+    ///
+    /// # S3b cross-yield liveness stub
+    /// After yielding, locally-defined values that are used again after the
+    /// resume point must be stored into (and reloaded from) the generator state
+    /// record. S3b's liveness pass identifies those locals and emits
+    /// store-before-yield / load-after-resume instructions. This function
+    /// intentionally leaves that gap as a comment at the yield site so S3b
+    /// has a clean insertion point.
+    fn lower_yield_expr(&mut self, expr: &HirExpr, value: Option<&HirExpr>) -> Option<Place> {
+        // Fail-closed: `yield` outside a gen-block body is a checker
+        // invariant violation. Emit a clear diagnostic rather than
+        // fabricating a value.
+        if !self.in_gen_body {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "HirExprKind::Yield outside gen-block body".to_string(),
+                    site: expr.site,
+                },
+                note: "yield is only valid inside a gen{} block; \
+                       the HIR checker should have rejected this program before MIR"
+                    .to_string(),
+            });
+            return None;
+        }
+
+        // Lower the yielded value to a Place.  If the value is absent (bare
+        // `yield;` — unit-typed generator), allocate a unit constant.
+        let value_place = if let Some(val_expr) = value {
+            self.decide(val_expr);
+            match self.lower_value(val_expr) {
+                Some(p) => p,
+                None => {
+                    // The value sub-expression failed to lower.  The child
+                    // diagnostic has already been pushed; propagate failure
+                    // by not emitting the Yield terminator.
+                    return None;
+                }
+            }
+        } else {
+            // `yield;` — allocate a unit local as the value carrier.
+            self.alloc_local(ResolvedTy::Unit)
+        };
+
+        // S3b insertion point: store cross-yield live locals to the state
+        // record HERE, before the Terminator::Yield. S3b's liveness pass
+        // identifies which locals are used after this resume point and emits
+        // the store instructions at this site.
+        // TODO(S3b): emit store-before-yield for cross-yield live locals.
+
+        // Allocate the resume block id and seal the current block with the
+        // Yield terminator.
+        let resume_block = self.alloc_block();
+        self.finish_current_block(Terminator::Yield {
+            value: value_place,
+            next: resume_block,
+        });
+        self.start_block(resume_block);
+
+        // S3b insertion point: reload cross-yield live locals from the state
+        // record HERE, at the top of the resume block.
+        // TODO(S3b): emit load-after-resume for cross-yield live locals.
+
+        // `yield` evaluates to unit in the gen body.
+        None
+    }
+
     fn decide(&mut self, expr: &HirExpr) {
         if self
             .decisions
@@ -8905,6 +9167,17 @@ impl Builder {
             {
                 true
             }
+            // `Generator<Y, R>` is the checker-supplied type for a gen-block
+            // expression. The S3a shell allocates a local of this type as a
+            // placeholder; S3b replaces it with the real state-record type.
+            // Classify as BitCopy so the decision-map check passes and the
+            // shell compiles. The state-record will carry its own drop
+            // semantics once S3b + S4 land.
+            // WHY BitCopy: the shell is a zero-size placeholder — it has no
+            // heap resources until S3b synthesises the state struct.
+            // WHEN-OBSOLETE: when S3b emits the state record type and S4
+            // wires the constructor; the real drop kind will replace this.
+            ResolvedTy::Named { name, .. } if name == "Generator" => true,
             ResolvedTy::Named { name, args } if args.is_empty() => {
                 self.actor_layouts.contains_key(name) || self.machine_layout_names.contains(name)
             }

@@ -1,0 +1,16 @@
+machine Door {
+    state Closed;
+    state Open;
+
+    event Toggle;
+
+    on Toggle: Closed -> Open {
+        await pending;
+        Open
+    }
+    on Toggle: Open -> Closed {
+        Closed
+    }
+}
+
+fn main() {}

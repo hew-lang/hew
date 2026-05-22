@@ -544,6 +544,21 @@ pub enum TypeErrorKind {
     ///
     /// Envelope code: `E_GENBLOCK_IN_ACTOR_RECEIVE`.
     GenBlockInActorReceive,
+    /// A `gen { }` generator block appeared inside a machine transition body.
+    ///
+    /// Machine transition bodies are pure state transformations; generator
+    /// suspension would make the transition non-atomic and is statically
+    /// forbidden.
+    ///
+    /// Envelope code: `E_GENBLOCK_IN_MACHINE_TRANSITION`.
+    GenBlockInMachineTransition,
+    /// An `await` expression appeared inside a machine transition body.
+    ///
+    /// Machine transition bodies are pure state transformations; awaiting a
+    /// task would suspend inside the transition and is statically forbidden.
+    ///
+    /// Envelope code: `E_AWAIT_IN_MACHINE_TRANSITION`.
+    AwaitInMachineTransition,
     /// A `gen { }` generator block whose body contains no `yield` expression.
     ///
     /// The checker infers the yield type from `yield` expressions inside the
@@ -676,6 +691,8 @@ impl TypeErrorKind {
             Self::ActorProtocolCollision { .. } => "ActorProtocolCollision",
             Self::ExternRtSymbolUnclassified { .. } => "ExternRtSymbolUnclassified",
             Self::GenBlockInActorReceive => "GenBlockInActorReceive",
+            Self::GenBlockInMachineTransition => "GenBlockInMachineTransition",
+            Self::AwaitInMachineTransition => "AwaitInMachineTransition",
             Self::EmptyGenerator => "EmptyGenerator",
             Self::ClosureRecursive { .. } => "ClosureRecursive",
             Self::SinkPayloadNotWire { .. } => "SinkPayloadNotWire",

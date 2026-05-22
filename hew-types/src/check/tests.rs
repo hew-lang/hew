@@ -17940,6 +17940,69 @@ mod assoc_types_slice2 {
         );
     }
 
+    // ── gen{} / await in machine transition bodies (Machine Lane B S6) ─────
+
+    #[test]
+    fn genblock_inside_machine_transition_is_rejected() {
+        let output = check_source(
+            r"
+            machine Door {
+                state Closed;
+                state Open;
+
+                event Toggle;
+
+                on Toggle: Closed -> Open {
+                    gen { yield Open; }
+                }
+                on Toggle: Open -> Closed {
+                    Closed
+                }
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::GenBlockInMachineTransition),
+            "gen{{}} inside machine transition must emit GenBlockInMachineTransition; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn await_inside_machine_transition_is_rejected() {
+        let output = check_source(
+            r"
+            machine Door {
+                state Closed;
+                state Open;
+
+                event Toggle;
+
+                on Toggle: Closed -> Open {
+                    await pending;
+                    Open
+                }
+                on Toggle: Open -> Closed {
+                    Closed
+                }
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::AwaitInMachineTransition),
+            "await inside machine transition must emit AwaitInMachineTransition; got: {:?}",
+            output.errors
+        );
+    }
+
     // ── gen{} Return-component inference ───────────────────────────────────
 
     /// `gen { 1 }` has a tail expression but no yield.  The Return component

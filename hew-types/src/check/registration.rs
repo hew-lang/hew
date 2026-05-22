@@ -1889,6 +1889,359 @@ impl Checker {
         }
     }
 
+    fn report_machine_transition_forbidden_exprs(
+        &mut self,
+        machine_name: &str,
+        transition: &hew_parser::ast::MachineTransition,
+    ) -> bool {
+        let mut hits = Vec::new();
+        Self::collect_machine_transition_forbidden_exprs(
+            &transition.body.0,
+            &transition.body.1,
+            &mut hits,
+        );
+        for (kind, span, label) in &hits {
+            let message = match kind {
+                TypeErrorKind::GenBlockInMachineTransition => format!(
+                    "E_GENBLOCK_IN_MACHINE_TRANSITION: `gen {{ }}` blocks are forbidden inside \
+                     machine `{machine_name}` transition `{}`: {} -> {}; transition bodies \
+                     must be pure and cannot suspend",
+                    transition.event_name, transition.source_state, transition.target_state
+                ),
+                TypeErrorKind::AwaitInMachineTransition => format!(
+                    "E_AWAIT_IN_MACHINE_TRANSITION: `{label}` is forbidden inside machine \
+                     `{machine_name}` transition `{}`: {} -> {}; transition bodies must be pure \
+                     and cannot suspend",
+                    transition.event_name, transition.source_state, transition.target_state
+                ),
+                _ => unreachable!("machine transition purity scanner only emits its own kinds"),
+            };
+            self.report_error(kind.clone(), span, message);
+        }
+        !hits.is_empty()
+    }
+
+    fn collect_machine_transition_forbidden_block(
+        block: &Block,
+        hits: &mut Vec<(TypeErrorKind, Span, &'static str)>,
+    ) {
+        for (stmt, span) in &block.stmts {
+            Self::collect_machine_transition_forbidden_stmt(stmt, span, hits);
+        }
+        if let Some(expr) = &block.trailing_expr {
+            Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "fail-closed transition purity scanner must cover every AST expression shape"
+    )]
+    fn collect_machine_transition_forbidden_stmt(
+        stmt: &Stmt,
+        span: &Span,
+        hits: &mut Vec<(TypeErrorKind, Span, &'static str)>,
+    ) {
+        match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::Var { value, .. }
+            | Stmt::Break { value, .. }
+            | Stmt::Return(value) => {
+                if let Some((expr, expr_span)) = value {
+                    Self::collect_machine_transition_forbidden_exprs(expr, expr_span, hits);
+                }
+            }
+            Stmt::Assign { target, value, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&target.0, &target.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(&value.0, &value.1, hits);
+            }
+            Stmt::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&condition.0, &condition.1, hits);
+                Self::collect_machine_transition_forbidden_block(then_block, hits);
+                if let Some(else_block) = else_block {
+                    if let Some(if_stmt) = &else_block.if_stmt {
+                        Self::collect_machine_transition_forbidden_stmt(
+                            &if_stmt.0, &if_stmt.1, hits,
+                        );
+                    }
+                    if let Some(block) = &else_block.block {
+                        Self::collect_machine_transition_forbidden_block(block, hits);
+                    }
+                }
+            }
+            Stmt::IfLet {
+                expr,
+                body,
+                else_body,
+                ..
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+                Self::collect_machine_transition_forbidden_block(body, hits);
+                if let Some(block) = else_body {
+                    Self::collect_machine_transition_forbidden_block(block, hits);
+                }
+            }
+            Stmt::Match { scrutinee, arms } => {
+                Self::collect_machine_transition_forbidden_exprs(&scrutinee.0, &scrutinee.1, hits);
+                for arm in arms {
+                    if let Some((guard, guard_span)) = &arm.guard {
+                        Self::collect_machine_transition_forbidden_exprs(guard, guard_span, hits);
+                    }
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &arm.body.0,
+                        &arm.body.1,
+                        hits,
+                    );
+                }
+            }
+            Stmt::Loop { body, .. } | Stmt::While { body, .. } => {
+                Self::collect_machine_transition_forbidden_block(body, hits);
+            }
+            Stmt::For {
+                is_await,
+                iterable,
+                body,
+                ..
+            } => {
+                if *is_await {
+                    hits.push((
+                        TypeErrorKind::AwaitInMachineTransition,
+                        span.clone(),
+                        "for await",
+                    ));
+                }
+                Self::collect_machine_transition_forbidden_exprs(&iterable.0, &iterable.1, hits);
+                Self::collect_machine_transition_forbidden_block(body, hits);
+            }
+            Stmt::WhileLet { expr, body, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+                Self::collect_machine_transition_forbidden_block(body, hits);
+            }
+            Stmt::Defer(expr) => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+            }
+            Stmt::Expression(expr) => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+            }
+            Stmt::Continue { .. } => {}
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "fail-closed transition purity scanner must cover every AST expression shape"
+    )]
+    fn collect_machine_transition_forbidden_exprs(
+        expr: &Expr,
+        span: &Span,
+        hits: &mut Vec<(TypeErrorKind, Span, &'static str)>,
+    ) {
+        match expr {
+            Expr::GenBlock { body } => {
+                hits.push((
+                    TypeErrorKind::GenBlockInMachineTransition,
+                    span.clone(),
+                    "gen",
+                ));
+                Self::collect_machine_transition_forbidden_block(body, hits);
+            }
+            Expr::Await(inner) => {
+                hits.push((
+                    TypeErrorKind::AwaitInMachineTransition,
+                    span.clone(),
+                    "await",
+                ));
+                Self::collect_machine_transition_forbidden_exprs(&inner.0, &inner.1, hits);
+            }
+            Expr::Binary { left, right, .. }
+            | Expr::Is {
+                lhs: left,
+                rhs: right,
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&left.0, &left.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(&right.0, &right.1, hits);
+            }
+            Expr::Unary { operand, .. }
+            | Expr::ForkChild { expr: operand, .. }
+            | Expr::PostfixTry(operand)
+            | Expr::Yield(Some(operand)) => {
+                Self::collect_machine_transition_forbidden_exprs(&operand.0, &operand.1, hits);
+            }
+            Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
+                for (expr, expr_span) in exprs {
+                    Self::collect_machine_transition_forbidden_exprs(expr, expr_span, hits);
+                }
+            }
+            Expr::ArrayRepeat { value, count } => {
+                Self::collect_machine_transition_forbidden_exprs(&value.0, &value.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(&count.0, &count.1, hits);
+            }
+            Expr::MapLiteral { entries } => {
+                for ((key, key_span), (value, value_span)) in entries {
+                    Self::collect_machine_transition_forbidden_exprs(key, key_span, hits);
+                    Self::collect_machine_transition_forbidden_exprs(value, value_span, hits);
+                }
+            }
+            Expr::Block(block) | Expr::Scope { body: block } | Expr::ForkBlock { body: block } => {
+                Self::collect_machine_transition_forbidden_block(block, hits);
+            }
+            Expr::UnsafeBlock(block) => {
+                Self::collect_machine_transition_forbidden_block(block, hits);
+            }
+            Expr::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&condition.0, &condition.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(
+                    &then_block.0,
+                    &then_block.1,
+                    hits,
+                );
+                if let Some(else_block) = else_block {
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &else_block.0,
+                        &else_block.1,
+                        hits,
+                    );
+                }
+            }
+            Expr::IfLet {
+                expr,
+                body,
+                else_body,
+                ..
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+                Self::collect_machine_transition_forbidden_block(body, hits);
+                if let Some(block) = else_body {
+                    Self::collect_machine_transition_forbidden_block(block, hits);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                Self::collect_machine_transition_forbidden_exprs(&scrutinee.0, &scrutinee.1, hits);
+                for arm in arms {
+                    if let Some((guard, guard_span)) = &arm.guard {
+                        Self::collect_machine_transition_forbidden_exprs(guard, guard_span, hits);
+                    }
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &arm.body.0,
+                        &arm.body.1,
+                        hits,
+                    );
+                }
+            }
+            Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&body.0, &body.1, hits);
+            }
+            Expr::Spawn { target, args } => {
+                Self::collect_machine_transition_forbidden_exprs(&target.0, &target.1, hits);
+                for (_, (arg, arg_span)) in args {
+                    Self::collect_machine_transition_forbidden_exprs(arg, arg_span, hits);
+                }
+            }
+            Expr::ScopeDeadline { duration, body } => {
+                Self::collect_machine_transition_forbidden_exprs(&duration.0, &duration.1, hits);
+                Self::collect_machine_transition_forbidden_block(body, hits);
+            }
+            Expr::InterpolatedString(parts) => {
+                for part in parts {
+                    if let StringPart::Expr((expr, expr_span)) = part {
+                        Self::collect_machine_transition_forbidden_exprs(expr, expr_span, hits);
+                    }
+                }
+            }
+            Expr::Call { function, args, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&function.0, &function.1, hits);
+                for arg in args {
+                    let (arg_expr, arg_span) = arg.expr();
+                    Self::collect_machine_transition_forbidden_exprs(arg_expr, arg_span, hits);
+                }
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&receiver.0, &receiver.1, hits);
+                for arg in args {
+                    let (arg_expr, arg_span) = arg.expr();
+                    Self::collect_machine_transition_forbidden_exprs(arg_expr, arg_span, hits);
+                }
+            }
+            Expr::StructInit { fields, base, .. } => {
+                for (_, (field, field_span)) in fields {
+                    Self::collect_machine_transition_forbidden_exprs(field, field_span, hits);
+                }
+                if let Some(base) = base {
+                    Self::collect_machine_transition_forbidden_exprs(&base.0, &base.1, hits);
+                }
+            }
+            Expr::Select { arms, timeout } => {
+                for arm in arms {
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &arm.source.0,
+                        &arm.source.1,
+                        hits,
+                    );
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &arm.body.0,
+                        &arm.body.1,
+                        hits,
+                    );
+                }
+                if let Some(timeout) = timeout {
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &timeout.duration.0,
+                        &timeout.duration.1,
+                        hits,
+                    );
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &timeout.body.0,
+                        &timeout.body.1,
+                        hits,
+                    );
+                }
+            }
+            Expr::Timeout { expr, duration } => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(&duration.0, &duration.1, hits);
+            }
+            Expr::FieldAccess { object, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&object.0, &object.1, hits);
+            }
+            Expr::Index { object, index } => {
+                Self::collect_machine_transition_forbidden_exprs(&object.0, &object.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(&index.0, &index.1, hits);
+            }
+            Expr::Cast { expr, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+            }
+            Expr::Range { start, end, .. } => {
+                if let Some(start) = start {
+                    Self::collect_machine_transition_forbidden_exprs(&start.0, &start.1, hits);
+                }
+                if let Some(end) = end {
+                    Self::collect_machine_transition_forbidden_exprs(&end.0, &end.1, hits);
+                }
+            }
+            Expr::MachineEmit { fields, .. } => {
+                for (_, (field, field_span)) in fields {
+                    Self::collect_machine_transition_forbidden_exprs(field, field_span, hits);
+                }
+            }
+            Expr::Literal(_)
+            | Expr::Identifier(_)
+            | Expr::Yield(None)
+            | Expr::Cooperate
+            | Expr::This
+            | Expr::RegexLiteral(_)
+            | Expr::ByteStringLiteral(_)
+            | Expr::ByteArrayLiteral(_) => {}
+        }
+    }
+
     /// Check that the machine's state × event matrix is fully covered.
     #[expect(
         clippy::too_many_lines,
@@ -1919,6 +2272,9 @@ impl Checker {
         let mut wildcard_events: HashSet<String> = HashSet::new();
 
         for transition in &md.transitions {
+            let transition_has_forbidden_expr =
+                self.report_machine_transition_forbidden_exprs(&md.name, transition);
+
             // Fix 2: Reject unknown event names
             if !event_names.contains(&transition.event_name.as_str()) {
                 self.errors.push(TypeError::new(
@@ -2051,7 +2407,9 @@ impl Checker {
             if let Some((guard_expr, guard_span)) = &transition.guard {
                 self.check_against(guard_expr, guard_span, &Ty::Bool);
             }
-            self.synthesize(&transition.body.0, &transition.body.1);
+            if !transition_has_forbidden_expr {
+                self.synthesize(&transition.body.0, &transition.body.1);
+            }
             self.current_machine_transition = None;
             self.env.pop_scope();
         }

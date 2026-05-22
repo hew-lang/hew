@@ -7170,6 +7170,15 @@ fn lower_terminator<'ctx>(
                 .map_err(|e| CodegenError::Llvm(format!("call br: {e:?}")))?;
         }
         Terminator::Trap { kind } => {
+            if matches!(*kind, TrapKind::MachineDispatchUnreachable) {
+                // Machine step dispatch is HIR-exhaustive. The residual
+                // fallthrough block is therefore impossible in well-typed
+                // programs and must not surface as a user-visible trap code.
+                fn_ctx.builder.build_unreachable().map_err(|e| {
+                    CodegenError::Llvm(format!("machine dispatch unreachable: {e:?}"))
+                })?;
+                return Ok(());
+            }
             // The exit-code constants here MUST stay in lock-step
             // with canonical `HEW_TRAP_*` in
             // `hew-runtime/src/internal/types.rs`; the native supervisor

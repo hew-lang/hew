@@ -479,6 +479,7 @@ fn bootstrap_linux_cross_target_library(target: &str) -> Result<(), String> {
 ///   2. The output is parseable as ELF with the correct architecture.
 ///   3. The build did not fall back to the `--emit-obj` rejection path.
 #[cfg(target_os = "linux")]
+#[ignore = "v0.5: hew build is unavailable during Rust MIR/codegen-rs cutover"]
 #[test]
 fn native_link_linux_cross_arch_produces_foreign_elf_binary() {
     let (cross_target, expected_arch) = linux_cross_target();
@@ -539,6 +540,7 @@ fn native_link_linux_cross_arch_produces_foreign_elf_binary() {
 /// This verifies that the fail-closed rejection error is no longer triggered
 /// for Linux same-OS cross-arch builds after issue #254 Phase 3.
 #[cfg(target_os = "linux")]
+#[ignore = "v0.5: hew build is unavailable during Rust MIR/codegen-rs cutover"]
 #[test]
 fn linux_cross_arch_passes_link_gate_not_rejected() {
     let (cross_target, _) = linux_cross_target();

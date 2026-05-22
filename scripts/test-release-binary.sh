@@ -32,8 +32,6 @@ echo "==> Release binary smoke test"
 if (( NO_BUILD == 0 )); then
     echo "==> Building hew-cli (release)"
     cargo build --release -p hew-cli 2>&1
-    echo "==> Building hew-emit helper (release)"
-    cargo build --release -p hew-codegen-rs --bin hew-emit 2>&1
 fi
 
 HEW="$REPO_ROOT/target/release/hew"
@@ -41,12 +39,6 @@ if [[ ! -x "$HEW" ]]; then
     echo "error: $HEW not found — run without --no-build or run 'cargo build --release -p hew-cli' first" >&2
     exit 1
 fi
-HEW_EMIT="$REPO_ROOT/target/release/hew-emit"
-if [[ ! -x "$HEW_EMIT" ]]; then
-    echo "error: $HEW_EMIT not found — run without --no-build or run 'cargo build --release -p hew-codegen-rs --bin hew-emit' first" >&2
-    exit 1
-fi
-
 # Drive the spine fixture through the IR ladder. The compile
 # subcommand emits artefacts under `.tmp/compile-out/` relative to the
 # current working directory, so run it from a scratch directory and then

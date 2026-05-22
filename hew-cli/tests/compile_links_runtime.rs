@@ -23,7 +23,7 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 /// error and produces a binary that runs to completion.
 ///
 /// This test exercises the full path:
-/// - Codegen emits a native `.o` object via `hew-emit`.
+/// - Codegen emits a native `.o` object in-process through LLVM.
 /// - `cmd_compile` calls `link::link_executable` with the host
 ///   `TargetSpec`, which resolves `libhew.a` and applies the platform
 ///   link plan.

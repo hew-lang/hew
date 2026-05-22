@@ -282,12 +282,6 @@ fn ensure_native_toolchain() {
                 .current_dir(repo_root()),
         );
         run_bootstrap_command(
-            "cargo build -q -p hew-codegen-rs --bin hew-emit",
-            std::process::Command::new("cargo")
-                .args(["build", "-q", "-p", "hew-codegen-rs", "--bin", "hew-emit"])
-                .current_dir(repo_root()),
-        );
-        run_bootstrap_command(
             "cargo build -q -p hew-lib",
             std::process::Command::new("cargo")
                 .args(["build", "-q", "-p", "hew-lib"])

@@ -100,11 +100,8 @@ all: hew adze runtime stdlib assemble
 # ── Rust targets ────────────────────────────────────────────────────────────
 
 # Build the hew compiler driver (debug).
-# hew-emit is the out-of-process LLVM object emitter required by
-# `hew compile`; it must sit alongside the hew binary at runtime.
 hew:
 	cargo build -p hew-cli
-	cargo build -p hew-codegen-rs --bin hew-emit
 
 # Build the adze package manager (debug)
 adze:
@@ -333,7 +330,6 @@ endif
 release:
 	$(RELEASE_PREP)
 	$(RELEASE_ENV) cargo build -p hew-cli --release
-	$(RELEASE_ENV) cargo build -p hew-codegen-rs --bin hew-emit --release
 	$(RELEASE_ENV) cargo build -p adze-cli --release
 	$(RELEASE_ENV) cargo build -p hew-lib --release
 	$(RELEASE_ENV) cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release

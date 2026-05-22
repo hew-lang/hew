@@ -4,8 +4,7 @@
 //! Each test drives `emit_module` with a hand-built `IrPipeline` containing
 //! a `Instr::CallRuntimeAbi` for one of the new symbols and asserts the
 //! emitted LLVM IR contains the expected `declare` signature. Passing
-//! `native: false, wasm: false` skips the `hew-emit` back-half so
-//! these run purely in-process.
+//! `native: false, wasm: false` keeps these focused on textual IR only.
 //!
 //! Direct `RuntimeCall` emission for `hew_task_spawn_thread` remains
 //! fail-closed; spawned task producers use dedicated MIR instructions that

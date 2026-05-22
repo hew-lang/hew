@@ -2,10 +2,8 @@
 //!
 //! Produces native object files and standalone WebAssembly modules from
 //! `hew-mir`'s raw MIR, with the LLVM module verified by `Module::verify()`
-//! before emission. The pipeline is split across two processes: IR
-//! construction runs in-process, object emission runs in the
-//! `hew-emit` helper binary (see `src/llvm.rs` for the architectural
-//! reasoning).
+//! before emission. IR construction and object emission both run in-process;
+//! textual `.ll` files are still written as diagnostics artefacts.
 //!
 //! ## Spine subset (initial)
 //!

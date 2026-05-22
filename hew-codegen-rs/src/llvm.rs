@@ -28,20 +28,12 @@
 //! `rust-lld -flavor wasm`) to produce a standalone module that
 //! `wasmtime --invoke main` can instantiate directly.
 //!
-//! ## Two-stage emission (front-half / back-half split)
+//! ## Emission
 //!
-//! IR construction runs in-process via inkwell. Object emission via
-//! `TargetMachine::write_to_file` is **not** safe in that same process:
-//! LLVM's legacy PassManager scheduler (which the C codegen API still
-//! routes through) can hit an `addLowerLevelRequiredPass` trap after
-//! earlier in-process LLVM setup has pre-touched the global
-//! `PassRegistry`. The fix is structural — the back half runs in its own
-//! process. `emit_module` writes the textual `.ll` in-process, then
-//! spawns the sibling `hew-emit` helper binary to compile each
-//! requested triple to a relocatable object. The helper process starts
-//! with a clean `libLLVM` global-state footprint, so the legacy PM
-//! scheduler finds its analyses and `write_to_file` succeeds.
-//! See `src/bin/hew_emit.rs` for the helper's own module docs.
+//! IR construction and object emission run in one process. `emit_module`
+//! still writes a textual `.ll` artefact for diagnostics, but native and
+//! WebAssembly objects are emitted directly from target-configured LLVM
+//! modules using `TargetMachine::write_to_file`.
 //!
 //! ## Side-table audit
 //!
@@ -56,6 +48,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy, PrintKind};
 use hew_hir::{mangle, HirRestartPolicy, HirSupervisorStrategy};
@@ -72,7 +65,10 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
-use inkwell::targets::{InitializationConfig, Target, TargetData, TargetMachine};
+use inkwell::targets::{
+    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetData, TargetMachine,
+    TargetTriple,
+};
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
@@ -195,18 +191,15 @@ pub struct EmitArtefacts {
 /// Emit native + wasm artefacts for `pipeline`'s raw MIR. Returns the paths
 /// of every artefact produced. Fail-closed on any verification failure.
 ///
-/// The textual LLVM IR (`<name>.ll`) is built in-process — the
-/// IR-construction path is safe under the `hew` driver's normal in-process
-/// LLVM setup. Object emission shells out to
-/// the `hew-emit` helper (see the helper's module docs for why), so the
-/// caller's binary must ship `hew-emit` alongside `hew` in the same
-/// directory (the workspace `cargo build` produces both into `target/<profile>/`).
+/// The textual LLVM IR (`<name>.ll`) is built in-process for forensics. Object
+/// emission also runs in-process, using a target-configured `TargetMachine`
+/// and a fresh LLVM `Context` per requested object.
 ///
 /// # Errors
 ///
 /// Returns `CodegenError` if any function declares an unsupported construct,
-/// `Module::verify()` rejects the emitted IR, the helper binary cannot be
-/// located, the helper exits non-zero, or `wasm-ld` fails.
+/// `Module::verify()` rejects the emitted IR, LLVM object emission fails, or
+/// `wasm-ld` fails.
 pub fn emit_module(
     pipeline: &IrPipeline,
     options: &EmitOptions<'_>,
@@ -225,7 +218,7 @@ pub fn emit_module(
         let obj_path = options.out_dir.join(format!("{}.o", options.module_name));
         let host_triple = TargetMachine::get_default_triple();
         let triple_str = host_triple.as_str().to_string_lossy().into_owned();
-        run_emit_helper(&ll_path, &triple_str, &obj_path)?;
+        emit_object_in_process(pipeline, options.module_name, &triple_str, &obj_path)?;
         artefacts.native_obj_path = Some(obj_path);
     }
 
@@ -245,7 +238,12 @@ pub fn emit_module(
         let wasm_obj_path = options
             .out_dir
             .join(format!("{}.wasm.o", options.module_name));
-        run_emit_helper(&ll_path, "wasm32-unknown-unknown", &wasm_obj_path)?;
+        emit_object_in_process(
+            pipeline,
+            options.module_name,
+            "wasm32-unknown-unknown",
+            &wasm_obj_path,
+        )?;
         let wasm_path = options
             .out_dir
             .join(format!("{}.wasm", options.module_name));
@@ -353,60 +351,56 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
     None
 }
 
-/// Locate the `hew-emit` helper binary sibling to the currently running
-/// executable, then invoke it to compile `ll_path` for `triple` into
-/// `out_path`.
-///
-/// The rustc-driver-style discovery (sibling of `current_exe`) handles both
-/// the dev layout (`target/debug/hew` next to `target/debug/hew-emit`)
-/// and any future install layout where the two binaries share a `bin/`.
-fn run_emit_helper(ll_path: &Path, triple: &str, out_path: &Path) -> CodegenResult<()> {
-    let helper = locate_emit_helper()?;
-    let output = Command::new(&helper)
-        .arg("--triple")
-        .arg(triple)
-        .arg("--in")
-        .arg(ll_path)
-        .arg("--out")
-        .arg(out_path)
-        .output()
-        .map_err(|e| CodegenError::Llvm(format!("spawn {}: {e}", helper.display())))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(CodegenError::Llvm(format!(
-            "hew-emit ({:?}) failed for triple={triple} out={}: {}",
-            output.status,
-            out_path.display(),
-            stderr.trim()
-        )));
-    }
+fn emit_object_in_process(
+    pipeline: &IrPipeline,
+    module_name: &str,
+    triple: &str,
+    out_path: &Path,
+) -> CodegenResult<()> {
+    let _guard = llvm_codegen_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let machine = target_machine_for_triple(triple)?;
+    let ctx = Context::create();
+    let llvm_mod = build_module_for_target(&ctx, pipeline, module_name, Some(&machine))?;
+    machine
+        .write_to_file(&llvm_mod, FileType::Object, out_path)
+        .map_err(|e| {
+            CodegenError::Llvm(format!(
+                "write object for triple={triple} out={}: {e:?}",
+                out_path.display()
+            ))
+        })?;
     Ok(())
 }
 
-fn locate_emit_helper() -> CodegenResult<std::path::PathBuf> {
-    let exe =
-        std::env::current_exe().map_err(|e| CodegenError::Llvm(format!("current_exe: {e}")))?;
-    let dir = exe.parent().ok_or_else(|| {
-        CodegenError::Llvm(format!(
-            "current exe `{}` has no parent directory",
-            exe.display()
-        ))
-    })?;
-    let name = if cfg!(windows) {
-        "hew-emit.exe"
-    } else {
-        "hew-emit"
-    };
-    let candidate = dir.join(name);
-    if !candidate.exists() {
-        return Err(CodegenError::Llvm(format!(
-            "helper binary `{}` not found next to `{}`; \
-             ensure `cargo build -p hew-codegen-rs --bin hew-emit` has run",
-            candidate.display(),
-            exe.display()
-        )));
-    }
-    Ok(candidate)
+fn llvm_codegen_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn target_machine_for_triple(triple: &str) -> CodegenResult<TargetMachine> {
+    initialise_llvm_targets();
+    let target_triple = TargetTriple::create(triple);
+    let target = Target::from_triple(&target_triple)
+        .map_err(|e| CodegenError::Llvm(format!("from_triple({triple}): {e:?}")))?;
+    target
+        .create_target_machine(
+            &target_triple,
+            "generic",
+            "",
+            inkwell::OptimizationLevel::Default,
+            RelocMode::PIC,
+            CodeModel::Default,
+        )
+        .ok_or_else(|| CodegenError::Llvm(format!("create_target_machine for {triple}")))
+}
+
+fn initialise_llvm_targets() {
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        Target::initialize_all(&InitializationConfig::default());
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1107,13 +1101,11 @@ fn register_record_layouts<'ctx>(
 //    `variant_struct.field_idx` through the bitcast payload pointer.
 //
 // **Sizing**: `build_tagged_union_layout` constructs each variant's LLVM
-// struct type first, then calls `host_target_data().get_abi_size(variant_struct)`
-// to obtain the ABI-correct byte count including inter-field padding.
-// `host_target_data()` initialises the native LLVM target once (via `OnceLock`)
-// and builds a `TargetData` from the host data-layout string. The wasm32 emit
-// path runs in a separate process (`hew_emit`) with its own data layout set
-// after IR generation; sizing at IR-build time uses the host layout, which
-// matches the native target. WASM-TODO(#1451): wasm32 variant layout accuracy.
+// struct type first, then calls the active target's
+// `TargetData::get_abi_size(variant_struct)` to obtain the ABI-correct byte
+// count including inter-field padding. Tests that inspect IR without selecting
+// an object target fall back to the host data layout; real native/WASM object
+// emission passes the `TargetMachine` data layout into module construction.
 //
 // **Alignment**: the outer payload field is `[K x iA]` where `A` is the
 // max ABI alignment across all variant payload structs (in bytes) and
@@ -1164,8 +1156,8 @@ struct MachineCodegenLayout<'ctx> {
     state_name_table: Option<inkwell::values::GlobalValue<'ctx>>,
 }
 
-/// Return the native host data-layout string, initialising LLVM's native
-/// target exactly once per process (guarded by `OnceLock`).
+/// Return the native host data-layout string, initialising LLVM's native target
+/// exactly once per process (guarded by `OnceLock`).
 ///
 /// `TargetData` wraps a raw pointer and is not `Sync`, so we cache the
 /// layout *string* (which is `Sync`) and construct a fresh `TargetData`
@@ -1173,21 +1165,9 @@ struct MachineCodegenLayout<'ctx> {
 /// cheap — it only parses the layout string into target-description tables;
 /// it does not allocate LLVM IR or touch the global PassManager.
 ///
-/// The in-process LLVM limitation that motivated the `hew_emit` split
-/// applies only to `TargetMachine::write_to_file` (legacy PassManager
-/// global). Initialising the native target for layout queries has no
-/// conflicting side effects.
-///
-/// **Multi-target portability**: this function returns the *host* data layout.
-/// `emit_module` builds a single target-agnostic textual IR that `hew-emit`
-/// re-parses for both native and wasm32 in separate processes — there is no
-/// single "current target" at IR-build time. The primitive ABI alignments
-/// Hew currently lowers (i8/i16/i32/i64/ptr) agree across native and wasm32
-/// data layouts, so querying the host's `TargetData` for variant ABI size and
-/// alignment in `build_tagged_union_layout` yields the same answers as
-/// querying the wasm32 target would. The wider-integer payload element type
-/// computed there makes per-target alignment moot — the IR is naturally
-/// aligned under either target's data layout.
+/// Object emission passes target-specific `TargetData` into module
+/// construction. This host helper is only for target-agnostic IR inspection
+/// tests and the debug `.ll` artefact.
 fn host_data_layout_string() -> &'static str {
     use std::sync::OnceLock;
     static HOST_DL: OnceLock<String> = OnceLock::new();
@@ -1246,12 +1226,18 @@ fn register_machine_layouts<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     machine_layouts: &[MachineLayout],
     record_layout_map: &mut RecordLayoutMap<'ctx>,
+    target_data: Option<&TargetData>,
 ) -> CodegenResult<MachineLayoutMap<'ctx>> {
     let mut map: MachineLayoutMap<'ctx> = HashMap::new();
     for layout in machine_layouts {
         // The state-side machine value: `<Name>` with state-variant payloads.
-        let mut machine_cg =
-            build_tagged_union_layout(ctx, &layout.name, &layout.variants, record_layout_map)?;
+        let mut machine_cg = build_tagged_union_layout(
+            ctx,
+            &layout.name,
+            &layout.variants,
+            record_layout_map,
+            target_data,
+        )?;
         // Build the per-machine state-name string table. Each entry is a
         // pointer to a private NUL-terminated read-only global; the table
         // itself is a private `[N x ptr]` constant. `Instr::MachineStateName`
@@ -1272,8 +1258,13 @@ fn register_machine_layouts<'ctx>(
         // The companion event enum: `<Name>Event` with event-variant
         // payloads. Tag bit width is derived from the event count
         let event_name = format!("{}Event", layout.name);
-        let event_cg =
-            build_tagged_union_layout(ctx, &event_name, &layout.events, record_layout_map)?;
+        let event_cg = build_tagged_union_layout(
+            ctx,
+            &event_name,
+            &layout.events,
+            record_layout_map,
+            target_data,
+        )?;
         record_layout_map.insert(event_name.clone(), event_cg.outer_struct);
         map.insert(event_name, event_cg);
     }
@@ -1298,12 +1289,18 @@ fn register_enum_layouts<'ctx>(
     enum_layouts: &[EnumLayout],
     record_layout_map: &mut RecordLayoutMap<'ctx>,
     machine_layout_map: &mut MachineLayoutMap<'ctx>,
+    target_data: Option<&TargetData>,
 ) -> CodegenResult<()> {
     for layout in enum_layouts {
         // Convert `EnumLayout.variants` (which are `MachineVariantLayout`)
         // directly — they share the same shape (`name`, `field_tys`).
-        let enum_cg =
-            build_tagged_union_layout(ctx, &layout.name, &layout.variants, record_layout_map)?;
+        let enum_cg = build_tagged_union_layout(
+            ctx,
+            &layout.name,
+            &layout.variants,
+            record_layout_map,
+            target_data,
+        )?;
         // Register the outer struct so `resolve_ty` resolves
         // `ResolvedTy::Named { name: "<EnumName>" }` the same way as a
         // machine-typed or record-typed local.
@@ -1328,6 +1325,7 @@ fn build_tagged_union_layout<'ctx>(
     outer_name: &str,
     variants: &[MachineVariantLayout],
     record_layout_map: &RecordLayoutMap<'ctx>,
+    target_data: Option<&TargetData>,
 ) -> CodegenResult<MachineCodegenLayout<'ctx>> {
     // Build each variant's LLVM struct type first, then query its ABI size.
     // This order is required: `get_abi_size` operates on a completed LLVM
@@ -1361,7 +1359,13 @@ fn build_tagged_union_layout<'ctx>(
     // across native and wasm32 data layouts, so this single IR shape is
     // valid on every target Hew lowers to. See the "Alignment" note in the
     // layout-invariants block above.
-    let td = host_target_data();
+    let host_td;
+    let td = if let Some(td) = target_data {
+        td
+    } else {
+        host_td = host_target_data();
+        &host_td
+    };
     let mut max_bytes: u64 = 0;
     let mut max_align: u32 = 0;
     for vs in &variant_struct_tys {
@@ -1616,13 +1620,7 @@ fn primitive_to_llvm<'ctx>(
         ResolvedTy::I32 | ResolvedTy::U32 => Ok(ctx.i32_type().into()),
         ResolvedTy::I64 | ResolvedTy::U64 => Ok(ctx.i64_type().into()),
         // Platform-sized integers: 32-bit on WASM32, 64-bit on native
-        // (Q42 ratification; B-D1).  The spine currently targets native
-        // only (see llvm.rs `intern_runtime_decl` comment at line ~394);
-        // WASM32 lowers separately via the `hew_emit` binary's
-        // `--target wasm32-unknown-unknown` path, which calls back into
-        // this same function.  The target data layout recorded on the
-        // LLVM module by `hew_emit.rs:107` ensures `i32` is
-        // pointer-sized on wasm32 and `i64` on native.
+        // (Q42 ratification; B-D1).
         //
         // SHIM: pointer-width selection here is compile-time via the Rust
         // usize width.  Replace with target-triple inspection once a
@@ -1638,9 +1636,9 @@ fn primitive_to_llvm<'ctx>(
         #[cfg(not(target_pointer_width = "32"))]
         ResolvedTy::Isize | ResolvedTy::Usize => Ok(ctx.i64_type().into()),
         ResolvedTy::Bool => Ok(ctx.i8_type().into()),
-        // `Unit` lowers to a zero-sized stand-in (i8); the binary that
-        // consumes it never observes the value (returning unit on Unix
-        // simply discards the call result).
+        // `Unit` lowers to a zero-sized stand-in (i8). Unit-returning
+        // functions return the canonical zero value rather than reading
+        // from the MIR return slot.
         ResolvedTy::Unit => Ok(ctx.i8_type().into()),
         ResolvedTy::F32 => Ok(ctx.f32_type().into()),
         ResolvedTy::F64 => Ok(ctx.f64_type().into()),
@@ -7084,6 +7082,13 @@ fn lower_terminator<'ctx>(
 ) -> CodegenResult<()> {
     match term {
         Terminator::Return => {
+            if matches!(fn_ctx.return_resolved_ty, ResolvedTy::Unit) {
+                fn_ctx
+                    .builder
+                    .build_return(Some(&fn_ctx.ctx.i8_type().const_zero()))
+                    .map_err(|e| CodegenError::Llvm(format!("unit ret: {e:?}")))?;
+                return Ok(());
+            }
             let loaded = fn_ctx
                 .builder
                 .build_load(fn_ctx.return_ty, fn_ctx.return_slot, "ret_val")
@@ -9428,7 +9433,26 @@ fn build_module<'ctx>(
     pipeline: &IrPipeline,
     name: &str,
 ) -> CodegenResult<LlvmModule<'ctx>> {
+    build_module_for_target(ctx, pipeline, name, None)
+}
+
+fn build_module_for_target<'ctx>(
+    ctx: &'ctx Context,
+    pipeline: &IrPipeline,
+    name: &str,
+    target_machine: Option<&TargetMachine>,
+) -> CodegenResult<LlvmModule<'ctx>> {
     let llvm_mod = ctx.create_module(name);
+    let target_data = if let Some(machine) = target_machine {
+        let triple = machine.get_triple();
+        llvm_mod.set_triple(&triple);
+        let data = machine.get_target_data();
+        let layout = data.get_data_layout();
+        llvm_mod.set_data_layout(&layout);
+        Some(data)
+    } else {
+        None
+    };
     // Register every named-form record from `pipeline.record_layouts` as an
     // LLVM named struct on `ctx` BEFORE any function declaration or body
     // lowering touches `resolve_ty`. Records can appear in function return
@@ -9448,6 +9472,7 @@ fn build_module<'ctx>(
         &llvm_mod,
         &pipeline.machine_layouts,
         &mut record_layouts,
+        target_data.as_ref(),
     )?;
     // Register user-defined enum layouts into the same `machine_layouts` map.
     // Enum-typed locals use the same `Place::MachineTag` / `Place::MachineVariant`
@@ -9459,6 +9484,7 @@ fn build_module<'ctx>(
         &pipeline.enum_layouts,
         &mut record_layouts,
         &mut machine_layouts,
+        target_data.as_ref(),
     )?;
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;

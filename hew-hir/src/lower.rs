@@ -1703,7 +1703,9 @@ impl LowerCtx {
                 id: ItemId(u32::MAX / 2),
                 return_ty: ResolvedTy::Unit,
                 param_tys: vec![ResolvedTy::Named {
-                    name: "LocalPid".to_string(),
+                    name: hew_types::BuiltinType::LocalPid
+                        .canonical_name()
+                        .to_string(),
                     args: vec![ResolvedTy::Unit],
                 }],
                 linkage: None,
@@ -7884,6 +7886,37 @@ mod tests {
         assert_eq!(hir_capture.binding, k_binding.id);
         assert_eq!(hir_capture.mode, checker_fact.mode);
         assert_eq!(hir_capture.is_send, checker_fact.is_send);
+    }
+
+    #[test]
+    fn synthesized_actor_handle_lowering_uses_builtin_type_marker() {
+        let (_program, _tco, lowered) = parse_typecheck_and_lower(
+            r"
+            actor Worker {
+                receive fn ping() {}
+            }
+
+            fn main() {
+                let worker = spawn Worker;
+            }
+            ",
+        );
+
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "lower diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+        let body = main_function_body(&lowered);
+        let HirStmtKind::Let(binding, Some(init)) = &body.statements[0].kind else {
+            panic!("expected first statement to bind worker");
+        };
+        assert_eq!(binding.name, "worker");
+        assert_eq!(
+            init.value_class,
+            ValueClass::AffineResource,
+            "LocalPid<Worker> must resolve through the builtin type marker registry"
+        );
     }
 
     #[test]

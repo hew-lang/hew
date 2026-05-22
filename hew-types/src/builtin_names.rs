@@ -347,6 +347,14 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::AsyncGenerator
             | BuiltinType::Range
             | BuiltinType::Rc
+            | BuiltinType::Pid
+            | BuiltinType::HewActor
+            | BuiltinType::HewDuplex
+            | BuiltinType::HewSendHalf
+            | BuiltinType::HewRecvHalf
+            | BuiltinType::BoxedActor
+            | BuiltinType::ActorState
+            | BuiltinType::MachineState
             | BuiltinType::SendHalf
             | BuiltinType::RecvHalf
             | BuiltinType::LambdaActorHandle

@@ -26,8 +26,16 @@ pub enum BuiltinType {
     Stream,
     Sink,
     Duplex,
+    Pid,
     LocalPid,
     RemotePid,
+    HewActor,
+    HewDuplex,
+    HewSendHalf,
+    HewRecvHalf,
+    BoxedActor,
+    ActorState,
+    MachineState,
     SendHalf,
     RecvHalf,
     LambdaActorHandle,
@@ -54,6 +62,40 @@ pub enum BuiltinType {
 pub struct BuiltinTypeInfo {
     pub kind: BuiltinType,
     pub canonical_name: &'static str,
+    pub marker: BuiltinTypeMarker,
+    pub close_method: Option<&'static str>,
+    pub handle_family: Option<BuiltinHandleFamily>,
+    pub arity: usize,
+    pub roles: &'static [BuiltinTypeRole],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BuiltinTypeMarker {
+    None,
+    BitCopy,
+    Resource,
+    Linear,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BuiltinHandleFamily {
+    ActorPid,
+    ActorRuntime,
+    Duplex,
+    DuplexHalf,
+    ActorState,
+    MachineState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BuiltinTypeRole {
+    ActorDispatchLocal,
+    ActorDispatchRemote,
+    SupervisorLocalPid,
+    WasmNativeOnlyHandle,
+    ActorStatePayload,
+    MachineStatePayload,
+    CrashInfoPayload,
 }
 
 macro_rules! builtin_types {
@@ -63,6 +105,11 @@ macro_rules! builtin_types {
                 BuiltinTypeInfo {
                     kind: BuiltinType::$variant,
                     canonical_name: $canonical,
+                    marker: BuiltinType::$variant.marker(),
+                    close_method: BuiltinType::$variant.close_method(),
+                    handle_family: BuiltinType::$variant.handle_family(),
+                    arity: BuiltinType::$variant.arity(),
+                    roles: BuiltinType::$variant.roles(),
                 },
             )*
         ];
@@ -97,8 +144,16 @@ builtin_types! {
     Stream => "Stream",
     Sink => "Sink",
     Duplex => "Duplex",
+    Pid => "Pid",
     LocalPid => "LocalPid",
     RemotePid => "RemotePid",
+    HewActor => "HewActor",
+    HewDuplex => "HewDuplex",
+    HewSendHalf => "HewSendHalf",
+    HewRecvHalf => "HewRecvHalf",
+    BoxedActor => "BoxedActor",
+    ActorState => "ActorState",
+    MachineState => "MachineState",
     SendHalf => "SendHalf",
     RecvHalf => "RecvHalf",
     LambdaActorHandle => "LambdaActorHandle",
@@ -122,6 +177,143 @@ builtin_types! {
 }
 
 impl BuiltinType {
+    #[must_use]
+    pub const fn marker(self) -> BuiltinTypeMarker {
+        match self {
+            Self::Duplex
+            | Self::Sink
+            | Self::Stream
+            | Self::LocalPid
+            | Self::RemotePid
+            | Self::HewActor
+            | Self::HewDuplex
+            | Self::HewSendHalf
+            | Self::HewRecvHalf
+            | Self::BoxedActor
+            | Self::SendHalf
+            | Self::RecvHalf
+            | Self::LambdaActorHandle => BuiltinTypeMarker::Resource,
+            Self::ActorState | Self::MachineState => BuiltinTypeMarker::Linear,
+            Self::CrashInfo => BuiltinTypeMarker::BitCopy,
+            _ => BuiltinTypeMarker::None,
+        }
+    }
+
+    #[must_use]
+    pub const fn close_method(self) -> Option<&'static str> {
+        match self {
+            Self::Duplex
+            | Self::Sink
+            | Self::Stream
+            | Self::HewActor
+            | Self::HewDuplex
+            | Self::HewSendHalf
+            | Self::HewRecvHalf
+            | Self::BoxedActor
+            | Self::SendHalf
+            | Self::RecvHalf
+            | Self::LambdaActorHandle => Some("close"),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn handle_family(self) -> Option<BuiltinHandleFamily> {
+        match self {
+            Self::Pid | Self::LocalPid | Self::RemotePid => Some(BuiltinHandleFamily::ActorPid),
+            Self::HewActor | Self::BoxedActor => Some(BuiltinHandleFamily::ActorRuntime),
+            Self::Duplex | Self::HewDuplex | Self::LambdaActorHandle => {
+                Some(BuiltinHandleFamily::Duplex)
+            }
+            Self::SendHalf | Self::RecvHalf | Self::HewSendHalf | Self::HewRecvHalf => {
+                Some(BuiltinHandleFamily::DuplexHalf)
+            }
+            Self::ActorState => Some(BuiltinHandleFamily::ActorState),
+            Self::MachineState => Some(BuiltinHandleFamily::MachineState),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn arity(self) -> usize {
+        match self {
+            Self::Option
+            | Self::Vec
+            | Self::HashSet
+            | Self::ActorRef
+            | Self::Actor
+            | Self::Task
+            | Self::Generator
+            | Self::AsyncGenerator
+            | Self::Range
+            | Self::Rc
+            | Self::Sender
+            | Self::Receiver
+            | Self::Stream
+            | Self::Sink
+            | Self::LocalPid
+            | Self::RemotePid
+            | Self::ActorState
+            | Self::MachineState
+            | Self::SendHalf
+            | Self::RecvHalf => 1,
+            Self::Result
+            | Self::HashMap
+            | Self::StreamPair
+            | Self::Duplex
+            | Self::HewDuplex
+            | Self::LambdaActorHandle => 2,
+            Self::Pid
+            | Self::HewActor
+            | Self::HewSendHalf
+            | Self::HewRecvHalf
+            | Self::BoxedActor
+            | Self::CrashInfo
+            | Self::CrashAction
+            | Self::SendError
+            | Self::AskError
+            | Self::RecvError
+            | Self::LinkError
+            | Self::MonitorRef
+            | Self::NarrowError
+            | Self::CloseError
+            | Self::Iterator
+            | Self::String
+            | Self::Map
+            | Self::Char
+            | Self::Unit
+            | Self::Duration
+            | Self::Float
+            | Self::Trap => 0,
+        }
+    }
+
+    #[must_use]
+    pub const fn roles(self) -> &'static [BuiltinTypeRole] {
+        match self {
+            Self::ActorRef | Self::Actor => &[BuiltinTypeRole::ActorDispatchLocal],
+            Self::LocalPid => &[
+                BuiltinTypeRole::ActorDispatchLocal,
+                BuiltinTypeRole::SupervisorLocalPid,
+            ],
+            Self::RemotePid => &[BuiltinTypeRole::ActorDispatchRemote],
+            Self::HewActor
+            | Self::HewDuplex
+            | Self::HewSendHalf
+            | Self::HewRecvHalf
+            | Self::BoxedActor => &[BuiltinTypeRole::WasmNativeOnlyHandle],
+            Self::ActorState => &[BuiltinTypeRole::ActorStatePayload],
+            Self::MachineState => &[BuiltinTypeRole::MachineStatePayload],
+            Self::CrashInfo => &[BuiltinTypeRole::CrashInfoPayload],
+            _ => &[],
+        }
+    }
+
+    #[must_use]
+    pub fn has_role(self, role: BuiltinTypeRole) -> bool {
+        self.roles().contains(&role)
+    }
+
     #[must_use]
     pub const fn is_channel_handle(self) -> bool {
         matches!(self, Self::Sender | Self::Receiver)
@@ -176,6 +368,11 @@ mod tests {
         for info in builtin_types() {
             assert_eq!(lookup_builtin_type(info.canonical_name), Some(info.kind));
             assert_eq!(info.kind.canonical_name(), info.canonical_name);
+            assert_eq!(info.marker, info.kind.marker());
+            assert_eq!(info.close_method, info.kind.close_method());
+            assert_eq!(info.handle_family, info.kind.handle_family());
+            assert_eq!(info.arity, info.kind.arity());
+            assert_eq!(info.roles, info.kind.roles());
         }
     }
 
@@ -194,5 +391,106 @@ mod tests {
             serde_json::from_str::<BuiltinType>(&json).unwrap(),
             BuiltinType::Option
         );
+    }
+
+    #[test]
+    fn handle_and_project_cap_facts_are_registered() {
+        let expected = [
+            (
+                BuiltinType::Pid,
+                BuiltinTypeMarker::None,
+                None,
+                Some(BuiltinHandleFamily::ActorPid),
+                0,
+                &[][..],
+            ),
+            (
+                BuiltinType::LocalPid,
+                BuiltinTypeMarker::Resource,
+                None,
+                Some(BuiltinHandleFamily::ActorPid),
+                1,
+                &[
+                    BuiltinTypeRole::ActorDispatchLocal,
+                    BuiltinTypeRole::SupervisorLocalPid,
+                ][..],
+            ),
+            (
+                BuiltinType::RemotePid,
+                BuiltinTypeMarker::Resource,
+                None,
+                Some(BuiltinHandleFamily::ActorPid),
+                1,
+                &[BuiltinTypeRole::ActorDispatchRemote][..],
+            ),
+            (
+                BuiltinType::HewActor,
+                BuiltinTypeMarker::Resource,
+                Some("close"),
+                Some(BuiltinHandleFamily::ActorRuntime),
+                0,
+                &[BuiltinTypeRole::WasmNativeOnlyHandle][..],
+            ),
+            (
+                BuiltinType::HewDuplex,
+                BuiltinTypeMarker::Resource,
+                Some("close"),
+                Some(BuiltinHandleFamily::Duplex),
+                2,
+                &[BuiltinTypeRole::WasmNativeOnlyHandle][..],
+            ),
+            (
+                BuiltinType::HewSendHalf,
+                BuiltinTypeMarker::Resource,
+                Some("close"),
+                Some(BuiltinHandleFamily::DuplexHalf),
+                0,
+                &[BuiltinTypeRole::WasmNativeOnlyHandle][..],
+            ),
+            (
+                BuiltinType::HewRecvHalf,
+                BuiltinTypeMarker::Resource,
+                Some("close"),
+                Some(BuiltinHandleFamily::DuplexHalf),
+                0,
+                &[BuiltinTypeRole::WasmNativeOnlyHandle][..],
+            ),
+            (
+                BuiltinType::BoxedActor,
+                BuiltinTypeMarker::Resource,
+                Some("close"),
+                Some(BuiltinHandleFamily::ActorRuntime),
+                0,
+                &[BuiltinTypeRole::WasmNativeOnlyHandle][..],
+            ),
+            (
+                BuiltinType::ActorState,
+                BuiltinTypeMarker::Linear,
+                None,
+                Some(BuiltinHandleFamily::ActorState),
+                1,
+                &[BuiltinTypeRole::ActorStatePayload][..],
+            ),
+            (
+                BuiltinType::MachineState,
+                BuiltinTypeMarker::Linear,
+                None,
+                Some(BuiltinHandleFamily::MachineState),
+                1,
+                &[BuiltinTypeRole::MachineStatePayload][..],
+            ),
+        ];
+
+        for (kind, marker, close_method, family, arity, roles) in expected {
+            let info = builtin_types()
+                .iter()
+                .find(|info| info.kind == kind)
+                .unwrap_or_else(|| panic!("missing builtin registration for {kind:?}"));
+            assert_eq!(info.marker, marker, "{kind:?} marker");
+            assert_eq!(info.close_method, close_method, "{kind:?} close method");
+            assert_eq!(info.handle_family, family, "{kind:?} handle family");
+            assert_eq!(info.arity, arity, "{kind:?} arity");
+            assert_eq!(info.roles, roles, "{kind:?} roles");
+        }
     }
 }

@@ -4713,12 +4713,6 @@ impl Checker {
     /// Used by [`synthesize_identifier`](Self::synthesize_identifier) to add a
     /// targeted suggestion when a `UseAfterMove` fires on a substrate binding.
     fn ty_is_substrate_handle(ty: &Ty) -> bool {
-        let Ty::Named { name, .. } = ty else {
-            return false;
-        };
-        matches!(
-            name.as_str(),
-            "Duplex" | "Sink" | "Stream" | "SendHalf" | "RecvHalf"
-        )
+        matches!(ty, Ty::Named { builtin: Some(builtin), .. } if builtin.is_substrate_handle())
     }
 }

@@ -40,6 +40,14 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::AsyncGenerator
             | BuiltinType::Range
             | BuiltinType::Rc
+            | BuiltinType::Pid
+            | BuiltinType::HewActor
+            | BuiltinType::HewDuplex
+            | BuiltinType::HewSendHalf
+            | BuiltinType::HewRecvHalf
+            | BuiltinType::BoxedActor
+            | BuiltinType::ActorState
+            | BuiltinType::MachineState
             | BuiltinType::SendHalf
             | BuiltinType::RecvHalf
             | BuiltinType::LambdaActorHandle
@@ -1037,10 +1045,14 @@ impl Ty {
     pub fn as_actor_handle(&self) -> Option<&Ty> {
         match self {
             Ty::Named {
-                builtin: Some(BuiltinType::ActorRef | BuiltinType::Actor | BuiltinType::LocalPid),
+                builtin: Some(builtin),
                 args,
                 ..
-            } if args.len() == 1 => Some(&args[0]),
+            } if builtin.has_role(crate::builtin_type::BuiltinTypeRole::ActorDispatchLocal)
+                && args.len() == 1 =>
+            {
+                Some(&args[0])
+            }
             _ => None,
         }
     }

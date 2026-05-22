@@ -1756,7 +1756,11 @@ impl Checker {
                 args: vec![],
             })
             .collect();
-        let machine_ty = Ty::normalize_named(md.name.clone(), machine_generic_args.clone());
+        let machine_ty = Ty::Named {
+            builtin: None,
+            name: md.name.clone(),
+            args: machine_generic_args.clone(),
+        };
 
         let event_type_name = format!("{}Event", md.name);
         let event_ty = Ty::Named {
@@ -2003,7 +2007,11 @@ impl Checker {
                 .collect();
             self.env.define(
                 "state".to_string(),
-                Ty::normalize_named(md.name.clone(), transition_machine_args),
+                Ty::Named {
+                    builtin: None,
+                    name: md.name.clone(),
+                    args: transition_machine_args,
+                },
                 false,
             );
             // Bind `event` as the event companion enum type so that

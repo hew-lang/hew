@@ -94,6 +94,138 @@ fn freshen_inner_recurses_into_trait_object_bound_args() {
 }
 
 #[test]
+fn local_pid_actor_dispatch_uses_builtin_discriminator() {
+    let output = check_source(
+        r"
+        actor Worker {
+            receive fn ping() {}
+        }
+
+        fn main() {
+            let worker = spawn Worker;
+            worker.ping();
+        }
+        ",
+    );
+
+    assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
+    assert!(
+        output.actor_method_dispatch.values().any(
+            |dispatch| matches!(dispatch, ActorMethodKind::Fire(method) if method == "Worker::ping")
+        ),
+        "LocalPid<Worker> actor dispatch must be recorded by typed builtin discriminator: {:?}",
+        output.actor_method_dispatch
+    );
+}
+
+#[test]
+fn remote_pid_does_not_fall_through_to_local_actor_dispatch() {
+    let output = check_source(
+        r"
+        actor Worker {
+            receive fn ping() {}
+        }
+
+        fn main() {
+            let remote: RemotePid<Worker>;
+            remote.ping();
+        }
+        ",
+    );
+
+    assert!(
+        output.actor_method_dispatch.is_empty(),
+        "RemotePid<Worker> must not be treated as a local actor dispatch receiver: {:?}",
+        output.actor_method_dispatch
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UndefinedMethod),
+        "remote actor receive dispatch should be rejected as an undefined method; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_wired_to_rejects_remote_pid_by_role() {
+    let output = check_source(
+        r"
+        actor Db {
+            receive fn query() {}
+        }
+
+        actor Api {
+            init(db: RemotePid<Db>) {}
+        }
+
+        supervisor App {
+            child db: Db;
+            child api: Api wired_to: { db };
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::InvalidOperation
+                && error
+                    .message
+                    .contains("E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH")
+                && error.message.contains("RemotePid<Db>")
+        }),
+        "wired_to must reject RemotePid<Db> rather than accepting actor-pid spelling: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
+    let output = check_source(
+        r"
+        machine MachineState {
+            state Idle;
+            state Running;
+
+            event Tick;
+
+            on Tick: Idle -> Running {
+                Running
+            }
+            on Tick: Running -> Idle {
+                Idle
+            }
+        }
+
+        fn main() {
+            var m = Idle;
+            m.step(Tick);
+        }
+        ",
+    );
+
+    assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
+    assert!(
+        output
+            .machine_method_dispatch
+            .values()
+            .any(|dispatch| matches!(dispatch, MachineMethodKind::Step { machine_name } if machine_name == "MachineState")),
+        "user machine named MachineState must still register as a nominal machine: {:?}",
+        output.machine_method_dispatch
+    );
+    assert_eq!(
+        Ty::normalize_named("MachineState".to_string(), vec![]),
+        Ty::Named {
+            builtin: Some(crate::BuiltinType::MachineState),
+            name: "MachineState".to_string(),
+            args: vec![],
+        },
+        "the builtin handle marker remains available separately"
+    );
+}
+
+#[test]
 fn register_type_decl_marks_transitive_handle_bearing_structs() {
     let mut registry = ModuleRegistry::new(vec![]);
     registry.insert_handle_type_for_test("regex.Pattern".to_string());

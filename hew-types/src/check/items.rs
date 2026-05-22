@@ -224,13 +224,14 @@ impl Checker {
 
         let (_, outer_type, first_inner_type) = param;
 
-        // Expected: outer = "LocalPid", inner = expected_sibling_type.
-        // RemotePid is intentionally rejected here: supervisors are local, and a
+        // Expected: outer has the supervisor-local pid role, inner = expected_sibling_type.
+        // RemotePid is intentionally rejected here by role: supervisors are local, and a
         // wired_to child param typed `RemotePid<Sibling>` is semantically invalid.
-        let type_ok = crate::lookup_builtin_type(outer_type) == Some(crate::BuiltinType::LocalPid)
-            && first_inner_type
-                .as_deref()
-                .is_some_and(|t| t == expected_sibling_type);
+        let type_ok = crate::lookup_builtin_type(outer_type).is_some_and(|builtin| {
+            builtin.has_role(crate::builtin_type::BuiltinTypeRole::SupervisorLocalPid)
+        }) && first_inner_type
+            .as_deref()
+            .is_some_and(|t| t == expected_sibling_type);
 
         if !type_ok {
             let actual_type = if first_inner_type.is_some() {

@@ -669,9 +669,15 @@ impl Checker {
     }
 
     fn reject_if_wasm_native_only_handle(&mut self, receiver_ty: &Ty, span: &Span) {
-        let Ty::Named { name, .. } = receiver_ty else {
+        let Ty::Named { name, builtin, .. } = receiver_ty else {
             return;
         };
+        if builtin.is_some_and(|builtin| {
+            builtin.has_role(crate::builtin_type::BuiltinTypeRole::WasmNativeOnlyHandle)
+        }) {
+            self.reject_wasm_feature(span, WasmUnsupportedFeature::TcpNetworking);
+            return;
+        }
         let Some(module_name) = name.split('.').next() else {
             return;
         };
@@ -2865,9 +2871,11 @@ impl Checker {
                     ..
                 } = resolved
                 {
-                    if let Some(sig) =
-                        self.lookup_named_method_sig("LocalPid", receiver_args, method)
-                    {
+                    if let Some(sig) = self.lookup_named_method_sig(
+                        crate::BuiltinType::LocalPid.canonical_name(),
+                        receiver_args,
+                        method,
+                    ) {
                         let applied_sig = self.apply_instantiated_call_signature(
                             &sig,
                             None,
@@ -2937,9 +2945,11 @@ impl Checker {
                     ..
                 } = resolved
                 {
-                    if let Some(sig) =
-                        self.lookup_named_method_sig("RemotePid", receiver_args, method)
-                    {
+                    if let Some(sig) = self.lookup_named_method_sig(
+                        crate::BuiltinType::RemotePid.canonical_name(),
+                        receiver_args,
+                        method,
+                    ) {
                         let applied_sig = self.apply_instantiated_call_signature(
                             &sig,
                             None,

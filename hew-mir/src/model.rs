@@ -959,11 +959,11 @@ pub enum Place {
     /// a zero-based ordinal matching the declaration order in the machine's
     /// `states` list.
     ///
-    /// **Tag-dominance authority**: the drop-elaborator (Slice 4c) reads
-    /// `MachineTag` places to determine which variant is live before
-    /// emitting entry/exit hooks and field drops. Any `Place::MachineVariant`
-    /// access is only legal when the corresponding `MachineTag` dominates
-    /// the use site.
+    /// **Tag-dominance authority**: machine payload slots are active only
+    /// under a matching tag. Keeping machine tags and payload fields as
+    /// dedicated places prevents generic struct-field dataflow from treating
+    /// inactive payload bytes as live, and gives the later drop-elaborator a
+    /// transition-out hook.
     ///
     /// **Drop semantics**: machine values are `BitCopy` by value-class
     /// (the tag itself carries no heap resources). Dropping a machine
@@ -975,11 +975,9 @@ pub enum Place {
     /// MIR local. Keying the place on the local id directly mirrors the
     /// existing handle places (`DuplexHandle(u32)`, `SendHalf(u32)`, …)
     /// and makes codegen consume it the same way as `Place::Local(u32)`.
-    /// WHY declared here: Slice 4b (transition body lowering) emits
-    /// `MachineTag` stores to update the discriminant after a transition.
-    /// Slice 4c (drop-elaboration) reads `MachineTag` to drive
-    /// tag-dominant drop. Neither can express machine dispatch in MIR
-    /// without this place primitive.
+    /// WHY declared here: Slice 4a's step shell reads and writes machine
+    /// state tags without reusing struct-field places; later transition-body
+    /// and drop-elaboration slices extend the same primitive.
     /// WHEN-OBSOLETE: never — permanent MIR primitive once tagged-union
     /// machine layout lands in Slice 5.
     MachineTag(u32),
@@ -995,9 +993,10 @@ pub enum Place {
     ///
     /// **Dominance invariant**: a `MachineVariant` load or store is only
     /// legal when `Place::MachineTag(local)` is known to carry
-    /// `variant_idx` at the use site (i.e. the tag-dominance CFG
-    /// property holds). Slice 4c enforces this during drop-elaboration;
-    /// Slice 4b enforces it during transition body lowering.
+    /// `variant_idx` at the use site (i.e. the tag-dominance CFG property
+    /// holds). Slice 4a preserves that relationship in the shell; later
+    /// transition-body and drop-elaboration slices enforce it for real
+    /// payload movement.
     ///
     /// WHY declared here: Slice 4b needs to materialise next-state field
     /// values without going through codegen-specific layout. Storing into

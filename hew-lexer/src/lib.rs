@@ -978,6 +978,35 @@ mod tests {
     }
 
     #[test]
+    fn regex_literals_tokenize() {
+        // Basic regex literal with whitespace class
+        assert_eq!(
+            tokens(r#"re"\s+""#),
+            vec![Token::RegexLiteral(r#"re"\s+""#)]
+        );
+        // Dot escape — a literal dot in regex
+        assert_eq!(tokens(r#"re"\.""#), vec![Token::RegexLiteral(r#"re"\.""#)]);
+        // Escaped quote inside regex literal
+        assert_eq!(
+            tokens(r#"re"^\"quoted\"$""#),
+            vec![Token::RegexLiteral(r#"re"^\"quoted\"$""#)]
+        );
+        // Named capture group
+        assert_eq!(
+            tokens(r#"re"(?P<token>.+)""#),
+            vec![Token::RegexLiteral(r#"re"(?P<token>.+)""#)]
+        );
+        // Multiple regex literals separated by whitespace
+        assert_eq!(
+            tokens(r#"re"^[0-9]+$" re"https?://""#),
+            vec![
+                Token::RegexLiteral(r#"re"^[0-9]+$""#),
+                Token::RegexLiteral(r#"re"https?://""#),
+            ]
+        );
+    }
+
+    #[test]
     fn duration_literals() {
         assert_eq!(
             tokens("100ms 5s 1h 200ns 50us 30m"),

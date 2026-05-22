@@ -120,6 +120,174 @@ pub unsafe extern "C" fn hew_regex_replace(
     str_to_malloc(&regex.inner.replace_all(text_str, repl_str))
 }
 
+// ── Codegen-emitted runtime ABI ──────────────────────────────────────────────
+//
+// These three functions are called ONLY by compiler-generated code (from
+// regex-literal match-arm lowering). They are distinct from the user-callable
+// `hew_regex_new` / `hew_regex_is_match` / `hew_regex_find` family above.
+//
+// Naming convention:
+//   hew_regex_compile — compile once at module init (called by @llvm.global_ctors)
+//   hew_regex_match   — check a match (called per match arm, returns i32 for C ABI)
+//   hew_regex_capture — extract a named capture by 0-based index (called per capture binding)
+//
+// WHY separate from hew_regex_new/hew_regex_is_match: the codegen substrate
+// uses a module-level global handle array indexed by literal_id; `hew_regex_compile`
+// populates that array at init time. The user-callable family operates on
+// user-allocated handles. Keeping them separate avoids coupling the compiler's
+// internal representation to the public stdlib API.
+// WHEN-OBSOLETE: if the compiler gains a Place::RegexHandle primitive, the
+// literal_id indirection in hew_regex_match/hew_regex_capture could be replaced
+// by direct handle passing; hew_regex_compile would still be needed for init.
+// WHAT: hew-codegen-rs emits calls from lower_call_runtime_abi arms (slice 5).
+
+/// Compile a regex pattern for use by compiler-generated match arms.
+///
+/// Called once per regex literal at module init time (from the function
+/// registered in `@llvm.global_ctors`). Returns a heap-allocated
+/// [`HewRegex`] on success, or null if the pattern is invalid. Since
+/// patterns are validated by the type-checker before codegen, a null return
+/// indicates an internal invariant violation; codegen traps fail-closed.
+///
+/// The returned handle is stored in the module-level global handle array and
+/// is never freed (module-lifetime). Callers must NOT pass it to
+/// [`hew_regex_free`].
+///
+/// # Safety
+///
+/// `pattern` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_regex_compile(pattern: *const c_char) -> *mut HewRegex {
+    // SAFETY: caller guarantees pattern is a valid NUL-terminated C string.
+    let Some(pat) = (unsafe { cstr_to_str(pattern) }) else {
+        return std::ptr::null_mut();
+    };
+    match regex::Regex::new(pat) {
+        Ok(re) => Box::into_raw(Box::new(HewRegex { inner: re })),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Test whether `text` matches a compiled regex, identified by handle.
+///
+/// Returns `1` if `text` matches, `0` otherwise. Returns `0` on any null
+/// argument. Returns `i32` (not `bool`) to match the C ABI convention used
+/// by other predicate-returning runtime entries and because MIR emits an
+/// `IntCmp(NotEq, result, 0i32)` immediately after the call.
+///
+/// Called by compiler-generated code for each regex match arm. The `re`
+/// pointer is loaded from the module-level global handle array by an LLVM GEP
+/// in the caller; it is the codegen's responsibility to pass a valid,
+/// non-null handle.
+///
+/// # Safety
+///
+/// - `re` must be a valid, non-null pointer returned by [`hew_regex_compile`].
+/// - `text` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_regex_match(re: *const HewRegex, text: *const c_char) -> i32 {
+    if re.is_null() {
+        return 0;
+    }
+    // SAFETY: re is a valid HewRegex pointer per caller contract.
+    let regex = unsafe { &*re };
+    // SAFETY: text is a valid NUL-terminated C string per caller contract.
+    let Some(text_str) = (unsafe { cstr_to_str(text) }) else {
+        return 0;
+    };
+    i32::from(regex.inner.is_match(text_str))
+}
+
+/// Extract a capture group by its 1-based regex group index from a successful match.
+///
+/// Called by compiler-generated code for each named capture binding in a
+/// regex match arm, after [`hew_regex_match`] has confirmed a match.
+/// `capture_idx` is the 1-based regex group position (group 0 is the whole
+/// match; group 1 is the first capture group regardless of whether it is
+/// named). The compiler resolves name→group-index at type-check time and
+/// stores the real group position in the HIR, so this function receives the
+/// actual group slot even when unnamed positional groups precede named ones.
+///
+/// Returns a `malloc`-allocated, NUL-terminated C string containing the
+/// capture content, or null if the group did not participate in the match
+/// (non-participating optional group). Callers must free with
+/// [`hew_regex_free_capture`].
+///
+/// WHY by group index not by name: MIR stores the group index as a `ConstI64`
+/// to avoid passing string constants through the ABI at every call site.
+/// The compiler resolves name→group-index at type-check time (checker side,
+/// `PatternKind::Regex { captures: Vec<(String, u32)> }`).
+///
+/// # Safety
+///
+/// - `re` must be a valid, non-null pointer returned by [`hew_regex_compile`].
+/// - `text` must be a valid NUL-terminated C string.
+/// - `capture_idx` must be a valid 1-based group index into the pattern's capture groups.
+#[no_mangle]
+pub unsafe extern "C" fn hew_regex_capture(
+    re: *const HewRegex,
+    text: *const c_char,
+    capture_idx: i64,
+) -> *mut c_char {
+    if re.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: re is a valid HewRegex pointer per caller contract.
+    let regex = unsafe { &*re };
+    // SAFETY: text is a valid NUL-terminated C string per caller contract.
+    let Some(text_str) = (unsafe { cstr_to_str(text) }) else {
+        return std::ptr::null_mut();
+    };
+    let Ok(idx) = usize::try_from(capture_idx) else {
+        return std::ptr::null_mut();
+    };
+    // `capture_idx` is the 1-based regex group index (group 0 is the whole
+    // match). We use `caps.get(idx)` directly — no +1 offset — because the
+    // compiler now stores the real group position, not the named-only ordinal.
+    // This correctly handles patterns where unnamed groups precede named ones:
+    // e.g. `(foo)(?P<bar>bar)` → group 1 is `foo` (unnamed), group 2 is `bar`
+    // (named); the compiler passes idx=2 for `bar` so `caps.get(2)` is correct.
+    let Some(caps) = regex.inner.captures(text_str) else {
+        return std::ptr::null_mut();
+    };
+    let capture_str = match caps.get(idx) {
+        Some(m) => m.as_str(),
+        None => return std::ptr::null_mut(),
+    };
+    str_to_malloc(capture_str)
+}
+
+/// Free a capture string returned by [`hew_regex_capture`].
+///
+/// `hew_regex_capture` returns a `malloc`-allocated, NUL-terminated C string.
+/// Compiler-generated code calls this function at arm-body exit (after the
+/// capture value has been used) and on the null-fail paths (when earlier
+/// captures in a multi-capture arm were allocated but a later one was null).
+///
+/// Passing a null pointer is a no-op (mirrors `libc::free` semantics).
+///
+/// WHY a wrapper rather than calling `libc::free` directly: isolates the
+/// allocation ABI from the codegen side so the underlying allocator can change
+/// without touching codegen. WHEN-OBSOLETE: if MIR gains a typed `CStringDrop`
+/// instruction that maps directly to the allocator's free, this wrapper becomes
+/// dead code. WHAT: add `Instr::CStringDrop { src: Place }` to hew-mir and wire
+/// codegen to the system allocator's free directly.
+///
+/// # Safety
+///
+/// - `ptr` must be null or a pointer returned by [`hew_regex_capture`].
+/// - After this call, `ptr` must not be used again.
+#[no_mangle]
+pub unsafe extern "C" fn hew_regex_free_capture(ptr: *mut c_char) {
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY: ptr is either null (checked above) or a valid malloc-owned pointer
+    // returned by hew_regex_capture (which calls str_to_malloc → CString::into_raw
+    // → a malloc allocation). Freeing it here releases the allocation.
+    unsafe { libc::free(ptr.cast()) }
+}
+
 /// Clone a compiled [`HewRegex`].
 ///
 /// Returns a heap-allocated copy that is independent of the original.
@@ -237,5 +405,164 @@ mod tests {
         );
         // SAFETY: Testing null pointer handling — should not crash.
         unsafe { hew_regex_free(std::ptr::null_mut()) };
+    }
+
+    #[test]
+    fn codegen_compile_valid_pattern_returns_non_null() {
+        let pattern = CString::new(r"(?P<year>\d{4})-(?P<month>\d{2})").unwrap();
+        // SAFETY: pattern is a valid NUL-terminated C string.
+        let re = unsafe { hew_regex_compile(pattern.as_ptr()) };
+        assert!(
+            !re.is_null(),
+            "hew_regex_compile must return non-null for a valid pattern"
+        );
+        // Leak intentionally: module-lifetime handles are not freed.
+        // In production the handle lives for the process lifetime in the
+        // global handle array. In tests we accept the leak via Box::from_raw.
+        // SAFETY: re is a valid non-null pointer returned by hew_regex_compile.
+        let _ = unsafe { Box::from_raw(re) };
+    }
+
+    #[test]
+    fn codegen_compile_invalid_pattern_returns_null() {
+        let pattern = CString::new(r"(?P<bad").unwrap();
+        // SAFETY: pattern is a valid NUL-terminated C string.
+        let re = unsafe { hew_regex_compile(pattern.as_ptr()) };
+        assert!(
+            re.is_null(),
+            "hew_regex_compile must return null for an invalid pattern"
+        );
+    }
+
+    #[test]
+    fn codegen_match_returns_one_on_match_zero_on_no_match() {
+        let pattern = CString::new(r"\d+").unwrap();
+        // SAFETY: pattern is a valid NUL-terminated C string.
+        let re = unsafe { hew_regex_compile(pattern.as_ptr()) };
+        assert!(!re.is_null());
+
+        let text_yes = CString::new("abc123").unwrap();
+        let text_no = CString::new("abcdef").unwrap();
+        // SAFETY: re and text pointers are valid.
+        assert_eq!(unsafe { hew_regex_match(re, text_yes.as_ptr()) }, 1);
+        // SAFETY: re and text pointers are valid.
+        assert_eq!(unsafe { hew_regex_match(re, text_no.as_ptr()) }, 0);
+
+        // SAFETY: re is a valid non-null pointer returned by hew_regex_compile.
+        let _ = unsafe { Box::from_raw(re) };
+    }
+
+    #[test]
+    fn codegen_match_null_re_returns_zero() {
+        let text = CString::new("hello").unwrap();
+        assert_eq!(
+            // SAFETY: Testing null pointer handling — null re must return 0.
+            unsafe { hew_regex_match(std::ptr::null(), text.as_ptr()) },
+            0
+        );
+    }
+
+    #[test]
+    fn codegen_capture_by_index_returns_matched_group() {
+        let pattern = CString::new(r"(?P<year>\d{4})-(?P<month>\d{2})").unwrap();
+        // SAFETY: pattern is a valid NUL-terminated C string.
+        let re = unsafe { hew_regex_compile(pattern.as_ptr()) };
+        assert!(!re.is_null());
+
+        let text = CString::new("date: 2024-03 end").unwrap();
+        // capture_idx is the 1-based regex group index (group 0 is the whole match).
+        // Pattern `(?P<year>...)` is group 1, `(?P<month>...)` is group 2.
+        // The compiler resolves name→group-index at check time and passes the real
+        // group index; passing 1 here matches the value MIR would emit for `year`.
+        // SAFETY: re and text pointers are valid; capture_idx is in-bounds.
+        let year_raw = unsafe { hew_regex_capture(re, text.as_ptr(), 1) };
+        assert!(
+            !year_raw.is_null(),
+            "capture idx 1 (year, group 1) must match"
+        );
+        // SAFETY: year_raw was allocated by hew_regex_capture with malloc.
+        let year_val = unsafe { CStr::from_ptr(year_raw) }.to_str().unwrap();
+        assert_eq!(year_val, "2024");
+        // SAFETY: year_raw was allocated by hew_regex_capture; free via the wrapper.
+        unsafe { hew_regex_free_capture(year_raw) };
+
+        // SAFETY: re and text pointers are valid; capture_idx is in-bounds.
+        let month_raw = unsafe { hew_regex_capture(re, text.as_ptr(), 2) };
+        assert!(
+            !month_raw.is_null(),
+            "capture idx 2 (month, group 2) must match"
+        );
+        // SAFETY: month_raw was allocated by hew_regex_capture with malloc.
+        let month_val = unsafe { CStr::from_ptr(month_raw) }.to_str().unwrap();
+        assert_eq!(month_val, "03");
+        // SAFETY: month_raw was allocated by hew_regex_capture; free via the wrapper.
+        unsafe { hew_regex_free_capture(month_raw) };
+
+        // SAFETY: re is a valid non-null pointer returned by hew_regex_compile.
+        let _ = unsafe { Box::from_raw(re) };
+    }
+
+    /// A pattern with an unnamed positional group BEFORE a named group: verifies
+    /// the real group index lookup is used (not the named-only ordinal).
+    /// Pattern `(foo)(?P<bar>bar)` → group 1 = `foo` (unnamed), group 2 = `bar` (named).
+    /// The compiler emits `capture_idx=2` for the `bar` binding.
+    #[test]
+    fn codegen_capture_unnamed_before_named_uses_real_group_index() {
+        let pattern = CString::new(r"(foo)(?P<bar>bar)").unwrap();
+        // SAFETY: pattern is a valid NUL-terminated C string.
+        let re = unsafe { hew_regex_compile(pattern.as_ptr()) };
+        assert!(!re.is_null());
+
+        let text = CString::new("foobar").unwrap();
+        // Group 2 is the named capture `bar`. The old code used idx+1=1 which
+        // returns `foo` (wrong). The corrected code passes idx=2 → `bar`.
+        // SAFETY: re and text pointers are valid.
+        // SAFETY: re and text pointers are valid; capture_idx 2 is in-bounds.
+        let bar_raw = unsafe { hew_regex_capture(re, text.as_ptr(), 2) };
+        assert!(
+            !bar_raw.is_null(),
+            "capture at real group index 2 (bar) must match"
+        );
+        // SAFETY: bar_raw is a valid NUL-terminated C string allocated by hew_regex_capture.
+        let bar_val = unsafe { CStr::from_ptr(bar_raw) }.to_str().unwrap();
+        assert_eq!(bar_val, "bar", "group 2 must be 'bar', not 'foo'");
+        // SAFETY: bar_raw was allocated by hew_regex_capture; free via the wrapper.
+        unsafe { hew_regex_free_capture(bar_raw) };
+
+        // Also verify group 1 (unnamed `foo`) is accessible by real index.
+        // SAFETY: re and text pointers are valid; capture_idx 1 is in-bounds.
+        let foo_raw = unsafe { hew_regex_capture(re, text.as_ptr(), 1) };
+        assert!(
+            !foo_raw.is_null(),
+            "group 1 (unnamed foo) must be accessible"
+        );
+        // SAFETY: foo_raw is a valid NUL-terminated C string allocated by hew_regex_capture.
+        let foo_val = unsafe { CStr::from_ptr(foo_raw) }.to_str().unwrap();
+        assert_eq!(foo_val, "foo");
+        // SAFETY: foo_raw was allocated by hew_regex_capture; free via the wrapper.
+        unsafe { hew_regex_free_capture(foo_raw) };
+
+        // SAFETY: re is a valid non-null pointer returned by hew_regex_compile.
+        let _ = unsafe { Box::from_raw(re) };
+    }
+
+    #[test]
+    fn codegen_capture_out_of_bounds_returns_null() {
+        let pattern = CString::new(r"(?P<word>\w+)").unwrap();
+        // SAFETY: pattern is a valid NUL-terminated C string.
+        let re = unsafe { hew_regex_compile(pattern.as_ptr()) };
+        assert!(!re.is_null());
+
+        let text = CString::new("hello").unwrap();
+        // capture_idx=5 is beyond the single named group — must return null.
+        // SAFETY: re and text pointers are valid.
+        let oob_ptr = unsafe { hew_regex_capture(re, text.as_ptr(), 5) };
+        assert!(
+            oob_ptr.is_null(),
+            "out-of-bounds capture index must return null"
+        );
+
+        // SAFETY: re is a valid non-null pointer returned by hew_regex_compile.
+        let _ = unsafe { Box::from_raw(re) };
     }
 }

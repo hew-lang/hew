@@ -29,10 +29,10 @@ pub use node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
     HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
     HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
-    HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding,
-    HirModule, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind,
-    HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirVariant,
-    HirVariantKind,
+    HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmPredicate,
+    HirModule, HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind,
+    HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy,
+    HirTypeDecl, HirVariant, HirVariantKind,
 };
 pub use value_class::{contains_named_type, named_type_names, TypeClassTable, ValueClass};
 pub use verify::verify_hir;

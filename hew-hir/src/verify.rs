@@ -181,6 +181,7 @@ impl Verifier {
             }
             HirExprKind::ContextReader { .. }
             | HirExprKind::Literal(_)
+            | HirExprKind::RegexLiteralRef { .. }
             | HirExprKind::MachineFieldAccess { .. } => {}
             HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => self.block(body),
             HirExprKind::ScopeDeadline { duration, body } => {

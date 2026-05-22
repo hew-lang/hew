@@ -1,0 +1,9 @@
+// Reject fixture: malformed regex literal in match-arm position.
+// The type checker validates regex syntax at check time (E_INVALID_REGEX_LITERAL).
+// `re"[unclosed"` contains an unclosed character class — rejected before HIR.
+fn classify(s: string) -> i64 {
+    match s {
+        re"[unclosed" => 0,
+        _ => 1,
+    }
+}

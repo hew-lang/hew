@@ -2753,6 +2753,11 @@ impl<'a> Formatter<'a> {
                 self.write(" | ");
                 self.format_pattern(&right.0);
             }
+            Pattern::Regex { pattern, .. } => {
+                self.write("re\"");
+                self.write(&escape_regex_pattern(pattern));
+                self.write("\"");
+            }
         }
     }
 

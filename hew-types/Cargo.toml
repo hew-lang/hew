@@ -17,3 +17,7 @@ hew-parser = { path = "../hew-parser" }
 serde.workspace = true
 siphasher = "1"
 stacker.workspace = true
+# Used to validate regex literal patterns at compile time (same engine as
+# std/text/regex runtime). Checker rejects syntactically invalid patterns
+# before any code generation runs.
+regex = "1"

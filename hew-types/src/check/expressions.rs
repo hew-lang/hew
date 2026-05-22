@@ -129,13 +129,25 @@ impl Checker {
             // Literals
             Expr::Literal(Literal::Float(_)) => Ty::FloatLiteral,
             Expr::Literal(Literal::String(_)) => Ty::String,
-            Expr::RegexLiteral(_) => {
+            Expr::RegexLiteral(pattern) => {
                 // The implicit `use std::text::regex` injected by the CLI is the
                 // provider of this type; mark it as used so the unused-import
                 // check doesn't fire a false-positive warning.
                 self.used_modules
                     .borrow_mut()
                     .insert(ImportKey::new(self.current_module.clone(), "regex"));
+                // Validate the pattern using the same regex engine the runtime
+                // uses. An invalid pattern is a compile-time hard error.
+                if let Err(err) = regex::Regex::new(pattern) {
+                    self.report_error(
+                        TypeErrorKind::InvalidRegexLiteral {
+                            pattern: pattern.clone(),
+                            error: err.to_string(),
+                        },
+                        span,
+                        format!("invalid regex literal `re\"{pattern}\"`: {err}"),
+                    );
+                }
                 Ty::Named {
                     name: "regex.Pattern".to_string(),
                     args: vec![],
@@ -2756,7 +2768,7 @@ impl Checker {
                 Self::shadow_pattern_bindings(&left.0, scopes);
                 Self::shadow_pattern_bindings(&right.0, scopes);
             }
-            Pattern::Wildcard | Pattern::Literal(_) => {}
+            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Regex { .. } => {}
         }
     }
 

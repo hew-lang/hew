@@ -507,3 +507,25 @@ if grep -q 'panicked at' "${reject_output}"; then
   echo "enum-payload-literal-subpattern fixture panicked instead of reporting a diagnostic" >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Regex literal match-arm patterns
+# ---------------------------------------------------------------------------
+
+# Accept: `re"..."` in match-arm predicate position type-checks cleanly.
+# The pattern syntax is validated at check time via the regex-syntax crate.
+# End-to-end compilation requires HIR ExternBlock support for the
+# auto-imported std::text::regex module (tracked as a follow-on lane).
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/regex_match_arm.hew" >"${reject_output}" 2>&1; then
+  echo "expected regex_match_arm fixture to pass hew check; got:" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Reject: malformed regex literal in match-arm position (E_INVALID_REGEX_LITERAL).
+# The type checker validates regex syntax before HIR lowering.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/regex_invalid_pattern.hew" >"${reject_output}" 2>&1; then
+  echo "expected regex_invalid_pattern fixture to fail" >&2
+  exit 1
+fi
+grep -qF 'invalid regex pattern' "${reject_output}"

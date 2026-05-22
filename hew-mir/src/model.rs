@@ -79,6 +79,40 @@ pub struct IrPipeline {
     /// Payload-bearing variants (`VariantKind::Tuple` / `VariantKind::Struct`)
     /// are not yet supported and will emit a `CodegenError::FailClosed`.
     pub enum_layouts: Vec<EnumLayout>,
+    /// Regex literals collected from `HirModule::regex_literals`. Each entry
+    /// carries a `literal_id` (0-based index) and the compiled pattern string.
+    /// Codegen uses this to emit a module-level `[N x ptr]` global handle
+    /// array populated by a `@llvm.global_ctors` init function that calls
+    /// `hew_regex_compile` once per pattern before `main` runs.
+    ///
+    /// `literal_id` is the index into this Vec AND the index into the global
+    /// array emitted by codegen, so `literal_id → handle` resolution is a
+    /// direct GEP. The array is populated by the module-init constructor; any
+    /// null result (invalid pattern) traps fail-closed.
+    ///
+    /// WHY not in codegen directly from HIR: `IrPipeline` is the codegen
+    /// substrate boundary; codegen does not re-read HIR. WHEN-OBSOLETE: never
+    /// — the pipeline-field pattern is established for all layout descriptors.
+    pub regex_literals: Vec<RegexLiteral>,
+}
+
+/// A regex literal compiled at module-init time.
+///
+/// One entry per unique pattern in `HirModule::regex_literals`. The
+/// `literal_id` is the 0-based index into `IrPipeline::regex_literals`
+/// AND the index into the global handle array emitted by codegen. Pattern
+/// string validity has already been checked by the type-checker
+/// (`hew-types`), so the compile call at module-init must not fail — if
+/// it does, the module-init trap fires (fail-closed, not null-propagation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegexLiteral {
+    /// 0-based index into `IrPipeline::regex_literals`. Stable across
+    /// the MIR → codegen boundary; MIR producers embed it as `ConstI64`
+    /// arguments to `hew_regex_match` and `hew_regex_capture` calls.
+    pub literal_id: u32,
+    /// The validated regex pattern string. Embedded in the module as a
+    /// NUL-terminated i8 constant; passed to `hew_regex_compile` at init.
+    pub pattern: String,
 }
 
 /// Layout descriptor for a named-form `record` declaration. The codegen

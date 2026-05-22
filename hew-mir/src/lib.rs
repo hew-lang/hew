@@ -28,8 +28,8 @@ pub use model::{
     Direction, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, EnumLayout,
     ExitPath, FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness,
     IrPipeline, LambdaCapture, MachineLayout, MachineVariantLayout, MirCheck, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, RawMirFunction, RecordLayout, RuntimeCall, SelectArm,
-    SelectArmKind, Strategy, SupervisorChildLayout, SupervisorLayout, Terminator, ThirFunction,
-    TrapKind,
+    MirDiagnosticKind, MirStatement, Place, RawMirFunction, RecordLayout, RegexLiteral,
+    RuntimeCall, SelectArm, SelectArmKind, Strategy, SupervisorChildLayout, SupervisorLayout,
+    Terminator, ThirFunction, TrapKind,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;

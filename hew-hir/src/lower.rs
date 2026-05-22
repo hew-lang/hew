@@ -24,10 +24,10 @@ use crate::node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
     HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
     HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
-    HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding,
-    HirModule, HirRecordDecl, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt,
-    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
-    HirVariant, HirVariantKind,
+    HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmPredicate,
+    HirModule, HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm,
+    HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirSupervisorStrategy, HirTypeDecl, HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ValueClass};
@@ -596,6 +596,7 @@ pub fn lower_program_with_mono_cap(
             record_layouts,
             enum_layouts,
             supervisor_child_slots,
+            regex_literals: ctx.regex_literals,
         },
         diagnostics: ctx.diagnostics,
     }
@@ -1137,6 +1138,17 @@ struct LowerCtx {
     /// span. Drained into `HirModule.supervisor_child_slots` at the end of
     /// `lower_program` (mirrors the `call_site_type_args` pattern).
     supervisor_child_slots: HashMap<SiteId, ChildSlot>,
+    /// Module-level regex literal table. Accumulates distinct compiled
+    /// patterns observed in match arms (and standalone `re"..."` expressions).
+    /// Deduplicated by raw pattern string equality (no flags in v0.5).
+    /// Each entry's `literal_id` matches its 0-based index in this `Vec`.
+    ///
+    /// Drained into `HirModule.regex_literals` at the end of `lower_program`.
+    regex_literals: Vec<HirRegexLiteral>,
+    /// Deduplication index for `regex_literals`: maps pattern string to its
+    /// allocated `literal_id`. Lookups via `alloc_regex_literal` avoid
+    /// scanning the `Vec` linearly.
+    regex_literal_index: HashMap<String, u32>,
     /// Event names of the machine currently being lowered, set only while
     /// lowering a machine body (transition bodies, entry/exit blocks). The
     /// index position corresponds to `HirMachineDecl::events` ordering so
@@ -1251,6 +1263,8 @@ impl LowerCtx {
             intrinsic_declarations: tc_output.intrinsic_declarations.clone(),
             supervisor_child_slots_checker: tc_output.supervisor_child_slots.clone(),
             supervisor_child_slots: HashMap::new(),
+            regex_literals: Vec::new(),
+            regex_literal_index: HashMap::new(),
             current_machine_events: None,
             current_machine_name: None,
             current_machine_states: None,
@@ -1259,6 +1273,26 @@ impl LowerCtx {
             enum_variants_by_name: HashMap::new(),
             pattern_resolutions: tc_output.pattern_resolutions.clone(),
         }
+    }
+
+    /// Allocate (or look up an existing) regex literal in the module table.
+    ///
+    /// Deduplicates by raw pattern string equality. Returns the stable
+    /// `literal_id` (0-based index into `HirModule::regex_literals`) for
+    /// use in `HirMatchArmPredicate::Regex` and `HirExprKind::RegexLiteralRef`.
+    fn alloc_regex_literal(&mut self, pattern: &str, captures: &[(String, u32)]) -> u32 {
+        if let Some(&id) = self.regex_literal_index.get(pattern) {
+            return id;
+        }
+        let id = u32::try_from(self.regex_literals.len())
+            .expect("regex literal count exceeds u32::MAX — impossible in practice");
+        self.regex_literal_index.insert(pattern.to_string(), id);
+        self.regex_literals.push(HirRegexLiteral {
+            literal_id: id,
+            pattern: pattern.to_string(),
+            captures: captures.to_vec(),
+        });
+        id
     }
 
     /// Try to record a generic-fn callsite in the monomorphisation
@@ -3357,6 +3391,39 @@ impl LowerCtx {
         let site = self.ids.site();
         let (kind, ty) = match &expr.0 {
             Expr::Literal(lit) => Self::lower_literal(lit),
+            Expr::RegexLiteral(pattern) => {
+                // A standalone `re"..."` expression. Allocate (or reuse) the
+                // module-level literal-table entry. The checker-assigned type is
+                // `regex.Pattern`; read it from `expr_types` if present (it is
+                // set by `synthesize_inner` for `Expr::RegexLiteral`), otherwise
+                // fall back to the canonical `Named` form. Using the checker's
+                // resolved type rather than hard-coding keeps capture / generic
+                // resolution consistent with the rest of the pipeline.
+                let checker_key = SpanKey::from(&span);
+                let resolved_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+                    ResolvedTy::from_ty(&ty).unwrap_or(ResolvedTy::Named {
+                        name: "regex.Pattern".to_string(),
+                        args: Vec::new(),
+                    })
+                } else {
+                    ResolvedTy::Named {
+                        name: "regex.Pattern".to_string(),
+                        args: Vec::new(),
+                    }
+                };
+                // No named captures from a standalone literal — captures are
+                // resolved per-arm in the match-arm context. Pass an empty
+                // capture list; the table deduplicates by pattern only.
+                let literal_id = self.alloc_regex_literal(pattern, &[]);
+                (
+                    HirExprKind::RegexLiteralRef {
+                        literal_id,
+                        pattern: pattern.clone(),
+                        captures: Vec::new(),
+                    },
+                    resolved_ty,
+                )
+            }
             Expr::Identifier(name) => {
                 // Inside a machine body, check if the identifier names one of the
                 // enclosing machine's states (unit state ctor, e.g. `Green`).
@@ -6310,10 +6377,18 @@ impl LowerCtx {
                 continue;
             };
 
-            // Resolve variant identity first; this gates whether payload
-            // binding can be wired even before we look at `payload_bindings`.
-            let (variant_match, variant_idx_opt) = match resolution.pattern_kind {
-                PatternKind::Wildcard => (None, None),
+            if !resolution.payload_bindings.is_empty() {
+                self.unsupported(
+                    pattern_span.clone(),
+                    "payload-bearing patterns in match arms",
+                    "match-expression-substrate",
+                );
+                rejected = true;
+                continue;
+            }
+
+            let predicate = match resolution.pattern_kind {
+                PatternKind::Wildcard => HirMatchArmPredicate::Wildcard,
                 PatternKind::VariantCtor => {
                     let Some(vm) = resolution.variant_match.clone() else {
                         let _ = self.lower_expr(&arm.body, IntentKind::Read);
@@ -6344,7 +6419,10 @@ impl LowerCtx {
                     };
                     let idx = u32::try_from(idx_usize)
                         .expect("variant index exceeds u32::MAX — impossible in Hew");
-                    (Some(vm), Some(idx))
+                    HirMatchArmPredicate::EnumVariant {
+                        variant_match: vm,
+                        variant_idx: idx,
+                    }
                 }
                 PatternKind::Literal
                 | PatternKind::Binding
@@ -6359,56 +6437,46 @@ impl LowerCtx {
                     rejected = true;
                     continue;
                 }
+                // Regex literal pattern in a string-scrutinee match arm.
+                // Allocate (or reuse) the literal-table entry and build the
+                // `HirMatchArmPredicate::Regex` predicate.
+                PatternKind::Regex { captures } => {
+                    // Extract the raw pattern string from the AST pattern node.
+                    // The pattern must be `Pattern::Regex { pattern, .. }`; any
+                    // other shape is a checker contract violation — fail closed.
+                    let raw_pattern = match &arm.pattern.0 {
+                        Pattern::Regex { pattern, .. } => pattern.clone(),
+                        other => {
+                            self.unsupported(
+                                pattern_span.clone(),
+                                format!(
+                                    "regex arm pattern resolved to PatternKind::Regex but AST \
+                                     pattern node is {:?} — checker contract violation",
+                                    std::mem::discriminant(other)
+                                ),
+                                "regex-match-arm-substrate",
+                            );
+                            rejected = true;
+                            continue;
+                        }
+                    };
+                    let literal_id = self.alloc_regex_literal(&raw_pattern, &captures);
+                    HirMatchArmPredicate::Regex {
+                        literal_id,
+                        pattern: raw_pattern,
+                        captures,
+                    }
+                }
             };
 
-            // Allocate per-arm payload bindings (if any), register them in a
-            // fresh scope, then lower the body. The scope is popped after the
-            // body so payload names are invisible to sibling arms and to
-            // surrounding code (mirrors the `select` arm pattern).
-            self.push_scope();
-            let mut hir_payload_bindings: Vec<HirMatchArmBinding> =
-                Vec::with_capacity(resolution.payload_bindings.len());
-            for pb in &resolution.payload_bindings {
-                let resolved_ty = match ResolvedTy::from_ty(&pb.ty) {
-                    Ok(t) => t,
-                    Err(err) => {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CheckerBoundaryViolation {
-                                name: pb.binding_name.clone(),
-                                reason: err.to_string(),
-                            },
-                            pattern_span.clone(),
-                            "match arm payload binding type failed boundary conversion",
-                        ));
-                        ResolvedTy::Unit
-                    }
-                };
-                let binding = self.bind(
-                    pb.binding_name.clone(),
-                    resolved_ty.clone(),
-                    false,
-                    pattern_span.clone(),
-                );
-                let field_idx = u32::try_from(pb.field_idx)
-                    .expect("payload field index exceeds u32::MAX — impossible in Hew");
-                hir_payload_bindings.push(HirMatchArmBinding {
-                    binding: binding.id,
-                    field_idx,
-                    name: pb.binding_name.clone(),
-                    ty: resolved_ty,
-                });
-            }
             let body_hir = self.lower_expr(&arm.body, IntentKind::Read);
-            self.pop_scope();
 
             if result_ty.is_none() {
                 result_ty = Some(body_hir.ty.clone());
             }
 
             hir_arms.push(HirMatchArm {
-                variant_match,
-                variant_idx: variant_idx_opt,
-                payload_bindings: hir_payload_bindings,
+                predicate,
                 body: body_hir,
                 span: arm.pattern.1.start..arm.body.1.end,
             });
@@ -6708,6 +6776,7 @@ fn collect_captures_walk(
         HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::SpawnLambdaActor { .. }
         | HirExprKind::Closure { .. }
         | HirExprKind::MachineFieldAccess { .. }
@@ -6920,6 +6989,7 @@ fn collect_general_closure_captures_walk(
         HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::SpawnLambdaActor { .. }
         | HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::Unsupported(_) => {}

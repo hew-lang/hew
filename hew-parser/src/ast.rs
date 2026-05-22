@@ -432,6 +432,16 @@ pub enum Pattern {
     },
     Tuple(Vec<Spanned<Pattern>>),
     Or(Box<Spanned<Pattern>>, Box<Spanned<Pattern>>),
+    /// A regex literal pattern in a match arm: `re"^Bearer\s+(.+)$"`.
+    ///
+    /// `pattern` is the normalised regex string (delimiter escapes decoded,
+    /// regex backslashes preserved verbatim — see `normalize_regex_literal`).
+    /// `captures` is populated by the checker from `regex::Regex::capture_names()`
+    /// and is empty when produced by the parser.
+    Regex {
+        pattern: String,
+        captures: Vec<String>,
+    },
 }
 
 // ── Supporting types ─────────────────────────────────────────────────

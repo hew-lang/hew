@@ -193,6 +193,7 @@ fn traffic_light_pipeline() -> IrPipeline {
         supervisor_layouts: Vec::new(),
         machine_layouts: vec![machine_layout],
         enum_layouts: Vec::new(),
+        regex_literals: vec![],
     }
 }
 

@@ -284,6 +284,14 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::Literal(lit) => {
             writeln!(out, "{pad}  literal {lit:?}").expect("write to string");
         }
+        HirExprKind::RegexLiteralRef {
+            literal_id,
+            pattern,
+            ..
+        } => {
+            writeln!(out, "{pad}  regex-literal #{literal_id} {pattern:?}")
+                .expect("write to string");
+        }
         HirExprKind::BindingRef { name, resolved } => {
             writeln!(out, "{pad}  ref {name} -> {resolved:?}").expect("write to string");
         }
@@ -710,9 +718,17 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             writeln!(out, "{pad}  match ({} arms)", arms.len()).expect("write to string");
             dump_expr(out, scrutinee, indent + 4);
             for arm in arms {
-                let label = match &arm.variant_match {
-                    Some(vm) => format!("{}::{}", vm.type_name, vm.variant_name),
-                    None => "_".to_string(),
+                let label = match &arm.predicate {
+                    crate::node::HirMatchArmPredicate::Wildcard => "_".to_string(),
+                    crate::node::HirMatchArmPredicate::EnumVariant { variant_match, .. } => {
+                        format!(
+                            "{}::{}",
+                            variant_match.type_name, variant_match.variant_name
+                        )
+                    }
+                    crate::node::HirMatchArmPredicate::Regex { pattern, .. } => {
+                        format!("re{pattern:?}")
+                    }
                 };
                 writeln!(out, "{pad}    arm {label}").expect("write to string");
                 dump_expr(out, &arm.body, indent + 6);

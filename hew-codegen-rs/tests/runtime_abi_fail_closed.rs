@@ -76,6 +76,7 @@ fn pipeline_with_call_runtime_abi(symbol: &str) -> IrPipeline {
         supervisor_layouts: vec![],
         machine_layouts: vec![],
         enum_layouts: vec![],
+        regex_literals: vec![],
     }
 }
 

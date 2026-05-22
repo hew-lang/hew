@@ -105,6 +105,7 @@ fn send_status_pipeline() -> IrPipeline {
         supervisor_layouts: vec![],
         machine_layouts: vec![],
         enum_layouts: vec![],
+        regex_literals: vec![],
     }
 }
 

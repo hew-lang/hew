@@ -512,6 +512,19 @@ pub enum PatternKind {
     StructPattern,
     /// A tuple pattern `(a, b, …)` including the empty-tuple unit pattern `()`.
     TuplePattern,
+    /// A regex literal pattern `re"..."` in a match arm.
+    ///
+    /// `captures` lists the named capture groups derived from
+    /// `regex::Regex::capture_names()` after the checker validated the
+    /// pattern. Each entry is `(name, group_index)` where `group_index` is
+    /// the 1-based regex group position (group 0 is the whole match; named
+    /// groups start at 1). Positional-only groups are skipped. Storing the
+    /// real group index rather than the named-capture-only position ensures
+    /// correct lookup when unnamed groups precede named ones.
+    ///
+    /// HIR lowering reads this to populate `HirMatchArm::kind` for the
+    /// regex arm and to know which capture names (and indices) to bind before the body.
+    Regex { captures: Vec<(String, u32)> },
 }
 
 /// Checker-resolved identity of the matched enum variant.

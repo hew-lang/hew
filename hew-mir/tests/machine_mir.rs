@@ -29,6 +29,7 @@ fn empty_module(items: Vec<HirItem>) -> HirModule {
         record_layouts: vec![],
         enum_layouts: vec![],
         supervisor_child_slots: HashMap::default(),
+        regex_literals: vec![],
     }
 }
 
@@ -551,6 +552,7 @@ fn resource_field_transition_out_drops() {
         record_layouts: vec![],
         enum_layouts: vec![],
         supervisor_child_slots: HashMap::default(),
+        regex_literals: vec![],
     };
 
     let pipeline = lower_hir_module(&module);

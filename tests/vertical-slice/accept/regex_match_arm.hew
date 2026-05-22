@@ -1,0 +1,12 @@
+// Accept fixture: regex literal in match-arm predicate position.
+// `re"..."` in match arms is type-checked via HirMatchArmPredicate::Regex;
+// the pattern syntax is validated by the regex-syntax crate at check time.
+// WASM-PASS: type-check level only; end-to-end compile requires HIR ExternBlock
+// support for the auto-imported std::text::regex module (follow-on lane).
+fn classify(s: string) -> i64 {
+    match s {
+        re"^[0-9]+$" => 0,
+        re"^[a-zA-Z]+$" => 1,
+        _ => 2,
+    }
+}

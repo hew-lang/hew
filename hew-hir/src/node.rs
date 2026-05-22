@@ -101,6 +101,18 @@ pub struct HirModule {
     ///
     /// LESSONS: `checker-authority` (P0), `producer-bridge-before-codegen` (P1).
     pub supervisor_child_slots: HashMap<SiteId, ChildSlot>,
+    /// Module-level regex literal table. Each distinct compiled pattern
+    /// observed in match arms (keyed by normalized pattern string — no flags
+    /// in v0.5) is allocated one entry here, deduplicated by string equality.
+    ///
+    /// Each `HirRegexLiteral` carries the 0-based index (its own position in
+    /// this `Vec`) as `literal_id`, so MIR/codegen can use the index directly
+    /// as the global-slot reference without scanning the table.
+    ///
+    /// MIR lowering (slice 4) will emit a module-init call that compiles
+    /// each entry and stores the `*HewRegex` handle in a global slot indexed
+    /// by `literal_id`. Codegen (slice 5) wires the global-slot reference.
+    pub regex_literals: Vec<HirRegexLiteral>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -608,6 +620,24 @@ pub struct HirExpr {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirExprKind {
     Literal(HirLiteral),
+    /// A reference to a compiled regex literal in the module's literal table.
+    ///
+    /// Produced from `Expr::RegexLiteral` when the pattern appears as a
+    /// standalone expression (e.g. `let r = re"hello";`). Match-arm patterns
+    /// `re"..."` are lowered directly into `HirMatchArmPredicate::Regex`
+    /// without emitting a `RegexLiteralRef` node for the pattern itself;
+    /// the literal table entry is still allocated via `alloc_regex_literal`.
+    ///
+    /// `literal_id` is the 0-based index into `HirModule::regex_literals`.
+    /// MIR lowering (slice 4) will load the compiled handle from the
+    /// corresponding global slot. Codegen (slice 5) wires the global.
+    ///
+    /// Type: `ResolvedTy::Regex` (the opaque regex handle type).
+    RegexLiteralRef {
+        literal_id: u32,
+        pattern: String,
+        captures: Vec<String>,
+    },
     BindingRef {
         name: String,
         resolved: ResolvedRef,
@@ -1044,43 +1074,94 @@ pub enum HirExprKind {
     Unsupported(String),
 }
 
+/// A compiled regex literal observed in a match arm.
+///
+/// Each distinct pattern (by string equality — no flags in v0.5) gets one
+/// entry in `HirModule::regex_literals`. The `literal_id` field is the
+/// 0-based index of this entry in that `Vec`; it matches the global-slot
+/// number that MIR (slice 4) and codegen (slice 5) will use to reference the
+/// compiled `*HewRegex` handle at runtime.
+///
+/// LESSONS: `checker-authority` (P0) — the `captures` list comes from the
+/// `PatternKind::Regex { captures }` resolver output in the type checker;
+/// HIR lowering never re-derives it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirRegexLiteral {
+    /// 0-based position of this entry in `HirModule::regex_literals`. Stable
+    /// across the HIR→MIR→codegen pipeline; used as the global-slot index.
+    pub literal_id: u32,
+    /// The raw pattern string as written in source. No normalisation is
+    /// applied in v0.5 — deduplication is by string equality on the raw
+    /// pattern. Future flag support will key on `(pattern, flags)`.
+    pub pattern: String,
+    /// Named capture groups derived from `PatternKind::Regex { captures }`
+    /// after the checker compiled and validated the pattern. Positional groups
+    /// participate in matching but are not listed here. Each entry is
+    /// `(name, group_index)` where `group_index` is the 1-based regex group
+    /// position (group 0 is the whole match). This preserves the real group
+    /// position across the HIR→MIR boundary so MIR can pass the correct index
+    /// to `hew_regex_capture` even when unnamed groups precede named ones.
+    pub captures: Vec<(String, u32)>,
+}
+
+/// The predicate of one `HirMatchArm`.
+///
+/// `Wildcard` replaces the `None` dual in the old two-field encoding.
+/// `EnumVariant` carries the data that was previously split across
+/// `variant_match: Option<VariantMatch>` and `variant_idx: Option<u32>`.
+/// `Regex` is the new regex-pattern arm added for string-scrutinee matches.
+///
+/// MIR lowering (slice 4) dispatches on this enum; codegen (slice 5) drives
+/// the predicate to the runtime ABI. Paths that are not yet wired must
+/// `todo!("MIR regex predicate — slice 4")` — never silently no-op.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirMatchArmPredicate {
+    /// `_` wildcard — matches any scrutinee value. At most one per match
+    /// expression; the checker enforces this.
+    Wildcard,
+    /// A unit-variant constructor arm (e.g. `Colour::Red`).
+    ///
+    /// `variant_match` is the checker-resolved `(type_name, variant_name)`
+    /// identity. `variant_idx` is the zero-based declaration-order index
+    /// within `HirTypeDecl.unit_variants`; MIR emits the tag-comparison
+    /// constant directly from this field.
+    EnumVariant {
+        variant_match: VariantMatch,
+        variant_idx: u32,
+    },
+    /// A regex literal pattern `re"..."` in a string-scrutinee match arm.
+    ///
+    /// `literal_id` is the index into `HirModule::regex_literals` for the
+    /// compiled pattern. `captures` lists the named capture groups (empty
+    /// when the pattern has none). Each entry is `(name, group_index)` where
+    /// `group_index` is the 1-based regex group position. MIR lowering uses
+    /// these to emit capture-extraction instructions before the arm body,
+    /// passing the real group index to `hew_regex_capture`.
+    Regex {
+        literal_id: u32,
+        pattern: String,
+        captures: Vec<(String, u32)>,
+    },
+}
+
 /// One arm of an `HirExprKind::Match` expression.
 ///
-/// `variant_match` carries the checker-resolved enum variant identity for
-/// constructor-pattern arms (e.g. `Colour::Red`, `Shape::Line(x)`). `None`
-/// denotes a wildcard arm (`_`). Pattern guards are still rejected at HIR
-/// lowering with a structured diagnostic.
+/// `predicate` encodes the arm's matching condition as an explicit enum,
+/// replacing the old two-field `(variant_match, variant_idx)` encoding.
+/// Wildcard arms (`_`) use `HirMatchArmPredicate::Wildcard`; unit-variant
+/// constructor arms use `HirMatchArmPredicate::EnumVariant`; regex-literal
+/// arms use `HirMatchArmPredicate::Regex`.
 ///
-/// `payload_bindings` carries one entry per source-named binding in a
-/// payload-bearing pattern (`Shape::Line(x)` → one entry, `field_idx = 0`,
-/// `binding_id = <fresh>`). Empty for unit-variant and wildcard arms. MIR
-/// consumes these to emit per-arm `Move { dest: <binding_local>, src:
-/// Place::EnumVariant { local: scrutinee, variant_idx, field_idx } }`
-/// instructions at arm-body entry; codegen GEPs through the tagged-union
-/// payload-byte array.
+/// Payload-bearing patterns and guards never produce a `HirMatchArm` —
+/// they are rejected at HIR lowering with a structured diagnostic so the
+/// slice's substrate stays honest.
 ///
 /// `body` is the arm's right-hand-side expression. The arm's source span
 /// is preserved for diagnostics.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirMatchArm {
-    /// `Some(VariantMatch)` for a unit variant constructor pattern;
-    /// `None` for a wildcard arm. See `pattern_resolutions` in the
-    /// `hew-types` side table for the producer.
-    pub variant_match: Option<VariantMatch>,
-    /// HIR-resolved zero-based variant index. `Some(idx)` for variant
-    /// constructor arms (unit or payload-bearing); `None` for wildcard arms.
-    /// The index matches the declaration order in `HirTypeDecl.variants` and
-    /// the `EnumLayout.variants` ordering MIR/codegen consume, so MIR's
-    /// `lower_match` can emit the tag-comparison constant directly without
-    /// re-resolving against the type registry. Resolved at HIR lowering time
-    /// from `LowerCtx.machine_ctor_registry`.
-    pub variant_idx: Option<u32>,
-    /// Per-arm payload bindings introduced by a constructor pattern, in
-    /// source order. Each entry binds a fresh `BindingId` to one positional
-    /// payload slot of the matched variant; arm-body identifier references
-    /// resolve to these ids via the normal scope-lookup path. Empty for unit
-    /// variant arms and wildcard arms.
-    pub payload_bindings: Vec<HirMatchArmBinding>,
+    /// The matching predicate for this arm.
+    pub predicate: HirMatchArmPredicate,
     /// Arm body expression. Evaluates only when this arm's predicate wins.
     pub body: HirExpr,
     /// Source span of the arm (pattern through body).

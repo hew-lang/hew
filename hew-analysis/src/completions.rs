@@ -698,6 +698,11 @@ fn collect_pattern_names(pattern: &Pattern, locals: &mut Vec<CompletionItem>) {
             collect_pattern_names(&left.0, locals);
             collect_pattern_names(&right.0, locals);
         }
+        Pattern::Regex { captures, .. } => {
+            for name in captures {
+                locals.push(local_completion(name));
+            }
+        }
         Pattern::Literal(_) | Pattern::Wildcard => {}
     }
 }

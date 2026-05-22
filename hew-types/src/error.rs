@@ -596,6 +596,29 @@ pub enum TypeErrorKind {
         /// or `"or-pattern"`.
         kind_label: String,
     },
+    /// A `re"..."` regex literal (in expression or pattern position) contains
+    /// an invalid regex pattern rejected by the `regex` crate.
+    ///
+    /// The checker validates every regex literal at compile time using the
+    /// same engine the runtime uses, so syntactically invalid patterns are
+    /// a hard error before any code is emitted.
+    ///
+    /// Envelope code: `E_INVALID_REGEX_LITERAL`.
+    InvalidRegexLiteral {
+        /// The offending pattern string (as it appears in source, after
+        /// delimiter normalisation).
+        pattern: String,
+        /// The error message from `regex::Regex::new`.
+        error: String,
+    },
+    /// A regex pattern in a match arm is used against a non-`string`
+    /// scrutinee.  Regex matching is defined only over `string` values.
+    ///
+    /// Envelope code: `E_REGEX_PATTERN_NOT_STRING`.
+    RegexPatternNotString {
+        /// User-facing representation of the actual scrutinee type.
+        actual_ty: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -657,6 +680,8 @@ impl TypeErrorKind {
             Self::ClosureRecursive { .. } => "ClosureRecursive",
             Self::SinkPayloadNotWire { .. } => "SinkPayloadNotWire",
             Self::UnsupportedPayloadSubpattern { .. } => "UnsupportedPayloadSubpattern",
+            Self::InvalidRegexLiteral { .. } => "InvalidRegexLiteral",
+            Self::RegexPatternNotString { .. } => "RegexPatternNotString",
         }
     }
 }

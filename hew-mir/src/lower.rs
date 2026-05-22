@@ -893,6 +893,19 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         diagnostics.extend(lowered.diagnostics);
     }
 
+    // Mirror HirModule::regex_literals into the IrPipeline so codegen can
+    // emit module-init globals without re-reading HIR. Each entry's literal_id
+    // is the 0-based index into this Vec AND into the global handle array that
+    // codegen emits. The pattern has already been validated by the type-checker.
+    let regex_literals: Vec<crate::model::RegexLiteral> = module
+        .regex_literals
+        .iter()
+        .map(|rl| crate::model::RegexLiteral {
+            literal_id: rl.literal_id,
+            pattern: rl.pattern.clone(),
+        })
+        .collect();
+
     IrPipeline {
         thir,
         raw_mir,
@@ -904,6 +917,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         supervisor_layouts,
         machine_layouts,
         enum_layouts,
+        regex_literals,
     }
 }
 
@@ -2635,6 +2649,7 @@ fn collect_unknown_self_fields_in_expr(
 ) {
     match &expr.kind {
         HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::BindingRef { .. }
         | HirExprKind::AwaitTask { .. }
         | HirExprKind::ContextReader { .. }
@@ -4594,6 +4609,34 @@ impl Builder {
                 body,
             } => self.lower_for_range(binding, start, end, *inclusive, body),
             HirExprKind::Match { scrutinee, arms } => self.lower_match(scrutinee, arms, &expr.ty),
+            HirExprKind::RegexLiteralRef { .. } => {
+                // Standalone regex literal expressions (as opposed to match-arm
+                // patterns) require a module-level global slot for the compiled
+                // `*HewRegex` handle. There is no first-class HIR producer that
+                // emits `RegexLiteralRef` in a value-expression position today —
+                // match-arm regex is lowered via `HirMatchArmPredicate::Regex`
+                // not through `lower_value`. Fail closed: emit a diagnostic so
+                // any future producer that accidentally routes here is caught at
+                // MIR construction, not silently at codegen.
+                //
+                // WHY NotYetImplemented (not wired in slice 4): slice 4 wires
+                // match-arm regex predicate dispatch; standalone regex-as-value
+                // semantics (passing a compiled regex to a function, storing it
+                // in a let binding, etc.) require a `Place::RegexGlobal` primitive
+                // and module-init global allocation that land in slice 5.
+                // WHEN-OBSOLETE: when a HIR producer emits `RegexLiteralRef` in
+                // a value position and slice 5 wires the global-slot place.
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "HirExprKind::RegexLiteralRef".to_string(),
+                        site: expr.site,
+                    },
+                    note: "standalone regex literal expression lowering — not yet wired; \
+                           match-arm regex patterns are lowered via HirMatchArmPredicate::Regex"
+                        .to_string(),
+                });
+                None
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
                 // NotYetImplemented and the driver should have stopped
@@ -5407,6 +5450,564 @@ impl Builder {
         arms: &[hew_hir::HirMatchArm],
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
+        // Dispatch: regex-predicate arms require ordered predicate dispatch
+        // through the runtime ABI; enum-tag arms use the fast tag-compare chain.
+        // A match expression may not mix Regex and EnumVariant arms (the checker
+        // rejects heterogeneous scrutinee types before this point), so the
+        // presence of any Regex arm signals the ordered-predicate path.
+        let has_regex = arms
+            .iter()
+            .any(|a| matches!(a.predicate, hew_hir::HirMatchArmPredicate::Regex { .. }));
+
+        if has_regex {
+            self.lower_match_regex(scrutinee, arms, result_ty)
+        } else {
+            self.lower_match_enum_tag(scrutinee, arms, result_ty)
+        }
+    }
+
+    /// Lower a match expression whose non-wildcard arms are all
+    /// `HirMatchArmPredicate::Regex` — an ordered predicate-dispatch CFG driven
+    /// by `hew_regex_match` + `hew_regex_capture`.
+    ///
+    /// Block topology (per regex arm `i`, with `k` named captures):
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   scrutinee_place = lower(scrutinee)
+    ///   Goto check_bb_0
+    ///
+    /// check_bb_i:
+    ///   lit_id_i = ConstI64(literal_id_i)
+    ///   match_result_i = CallRuntimeAbi(hew_regex_match, [scrutinee, lit_id_i])
+    ///   match_bool_i = IntCmp(NotEq, match_result_i, 0i64)
+    ///   Branch { cond: match_bool_i, then: cap_bb_i_0 (or body_bb_i), else: check_bb_{i+1} }
+    ///
+    /// cap_bb_i_j  (one per named capture group j):
+    ///   cap_idx_j = ConstI64(j)
+    ///   cap_ptr_j = CallRuntimeAbi(hew_regex_capture, [scrutinee, lit_id_i, cap_idx_j])
+    ///   null_k_j  = ConstI64(0)
+    ///   null_cond_j = IntCmp(Eq, cap_ptr_j, null_k_j)
+    ///   Branch { cond: null_cond_j, then: check_bb_{i+1}, else: cap_bb_i_{j+1} (or body_bb_i) }
+    ///
+    /// body_bb_i:
+    ///   result = lower(arm_i.body)
+    ///   Move { dest: result_place, src: result }
+    ///   Goto join_bb
+    ///
+    /// (last check falls through to wildcard_bb or fail-closed trap)
+    ///
+    /// join_bb:
+    ///   (subsequent lowering continues here)
+    /// ```
+    ///
+    /// Capture bindings: each `hew_regex_capture` return value is placed into a
+    /// fresh `Place::Local` typed as `ResolvedTy::I64` (opaque pointer — the
+    /// runtime returns a NUL-terminated C string as `*mut u8`, which has no
+    /// first-class MIR type today). The HIR arm body's capture references will
+    /// resolve to these locals in the binding scope once the HIR producer threads
+    /// `BindingIds` for captures (slice 5+ follow-on). For slice 4 the places are
+    /// allocated and the null-check CFG is emitted correctly; the arm body simply
+    /// does not yet reference them via `BindingRef`.
+    ///
+    /// WHY `hew_regex_match` returns i32 not bool: C ABI convention used by all
+    /// predicate-returning runtime entries. The MIR branch uses an IntCmp(NotEq,
+    /// _, 0) to produce the Bool cond local.
+    ///
+    /// WHY `literal_id` not handle: MIR has no `Place::RegexHandle` primitive yet.
+    /// The runtime resolves `literal_id → compiled handle` via the module-init
+    /// global array (wired in slice 5). WHEN-OBSOLETE: if a `Place::RegexGlobal`
+    /// primitive lands, the id-to-handle indirection moves inside MIR.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single coherent CFG builder for the regex predicate dispatch chain; splitting would hide block-allocation ordering"
+    )]
+    fn lower_match_regex(
+        &mut self,
+        scrutinee: &HirExpr,
+        arms: &[hew_hir::HirMatchArm],
+        result_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        // Result local first so every arm's Move dominates it.
+        let result_place = self.alloc_local(result_ty.clone());
+
+        // Partition into ordered non-wildcard arms and the optional wildcard.
+        // All non-wildcard arms must be Regex here; EnumVariant in a regex match
+        // is a checker contract violation (heterogeneous scrutinee types).
+        let mut regex_arms: Vec<&hew_hir::HirMatchArm> = Vec::new();
+        let mut wildcard_arm: Option<&hew_hir::HirMatchArm> = None;
+        for arm in arms {
+            match &arm.predicate {
+                hew_hir::HirMatchArmPredicate::Regex { .. } => {
+                    regex_arms.push(arm);
+                }
+                hew_hir::HirMatchArmPredicate::Wildcard => {
+                    if wildcard_arm.is_none() {
+                        wildcard_arm = Some(arm);
+                    }
+                }
+                hew_hir::HirMatchArmPredicate::EnumVariant { .. } => {
+                    // EnumVariant arms cannot co-exist with Regex arms in a
+                    // well-typed match (the checker rejects heterogeneous
+                    // scrutinee types). Fail closed: emit a diagnostic and
+                    // return without emitting a half-built CFG.
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "EnumVariant arm in regex match expression".to_string(),
+                            site: scrutinee.site,
+                        },
+                        note: "a match expression cannot mix EnumVariant and Regex arms; \
+                               this shape should have been rejected by the checker"
+                            .to_string(),
+                    });
+                    return None;
+                }
+            }
+        }
+
+        // Lower the scrutinee in the entry block.
+        let scrutinee_place = self.lower_value(scrutinee)?;
+        let scrutinee_local = match scrutinee_place {
+            Place::Local(n) => n,
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "regex match scrutinee place shape".to_string(),
+                        site: scrutinee.site,
+                    },
+                    note: format!(
+                        "regex match scrutinee must lower to Place::Local; got {other:?}"
+                    ),
+                });
+                return None;
+            }
+        };
+
+        // Allocate the join block up front.
+        let join_bb = self.alloc_block();
+
+        // Allocate one body block per regex arm.
+        let body_bbs: Vec<u32> = (0..regex_arms.len()).map(|_| self.alloc_block()).collect();
+
+        // Tail block: wildcard or fail-closed trap.
+        let tail_bb = self.alloc_block();
+
+        // Build the check chain. For each regex arm:
+        //   1. ConstI64(literal_id) → lit_local
+        //   2. CallRuntimeAbi(hew_regex_match, [scrutinee, lit_local]) → i32 result
+        //   3. IntCmp(NotEq, result, 0) → bool cond
+        //   4. Branch(cond, then: cap_check_or_body, else: next_check)
+        //
+        // If the arm has named captures, insert a null-check chain between the
+        // match call and the body block (one check per capture; any null → next arm).
+        //
+        // `arm_capture_places[i]` accumulates the capture pointer places for arm i so
+        // the body block loop below can emit `hew_regex_free_capture` for each before
+        // running the arm body (success-path ownership release) and the partial-failure
+        // cleanup blocks can free the captures that were already allocated before the
+        // null was discovered.
+        let mut arm_capture_places: Vec<Vec<Place>> = Vec::with_capacity(regex_arms.len());
+
+        for (i, arm) in regex_arms.iter().enumerate() {
+            let (literal_id, captures) = match &arm.predicate {
+                hew_hir::HirMatchArmPredicate::Regex {
+                    literal_id,
+                    captures,
+                    ..
+                } => (*literal_id, captures.as_slice()),
+                // regex_arms only contains Regex arms (enforced above).
+                other => {
+                    unreachable!("regex_arms must only contain Regex predicates; got {other:?}")
+                }
+            };
+
+            // ConstI64 for the literal id.
+            let lit_local = self.alloc_local(ResolvedTy::I64);
+            self.instructions.push(Instr::ConstI64 {
+                dest: lit_local,
+                value: i64::from(literal_id),
+            });
+
+            // Call hew_regex_match — returns i32 (1 = match, 0 = no match).
+            let match_result_local = self.alloc_local(ResolvedTy::I32);
+            match crate::model::RuntimeCall::new(
+                "hew_regex_match",
+                vec![Place::Local(scrutinee_local), lit_local],
+                Some(match_result_local),
+            ) {
+                Ok(call) => self.instructions.push(Instr::CallRuntimeAbi(call)),
+                Err(e) => {
+                    // The symbol must be in the allowlist (we added it in slice 4);
+                    // if we reach here it is a code invariant violation.
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!("hew_regex_match runtime call: {e}"),
+                            site: scrutinee.site,
+                        },
+                        note:
+                            "hew_regex_match must be in the runtime allowlist (slice 4 invariant)"
+                                .to_string(),
+                    });
+                    return None;
+                }
+            }
+
+            // Widen the i32 match result to Bool for the branch condition.
+            let zero_local = self.alloc_local(ResolvedTy::I32);
+            self.instructions.push(Instr::ConstI64 {
+                dest: zero_local,
+                value: 0,
+            });
+            let match_cond_local = self.alloc_local(ResolvedTy::Bool);
+            self.instructions.push(Instr::IntCmp {
+                pred: crate::model::CmpPred::NotEq,
+                lhs: match_result_local,
+                rhs: zero_local,
+                dest: match_cond_local,
+            });
+
+            // The else target for the match-check branch is the next arm's check
+            // block (or the tail on the last arm). We emit the next check block
+            // only if there is a next arm.
+            let next_check_bb = if i + 1 < regex_arms.len() {
+                self.alloc_block()
+            } else {
+                tail_bb
+            };
+
+            // If there are named captures, the "then" target is the first capture
+            // null-check block; otherwise it is the body block directly.
+            // We build the capture-null-check chain first (pre-allocating blocks),
+            // then emit the branch that enters it.
+            //
+            // Capture places: typed as I64 (opaque pointer). The runtime returns
+            // a NUL-terminated C string as *mut u8 cast to i64 (zero = null).
+            // Slice 5 will introduce proper CString/StrPtr semantics; for now the
+            // i64 opaque representation is substrate-correct for null-check dispatch.
+            //
+            // WHY I64 for a pointer: MIR has no nullable-pointer type today. I64
+            // is the convention used by other handle places (lambda-actor handles
+            // are also stored as i64-sized locals). WHEN-OBSOLETE: when a
+            // `ResolvedTy::Pointer { nullable: true }` variant lands, capture
+            // places should switch to it so codegen emits a real pointer icmp.
+            let capture_places: Vec<Place> = captures
+                .iter()
+                .map(|_| self.alloc_local(ResolvedTy::I64))
+                .collect();
+
+            // Build the capture null-check chain from the end backward so we
+            // have the "entry" target for the first check available when we emit
+            // the match-branch.
+            //
+            // For each capture j (in order):
+            //   cap_bb_j (allocated below for j >= 1; for j == 0 it is the first
+            //   block after the match call):
+            //     cap_idx_j = ConstI64(real_group_idx)
+            //     cap_ptr_j = CallRuntimeAbi(hew_regex_capture, [scrutinee, lit_id, cap_idx_j])
+            //     Move { dest: capture_places[j], src: cap_ptr_j }
+            //     null_k = ConstI64(0)
+            //     null_cond_j = IntCmp(Eq, capture_places[j], 0)
+            //     Branch { then: cleanup_bb_j_or_next_check, else: cap_bb_{j+1} (or body_bb_i) }
+            //
+            //   cleanup_bb_j (only when j > 0; for j==0 null means no allocation yet):
+            //     hew_regex_free_capture(capture_places[0]) ... hew_regex_free_capture(capture_places[j-1])
+            //     Goto next_check_bb
+            //
+            // If captures is empty the first_cap_bb == body_bb_i (no intervening blocks).
+            let cap_entry_bb = if captures.is_empty() {
+                body_bbs[i]
+            } else {
+                // Pre-allocate interior capture check blocks (one per capture).
+                let cap_check_bbs: Vec<u32> = std::iter::once(self.alloc_block())
+                    .chain((1..captures.len()).map(|_| self.alloc_block()))
+                    .collect();
+
+                let first_cap_bb = cap_check_bbs[0];
+
+                // Emit the match-check branch that enters the capture chain.
+                self.finish_current_block(Terminator::Branch {
+                    cond: match_cond_local,
+                    then_target: first_cap_bb,
+                    else_target: next_check_bb,
+                });
+
+                // Emit each capture null-check block.
+                for (j, (_cap_name, group_idx)) in captures.iter().enumerate() {
+                    self.start_block(cap_check_bbs[j]);
+
+                    // ConstI64 for the real regex group index (1-based; group 0 is the
+                    // whole match). Using the real group position rather than the
+                    // named-capture-only ordinal `j` ensures correct lookup when unnamed
+                    // positional groups precede named ones — e.g. `(foo)(?P<bar>bar)` has
+                    // group 1=(foo) and group 2=bar; passing `j+1` would return group 1
+                    // ("foo") instead of group 2 ("bar").
+                    let cap_idx_local = self.alloc_local(ResolvedTy::I64);
+                    self.instructions.push(Instr::ConstI64 {
+                        dest: cap_idx_local,
+                        value: i64::from(*group_idx),
+                    });
+
+                    // hew_regex_capture returns the capture value (or null).
+                    let cap_raw_local = self.alloc_local(ResolvedTy::I64);
+                    match crate::model::RuntimeCall::new(
+                        "hew_regex_capture",
+                        vec![Place::Local(scrutinee_local), lit_local, cap_idx_local],
+                        Some(cap_raw_local),
+                    ) {
+                        Ok(call) => self.instructions.push(Instr::CallRuntimeAbi(call)),
+                        Err(e) => {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!("hew_regex_capture runtime call: {e}"),
+                                    site: scrutinee.site,
+                                },
+                                note:
+                                    "hew_regex_capture must be in the runtime allowlist (slice 4)"
+                                        .to_string(),
+                            });
+                            return None;
+                        }
+                    }
+
+                    // Store the raw capture pointer into the capture place for
+                    // this named capture. The arm body will read from this local
+                    // once the HIR producer threads BindingIds for captures.
+                    self.instructions.push(Instr::Move {
+                        dest: capture_places[j],
+                        src: cap_raw_local,
+                    });
+
+                    // Null check: if the capture pointer is zero the pattern did
+                    // not capture this group → branch to cleanup/next arm (fail closed:
+                    // missing capture ≠ empty string, LESSONS `match-fail-closed`).
+                    let null_k_local = self.alloc_local(ResolvedTy::I64);
+                    self.instructions.push(Instr::ConstI64 {
+                        dest: null_k_local,
+                        value: 0,
+                    });
+                    let null_cond_local = self.alloc_local(ResolvedTy::Bool);
+                    self.instructions.push(Instr::IntCmp {
+                        pred: crate::model::CmpPred::Eq,
+                        lhs: capture_places[j],
+                        rhs: null_k_local,
+                        dest: null_cond_local,
+                    });
+
+                    // Then: null → go to cleanup (if prior captures allocated) or next arm.
+                    // Else: non-null → next capture or body.
+                    let else_target = if j + 1 < captures.len() {
+                        cap_check_bbs[j + 1]
+                    } else {
+                        body_bbs[i]
+                    };
+                    // When j > 0, captures[0..j] were malloc'd and must be freed before
+                    // we abandon this arm. Emit a cleanup block that calls
+                    // hew_regex_free_capture for each allocated capture then Goto
+                    // next_check_bb.
+                    //
+                    // When j == 0 the current capture is null so nothing was allocated
+                    // yet — go directly to next_check_bb.
+                    //
+                    // SHIM: this free sequence only covers the straight-line null-fail
+                    // path. If arm bodies contain early returns or trap paths the
+                    // already-extracted captures would leak on those paths. A real fix
+                    // requires scope-exit cleanup primitives in MIR (v0.6 substrate lane).
+                    // WHY acceptable for v0.5: arm bodies in the current regex feature are
+                    // value expressions (literals, arithmetic) with no early-return paths.
+                    // WHEN-OBSOLETE: when MIR gains Instr::ScopeExit or Instr::CStringDrop.
+                    let null_then_target = if j == 0 {
+                        // No prior allocations; go directly to next arm check.
+                        next_check_bb
+                    } else {
+                        // Prior captures[0..j] are malloc'd; emit a cleanup block.
+                        let cleanup_bb = self.alloc_block();
+                        self.finish_current_block(Terminator::Branch {
+                            cond: null_cond_local,
+                            then_target: cleanup_bb,
+                            else_target,
+                        });
+                        self.start_block(cleanup_bb);
+                        for &prior_place in capture_places.iter().take(j) {
+                            match crate::model::RuntimeCall::new(
+                                "hew_regex_free_capture",
+                                vec![prior_place],
+                                None,
+                            ) {
+                                Ok(call) => self.instructions.push(Instr::CallRuntimeAbi(call)),
+                                Err(e) => {
+                                    self.diagnostics.push(MirDiagnostic {
+                                        kind: MirDiagnosticKind::NotYetImplemented {
+                                            construct: format!(
+                                                "hew_regex_free_capture runtime call: {e}"
+                                            ),
+                                            site: scrutinee.site,
+                                        },
+                                        note: "hew_regex_free_capture must be in the allowlist"
+                                            .to_string(),
+                                    });
+                                    return None;
+                                }
+                            }
+                        }
+                        self.finish_current_block(Terminator::Goto {
+                            target: next_check_bb,
+                        });
+                        // Skip the branch below (already emitted with cleanup_bb as then).
+                        continue;
+                    };
+                    self.finish_current_block(Terminator::Branch {
+                        cond: null_cond_local,
+                        then_target: null_then_target,
+                        else_target,
+                    });
+                }
+
+                // Return the entry block for the capture chain.
+                // The match-check branch was already emitted above.
+                first_cap_bb
+            };
+
+            // When there are no captures, emit the match-check branch here.
+            // When there are captures, the branch was already emitted inside the
+            // `else` block above; this branch would be a double-close. Guard with
+            // the captures-empty check.
+            if captures.is_empty() {
+                self.finish_current_block(Terminator::Branch {
+                    cond: match_cond_local,
+                    then_target: cap_entry_bb,
+                    else_target: next_check_bb,
+                });
+            }
+
+            arm_capture_places.push(capture_places);
+
+            // Open the next check block (or the tail, on the last arm) so the
+            // next iteration has a current block to append to.
+            self.start_block(next_check_bb);
+        }
+
+        // Tail block: wildcard body or fail-closed trap.
+        // (We are already in next_check_bb / tail_bb at this point.)
+        if let Some(wildcard) = wildcard_arm {
+            let value = self.lower_value(&wildcard.body);
+            if let Some(src) = value {
+                self.instructions.push(Instr::Move {
+                    dest: result_place,
+                    src,
+                });
+            }
+            self.finish_current_block(Terminator::Goto { target: join_bb });
+        } else {
+            // Belt-and-braces runtime guard (LESSONS `match-fail-closed` P0).
+            // The checker rejects non-exhaustive regex matches at compile time.
+            self.finish_current_block(Terminator::Trap {
+                kind: crate::model::TrapKind::ExhaustivenessFallthrough,
+            });
+        }
+
+        // Arm body blocks.
+        for (i, arm) in regex_arms.iter().enumerate() {
+            self.start_block(body_bbs[i]);
+
+            // Success path: all captures for this arm are non-null (malloc'd by
+            // hew_regex_capture). Emit hew_regex_free_capture for each capture
+            // AFTER the arm body runs (the body currently has no bindings to the
+            // capture places, but ownership must still be released). When the HIR
+            // producer wires capture BindingIds to these places (a follow-on lane),
+            // the free must move to after the last use, not before — update at that time.
+            //
+            // SHIM: free is emitted before lower_value so the capture places are
+            // released regardless of the body's type. This is correct for straight-line
+            // bodies but would double-free if the body itself read the capture place and
+            // then freed it. Since capture bindings are not yet threaded into the body
+            // (no HIR BindingId → place mapping), this is safe for v0.5.
+            // WHEN-OBSOLETE: when capture bindings are wired, move each free to after
+            // the last use of that binding in the body.
+            let cap_places = &arm_capture_places[i];
+            for &cap_place in cap_places {
+                match crate::model::RuntimeCall::new(
+                    "hew_regex_free_capture",
+                    vec![cap_place],
+                    None,
+                ) {
+                    Ok(call) => self.instructions.push(Instr::CallRuntimeAbi(call)),
+                    Err(e) => {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: format!("hew_regex_free_capture body exit: {e}"),
+                                site: scrutinee.site,
+                            },
+                            note: "hew_regex_free_capture must be in the allowlist".to_string(),
+                        });
+                        return None;
+                    }
+                }
+            }
+
+            let value = self.lower_value(&arm.body);
+            if let Some(src) = value {
+                self.instructions.push(Instr::Move {
+                    dest: result_place,
+                    src,
+                });
+            }
+            self.finish_current_block(Terminator::Goto { target: join_bb });
+        }
+
+        // Join. Subsequent lowering continues here.
+        self.start_block(join_bb);
+        Some(result_place)
+    }
+
+    /// Lower a match expression whose non-wildcard arms are all
+    /// `HirMatchArmPredicate::EnumVariant` — the fast enum-tag-compare chain.
+    ///
+    /// Emits the following block topology over `Place::EnumTag(scrutinee)`:
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   scrutinee_local = lower(scrutinee)
+    ///   tag_local = Move from Place::EnumTag(scrutinee_local)
+    ///   Goto check_bb_0
+    ///
+    /// check_bb_i (one per non-wildcard arm i):
+    ///   k = ConstI64(variant_idx_i)
+    ///   cond_i = IntCmp(Eq, tag_local, k)
+    ///   Branch { cond_i, then: body_bb_i, else: check_bb_{i+1} }
+    ///
+    /// body_bb_i:
+    ///   result_local = lower(arm_i.body)
+    ///   Goto join_bb
+    ///
+    /// (last check falls through to either the wildcard body or the
+    /// fail-closed trap block)
+    ///
+    /// wildcard_bb (when a wildcard arm exists):
+    ///   result_local = lower(wildcard.body)
+    ///   Goto join_bb
+    ///
+    /// fallthrough_bb (when no wildcard arm — emitted as a runtime guard
+    /// even though the checker pre-gates non-exhaustive matches per
+    /// LESSONS `match-fail-closed`):
+    ///   Trap { kind: ExhaustivenessFallthrough }
+    ///
+    /// join_bb:
+    ///   (subsequent lowering continues here; result is result_local)
+    /// ```
+    ///
+    /// Returns the result `Place::Local` that every arm body's value is
+    /// moved into. For a Unit-valued match the result local is allocated
+    /// but never read by codegen.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single coherent CFG builder for the match dispatch chain; splitting would hide block-allocation ordering"
+    )]
+    fn lower_match_enum_tag(
+        &mut self,
+        scrutinee: &HirExpr,
+        arms: &[hew_hir::HirMatchArm],
+        result_ty: &ResolvedTy,
+    ) -> Option<Place> {
         // Result local first so every arm's Move dominates it.
         let result_place = self.alloc_local(result_ty.clone());
 
@@ -5419,10 +6020,23 @@ impl Builder {
         let mut variant_arms: Vec<&hew_hir::HirMatchArm> = Vec::new();
         let mut wildcard_arm: Option<&hew_hir::HirMatchArm> = None;
         for arm in arms {
-            if arm.variant_match.is_some() {
-                variant_arms.push(arm);
-            } else if wildcard_arm.is_none() {
-                wildcard_arm = Some(arm);
+            match &arm.predicate {
+                hew_hir::HirMatchArmPredicate::EnumVariant { .. } => {
+                    variant_arms.push(arm);
+                }
+                hew_hir::HirMatchArmPredicate::Wildcard => {
+                    if wildcard_arm.is_none() {
+                        wildcard_arm = Some(arm);
+                    }
+                }
+                // Regex arms are routed to `lower_match_regex` by the
+                // `lower_match` dispatcher; reaching here is a contract violation.
+                hew_hir::HirMatchArmPredicate::Regex { .. } => {
+                    unreachable!(
+                        "Regex arm in lower_match_enum_tag — lower_match dispatcher \
+                         should have routed regex arms to lower_match_regex"
+                    )
+                }
             }
         }
 
@@ -5474,10 +6088,14 @@ impl Builder {
             // Allocate a constant local for the variant index and an
             // i1 result local for the equality compare.
             let k_local = self.alloc_local(ResolvedTy::I64);
-            let variant_idx = arm.variant_idx.expect(
-                "HIR producer must set variant_idx for every non-wildcard arm; \
-                 lower_match_expr is the contract owner",
-            );
+            let variant_idx = match &arm.predicate {
+                hew_hir::HirMatchArmPredicate::EnumVariant { variant_idx, .. } => *variant_idx,
+                // variant_arms only contains EnumVariant arms (enforced in the
+                // partition loop above); any other predicate is a contract violation.
+                other => unreachable!(
+                    "variant_arms must only contain EnumVariant predicates; got {other:?}"
+                ),
+            };
             self.instructions.push(Instr::ConstI64 {
                 dest: k_local,
                 value: i64::from(variant_idx),
@@ -5526,45 +6144,12 @@ impl Builder {
             });
         }
 
-        // Variant arm body blocks. Per-arm payload bindings (e.g.
-        // `Shape::Line(x) => x + 1`) are materialised at the top of each
-        // body block via `Move { dest: <binding_local>, src:
-        // Place::EnumVariant { local: scrutinee, variant_idx, field_idx } }`.
-        // Tag-dominance invariant: the per-arm move is downstream of the
-        // tag-branch jump that selected this block, so the payload bytes
-        // belong to the active variant. The `binding_locals` registration
-        // mirrors how `select`/`let` bindings resolve `BindingRef` reads.
+        // Variant arm body blocks. Payload bindings are rejected at HIR
+        // lowering for v0.5 (predicate-based `HirMatchArmPredicate::EnumVariant`
+        // only carries unit-variant arms). Body lowering simply evaluates the
+        // arm expression and moves the result into `result_place`.
         for (i, arm) in variant_arms.iter().enumerate() {
             self.start_block(body_bbs[i]);
-            let variant_idx = arm.variant_idx.expect(
-                "variant arm must carry variant_idx — verified during dispatch chain build",
-            );
-            for pb in &arm.payload_bindings {
-                let binding_local = self.alloc_local(pb.ty.clone());
-                let Place::Local(_) = binding_local else {
-                    unreachable!("alloc_local returns Place::Local");
-                };
-                self.binding_locals.insert(pb.binding, binding_local);
-                // Register the binding with the move-checker dataflow so
-                // arm-body reads transition from `Uninit` → `Live`.
-                // Sentinel `SiteId(0)` because payload-binding sites are
-                // synthesised here, not at any checker-recorded site (same
-                // pattern as the for-range loop binding emit).
-                self.statements.push(MirStatement::Bind {
-                    binding: pb.binding,
-                    name: pb.name.clone(),
-                    site: hew_hir::SiteId(0),
-                    ty: pb.ty.clone(),
-                });
-                self.instructions.push(Instr::Move {
-                    dest: binding_local,
-                    src: Place::EnumVariant {
-                        local: scrutinee_local,
-                        variant_idx,
-                        field_idx: pb.field_idx,
-                    },
-                });
-            }
             let value = self.lower_value(&arm.body);
             if let Some(src) = value {
                 self.instructions.push(Instr::Move {
@@ -11298,6 +11883,7 @@ mod enum_layout_tests {
             record_layouts: vec![],
             enum_layouts: vec![],
             supervisor_child_slots: HashMap::<SiteId, ChildSlot>::default(),
+            regex_literals: vec![],
         }
     }
 

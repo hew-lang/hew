@@ -729,6 +729,16 @@ fn find_pattern_binding_type(
             find_pattern_binding_type(left, source_ty, type_defs, word, offset)
                 .or_else(|| find_pattern_binding_type(right, source_ty, type_defs, word, offset))
         }
+        Pattern::Regex { captures, .. } => {
+            // Named captures are bound as `string` in the arm body.
+            captures
+                .iter()
+                .find(|c| c.as_str() == word)
+                .map(|_| Ty::Named {
+                    name: "string".to_string(),
+                    args: vec![],
+                })
+        }
         Pattern::Wildcard | Pattern::Literal(_) => None,
     }
 }
@@ -751,6 +761,7 @@ fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Op
         Pattern::Or(left, right) => {
             find_binding_name(left, word, offset).or_else(|| find_binding_name(right, word, offset))
         }
+        Pattern::Regex { captures, .. } => captures.iter().find(|c| c.as_str() == word).map(|_| ()),
         Pattern::Wildcard | Pattern::Literal(_) => None,
     }
 }

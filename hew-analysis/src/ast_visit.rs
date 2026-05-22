@@ -1002,6 +1002,12 @@ fn collect_pattern_bindings<'ast>(
             collect_pattern_bindings(source, &left.0, &left.1, bindings);
             collect_pattern_bindings(source, &right.0, &right.1, bindings);
         }
+        // Regex captures are named bindings in scope for the arm body.
+        Pattern::Regex { captures, .. } => {
+            for name in captures {
+                bindings.push(binding_from_name(source, name, span, BindingKind::Local));
+            }
+        }
         Pattern::Wildcard | Pattern::Literal(_) => {}
     }
 }

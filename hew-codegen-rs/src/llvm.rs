@@ -63,7 +63,7 @@ use hew_mir::{
     validate_context_markers, ActorLayout, CheckedMirFunction, CmpPred, CooperateKind,
     CooperateSite, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth,
     FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, MachineLayout,
-    MachineVariantLayout, Place, RawMirFunction, RecordLayout, SupervisorChildLayout,
+    MachineVariantLayout, Place, RawMirFunction, RecordLayout, RegexLiteral, SupervisorChildLayout,
     SupervisorLayout, Terminator, TrapKind,
 };
 use hew_types::ResolvedTy;
@@ -850,6 +850,42 @@ fn intern_runtime_decl<'ctx>(
         "hew_actor_set_terminate" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // ── Regex literal substrate (codegen-emitted, not user-callable) ──────
+        //
+        // hew_regex_compile(pattern: *const c_char) -> *mut HewRegex
+        // (`std/text/regex/src/lib.rs`). Called once per regex literal from the
+        // `hew_module_init_regex` constructor registered in `@llvm.global_ctors`.
+        // Stores the compiled handle into the module-level `@hew_regex_handles`
+        // global array. Returns null on invalid pattern (should not happen: the
+        // type-checker validated the syntax); codegen traps fail-closed if null.
+        "hew_regex_compile" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_regex_match(re: *const HewRegex, text: *const c_char) -> i32
+        // (`std/text/regex/src/lib.rs`). Called by compiler-emitted match-arm
+        // predicate code. The `re` pointer is loaded from `@hew_regex_handles`
+        // by GEP before the call (codegen resolves literal_id → handle inline).
+        // Returns 1 on match, 0 on no-match or null `re`. MIR emits an
+        // `IntCmp(NotEq, result, 0i32)` immediately after to produce the branch
+        // condition; returning i32 rather than i1 avoids C ABI bool-extension
+        // hazards on all supported targets.
+        "hew_regex_match" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_regex_capture(re: *const HewRegex, text: *const c_char,
+        //                   capture_idx: i64) -> *mut c_char
+        // (`std/text/regex/src/lib.rs`). Called by compiler-emitted capture-
+        // extraction code after a successful `hew_regex_match`. `capture_idx`
+        // is the 0-based index into the pattern's named-capture list
+        // (i64 to match the `ConstI64` local that MIR uses for the index).
+        // Returns a malloc-owned NUL-terminated string for the captured group,
+        // or null for non-participating optional groups. Callers free with
+        // `libc::free`. The null-check in the MIR capture chain drives the
+        // "missing capture → try next arm" branch (fail-closed).
+        "hew_regex_capture" => {
+            ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false)
+        }
+        // hew_regex_free_capture(ptr: *mut c_char) -> void
+        // Frees a capture string returned by hew_regex_capture (malloc-owned).
+        // Emitted by MIR at arm-body exit (success path) and on the partial-failure
+        // cleanup paths (captures[0..j] already allocated when capture[j] is null).
+        "hew_regex_free_capture" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "intern_runtime_decl: codegen has no LLVM signature for runtime \
@@ -5962,6 +5998,234 @@ fn lower_call_runtime_abi(
                 })?;
             let _ = (i32_ty, ptr_ty);
         }
+
+        // ── Regex literal match arm lowering ──────────────────────────────────
+        //
+        // Both arms load the compiled `*HewRegex` handle from the module-level
+        // `@hew_regex_handles` global array using the `literal_id` (arg[1]) as
+        // the GEP index. The array is populated by the `hew_module_init_regex`
+        // constructor registered in `@llvm.global_ctors` (see
+        // `emit_regex_module_init`). If the global is absent (no regex literals
+        // in the pipeline), these arms fail closed — they should never be reached
+        // without a corresponding `emit_regex_module_init` call.
+
+        // hew_regex_match(re: *const HewRegex, text: *const c_char) -> i32
+        //
+        // args[0]: scrutinee (string local; stored as ptr in LLVM)
+        // args[1]: literal_id (ConstI64 local; used as GEP index into global array)
+        // dest:    i32 local (MIR emits IntCmp(NotEq, result, 0) immediately after)
+        "hew_regex_match" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_regex_match): expected 2 args \
+                     (scrutinee, literal_id), got {}",
+                    args.len()
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_regex_match: producer must supply a dest place for the i32 result".into(),
+                )
+            })?;
+            // arg0: scrutinee — ResolvedTy::String (stored as ptr in LLVM).
+            let (scrutinee_alloca, scrutinee_llvm_ty) = place_pointer(fn_ctx, args[0])?;
+            let text_ptr = fn_ctx
+                .builder
+                .build_load(scrutinee_llvm_ty, scrutinee_alloca, "regex_match_text")
+                .map_err(|e| CodegenError::Llvm(format!("hew_regex_match text load: {e:?}")))?
+                .into_pointer_value();
+            // arg1: literal_id — ConstI64 → used as GEP index into @hew_regex_handles.
+            let lit_id = load_int_arg(fn_ctx, args[1], i64_ty, "hew_regex_match lit_id")?;
+            let handle_arr_global =
+                fn_ctx
+                    .llvm_mod
+                    .get_global("hew_regex_handles")
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "hew_regex_match: @hew_regex_handles global not found — \
+                     regex_literals must be non-empty in the pipeline to emit the global"
+                                .into(),
+                        )
+                    })?;
+            // The global is [N x ptr]; GEP with [0, lit_id] to reach slot lit_id.
+            // We don't know N at this point (it's a module-level choice), but
+            // LLVM's typed GEP for arrays only validates the outer-index (0) at
+            // IR level; the inner index is bounds-checked by the type-checker at
+            // compile time (literal_id < N is an invariant). Using i64 for both
+            // indices; LLVM normalises to the GEP element type internally.
+            let handle_arr_ty = handle_arr_global.get_value_type().into_array_type();
+            let slot_ptr = unsafe {
+                fn_ctx
+                    .builder
+                    .build_gep(
+                        handle_arr_ty,
+                        handle_arr_global.as_pointer_value(),
+                        &[i64_ty.const_zero(), lit_id],
+                        "regex_handle_slot",
+                    )
+                    .map_err(|e| CodegenError::Llvm(format!("hew_regex_match GEP: {e:?}")))?
+            };
+            let handle = fn_ctx
+                .builder
+                .build_load(ptr_ty, slot_ptr, "regex_handle")
+                .map_err(|e| CodegenError::Llvm(format!("hew_regex_match handle load: {e:?}")))?
+                .into_pointer_value();
+            // Call hew_regex_match(handle, text) -> i32.
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let llvm_args: [BasicMetadataValueEnum; 2] = [handle.into(), text_ptr.into()];
+            let call_site = fn_ctx
+                .builder
+                .build_call(fv, &llvm_args, "hew_regex_match_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_regex_match call: {e:?}")))?;
+            let result_i32 = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_regex_match returned void".into()))?;
+            // Store i32 into dest.
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result_i32)
+                .map_err(|e| CodegenError::Llvm(format!("hew_regex_match store: {e:?}")))?;
+        }
+
+        // hew_regex_capture(re: *const HewRegex, text: *const c_char,
+        //                   capture_idx: i64) -> *mut c_char
+        //
+        // args[0]: scrutinee (string local; stored as ptr)
+        // args[1]: literal_id (ConstI64; GEP into @hew_regex_handles)
+        // args[2]: capture_idx (ConstI64; 0-based into pattern's named capture list)
+        // dest:    i64 local (captures stored as i64 for null-check via IntCmp)
+        //
+        // The returned *mut c_char is converted to i64 via ptrtoint so it fits
+        // into the MIR i64 capture place. The MIR null-check (`IntCmp(Eq, cap, 0)`)
+        // fires when the capture did not participate (null → 0 → branch to next arm).
+        "hew_regex_capture" => {
+            if args.len() != 3 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_regex_capture): expected 3 args \
+                     (scrutinee, literal_id, capture_idx), got {}",
+                    args.len()
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_regex_capture: producer must supply a dest place for the capture ptr"
+                        .into(),
+                )
+            })?;
+            // arg0: scrutinee — ResolvedTy::String (ptr in LLVM).
+            let (scrutinee_alloca, scrutinee_llvm_ty) = place_pointer(fn_ctx, args[0])?;
+            let text_ptr = fn_ctx
+                .builder
+                .build_load(scrutinee_llvm_ty, scrutinee_alloca, "regex_cap_text")
+                .map_err(|e| CodegenError::Llvm(format!("hew_regex_capture text load: {e:?}")))?
+                .into_pointer_value();
+            // arg1: literal_id — GEP into @hew_regex_handles.
+            let lit_id = load_int_arg(fn_ctx, args[1], i64_ty, "hew_regex_capture lit_id")?;
+            let handle_arr_global =
+                fn_ctx
+                    .llvm_mod
+                    .get_global("hew_regex_handles")
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "hew_regex_capture: @hew_regex_handles global not found".into(),
+                        )
+                    })?;
+            let handle_arr_ty = handle_arr_global.get_value_type().into_array_type();
+            let slot_ptr = unsafe {
+                fn_ctx
+                    .builder
+                    .build_gep(
+                        handle_arr_ty,
+                        handle_arr_global.as_pointer_value(),
+                        &[i64_ty.const_zero(), lit_id],
+                        "regex_cap_handle_slot",
+                    )
+                    .map_err(|e| CodegenError::Llvm(format!("hew_regex_capture GEP: {e:?}")))?
+            };
+            let handle = fn_ctx
+                .builder
+                .build_load(ptr_ty, slot_ptr, "regex_cap_handle")
+                .map_err(|e| CodegenError::Llvm(format!("hew_regex_capture handle load: {e:?}")))?
+                .into_pointer_value();
+            // arg2: capture_idx — i64.
+            let cap_idx = load_int_arg(fn_ctx, args[2], i64_ty, "hew_regex_capture cap_idx")?;
+            // Call hew_regex_capture(handle, text, cap_idx) -> *mut c_char.
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let llvm_args: [BasicMetadataValueEnum; 3] =
+                [handle.into(), text_ptr.into(), cap_idx.into()];
+            let call_site = fn_ctx
+                .builder
+                .build_call(fv, &llvm_args, "hew_regex_capture_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_regex_capture call: {e:?}")))?;
+            let cap_ptr = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_regex_capture returned void".into()))?
+                .into_pointer_value();
+            // Convert *mut c_char → i64 (ptrtoint) so the capture place (ResolvedTy::I64)
+            // receives the pointer bit-pattern. The MIR null-check (IntCmp Eq 0) fires on
+            // null return (group did not participate → branch to next arm, fail-closed).
+            let cap_as_i64 = fn_ctx
+                .builder
+                .build_ptr_to_int(cap_ptr, i64_ty, "regex_cap_as_i64")
+                .map_err(|e| CodegenError::Llvm(format!("hew_regex_capture ptrtoint: {e:?}")))?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, cap_as_i64)
+                .map_err(|e| CodegenError::Llvm(format!("hew_regex_capture store: {e:?}")))?;
+        }
+
+        // hew_regex_free_capture(ptr: *mut c_char) -> void
+        //
+        // args[0]: the i64 capture place (pointer bit-pattern stored as i64 via ptrtoint).
+        //          Converted back to *mut c_char via inttoptr before the call.
+        // dest:    must be None (void return).
+        //
+        // Emitted by MIR at arm-body exit (success path, after all captures are
+        // extracted) and in partial-failure cleanup blocks (captures[0..j] already
+        // allocated when capture[j] returned null).
+        "hew_regex_free_capture" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_regex_free_capture): expected 1 arg \
+                     (capture ptr as i64), got {}",
+                    args.len()
+                )));
+            }
+            // The capture place is ResolvedTy::I64 (pointer bit-pattern via ptrtoint).
+            // Load the i64 value and convert back to *mut c_char via inttoptr.
+            let cap_as_i64 = load_int_arg(fn_ctx, args[0], i64_ty, "hew_regex_free_cap_i64")?;
+            let cap_ptr = fn_ctx
+                .builder
+                .build_int_to_ptr(cap_as_i64, ptr_ty, "hew_regex_free_cap_ptr")
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("hew_regex_free_capture inttoptr: {e:?}"))
+                })?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(fv, &[cap_ptr.into()], "hew_regex_free_capture_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_regex_free_capture call: {e:?}")))?;
+        }
+
         other => {
             // Allowlisted but not wired. Names a missing follow-on
             // seam so the next implementer can find the gap quickly
@@ -8891,10 +9155,215 @@ fn build_module<'ctx>(
             &machine_layouts,
         )?;
     }
+    // Emit regex module-init infrastructure if the module uses any regex literals.
+    // This must come AFTER all function bodies are lowered (the init function
+    // references globals declared here) and BEFORE llvm_mod.verify() so the
+    // verifier can check the emitted IR.
+    if !pipeline.regex_literals.is_empty() {
+        emit_regex_module_init(ctx, &llvm_mod, &pipeline.regex_literals)?;
+    }
     llvm_mod
         .verify()
         .map_err(|e| CodegenError::LlvmVerify(e.to_string()))?;
     Ok(llvm_mod)
+}
+
+/// Emit the module-level regex infrastructure when `pipeline.regex_literals` is non-empty.
+///
+/// Emits:
+/// 1. `@hew_regex_handles : [N x ptr]` — global mutable array of `*mut HewRegex` handles,
+///    initialised to null. The module-init constructor populates each slot.
+/// 2. Per literal: `@hew_regex_pattern_<i> : [M x i8]` — private NUL-terminated i8 constant
+///    holding the pattern bytes.
+/// 3. `@hew_module_init_regex` — void() constructor that calls `hew_regex_compile` for each
+///    pattern and stores the result into `@hew_regex_handles[i]`. Traps fail-closed if any
+///    compile returns null (the type-checker guaranteed the pattern is valid; null means OOM
+///    or an internal invariant was broken).
+/// 4. `@llvm.global_ctors = appending [{ i32, ptr, ptr } { 65535, @hew_module_init_regex,
+///    null }]` — ensures the constructor runs before `main`.
+///
+/// WHY `@llvm.global_ctors` not a call from `main`: every user-defined entrypoint (not just
+/// `main`) runs after module init; a ctors entry is the substrate-correct mechanism.
+/// WHEN-OBSOLETE: if Hew gains a module-level DSL for eager resource initialisation, this
+/// synthesised constructor is the expected substrate for that feature.
+/// WHAT: the `lower_call_runtime_abi` arms for `hew_regex_match` and `hew_regex_capture` load
+/// from this global array by GEP (literal_id → slot index).
+fn emit_regex_module_init<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    literals: &[RegexLiteral],
+) -> CodegenResult<()> {
+    if literals.is_empty() {
+        return Ok(());
+    }
+    let n = u32::try_from(literals.len()).map_err(|_| {
+        CodegenError::FailClosed("regex literal count exceeds u32::MAX — impossible".into())
+    })?;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i8_ty = ctx.i8_type();
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+
+    // 1. Global handle array: [N x ptr] initialised to all-null.
+    let handle_arr_ty = ptr_ty.array_type(n);
+    let handles_global = llvm_mod.add_global(handle_arr_ty, None, "hew_regex_handles");
+    let null_ptrs: Vec<inkwell::values::PointerValue<'ctx>> =
+        (0..n).map(|_| ptr_ty.const_null()).collect();
+    let null_arr_init = ptr_ty.const_array(&null_ptrs);
+    handles_global.set_initializer(&null_arr_init);
+    handles_global.set_linkage(Linkage::Private);
+
+    // 2. Per-literal pattern constant: private unnamed_addr [M x i8].
+    let mut pattern_ptrs: Vec<inkwell::values::PointerValue<'ctx>> =
+        Vec::with_capacity(literals.len());
+    for lit in literals {
+        let bytes_with_nul: Vec<u8> = lit.pattern.bytes().chain(std::iter::once(0u8)).collect();
+        let len = u32::try_from(bytes_with_nul.len()).map_err(|_| {
+            CodegenError::FailClosed(format!(
+                "regex pattern {lit_id} is too long for LLVM constant",
+                lit_id = lit.literal_id
+            ))
+        })?;
+        let arr_ty = i8_ty.array_type(len);
+        let global_name = format!("hew_regex_pattern_{}", lit.literal_id);
+        let pat_global = llvm_mod.add_global(arr_ty, None, &global_name);
+        let bytes_as_i8: Vec<inkwell::values::IntValue<'ctx>> = bytes_with_nul
+            .iter()
+            .map(|b| i8_ty.const_int(u64::from(*b), false))
+            .collect();
+        let arr_init = i8_ty.const_array(&bytes_as_i8);
+        pat_global.set_initializer(&arr_init);
+        pat_global.set_linkage(Linkage::Private);
+        pat_global.set_constant(true);
+        pat_global.set_unnamed_addr(true);
+        pattern_ptrs.push(pat_global.as_pointer_value());
+    }
+
+    // 3. Constructor function: `void hew_module_init_regex()`.
+    let void_ty = ctx.void_type();
+    let init_fn_ty = void_ty.fn_type(&[], false);
+    let init_fn =
+        llvm_mod.add_function("hew_module_init_regex", init_fn_ty, Some(Linkage::Private));
+    let entry_bb = ctx.append_basic_block(init_fn, "entry");
+    let builder = ctx.create_builder();
+    builder.position_at_end(entry_bb);
+
+    // Intern hew_regex_compile declaration.
+    let compile_fn = {
+        let compile_ty = ptr_ty.fn_type(&[ptr_ty.into()], false);
+        llvm_mod
+            .get_function("hew_regex_compile")
+            .unwrap_or_else(|| {
+                llvm_mod.add_function("hew_regex_compile", compile_ty, Some(Linkage::External))
+            })
+    };
+
+    // hew_trap_with_code for fail-closed on null return.
+    let trap_fn = {
+        let trap_ty = void_ty.fn_type(&[i32_ty.into(), i32_ty.into()], false);
+        llvm_mod
+            .get_function("hew_trap_with_code")
+            .unwrap_or_else(|| {
+                llvm_mod.add_function("hew_trap_with_code", trap_ty, Some(Linkage::External))
+            })
+    };
+
+    for (i, pat_ptr) in pattern_ptrs.iter().enumerate() {
+        // Call hew_regex_compile(pattern).
+        let call_result = builder
+            .build_call(
+                compile_fn,
+                &[(*pat_ptr).into()],
+                &format!("compile_regex_{i}"),
+            )
+            .map_err(|e| {
+                CodegenError::Llvm(format!("hew_regex_compile call in module-init: {e:?}"))
+            })?;
+        let handle = call_result
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_regex_compile returned void — signature mismatch".into(),
+                )
+            })?
+            .into_pointer_value();
+
+        // Fail-closed trap if null: pattern was validated by the checker; null is OOM or
+        // a code invariant violation. Trap code 206 (InvalidRegex) per hew-runtime TrapKind.
+        // WHY trap not unreachable: LLVM may speculate past `unreachable` at -O2; a call to
+        // `hew_trap_with_code` is opaque to the optimiser and always terminates. WHEN-OBSOLETE:
+        // when LLVM's opaque-pointer + assume attributes land in hew-codegen-rs, the assume
+        // could suppress the branch; for now the explicit call is the correct substrate.
+        let null_check_bb = ctx.append_basic_block(init_fn, &format!("null_check_{i}"));
+        let ok_bb = ctx.append_basic_block(init_fn, &format!("ok_{i}"));
+        let is_null = builder
+            .build_is_null(handle, &format!("is_null_{i}"))
+            .map_err(|e| CodegenError::Llvm(format!("is_null check in module-init: {e:?}")))?;
+        builder
+            .build_conditional_branch(is_null, null_check_bb, ok_bb)
+            .map_err(|e| CodegenError::Llvm(format!("null-check branch in module-init: {e:?}")))?;
+
+        builder.position_at_end(null_check_bb);
+        // Trap code 209 — module-init regex compile failure (internal invariant
+        // violation; patterns are validated by the type-checker so this branch
+        // is dead code in correctly-compiled programs). 209 is the next unused
+        // code after 208 (ExhaustivenessFallthrough). WHEN-OBSOLETE: when
+        // TrapKind gains a dedicated InvalidRegex variant, add it at code 209
+        // and update the constant table in lower_call_runtime_abi.
+        // WHY not 206: 206 is HEW_TRAP_ACTOR_SEND_FAILED; reusing it would
+        // make diagnostics misleading.
+        const HEW_TRAP_MODULE_INIT_REGEX_FAILED: u64 = 209;
+        let trap_code = i32_ty.const_int(HEW_TRAP_MODULE_INIT_REGEX_FAILED, false);
+        let lit_id_code = i32_ty.const_int(u64::from(literals[i].literal_id), false);
+        builder
+            .build_call(
+                trap_fn,
+                &[trap_code.into(), lit_id_code.into()],
+                "trap_null_regex",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("trap call in module-init: {e:?}")))?;
+        builder
+            .build_unreachable()
+            .map_err(|e| CodegenError::Llvm(format!("unreachable in module-init: {e:?}")))?;
+
+        builder.position_at_end(ok_bb);
+        // Store handle into @hew_regex_handles[i].
+        let idx = i64_ty.const_int(u64::try_from(i).unwrap_or(u64::MAX), false);
+        let slot_ptr = unsafe {
+            builder
+                .build_gep(
+                    handle_arr_ty,
+                    handles_global.as_pointer_value(),
+                    &[i64_ty.const_zero(), idx],
+                    &format!("regex_slot_{i}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("GEP for regex handle slot {i}: {e:?}")))?
+        };
+        builder
+            .build_store(slot_ptr, handle)
+            .map_err(|e| CodegenError::Llvm(format!("store regex handle {i}: {e:?}")))?;
+    }
+    builder
+        .build_return(None)
+        .map_err(|e| CodegenError::Llvm(format!("return in hew_module_init_regex: {e:?}")))?;
+
+    // 4. Register in @llvm.global_ctors (appending linkage, priority 65535).
+    // The struct type is { i32, ptr, ptr } — priority, fn ptr, associated data (null).
+    let ctor_entry_ty = ctx.struct_type(&[i32_ty.into(), ptr_ty.into(), ptr_ty.into()], false);
+    let ctor_arr_ty = ctor_entry_ty.array_type(1);
+    let priority = i32_ty.const_int(65535, false);
+    let init_fn_ptr = init_fn.as_global_value().as_pointer_value();
+    let assoc_data = ptr_ty.const_null();
+    let ctor_entry =
+        ctor_entry_ty.const_named_struct(&[priority.into(), init_fn_ptr.into(), assoc_data.into()]);
+    let ctor_arr_init = ctor_entry_ty.const_array(&[ctor_entry]);
+    // LLVM requires appending linkage for @llvm.global_ctors; the name is magic.
+    let ctors_global = llvm_mod.add_global(ctor_arr_ty, None, "llvm.global_ctors");
+    ctors_global.set_initializer(&ctor_arr_init);
+    ctors_global.set_linkage(Linkage::Appending);
+
+    Ok(())
 }
 
 fn emit_textual(pipeline: &IrPipeline, name: &str, out: &Path) -> CodegenResult<()> {
@@ -9002,6 +9471,7 @@ mod tests {
             supervisor_layouts: Vec::new(),
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
         }
     }
 
@@ -9047,6 +9517,7 @@ mod tests {
             supervisor_layouts: Vec::new(),
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -9110,6 +9581,7 @@ mod tests {
             supervisor_layouts: Vec::new(),
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -9167,6 +9639,7 @@ mod tests {
             supervisor_layouts: Vec::new(),
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
         };
         let ctx = Context::create();
         let m =
@@ -9209,6 +9682,7 @@ mod tests {
             supervisor_layouts: Vec::new(),
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
         };
         let ctx = Context::create();
         let err =
@@ -9267,6 +9741,7 @@ mod tests {
             supervisor_layouts: Vec::new(),
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
         }
     }
 
@@ -9459,6 +9934,7 @@ mod tests {
             supervisor_layouts: Vec::new(),
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
         }
     }
 
@@ -10142,6 +10618,7 @@ mod tests {
             supervisor_layouts: Vec::new(),
             machine_layouts: Vec::new(),
             enum_layouts: vec![enum_layout],
+            regex_literals: Vec::new(),
         };
 
         let ctx = Context::create();

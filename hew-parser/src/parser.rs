@@ -184,6 +184,44 @@ fn push_unescaped_sequence(
     2
 }
 
+/// Normalise a `re"..."` token into the regex pattern string.
+///
+/// Regex literals use different escape semantics from Hew string literals:
+/// backslashes are passed through verbatim to the regex engine (so `re"\s+"`
+/// is whitespace, `re"\."` is a literal dot). Only the delimiter escape
+/// `\"` is consumed to allow a literal double-quote inside the pattern.
+/// Any other two-character `\x` sequence is emitted as-is (both backslash
+/// and the next character) so regex operators like `\d`, `\w`, `\b`,
+/// `(?P<name>...)` named groups, and anchors survive unchanged.
+///
+/// `raw` must be the full token text including the `re"` prefix and `"` suffix.
+pub(crate) fn normalize_regex_literal(raw: &str) -> String {
+    // Strip re" prefix and " suffix.
+    let inner = raw
+        .strip_prefix("re\"")
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(raw);
+
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('"') => out.push('"'), // delimiter escape: \" → "
+                Some(next) => {
+                    // All other backslash sequences: pass through both characters.
+                    out.push('\\');
+                    out.push(next);
+                }
+                None => out.push('\\'), // trailing lone backslash — pass through
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Process escape sequences in a string literal, converting `\n`, `\t`, `\r`,
 /// `\\`, `\"`, and `\0` to their corresponding characters.
 fn unescape_string(s: &str) -> String {
@@ -5261,12 +5299,10 @@ impl<'src> Parser<'src> {
                 Expr::InterpolatedString(parts)
             }
             Token::RegexLiteral(s) => {
-                // Strip `re"` prefix and `"` suffix to get the pattern.
-                let pattern = s
-                    .strip_prefix("re\"")
-                    .and_then(|s| s.strip_suffix('"'))
-                    .unwrap_or(s);
-                let pattern = pattern.to_string();
+                // Normalise the token: strip delimiters and decode only the
+                // delimiter escape `\"`. Regex backslashes are passed through
+                // verbatim so `re"\s+"` reaches the engine as `\s+`.
+                let pattern = normalize_regex_literal(s);
                 self.advance();
                 Expr::RegexLiteral(pattern)
             }
@@ -6592,6 +6628,18 @@ impl<'src> Parser<'src> {
             Some(Token::False) => {
                 self.advance();
                 Pattern::Literal(Literal::Bool(false))
+            }
+            // Regex literal pattern: re"pattern" in a match arm.
+            // `captures` is empty here; the checker populates it from the
+            // regex engine's named-capture list after validating the pattern.
+            Some(Token::RegexLiteral(s)) => {
+                let s = *s;
+                let pattern = normalize_regex_literal(s);
+                self.advance();
+                Pattern::Regex {
+                    pattern,
+                    captures: vec![],
+                }
             }
             // Contextual keywords used as identifiers in patterns
             Some(tok) if Self::contextual_keyword_name(tok).is_some() => {

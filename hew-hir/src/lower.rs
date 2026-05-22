@@ -2291,8 +2291,9 @@ impl LowerCtx {
             let body =
                 self.lower_machine_expr_filtered(&tr.body, &state_names, event_names.clone());
             self.current_machine_source_state = prev_source_state;
-            // body_emits is now derived from the lowered HIR body rather than
-            // the AST summary walk so that emit expressions nested inside
+            // body_emits is derived from the lowered HIR body by walking
+            // `HirExprKind::MachineEmit { event_idx, .. }` rather than the
+            // AST summary shape, so emit expressions nested inside
             // conditionals or match arms are correctly detected.
             let body_emits = collect_hir_emitted_events(&body, &event_names);
             hir_transitions.push(HirMachineTransition {

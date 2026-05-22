@@ -1594,9 +1594,9 @@ fn mangle_machine_step(name: &str) -> String {
 /// Matched arms lower the transition body in-place and return the machine
 /// value produced by that HIR body. Real transitions (state tag changes)
 /// invoke source `exit` before the body and target `entry` after the body has
-/// constructed the target value. Self-transitions skip hooks unless the HIR
-/// transition carries `@reenter`, in which case exit and entry both fire.
-/// Drop elaboration remains a later slice.
+/// constructed the target value. Self-transitions skip hooks and transition-out
+/// drops unless the HIR transition carries `@reenter`, in which case exit,
+/// source-payload drops, and entry all fire.
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -1875,9 +1875,9 @@ fn synthesize_machine_step_fn(
         cooperate_sites: Vec::new(),
     };
 
-    // Elaborated: mirror raw blocks as Normal kind with no drops. The
-    // step fn has no @resource locals (machine values are BitCopy at this
-    // slice; payload-field drops are Slice 4c's responsibility).
+    // Elaborated: mirror raw blocks as Normal kind with no owned-local drops.
+    // Machine transition-out resource drops are emitted directly into the raw
+    // arm body because their liveness is tag-dominated by the source state.
     let elab_blocks: Vec<ElabBlock> = blocks
         .iter()
         .map(|b| ElabBlock {
@@ -1930,6 +1930,7 @@ fn emit_machine_step_transition_return(
         if let Some(exit) = &state.exit {
             lower_machine_lifecycle_block(builder, self_binding, self_place, exit);
         }
+        emit_machine_transition_out_drops(builder, state, state_idx, self_place);
     }
 
     let prev_machine_self = builder.current_machine_self_binding.replace(self_binding);
@@ -1989,6 +1990,48 @@ fn emit_machine_step_transition_return(
         dest: Place::ReturnSlot,
         src: next,
     });
+}
+
+fn emit_machine_transition_out_drops(
+    builder: &mut Builder,
+    state: &hew_hir::HirMachineState,
+    state_idx: usize,
+    self_place: Place,
+) {
+    let Place::Local(self_local) = self_place else {
+        builder.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::UnsupportedNode {
+                reason: format!(
+                    "machine state `{}` transition-out drop has non-local self place {self_place:?}",
+                    state.name
+                ),
+            },
+            note: "internal: machine step self parameter must be a Place::Local for \
+                   MachineVariant drop addressing"
+                .to_string(),
+        });
+        return;
+    };
+
+    let variant_idx = u32::try_from(state_idx).expect("state index exceeds u32::MAX");
+    // Enumerate only the fields of the source variant proven live by the arm's
+    // dominating MachineTag check; inactive union payload bytes are not touched.
+    for (field_idx, field) in state.fields.iter().enumerate().rev() {
+        if ValueClass::of_ty(&field.ty, &builder.type_classes) != ValueClass::AffineResource {
+            continue;
+        }
+        let field_idx = u32::try_from(field_idx).expect("field index exceeds u32::MAX");
+        let place = Place::MachineVariant {
+            local: self_local,
+            variant_idx,
+            field_idx,
+        };
+        builder.instructions.push(Instr::Drop {
+            place,
+            ty: field.ty.clone(),
+            drop_fn: resource_drop_fn(&field.ty, &builder.type_classes),
+        });
+    }
 }
 
 fn lower_machine_lifecycle_block(
@@ -9953,6 +9996,17 @@ fn drop_kind_for(place: Place, ty: &ResolvedTy) -> DropKind {
     }
 }
 
+fn resource_drop_fn(ty: &ResolvedTy, type_classes: &hew_hir::TypeClassTable) -> Option<String> {
+    match ty {
+        ResolvedTy::Named { name, .. } => type_classes
+            .get(name)
+            .and_then(|(_, close)| close.as_ref())
+            .map(|m| format!("{name}::{m}")),
+        // Task<T> and all other types have no user-visible close method.
+        _ => None,
+    }
+}
+
 /// LIFO drop sequence for an owned-locals ledger. Only `AffineResource`
 /// contributes; `Linear` is the move-checker's responsibility (`MustConsume`),
 /// and other classes have no implicit drop.
@@ -9980,17 +10034,7 @@ fn build_lifo_drops(
                 // the pipeline upstream. The string form is preserved as a
                 // failsafe; codegen rejects `Some(_)` until runtime drop
                 // dispatch lands (`hew-codegen-rs/src/llvm.rs:471`).
-                let drop_fn = match ty {
-                    ResolvedTy::Named { name, .. } => type_classes
-                        .get(name)
-                        .and_then(|(_, close)| close.as_ref())
-                        .map(|m| format!("{name}::{m}")),
-                    // Task<T> and all other types have no user-visible close
-                    // method. Task<T> drop (hew_task_await_blocking +
-                    // hew_task_free) lands as a runtime ABI call in a later
-                    // slice (MIR/codegen glue); no close method name here.
-                    _ => None,
-                };
+                let drop_fn = resource_drop_fn(ty, type_classes);
                 // Resolve to the binding's real backend place. Falling
                 // back to `ReturnSlot` for an unmapped binding would
                 // drop the wrong slot — fail closed instead. The

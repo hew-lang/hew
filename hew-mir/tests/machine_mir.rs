@@ -3,15 +3,19 @@
 //! Every `HirItem::Machine` produces a synthesised `<Name>__step` MIR
 //! function with the correct signature and a fail-closed state×event
 //! dispatch shell. Transition bodies and lifecycle hooks lower into matched
-//! arms; transition-out drops remain a later slice.
+//! arms; transition-out drops are emitted for tag-dominated resource payloads.
 
 use hew_hir::{
-    HirBlock, HirExpr, HirExprKind, HirField, HirItem, HirMachineDecl, HirMachineEvent,
-    HirMachineState, HirMachineTransition, HirModule, HirStmt, HirStmtKind, IntentKind, ValueClass,
+    BindingId, HirBlock, HirExpr, HirExprKind, HirField, HirItem, HirMachineDecl, HirMachineEvent,
+    HirMachineState, HirMachineTransition, HirModule, HirStmt, HirStmtKind, IntentKind,
+    ResolvedRef, ValueClass,
 };
 use hew_mir::{lower_hir_module, FunctionCallConv, Instr, Place, Terminator, TrapKind};
+use hew_parser::ast::ResourceMarker as AstResourceMarker;
 use hew_types::ResolvedTy;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+
+const MACHINE_SELF_BINDING: BindingId = BindingId(u32::MAX);
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
@@ -40,6 +44,24 @@ fn machine_ctor_expr(machine_name: &str, state_idx: usize) -> HirExpr {
             machine_name: machine_name.to_string(),
             state_idx,
             payload: None,
+        },
+        span: 0..0,
+    }
+}
+
+fn machine_self_expr(machine_name: &str) -> HirExpr {
+    HirExpr {
+        node: hew_hir::HirNodeId(0),
+        site: hew_hir::SiteId(0),
+        ty: ResolvedTy::Named {
+            name: machine_name.to_string(),
+            args: vec![],
+        },
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: "self".to_string(),
+            resolved: ResolvedRef::Binding(MACHINE_SELF_BINDING),
         },
         span: 0..0,
     }
@@ -113,11 +135,32 @@ fn make_state(name: &str) -> HirMachineState {
     }
 }
 
+fn make_state_with_fields(name: &str, fields: Vec<HirField>) -> HirMachineState {
+    HirMachineState {
+        name: name.to_string(),
+        fields,
+        has_entry: false,
+        has_exit: false,
+        entry_writes: Vec::new(),
+        exit_writes: Vec::new(),
+        entry: None,
+        exit: None,
+        span: 0..0,
+    }
+}
+
 fn make_event(name: &str) -> HirMachineEvent {
     HirMachineEvent {
         name: name.to_string(),
         fields: Vec::<HirField>::new(),
         span: 0..0,
+    }
+}
+
+fn named_ty(name: &str) -> ResolvedTy {
+    ResolvedTy::Named {
+        name: name.to_string(),
+        args: vec![],
     }
 }
 
@@ -405,6 +448,255 @@ fn transition_bodies_entry_exit_reenter() {
     assert!(
         block_tag_write_index(BODY_REENTER) < block_emit_instr_index(ENTRY_ACTIVE),
         "@reenter transition invokes entry after target construction"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "matrix test covers resource transition-out, self persistence, reenter, and non-resource states"
+)]
+fn resource_field_transition_out_drops() {
+    const BODY_TO_IDLE: usize = 4;
+    const BODY_REENTER: usize = 5;
+    const BODY_FINISH: usize = 6;
+
+    let handle_ty = named_ty("FileHandle");
+    let holding = make_state_with_fields(
+        "Holding",
+        vec![HirField {
+            name: "handle".to_string(),
+            ty: handle_ty.clone(),
+            span: 0..0,
+        }],
+    );
+    let idle = make_state("Idle");
+    let done = make_state("Done");
+
+    let mut to_idle = make_transition("ResourceMachine", "ToIdle", "Holding", "Idle", 1);
+    to_idle.body = transition_body("ResourceMachine", 1, &[BODY_TO_IDLE]);
+
+    let mut stay = make_transition("ResourceMachine", "Stay", "Holding", "Holding", 0);
+    stay.body = machine_self_expr("ResourceMachine");
+
+    let mut reenter = make_transition("ResourceMachine", "Reenter", "Holding", "Holding", 0);
+    reenter.reenter = true;
+    reenter.body = transition_body("ResourceMachine", 0, &[BODY_REENTER]);
+
+    let mut finish = make_transition("ResourceMachine", "Finish", "Idle", "Done", 2);
+    finish.body = transition_body("ResourceMachine", 2, &[BODY_FINISH]);
+
+    let machine = HirMachineDecl {
+        id: hew_hir::ItemId(0),
+        node: hew_hir::HirNodeId(0),
+        name: "ResourceMachine".to_string(),
+        type_params: Vec::new(),
+        states: vec![holding.clone(), idle, done],
+        events: vec![
+            make_event("ToIdle"),
+            make_event("Stay"),
+            make_event("Reenter"),
+            make_event("Finish"),
+            make_event("BodyToIdle"),
+            make_event("BodyReenter"),
+            make_event("BodyFinish"),
+        ],
+        transitions: vec![to_idle, stay, reenter, finish],
+        has_default: false,
+        span: 0..0,
+    };
+
+    let mut module = empty_module(vec![HirItem::Machine(machine.clone())]);
+    module.type_classes.insert(
+        "FileHandle".to_string(),
+        (AstResourceMarker::Resource, Some("close".to_string())),
+    );
+
+    let pipeline = lower_hir_module(&module);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "machine resource transition lowering should not produce diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let step_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "ResourceMachine__step")
+        .expect("ResourceMachine__step synthesised");
+
+    let block_containing_emit = |needle| {
+        step_fn
+            .blocks
+            .iter()
+            .find(|block| {
+                block.instructions.iter().any(|instr| {
+                    matches!(
+                        instr,
+                        Instr::MachineEmitPlaceholder {
+                            event_idx,
+                            ..
+                        } if *event_idx == needle
+                    )
+                })
+            })
+            .unwrap_or_else(|| panic!("block containing emit event_idx={needle}"))
+    };
+    let drops_in_block = |needle| -> BTreeSet<String> {
+        block_containing_emit(needle)
+            .instructions
+            .iter()
+            .filter_map(|instr| match instr {
+                Instr::Drop { place, .. } => Some(format!("{place:?}")),
+                _ => None,
+            })
+            .collect()
+    };
+    let drop_summaries = |needle| -> Vec<String> {
+        block_containing_emit(needle)
+            .instructions
+            .iter()
+            .filter_map(|instr| match instr {
+                Instr::Drop { place, drop_fn, .. } => Some(format!(
+                    "{place:?} via {}",
+                    drop_fn.as_deref().unwrap_or("<none>")
+                )),
+                _ => None,
+            })
+            .collect()
+    };
+    let expected_source_resource_places = |source_variant_idx: usize| -> BTreeSet<String> {
+        let self_local = 0;
+        machine.states[source_variant_idx]
+            .fields
+            .iter()
+            .enumerate()
+            .filter_map(|(field_idx, field)| {
+                (ValueClass::of_ty(&field.ty, &module.type_classes) == ValueClass::AffineResource)
+                    .then_some(format!(
+                        "{:?}",
+                        Place::MachineVariant {
+                            local: self_local,
+                            variant_idx: u32::try_from(source_variant_idx)
+                                .expect("variant index fits u32"),
+                            field_idx: u32::try_from(field_idx).expect("field index fits u32"),
+                        }
+                    ))
+            })
+            .collect()
+    };
+    let first_drop_index = |needle| {
+        block_containing_emit(needle)
+            .instructions
+            .iter()
+            .position(|instr| matches!(instr, Instr::Drop { .. }))
+            .unwrap_or_else(|| panic!("block containing emit event_idx={needle} has a Drop"))
+    };
+    let first_tag_write_index = |needle| {
+        block_containing_emit(needle)
+            .instructions
+            .iter()
+            .position(|instr| {
+                matches!(
+                    instr,
+                    Instr::Move {
+                        dest: Place::MachineTag(_),
+                        ..
+                    }
+                )
+            })
+            .unwrap_or_else(|| panic!("block containing emit event_idx={needle} writes target tag"))
+    };
+
+    let holding_resource_places = expected_source_resource_places(0);
+    assert_eq!(
+        drops_in_block(BODY_TO_IDLE),
+        holding_resource_places,
+        "lattice-correct: dropped places equal source variant @resource fields"
+    );
+    assert!(
+        first_drop_index(BODY_TO_IDLE) < first_tag_write_index(BODY_TO_IDLE),
+        "transition-out drop precedes target tag write"
+    );
+    assert_eq!(
+        drops_in_block(BODY_REENTER),
+        expected_source_resource_places(0),
+        "@reenter self-transition drops source variant resources"
+    );
+    assert!(
+        first_drop_index(BODY_REENTER) < first_tag_write_index(BODY_REENTER),
+        "@reenter drop precedes re-construction tag write"
+    );
+    assert!(
+        drops_in_block(BODY_FINISH).is_empty(),
+        "transition between non-resource states emits no drops"
+    );
+
+    let self_persist_blocks: Vec<_> = step_fn
+        .blocks
+        .iter()
+        .filter(|block| {
+            matches!(block.terminator, Terminator::Return)
+                && block.instructions.iter().any(|instr| {
+                    matches!(
+                        instr,
+                        Instr::Move {
+                            dest: Place::ReturnSlot,
+                            src: Place::Local(0),
+                        }
+                    )
+                })
+        })
+        .collect();
+    assert_eq!(
+        self_persist_blocks.len(),
+        1,
+        "self-transition default {{ self }} arm is present exactly once"
+    );
+    assert!(
+        self_persist_blocks[0]
+            .instructions
+            .iter()
+            .all(|instr| !matches!(instr, Instr::Drop { .. })),
+        "self-transition without @reenter emits zero drops"
+    );
+
+    let snapshot = vec![
+        format!("Holding->Idle drops: {:?}", drop_summaries(BODY_TO_IDLE)),
+        format!(
+            "Holding->Idle dropped-set: {:?}",
+            drops_in_block(BODY_TO_IDLE)
+        ),
+        format!("Holding @resource-set: {holding_resource_places:?}"),
+        format!(
+            "Holding->Idle order: drop@{} < tag@{}",
+            first_drop_index(BODY_TO_IDLE),
+            first_tag_write_index(BODY_TO_IDLE)
+        ),
+        "Holding->Holding default { self } drops: []".to_string(),
+        format!(
+            "Holding->Holding @reenter drops: {:?}",
+            drop_summaries(BODY_REENTER)
+        ),
+        format!(
+            "Holding->Holding @reenter order: drop@{} < tag@{}",
+            first_drop_index(BODY_REENTER),
+            first_tag_write_index(BODY_REENTER)
+        ),
+        format!("Idle->Done drops: {:?}", drop_summaries(BODY_FINISH)),
+    ];
+    assert_eq!(
+        snapshot,
+        vec![
+            "Holding->Idle drops: [\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 } via FileHandle::close\"]",
+            "Holding->Idle dropped-set: {\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 }\"}",
+            "Holding @resource-set: {\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 }\"}",
+            "Holding->Idle order: drop@0 < tag@3",
+            "Holding->Holding default { self } drops: []",
+            "Holding->Holding @reenter drops: [\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 } via FileHandle::close\"]",
+            "Holding->Holding @reenter order: drop@0 < tag@3",
+            "Idle->Done drops: []",
+        ],
+        "machine transition-out resource-drop snapshot"
     );
 }
 

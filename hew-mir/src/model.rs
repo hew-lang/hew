@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use hew_hir::{BindingId, IntentKind, SiteId, ValueClass};
-use hew_types::ResolvedTy;
+use hew_types::{NumericWidth, ResolvedTy};
 
 pub use crate::runtime_symbols::UnknownRuntimeSymbol;
 
@@ -1299,6 +1299,32 @@ pub enum Instr {
         lhs: Place,
         rhs: Place,
         overflow_flag: Place,
+    },
+    /// Checked integer opt-out method lowering: `dest = Some(lhs op rhs)`
+    /// when the arithmetic does not overflow, otherwise `dest = None`.
+    ///
+    /// Unlike `IntArithChecked`, this instruction does not branch or trap.
+    /// Codegen must keep the intrinsic's arithmetic result and overflow bit
+    /// together long enough to construct the destination `Option<W>`
+    /// explicitly.
+    IntArithCheckedOption {
+        op: IntArithOp,
+        signed: IntSignedness,
+        width: NumericWidth,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+    },
+    /// Saturating integer opt-out method lowering: `dest = lhs op rhs`,
+    /// clamped to the signed/unsigned min/max boundary for `dest`'s width
+    /// when overflow is reported by the arithmetic intrinsic.
+    IntArithSaturating {
+        op: IntArithOp,
+        signed: IntSignedness,
+        width: NumericWidth,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
     },
     /// `dest = (lhs <pred> rhs)` on integers. The result is written into
     /// `dest` as an integer truth value: `1` for true, `0` for false. The

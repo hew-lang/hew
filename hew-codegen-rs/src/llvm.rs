@@ -66,7 +66,7 @@ use hew_mir::{
     MachineVariantLayout, Place, RawMirFunction, RecordLayout, RegexLiteral, SupervisorChildLayout,
     SupervisorLayout, Terminator, TrapKind,
 };
-use hew_types::ResolvedTy;
+use hew_types::{NumericWidth, ResolvedTy};
 
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -3241,6 +3241,95 @@ fn emit_spawn_task_closure(
     Ok(())
 }
 
+fn overflow_intrinsic_name(op: IntArithOp, signed: IntSignedness) -> &'static str {
+    match (op, signed) {
+        (IntArithOp::Add, IntSignedness::Signed) => "llvm.sadd.with.overflow",
+        (IntArithOp::Add, IntSignedness::Unsigned) => "llvm.uadd.with.overflow",
+        (IntArithOp::Sub, IntSignedness::Signed) => "llvm.ssub.with.overflow",
+        (IntArithOp::Sub, IntSignedness::Unsigned) => "llvm.usub.with.overflow",
+        (IntArithOp::Mul, IntSignedness::Signed) => "llvm.smul.with.overflow",
+        (IntArithOp::Mul, IntSignedness::Unsigned) => "llvm.umul.with.overflow",
+    }
+}
+
+fn validate_numeric_method_width(
+    width: NumericWidth,
+    int_ty: inkwell::types::IntType<'_>,
+    construct: &str,
+) -> CodegenResult<()> {
+    match width {
+        NumericWidth::Bits(bits) if bits == int_ty.get_bit_width() => Ok(()),
+        NumericWidth::Bits(bits) => Err(CodegenError::FailClosed(format!(
+            "{construct} width side-table mismatch: checker recorded {bits} bits, LLVM operand is {} bits",
+            int_ty.get_bit_width()
+        ))),
+        NumericWidth::Pointer => Err(CodegenError::FailClosed(format!(
+            "{construct} on isize/usize requires target pointer-width layout; no target layout was provided to this instruction"
+        ))),
+    }
+}
+
+fn saturating_bound<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    op: IntArithOp,
+    signed: IntSignedness,
+    int_ty: inkwell::types::IntType<'ctx>,
+    lhs_v: IntValue<'ctx>,
+    rhs_v: IntValue<'ctx>,
+) -> CodegenResult<IntValue<'ctx>> {
+    let bits = int_ty.get_bit_width();
+    let zero = int_ty.const_zero();
+    match signed {
+        IntSignedness::Unsigned => Ok(match op {
+            IntArithOp::Sub => zero,
+            IntArithOp::Add | IntArithOp::Mul => int_ty.const_all_ones(),
+        }),
+        IntSignedness::Signed => {
+            let max = int_ty.const_int(((1u128 << (bits - 1)) - 1) as u64, false);
+            let min = int_ty.const_int((1u128 << (bits - 1)) as u64, false);
+            let choose_max = match op {
+                IntArithOp::Add => fn_ctx
+                    .builder
+                    .build_int_compare(IntPredicate::SGE, rhs_v, zero, "sat_add_positive")
+                    .map_err(|e| {
+                        CodegenError::Llvm(format!("saturating add sign compare: {e:?}"))
+                    })?,
+                IntArithOp::Sub => fn_ctx
+                    .builder
+                    .build_int_compare(IntPredicate::SLT, rhs_v, zero, "sat_sub_negative")
+                    .map_err(|e| {
+                        CodegenError::Llvm(format!("saturating sub sign compare: {e:?}"))
+                    })?,
+                IntArithOp::Mul => {
+                    let lhs_neg = fn_ctx
+                        .builder
+                        .build_int_compare(IntPredicate::SLT, lhs_v, zero, "sat_mul_lhs_neg")
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("saturating mul lhs sign compare: {e:?}"))
+                        })?;
+                    let rhs_neg = fn_ctx
+                        .builder
+                        .build_int_compare(IntPredicate::SLT, rhs_v, zero, "sat_mul_rhs_neg")
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("saturating mul rhs sign compare: {e:?}"))
+                        })?;
+                    fn_ctx
+                        .builder
+                        .build_int_compare(IntPredicate::EQ, lhs_neg, rhs_neg, "sat_mul_same_sign")
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("saturating mul same-sign compare: {e:?}"))
+                        })?
+                }
+            };
+            Ok(fn_ctx
+                .builder
+                .build_select(choose_max, max, min, "sat_signed_bound")
+                .map_err(|e| CodegenError::Llvm(format!("saturating bound select: {e:?}")))?
+                .into_int_value())
+        }
+    }
+}
+
 fn lower_instruction(
     fn_ctx: &FnCtx<'_, '_>,
     instr: &Instr,
@@ -3640,6 +3729,205 @@ fn lower_instruction(
                 .build_store(flag_ptr, of_widened)
                 .map_err(|e| CodegenError::Llvm(format!("checked flag store: {e:?}")))?;
             let _ = ctx;
+        }
+        Instr::IntArithCheckedOption {
+            op,
+            signed,
+            width,
+            dest,
+            lhs,
+            rhs,
+        } => {
+            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
+            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            let lhs_int = match lhs_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntArithCheckedOption lhs is not an integer".into(),
+                    ))
+                }
+            };
+            if rhs_ty != lhs_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntArithCheckedOption operands must share the same integer type".into(),
+                ));
+            }
+            validate_numeric_method_width(*width, lhs_int, "IntArithCheckedOption")?;
+            let Place::Local(dest_local) = dest else {
+                return Err(CodegenError::FailClosed(
+                    "IntArithCheckedOption destination must be a local enum slot".into(),
+                ));
+            };
+            let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(*dest_local))?;
+            let tag_int = match tag_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntArithCheckedOption enum tag is not an integer".into(),
+                    ))
+                }
+            };
+            let some_payload = Place::EnumVariant {
+                local: *dest_local,
+                variant_idx: 0,
+                field_idx: 0,
+            };
+            let (payload_ptr, payload_ty) = place_pointer(fn_ctx, some_payload)?;
+            if payload_ty != lhs_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntArithCheckedOption Some payload type must match operand type".into(),
+                ));
+            }
+            let intrinsic_name = overflow_intrinsic_name(*op, *signed);
+            let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
+                CodegenError::Llvm(format!(
+                    "with-overflow intrinsic `{intrinsic_name}` not found in LLVM build"
+                ))
+            })?;
+            let intrinsic_fn = intrinsic
+                .get_declaration(fn_ctx.llvm_mod, &[lhs_int.into()])
+                .ok_or_else(|| {
+                    CodegenError::Llvm(format!(
+                        "with-overflow intrinsic `{intrinsic_name}` declaration failed for width {lhs_int:?}"
+                    ))
+                })?;
+            let lhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, lhs_ptr, "checked_option_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("checked-option lhs load: {e:?}")))?
+                .into_int_value();
+            let rhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, rhs_ptr, "checked_option_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("checked-option rhs load: {e:?}")))?
+                .into_int_value();
+            let call_site = fn_ctx
+                .builder
+                .build_call(
+                    intrinsic_fn,
+                    &[lhs_v.into(), rhs_v.into()],
+                    "checked_option_with_overflow",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("checked-option intrinsic call: {e:?}")))?;
+            let agg = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::Llvm(format!(
+                        "with-overflow intrinsic `{intrinsic_name}` returned void"
+                    ))
+                })?
+                .into_struct_value();
+            let result_v = fn_ctx
+                .builder
+                .build_extract_value(agg, 0, "checked_option_result")
+                .map_err(|e| CodegenError::Llvm(format!("checked-option result extract: {e:?}")))?
+                .into_int_value();
+            let of_bit = fn_ctx
+                .builder
+                .build_extract_value(agg, 1, "checked_option_overflow")
+                .map_err(|e| CodegenError::Llvm(format!("checked-option overflow extract: {e:?}")))?
+                .into_int_value();
+            let some_tag = tag_int.const_zero();
+            let none_tag = tag_int.const_int(1, false);
+            let tag_v = fn_ctx
+                .builder
+                .build_select(of_bit, none_tag, some_tag, "checked_option_tag")
+                .map_err(|e| CodegenError::Llvm(format!("checked-option tag select: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(tag_ptr, tag_v)
+                .map_err(|e| CodegenError::Llvm(format!("checked-option tag store: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(payload_ptr, result_v)
+                .map_err(|e| CodegenError::Llvm(format!("checked-option payload store: {e:?}")))?;
+        }
+        Instr::IntArithSaturating {
+            op,
+            signed,
+            width,
+            dest,
+            lhs,
+            rhs,
+        } => {
+            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
+            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let lhs_int = match lhs_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntArithSaturating lhs is not an integer".into(),
+                    ))
+                }
+            };
+            if rhs_ty != lhs_ty || dest_ty != lhs_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntArithSaturating operands and dest must share the same integer type".into(),
+                ));
+            }
+            validate_numeric_method_width(*width, lhs_int, "IntArithSaturating")?;
+            let intrinsic_name = overflow_intrinsic_name(*op, *signed);
+            let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
+                CodegenError::Llvm(format!(
+                    "with-overflow intrinsic `{intrinsic_name}` not found in LLVM build"
+                ))
+            })?;
+            let intrinsic_fn = intrinsic
+                .get_declaration(fn_ctx.llvm_mod, &[lhs_int.into()])
+                .ok_or_else(|| {
+                    CodegenError::Llvm(format!(
+                        "with-overflow intrinsic `{intrinsic_name}` declaration failed for width {lhs_int:?}"
+                    ))
+                })?;
+            let lhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, lhs_ptr, "saturating_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("saturating lhs load: {e:?}")))?
+                .into_int_value();
+            let rhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, rhs_ptr, "saturating_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("saturating rhs load: {e:?}")))?
+                .into_int_value();
+            let call_site = fn_ctx
+                .builder
+                .build_call(
+                    intrinsic_fn,
+                    &[lhs_v.into(), rhs_v.into()],
+                    "saturating_with_overflow",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("saturating intrinsic call: {e:?}")))?;
+            let agg = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::Llvm(format!(
+                        "with-overflow intrinsic `{intrinsic_name}` returned void"
+                    ))
+                })?
+                .into_struct_value();
+            let result_v = fn_ctx
+                .builder
+                .build_extract_value(agg, 0, "saturating_result")
+                .map_err(|e| CodegenError::Llvm(format!("saturating result extract: {e:?}")))?
+                .into_int_value();
+            let of_bit = fn_ctx
+                .builder
+                .build_extract_value(agg, 1, "saturating_overflow")
+                .map_err(|e| CodegenError::Llvm(format!("saturating overflow extract: {e:?}")))?
+                .into_int_value();
+            let bound = saturating_bound(fn_ctx, *op, *signed, lhs_int, lhs_v, rhs_v)?;
+            let final_v = fn_ctx
+                .builder
+                .build_select(of_bit, bound, result_v, "saturating_select")
+                .map_err(|e| CodegenError::Llvm(format!("saturating select: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, final_v)
+                .map_err(|e| CodegenError::Llvm(format!("saturating result store: {e:?}")))?;
         }
         Instr::IntCmp {
             dest,

@@ -10,7 +10,8 @@ use hew_parser::ast::{
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildSlot,
     ClosureCaptureFact, ExecutionContextReader, LoweringFact, MethodCallReceiverKind,
-    MethodCallRewrite, PatternKind, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
+    MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, PatternKind, ResolvedTy,
+    SpanKey, Ty, TypeCheckOutput,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -37,6 +38,7 @@ type ScopeBinding = (BindingId, ResolvedTy, std::ops::Range<usize>);
 type ScopeMap = HashMap<String, ScopeBinding>;
 type OuterClosureBinding = (String, ResolvedTy, std::ops::Range<usize>);
 type ClosureCaptureCandidate = (BindingId, String, std::ops::Range<usize>);
+const SYNTHETIC_OPTION_ITEM: ItemId = ItemId(u32::MAX - 1);
 
 #[derive(Debug, Clone, Default)]
 pub struct ResolutionCtx;
@@ -953,6 +955,11 @@ struct LowerCtx {
     /// here and rewrites to `HirExprKind::Call` with the runtime symbol.
     /// A missing entry is a fail-closed diagnostic (`MethodCallNoRewrite`).
     method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Checker-owned integer opt-out method lowering decisions keyed by the
+    /// method-call expression span. HIR checks this before generic method-call
+    /// rewrites so numeric methods lower to a dedicated node without any
+    /// downstream method-name matching.
+    numeric_method_lowerings: HashMap<SpanKey, NumericMethodLowering>,
     /// Checker-owned actor receive dispatch decisions keyed by method-call span.
     /// HIR consumes these to choose `ActorSend` / `ActorAsk` without reclassifying
     /// receiver types.
@@ -1255,6 +1262,7 @@ impl LowerCtx {
             type_classes,
             diagnostics: Vec::new(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
+            numeric_method_lowerings: tc_output.numeric_method_lowerings.clone(),
             actor_method_dispatch: tc_output.actor_method_dispatch.clone(),
             machine_method_dispatch: tc_output.machine_method_dispatch.clone(),
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
@@ -5499,7 +5507,62 @@ impl LowerCtx {
         }
     }
 
-    /// Lower `receiver.method(args)` using the checker's `method_call_rewrites` side-table.
+    fn resolve_numeric_method_ty(
+        &mut self,
+        ty: &Ty,
+        span: &Span,
+        label: &str,
+    ) -> Option<ResolvedTy> {
+        match ResolvedTy::from_ty(ty) {
+            Ok(ty) => Some(ty),
+            Err(err) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: label.to_string(),
+                        reason: err.to_string(),
+                    },
+                    span.clone(),
+                    "checker-authoritative numeric method lowering type failed boundary conversion",
+                ));
+                None
+            }
+        }
+    }
+
+    fn register_numeric_checked_option_layout(&mut self, operand_ty: &ResolvedTy, span: &Span) {
+        let key = EnumMonoKey {
+            origin: SYNTHETIC_OPTION_ITEM,
+            origin_name: "Option".to_string(),
+            type_args: vec![operand_ty.clone()],
+        };
+        if self
+            .enum_layout_registry
+            .insert(
+                key,
+                vec![
+                    EnumVariantLayout {
+                        name: "Some".to_string(),
+                        field_tys: vec![operand_ty.clone()],
+                    },
+                    EnumVariantLayout {
+                        name: "None".to_string(),
+                        field_tys: Vec::new(),
+                    },
+                ],
+            )
+            .is_err()
+        {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::EnumLayoutCapExceeded {
+                    cap: self.enum_layout_registry.cap(),
+                },
+                span.clone(),
+                "enum monomorphisation cap exceeded while registering checked numeric method Option layout",
+            ));
+        }
+    }
+
+    /// Lower `receiver.method(args)` using the checker's method-call side-tables.
     ///
     /// Fail-closed per `checker-output-boundary` (LESSONS P0): a missing entry for
     /// this call site's span is a hard diagnostic — HIR never re-infers the runtime
@@ -5521,6 +5584,67 @@ impl LowerCtx {
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         let key = SpanKey::from(&span);
+        if let Some(lowering) = self.numeric_method_lowerings.get(&key).cloned() {
+            if args.len() != 1 {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: format!("numeric method `.{method}`"),
+                        reason: format!(
+                            "checker side-table expected one argument, found {}",
+                            args.len()
+                        ),
+                    },
+                    span.clone(),
+                    "numeric method lowering requires exactly one checked argument",
+                ));
+                return (
+                    HirExprKind::Unsupported(format!(
+                        "numeric method `.{method}` has invalid arity"
+                    )),
+                    ResolvedTy::Unit,
+                );
+            }
+            let Some(result_ty) =
+                self.resolve_numeric_method_ty(&lowering.result_ty, &span, "numeric method result")
+            else {
+                return (
+                    HirExprKind::Unsupported(format!(
+                        "numeric method `.{method}` has poisoned result type"
+                    )),
+                    ResolvedTy::Unit,
+                );
+            };
+            let Some(operand_ty) = self.resolve_numeric_method_ty(
+                &lowering.operand_ty,
+                &span,
+                "numeric method operand",
+            ) else {
+                return (
+                    HirExprKind::Unsupported(format!(
+                        "numeric method `.{method}` has poisoned operand type"
+                    )),
+                    ResolvedTy::Unit,
+                );
+            };
+            if lowering.family == NumericMethodFamily::Checked {
+                self.register_numeric_checked_option_layout(&operand_ty, &span);
+            }
+            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            let lowered_arg = self.lower_expr(args[0].expr(), IntentKind::Read);
+            return (
+                HirExprKind::NumericMethod {
+                    receiver: Box::new(lowered_receiver),
+                    arg: Box::new(lowered_arg),
+                    family: lowering.family,
+                    op: lowering.op,
+                    result_ty: result_ty.clone(),
+                    operand_ty,
+                    signedness: lowering.signedness,
+                    width: lowering.width,
+                },
+                result_ty,
+            );
+        }
         if let Some(dispatch) = self.actor_method_dispatch.get(&key).cloned() {
             let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
             let lowered_args: Vec<HirExpr> = args
@@ -6823,6 +6947,10 @@ fn collect_captures_walk(
             collect_captures_walk(left, param_ids, seen, captures, self_id);
             collect_captures_walk(right, param_ids, seen, captures, self_id);
         }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
+            collect_captures_walk(arg, param_ids, seen, captures, self_id);
+        }
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_captures_walk(callee, param_ids, seen, captures, self_id);
             for arg in args {
@@ -7034,6 +7162,10 @@ fn collect_general_closure_captures_walk(
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_general_closure_captures_walk(left, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(right, outer_bindings, seen, captures);
+        }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
         }
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_general_closure_captures_walk(callee, outer_bindings, seen, captures);

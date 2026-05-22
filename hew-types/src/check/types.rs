@@ -107,6 +107,13 @@ pub struct TypeCheckOutput {
     /// consume a single authoritative contract instead of re-resolving C
     /// symbols from receiver types or the module registry.
     pub method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Checker-owned numeric method lowering decisions keyed by method-call span.
+    ///
+    /// Populated for accepted integer opt-out methods:
+    /// `.wrapping_{add,sub,mul}`, `.checked_{add,sub,mul}`, and
+    /// `.saturating_{add,sub,mul}`. HIR/MIR must consume this table instead of
+    /// re-matching method-name strings downstream.
+    pub numeric_method_lowerings: HashMap<SpanKey, NumericMethodLowering>,
     /// Checker-owned actor mailbox dispatch decisions keyed by the method call span.
     ///
     /// Populated only when a method call resolves to an actor `receive fn`.
@@ -596,6 +603,7 @@ impl Default for TypeCheckOutput {
             lowering_facts: HashMap::new(),
             actor_handler_state_guards: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: Vec::new(),
@@ -815,6 +823,42 @@ pub enum MethodCallRewrite {
         c_symbol: String,
     },
     DeferToLowering,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NumericMethodFamily {
+    Wrapping,
+    Checked,
+    Saturating,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NumericMethodOp {
+    Add,
+    Sub,
+    Mul,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NumericSignedness {
+    Signed,
+    Unsigned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NumericWidth {
+    Bits(u32),
+    Pointer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NumericMethodLowering {
+    pub family: NumericMethodFamily,
+    pub op: NumericMethodOp,
+    pub result_ty: Ty,
+    pub operand_ty: Ty,
+    pub signedness: NumericSignedness,
+    pub width: NumericWidth,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1300,6 +1344,7 @@ pub struct Checker {
     /// same variable every time).
     pub(super) deferred_channel_rewrites: HashMap<SpanKey, DeferredChannelMethodRewrite>,
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    pub(super) numeric_method_lowerings: HashMap<SpanKey, NumericMethodLowering>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     /// Machine method dispatch side-table. Mirrors [`TypeCheckOutput::machine_method_dispatch`].
     pub(super) machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
@@ -1597,6 +1642,7 @@ impl Checker {
             deferred_vec_admission: HashMap::new(),
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),

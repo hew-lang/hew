@@ -8,7 +8,10 @@ use hew_hir::{
     HirSupervisorDecl, IntentKind, ResolvedRef, ResourceMarker, ScopeId, SiteId, ValueClass,
 };
 use hew_parser::ast::BinaryOp;
-use hew_types::{ChildKind, ChildSlot, ExecutionContextReader, ResolvedTy};
+use hew_types::{
+    ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily, NumericMethodOp,
+    NumericSignedness, ResolvedTy,
+};
 
 use crate::dataflow;
 use crate::model::{
@@ -82,6 +85,21 @@ fn integer_signedness(ty: &ResolvedTy) -> Option<IntSignedness> {
         | ResolvedTy::U64
         | ResolvedTy::Usize => Some(IntSignedness::Unsigned),
         _ => None,
+    }
+}
+
+fn numeric_method_op(op: NumericMethodOp) -> IntArithOp {
+    match op {
+        NumericMethodOp::Add => IntArithOp::Add,
+        NumericMethodOp::Sub => IntArithOp::Sub,
+        NumericMethodOp::Mul => IntArithOp::Mul,
+    }
+}
+
+fn numeric_method_signedness(signedness: NumericSignedness) -> IntSignedness {
+    match signedness {
+        NumericSignedness::Signed => IntSignedness::Signed,
+        NumericSignedness::Unsigned => IntSignedness::Unsigned,
     }
 }
 
@@ -2689,6 +2707,10 @@ fn collect_unknown_self_fields_in_expr(
             collect_unknown_self_fields_in_expr(left, state_fields, seen, unknown);
             collect_unknown_self_fields_in_expr(right, state_fields, seen, unknown);
         }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
+        }
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_unknown_self_fields_in_expr(callee, state_fields, seen, unknown);
             for arg in args {
@@ -3818,6 +3840,55 @@ impl Builder {
                     (Some(lhs), Some(rhs)) => self.lower_binary(*op, lhs, rhs, &expr.ty, expr.site),
                     _ => None,
                 }
+            }
+            HirExprKind::NumericMethod {
+                receiver,
+                arg,
+                family,
+                op,
+                signedness,
+                width,
+                ..
+            } => {
+                let lhs = self.lower_value(receiver);
+                let rhs = self.lower_value(arg);
+                let (Some(lhs), Some(rhs)) = (lhs, rhs) else {
+                    return None;
+                };
+                let dest = self.alloc_local(expr.ty.clone());
+                let op = numeric_method_op(*op);
+                let signed = numeric_method_signedness(*signedness);
+                match *family {
+                    NumericMethodFamily::Wrapping => {
+                        let instr = match op {
+                            IntArithOp::Add => Instr::IntAdd { dest, lhs, rhs },
+                            IntArithOp::Sub => Instr::IntSub { dest, lhs, rhs },
+                            IntArithOp::Mul => Instr::IntMul { dest, lhs, rhs },
+                        };
+                        self.instructions.push(instr);
+                    }
+                    NumericMethodFamily::Checked => {
+                        self.instructions.push(Instr::IntArithCheckedOption {
+                            op,
+                            signed,
+                            width: *width,
+                            dest,
+                            lhs,
+                            rhs,
+                        });
+                    }
+                    NumericMethodFamily::Saturating => {
+                        self.instructions.push(Instr::IntArithSaturating {
+                            op,
+                            signed,
+                            width: *width,
+                            dest,
+                            lhs,
+                            rhs,
+                        });
+                    }
+                }
+                Some(dest)
             }
             HirExprKind::Call { callee, args } => {
                 if let Some((symbol, args, site)) = runtime_symbol_for_call_expr(expr) {
@@ -9850,6 +9921,8 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         Instr::IntAdd { dest, lhs, rhs }
         | Instr::IntSub { dest, lhs, rhs }
         | Instr::IntMul { dest, lhs, rhs }
+        | Instr::IntArithCheckedOption { dest, lhs, rhs, .. }
+        | Instr::IntArithSaturating { dest, lhs, rhs, .. }
         | Instr::IntDiv { dest, lhs, rhs, .. }
         | Instr::IntRem { dest, lhs, rhs, .. }
         | Instr::IntBitAnd { dest, lhs, rhs }

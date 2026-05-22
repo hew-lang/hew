@@ -11,6 +11,25 @@ use crate::method_resolution::{
 };
 
 impl Checker {
+    fn numeric_method_signedness(ty: &Ty) -> Option<NumericSignedness> {
+        match ty {
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::Isize => Some(NumericSignedness::Signed),
+            Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize => Some(NumericSignedness::Unsigned),
+            _ => None,
+        }
+    }
+
+    fn numeric_method_width(ty: &Ty) -> Option<NumericWidth> {
+        match ty {
+            Ty::I8 | Ty::U8 => Some(NumericWidth::Bits(8)),
+            Ty::I16 | Ty::U16 => Some(NumericWidth::Bits(16)),
+            Ty::I32 | Ty::U32 => Some(NumericWidth::Bits(32)),
+            Ty::I64 | Ty::U64 => Some(NumericWidth::Bits(64)),
+            Ty::Isize | Ty::Usize => Some(NumericWidth::Pointer),
+            _ => None,
+        }
+    }
+
     pub(super) fn record_hashset_lowering_fact(&mut self, span: &Span, elem_ty: &Ty) {
         let key = SpanKey::from(span);
         // If deferred admission was already recorded for this span, the
@@ -2732,6 +2751,13 @@ impl Checker {
             {
                 let is_wrapping = method.starts_with("wrapping_");
                 let is_checked = method.starts_with("checked_");
+                let family = if is_wrapping {
+                    NumericMethodFamily::Wrapping
+                } else if is_checked {
+                    NumericMethodFamily::Checked
+                } else {
+                    NumericMethodFamily::Saturating
+                };
                 let op_name = if is_wrapping {
                     &method["wrapping_".len()..]
                 } else if is_checked {
@@ -2746,7 +2772,39 @@ impl Checker {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, resolved);
                         }
-                        if is_checked {
+                        let op = match op_name {
+                            "add" => NumericMethodOp::Add,
+                            "sub" => NumericMethodOp::Sub,
+                            "mul" => NumericMethodOp::Mul,
+                            _ => unreachable!("op_name matched add/sub/mul above"),
+                        };
+                        if let (Some(signedness), Some(width)) = (
+                            Self::numeric_method_signedness(resolved),
+                            Self::numeric_method_width(resolved),
+                        ) {
+                            let result_ty = if is_checked {
+                                Ty::option(resolved.clone())
+                            } else {
+                                resolved.clone()
+                            };
+                            let prior = self.numeric_method_lowerings.insert(
+                                SpanKey::from(span),
+                                NumericMethodLowering {
+                                    family,
+                                    op,
+                                    result_ty: result_ty.clone(),
+                                    operand_ty: resolved.clone(),
+                                    signedness,
+                                    width,
+                                },
+                            );
+                            debug_assert!(
+                                prior.is_none(),
+                                "duplicate numeric method lowering for span {:?}",
+                                SpanKey::from(span)
+                            );
+                            result_ty
+                        } else if is_checked {
                             Ty::option(resolved.clone())
                         } else {
                             resolved.clone()

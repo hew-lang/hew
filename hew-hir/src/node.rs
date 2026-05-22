@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use hew_parser::ast::{BinaryOp, OverflowPolicy, Span};
 use hew_types::{ChildSlot, ExecutionContextReader, ResolvedTy, VariantMatch};
+use hew_types::{NumericMethodFamily, NumericMethodOp, NumericSignedness, NumericWidth};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::monomorph::{EnumLayout, MonomorphizedFn, RecordLayout};
@@ -907,6 +908,22 @@ pub enum HirExprKind {
         slot: u32,
         args: Vec<HirExpr>,
         ret_ty: ResolvedTy,
+    },
+    /// Checker-authoritative integer opt-out method call:
+    /// `.wrapping_*`, `.checked_*`, or `.saturating_*` for add/sub/mul.
+    ///
+    /// Produced only from `TypeCheckOutput::numeric_method_lowerings`.
+    /// Downstream phases must consume the carried discriminators rather than
+    /// re-matching the surface method name.
+    NumericMethod {
+        receiver: Box<HirExpr>,
+        arg: Box<HirExpr>,
+        family: NumericMethodFamily,
+        op: NumericMethodOp,
+        result_ty: ResolvedTy,
+        operand_ty: ResolvedTy,
+        signedness: NumericSignedness,
+        width: NumericWidth,
     },
     /// `emit EventName { field: value, ... }` inside a machine transition body,
     /// entry block, or exit block.

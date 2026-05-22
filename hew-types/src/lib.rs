@@ -30,8 +30,9 @@ pub use check::{
     ActorStateGuard, ArmResolution, AssignTargetKind, AssignTargetShape, Checker, ChildKind,
     ChildSlot, ClosureCaptureFact, ClosureCaptureMode, DynAssocBinding, DynCoercion, DynMethodCall,
     DynVtableEntry, DynVtableKey, ExecutionContextReader, MachineMethodKind,
-    MethodCallReceiverKind, MethodCallRewrite, PatternKind, SpanKey, TypeCheckOutput, VariantDef,
-    VariantMatch,
+    MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily, NumericMethodLowering,
+    NumericMethodOp, NumericSignedness, NumericWidth, PatternKind, SpanKey, TypeCheckOutput,
+    VariantDef, VariantMatch,
 };
 pub use error::TypeError;
 pub use lowering_facts::{

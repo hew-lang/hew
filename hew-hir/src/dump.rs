@@ -638,6 +638,30 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, arg, indent + 4);
             }
         }
+        HirExprKind::NumericMethod {
+            receiver,
+            arg,
+            family,
+            op,
+            result_ty,
+            operand_ty,
+            signedness,
+            width,
+        } => {
+            writeln!(
+                out,
+                "{pad}  numeric-method {:?} {:?} {} -> {} ({:?}, {:?})",
+                family,
+                op,
+                operand_ty.user_facing(),
+                result_ty.user_facing(),
+                signedness,
+                width
+            )
+            .expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+            dump_expr(out, arg, indent + 4);
+        }
         HirExprKind::MachineEmit { event_idx, fields } => {
             writeln!(out, "{pad}  machine-emit event_idx={event_idx}").expect("write to string");
             for (field_name, field_val) in fields {

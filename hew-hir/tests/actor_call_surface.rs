@@ -51,6 +51,10 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(left, out);
             visit_expr(right, out);
         }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            visit_expr(receiver, out);
+            visit_expr(arg, out);
+        }
         HirExprKind::If {
             condition,
             then_expr,

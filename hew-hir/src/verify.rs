@@ -156,6 +156,10 @@ impl Verifier {
                     self.expr(arg);
                 }
             }
+            HirExprKind::NumericMethod { receiver, arg, .. } => {
+                self.expr(receiver);
+                self.expr(arg);
+            }
             HirExprKind::Block(block) => self.block(block),
             HirExprKind::If {
                 condition,

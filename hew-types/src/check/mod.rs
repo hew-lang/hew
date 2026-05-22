@@ -39,8 +39,9 @@ pub use self::types::{
     ArmResolution, AssignTargetKind, AssignTargetShape, Checker, ChildKind, ChildSlot,
     ClosureCaptureFact, ClosureCaptureMode, DynAssocBinding, DynCoercion, DynMethodCall,
     DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig, MachineMethodKind,
-    MethodCallReceiverKind, MethodCallRewrite, PatternKind, PayloadBinding, SpanKey, StackHint,
-    TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch,
+    MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily, NumericMethodLowering,
+    NumericMethodOp, NumericSignedness, NumericWidth, PatternKind, PayloadBinding, SpanKey,
+    StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch,
 };
 use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,
@@ -384,6 +385,7 @@ impl Checker {
             supervisor_child_slots: std::mem::take(&mut self.supervisor_child_slots),
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
+            numeric_method_lowerings: std::mem::take(&mut self.numeric_method_lowerings),
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),

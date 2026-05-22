@@ -439,6 +439,8 @@ fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         | Instr::IntBitXor { dest, lhs, rhs }
         | Instr::IntShl { dest, lhs, rhs }
         | Instr::IntShr { dest, lhs, rhs, .. }
+        | Instr::IntArithCheckedOption { dest, lhs, rhs, .. }
+        | Instr::IntArithSaturating { dest, lhs, rhs, .. }
         | Instr::IntCmp { dest, lhs, rhs, .. }
         | Instr::IdentityCompare { dest, lhs, rhs }
         | Instr::FloatAdd { dest, lhs, rhs, .. }

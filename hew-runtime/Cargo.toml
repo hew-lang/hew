@@ -21,6 +21,7 @@ encryption = ["dep:snow"]
 
 # QUIC transport (replaces TCP + Noise with QUIC/TLS 1.3)
 quic = [
+  "dep:bytes",
   "dep:quinn",
   "dep:rustls",
   "dep:rustls-webpki",
@@ -74,6 +75,9 @@ http-body-util = { version = "0.1", optional = true }
 ureq = { version = "3", optional = true, default-features = false }
 
 # QUIC transport dependencies (optional, behind "quic" feature)
+# bytes is a direct dep (not transitive-only) because quic_mesh's datagram
+# surface exposes Bytes in its public API, matching the quinn wire type.
+bytes = { version = "1", optional = true }
 quinn = { version = "0.11", optional = true, default-features = false, features = [
   "runtime-tokio",
   "rustls-ring",

@@ -527,6 +527,9 @@ pub mod encryption;
 #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
 pub mod quic_transport;
 
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+pub mod quic_mesh;
+
 // OTel exporter: background thread + OTLP/HTTP, activated by HEW_OTEL_ENDPOINT.
 // Not available on WASM (no OS threads for the background exporter).
 #[cfg(all(feature = "otel", not(target_arch = "wasm32")))]

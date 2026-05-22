@@ -1700,6 +1700,7 @@ dependencies = [
 name = "hew-runtime"
 version = "0.5.0-pre"
 dependencies = [
+ "bytes",
  "ciborium",
  "crossbeam-deque",
  "crossbeam-utils",

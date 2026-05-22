@@ -3642,7 +3642,17 @@ impl Checker {
                         (span.clone(), self.current_module.clone()),
                     );
                 }
-                self.register_user_module(&short, resolved_items, &decl.spec);
+                // Dedup pure-Hew modules (e.g. `std::fs`) that may be transitively
+                // imported by multiple stdlib sub-modules.  Without this guard,
+                // each referring module's `ImportDecl` carries its own
+                // `resolved_items` copy and `register_user_module` would register
+                // types like `IoError` once per importer, triggering duplicate-
+                // definition errors.  The `registered_stdlib_hew_sources` set tracks
+                // by canonical `module_path` so all `import std::fs` ImportDecls
+                // collapse to the same key.
+                if !self.stdlib_hew_source_already_registered(decl, &module_path) {
+                    self.register_user_module(&short, resolved_items, &decl.spec);
+                }
             }
         } else if let Some(error) =
             Self::unresolved_import_error(decl, import_span, &module_path, load_error_detail)
@@ -3652,10 +3662,21 @@ impl Checker {
     }
 
     fn stdlib_hew_source_identity(decl: &ImportDecl, module_path: &str) -> String {
-        decl.resolved_source_paths.first().map_or_else(
-            || format!("module:{module_path}"),
-            |path| format!("path:{}", path.display()),
-        )
+        // Always prefer the canonical module-path key when available so that
+        // multiple ImportDecl objects for the same stdlib module (e.g. `import
+        // std::fs` appearing in quic.hew, tls.hew, and the user file) all hash
+        // to the same identity string even when only some of them have a
+        // resolved_source_paths populated.  Using the file path as the primary
+        // key produces two different strings for the same logical module and
+        // defeats the registered_stdlib_hew_sources dedup guard.
+        if module_path.is_empty() {
+            decl.resolved_source_paths.first().map_or_else(
+                || String::from("module:"),
+                |p| format!("path:{}", p.display()),
+            )
+        } else {
+            format!("module:{module_path}")
+        }
     }
 
     fn unresolved_import_error(

@@ -1,0 +1,19 @@
+// Accept: nested generic enum — Option<Option<i64>> end-to-end lowering.
+// The HIR mono-pass must register both Option<i64> and Option<Option<i64>>
+// layouts. Exit code 5 proves the nested Some arm was reached.
+enum Option<T> {
+    Some(T);
+    None;
+}
+
+fn main() -> i64 {
+    let inner: Option<i64> = Option::Some(5);
+    let outer: Option<Option<i64>> = Option::Some(inner);
+    match outer {
+        Option::Some(v) => match v {
+            Option::Some(n) => n,
+            Option::None => 0,
+        },
+        Option::None => 0,
+    }
+}

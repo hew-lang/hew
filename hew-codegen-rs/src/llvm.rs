@@ -1301,9 +1301,9 @@ fn register_machine_layouts<'ctx>(
 /// variant shape (unit, tuple, struct) lower end-to-end through this
 /// substrate — `build_tagged_union_layout` walks per-variant `field_tys` and
 /// emits an alignment-correct payload byte array sized to the widest variant.
-/// Generic enums (`enum Maybe<T> { ... }`) are blocked upstream at MIR with
-/// `GenericEnumNotYetSupported`; they need a monomorphisation-keyed registry
-/// the next-stage `EnumLayoutRegistry` lane will land.
+/// Generic enums (`enum Maybe<T> { ... }`) are fully supported via the
+/// `EnumLayoutRegistry` substrate; each instantiation arrives in `enum_layouts`
+/// under a mangled name (e.g. `Option$$i64`) and is registered here.
 fn register_enum_layouts<'ctx>(
     ctx: &'ctx Context,
     enum_layouts: &[EnumLayout],

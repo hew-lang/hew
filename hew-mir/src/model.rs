@@ -2419,18 +2419,6 @@ pub enum MirDiagnosticKind {
         existing: String,
         duplicate: String,
     },
-    /// A user-defined enum declares one or more type parameters
-    /// (`enum Maybe<T> { Just(T); Nothing }`). Generic enums require a
-    /// monomorphisation-keyed layout registry that the next-stage
-    /// `EnumLayoutRegistry` lane will land; until then the substrate
-    /// fail-closes and skips layout registration so codegen never sees a
-    /// generic enum with an under-specified payload type. Strictly narrower
-    /// than the previous "mixed enum" surface — monomorphic enums of any
-    /// variant shape (unit, tuple, struct) now lower end-to-end.
-    GenericEnumNotYetSupported {
-        enum_name: String,
-        type_param_count: usize,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

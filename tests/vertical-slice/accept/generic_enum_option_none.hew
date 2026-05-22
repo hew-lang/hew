@@ -1,0 +1,15 @@
+// Accept: generic enum Option<T> with None variant — end-to-end lowering.
+// Option::None must lower through HIR EnumLayoutRegistry → MIR → codegen
+// and the default arm must match, exiting 99.
+enum Option<T> {
+    Some(T);
+    None;
+}
+
+fn main() -> i64 {
+    let x: Option<i64> = Option::None;
+    match x {
+        Option::Some(v) => v,
+        Option::None => 99,
+    }
+}

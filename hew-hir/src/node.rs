@@ -82,8 +82,8 @@ pub struct HirModule {
     /// Empty when no user generic enum instantiation sites exist. Downstream
     /// MIR and codegen consumers iterate this list to emit one `EnumLayout`
     /// per entry under the mangled name. The registry is the substrate that
-    /// replaces the `GenericEnumNotYetSupported` fail-closed branch in MIR
-    /// layout-gather (Cluster B, slice 3).
+    /// consumed by MIR layout-gather and codegen to emit one `EnumLayout`
+    /// per instantiation under the mangled name.
     ///
     /// LESSONS: `producer-bridge-before-codegen` (P1),
     /// `checker-authority` (P0).
@@ -1053,9 +1053,9 @@ pub enum HirExprKind {
     /// (`_`) are lowered here. Pattern guards, literal patterns,
     /// tuple-without-ctor patterns, and or-patterns are still rejected at HIR
     /// lowering with a structured `NotYetImplemented` diagnostic. Generic
-    /// enums (`Option<T>`, `Result<T,E>`) are blocked at MIR with
-    /// `GenericEnumNotYetSupported` until the `EnumLayoutRegistry` lane
-    /// lands.
+    /// Generic enums (`Option<T>`, `Result<T,E>`) are fully supported
+    /// via the `EnumLayoutRegistry` substrate introduced in the
+    /// generic-enum-monomorphisation lane.
     ///
     /// **Exhaustiveness**: enforced by the type checker at
     /// `hew-types/src/check/diagnostics.rs::check_exhaustiveness`. A

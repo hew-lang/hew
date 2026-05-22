@@ -304,49 +304,6 @@ fn run_shape_mixed_match_fixture_executes() {
     run_enum_fixture_executes("run_shape_mixed_match");
 }
 
-/// Pins the fail-closed surface for generic enums. The compiler must emit
-/// `GenericEnumNotYetSupported` (classified as `E_NOT_YET_IMPLEMENTED`)
-/// rather than silently registering a layout with under-specified payload
-/// types. Confirms strictly narrower behaviour than the old "mixed enum"
-/// surface this lane replaced.
-#[test]
-fn run_generic_enum_rejected_fixture_emits_diagnostic() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let hew_bin = std::path::PathBuf::from(manifest)
-        .parent()
-        .unwrap()
-        .join("target")
-        .join("debug")
-        .join("hew");
-    let fixture = std::path::PathBuf::from(manifest)
-        .parent()
-        .unwrap()
-        .join("examples")
-        .join("enums")
-        .join("run_generic_enum_rejected.hew");
-    let output = std::process::Command::new(&hew_bin)
-        .arg("run")
-        .arg(&fixture)
-        .output()
-        .expect("spawn hew run");
-    assert!(
-        !output.status.success(),
-        "hew run must reject generic enum; got success exit"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let combined = format!("{stderr}{stdout}");
-    assert!(
-        combined.contains("GenericEnumNotYetSupported")
-            || combined.contains("E_NOT_YET_IMPLEMENTED"),
-        "expected GenericEnumNotYetSupported diagnostic; got:\nstderr: {stderr}\nstdout: {stdout}"
-    );
-    assert!(
-        combined.contains("Maybe"),
-        "diagnostic must name the offending enum (`Maybe`); got: {combined}"
-    );
-}
-
 /// Shared helper: run `examples/enums/<name>.hew` through the in-tree
 /// `hew` binary and diff stdout against `<name>.expected`.
 fn run_enum_fixture_executes(name: &str) {

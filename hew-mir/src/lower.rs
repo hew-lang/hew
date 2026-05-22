@@ -310,37 +310,9 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 // during HIR mono-pass. Those entries are emitted into
                 // `enum_layouts` below the item loop (mirroring the
                 // `module.record_layouts` precedent for generic records).
-                // The bare-name generic decl itself emits no layout here.
-                //
-                // Defensive fail-closed: if a generic enum decl has variants
-                // but no registered instantiations in `module.enum_layouts`,
-                // emit `GenericEnumNotYetSupported`. This fires only for
-                // ill-typed programs or missing discovery — not for any
-                // well-typed program that reached MIR with `enum_layouts`
-                // populated by the HIR mono pass.
+                // The bare-name generic decl itself emits no layout here;
+                // an unused generic enum declaration is a non-event.
                 if !decl.type_params.is_empty() {
-                    if !decl.variants.is_empty() {
-                        let has_instantiation = module
-                            .enum_layouts
-                            .iter()
-                            .any(|el| el.key.origin == decl.id);
-                        if !has_instantiation {
-                            diagnostics.push(crate::model::MirDiagnostic {
-                                kind: crate::model::MirDiagnosticKind::GenericEnumNotYetSupported {
-                                    enum_name: decl.name.clone(),
-                                    type_param_count: decl.type_params.len(),
-                                },
-                                note: format!(
-                                    "enum `{}` declares {} type parameter(s) but no \
-                                     monomorphisation was discovered during HIR lowering. \
-                                     This indicates the enum is declared but never \
-                                     instantiated in this module.",
-                                    decl.name,
-                                    decl.type_params.len()
-                                ),
-                            });
-                        }
-                    }
                     continue;
                 }
                 let fields: Vec<(String, ResolvedTy)> = decl
@@ -11866,7 +11838,6 @@ mod enum_layout_tests {
     use std::collections::HashMap;
 
     use super::lower_hir_module;
-    use crate::model::MirDiagnosticKind;
     use hew_hir::{
         EnumLayout, EnumMonoKey, EnumVariantLayout, HirItem, HirModule, HirNodeId, HirTypeDecl,
         HirVariant, HirVariantKind, ItemId, SiteId,
@@ -11971,58 +11942,6 @@ mod enum_layout_tests {
     }
 
     #[test]
-    fn generic_enum_emits_typed_diagnostic_and_skips_layout() {
-        // Generic enums (e.g. `enum Maybe<T> { Just(T); Nothing }`) need a
-        // monomorphisation-keyed registry — out of scope for this lane.
-        // Strictly narrower than the previous mixed-enum surface.
-        let decl = HirTypeDecl {
-            id: ItemId(2),
-            node: HirNodeId(2),
-            name: "Maybe".to_string(),
-            marker: ResourceMarker::None,
-            consuming_methods: vec![],
-            type_params: vec!["T".to_string()],
-            fields: vec![],
-            variants: vec![
-                tuple_variant(
-                    "Just",
-                    vec![ResolvedTy::Named {
-                        name: "T".to_string(),
-                        args: vec![],
-                    }],
-                ),
-                unit_variant("Nothing"),
-            ],
-            span: 0..0,
-        };
-        let module = minimal_module(vec![HirItem::TypeDecl(decl)]);
-        let pipeline = lower_hir_module(&module);
-
-        assert_eq!(
-            pipeline.diagnostics.len(),
-            1,
-            "expected exactly one diagnostic for generic enum; got: {:?}",
-            pipeline.diagnostics
-        );
-        let kind = &pipeline.diagnostics[0].kind;
-        assert!(
-            matches!(
-                kind,
-                MirDiagnosticKind::GenericEnumNotYetSupported {
-                    enum_name,
-                    type_param_count: 1,
-                } if enum_name == "Maybe"
-            ),
-            "expected GenericEnumNotYetSupported for Maybe; got: {kind:?}"
-        );
-        assert!(
-            pipeline.enum_layouts.is_empty(),
-            "enum_layouts must be empty for a generic enum; got: {:?}",
-            pipeline.enum_layouts
-        );
-    }
-
-    #[test]
     fn all_unit_enum_registers_layout_without_diagnostic() {
         // `enum Colour { Red; Green; Blue; }` — three unit variants, no payload.
         let decl = HirTypeDecl {
@@ -12059,10 +11978,9 @@ mod enum_layout_tests {
 
     #[test]
     fn generic_enum_with_registered_instantiation_emits_mir_layout_without_diagnostic() {
-        // Slice 3 invariant: when `module.enum_layouts` carries at least one
-        // entry for a generic enum decl's origin `ItemId`, the fail-closed
-        // `GenericEnumNotYetSupported` diagnostic is suppressed and the MIR
-        // pipeline emits the mangled layout instead.
+        // Invariant: when `module.enum_layouts` carries at least one entry for
+        // a generic enum decl's origin `ItemId`, the MIR pipeline emits the
+        // mangled layout and no diagnostic fires.
         //
         // Fixture: `enum Option<T> { Some(T); None }` with one instantiation
         // `Option<i64>` pre-registered by the HIR mono pass.
@@ -12134,66 +12052,5 @@ mod enum_layout_tests {
         assert_eq!(layout.variants[0].field_tys, vec![ResolvedTy::I64]);
         assert_eq!(layout.variants[1].name, "None");
         assert!(layout.variants[1].field_tys.is_empty());
-    }
-
-    #[test]
-    fn generic_enum_without_instantiation_still_emits_diagnostic() {
-        // The Slice 3 fail-closed guard must still fire when the generic enum
-        // has variants but zero instantiations in `module.enum_layouts`.
-        // This is the same scenario as `generic_enum_emits_typed_diagnostic_and_skips_layout`
-        // but uses the post-Slice3 narrowed guard path explicitly — verifying the
-        // defensive path is not accidentally removed by the non-empty-instantiation branch.
-        let decl = HirTypeDecl {
-            id: ItemId(20),
-            node: HirNodeId(20),
-            name: "Result".to_string(),
-            marker: ResourceMarker::None,
-            consuming_methods: vec![],
-            type_params: vec!["T".to_string(), "E".to_string()],
-            fields: vec![],
-            variants: vec![
-                tuple_variant(
-                    "Ok",
-                    vec![ResolvedTy::Named {
-                        name: "T".to_string(),
-                        args: vec![],
-                    }],
-                ),
-                tuple_variant(
-                    "Err",
-                    vec![ResolvedTy::Named {
-                        name: "E".to_string(),
-                        args: vec![],
-                    }],
-                ),
-            ],
-            span: 0..0,
-        };
-        // No enum_layouts registered (module.enum_layouts is empty by default in minimal_module).
-        let module = minimal_module(vec![HirItem::TypeDecl(decl)]);
-        let pipeline = lower_hir_module(&module);
-
-        assert_eq!(
-            pipeline.diagnostics.len(),
-            1,
-            "expected GenericEnumNotYetSupported when no instantiation registered; got: {:?}",
-            pipeline.diagnostics
-        );
-        assert!(
-            matches!(
-                &pipeline.diagnostics[0].kind,
-                MirDiagnosticKind::GenericEnumNotYetSupported {
-                    enum_name,
-                    type_param_count: 2,
-                } if enum_name == "Result"
-            ),
-            "unexpected diagnostic: {:?}",
-            pipeline.diagnostics[0].kind
-        );
-        assert!(
-            pipeline.enum_layouts.is_empty(),
-            "no MIR EnumLayout for uninstantiated generic enum; got: {:?}",
-            pipeline.enum_layouts
-        );
     }
 }

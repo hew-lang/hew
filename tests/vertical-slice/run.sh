@@ -452,26 +452,6 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/yield_outside_gen.hew" >"
 fi
 grep -q 'outside of generator' "${reject_output}"
 
-# Reject: generic enum — GenericEnumNotYetSupported.
-# Generic enums need a monomorphisation-keyed layout registry that the
-# next-stage substrate will land; fail-closed with a typed diagnostic
-# until then. Monomorphic mixed-variant enums (the previous reject case)
-# now lower successfully end-to-end.
-set +e
-"${HEW}" compile "${ROOT}/tests/vertical-slice/reject/generic_enum_not_supported.hew" >"${reject_output}" 2>&1
-generic_enum_exit=$?
-set -e
-if [ "${generic_enum_exit}" -ne 1 ]; then
-  echo "expected generic-enum-not-supported fixture to exit 1, got ${generic_enum_exit}" >&2
-  exit 1
-fi
-grep -q 'GenericEnumNotYetSupported' "${reject_output}"
-grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
-if grep -q 'panicked at' "${reject_output}"; then
-  echo "generic-enum-not-supported fixture panicked instead of reporting a diagnostic" >&2
-  exit 1
-fi
-
 # ---------------------------------------------------------------------------
 # Sink<T> / Stream<T> Wire-capability admissibility gate
 # ---------------------------------------------------------------------------
@@ -529,3 +509,30 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/regex_invalid_pattern.hew
   exit 1
 fi
 grep -qF 'invalid regex pattern' "${reject_output}"
+
+# ---------------------------------------------------------------------------
+# Generic enum monomorphisation — end-to-end acceptance fixtures
+# ---------------------------------------------------------------------------
+
+# Accept: Option<i64>::Some(42) — tuple-variant generic enum lowers end-to-end.
+# Exercises HIR EnumLayoutRegistry → MIR layout-gather → codegen mangled-name
+# lookup → link. Exit 42 proves the Some arm was matched and the payload read.
+run_accept_expect_status "generic_enum_option_some" 42
+
+# Accept: Option<i64>::None — unit arm of the same generic enum.
+# Exit 99 proves the None arm matched (no payload confusion with Some).
+run_accept_expect_status "generic_enum_option_none" 99
+
+# Accept: Maybe<i64>::Just { value: 42 } — struct-variant (named-field) generic enum.
+# Exit 42 proves named-field variant payloads lower through the generic path.
+run_accept_expect_status "generic_enum_maybe_just" 42
+
+# Accept: Result<i64, bool>::Ok(7) — two-type-parameter generic enum.
+# Exit 7 proves the Ok arm matched and the i64 payload was read correctly.
+run_accept_expect_status "generic_enum_result_ok" 7
+
+# Accept: Option<Option<i64>>::Some(Some(5)) — nested generic instantiation.
+# The HIR mono-pass must register both Option<i64> and Option<Option<i64>>
+# layouts. Exit 5 proves both layouts lower and the nested match dispatched
+# correctly.
+run_accept_expect_status "generic_enum_nested_option" 5

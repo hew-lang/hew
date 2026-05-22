@@ -350,18 +350,243 @@ pub struct HewCluster {
     registry_callback_user_data: *mut c_void,
     /// Monotonic timestamp of last tick.
     last_tick_ms: u64,
-    /// Index for round-robin ping target selection.
-    ping_index: usize,
+    /// Protocol strategy (SWIM message handlers + tick-transition logic).
+    ///
+    /// Holds `Box<dyn ClusterProtocol>` so the v0.6 Lifeguard
+    /// implementation can replace `SimpleSwim` without changing any FFI
+    /// surface or membership-callback semantics.
+    protocol: Box<dyn ClusterProtocol>,
     /// Per-peer phi-accrual failure detectors.
     ///
     /// Locked after `members` (members → detectors) to avoid deadlock.
     /// Heartbeat observations and tick-time phi queries are the only
-    /// sites that touch this mutex.
+    /// sites that touch this mutex.  The detectors are orthogonal to
+    /// `protocol`: they produce the `phi_snapshot` the protocol consumes
+    /// in `compute_tick_transitions`, but the detector itself is owned
+    /// here, not by the protocol.
     detectors: Mutex<HashMap<u16, PhiAccrualDetector>>,
 }
 
 /// Maximum number of gossip events to retain.
 const MAX_GOSSIP_EVENTS: usize = 64;
+
+// ── ClusterProtocol trait ──────────────────────────────────────────────
+
+/// The decision a protocol handler asks the cluster to apply after
+/// processing one inbound SWIM message.
+///
+/// Using a decision struct (rather than calling cluster methods directly
+/// from inside the trait) keeps `ClusterProtocol` impls free of any
+/// borrow on the outer `HewCluster`, which makes `Box<dyn
+/// ClusterProtocol>` on `HewCluster` work without self-borrow cycles.
+#[derive(Debug, Default)]
+pub struct ProtocolDecision {
+    /// Record this peer's last-seen timestamp and advance its phi
+    /// detector anchor.
+    pub update_last_seen: bool,
+    /// Additionally mark the peer `MEMBER_ALIVE` at the supplied
+    /// incarnation (only meaningful when `update_last_seen` is also
+    /// true).
+    pub upsert_alive: bool,
+}
+
+/// A single state-transition decision produced by
+/// [`ClusterProtocol::compute_tick_transitions`].
+#[derive(Debug, Clone)]
+pub struct StateChange {
+    /// The peer whose state changes.
+    pub node_id: u16,
+    /// The new membership state (`MEMBER_SUSPECT` or `MEMBER_DEAD`).
+    pub new_state: i32,
+    /// The peer's incarnation number at the time of the decision.
+    pub incarnation: u64,
+}
+
+/// Protocol strategy for the SWIM cluster substrate.
+///
+/// `ClusterProtocol` separates the *protocol decision logic* from the
+/// *membership-state bookkeeping* held by [`HewCluster`].  The cluster
+/// calls these methods, receives decisions, and applies them — so
+/// alternative protocol implementations (e.g. SWIM-Lifeguard with
+/// phi-accrual in v0.6) can be swapped behind this trait without
+/// touching the FFI surface or the `MembershipCallback` semantics.
+///
+/// # Design
+///
+/// Implementations receive borrowed read-only state that is already
+/// materialized by the caller (phi snapshot, member slice) so no
+/// re-entrant lock is needed.  All mutations are requested through the
+/// return type; the caller executes them.
+///
+/// # v0.5 / v0.6 boundary
+///
+/// v0.5 ships [`SimpleSwim`] behind this trait.  The v0.6 Lifeguard
+/// implementation will carry its own adaptive-timeout logic and can
+/// replace `SimpleSwim` without changing the FFI surface or any caller
+/// of `HewCluster`.
+pub trait ClusterProtocol: Send + Sync + std::fmt::Debug {
+    /// Handle an inbound `SWIM_MSG_PING` from `from_node`.
+    fn handle_ping(&self, from_node: u16) -> ProtocolDecision;
+
+    /// Handle an inbound `SWIM_MSG_ACK` from `from_node`.
+    fn handle_ack(&self, from_node: u16, incarnation: u64) -> ProtocolDecision;
+
+    /// Handle an inbound `SWIM_MSG_PING_REQ` from `from_node`.
+    fn handle_ping_req(&self, from_node: u16) -> ProtocolDecision;
+
+    /// Handle an inbound `SWIM_MSG_GOSSIP` from `from_node`.
+    ///
+    /// Default: no-op — v0.5 gossip is piggybacked on other messages;
+    /// a dedicated GOSSIP frame handler arrives in v0.6 / C3.
+    fn handle_gossip(&self, _from_node: u16, _incarnation: u64) -> ProtocolDecision {
+        ProtocolDecision::default()
+    }
+
+    /// Compute which member state transitions are due at `now_ms`.
+    ///
+    /// The caller passes:
+    /// - `ping_timeout_ms` / `suspect_timeout_ms` — from [`ClusterConfig`].
+    /// - `phi_snapshot` — per-peer `(phi_value, is_warm)` pre-computed
+    ///   from the cluster's phi-accrual detectors (orthogonal to this
+    ///   trait; detectors stay on [`HewCluster`]).
+    /// - `members` — read-only snapshot of the current membership list.
+    ///
+    /// Returns only transitions that should be applied; dead / left
+    /// members are already filtered out by the caller.
+    fn compute_tick_transitions(
+        &self,
+        now_ms: u64,
+        ping_timeout_ms: u64,
+        suspect_timeout_ms: u64,
+        phi_snapshot: &HashMap<u16, (f64, bool)>,
+        members: &[ClusterMember],
+    ) -> Vec<StateChange>;
+
+    /// Choose the next ping target from `alive_members` (round-robin or
+    /// implementation-defined selection).
+    ///
+    /// Returns `None` when the live set is empty.
+    fn next_ping_target(&mut self, alive_members: &[u16]) -> Option<u16>;
+}
+
+// ── SimpleSwim: the v0.5 ClusterProtocol implementation ───────────────
+
+/// Simple SWIM protocol implementation — the v0.5 cluster protocol
+/// strategy.
+///
+/// Implements the SWIM message handlers and a round-robin ping-target
+/// selector.  Tick-time ALIVE→SUSPECT decisions defer to the phi-accrual
+/// snapshot supplied by [`HewCluster::tick`] so the detector itself stays
+/// orthogonal to the protocol (per A152 ratification).
+///
+/// # SHIM note
+///
+/// v0.5 indirect-ping forwarding (`SWIM_MSG_PING_REQ`) records the
+/// sender's last-seen but does not yet issue a real forwarded ping to the
+/// target — the actual fanout requires the C3 SWIM driver (protocol
+/// runner + transport).  This is the correct "trampoline + caller handles
+/// forwarding" contract from the original `process_message` comment.
+/// When C3 lands it will either extend this impl or replace it via the
+/// trait.
+#[derive(Debug, Default)]
+pub struct SimpleSwim {
+    /// Index for round-robin ping target selection.
+    ///
+    /// Owned here (not on `HewCluster`) because it is purely
+    /// SWIM-protocol-driver state; a Lifeguard impl may use a different
+    /// target-selection strategy.
+    ping_index: usize,
+}
+
+impl SimpleSwim {
+    /// Create a new `SimpleSwim` instance.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { ping_index: 0 }
+    }
+}
+
+impl ClusterProtocol for SimpleSwim {
+    fn handle_ping(&self, _from_node: u16) -> ProtocolDecision {
+        ProtocolDecision {
+            update_last_seen: true,
+            upsert_alive: false,
+        }
+    }
+
+    fn handle_ack(&self, _from_node: u16, _incarnation: u64) -> ProtocolDecision {
+        ProtocolDecision {
+            update_last_seen: true,
+            upsert_alive: true,
+        }
+    }
+
+    fn handle_ping_req(&self, _from_node: u16) -> ProtocolDecision {
+        // SHIM: record last-seen for the intermediary; actual forwarding
+        // to the target is the caller's (C3 driver's) responsibility.
+        // WHY: C3 SWIM driver not yet wired; this preserves the pre-C1
+        //   "caller handles forwarding" trampoline contract.
+        // WHEN obsolete: when C3 supplies a real indirect-ping sender.
+        // REAL solution: ClusterProtocol gains a `send_indirect_ping`
+        //   callback or the C3 runner wraps the trait for transport access.
+        ProtocolDecision {
+            update_last_seen: true,
+            upsert_alive: false,
+        }
+    }
+
+    fn compute_tick_transitions(
+        &self,
+        now_ms: u64,
+        ping_timeout_ms: u64,
+        suspect_timeout_ms: u64,
+        phi_snapshot: &HashMap<u16, (f64, bool)>,
+        members: &[ClusterMember],
+    ) -> Vec<StateChange> {
+        let mut changes = Vec::new();
+        for member in members {
+            if member.state == MEMBER_DEAD || member.state == MEMBER_LEFT {
+                continue;
+            }
+            let elapsed = now_ms.saturating_sub(member.last_seen_ms);
+            if member.state == MEMBER_SUSPECT && elapsed > suspect_timeout_ms {
+                changes.push(StateChange {
+                    node_id: member.node_id,
+                    new_state: MEMBER_DEAD,
+                    incarnation: member.incarnation,
+                });
+            } else if member.state == MEMBER_ALIVE {
+                let (phi, warm) = phi_snapshot
+                    .get(&member.node_id)
+                    .copied()
+                    .unwrap_or((0.0, false));
+                let suspect = if warm {
+                    phi > PHI_THRESHOLD
+                } else {
+                    elapsed > ping_timeout_ms
+                };
+                if suspect {
+                    changes.push(StateChange {
+                        node_id: member.node_id,
+                        new_state: MEMBER_SUSPECT,
+                        incarnation: member.incarnation,
+                    });
+                }
+            }
+        }
+        changes
+    }
+
+    fn next_ping_target(&mut self, alive_members: &[u16]) -> Option<u16> {
+        if alive_members.is_empty() {
+            return None;
+        }
+        self.ping_index %= alive_members.len();
+        let target = alive_members[self.ping_index];
+        self.ping_index = (self.ping_index + 1) % alive_members.len();
+        Some(target)
+    }
+}
 
 // ── Phi-accrual failure-detector tuning ────────────────────────────────
 //
@@ -406,7 +631,7 @@ impl HewCluster {
             registry_callback: None,
             registry_callback_user_data: std::ptr::null_mut(),
             last_tick_ms: 0,
-            ping_index: 0,
+            protocol: Box::new(SimpleSwim::new()),
             detectors: Mutex::new(HashMap::new()),
         }
     }
@@ -711,7 +936,8 @@ impl HewCluster {
         result
     }
 
-    /// Process a received SWIM message.
+    /// Process a received SWIM message, delegating protocol decisions to
+    /// the installed [`ClusterProtocol`] strategy.
     fn process_message(
         &mut self,
         msg_type: i32,
@@ -725,23 +951,18 @@ impl HewCluster {
             );
             return;
         }
-        match msg_type {
-            SWIM_MSG_PING => {
-                // Respond with ACK (caller handles sending the response).
-                // Update the sender's last_seen.
-                self.update_last_seen(from_node);
-            }
-            SWIM_MSG_ACK => {
-                // Mark the sender as alive.
-                self.update_last_seen(from_node);
-                self.upsert_member(from_node, MEMBER_ALIVE, incarnation, &[]);
-            }
-            SWIM_MSG_PING_REQ => {
-                // Indirect ping — forward the ping to the target.
-                // Caller handles the forwarding.
-                self.update_last_seen(from_node);
-            }
-            _ => {}
+        let decision = match msg_type {
+            SWIM_MSG_PING => self.protocol.handle_ping(from_node),
+            SWIM_MSG_ACK => self.protocol.handle_ack(from_node, incarnation),
+            SWIM_MSG_PING_REQ => self.protocol.handle_ping_req(from_node),
+            SWIM_MSG_GOSSIP => self.protocol.handle_gossip(from_node, incarnation),
+            _ => return,
+        };
+        if decision.update_last_seen {
+            self.update_last_seen(from_node);
+        }
+        if decision.upsert_alive {
+            self.upsert_member(from_node, MEMBER_ALIVE, incarnation, &[]);
         }
     }
 
@@ -796,11 +1017,17 @@ impl HewCluster {
     /// Note: this changes *when* a [`HEW_MEMBERSHIP_EVENT_NODE_SUSPECT`]
     /// fires, never *what* the consumer observes — the membership event
     /// ABI surface (`Partition`-equivalent) is preserved.
+    ///
+    /// The transition decision logic is delegated to the installed
+    /// [`ClusterProtocol`] via [`ClusterProtocol::compute_tick_transitions`].
+    /// The phi-accrual detector snapshot is computed here (detectors are
+    /// orthogonal to the protocol: they stay on `HewCluster`) and
+    /// supplied as a read-only argument to the protocol.
     fn tick(&mut self, now_ms: u64) {
         self.last_tick_ms = now_ms;
 
-        let suspect_timeout = u64::from(self.config.suspect_timeout_ms);
-        let ping_timeout = u64::from(self.config.ping_timeout_ms);
+        let suspect_timeout_ms = u64::from(self.config.suspect_timeout_ms);
+        let ping_timeout_ms = u64::from(self.config.ping_timeout_ms);
 
         // Take a snapshot of (node_id, phi, is_warm) outside the
         // `members` lock so we respect the members → detectors lock
@@ -813,51 +1040,38 @@ impl HewCluster {
                 .collect()
         };
 
-        let mut members = self.members.lock_or_recover();
+        // Take a member snapshot to pass to the protocol.  We release
+        // the lock before applying state changes so the apply loop can
+        // re-lock for mutation without holding two locks.
+        let member_snapshot: Vec<ClusterMember> = self.members.lock_or_recover().clone();
 
-        let mut state_changes: Vec<(u16, i32, u64)> = Vec::new();
+        // Delegate the transition decision to the protocol strategy.
+        let state_changes = self.protocol.compute_tick_transitions(
+            now_ms,
+            ping_timeout_ms,
+            suspect_timeout_ms,
+            &phi_snapshot,
+            &member_snapshot,
+        );
 
-        for member in members.iter_mut() {
-            if member.state == MEMBER_DEAD || member.state == MEMBER_LEFT {
-                continue;
-            }
-
-            let elapsed = now_ms.saturating_sub(member.last_seen_ms);
-
-            if member.state == MEMBER_SUSPECT && elapsed > suspect_timeout {
-                // Suspect too long → declare dead.
-                member.state = MEMBER_DEAD;
-                state_changes.push((member.node_id, MEMBER_DEAD, member.incarnation));
-            } else if member.state == MEMBER_ALIVE {
-                let (phi, warm) = phi_snapshot
-                    .get(&member.node_id)
-                    .copied()
-                    .unwrap_or((0.0, false));
-                let suspect = if warm {
-                    // Phi-accrual: suspect when the silence is statistically
-                    // anomalous given the learned inter-arrival distribution.
-                    phi > PHI_THRESHOLD
-                } else {
-                    // Cold-start fallback: legacy fixed ping-timeout.
-                    elapsed > ping_timeout
-                };
-                if suspect {
-                    member.state = MEMBER_SUSPECT;
-                    state_changes.push((member.node_id, MEMBER_SUSPECT, member.incarnation));
+        // Apply state transitions: update the authoritative members list,
+        // emit gossip events, fire callbacks.
+        for change in &state_changes {
+            {
+                let mut members = self.members.lock_or_recover();
+                if let Some(m) = members.iter_mut().find(|m| m.node_id == change.node_id) {
+                    // Only apply if the member hasn't moved on since the snapshot.
+                    if m.state != MEMBER_DEAD && m.state != MEMBER_LEFT {
+                        m.state = change.new_state;
+                    }
                 }
             }
-        }
-
-        drop(members);
-
-        // Emit events and callbacks for state changes.
-        for (node_id, state, incarnation) in state_changes {
-            self.emit_event(node_id, state, incarnation);
-            self.notify_callback(node_id, state, incarnation);
-            self.notify_membership_callback(node_id, state, false, None);
+            self.emit_event(change.node_id, change.new_state, change.incarnation);
+            self.notify_callback(change.node_id, change.new_state, change.incarnation);
+            self.notify_membership_callback(change.node_id, change.new_state, false, None);
             // Prune the detector once the peer has left the live set.
-            if state == MEMBER_DEAD {
-                self.detectors.lock_or_recover().remove(&node_id);
+            if change.new_state == MEMBER_DEAD {
+                self.detectors.lock_or_recover().remove(&change.node_id);
             }
         }
     }
@@ -1060,24 +1274,18 @@ impl HewCluster {
         }
     }
 
-    /// Get the next ping target (round-robin through members).
+    /// Get the next ping target, delegating selection to the installed
+    /// [`ClusterProtocol`] strategy.
     fn next_ping_target(&mut self) -> Option<u16> {
-        let members = self.members.lock_or_recover();
-
-        let alive_members: Vec<u16> = members
-            .iter()
-            .filter(|m| m.state == MEMBER_ALIVE || m.state == MEMBER_SUSPECT)
-            .map(|m| m.node_id)
-            .collect();
-
-        if alive_members.is_empty() {
-            return None;
-        }
-
-        self.ping_index %= alive_members.len();
-        let target = alive_members[self.ping_index];
-        self.ping_index = (self.ping_index + 1) % alive_members.len();
-        Some(target)
+        let alive_members: Vec<u16> = {
+            let members = self.members.lock_or_recover();
+            members
+                .iter()
+                .filter(|m| m.state == MEMBER_ALIVE || m.state == MEMBER_SUSPECT)
+                .map(|m| m.node_id)
+                .collect()
+        };
+        self.protocol.next_ping_target(&alive_members)
     }
 
     // ── Registry gossip ────────────────────────────────────────────────
@@ -3284,6 +3492,89 @@ mod tests {
         unsafe {
             let cluster = hew_cluster_new(std::ptr::null());
             assert!(cluster.is_null());
+        }
+    }
+
+    // ── ClusterProtocol trait-surface tests ────────────────────────────
+    //
+    // Gate requirement: at least 2 unit tests for the trait surface.
+    //   1. `cluster_protocol_dyn_dispatch_produces_correct_decisions`
+    //      — calls through `&dyn ClusterProtocol`, verifying that trait
+    //      object dispatch routes to the correct decisions for each
+    //      SWIM message type.
+    //   2. `simple_swim_identical_to_pre_extraction_on_ping_ack_sequence`
+    //      — drives `HewCluster` through the same PING/ACK sequence that
+    //      the pre-extraction `process_message` implementation handled,
+    //      and asserts that membership state is identical to the expected
+    //      pre-extraction outcome.
+
+    #[test]
+    fn cluster_protocol_dyn_dispatch_produces_correct_decisions() {
+        let protocol: Box<dyn ClusterProtocol> = Box::new(SimpleSwim::new());
+
+        // PING: update last_seen, do NOT upsert alive.
+        let d = protocol.handle_ping(2);
+        assert!(d.update_last_seen, "PING must update last_seen");
+        assert!(!d.upsert_alive, "PING must not upsert alive");
+
+        // ACK: update last_seen AND upsert alive.
+        let d = protocol.handle_ack(2, 1);
+        assert!(d.update_last_seen, "ACK must update last_seen");
+        assert!(d.upsert_alive, "ACK must upsert alive");
+
+        // PING_REQ: update last_seen, do NOT upsert alive (forwarding is
+        // the C3 driver's responsibility).
+        let d = protocol.handle_ping_req(3);
+        assert!(d.update_last_seen, "PING_REQ must update last_seen");
+        assert!(!d.upsert_alive, "PING_REQ must not upsert alive");
+
+        // GOSSIP: no-op default.
+        let d = protocol.handle_gossip(4, 1);
+        assert!(!d.update_last_seen, "GOSSIP default must be a no-op");
+        assert!(!d.upsert_alive, "GOSSIP default must be a no-op");
+    }
+
+    #[test]
+    fn simple_swim_identical_to_pre_extraction_on_ping_ack_sequence() {
+        // Pre-extraction behaviour (now implemented via trait dispatch):
+        //
+        //   1. Node 2 is MEMBER_SUSPECT.
+        //   2. Receiving SWIM_MSG_PING from node 2 calls update_last_seen,
+        //      which recovers node 2 to MEMBER_ALIVE.
+        //   3. Receiving SWIM_MSG_ACK from node 2 marks it MEMBER_ALIVE
+        //      via upsert_member.
+        //
+        // The post-extraction cluster must produce the same final
+        // membership state as the pre-extraction cluster would have.
+
+        let mut cluster = HewCluster::new(make_config(1));
+        cluster.upsert_member(2, MEMBER_SUSPECT, 1, b"10.0.0.2:9000");
+
+        // Step 1: PING recovers SUSPECT → ALIVE via update_last_seen.
+        cluster.process_message(SWIM_MSG_PING, 2, 1, 2);
+        {
+            let members = cluster.members.lock().unwrap();
+            assert_eq!(
+                members[0].state, MEMBER_ALIVE,
+                "PING from a SUSPECT peer must recover it to ALIVE"
+            );
+        }
+
+        // Step 2: drive node 2 back to SUSPECT manually to test ACK path.
+        cluster.upsert_member(2, MEMBER_SUSPECT, 1, b"");
+
+        // Step 3: ACK marks MEMBER_ALIVE via upsert_member (incarnation bump).
+        cluster.process_message(SWIM_MSG_ACK, 2, 2, 2);
+        {
+            let members = cluster.members.lock().unwrap();
+            assert_eq!(
+                members[0].state, MEMBER_ALIVE,
+                "ACK must mark the sender MEMBER_ALIVE"
+            );
+            assert_eq!(
+                members[0].incarnation, 2,
+                "ACK must update incarnation to the supplied value"
+            );
         }
     }
 }

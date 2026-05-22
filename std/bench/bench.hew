@@ -67,17 +67,14 @@ impl SuiteMethods for Suite {
         if warmup < 1 {
             warmup = 1;
         }
-        var wi: i64 = 0;
-        while wi < warmup {
+        for wi in 0 .. warmup {
             f();
-            wi = wi + 1;
         }
         // Measure
         var min_ns: i64 = 9223372036854775807;
         var max_ns: i64 = 0;
         var total_ns: i64 = 0;
-        var i: i64 = 0;
-        while i < iterations {
+        for i in 0 .. iterations {
             let start = datetime.now_nanos();
             f();
             let end = datetime.now_nanos();
@@ -89,7 +86,6 @@ impl SuiteMethods for Suite {
             if elapsed > max_ns {
                 max_ns = elapsed;
             }
-            i = i + 1;
         }
         let avg_ns = total_ns / iterations;
         let result = BenchResult { name: name, iterations: iterations, avg_ns: avg_ns, min_ns: min_ns, max_ns: max_ns, total_ns: total_ns };
@@ -98,28 +94,24 @@ impl SuiteMethods for Suite {
     /// Print results as a human-readable table.
     fn report(suite: Suite) {
         println(f"=== {suite.name} ===");
-        var i: i32 = 0;
-        while i < suite.results.len() {
+        for i in 0 .. suite.results.len() {
             let r = suite.results.get(i);
             let avg_str = format_time(r.avg_ns);
             let min_str = format_time(r.min_ns);
             let max_str = format_time(r.max_ns);
             let ops = format_ops(r.avg_ns);
             println(f"  {r.name}  {r.iterations} iters  avg {avg_str}  min {min_str}  max {max_str}  {ops}");
-            i = i + 1;
         }
     }
     /// Print results as a JSON array.
     fn report_json(suite: Suite) {
         var json = f"\{\"suite\":\"{suite.name}\",\"benchmarks\":[";
-        var i: i32 = 0;
-        while i < suite.results.len() {
+        for i in 0 .. suite.results.len() {
             let r = suite.results.get(i);
             if i > 0 {
                 json = json + ",";
             }
             json = json + f"\{\"name\":\"{r.name}\",\"iterations\":{r.iterations},\"avg_ns\":{r.avg_ns},\"min_ns\":{r.min_ns},\"max_ns\":{r.max_ns},\"total_ns\":{r.total_ns}\\}";
-            i = i + 1;
         }
         json = json + "]}";
         println(json);

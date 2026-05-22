@@ -630,7 +630,7 @@ use std::ptr;
 // close/release call. Subsequent calls detect the already-set flag and
 // return `SendError::DoubleClose` (= 4) without touching `inner`.
 //
-// Why leak the outer wrapper (never call `Box::from_raw` on it):
+// Why leak the outer wrapper on close (never call `Box::from_raw` on it):
 //   A second close call must read `released` to know whether the handle
 //   is still live. If the outer allocation were freed on first close, the
 //   second call would read from freed memory — use-after-free UB. By
@@ -638,6 +638,9 @@ use std::ptr;
 //   call. The allocation cost is bounded by the number of unique handles
 //   ever created (a monotonically growing but practically small set in
 //   the Hew object model).
+//   Successful consume-split (`hew_duplex_{send,recv}_half`) is the
+//   exception: its safety contract consumes the input pointer, so after
+//   moving out the inner `HewDuplex` it reclaims the empty wrapper Box.
 //
 // Allocation protocol:
 //   - Construct `Box::new(HewDuplexHandle::new(duplex))`; hand out
@@ -650,6 +653,10 @@ use std::ptr;
 //     `ManuallyDrop::drop` on the inner value to run its existing `Drop`
 //     impl (which releases Arc refcounts / queue caps) — but do NOT
 //     reconstruct or drop the outer `Box<HewDuplexHandle>`.
+//   - On successful consume-split: perform the same swap guard, take
+//     the inner `HewDuplex` by value, then reconstruct and drop the
+//     wrapper Box. Reusing the consumed pointer after success violates
+//     the split entry point's safety contract.
 //   - The raw-pointer flag-read phase is required: two concurrent
 //     callers passing the same handle pointer would otherwise each hold
 //     a `&mut *d` simultaneously, which is formal Rust aliasing UB even
@@ -1127,7 +1134,8 @@ pub unsafe extern "C" fn hew_duplex_close(d: *mut HewDuplexHandle) -> i32 {
 /// The returned handle must be released via [`hew_duplex_close_half`]
 /// with `Direction::Send`.
 ///
-/// Returns null on double-call (D4: typed error path, not UB).
+/// Returns null if another close/consume-split already released the handle
+/// before this call wins the release swap.
 ///
 /// # Safety
 ///
@@ -1158,15 +1166,23 @@ pub unsafe extern "C" fn hew_duplex_send_half(d: *mut HewDuplexHandle) -> *mut H
     // SAFETY: see the take-phase block above — this thread owns the
     // wrapper exclusively against all close/release callers.
     let duplex = unsafe { ManuallyDrop::take(&mut h.inner) };
+    let trace_id = d as u64;
+    // SAFETY: the swap above won the consume/close race for callers that
+    // honour the documented consume contract and do not use `d` after this
+    // successful split. `ManuallyDrop::take` moved out the inner HewDuplex;
+    // dropping the wrapper Box now only reclaims the released=true husk
+    // allocation and does not drop the consumed inner value.
+    let _ = unsafe { Box::from_raw(d) };
     let send_half = duplex.into_send_half();
     let result = Box::into_raw(Box::new(HewSendHalfHandle::new(send_half)));
-    crate::tracing::record_channel_event(d as u64, crate::tracing::SPAN_DUPLEX_HALF_SPLIT);
+    crate::tracing::record_channel_event(trace_id, crate::tracing::SPAN_DUPLEX_HALF_SPLIT);
     result
 }
 
 /// Convert a unified Duplex into a `HewRecvHalfHandle` (recv-only alias).
 ///
-/// Returns null on double-call (D4: typed error path, not UB).
+/// Returns null if another close/consume-split already released the handle
+/// before this call wins the release swap.
 ///
 /// # Safety
 ///
@@ -1193,9 +1209,16 @@ pub unsafe extern "C" fn hew_duplex_recv_half(d: *mut HewDuplexHandle) -> *mut H
     // SAFETY: see the take-phase block above — this thread owns the
     // wrapper exclusively against all close/release callers.
     let duplex = unsafe { ManuallyDrop::take(&mut h.inner) };
+    let trace_id = d as u64;
+    // SAFETY: the swap above won the consume/close race for callers that
+    // honour the documented consume contract and do not use `d` after this
+    // successful split. `ManuallyDrop::take` moved out the inner HewDuplex;
+    // dropping the wrapper Box now only reclaims the released=true husk
+    // allocation and does not drop the consumed inner value.
+    let _ = unsafe { Box::from_raw(d) };
     let recv_half = duplex.into_recv_half();
     let result = Box::into_raw(Box::new(HewRecvHalfHandle::new(recv_half)));
-    crate::tracing::record_channel_event(d as u64, crate::tracing::SPAN_DUPLEX_HALF_SPLIT);
+    crate::tracing::record_channel_event(trace_id, crate::tracing::SPAN_DUPLEX_HALF_SPLIT);
     result
 }
 

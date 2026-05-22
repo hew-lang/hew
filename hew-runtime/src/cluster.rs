@@ -45,6 +45,7 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use crate::phi_accrual::PhiAccrualDetector;
 use crate::util::MutexExt;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
@@ -351,10 +352,40 @@ pub struct HewCluster {
     last_tick_ms: u64,
     /// Index for round-robin ping target selection.
     ping_index: usize,
+    /// Per-peer phi-accrual failure detectors.
+    ///
+    /// Locked after `members` (members → detectors) to avoid deadlock.
+    /// Heartbeat observations and tick-time phi queries are the only
+    /// sites that touch this mutex.
+    detectors: Mutex<HashMap<u16, PhiAccrualDetector>>,
 }
 
 /// Maximum number of gossip events to retain.
 const MAX_GOSSIP_EVENTS: usize = 64;
+
+// ── Phi-accrual failure-detector tuning ────────────────────────────────
+//
+// These constants tune the phi-accrual replacement of the legacy
+// fixed-threshold ALIVE → SUSPECT trigger. They are module-level (not
+// fields on the FFI-stable [`ClusterConfig`]) so that future re-tuning
+// is a one-line change without breaking the C ABI.
+//
+// Defaults match the production-SOTA choices used by Akka, Cassandra,
+// and Hashicorp memberlist:
+//   - threshold 8.0 ⇒ "very likely dead" (≤10⁻⁸ probability under the
+//     learned distribution)
+//   - 200-sample sliding window — enough to track minutes of cadence
+//     at a 1Hz heartbeat without becoming sluggish to react.
+//   - 10-sample warm-up — below this we fall back to `ping_timeout_ms`
+//     so brand-new peers and quiet peers are not blind-spots.
+
+/// Suspect a peer when its phi value exceeds this threshold.
+const PHI_THRESHOLD: f64 = 8.0;
+/// Maximum number of inter-arrival samples retained per peer.
+const PHI_WINDOW_SIZE: usize = 200;
+/// Minimum interval samples before phi is consulted; below this
+/// the legacy `ping_timeout_ms` fixed threshold is used.
+const PHI_MIN_SAMPLES: usize = 10;
 
 // ── Core protocol logic ────────────────────────────────────────────────
 
@@ -376,6 +407,7 @@ impl HewCluster {
             registry_callback_user_data: std::ptr::null_mut(),
             last_tick_ms: 0,
             ping_index: 0,
+            detectors: Mutex::new(HashMap::new()),
         }
     }
 
@@ -713,26 +745,75 @@ impl HewCluster {
         }
     }
 
-    /// Update `last_seen_ms` for a member.
+    /// Update `last_seen_ms` for a member, and record the heartbeat
+    /// into that peer's phi-accrual detector.
+    ///
+    /// If the peer is recovering from `SUSPECT`, the recovery interval
+    /// is intentionally *not* fed into the distribution — folding a
+    /// multi-second silence into the window would teach the detector
+    /// that long gaps are normal and dull all future detections. We
+    /// still advance the detector's anchor so the next genuine interval
+    /// is measured correctly.
     fn update_last_seen(&self, node_id: u16) {
-        let mut members = self.members.lock_or_recover();
-        if let Some(m) = members.iter_mut().find(|m| m.node_id == node_id) {
-            // SAFETY: hew_now_ms has no preconditions.
-            m.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
-            if m.state == MEMBER_SUSPECT {
-                m.state = MEMBER_ALIVE;
+        // SAFETY: hew_now_ms has no preconditions.
+        let now = unsafe { crate::io_time::hew_now_ms() };
+        let was_suspect = {
+            let mut members = self.members.lock_or_recover();
+            if let Some(m) = members.iter_mut().find(|m| m.node_id == node_id) {
+                m.last_seen_ms = now;
+                let was_suspect = m.state == MEMBER_SUSPECT;
+                if was_suspect {
+                    m.state = MEMBER_ALIVE;
+                }
+                Some(was_suspect)
+            } else {
+                None
+            }
+        };
+        if let Some(was_suspect) = was_suspect {
+            // members → detectors lock order.
+            let mut detectors = self.detectors.lock_or_recover();
+            let det = detectors
+                .entry(node_id)
+                .or_insert_with(|| PhiAccrualDetector::new(PHI_WINDOW_SIZE, PHI_MIN_SAMPLES));
+            if was_suspect {
+                det.heartbeat_anchor_only(now);
+            } else {
+                det.heartbeat(now);
             }
         }
     }
 
     /// Advance the protocol: check for suspects and dead members.
+    ///
+    /// The ALIVE → SUSPECT transition uses the phi-accrual failure
+    /// detector once the per-peer window holds at least
+    /// [`PHI_MIN_SAMPLES`] inter-arrival samples (the "warm" state).
+    /// While cold, the legacy `ping_timeout_ms` threshold is used as a
+    /// conservative fallback so brand-new or quiet peers are not blind
+    /// spots. The SUSPECT → DEAD escalation is unchanged.
+    ///
+    /// Note: this changes *when* a [`HEW_MEMBERSHIP_EVENT_NODE_SUSPECT`]
+    /// fires, never *what* the consumer observes — the membership event
+    /// ABI surface (`Partition`-equivalent) is preserved.
     fn tick(&mut self, now_ms: u64) {
         self.last_tick_ms = now_ms;
 
-        let mut members = self.members.lock_or_recover();
-
         let suspect_timeout = u64::from(self.config.suspect_timeout_ms);
         let ping_timeout = u64::from(self.config.ping_timeout_ms);
+
+        // Take a snapshot of (node_id, phi, is_warm) outside the
+        // `members` lock so we respect the members → detectors lock
+        // order. We hold detectors only briefly.
+        let phi_snapshot: HashMap<u16, (f64, bool)> = {
+            let detectors = self.detectors.lock_or_recover();
+            detectors
+                .iter()
+                .map(|(id, det)| (*id, (det.phi(now_ms), det.is_warm())))
+                .collect()
+        };
+
+        let mut members = self.members.lock_or_recover();
 
         let mut state_changes: Vec<(u16, i32, u64)> = Vec::new();
 
@@ -747,10 +828,23 @@ impl HewCluster {
                 // Suspect too long → declare dead.
                 member.state = MEMBER_DEAD;
                 state_changes.push((member.node_id, MEMBER_DEAD, member.incarnation));
-            } else if member.state == MEMBER_ALIVE && elapsed > ping_timeout {
-                // No response within ping timeout → suspect.
-                member.state = MEMBER_SUSPECT;
-                state_changes.push((member.node_id, MEMBER_SUSPECT, member.incarnation));
+            } else if member.state == MEMBER_ALIVE {
+                let (phi, warm) = phi_snapshot
+                    .get(&member.node_id)
+                    .copied()
+                    .unwrap_or((0.0, false));
+                let suspect = if warm {
+                    // Phi-accrual: suspect when the silence is statistically
+                    // anomalous given the learned inter-arrival distribution.
+                    phi > PHI_THRESHOLD
+                } else {
+                    // Cold-start fallback: legacy fixed ping-timeout.
+                    elapsed > ping_timeout
+                };
+                if suspect {
+                    member.state = MEMBER_SUSPECT;
+                    state_changes.push((member.node_id, MEMBER_SUSPECT, member.incarnation));
+                }
             }
         }
 
@@ -761,6 +855,10 @@ impl HewCluster {
             self.emit_event(node_id, state, incarnation);
             self.notify_callback(node_id, state, incarnation);
             self.notify_membership_callback(node_id, state, false, None);
+            // Prune the detector once the peer has left the live set.
+            if state == MEMBER_DEAD {
+                self.detectors.lock_or_recover().remove(&node_id);
+            }
         }
     }
 

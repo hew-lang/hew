@@ -499,6 +499,8 @@ pub mod link;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod monitor;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod phi_accrual;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod pid;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pool;

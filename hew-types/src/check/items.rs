@@ -638,7 +638,7 @@ impl Checker {
             }
 
             // `#[on(crash)]` diverges from start/stop signature-wise:
-            // crash takes a `PanicInfo` parameter and returns `CrashAction`.
+            // crash takes a `CrashInfo` parameter and returns `CrashAction`.
             match hook_kind_str {
                 "crash" => {
                     self.check_crash_hook(&ad.name, method, &ad.fields);
@@ -887,14 +887,14 @@ impl Checker {
     /// Type-check an actor `#[on(crash)]` hook.
     ///
     /// Signature shape (failure-philosophy plan E2, Q45/A22, Q46/A23):
-    /// - exactly one parameter `info: PanicInfo` (the runtime supplies
+    /// - exactly one parameter `info: CrashInfo` (the runtime supplies
     ///   the int-tag payload — string fields wait on the spine-widening
     ///   lane).
     /// - return type `CrashAction` (variants `Restart | Escalate | Kill`;
     ///   the supervisor consults but honours its own budget rules).
     /// - not `pure`, no type parameters, no `where` clause.
     ///
-    /// `PanicInfo` and `CrashAction` are provided by `std/failure.hew`
+    /// `CrashInfo` and `CrashAction` are provided by `std/failure.hew`
     /// (also pre-bound via `register_builtin_failure_surface` for inline
     /// tests).  Body type-checking binds actor fields as bare names in
     /// scope, same idiom as `init { }` / `#[on(start)]` / `#[on(stop)]`.
@@ -945,23 +945,23 @@ impl Checker {
     }
 
     /// Validate the parameter list of a `#[on(crash)]` hook: exactly one
-    /// parameter typed `PanicInfo`.  Diagnostics live here rather than in
+    /// parameter typed `CrashInfo`.  Diagnostics live here rather than in
     /// `check_crash_hook` to keep that entry under the clippy line limit.
     fn check_crash_hook_param(&mut self, actor_name: &str, hook: &FnDecl, hook_kind: &str) {
         match hook.params.as_slice() {
             [p] => {
                 let pty = self.resolve_type_expr(&p.ty);
-                let is_panic_info = matches!(
+                let is_crash_info = matches!(
                     &pty,
-                    Ty::Named { name, args } if name == "PanicInfo" && args.is_empty()
+                    Ty::Named { name, args } if name == "CrashInfo" && args.is_empty()
                 );
-                if !is_panic_info {
+                if !is_crash_info {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
                         p.ty.1.clone(),
                         format!(
                             "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` parameter \
-                             must have type `PanicInfo` (from `std::failure`)",
+                             must have type `CrashInfo` (from `std::failure`)",
                             hook.name
                         ),
                     ));
@@ -973,7 +973,7 @@ impl Checker {
                     hook.decl_span.clone(),
                     format!(
                         "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must take \
-                         exactly one parameter `info: PanicInfo`; got {} parameter(s)",
+                         exactly one parameter `info: CrashInfo`; got {} parameter(s)",
                         hook.name,
                         other.len()
                     ),

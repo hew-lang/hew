@@ -137,7 +137,7 @@ run_accept_expect_status "supervisor_stop_basic" 0
 run_accept_expect_status "on_crash_basic" 42
 
 # on(crash) with info.code field access: verifies the full HIR → MIR → codegen path
-# for reading PanicInfo.code inside an on(crash) body.  PanicInfo is loaded from
+# for reading CrashInfo.code inside an on(crash) body.  CrashInfo is loaded from
 # std/failure.hew via the module graph walk, so record_field_orders is populated and
 # FieldAccess lowering succeeds.  The supervisor boots and main returns 42.
 run_accept_expect_status "on_crash_info_code" 42

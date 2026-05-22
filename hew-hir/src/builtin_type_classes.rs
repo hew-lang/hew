@@ -44,7 +44,7 @@ pub struct BuiltinTypeRegistration {
     pub role: Option<BuiltinTypeRole>,
 }
 
-const PANIC_INFO_FIELDS: &[BuiltinTypeField] = &[BuiltinTypeField {
+const CRASH_INFO_FIELDS: &[BuiltinTypeField] = &[BuiltinTypeField {
     name: "code",
     ty: BuiltinFieldTy::I64,
 }];
@@ -95,10 +95,10 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
         role: None,
     },
     BuiltinTypeRegistration {
-        name: "PanicInfo",
+        name: "CrashInfo",
         marker: ResourceMarker::BitCopy,
         close_method: None,
-        shape: BuiltinTypeShape::Struct(PANIC_INFO_FIELDS),
+        shape: BuiltinTypeShape::Struct(CRASH_INFO_FIELDS),
         role: Some(BuiltinTypeRole::CrashInfo),
     },
     BuiltinTypeRegistration {
@@ -258,31 +258,31 @@ mod tests {
     }
 
     #[test]
-    fn panic_info_is_seeded_as_bitcopy_marker() {
+    fn crash_info_is_seeded_as_bitcopy_marker() {
         let mut table: TypeClassTable = HashMap::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
-            crate::lookup_type_marker("PanicInfo", &table),
+            crate::lookup_type_marker("CrashInfo", &table),
             Some(ResourceMarker::BitCopy),
-            "PanicInfo must be BitCopy so crash-hook payload lowering is marker-driven"
+            "CrashInfo must be BitCopy so crash-hook payload lowering is marker-driven"
         );
     }
 
     #[test]
-    fn panic_info_named_ty_resolves_to_bitcopy() {
+    fn crash_info_named_ty_resolves_to_bitcopy() {
         let mut table: TypeClassTable = HashMap::default();
         seed_builtin_type_classes(&mut table);
         let ty = ResolvedTy::Named {
-            name: "PanicInfo".to_string(),
+            name: "CrashInfo".to_string(),
             args: vec![],
         };
         assert_eq!(ValueClass::of_ty(&ty, &table), ValueClass::BitCopy);
     }
 
     #[test]
-    fn panic_info_shape_is_registered_as_crash_info_payload() {
+    fn crash_info_shape_is_registered_as_crash_info_payload() {
         let registration = crash_info_type_registration();
-        assert_eq!(registration.name, "PanicInfo");
+        assert_eq!(registration.name, "CrashInfo");
         assert_eq!(registration.marker, ResourceMarker::BitCopy);
         assert_eq!(registration.role, Some(BuiltinTypeRole::CrashInfo));
         assert_eq!(
@@ -306,12 +306,12 @@ mod tests {
     }
 
     #[test]
-    fn panic_info_named_ty_is_known_to_type_classes() {
+    fn crash_info_named_ty_is_known_to_type_classes() {
         let mut table: TypeClassTable = HashMap::default();
         seed_builtin_type_classes(&mut table);
         assert!(
-            table.contains_key("PanicInfo"),
-            "PanicInfo absent from TypeClassTable; on(crash) hook params would fire UnknownType"
+            table.contains_key("CrashInfo"),
+            "CrashInfo absent from TypeClassTable; on(crash) hook params would fire UnknownType"
         );
     }
 

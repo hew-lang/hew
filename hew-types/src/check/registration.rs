@@ -57,7 +57,7 @@ extern "C" {
 /// Embedded source for `std/failure.hew`.
 ///
 /// Parsed at import-registration time for `std::failure` so the
-/// `PanicInfo` struct and `CrashAction` enum used in `#[on(crash)]` hook
+/// `CrashInfo` struct and `CrashAction` enum used in `#[on(crash)]` hook
 /// signatures are visible in the checker even in programs that were not
 /// loaded through the module-graph path (e.g. inline programs in tests).
 ///
@@ -66,7 +66,7 @@ extern "C" {
 /// not flow through the import resolver, so the embedded snippet omits
 /// any top-of-file imports the file itself does not need (none today).
 const FAILURE_HEW: &str = r"
-pub type PanicInfo {
+pub type CrashInfo {
     code: i64;
 }
 
@@ -793,7 +793,7 @@ impl Checker {
         }
     }
 
-    /// Register the built-in `PanicInfo` / `CrashAction` surface so
+    /// Register the built-in `CrashInfo` / `CrashAction` surface so
     /// `#[on(crash)]` lifecycle hooks can name them in their signatures
     /// without `import std::failure;`.  Inline tests (no stdlib search
     /// path) rely on this; on-disk programs reach the same types via

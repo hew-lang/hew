@@ -232,7 +232,7 @@ fn on_crash_still_works() {
             let count: i32;
 
             #[on(crash)]
-            fn on_crash(info: PanicInfo) -> CrashAction {
+            fn on_crash(info: CrashInfo) -> CrashAction {
                 CrashAction::Restart
             }
         }
@@ -335,7 +335,7 @@ fn reject_on_upgrade_with_extra_args() {
 // ── E2: `#[on(crash)]` signature pinning ─────────────────────────────
 //
 // Failure-philosophy slice E2 pins the crash hook signature shape:
-// `fn on_crash(info: PanicInfo) -> CrashAction`.  `PanicInfo` and
+// `fn on_crash(info: CrashInfo) -> CrashAction`.  `CrashInfo` and
 // `CrashAction` come from `std/failure.hew` and are pre-registered for
 // inline tests via `register_builtin_failure_surface`.  Each rejection
 // has an accept twin and a reject twin (HEW-SPEC-2026 §3.3 both-path).
@@ -349,7 +349,7 @@ fn on_crash_signature_pinned() {
             let count: i32;
 
             #[on(crash)]
-            fn on_crash(info: PanicInfo) -> CrashAction {
+            fn on_crash(info: CrashInfo) -> CrashAction {
                 CrashAction::Escalate
             }
         }
@@ -405,8 +405,8 @@ fn reject_on_crash_wrong_param_type() {
             .errors
             .iter()
             .any(|e| e.message.contains("on(crash)")
-                && e.message.contains("must have type `PanicInfo`")),
-        "`#[on(crash)]` with non-PanicInfo param should be rejected: {:?}",
+                && e.message.contains("must have type `CrashInfo`")),
+        "`#[on(crash)]` with non-CrashInfo param should be rejected: {:?}",
         output.errors
     );
 }
@@ -417,7 +417,7 @@ fn reject_on_crash_missing_return_type() {
         r"
         actor Worker {
             #[on(crash)]
-            fn on_crash(info: PanicInfo) {
+            fn on_crash(info: CrashInfo) {
             }
         }
 
@@ -441,7 +441,7 @@ fn reject_on_crash_wrong_return_type() {
         r"
         actor Worker {
             #[on(crash)]
-            fn on_crash(info: PanicInfo) -> i32 {
+            fn on_crash(info: CrashInfo) -> i32 {
                 0
             }
         }
@@ -471,7 +471,7 @@ fn accept_on_crash_all_three_variants_assignable() {
             "
             actor Worker {{
                 #[on(crash)]
-                fn on_crash(info: PanicInfo) -> CrashAction {{
+                fn on_crash(info: CrashInfo) -> CrashAction {{
                     CrashAction::{variant}
                 }}
             }}

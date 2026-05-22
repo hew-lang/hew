@@ -1,12 +1,12 @@
 // Acceptance fixture for `info.code` field access in an `#[on(crash)]` handler.
 //
-// Exercises the full codegen path for reading `PanicInfo.code`:
+// Exercises the full codegen path for reading `CrashInfo.code`:
 //   - `import std.failure` loads std/failure.hew into the module graph so the
-//     checker registers PanicInfo's `code: i64` field in type_defs
+//     checker registers CrashInfo's `code: i64` field in type_defs
 //   - `Crasher` actor declares an `#[on(crash)]` handler
-//   - the MIR prologue injects `let info = PanicInfo { code: __crash_code }`
+//   - the MIR prologue injects `let info = CrashInfo { code: __crash_code }`
 //     so `info.code` resolves to the i64 ABI parameter
-//   - `PanicInfo` appears in `record_field_orders` (registered unconditionally
+//   - `CrashInfo` appears in `record_field_orders` (registered unconditionally
 //     in the MIR lowering pass) so `FieldAccess` lowering succeeds
 //   - the fixture compiles and the supervisor boots cleanly; main returns 42
 //
@@ -18,7 +18,7 @@ import std::failure;
 
 actor Crasher {
     #[on(crash)]
-    fn handle_crash(info: PanicInfo) -> CrashAction {
+    fn handle_crash(info: CrashInfo) -> CrashAction {
         let _code = info.code;
         panic("crash handler reached")
     }

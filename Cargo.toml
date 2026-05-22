@@ -45,6 +45,7 @@ members = [
   "hew-types",
   "hew-observe",
   "hew-wasm",
+  "hew-sandbox-wasm",
   "hew-analysis",
   "hew-compile",
   "hew-hir",
@@ -52,6 +53,7 @@ members = [
   "hew-codegen-rs",
   "hew-wirecodec",
   "hew-capability-gen",
+  "xtask",
 ]
 exclude = ["hew-parser/fuzz"]
 resolver = "2"

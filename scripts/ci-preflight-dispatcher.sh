@@ -191,6 +191,28 @@ is_wasm_path() {
     return 1
 }
 
+is_sandbox_fixture_path() {
+    case "$1" in
+        hew-sandbox-vm/fixtures/*|hew-sandbox-vm/test/build-fixtures.test.mjs|xtask/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+is_sandbox_parity_path() {
+    case "$1" in
+        hew-sandbox-wasm/tests/parity.rs|hew-sandbox-wasm/Cargo.toml|\
+        hew-sandbox-vm/src/interpreter/parity-runner.ts|hew-sandbox-vm/package.json|\
+        examples/playground/basics/hello_world.hew|examples/playground/basics/fibonacci.hew|\
+        examples/playground/concurrency/counter_actor.hew|examples/playground/concurrency/actor_pipeline.hew|\
+        examples/playground/concurrency/supervisor.hew|examples/playground/machines/traffic_light.hew)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 is_scripts_config_path() {
     case "$1" in
         Makefile|.gitignore|scripts/*|.config/nextest.toml|.github/workflows/*|Cargo.toml|Cargo.lock|.cargo/*|rust-toolchain*)
@@ -282,6 +304,8 @@ has_scripts_config=0
 has_wasm=0
 needs_codegen_release_smoke=0
 needs_stdlib_lint=0
+needs_sandbox_fixture_check=0
+needs_sandbox_parity=0
 
 for path in "${CHANGED_FILES[@]}"; do
     case "$path" in
@@ -301,7 +325,13 @@ for path in "${CHANGED_FILES[@]}"; do
             ;;
     esac
 
-    if is_grammar_path "$path"; then
+    if is_sandbox_parity_path "$path"; then
+        has_scripts_config=1
+        needs_sandbox_parity=1
+    elif is_sandbox_fixture_path "$path"; then
+        has_scripts_config=1
+        needs_sandbox_fixture_check=1
+    elif is_grammar_path "$path"; then
         has_grammar=1
     elif is_docs_path "$path"; then
         continue
@@ -317,6 +347,7 @@ for path in "${CHANGED_FILES[@]}"; do
         has_runtime_net=1
     elif is_wasm_path "$path"; then
         has_wasm=1
+        needs_sandbox_fixture_check=1
     else
         fallback_lane=1
     fi
@@ -417,6 +448,14 @@ fi
 
 if (( needs_stdlib_lint == 1 )); then
     add_command "make stdlib-lint"
+fi
+
+if (( needs_sandbox_fixture_check == 1 )); then
+    add_command "make sandbox-fixtures-check"
+fi
+
+if (( needs_sandbox_parity == 1 )); then
+    add_command "make sandbox-parity"
 fi
 
 # Test-only override for dispatcher command execution. This keeps failure-policy

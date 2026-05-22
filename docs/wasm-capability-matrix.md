@@ -16,10 +16,43 @@ that disposition at compile time before any code reaches LLVM/WASM codegen.
 | Tier | Crate / Target | Use case |
 |------|----------------|----------|
 | **Tier 1** | `hew-wasm` compiled to `wasm32-unknown-unknown` via `wasm-bindgen` | Browser playground, editor analysis, in-browser type checking |
+| **sandbox-vm-export** | `hew-sandbox-wasm` compiled to `wasm32-unknown-unknown` via `wasm-bindgen` | Browser sandbox bytecode export for the educational VM |
+| **sandbox-vm** | `hew-sandbox-vm` TypeScript worker | Browser educational sandbox execution for deterministic sequential bytecode |
 | **Tier 2** | `hew-runtime` compiled to `wasm32-wasip1` (formerly `wasm32-wasi`) | WASI execution — `hew build --target=wasm32-wasi` |
 
 **Tier 1** is analysis-only: lexer, parser, and type checker only.  It never
 executes Hew programs; it only provides diagnostics.
+
+**sandbox-vm-export** sits alongside Tier 1 rather than replacing it.  The
+`hew-sandbox-wasm` crate runs parse, type-check, explicit sandbox profile
+admission, and deterministic bytecode package emission for browser callers.  It
+does not execute Hew programs.
+
+**sandbox-vm** executes admitted sandbox bytecode in a Web Worker.  The current
+interpreter covers deterministic sequential code, checked arithmetic, records,
+enums, lowered match dispatch, direct monomorphized calls, strings, vectors, an
+educational JavaScript `RegExp` subset for curated regex fixtures, the M4
+single-threaded actor scheduler (`spawn`, `send`, `receive`, root `ask/reply`,
+actor crash hooks, bounded mailboxes, seeded chaos scheduling, and replay via
+trace inputs), and the M5 educational coordination subset: bounded in-memory
+channels, in-memory stream/sink/duplex handles layered on those channels,
+async task spawn/await, structured scopes with cancellation observation at await
+and channel boundaries, deterministic `select`, virtual-time timer arms, and
+the M6 educational failure-philosophy subset: declarative supervisor specs,
+visible child slots, deterministic one-for-one / one-for-all / rest-for-one
+restart decisions, virtual-time restart windows, linked exit messages, monitor
+notifications, and `#[on(crash)]` observation before supervisor decisions.
+M7 adds a machine-readable sandbox stdlib profile, conservative pure/page-I/O
+shims, virtual-clock `time.now` / `time.sleep` / `time.deadline` shims, typed
+fail-closed diagnostics for unsupported stdlib symbols, and a DOM-free
+playground JSON contract for diagnostics, trace views, controls, share links,
+lesson virtual files, and trace export.
+This is intentionally reduced sandbox semantics rather than production runtime
+parity: link-to-dead traps fail closed, monitor-to-dead fires immediately, and
+supervisor restart budget exhaustion escalates through typed runtime failures.
+Machine runtime parity, file-backed streams, network-backed streams, and broader
+host I/O remain fail-closed with structured `unsupported_instruction` runtime
+failures for the post-M7/native-runtime milestones.
 
 **Tier 2** is a genuine execution runtime on top of the WASI ABI.  It uses a
 single-threaded cooperative actor scheduler and provides a meaningful subset of
@@ -47,8 +80,8 @@ The **Checker disposition** column documents what the type checker emits when
 | Actor ask/reply (`reply_channel_wasm`) | ✅ Pass | Implemented | — |
 | Raw WASI socket capability (host-provided, no stable Hew stdlib surface yet) | ⚠️ WASM-TODO (not checker-gated) | Host-/runtime-dependent; Hew does not yet expose a supported cross-target socket layer | WASM-TODO |
 | `select {}` (any timeout expression, any arm count) | ✅ Pass | Implemented | — |
-| Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | 🚫 Error (`SupervisionTrees`) | Native-only runtime module | WASM-TODO |
-| Actor `link` / `unlink` / `monitor` / `demonitor` | 🚫 Error (`LinkMonitor`) | Native-only runtime module | WASM-TODO |
+| Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | 🚫 Error (`SupervisionTrees`) | Educational sandbox subset implements deterministic restart trees; native runtime parity remains gated | M6 |
+| Actor `link` / `unlink` / `monitor` / `demonitor` | 🚫 Error (`LinkMonitor`) | Educational sandbox subset implements deterministic graph state, exit signals, and monitor notifications; native runtime parity remains gated | M6 |
 | Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | 🚫 Error (`StructuredConcurrency`) | Native-only runtime module | WASM-TODO |
 | Scope-spawned `Task` handles | 🚫 Error (`Tasks`) | Native-only runtime module | WASM-TODO |
 | **`channel.new`, `Sender<T>::send/clone/close`, `Receiver<T>::try_recv/close`** | ✅ Pass | Bounded non-blocking slice implemented; `send` traps on full queue | v0.3.2 |
@@ -98,11 +131,12 @@ no coherent runtime support for them and allowing them through the checker
 would otherwise end in a trap or linker failure:
 
 - **Supervision trees / link-monitor / structured concurrency / tasks**: the
-  corresponding runtime modules are gated behind
-  `#[cfg(not(target_arch = "wasm32"))]` in `hew-runtime/src/lib.rs`.  Codegen
-  still lowers these operations, so warning-only checker behavior leaks through
-  to undefined-symbol linker failures.  Rejecting at check time gives users a
-  direct, feature-specific diagnostic instead.
+  production runtime modules are gated behind
+  `#[cfg(not(target_arch = "wasm32"))]` in `hew-runtime/src/lib.rs`.  The
+  sandbox VM separately teaches reduced M6 supervision/link/monitor semantics
+  with deterministic virtual time and typed fail-closed traps; Tier 2 still
+  rejects the production surface at check time to avoid undefined-symbol linker
+  failures.
 
 - **Channels (bounded subset)**: `channel.new`, sender clone/close,
   `Receiver::try_recv`, and typed `send` are available on wasm32 via the

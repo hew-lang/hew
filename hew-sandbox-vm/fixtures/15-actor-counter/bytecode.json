@@ -1,0 +1,323 @@
+{
+  "capabilities": [
+    {
+      "disposition": "allowed",
+      "id": "core.stdout",
+      "reason": "page stdout shim",
+      "required_by": [
+        "sym:core.stdout.println"
+      ]
+    }
+  ],
+  "compiler_version": "handcrafted-pending-actor-scheduler-emitter",
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": "block:counter.increment.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:counter.count"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:counter.n"
+                }
+              ],
+              "dst": "local:counter.next",
+              "op": "i64.add",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:counter.reply"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:counter.next"
+                }
+              ],
+              "dst": null,
+              "op": "actor.reply",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [
+              {
+                "kind": "local",
+                "value": "local:counter.next"
+              }
+            ],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:counter.increment",
+      "locals": [
+        {
+          "id": "local:counter.reply",
+          "mutable": false,
+          "name": "reply",
+          "span": null,
+          "type": "type:reply"
+        },
+        {
+          "id": "local:counter.count",
+          "mutable": false,
+          "name": "count",
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:counter.n",
+          "mutable": false,
+          "name": "n",
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:counter.next",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        }
+      ],
+      "module": "mod:main",
+      "name": "Counter.increment",
+      "params": [
+        "local:counter.reply",
+        "local:counter.count",
+        "local:counter.n"
+      ],
+      "result": "type:i64",
+      "span": null
+    },
+    {
+      "blocks": [
+        {
+          "id": "block:main.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 0
+                }
+              ],
+              "dst": "local:main.zero",
+              "op": "const.i64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "type",
+                  "value": "type:Counter"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.zero"
+                }
+              ],
+              "dst": "local:main.counter",
+              "op": "actor.spawn",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 5
+                }
+              ],
+              "dst": "local:main.n",
+              "op": "const.i64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.counter"
+                },
+                {
+                  "kind": "symbol",
+                  "value": "increment"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.n"
+                }
+              ],
+              "dst": "local:main.reply",
+              "op": "actor.ask",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "symbol",
+                  "value": "sym:core.stdout.println"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.reply"
+                }
+              ],
+              "dst": null,
+              "op": "call.stdlib",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:main",
+      "locals": [
+        {
+          "id": "local:main.zero",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.counter",
+          "mutable": false,
+          "name": "counter",
+          "span": null,
+          "type": "type:Counter"
+        },
+        {
+          "id": "local:main.n",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.reply",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        }
+      ],
+      "module": "mod:main",
+      "name": "main",
+      "params": [],
+      "result": "type:unit",
+      "span": null
+    }
+  ],
+  "hew_version": "0.5.0-pre",
+  "layouts": {
+    "actors": [
+      {
+        "handlers": [
+          {
+            "function": "fn:counter.increment",
+            "name": "increment"
+          }
+        ],
+        "id": "type:Counter",
+        "max_mailbox": 4,
+        "name": "Counter",
+        "state_fields": [
+          {
+            "index": 0,
+            "name": "count",
+            "type": "type:i64"
+          }
+        ]
+      }
+    ],
+    "enums": [],
+    "machines": [],
+    "records": [],
+    "supervisors": [],
+    "types": [
+      {
+        "id": "type:unit",
+        "kind": "unit",
+        "name": "()"
+      },
+      {
+        "id": "type:i64",
+        "kind": "integer",
+        "name": "i64"
+      },
+      {
+        "id": "type:string",
+        "kind": "string",
+        "name": "String"
+      },
+      {
+        "id": "type:actor",
+        "kind": "actor",
+        "name": "Actor"
+      },
+      {
+        "id": "type:reply",
+        "kind": "opaque",
+        "name": "ReplyToken"
+      },
+      {
+        "id": "type:Counter",
+        "kind": "actor",
+        "name": "Counter"
+      }
+    ]
+  },
+  "module_graph": {
+    "entry": "mod:main",
+    "modules": [
+      {
+        "functions": [
+          "fn:counter.increment",
+          "fn:main"
+        ],
+        "id": "mod:main",
+        "imports": [],
+        "path": "main.hew",
+        "source_id": "src:main"
+      }
+    ]
+  },
+  "package_id": "pkg:actor-counter",
+  "profile": "sandbox.educational.v0",
+  "schema_version": "hew.sandbox.bytecode.v0",
+  "source_map": {
+    "sources": [],
+    "spans": []
+  },
+  "stdlib_symbols": [
+    {
+      "admission": "allowed",
+      "capability": "core.stdout",
+      "id": "sym:core.stdout.println",
+      "module": "core.stdout",
+      "name": "println",
+      "params": [
+        "type:any"
+      ],
+      "result": "type:unit"
+    }
+  ]
+}

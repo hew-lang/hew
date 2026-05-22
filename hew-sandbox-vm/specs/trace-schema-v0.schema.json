@@ -1,0 +1,655 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hew.sh/schemas/sandbox/trace-v0.schema.json",
+  "title": "Hew Sandbox Trace Schema v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "trace_id",
+    "fixture_id",
+    "profile",
+    "hew_version",
+    "sandbox_version",
+    "result",
+    "replay",
+    "events",
+    "final_state"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "hew.sandbox.trace.v0"
+    },
+    "trace_id": {
+      "type": "string",
+      "pattern": "^trace:[A-Za-z0-9_.:-]+$"
+    },
+    "fixture_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_.-]*$"
+    },
+    "profile": {
+      "type": "string",
+      "pattern": "^sandbox\\.[a-z0-9_.-]+$"
+    },
+    "hew_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sandbox_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "result": {
+      "enum": [
+        "ok",
+        "compile_error",
+        "sandbox_rejected",
+        "runtime_failure",
+        "budget_exhausted",
+        "panic",
+        "trap"
+      ]
+    },
+    "replay": {
+      "$ref": "#/$defs/replay"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/event"
+      }
+    },
+    "final_state": {
+      "$ref": "#/$defs/final_state"
+    }
+  },
+  "$defs": {
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "type",
+        "phase",
+        "span"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "type": {
+          "enum": [
+            "trace.started",
+            "trace.ended",
+            "compile.diagnostic",
+            "sandbox.rejected",
+            "runtime.failure",
+            "budget.exhausted",
+            "io.stdout",
+            "io.stderr",
+            "replay.input",
+            "clock.virtual_advance",
+            "runtime.id_allocated",
+            "state.snapshot",
+            "step.committed"
+          ]
+        },
+        "phase": {
+          "enum": [
+            "compile",
+            "profile",
+            "run",
+            "replay"
+          ]
+        },
+        "span": {
+          "$ref": "#/$defs/span_or_null"
+        },
+        "message": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "diagnostic": {
+          "$ref": "#/$defs/diagnostic"
+        },
+        "rejection": {
+          "$ref": "#/$defs/sandbox_rejection"
+        },
+        "failure": {
+          "$ref": "#/$defs/runtime_failure"
+        },
+        "replay_input": {
+          "$ref": "#/$defs/replay_input"
+        },
+        "clock": {
+          "$ref": "#/$defs/virtual_clock"
+        },
+        "amount_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "id_kind": {
+          "$ref": "#/$defs/id_kind"
+        },
+        "id": {
+          "$ref": "#/$defs/sandbox_id"
+        },
+        "parent_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sandbox_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "step_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "budget_remaining": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "trap_kind": {
+          "$ref": "#/$defs/trap_kind"
+        }
+      }
+    },
+    "replay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seed",
+        "step_budget",
+        "virtual_clock",
+        "inputs"
+      ],
+      "properties": {
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "step_budget": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "virtual_clock": {
+          "$ref": "#/$defs/virtual_clock"
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/replay_input"
+          }
+        }
+      }
+    },
+    "replay_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "data"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "stdin",
+            "argv",
+            "env",
+            "random_bytes",
+            "clock_advance",
+            "capability_response",
+            "user_event"
+          ]
+        },
+        "data": {
+          "$ref": "#/$defs/json_value"
+        }
+      }
+    },
+    "virtual_clock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "epoch_ms",
+        "tick_ms",
+        "current_ms"
+      ],
+      "properties": {
+        "epoch_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tick_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "current_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "final_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "exit_code",
+        "step_count",
+        "budget_remaining",
+        "virtual_clock",
+        "stdout",
+        "stderr",
+        "ids",
+        "diagnostics",
+        "sandbox_rejections",
+        "runtime_failures",
+        "globals"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "ok",
+            "compile_error",
+            "sandbox_rejected",
+            "runtime_failure",
+            "budget_exhausted",
+            "panic",
+            "trap"
+          ]
+        },
+        "exit_code": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "step_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "budget_remaining": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "virtual_clock": {
+          "$ref": "#/$defs/virtual_clock"
+        },
+        "stdout": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "stderr": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ids": {
+          "$ref": "#/$defs/id_snapshot"
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        },
+        "sandbox_rejections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sandbox_rejection"
+          }
+        },
+        "runtime_failures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/runtime_failure"
+          }
+        },
+        "globals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/value_binding"
+          }
+        }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "phase",
+        "severity",
+        "code",
+        "message",
+        "span",
+        "notes",
+        "suggestions"
+      ],
+      "properties": {
+        "phase": {
+          "enum": [
+            "lex",
+            "parse",
+            "resolve",
+            "type",
+            "lower",
+            "profile",
+            "bytecode"
+          ]
+        },
+        "severity": {
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "help"
+          ]
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z0-9_:-]+$"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "span": {
+          "$ref": "#/$defs/span_or_null"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/suggestion"
+          }
+        }
+      }
+    },
+    "suggestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "message",
+        "replacement",
+        "span"
+      ],
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "replacement": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "span": {
+          "$ref": "#/$defs/span_or_null"
+        }
+      }
+    },
+    "sandbox_rejection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "capability",
+        "message",
+        "span"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z0-9_.:-]+$"
+        },
+        "capability": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "span": {
+          "$ref": "#/$defs/span_or_null"
+        }
+      }
+    },
+    "runtime_failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "message",
+        "span",
+        "trap_kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "panic",
+            "trap",
+            "budget_exhausted",
+            "unsupported",
+            "internal_error"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "span": {
+          "$ref": "#/$defs/span_or_null"
+        },
+        "trap_kind": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/trap_kind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "trap_kind": {
+      "enum": [
+        "integer_overflow",
+        "divide_by_zero",
+        "invalid_local",
+        "invalid_block",
+        "invalid_call",
+        "invalid_enum_tag",
+        "invalid_record_field",
+        "vector_bounds",
+        "string_bounds",
+        "regex_compile",
+        "capability_missing",
+        "budget_exhausted",
+        "panic",
+        "unsupported_instruction",
+        "internal_error"
+      ]
+    },
+    "id_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actors",
+        "channels",
+        "tasks",
+        "supervisors",
+        "machines"
+      ],
+      "properties": {
+        "actors": {
+          "$ref": "#/$defs/id_array"
+        },
+        "channels": {
+          "$ref": "#/$defs/id_array"
+        },
+        "tasks": {
+          "$ref": "#/$defs/id_array"
+        },
+        "supervisors": {
+          "$ref": "#/$defs/id_array"
+        },
+        "machines": {
+          "$ref": "#/$defs/id_array"
+        }
+      }
+    },
+    "id_array": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sandbox_id"
+      }
+    },
+    "id_kind": {
+      "enum": [
+        "actor",
+        "channel",
+        "task",
+        "supervisor",
+        "machine"
+      ]
+    },
+    "sandbox_id": {
+      "type": "string",
+      "pattern": "^(actor|channel|task|supervisor|machine):[A-Za-z0-9_.:-]+$"
+    },
+    "value_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "$ref": "#/$defs/json_value"
+        }
+      }
+    },
+    "span_or_null": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/span"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "path",
+        "start",
+        "end"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start": {
+          "$ref": "#/$defs/source_position"
+        },
+        "end": {
+          "$ref": "#/$defs/source_position"
+        }
+      }
+    },
+    "source_position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "line",
+        "column",
+        "byte_offset"
+      ],
+      "properties": {
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "column": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "byte_offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "json_value": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/json_value"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/json_value"
+          }
+        }
+      ]
+    }
+  }
+}

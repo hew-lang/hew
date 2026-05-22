@@ -1,0 +1,199 @@
+{
+  "capabilities": [],
+  "compiler_version": "handcrafted-pending-control-flow-emitter",
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": "block:main.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 0
+                }
+              ],
+              "dst": "local:main.1",
+              "op": "const.i64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.0"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.1"
+                }
+              ],
+              "dst": null,
+              "op": "local.set",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "br",
+            "span": null,
+            "target": "block:main.loop"
+          }
+        },
+        {
+          "id": "block:main.loop",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.0"
+                }
+              ],
+              "dst": "local:main.2",
+              "op": "local.get",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 1
+                }
+              ],
+              "dst": "local:main.3",
+              "op": "const.i64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.2"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.3"
+                }
+              ],
+              "dst": "local:main.4",
+              "op": "i64.checked_add",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.0"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.4"
+                }
+              ],
+              "dst": null,
+              "op": "local.set",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "br",
+            "span": null,
+            "target": "block:main.loop"
+          }
+        }
+      ],
+      "id": "fn:main",
+      "locals": [
+        {
+          "id": "local:main.0",
+          "mutable": true,
+          "name": "i",
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.1",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.2",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.3",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.4",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        }
+      ],
+      "module": "mod:main",
+      "name": "main",
+      "params": [],
+      "result": "type:unit",
+      "span": null
+    }
+  ],
+  "hew_version": "0.5.0-pre",
+  "layouts": {
+    "actors": [],
+    "enums": [],
+    "machines": [],
+    "records": [],
+    "supervisors": [],
+    "types": [
+      {
+        "id": "type:unit",
+        "kind": "unit",
+        "name": "()"
+      },
+      {
+        "id": "type:i64",
+        "kind": "integer",
+        "name": "i64"
+      }
+    ]
+  },
+  "module_graph": {
+    "entry": "mod:main",
+    "modules": [
+      {
+        "functions": [
+          "fn:main"
+        ],
+        "id": "mod:main",
+        "imports": [],
+        "path": "main.hew",
+        "source_id": "src:main"
+      }
+    ]
+  },
+  "package_id": "pkg:step-budget-exhausted",
+  "profile": "sandbox.educational.v0",
+  "schema_version": "hew.sandbox.bytecode.v0",
+  "source_map": {
+    "sources": [],
+    "spans": []
+  },
+  "stdlib_symbols": []
+}

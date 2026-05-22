@@ -72,6 +72,10 @@ and then [`examples/multifile/README.md`](examples/multifile/README.md).
 
 When you move from language lessons to library APIs, use [`std/README.md`](std/README.md), the canonical index of shipped stdlib modules.
 
+## Sandbox VM
+
+The sandbox VM runs admitted Hew programs in a deterministic browser-hosted runtime with a virtual clock, seeded randomness, logical heap accounting, and page-owned streams. See the public [sandbox VM divergence catalog](docs/sandbox-vm-divergences.md) for the accepted differences from native execution and the native-only APIs rejected by the sandbox profile.
+
 ### Language Basics
 
 **`println` and `print` are plain function calls, not macros.**  Coming from Rust, you might reach for `println!` — in Hew these are ordinary built-in functions written without a `!` suffix, auto-imported into every file:

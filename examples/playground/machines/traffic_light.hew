@@ -1,0 +1,20 @@
+//! @name Traffic Light
+//! @description A traffic signal state machine
+
+machine TrafficLight {
+    state Red;
+    state Green;
+    state Yellow;
+
+    event Tick;
+
+    on Tick: Red -> Green {
+        Green
+    }
+    on Tick: Green -> Yellow {
+        Yellow
+    }
+    on Tick: Yellow -> Red {
+        Red
+    }
+}

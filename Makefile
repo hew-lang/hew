@@ -26,6 +26,9 @@
 #   make wasm         — build hew-wasm (browser WASM via wasm-pack)
 #   make playground-manifest       — regenerate examples/playground/manifest.json
 #   make playground-manifest-check — verify examples/playground/manifest.json freshness
+#   make sandbox-fixtures          — regenerate sandbox VM bytecode fixtures from main.hew
+#   make sandbox-fixtures-check    — verify sandbox VM bytecode fixtures are fresh
+#   make sandbox-parity            — native hew run ↔ sandbox VM parity harness
 #   make playground-check          — manifest freshness + curated analysis smoke + build hew-wasm
 #   make playground-wasi-check     — focused curated manifest WASI runtime preflight
 #   make ci-preflight              — dispatch a conservative local preflight from the current diff
@@ -49,7 +52,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release
+.PHONY: all bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release
 .PHONY: test test-all test-rust test-parser test-types test-cli test-runtime-net test-runtime-unit test-stdlib test-hew test-release-binary asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
@@ -134,6 +137,17 @@ playground-manifest:
 # Verify the checked-in playground manifest is current.
 playground-manifest-check:
 	python3 scripts/gen-playground-manifest.py --check
+
+sandbox-fixtures:
+	cargo run -p xtask -- sandbox-fixtures
+
+sandbox-fixtures-check:
+	cargo run -p xtask -- sandbox-fixtures --check
+
+sandbox-parity: hew stdlib
+	npm --prefix hew-sandbox-vm ci
+	npm --prefix hew-sandbox-vm run build
+	cargo test -p hew-sandbox-wasm --test parity
 
 # Repo-local browser/tooling smoke:
 # manifest freshness + curated hew-wasm analysis smoke + analysis-only WASM build.

@@ -1,0 +1,15 @@
+enum Shape {
+    Circle(i64);
+    Rectangle(i64, i64);
+}
+
+fn area(shape: Shape) -> i64 {
+    match shape {
+        Circle(r) => r * r * 3,
+        Rectangle(w, h) => w * h,
+    }
+}
+
+fn main() {
+    println(area(Rectangle(4, 6)));
+}

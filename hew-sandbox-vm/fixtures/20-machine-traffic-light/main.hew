@@ -1,0 +1,24 @@
+machine TrafficLight {
+    state Red;
+    state Green;
+    state Yellow;
+
+    event Tick;
+
+    on Tick: Red -> Green {
+        Green
+    }
+    on Tick: Green -> Yellow {
+        Yellow
+    }
+    on Tick: Yellow -> Red {
+        Red
+    }
+}
+
+fn main() {
+    var light = Red;
+    println(light.state_name());
+    light.step(Tick);
+    println(light.state_name());
+}

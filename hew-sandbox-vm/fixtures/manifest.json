@@ -1,0 +1,292 @@
+[
+  {
+    "id": "hello-world",
+    "category": "sequential",
+    "name": "Hello World",
+    "description": "Emits one stdout record and a successful final snapshot.",
+    "source_path": "01-hello-world/main.hew",
+    "expected_trace_path": "01-hello-world/expected.trace.json",
+    "status": "planned",
+    "features": ["stdout", "final-state"]
+  },
+  {
+    "id": "arithmetic-checked",
+    "category": "sequential",
+    "name": "Checked Arithmetic",
+    "description": "Covers deterministic integer arithmetic and checked-operation accounting.",
+    "source_path": "02-arithmetic-checked/main.hew",
+    "expected_trace_path": "02-arithmetic-checked/expected.trace.json",
+    "status": "planned",
+    "features": ["arithmetic", "checked-arithmetic"]
+  },
+  {
+    "id": "branch-loop",
+    "category": "sequential",
+    "name": "Branch and Loop",
+    "description": "Covers branch selection, loop progress, and step accounting.",
+    "source_path": "03-branch-loop/main.hew",
+    "expected_trace_path": "03-branch-loop/expected.trace.json",
+    "status": "m5",
+    "features": ["branch", "loop", "step-budget"]
+  },
+  {
+    "id": "record-fields",
+    "category": "values",
+    "name": "Record Fields",
+    "description": "Covers record construction and field projection.",
+    "source_path": "04-record-fields/main.hew",
+    "expected_trace_path": "04-record-fields/expected.trace.json",
+    "status": "m5",
+    "features": ["record", "field"]
+  },
+  {
+    "id": "enum-match",
+    "category": "values",
+    "name": "Enum Match",
+    "description": "Covers enum construction and match result selection.",
+    "source_path": "05-enum-match/main.hew",
+    "expected_trace_path": "05-enum-match/expected.trace.json",
+    "status": "planned",
+    "features": ["enum", "match"]
+  },
+  {
+    "id": "vector-basics",
+    "category": "values",
+    "name": "Vector Basics",
+    "description": "Covers vector allocation, push, get, and length operations.",
+    "source_path": "06-vector-basics/main.hew",
+    "expected_trace_path": "06-vector-basics/expected.trace.json",
+    "status": "planned",
+    "features": ["vector", "stdlib-symbol"]
+  },
+  {
+    "id": "string-interpolation",
+    "category": "values",
+    "name": "String Interpolation",
+    "description": "Covers string construction and formatted output.",
+    "source_path": "07-string-interpolation/main.hew",
+    "expected_trace_path": "07-string-interpolation/expected.trace.json",
+    "status": "planned",
+    "features": ["string", "stdout"]
+  },
+  {
+    "id": "regex-match",
+    "category": "stdlib",
+    "name": "Regex Match",
+    "description": "Covers regex stdlib symbol references and deterministic match output.",
+    "source_path": "08-regex-match/main.hew",
+    "expected_trace_path": "08-regex-match/expected.trace.json",
+    "status": "planned",
+    "features": ["regex", "stdlib-symbol"]
+  },
+  {
+    "id": "compile-type-error",
+    "category": "diagnostics",
+    "name": "Compile Type Error",
+    "description": "Covers compile diagnostic records with a primary source span.",
+    "source_path": "09-compile-type-error/main.hew",
+    "expected_trace_path": "09-compile-type-error/expected.trace.json",
+    "status": "planned",
+    "features": ["compile-diagnostic", "source-span"]
+  },
+  {
+    "id": "sandbox-reject-filesystem",
+    "category": "sandbox-profile",
+    "name": "Filesystem Rejection",
+    "description": "Covers fail-closed sandbox profile rejection for filesystem access.",
+    "source_path": "10-sandbox-reject-filesystem/main.hew",
+    "expected_trace_path": "10-sandbox-reject-filesystem/expected.trace.json",
+    "status": "planned",
+    "features": ["sandbox-rejection", "capability"]
+  },
+  {
+    "id": "runtime-panic",
+    "category": "runtime-failure",
+    "name": "Runtime Panic",
+    "description": "Covers panic failure records.",
+    "source_path": "11-runtime-panic/main.hew",
+    "expected_trace_path": "11-runtime-panic/expected.trace.json",
+    "status": "planned",
+    "features": ["panic", "runtime-failure"]
+  },
+  {
+    "id": "divide-by-zero-trap",
+    "category": "runtime-failure",
+    "name": "Divide By Zero Trap",
+    "description": "Covers deterministic trap records.",
+    "source_path": "12-divide-by-zero-trap/main.hew",
+    "expected_trace_path": "12-divide-by-zero-trap/expected.trace.json",
+    "status": "planned",
+    "features": ["trap", "arithmetic"]
+  },
+  {
+    "id": "step-budget-exhausted",
+    "category": "runtime-failure",
+    "name": "Step Budget Exhausted",
+    "description": "Covers budget exhaustion event and final state.",
+    "source_path": "13-step-budget-exhausted/main.hew",
+    "expected_trace_path": "13-step-budget-exhausted/expected.trace.json",
+    "status": "planned",
+    "features": ["step-budget", "runtime-failure"]
+  },
+  {
+    "id": "virtual-sleep-clock",
+    "category": "replay",
+    "name": "Virtual Sleep Clock",
+    "description": "Covers virtual clock advancement records.",
+    "source_path": "14-virtual-sleep-clock/main.hew",
+    "expected_trace_path": "14-virtual-sleep-clock/expected.trace.json",
+    "status": "planned",
+    "features": ["virtual-clock", "sleep"]
+  },
+  {
+    "id": "actor-counter",
+    "category": "concurrency",
+    "name": "Actor Counter",
+    "description": "Covers actor ID allocation and deterministic actor output.",
+    "source_path": "15-actor-counter/main.hew",
+    "expected_trace_path": "15-actor-counter/expected.trace.json",
+    "status": "m4",
+    "features": ["actor", "id", "scheduler", "replay"]
+  },
+  {
+    "id": "actor-ask-reply",
+    "category": "concurrency",
+    "name": "Actor Ask Reply",
+    "description": "Covers ask/reply trace shape without defining scheduler implementation.",
+    "source_path": "16-actor-ask-reply/main.hew",
+    "expected_trace_path": "16-actor-ask-reply/expected.trace.json",
+    "status": "m4",
+    "features": ["actor", "ask", "reply", "scheduler"]
+  },
+  {
+    "id": "channel-select",
+    "category": "concurrency",
+    "name": "Channel Select",
+    "description": "Covers channel ID allocation and select trace shape.",
+    "source_path": "17-channel-select/main.hew",
+    "expected_trace_path": "17-channel-select/expected.trace.json",
+    "status": "planned",
+    "features": ["channel", "select", "id"]
+  },
+  {
+    "id": "task-await",
+    "category": "concurrency",
+    "name": "Task Await",
+    "description": "Covers task ID allocation and await result trace shape.",
+    "source_path": "18-task-await/main.hew",
+    "expected_trace_path": "18-task-await/expected.trace.json",
+    "status": "planned",
+    "features": ["task", "await", "id"]
+  },
+  {
+    "id": "supervisor-restart",
+    "category": "concurrency",
+    "name": "Supervisor Restart",
+    "description": "Covers supervisor ID allocation and restart trace shape.",
+    "source_path": "19-supervisor-restart/main.hew",
+    "expected_trace_path": "19-supervisor-restart/expected.trace.json",
+    "status": "planned",
+    "features": ["supervisor", "actor", "id"]
+  },
+  {
+    "id": "machine-traffic-light",
+    "category": "state-machine",
+    "name": "Machine Traffic Light",
+    "description": "Covers machine ID allocation and deterministic state output.",
+    "source_path": "20-machine-traffic-light/main.hew",
+    "expected_trace_path": "20-machine-traffic-light/expected.trace.json",
+    "status": "planned",
+    "features": ["machine", "state"]
+  },
+  {
+    "id": "replay-stdin",
+    "category": "replay",
+    "name": "Replay Stdin",
+    "description": "Covers deterministic stdin replay input.",
+    "source_path": "21-replay-stdin/main.hew",
+    "expected_trace_path": "21-replay-stdin/expected.trace.json",
+    "status": "planned",
+    "features": ["replay-input", "stdin"]
+  },
+  {
+    "id": "deterministic-random",
+    "category": "replay",
+    "name": "Deterministic Random",
+    "description": "Covers seed semantics and random byte replay input.",
+    "source_path": "22-deterministic-random/main.hew",
+    "expected_trace_path": "22-deterministic-random/expected.trace.json",
+    "status": "planned",
+    "features": ["seed", "random-bytes", "replay-input"]
+  },
+  {
+    "id": "direct-call",
+    "category": "sequential",
+    "name": "Direct Call",
+    "description": "Covers direct function calls, returns, and monomorphized generic call shape.",
+    "source_path": "23-direct-call/main.hew",
+    "expected_trace_path": "23-direct-call/expected.trace.json",
+    "status": "m3",
+    "features": ["call", "return", "generics", "stdout"]
+  },
+  {
+    "id": "actor-pipeline",
+    "category": "concurrency",
+    "name": "Actor Pipeline",
+    "description": "Covers actor send, receive, deterministic message IDs, and round-robin scheduler order.",
+    "source_path": "24-actor-pipeline/main.hew",
+    "expected_trace_path": "24-actor-pipeline/expected.trace.json",
+    "status": "m4",
+    "features": ["actor", "send", "receive", "message-id", "scheduler"]
+  },
+  {
+    "id": "actor-crash",
+    "category": "concurrency",
+    "name": "Actor Crash",
+    "description": "Covers actor crash trace records and on(crash) lifecycle hooks.",
+    "source_path": "25-actor-crash/main.hew",
+    "expected_trace_path": "25-actor-crash/expected.trace.json",
+    "status": "m4",
+    "features": ["actor", "crash", "lifecycle"]
+  },
+  {
+    "id": "i64-bigint",
+    "category": "values",
+    "name": "i64 BigInt",
+    "description": "Covers i64 arithmetic and comparison for values above JavaScript's safe integer range.",
+    "source_path": "26-i64-bigint/main.hew",
+    "expected_trace_path": "26-i64-bigint/expected.trace.json",
+    "status": "m4",
+    "features": ["arithmetic", "comparison", "bigint"]
+  },
+  {
+    "id": "actor-crash-restart-ignored",
+    "category": "concurrency",
+    "name": "Actor Crash Restart Ignored",
+    "description": "Covers fail-closed M4 actor crash termination when an on(crash) hook returns an M6 restart directive.",
+    "source_path": "27-actor-crash-restart-ignored/main.hew",
+    "expected_trace_path": "27-actor-crash-restart-ignored/expected.trace.json",
+    "status": "m4",
+    "features": ["actor", "crash", "lifecycle"]
+  },
+  {
+    "id": "actor-state-arity-trap",
+    "category": "concurrency",
+    "name": "Actor State Arity Trap",
+    "description": "Covers deterministic actor crash when a handler returns a record with the wrong state arity.",
+    "source_path": "28-actor-state-arity-trap/main.hew",
+    "expected_trace_path": "28-actor-state-arity-trap/expected.trace.json",
+    "status": "m4",
+    "features": ["actor", "state", "trap"]
+  },
+  {
+    "id": "mixed-scalar-compare-trap",
+    "category": "values",
+    "name": "Mixed Scalar Compare Trap",
+    "description": "Covers fail-closed ordered comparison between i64 and f64 scalars.",
+    "source_path": "29-mixed-scalar-compare-trap/main.hew",
+    "expected_trace_path": "29-mixed-scalar-compare-trap/expected.trace.json",
+    "status": "m4",
+    "features": ["comparison", "bigint", "trap"]
+  }
+]

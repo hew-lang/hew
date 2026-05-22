@@ -1,0 +1,32 @@
+[package]
+name = "hew-sandbox-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WebAssembly bindings for Hew sandbox bytecode export"
+repository = "https://github.com/hew-lang/hew"
+readme = "README.md"
+keywords = ["hew", "sandbox", "wasm", "webassembly"]
+categories = ["compilers", "wasm"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[dependencies]
+hew-parser = { path = "../hew-parser" }
+hew-types = { path = "../hew-types" }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+wasm-bindgen = "0.2"
+
+[dev-dependencies]
+assert_cmd = "2"
+tempfile.workspace = true
+walkdir = "2"

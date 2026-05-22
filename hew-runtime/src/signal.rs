@@ -19,6 +19,67 @@
 //!
 //! Active on Unix-like platforms (Linux, macOS). Other platforms
 //! (Windows, WASM) get no-op stubs.
+//!
+//! # Trap-as-actor-crash boundary (two-tier policy)
+//!
+//! This module codifies the formal boundary between traps that route to
+//! an actor crash (recoverable) and traps that terminate the process
+//! (program-terminating). The substrate below already implements the
+//! policy; this docstring records the invariant so future changes do not
+//! silently shift the line.
+//!
+//! ## Recoverable tier — actor-crash
+//!
+//! Synchronous fault signals delivered to a worker thread that holds a
+//! valid `sigjmp_buf` recovery context are caught by
+//! `crash_signal_handler`, which calls `siglongjmp` back to the
+//! scheduler. The scheduler marks the actor `Crashed` and continues
+//! processing other actors. The fault classes routed through this path:
+//!
+//! - `SIGSEGV`, `SIGBUS`, `SIGFPE`, `SIGILL`, `SIGTRAP`
+//! - Integer overflow trap (LLVM `*.with.overflow` branch → `ud2` →
+//!   `SIGILL`)
+//! - OOB indexing trap (bounds check → trap)
+//! - Integer divide / modulo / shift traps
+//! - Explicit `panic(...)` and `hew_panic()`
+//! - `HeapExceeded` (arena cap exceeded → `hew_trap_with_code` stamps
+//!   the discriminator before `siglongjmp`)
+//! - `PartitionDetected` (mailbox / duplex disconnect surfaces as a
+//!   typed recv error, not a trap; included here for completeness as a
+//!   fail-closed exit class the supervisor observes)
+//! - FFI null-pointer dereference reaching the runtime
+//!
+//! Stack-overflow on the worker stack is recoverable: handlers run on
+//! the per-worker alternate signal stack installed via `SA_ONSTACK` and
+//! `sigaltstack`. A signal raised while the recovery path is already
+//! running (double-fault) is the boundary — see below.
+//!
+//! ## Program-terminating tier — `_exit`
+//!
+//! The handler calls `libc::_exit(128 + sig)` (async-signal-safe) in
+//! exactly these cases:
+//!
+//! - **Double-fault**: a signal arrives while `in_recovery` is set. See
+//!   the re-entrancy check in `crash_signal_handler` below — if the
+//!   recovery path itself faulted, there is no safe `siglongjmp` target
+//!   and continuing would corrupt scheduler state.
+//! - **No recovery context**: the faulting thread has no valid
+//!   `sigjmp_buf` installed (signal raised in scheduler internals,
+//!   pre-dispatch Rust code, or any worker before `init_worker_recovery`
+//!   has run). Recovery would jump into uninitialised memory.
+//! - **Allocator or scheduler invariant break**: detected by upstream
+//!   code, not the signal handler directly; reachable via the same
+//!   `_exit` path when the invariant guard cannot proceed.
+//!
+//! ## Why this is locked
+//!
+//! Both tiers are load-bearing for v0.5's fail-closed substrate. The
+//! recoverable tier guarantees that a single actor's bug cannot down
+//! the runtime; the terminating tier guarantees that scheduler-internal
+//! corruption cannot silently propagate. Adding a fault class to the
+//! recoverable list requires a corresponding `sigjmp_buf` reachability
+//! proof; demoting a fault class to the terminating list is a
+//! breaking change to the actor-isolation contract.
 
 // ── Shared recovery logic ────────────────────────────────────────────────
 //

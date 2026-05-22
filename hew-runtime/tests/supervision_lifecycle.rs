@@ -23,10 +23,14 @@
 
 use std::ffi::{c_void, CString};
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{mpsc, Arc, Barrier, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use hew_runtime::actor::hew_actor_send;
+use hew_runtime::actor::{
+    hew_actor_send, hew_actor_set_crash_teardown_order_hook,
+    HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION,
+    HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION,
+};
 use hew_runtime::crash::{hew_crash_log_count, hew_crash_log_last};
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
 use hew_runtime::link::hew_actor_link;
@@ -491,6 +495,182 @@ fn link_delivers_exit_on_crash() {
         "linked actor_b should have received EXIT message (got {})",
         LINK_EXIT_RECEIVED.load(Ordering::SeqCst)
     );
+
+    hew_deterministic_reset();
+}
+
+/// D48 cascade invariant: a linked actor's crash-cascade EXIT is enqueued
+/// before the supervisor's restart cycle for the crashed actor completes.
+///
+/// The EXIT-enqueue probe sends directly from the crash teardown path after
+/// `propagate_exit_to_links`, while a separate waiter thread sends when
+/// `hew_supervisor_wait_restart` observes restart completion. The test drains
+/// the shared channel and asserts the first signal is the EXIT enqueue, so the
+/// assertion is not constructed by sequentially waiting for EXIT before restart.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Integration setup keeps the independent ordering probes in one test"
+)]
+fn linked_actor_receives_exit_before_supervisor_restarts() {
+    const STRATEGY_ONE_FOR_ONE: i32 = 0;
+    const RESTART_PERMANENT: i32 = 0;
+    const OVERFLOW_DROP_NEW: i32 = 1;
+
+    static LINK_EXIT_RECEIVED: AtomicI32 = AtomicI32::new(0);
+    static CRASH_TEARDOWN_ORDER_TX: Mutex<Option<mpsc::Sender<(&'static str, usize)>>> =
+        Mutex::new(None);
+
+    struct CrashTeardownOrderHookGuard;
+
+    impl Drop for CrashTeardownOrderHookGuard {
+        fn drop(&mut self) {
+            hew_actor_set_crash_teardown_order_hook(None);
+            *CRASH_TEARDOWN_ORDER_TX.lock().unwrap() = None;
+        }
+    }
+
+    fn crash_teardown_order_hook(event: i32) {
+        if event == HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION {
+            std::thread::sleep(Duration::from_millis(250));
+            return;
+        }
+
+        if event == HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION {
+            if let Some(tx) = CRASH_TEARDOWN_ORDER_TX.lock().unwrap().as_ref() {
+                let _ = tx.send(("exit_enqueued", 0));
+            }
+        }
+    }
+
+    unsafe extern "C-unwind" fn exit_observing_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        msg_type: i32,
+        _data: *mut c_void,
+        _data_size: usize,
+    ) {
+        // SYS_MSG_EXIT = 103.
+        if msg_type == 103 {
+            LINK_EXIT_RECEIVED.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_scheduler();
+    hew_deterministic_reset();
+    LINK_EXIT_RECEIVED.store(0, Ordering::SeqCst);
+    DISPATCH_COUNT.store(0, Ordering::SeqCst);
+    DISPATCH_SIGNAL.reset();
+    let (order_tx, order_rx) = mpsc::channel();
+    *CRASH_TEARDOWN_ORDER_TX.lock().unwrap() = Some(order_tx.clone());
+    hew_actor_set_crash_teardown_order_hook(Some(crash_teardown_order_hook));
+    let _order_hook_guard = CrashTeardownOrderHookGuard;
+
+    let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 5, 60);
+    let linked = TestActor::spawn(exit_observing_dispatch);
+
+    // SAFETY: supervisor and standalone actor wrappers keep the
+    // underlying handles live; child-management and link FFI are raw.
+    unsafe {
+        hew_supervisor_set_restart_notify(sup.as_ptr());
+
+        let mut state: i32 = 0;
+        let name = cstr("cascade-source");
+        let spec = HewChildSpec {
+            name: name.as_ptr(),
+            init_state: (&raw mut state).cast(),
+            init_state_size: std::mem::size_of::<i32>(),
+            dispatch: Some(counting_dispatch),
+            restart_policy: RESTART_PERMANENT,
+            mailbox_capacity: -1,
+            overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
+            on_crash: None,
+        };
+        assert_eq!(
+            hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
+            0
+        );
+        assert_eq!(sup.start(), 0);
+
+        let child = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
+        assert!(!child.is_null(), "supervised child must be spawned");
+        let crashed_id = (*child).id;
+
+        // Wait until the child is actually dispatching so the link
+        // attaches to a runnable target.
+        hew_actor_send(child, 1, std::ptr::null_mut(), 0);
+        assert!(
+            DISPATCH_SIGNAL.wait_for(1, Duration::from_secs(5)),
+            "supervised child should run at least once before linking"
+        );
+
+        // Link standalone actor → supervised child.  When the child
+        // crashes, propagate_exit_to_links must enqueue SYS_MSG_EXIT in
+        // the standalone actor's mailbox.
+        hew_actor_link(linked.as_ptr(), child);
+
+        // Inject the crash and trigger it.
+        let restart_waiter_ready = Arc::new(Barrier::new(2));
+        let sup_addr = sup.as_ptr() as usize;
+        let restart_tx = order_tx.clone();
+        let restart_waiter = {
+            let restart_waiter_ready = Arc::clone(&restart_waiter_ready);
+            std::thread::spawn(move || {
+                restart_waiter_ready.wait();
+                let restart_count = hew_supervisor_wait_restart(
+                    sup_addr as *mut hew_runtime::supervisor::HewSupervisor,
+                    1,
+                    5_000,
+                );
+                let _ = restart_tx.send(("restart", restart_count));
+            })
+        };
+        restart_waiter_ready.wait();
+
+        hew_fault_inject_crash(crashed_id, 1);
+        hew_actor_send(child, 1, std::ptr::null_mut(), 0);
+
+        let first = order_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("linked EXIT or supervisor restart observation must arrive");
+        assert_eq!(
+            first.0, "exit_enqueued",
+            "D48 invariant: linked actor's EXIT enqueue must win the \
+             independent race against supervisor restart completion (first={first:?})"
+        );
+
+        let second = order_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("supervisor restart observation must arrive after linked EXIT");
+        assert_eq!(
+            second.0, "restart",
+            "only linked EXIT and supervisor restart observations are expected"
+        );
+        assert!(
+            second.1 >= 1,
+            "supervisor must complete a restart cycle for the crashed child"
+        );
+        restart_waiter
+            .join()
+            .expect("restart waiter must not panic");
+
+        // Sanity: the restarted child gets a fresh actor id, proving
+        // the supervisor actually re-spawned.
+        let restarted = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
+        assert!(
+            !restarted.is_null(),
+            "restarted child must be available after restart cycle"
+        );
+        assert_ne!(
+            (*restarted).id,
+            crashed_id,
+            "restart must replace the crashed child with a new actor"
+        );
+    }
 
     hew_deterministic_reset();
 }

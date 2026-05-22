@@ -1718,6 +1718,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "rustls-webpki",
+ "serde",
  "serde_json",
  "snow",
  "socket2",

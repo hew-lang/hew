@@ -51,6 +51,8 @@ otel = ["dep:ureq"]
 # CBOR codec (R62: CBOR+CDDL replaces HBF; ciborium chosen by Council B).
 # Added in W0 (dependency available); encoding usage added in W1-W6.
 ciborium = "0.2"
+# Serde derive support for the CBOR envelope types (W1+).
+serde.workspace = true
 # Core dependencies — always linked (collections, print, string, etc.)
 hew-cabi = { path = "../hew-cabi" }
 libc.workspace = true

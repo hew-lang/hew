@@ -121,6 +121,11 @@ macro_rules! cabi_guard {
 pub(crate) mod lifetime;
 pub(crate) mod util;
 
+/// CBOR wire envelope types — the Rust-native representation of the Hew wire
+/// protocol. Codec (encode/decode) is added in W2; this module is type-shape
+/// only.
+pub mod envelope;
+
 #[cfg(test)]
 pub(crate) struct RuntimeTestGuard {
     _lock_guard: Option<std::sync::MutexGuard<'static, ()>>,

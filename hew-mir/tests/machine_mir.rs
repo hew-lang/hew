@@ -2,13 +2,12 @@
 //!
 //! Every `HirItem::Machine` produces a synthesised `<Name>__step` MIR
 //! function with the correct signature and a fail-closed state×event
-//! dispatch shell. Transition bodies, hooks, and transition-out drops are
-//! deliberately not lowered in Slice 4a; matched arms return target-state
-//! placeholders.
+//! dispatch shell. Transition bodies and lifecycle hooks lower into matched
+//! arms; transition-out drops remain a later slice.
 
 use hew_hir::{
-    HirExpr, HirExprKind, HirField, HirItem, HirLiteral, HirMachineDecl, HirMachineEvent,
-    HirMachineState, HirMachineTransition, HirModule, IntentKind, ValueClass,
+    HirBlock, HirExpr, HirExprKind, HirField, HirItem, HirMachineDecl, HirMachineEvent,
+    HirMachineState, HirMachineTransition, HirModule, HirStmt, HirStmtKind, IntentKind, ValueClass,
 };
 use hew_mir::{lower_hir_module, FunctionCallConv, Instr, Place, Terminator, TrapKind};
 use hew_types::ResolvedTy;
@@ -27,14 +26,75 @@ fn empty_module(items: Vec<HirItem>) -> HirModule {
     }
 }
 
-fn unit_literal_expr() -> HirExpr {
+fn machine_ctor_expr(machine_name: &str, state_idx: usize) -> HirExpr {
+    HirExpr {
+        node: hew_hir::HirNodeId(0),
+        site: hew_hir::SiteId(0),
+        ty: ResolvedTy::Named {
+            name: machine_name.to_string(),
+            args: vec![],
+        },
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::MachineVariantCtor {
+            machine_name: machine_name.to_string(),
+            state_idx,
+            payload: None,
+        },
+        span: 0..0,
+    }
+}
+
+fn machine_emit_expr(event_idx: usize) -> HirExpr {
     HirExpr {
         node: hew_hir::HirNodeId(0),
         site: hew_hir::SiteId(0),
         ty: ResolvedTy::Unit,
         value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
-        kind: HirExprKind::Literal(HirLiteral::Unit),
+        kind: HirExprKind::MachineEmit {
+            event_idx,
+            fields: Vec::new(),
+        },
+        span: 0..0,
+    }
+}
+
+fn machine_emit_stmt(event_idx: usize) -> HirStmt {
+    HirStmt {
+        node: hew_hir::HirNodeId(0),
+        kind: HirStmtKind::Expr(machine_emit_expr(event_idx)),
+        span: 0..0,
+    }
+}
+
+fn hir_block(statements: Vec<HirStmt>, tail: Option<HirExpr>, ty: ResolvedTy) -> HirBlock {
+    HirBlock {
+        node: hew_hir::HirNodeId(0),
+        scope: hew_hir::ScopeId(0),
+        statements,
+        tail: tail.map(Box::new),
+        ty,
+        span: 0..0,
+    }
+}
+
+fn transition_body(machine_name: &str, target_idx: usize, emits: &[usize]) -> HirExpr {
+    let machine_ty = ResolvedTy::Named {
+        name: machine_name.to_string(),
+        args: vec![],
+    };
+    HirExpr {
+        node: hew_hir::HirNodeId(0),
+        site: hew_hir::SiteId(0),
+        ty: machine_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::Block(hir_block(
+            emits.iter().copied().map(machine_emit_stmt).collect(),
+            Some(machine_ctor_expr(machine_name, target_idx)),
+            machine_ty,
+        )),
         span: 0..0,
     }
 }
@@ -61,7 +121,13 @@ fn make_event(name: &str) -> HirMachineEvent {
     }
 }
 
-fn make_transition(event_name: &str, source: &str, target: &str) -> HirMachineTransition {
+fn make_transition(
+    machine_name: &str,
+    event_name: &str,
+    source: &str,
+    target: &str,
+    target_idx: usize,
+) -> HirMachineTransition {
     HirMachineTransition {
         event_name: event_name.to_string(),
         source_state: source.to_string(),
@@ -71,7 +137,7 @@ fn make_transition(event_name: &str, source: &str, target: &str) -> HirMachineTr
         reenter: false,
         body_writes: Vec::new(),
         body_emits: Vec::new(),
-        body: unit_literal_expr(),
+        body: machine_ctor_expr(machine_name, target_idx),
         span: 0..0,
     }
 }
@@ -85,8 +151,8 @@ fn traffic_light_machine() -> HirMachineDecl {
         states: vec![make_state("Red"), make_state("Green")],
         events: vec![make_event("Tick")],
         transitions: vec![
-            make_transition("Tick", "Red", "Green"),
-            make_transition("Tick", "Green", "Red"),
+            make_transition("TrafficLight", "Tick", "Red", "Green", 1),
+            make_transition("TrafficLight", "Tick", "Green", "Red", 0),
         ],
         has_default: false,
         span: 0..0,
@@ -102,8 +168,8 @@ fn traffic_light_with_wildcard_machine() -> HirMachineDecl {
         states: vec![make_state("Red"), make_state("Green")],
         events: vec![make_event("Tick"), make_event("Timeout")],
         transitions: vec![
-            make_transition("Tick", "Red", "Green"),
-            make_transition("Timeout", "_", "Red"),
+            make_transition("TrafficLight", "Tick", "Red", "Green", 1),
+            make_transition("TrafficLight", "Timeout", "_", "Red", 0),
         ],
         has_default: false,
         span: 0..0,
@@ -118,10 +184,228 @@ fn generic_lifecycle_machine() -> HirMachineDecl {
         type_params: vec!["T".to_string()],
         states: vec![make_state("Idle"), make_state("Running")],
         events: vec![make_event("Start")],
-        transitions: vec![make_transition("Start", "Idle", "Running")],
+        transitions: vec![make_transition("Lifecycle", "Start", "Idle", "Running", 1)],
         has_default: false,
         span: 0..0,
     }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "single snapshot-style test covers real, self, and @reenter hook ordering"
+)]
+fn transition_bodies_entry_exit_reenter() {
+    const EXIT_IDLE: usize = 3;
+    const BODY_REAL: usize = 4;
+    const ENTRY_ACTIVE: usize = 5;
+    const BODY_SELF: usize = 6;
+    const EXIT_ACTIVE: usize = 7;
+    const BODY_REENTER: usize = 8;
+
+    let machine_ty = ResolvedTy::Named {
+        name: "Lifecycle".to_string(),
+        args: vec![],
+    };
+    let idle = HirMachineState {
+        name: "Idle".to_string(),
+        fields: Vec::new(),
+        has_entry: false,
+        has_exit: true,
+        entry_writes: Vec::new(),
+        exit_writes: Vec::new(),
+        entry: None,
+        exit: Some(hir_block(
+            vec![machine_emit_stmt(EXIT_IDLE)],
+            None,
+            ResolvedTy::Unit,
+        )),
+        span: 0..0,
+    };
+    let active = HirMachineState {
+        name: "Active".to_string(),
+        fields: Vec::new(),
+        has_entry: true,
+        has_exit: true,
+        entry_writes: Vec::new(),
+        exit_writes: Vec::new(),
+        entry: Some(hir_block(
+            vec![machine_emit_stmt(ENTRY_ACTIVE)],
+            None,
+            ResolvedTy::Unit,
+        )),
+        exit: Some(hir_block(
+            vec![machine_emit_stmt(EXIT_ACTIVE)],
+            None,
+            ResolvedTy::Unit,
+        )),
+        span: 0..0,
+    };
+    let mut real = make_transition("Lifecycle", "Start", "Idle", "Active", 1);
+    real.body = transition_body("Lifecycle", 1, &[BODY_REAL]);
+    real.body_emits = vec!["BodyReal".to_string()];
+
+    let mut self_no_reenter = make_transition("Lifecycle", "Stay", "Active", "Active", 1);
+    self_no_reenter.body = transition_body("Lifecycle", 1, &[BODY_SELF]);
+    self_no_reenter.body_emits = vec!["BodySelf".to_string()];
+
+    let mut self_reenter = make_transition("Lifecycle", "Pulse", "Active", "Active", 1);
+    self_reenter.reenter = true;
+    self_reenter.body = transition_body("Lifecycle", 1, &[BODY_REENTER]);
+    self_reenter.body_emits = vec!["BodyReenter".to_string()];
+
+    let machine = HirMachineDecl {
+        id: hew_hir::ItemId(0),
+        node: hew_hir::HirNodeId(0),
+        name: "Lifecycle".to_string(),
+        type_params: Vec::new(),
+        states: vec![idle, active],
+        events: vec![
+            make_event("Start"),
+            make_event("Stay"),
+            make_event("Pulse"),
+            make_event("ExitIdle"),
+            make_event("BodyReal"),
+            make_event("EntryActive"),
+            make_event("BodySelf"),
+            make_event("ExitActive"),
+            make_event("BodyReenter"),
+        ],
+        transitions: vec![real, self_no_reenter, self_reenter],
+        has_default: false,
+        span: 0..0,
+    };
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Machine(machine)]));
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "machine body lowering should not produce diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let step_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "Lifecycle__step")
+        .expect("Lifecycle__step synthesised");
+    assert_eq!(step_fn.return_ty, machine_ty);
+
+    let block_emit_indices = |needle| {
+        step_fn
+            .blocks
+            .iter()
+            .find_map(|block| {
+                let emits = block
+                    .instructions
+                    .iter()
+                    .filter_map(|instr| {
+                        if let Instr::MachineEmitPlaceholder { event_idx, .. } = instr {
+                            Some(*event_idx)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                emits.contains(&needle).then_some(emits)
+            })
+            .unwrap_or_else(|| panic!("return block containing emit event_idx={needle}"))
+    };
+    let block_tag_write_index = |needle| {
+        let block = step_fn
+            .blocks
+            .iter()
+            .find(|block| {
+                block.instructions.iter().any(|instr| {
+                    matches!(
+                        instr,
+                        Instr::MachineEmitPlaceholder {
+                            event_idx,
+                            ..
+                        } if *event_idx == needle
+                    )
+                })
+            })
+            .unwrap_or_else(|| panic!("block containing emit event_idx={needle}"));
+        block
+            .instructions
+            .iter()
+            .position(|instr| {
+                matches!(
+                    instr,
+                    Instr::Move {
+                        dest: Place::MachineTag(_),
+                        ..
+                    }
+                )
+            })
+            .unwrap_or_else(|| panic!("block containing emit event_idx={needle} writes target tag"))
+    };
+    let block_emit_instr_index = |needle| {
+        let block = step_fn
+            .blocks
+            .iter()
+            .find(|block| {
+                block.instructions.iter().any(|instr| {
+                    matches!(
+                        instr,
+                        Instr::MachineEmitPlaceholder {
+                            event_idx,
+                            ..
+                        } if *event_idx == needle
+                    )
+                })
+            })
+            .unwrap_or_else(|| panic!("block containing emit event_idx={needle}"));
+        block
+            .instructions
+            .iter()
+            .position(|instr| {
+                matches!(
+                    instr,
+                    Instr::MachineEmitPlaceholder {
+                        event_idx,
+                        ..
+                    } if *event_idx == needle
+                )
+            })
+            .unwrap_or_else(|| panic!("emit event_idx={needle} present"))
+    };
+
+    let real_emits = block_emit_indices(BODY_REAL);
+    assert_eq!(
+        real_emits,
+        vec![EXIT_IDLE, BODY_REAL, ENTRY_ACTIVE],
+        "real transition fires source exit, then body, then target entry"
+    );
+    assert!(
+        block_tag_write_index(BODY_REAL) > block_emit_instr_index(BODY_REAL),
+        "real transition constructs target after body side effects"
+    );
+    assert!(
+        block_tag_write_index(BODY_REAL) < block_emit_instr_index(ENTRY_ACTIVE),
+        "real transition invokes entry after target construction"
+    );
+
+    let self_emits = block_emit_indices(BODY_SELF);
+    assert_eq!(
+        self_emits,
+        vec![BODY_SELF],
+        "self-transition without @reenter runs only the body"
+    );
+
+    let reenter_emits = block_emit_indices(BODY_REENTER);
+    assert_eq!(
+        reenter_emits,
+        vec![EXIT_ACTIVE, BODY_REENTER, ENTRY_ACTIVE],
+        "@reenter self-transition fires exit, then body, then entry"
+    );
+    assert!(
+        block_tag_write_index(BODY_REENTER) > block_emit_instr_index(BODY_REENTER),
+        "@reenter transition constructs target after body side effects"
+    );
+    assert!(
+        block_tag_write_index(BODY_REENTER) < block_emit_instr_index(ENTRY_ACTIVE),
+        "@reenter transition invokes entry after target construction"
+    );
 }
 
 #[test]

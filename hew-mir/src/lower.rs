@@ -1577,7 +1577,7 @@ fn mangle_machine_step(name: &str) -> String {
 /// emitted once per machine declaration (not per monomorphisation);
 /// monomorphisation-aware codegen for generic machines arrives with the
 /// stdlib machine catalogue.
-/// # Dispatch shell (Slice 4a)
+/// # Dispatch shell and transition bodies (Slice 4b)
 ///
 /// The entry block loads the state tag (`Place::MachineTag(self)`)
 /// and event tag (`Instr::EnumTagLoad` from the event parameter), then
@@ -1591,12 +1591,12 @@ fn mangle_machine_step(name: &str) -> String {
 /// surfacing it is the fail-closed runtime backstop (LESSONS P0
 /// `fail-closed-not-pretend`).
 ///
-/// Matched arms do **not** lower transition bodies, entry/exit hooks, or
-/// drop elaboration in this slice. Each arm copies the incoming machine
-/// value into a fresh placeholder, overwrites only the target-state tag,
-/// and returns that placeholder. Payload bytes are deliberately addressed
-/// only through `Place::MachineVariant` placeholders when needed by the
-/// shell; no `Place::Field` projection is used for machine payloads.
+/// Matched arms lower the transition body in-place and return the machine
+/// value produced by that HIR body. Real transitions (state tag changes)
+/// invoke source `exit` before the body and target `entry` after the body has
+/// constructed the target value. Self-transitions skip hooks unless the HIR
+/// transition carries `@reenter`, in which case exit and entry both fire.
+/// Drop elaboration remains a later slice.
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -1812,15 +1812,15 @@ fn synthesize_machine_step_fn(
                 else_target: next_arm,
             });
 
-            // ── arm_body_j: return a target-state placeholder.
+            // ── arm_body_j: run hooks/body and return the next state.
             builder.start_block(arm_body_blocks[arm_idx]);
-            emit_machine_step_placeholder_return(
+            emit_machine_step_transition_return(
                 &mut builder,
                 md,
                 state,
                 state_idx,
                 transition,
-                (self_ty.clone(), self_place, self_local),
+                (self_binding, self_place),
             );
             builder.finish_current_block(Terminator::Return);
         }
@@ -1909,107 +1909,79 @@ fn synthesize_machine_step_fn(
     }
 }
 
-fn emit_machine_step_placeholder_return(
+fn emit_machine_step_transition_return(
     builder: &mut Builder,
     md: &HirMachineDecl,
     state: &hew_hir::HirMachineState,
     state_idx: usize,
     transition: &HirMachineTransition,
-    self_info: (ResolvedTy, Place, u32),
+    self_info: (BindingId, Place),
 ) {
-    let (self_ty, self_place, self_local) = self_info;
-    let next = builder.alloc_local(self_ty);
-    let Place::Local(next_local) = next else {
-        unreachable!("alloc_local returns Place::Local");
-    };
-    builder.instructions.push(Instr::Move {
-        dest: next,
-        src: self_place,
-    });
+    let (self_binding, self_place) = self_info;
 
     let target_idx = md
         .states
         .iter()
         .position(|s| s.name == transition.target_state)
         .unwrap_or(state_idx);
-    let target_tag = builder.alloc_local(ResolvedTy::I64);
-    builder.instructions.push(Instr::ConstI64 {
-        dest: target_tag,
-        value: i64::try_from(target_idx).unwrap_or(i64::MAX),
-    });
-    builder.instructions.push(Instr::Move {
-        dest: Place::MachineTag(next_local),
-        src: target_tag,
-    });
+    let invokes_lifecycle_hooks = target_idx != state_idx || transition.reenter;
 
-    let source_variant_idx = u32::try_from(state_idx).unwrap_or(u32::MAX);
-    let target_variant_idx = u32::try_from(target_idx).unwrap_or(u32::MAX);
-    let mut source_payload = Vec::with_capacity(state.fields.len());
-    for (field_idx, field) in state.fields.iter().enumerate() {
-        let scratch = builder.alloc_local(field.ty.clone());
-        builder.instructions.push(Instr::Move {
-            dest: scratch,
-            src: Place::MachineVariant {
-                local: self_local,
-                variant_idx: source_variant_idx,
-                field_idx: u32::try_from(field_idx).unwrap_or(u32::MAX),
-            },
-        });
-        source_payload.push((field.ty.clone(), scratch));
-    }
-
-    if let Some(target_state) = md.states.get(target_idx) {
-        for (field_idx, field) in target_state.fields.iter().enumerate() {
-            let src = source_payload
-                .get(field_idx)
-                .filter(|(ty, _)| *ty == field.ty)
-                .map_or_else(
-                    || {
-                        let zero = builder.alloc_local(field.ty.clone());
-                        builder.instructions.push(Instr::ConstI64 {
-                            dest: zero,
-                            value: 0,
-                        });
-                        zero
-                    },
-                    |(_, place)| *place,
-                );
-            // Placeholder-only payload movement: make carried i64 payloads
-            // visibly usable without walking the HIR transition body. Slice
-            // 4b replaces this with the real body expression.
-            let src = if transition.is_self_transition && matches!(field.ty, ResolvedTy::I64) {
-                let one = builder.alloc_local(ResolvedTy::I64);
-                builder.instructions.push(Instr::ConstI64 {
-                    dest: one,
-                    value: 1,
-                });
-                let summed = builder.alloc_local(ResolvedTy::I64);
-                builder.instructions.push(Instr::IntAdd {
-                    dest: summed,
-                    lhs: src,
-                    rhs: one,
-                });
-                summed
-            } else {
-                src
-            };
-            builder.instructions.push(Instr::Move {
-                dest: Place::MachineVariant {
-                    local: next_local,
-                    variant_idx: target_variant_idx,
-                    field_idx: u32::try_from(field_idx).unwrap_or(u32::MAX),
-                },
-                src,
-            });
+    if invokes_lifecycle_hooks {
+        if let Some(exit) = &state.exit {
+            lower_machine_lifecycle_block(builder, self_binding, self_place, exit);
         }
     }
 
-    for event_name in &transition.body_emits {
-        if let Some(event_idx) = md.events.iter().position(|ev| ev.name == *event_name) {
-            builder.instructions.push(Instr::MachineEmitPlaceholder {
-                event_idx,
-                payload: Vec::new(),
-            });
+    let prev_machine_self = builder.current_machine_self_binding.replace(self_binding);
+    let prev_self_place = builder.binding_locals.insert(self_binding, self_place);
+    let next = builder.lower_value(&transition.body);
+    if let Some(place) = prev_self_place {
+        builder.binding_locals.insert(self_binding, place);
+    } else {
+        builder.binding_locals.remove(&self_binding);
+    }
+    builder.current_machine_self_binding = prev_machine_self;
+
+    let Some(next) = next else {
+        builder.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::UnsupportedNode {
+                reason: format!(
+                    "machine `{}` transition `on {}` from `{}` to `{}` did not produce \
+                     a next-state value",
+                    md.name,
+                    transition.event_name,
+                    transition.source_state,
+                    transition.target_state
+                ),
+            },
+            note: "transition bodies must lower to a machine state constructor before the \
+                   step arm can write the return slot"
+                .to_string(),
+        });
+        return;
+    };
+
+    let Place::Local(_) = next else {
+        builder.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::UnsupportedNode {
+                reason: format!(
+                    "machine `{}` transition `on {}` produced non-local next-state place {next:?}",
+                    md.name, transition.event_name
+                ),
+            },
+            note:
+                "machine transition bodies must materialise a local machine value so entry hooks \
+                   can observe the constructed target"
+                    .to_string(),
+        });
+        return;
+    };
+
+    if invokes_lifecycle_hooks {
+        if let Some(target_state) = md.states.get(target_idx) {
+            if let Some(entry) = &target_state.entry {
+                lower_machine_lifecycle_block(builder, self_binding, next, entry);
+            }
         }
     }
 
@@ -2017,6 +1989,28 @@ fn emit_machine_step_placeholder_return(
         dest: Place::ReturnSlot,
         src: next,
     });
+}
+
+fn lower_machine_lifecycle_block(
+    builder: &mut Builder,
+    self_binding: BindingId,
+    self_place: Place,
+    block: &hew_hir::HirBlock,
+) {
+    let prev_machine_self = builder.current_machine_self_binding.replace(self_binding);
+    let prev_self_place = builder.binding_locals.insert(self_binding, self_place);
+    for stmt in &block.statements {
+        builder.stmt(stmt);
+    }
+    if let Some(tail) = &block.tail {
+        let _ = builder.lower_value(tail);
+    }
+    if let Some(place) = prev_self_place {
+        builder.binding_locals.insert(self_binding, place);
+    } else {
+        builder.binding_locals.remove(&self_binding);
+    }
+    builder.current_machine_self_binding = prev_machine_self;
 }
 
 /// Topologically sort supervisor children by `wired_to:` dependencies via

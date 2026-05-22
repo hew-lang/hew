@@ -5280,9 +5280,9 @@ fn lower_call_runtime_abi(
                 )));
             }
             // arg0: parent actor handle (opaque ptr).
-            let parent = load_int_arg(fn_ctx, args[0], i64_ty, "link_parent")?;
+            let parent = load_duplex_handle(fn_ctx, args[0], "link_parent")?;
             // arg1: child actor handle (opaque ptr).
-            let child = load_int_arg(fn_ctx, args[1], i64_ty, "link_child")?;
+            let child = load_duplex_handle(fn_ctx, args[1], "link_child")?;
             let fv = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
@@ -5316,9 +5316,9 @@ fn lower_call_runtime_abi(
                 )));
             }
             // arg0: watcher actor handle (opaque ptr).
-            let watcher = load_int_arg(fn_ctx, args[0], i64_ty, "monitor_watcher")?;
+            let watcher = load_duplex_handle(fn_ctx, args[0], "monitor_watcher")?;
             // arg1: target actor handle (opaque ptr).
-            let target = load_int_arg(fn_ctx, args[1], i64_ty, "monitor_target")?;
+            let target = load_duplex_handle(fn_ctx, args[1], "monitor_target")?;
             let fv = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,

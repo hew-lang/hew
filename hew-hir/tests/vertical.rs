@@ -1165,73 +1165,11 @@ fn make() {
     );
 }
 
-// ── link / monitor / unlink rejection ──────────────────────────────────────
+// ── unlink rejection ───────────────────────────────────────────────────────
 //
-// These builtins have runtime substrate (`hew_actor_link`, `hew_actor_monitor`)
-// and codegen arms, but the MIR producer cannot be wired until the Cluster 2
-// composite-return spine lands (Result<(),LinkError> and MonitorRef).
-// Until then, every call must emit NotYetImplemented with owning_pass
-// "cluster-runtime" — never UnresolvedSymbol (which looks like a user typo).
-
-#[test]
-fn link_call_emits_not_yet_implemented_not_unresolved() {
-    // `link(x)` in a syntactically valid actor context.
-    // The checker is not run here (TypeCheckOutput::default()); HIR lowering
-    // must fire the intercept independently of type-check state.
-    let output = lower(
-        "actor Probe { receive fn crash() { exit(1) } }
-         fn main() { let p = spawn Probe; link(p); }",
-    );
-    let is_nyi = output.diagnostics.iter().any(|d| match &d.kind {
-        HirDiagnosticKind::NotYetImplemented {
-            construct,
-            owning_pass,
-        } => construct.contains("link") && owning_pass == "cluster-runtime",
-        _ => false,
-    });
-    assert!(
-        is_nyi,
-        "link() call must emit NotYetImplemented(cluster-runtime), got: {:?}",
-        output.diagnostics
-    );
-    // Must NOT produce a bare UnresolvedSymbol that looks like a user typo.
-    let unresolved_name = output
-        .diagnostics
-        .iter()
-        .any(|d| matches!(&d.kind, HirDiagnosticKind::UnresolvedSymbol { name } if name == "link"));
-    assert!(
-        !unresolved_name,
-        "link() must not produce UnresolvedSymbol(link); \
-         NotYetImplemented is the expected diagnostic"
-    );
-}
-
-#[test]
-fn monitor_call_emits_not_yet_implemented_not_unresolved() {
-    let output = lower(
-        "actor Target { receive fn ping() {} }
-         fn main() { let t = spawn Target; monitor(t); }",
-    );
-    let is_nyi = output.diagnostics.iter().any(|d| match &d.kind {
-        HirDiagnosticKind::NotYetImplemented {
-            construct,
-            owning_pass,
-        } => construct.contains("monitor") && owning_pass == "cluster-runtime",
-        _ => false,
-    });
-    assert!(
-        is_nyi,
-        "monitor() call must emit NotYetImplemented(cluster-runtime), got: {:?}",
-        output.diagnostics
-    );
-    let unresolved_name = output.diagnostics.iter().any(
-        |d| matches!(&d.kind, HirDiagnosticKind::UnresolvedSymbol { name } if name == "monitor"),
-    );
-    assert!(
-        !unresolved_name,
-        "monitor() must not produce UnresolvedSymbol(monitor)"
-    );
-}
+// `link` and `monitor` now pass through HIR so MIR can distinguish discarded
+// statement-position calls from value-needed composite returns. `unlink` has no
+// producer arm in this slice and remains fail-closed here.
 
 #[test]
 fn unlink_call_emits_not_yet_implemented_not_unresolved() {

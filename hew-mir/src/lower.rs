@@ -3323,6 +3323,28 @@ struct Builder {
     current_machine_self_binding: Option<BindingId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeCallContext {
+    Discarded,
+    ValueNeeded,
+}
+
+fn runtime_symbol_for_call_expr(
+    expr: &HirExpr,
+) -> Option<(String, &[hew_hir::HirExpr], hew_hir::SiteId)> {
+    let HirExprKind::Call { callee, args } = &expr.kind else {
+        return None;
+    };
+    let HirExprKind::BindingRef { name, .. } = &callee.kind else {
+        return None;
+    };
+    if crate::runtime_symbols::is_known_runtime_symbol(name) {
+        return Some((name.clone(), args, expr.site));
+    }
+    crate::runtime_symbols::user_name_to_c_symbol(name)
+        .map(|symbol| (symbol.to_string(), args.as_slice(), expr.site))
+}
+
 #[derive(Debug, Clone)]
 struct CaptureEnvSource {
     env: Place,
@@ -3605,7 +3627,7 @@ impl Builder {
             }
             HirStmtKind::Let(_, None) => {}
             HirStmtKind::Expr(expr) => {
-                let _ = self.lower_value(expr);
+                self.lower_expr_statement(expr);
                 self.statements.push(MirStatement::Evaluate {
                     site: expr.site,
                     ty: self.subst_ty(&expr.ty),
@@ -3639,6 +3661,14 @@ impl Builder {
                     ty: ResolvedTy::Unit,
                 });
             }
+        }
+    }
+
+    fn lower_expr_statement(&mut self, expr: &HirExpr) {
+        if let Some((symbol, args, site)) = runtime_symbol_for_call_expr(expr) {
+            let _ = self.lower_runtime_call(&symbol, args, site, RuntimeCallContext::Discarded);
+        } else {
+            let _ = self.lower_value(expr);
         }
     }
 
@@ -3790,38 +3820,22 @@ impl Builder {
                 }
             }
             HirExprKind::Call { callee, args } => {
-                // SHIM(E2→checker): callee classification uses the callee name
-                // string rather than a checker-resolved `ResolvedRef`.
-                // WHY: the typecheck→HIR bridge (E1) emits `BindingRef { name:
-                //   c_symbol, resolved: ResolvedRef::Unresolved }` for every
-                //   runtime-symbol callee because the Rust MIR pipeline does not
-                //   thread `TypeCheckOutput.method_call_rewrites` resolver IDs
-                //   into HIR's `ResolvedRef`.  The name is the only available
-                //   discriminator at MIR time. User functions are identified by
-                //   membership in `module_fn_names` (collected in
-                //   `lower_hir_module` before any body is lowered).
-                // WHEN obsolete: when HIR emits `ResolvedRef::Item` for user-fn
-                //   callees and `ResolvedRef::Builtin` for runtime callees so MIR
-                //   can match on the resolved variant instead of name strings.
-                // WHAT: replace with variant-based dispatch; remove the
-                //   `is_known_runtime_symbol` and `module_fn_names` checks.
+                if let Some((symbol, args, site)) = runtime_symbol_for_call_expr(expr) {
+                    return self.lower_runtime_call(
+                        &symbol,
+                        args,
+                        site,
+                        RuntimeCallContext::ValueNeeded,
+                    );
+                }
+                // SHIM(E2→checker): user functions are still identified by
+                // callee name membership in `module_fn_names` until HIR threads
+                // resolved item/builtin variants through the bridge.
                 let callee_name = match &callee.kind {
                     HirExprKind::BindingRef { name, .. } => Some(name.as_str()),
                     _ => None,
                 };
                 if let Some(name) = callee_name {
-                    // Direct `hew_*` C-ABI name (from method-call rewrites).
-                    if crate::runtime_symbols::is_known_runtime_symbol(name) {
-                        return self.lower_runtime_call(name, args, expr.site);
-                    }
-                    // User-facing builtin name (e.g. `duplex_pair`) that maps
-                    // to a C-ABI symbol. HIR emits the source name because
-                    // checker-registered builtins do not appear in the AST
-                    // function-item registry (see `runtime_symbols::user_name_to_c_symbol`
-                    // for the shim rationale).
-                    if let Some(c_sym) = crate::runtime_symbols::user_name_to_c_symbol(name) {
-                        return self.lower_runtime_call(c_sym, args, expr.site);
-                    }
                     // Generic top-level user fn: HIR recorded
                     // `call_site_type_args[expr.site]` with the type
                     // arguments observed at this call site (possibly
@@ -7381,6 +7395,7 @@ impl Builder {
         symbol: &str,
         hir_args: &[hew_hir::HirExpr],
         site: hew_hir::SiteId,
+        context: RuntimeCallContext,
     ) -> Option<Place> {
         // Construction-time contract: the symbol must be in the allowlist.
         // This is the HIR-string-boundary gate: the caller dispatched this
@@ -7398,6 +7413,9 @@ impl Builder {
             "hew_duplex_pair" => self.lower_duplex_pair(hir_args, site),
             "hew_duplex_send" => self.lower_duplex_send(hir_args, site),
             "hew_supervisor_stop" => self.lower_supervisor_stop(hir_args, site),
+            "hew_actor_link" | "hew_actor_monitor" => {
+                self.lower_actor_link_or_monitor(symbol, hir_args, site, context)
+            }
             _ => {
                 // Known-allowlisted symbol but no producer arm yet.  Fail closed
                 // so the pipeline rejects the program before codegen runs.
@@ -7416,6 +7434,62 @@ impl Builder {
                 None
             }
         }
+    }
+
+    /// Emit `Instr::CallRuntimeAbi` for discarded `link` / `monitor` calls.
+    ///
+    /// Statement-position calls are authorised by `HirStmtKind::Expr` before
+    /// `lower_value` is entered. Value-needed calls still fail closed because
+    /// the current codegen spine cannot construct `Result<(), LinkError>` or
+    /// `MonitorRef`.
+    fn lower_actor_link_or_monitor(
+        &mut self,
+        symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        if hir_args.len() != 2 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("runtime call `{symbol}` arity"),
+                    site,
+                },
+                note: format!(
+                    "`{symbol}` expects exactly 2 actor-handle arguments, got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+
+        if context == RuntimeCallContext::ValueNeeded {
+            let return_shape = match symbol {
+                "hew_actor_link" => "Result<(), LinkError>",
+                "hew_actor_monitor" => "MonitorRef",
+                _ => unreachable!("only link/monitor symbols reach this helper"),
+            };
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("runtime call `{symbol}` value result"),
+                    site,
+                },
+                note: format!(
+                    "`{symbol}` requires {return_shape} construction in value-needed \
+                     context; discarded statement-position calls are wired with dest=None, \
+                     but composite return construction remains fail-closed"
+                ),
+            });
+            return None;
+        }
+
+        let arg0 = self.lower_value(&hir_args[0]);
+        let arg1 = self.lower_value(&hir_args[1]);
+        let (Some(arg0), Some(arg1)) = (arg0, arg1) else {
+            return None;
+        };
+        self.push_runtime_call(symbol, vec![arg0, arg1], None);
+        None
     }
 
     /// Emit `Instr::CallRuntimeAbi` for `hew_duplex_pair`.

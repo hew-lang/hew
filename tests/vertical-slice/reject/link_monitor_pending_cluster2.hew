@@ -1,14 +1,16 @@
-// link() and monitor() are rejected until the Cluster 2 composite-return
-// spine lands.  hew_actor_link / hew_actor_monitor runtime symbols exist and
-// codegen arms are present, but Result<(),LinkError> / MonitorRef construction
-// requires enum-variant + struct-literal lowering (Cluster 2).
+// Value-needed monitor() remains rejected until Cluster 2 can construct
+// MonitorRef from the hew_actor_monitor ref_id return.
 actor Probe {
-    receive fn crash() {
-        exit(1)
-    }
+    receive fn ping() {}
 }
 
-fn main() {
+fn monitor(_a: LocalPid<Probe>, _b: LocalPid<Probe>) -> i64 {
+    0
+}
+
+fn main() -> i64 {
     let p = spawn Probe;
-    link(p);
+    let q = spawn Probe;
+    let m = monitor(p, q);
+    m
 }

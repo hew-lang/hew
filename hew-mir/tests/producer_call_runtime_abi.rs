@@ -286,3 +286,114 @@ fn duplex_pair_symbol_is_on_allowlist_no_unsupported_diagnostic() {
         "no NotYetImplemented for unknown runtime symbol expected; got: {bad:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// actor link/monitor lowering — discarded calls only
+// ---------------------------------------------------------------------------
+
+fn link_monitor_source(body: &str) -> String {
+    format!(
+        r"
+        actor Probe {{
+            receive fn crash() {{
+                exit(1)
+            }}
+        }}
+
+        fn link(_a: LocalPid<Probe>, _b: LocalPid<Probe>) {{}}
+        fn monitor(_a: LocalPid<Probe>, _b: LocalPid<Probe>) {{}}
+
+        fn main() -> i64 {{
+            {body}
+        }}
+        "
+    )
+}
+
+fn calls_for<'a>(raw: &'a hew_mir::RawMirFunction, symbol: &str) -> Vec<&'a hew_mir::RuntimeCall> {
+    raw.blocks
+        .iter()
+        .flat_map(|b| b.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::CallRuntimeAbi(call) if call.symbol() == symbol => Some(call),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn discarded_link_and_monitor_emit_call_runtime_abi_without_dest() {
+    let source = link_monitor_source(
+        r"
+        let p = spawn Probe;
+        let q = spawn Probe;
+        let r = spawn Probe;
+        let s = spawn Probe;
+        link(p, q);
+        monitor(r, s);
+        return 0;
+        ",
+    );
+    let pipeline = pipeline_with_tc(&source);
+    let raw = main_raw(&pipeline);
+
+    for symbol in ["hew_actor_link", "hew_actor_monitor"] {
+        let calls = calls_for(raw, symbol);
+        assert_eq!(
+            calls.len(),
+            1,
+            "expected exactly one CallRuntimeAbi for {symbol}, got {calls:?}"
+        );
+        let call = calls[0];
+        assert_eq!(
+            call.args().len(),
+            2,
+            "{symbol} must carry two actor handles"
+        );
+        assert!(
+            matches!(call.args()[0], Place::ActorHandle(_)),
+            "{symbol} arg0 must be an ActorHandle; got {:?}",
+            call.args()[0]
+        );
+        assert!(
+            matches!(call.args()[1], Place::ActorHandle(_)),
+            "{symbol} arg1 must be an ActorHandle; got {:?}",
+            call.args()[1]
+        );
+        assert!(
+            call.dest().is_none(),
+            "{symbol} discarded statement-position call must use dest=None"
+        );
+    }
+}
+
+#[test]
+fn value_needed_monitor_stays_fail_closed_until_monitor_ref_construction() {
+    let source = link_monitor_source(
+        r"
+        let p = spawn Probe;
+        let q = spawn Probe;
+        let m = monitor(p, q);
+        return 0;
+        ",
+    );
+    let pipeline = pipeline_with_tc(&source);
+    let raw = main_raw(&pipeline);
+
+    assert!(
+        calls_for(raw, "hew_actor_monitor").is_empty(),
+        "value-needed monitor() must not emit CallRuntimeAbi until MonitorRef construction exists"
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|d| {
+            matches!(
+                &d.kind,
+                hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                    if construct.contains("hew_actor_monitor")
+                        && construct.contains("value result")
+            ) && d.note.contains("MonitorRef")
+        }),
+        "value-needed monitor() must fail closed with a MonitorRef diagnostic; got: {:?}",
+        pipeline.diagnostics
+    );
+}

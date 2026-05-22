@@ -3543,41 +3543,20 @@ impl LowerCtx {
                                 ResolvedTy::Unit,
                             )
                         }
-                    } else if matches!(name.as_str(), "link" | "unlink" | "monitor") {
-                        // `link`, `unlink`, and `monitor` are checker-registered
-                        // actor-lifecycle builtins.  The runtime substrate
-                        // (`hew_actor_link`, `hew_actor_monitor`) and the codegen
-                        // arms in `hew-codegen-rs/src/llvm.rs` both exist, but
-                        // wiring the MIR producer requires the Cluster 2
-                        // composite-return spine: `link` returns
-                        // `Result<(), LinkError>` and `monitor` returns
-                        // `MonitorRef { ref_id }`, neither of which can be
-                        // constructed by the current scalar-only codegen.
-                        //
-                        // Fail-closed here so the pipeline never reaches
-                        // `lower_regular_call` → `lower_identifier` →
-                        // `UnresolvedSymbol` (which would look like a typo, not a
-                        // known-pending substrate gap).
-                        //
-                        // WHEN obsolete: when the Cluster 2 spine lands
-                        // enum-variant and struct-literal construction in
-                        // `hew-codegen-rs`, the producer arm in
-                        // `hew-mir/src/lower.rs` can be wired and this intercept
-                        // removed.  At that point `lower_regular_call` reaches
-                        // `user_name_to_c_symbol` → `lower_runtime_call` naturally.
-                        // WHAT: add `"hew_actor_link"` and `"hew_actor_monitor"`
-                        // arms in `lower_runtime_call`; remove this block.
+                    } else if name == "unlink" {
+                        // `unlink` remains a checker-registered actor-lifecycle
+                        // builtin without a MIR producer arm. `link` and `monitor`
+                        // now pass through to MIR so statement-position calls can
+                        // emit `CallRuntimeAbi` while value-needed composite returns
+                        // fail closed at the producer boundary.
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::NotYetImplemented {
                                 construct: format!("builtin call `{name}`"),
                                 owning_pass: "cluster-runtime".to_string(),
                             },
                             span.clone(),
-                            "link/monitor/unlink require the Cluster 2 composite-return \
-                             spine (Result<(),LinkError> and MonitorRef construction); \
-                             runtime symbols hew_actor_link/hew_actor_monitor exist and \
-                             codegen arms are present — wire the MIR producer when \
-                             enum-variant + struct-literal lowering lands",
+                            "unlink requires a MIR producer arm before it can reach \
+                             the runtime substrate",
                         ));
                         let callee = self.unresolved_builtin_callee(name, function.1.clone());
                         (

@@ -424,6 +424,77 @@ machine Counter {
 }
 
 #[test]
+fn transition_body_scopes_state_event_implicit_bindings() {
+    // Lane A reserves `state` and `event` as implicit transition-body bindings.
+    // HIR lowering should scope them while lowering the body so identifier reads
+    // produce normal BindingRef nodes instead of unresolved-symbol diagnostics.
+    let src = r"
+machine Counter {
+    state Running;
+
+    event Tick;
+
+    on Tick: Running -> Running @reenter {
+        state;
+        event;
+        Running
+    }
+}
+";
+    let output = lower(src);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        output.diagnostics
+    );
+    let machine = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| {
+            if let HirItem::Machine(m) = item {
+                Some(m)
+            } else {
+                None
+            }
+        })
+        .expect("expected Machine HirItem");
+    let tr = machine
+        .transitions
+        .iter()
+        .find(|t| t.event_name == "Tick")
+        .expect("expected Tick transition");
+    let HirExprKind::Block(block) = &tr.body.kind else {
+        panic!(
+            "expected lowered transition body block, got {:?}",
+            tr.body.kind
+        );
+    };
+    let binding_ref_names: Vec<&str> = block
+        .statements
+        .iter()
+        .filter_map(|stmt| {
+            if let hew_hir::HirStmtKind::Expr(expr) = &stmt.kind {
+                if let HirExprKind::BindingRef { name, .. } = &expr.kind {
+                    return Some(name.as_str());
+                }
+            }
+            None
+        })
+        .collect();
+    assert_eq!(
+        binding_ref_names,
+        vec!["state", "event"],
+        "implicit transition-body bindings should lower as BindingRef statements"
+    );
+    let snapshot = format!("{tr:#?}");
+    assert!(
+        snapshot.contains("body: HirExpr"),
+        "transition debug snapshot should include body field; got:\n{snapshot}"
+    );
+}
+
+#[test]
 fn entry_exit_blocks_lower_to_hir_block_substrate() {
     // The Door machine has an entry and exit block on `Closed`. Both should
     // appear as `Some(HirBlock)` on the lowered state. The blocks here use

@@ -175,6 +175,13 @@ impl Checker {
                                 self.local_type_defs.insert(td.name.clone());
                                 self.source_type_defs.insert(td.name.clone());
                             }
+                            Item::Machine(md) => {
+                                // Parallel to the TypeDecl arm: seed the machine's
+                                // name so orphan-rule and locally_non_generic checks
+                                // inside the body pass see it as locally-defined.
+                                self.local_type_defs.insert(md.name.clone());
+                                self.source_type_defs.insert(md.name.clone());
+                            }
                             Item::Trait(tr) => {
                                 self.local_trait_defs.insert(tr.name.clone());
                             }

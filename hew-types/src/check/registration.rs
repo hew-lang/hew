@@ -926,16 +926,41 @@ impl Checker {
                     let saved_local_type_defs = self.local_type_defs.clone();
                     let saved_source_type_defs = self.source_type_defs.clone();
                     for (item, _) in &module.items {
-                        if let Item::TypeDecl(td) = item {
-                            self.local_type_defs.insert(td.name.clone());
-                            self.source_type_defs.insert(td.name.clone());
+                        match item {
+                            Item::TypeDecl(td) => {
+                                self.local_type_defs.insert(td.name.clone());
+                                self.source_type_defs.insert(td.name.clone());
+                            }
+                            Item::Machine(md) => {
+                                // Pre-seed the machine name so that resolve_type_expr
+                                // inside state/event field resolution sees the machine
+                                // as locally-non-generic instead of injecting a fresh var.
+                                self.local_type_defs.insert(md.name.clone());
+                                self.source_type_defs.insert(md.name.clone());
+                            }
+                            _ => {}
                         }
                     }
                     let err_before = self.errors.len();
                     let warn_before = self.warnings.len();
                     for (item, _) in &module.items {
-                        if let Item::TypeDecl(td) = item {
-                            self.pre_register_type_decl(td);
+                        match item {
+                            Item::TypeDecl(td) => {
+                                self.pre_register_type_decl(td);
+                            }
+                            // Register machine state/event binding tables for the
+                            // non-root module path, mirroring the root-loop arm at
+                            // line ~1029. Deliberately skips
+                            // `register_machine_type_namespace_names` (which claims
+                            // `type_def_spans`) because the import-surface path
+                            // handles namespace dedup for exported names; claiming
+                            // spans here would cause false duplicate-definition
+                            // errors when the import path later registers the same
+                            // machine. Idempotency guard matches `pre_register_type_decl`.
+                            Item::Machine(md) if !self.type_defs.contains_key(&md.name) => {
+                                self.register_machine_decl(md);
+                            }
+                            _ => {}
                         }
                     }
                     for e in &mut self.errors[err_before..] {

@@ -6116,13 +6116,56 @@ impl Builder {
             });
         }
 
-        // Variant arm body blocks. Payload bindings are rejected at HIR
-        // lowering for v0.5 (predicate-based `HirMatchArmPredicate::EnumVariant`
-        // only carries unit-variant arms). Body lowering simply evaluates the
-        // arm expression and moves the result into `result_place`.
+        // Variant arm body blocks. Payload bindings are initialised from the
+        // dominated variant payload field before lowering the arm body so body
+        // `BindingRef`s resolve through `binding_locals` like ordinary lets.
         for (i, arm) in variant_arms.iter().enumerate() {
             self.start_block(body_bbs[i]);
+            let variant_idx = match &arm.predicate {
+                hew_hir::HirMatchArmPredicate::EnumVariant { variant_idx, .. } => *variant_idx,
+                other => unreachable!(
+                    "variant_arms must only contain EnumVariant predicates; got {other:?}"
+                ),
+            };
+            let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
+            for binding in &arm.bindings {
+                let binding_ty = self.subst_ty(&binding.ty);
+                self.statements.push(MirStatement::Bind {
+                    binding: binding.binding,
+                    name: binding.name.clone(),
+                    site: arm.body.site,
+                    ty: binding_ty.clone(),
+                });
+                if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+                    self.owned_locals.push((
+                        binding.binding,
+                        binding.name.clone(),
+                        binding_ty.clone(),
+                    ));
+                }
+                let dest = self.alloc_local(binding.ty.clone());
+                self.instructions.push(Instr::Move {
+                    dest,
+                    src: Place::MachineVariant {
+                        local: scrutinee_local,
+                        variant_idx,
+                        field_idx: binding.field_idx,
+                    },
+                });
+                let previous = self.binding_locals.insert(binding.binding, dest);
+                overwritten_bindings.push((binding.binding, previous));
+            }
+
             let value = self.lower_value(&arm.body);
+
+            for (binding, previous) in overwritten_bindings.into_iter().rev() {
+                if let Some(previous) = previous {
+                    self.binding_locals.insert(binding, previous);
+                } else {
+                    self.binding_locals.remove(&binding);
+                }
+            }
+
             if let Some(src) = value {
                 self.instructions.push(Instr::Move {
                     dest: result_place,

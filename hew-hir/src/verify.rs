@@ -319,6 +319,9 @@ impl Verifier {
             HirExprKind::Match { scrutinee, arms } => {
                 self.expr(scrutinee);
                 for arm in arms {
+                    for binding in &arm.bindings {
+                        self.binding(binding.binding, arm.span.clone());
+                    }
                     self.expr(&arm.body);
                 }
             }

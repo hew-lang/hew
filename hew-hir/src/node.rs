@@ -1152,9 +1152,9 @@ pub enum HirMatchArmPredicate {
 /// constructor arms use `HirMatchArmPredicate::EnumVariant`; regex-literal
 /// arms use `HirMatchArmPredicate::Regex`.
 ///
-/// Payload-bearing patterns and guards never produce a `HirMatchArm` —
-/// they are rejected at HIR lowering with a structured diagnostic so the
-/// slice's substrate stays honest.
+/// Payload-bearing constructor patterns carry their per-field bindings in
+/// `bindings`; guards still never produce a `HirMatchArm` and are rejected at
+/// HIR lowering with a structured diagnostic.
 ///
 /// `body` is the arm's right-hand-side expression. The arm's source span
 /// is preserved for diagnostics.
@@ -1162,6 +1162,8 @@ pub enum HirMatchArmPredicate {
 pub struct HirMatchArm {
     /// The matching predicate for this arm.
     pub predicate: HirMatchArmPredicate,
+    /// Payload bindings introduced by this arm's constructor pattern.
+    pub bindings: Vec<HirMatchArmBinding>,
     /// Arm body expression. Evaluates only when this arm's predicate wins.
     pub body: HirExpr,
     /// Source span of the arm (pattern through body).

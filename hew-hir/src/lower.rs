@@ -24,9 +24,9 @@ use crate::node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
     HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
     HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
-    HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmPredicate,
-    HirModule, HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm,
-    HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding,
+    HirMatchArmPredicate, HirModule, HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect,
+    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
     HirSupervisorStrategy, HirTypeDecl, HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
@@ -6290,16 +6290,13 @@ impl LowerCtx {
     /// Lower a surface `match` expression to `HirExprKind::Match`.
     ///
     /// **Substrate scope (v0.5 match-expression slice)**: this lane lowers
-    /// only unit-variant constructor arms (e.g. `Colour::Red`) and wildcard
-    /// arms (`_`). The following are rejected with a structured
-    /// `NotYetImplemented` diagnostic and lower to `HirExprKind::Unsupported`,
-    /// per LESSONS `match-fail-closed` (P0) and
-    /// `exhaustive-traversal-and-lowering` (P1):
+    /// variant constructor arms (unit, tuple-payload, and struct-payload with
+    /// plain binding / wildcard subpatterns) plus wildcard arms (`_`). The
+    /// following are rejected with a structured `NotYetImplemented` diagnostic
+    /// and lower to `HirExprKind::Unsupported`, per LESSONS
+    /// `match-fail-closed` (P0) and `exhaustive-traversal-and-lowering` (P1):
     ///
     /// - Pattern guards (`Red if cond => ...`).
-    /// - Payload-bearing constructor patterns (`Some(x)`, `Ok(v)`). Their
-    ///   substrate (`Place::EnumVariant`) lands here but is consumed by the
-    ///   Option<T> destructure slice; this lane reserves it.
     /// - Literal patterns (`1`, `"hello"`). Different lowering shape
     ///   (chained equality), separate plan.
     /// - Plain bindings (`n => ...`) and struct/tuple patterns. Substrate
@@ -6376,16 +6373,6 @@ impl LowerCtx {
                 rejected = true;
                 continue;
             };
-
-            if !resolution.payload_bindings.is_empty() {
-                self.unsupported(
-                    pattern_span.clone(),
-                    "payload-bearing patterns in match arms",
-                    "match-expression-substrate",
-                );
-                rejected = true;
-                continue;
-            }
 
             let predicate = match resolution.pattern_kind {
                 PatternKind::Wildcard => HirMatchArmPredicate::Wildcard,
@@ -6469,7 +6456,56 @@ impl LowerCtx {
                 }
             };
 
-            let body_hir = self.lower_expr(&arm.body, IntentKind::Read);
+            let mut binding_specs = Vec::with_capacity(resolution.payload_bindings.len());
+            let mut binding_error = false;
+            for payload in &resolution.payload_bindings {
+                let ty = match ResolvedTy::from_ty(&payload.ty) {
+                    Ok(ty) => ty,
+                    Err(err) => {
+                        self.unsupported(
+                            pattern_span.clone(),
+                            format!("unresolved payload binding type in match arm ({err:?})"),
+                            "match-expression-substrate",
+                        );
+                        binding_error = true;
+                        continue;
+                    }
+                };
+                let Ok(field_idx) = u32::try_from(payload.field_idx) else {
+                    self.unsupported(
+                        pattern_span.clone(),
+                        "payload binding field index exceeds u32::MAX",
+                        "match-expression-substrate",
+                    );
+                    binding_error = true;
+                    continue;
+                };
+                binding_specs.push((field_idx, payload.binding_name.clone(), ty));
+            }
+            if binding_error {
+                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                rejected = true;
+                continue;
+            }
+
+            let (bindings, body_hir) = if binding_specs.is_empty() {
+                (Vec::new(), self.lower_expr(&arm.body, IntentKind::Read))
+            } else {
+                self.push_scope();
+                let mut bindings = Vec::with_capacity(binding_specs.len());
+                for (field_idx, name, ty) in binding_specs {
+                    let bound = self.bind(name.clone(), ty.clone(), false, pattern_span.clone());
+                    bindings.push(HirMatchArmBinding {
+                        binding: bound.id,
+                        field_idx,
+                        name,
+                        ty,
+                    });
+                }
+                let body_hir = self.lower_expr(&arm.body, IntentKind::Read);
+                self.pop_scope();
+                (bindings, body_hir)
+            };
 
             if result_ty.is_none() {
                 result_ty = Some(body_hir.ty.clone());
@@ -6477,6 +6513,7 @@ impl LowerCtx {
 
             hir_arms.push(HirMatchArm {
                 predicate,
+                bindings,
                 body: body_hir,
                 span: arm.pattern.1.start..arm.body.1.end,
             });

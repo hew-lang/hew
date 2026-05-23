@@ -211,9 +211,8 @@ The checker is the authority. Codegen consumes pre-validated facts.
   `exhaustive-traversal-and-lowering` requires; the spec mandates their
   exhaustive presence with no wildcard fallthrough.
 - The v0.5 HIR/MIR pipeline carries these facts into `hew-codegen-rs` as
-  validated MIR metadata. The retired `TypedProgram`/MessagePack/C++ backend
-  seam is documented only as historical certification context in
-  `docs/specs/typedprogram-soundness-matrix.md`.
+  validated MIR metadata. The `TypedProgram`/MessagePack/C++ backend seam
+  has been retired.
 - Codegen's role is fail-closed consumption only: missing classification at
   lowering is an invariant diagnostic (LESSONS `assignment-target-authority`,
   `checker-codegen-pattern-contract`), never a fall-back inference, and never
@@ -251,8 +250,7 @@ ownership model, not two.
   oracle.
 - **Analysis contract:** the full spec for what the move-checker substrate
   must implement — DROP-TODO inventory, failure-mode mapping, diagnostic
-  vocabulary, and rejection fixtures — is in
-  [`move-checker.md`](./move-checker.md).
+  vocabulary, and rejection fixtures — was tracked under issue #1399.
 
 ---
 
@@ -465,8 +463,6 @@ behind a flag, the following rules apply:
   and consume-on-call), #1314 (`http.Server` / `regex.Pattern` manual-release
   migration), #1399 (move-checker substrate), #1500 (`http.Request` /
   `json.Value` manual-release migration).
-- Soundness matrix: `docs/specs/typedprogram-soundness-matrix.md` (extended
-  in the same change to add a `handle_ownership_kinds` row).
 - Substrate paths cited in this spec: `hew-mir/`, `hew-codegen-rs/`,
   `hew-runtime/src/scheduler.rs`, `hew-runtime/src/scheduler_wasm.rs`,
   `hew-runtime/src/session.rs`, `hew-cabi/tests/`.
@@ -478,6 +474,4 @@ behind a flag, the following rules apply:
   `static-cpp-object-libcxx-boundary`, `error-count-exit-code`,
   `preflight-perf-discipline`, `check-pass-does-not-imply-run-pass`,
   `network-smoke-readiness`.
-- Soundness matrix: `docs/specs/typedprogram-soundness-matrix.md` (extended in
-  the same change to add a `handle_ownership_kinds` row).
 - Issues: #1228, #1251, #1252, #1281, #1295, #1314, #1399, #1500.

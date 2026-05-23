@@ -13,14 +13,13 @@
 #[cfg(test)]
 extern crate hew_runtime;
 
-use std::ffi::c_char;
 use std::io::{self, Read};
 
 use flate2::read::{
     DeflateDecoder, DeflateEncoder, GzDecoder, GzEncoder, ZlibDecoder, ZlibEncoder,
 };
 use flate2::Compression;
-use hew_cabi::cabi::{malloc_bytes, str_to_malloc};
+use hew_cabi::cabi::malloc_bytes;
 
 /// Conservative starting point for explicit decompression caps.
 pub const DEFAULT_MAX_OUTPUT_LEN: usize = 64 * 1024 * 1024;
@@ -38,6 +37,7 @@ fn clear_last_error() {
     LAST_ERROR.with(|error| *error.borrow_mut() = None);
 }
 
+#[cfg(test)]
 fn get_last_error() -> String {
     LAST_ERROR.with(|error| error.borrow().clone().unwrap_or_else(String::new))
 }
@@ -379,14 +379,6 @@ pub unsafe extern "C" fn hew_zlib_decompress(
 ) -> *mut u8 {
     // SAFETY: caller contract is forwarded to hew_zlib_decompress_with_limit.
     unsafe { hew_zlib_decompress_with_limit(data, len, out_len, max_output_len) }
-}
-
-/// Return this actor's last compression/decompression error.
-///
-/// Returns an empty string when no error has been recorded.
-#[no_mangle]
-pub extern "C" fn hew_compress_last_error() -> *mut c_char {
-    str_to_malloc(&get_last_error())
 }
 
 /// Free a buffer previously returned by any `hew_gzip_*`, `hew_deflate_*`, or

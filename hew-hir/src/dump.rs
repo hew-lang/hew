@@ -814,5 +814,23 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");
         }
+        HirExprKind::WhileLet {
+            scrutinee,
+            variant_match,
+            variant_idx,
+            bindings,
+            body,
+        } => {
+            writeln!(
+                out,
+                "{pad}  while-let {}::{} [variant_idx={variant_idx}, bindings={}]",
+                variant_match.type_name,
+                variant_match.variant_name,
+                bindings.len(),
+            )
+            .expect("write to string");
+            dump_expr(out, scrutinee, indent + 4);
+            dump_block(out, body, indent + 4);
+        }
     }
 }

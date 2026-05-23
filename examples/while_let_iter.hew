@@ -1,0 +1,21 @@
+//! Status: stable (Hew roadmap: v0.5 while-let substrate)
+//! Description: Exercises the `while let Some(_) = …` HIR/MIR lowering.
+
+//
+// Demonstrates the canonical iteration substrate: a `var` scrutinee
+// reassigned each loop body so the head-of-loop pattern check re-evaluates
+// against fresh state. The body destructures `Some(value)`, prints, and
+// either steps to `Some(value - 1)` or terminates by reassigning the
+// scrutinee to a pre-built `None` sentinel.
+fn main() {
+    var current: Option<i64> = Some(3);
+    while let Some(value) = current {
+        println(value);
+        if value > 0 {
+            current = Some(value - 1);
+        } else {
+            var stop: Option<i64> = None;
+            current = stop;
+        }
+    }
+}

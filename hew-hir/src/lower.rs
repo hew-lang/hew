@@ -1220,6 +1220,10 @@ fn collect_call_sites_in_stmt(stmt: &HirStmt, out: &mut Vec<(String, SiteId)>) {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "single recursive walker spanning all HirExprKind variants"
+)]
 fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
     match &expr.kind {
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
@@ -1318,6 +1322,12 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
             for arm in arms {
                 collect_call_sites_in_expr(&arm.body, out);
             }
+        }
+        HirExprKind::WhileLet {
+            scrutinee, body, ..
+        } => {
+            collect_call_sites_in_expr(scrutinee, out);
+            collect_call_sites_in_block(body, out);
         }
         _ => {}
     }
@@ -4191,6 +4201,229 @@ impl LowerCtx {
                     span: span.clone(),
                 };
                 HirStmtKind::Expr(while_expr)
+            }
+            Stmt::WhileLet {
+                label: _,
+                pattern,
+                expr,
+                body,
+            } => {
+                // `while let <Ctor>(bindings) = scrutinee { body }` — lowered
+                // to a HIR `WhileLet` expression so that MIR can build the
+                // header/body/exit CFG shape (mirroring `While` + enum-tag
+                // `Match`).
+                //
+                // Pattern scope: only a single payload-bearing enum
+                // constructor pattern (`Some(x)`) is accepted here. Unit
+                // variants (`None`), or-patterns, guards, literals, and
+                // plain bindings fail closed with a typed diagnostic, the
+                // same fail-closed shape used by `Match` lowering.
+                //
+                // The checker's `pattern_resolutions` side-table carries the
+                // resolved variant identity + payload binding metadata;
+                // missing entries (or-pattern / checker-rejected shapes)
+                // surface a single `NotYetImplemented` diagnostic so callers
+                // never see a half-built node.
+                //
+                // Labels are out of scope for this slice; the label is
+                // dropped here because MIR does not yet wire break/continue
+                // targets.
+                let scrutinee_hir = self.lower_expr(expr, IntentKind::Read);
+                // Register a generic-enum instantiation if the scrutinee's
+                // type is a parameterised enum (`Option<i64>`). No-op for
+                // monomorphic enums; required so MIR/codegen find the
+                // `Option$$i64` layout — matches the Match path's
+                // `try_register_enum_instantiation(scrutinee.1)` call.
+                self.try_register_enum_instantiation(&expr.1);
+
+                let pattern_span = &pattern.1;
+                let key = SpanKey::from(pattern_span);
+                let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
+                    self.unsupported(
+                        pattern_span.clone(),
+                        "while-let pattern has no resolution; \
+                         only single payload-bearing enum-variant patterns are supported",
+                        "while-let-substrate",
+                    );
+                    // Walk the body for checker-stream coverage.
+                    self.push_scope();
+                    let _ = self.lower_block(body, &ResolvedTy::Unit);
+                    self.pop_scope();
+                    let unsupported_expr = HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        ty: ResolvedTy::Unit,
+                        value_class: ValueClass::BitCopy,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::Unsupported(
+                            "while-let with unsupported pattern shape".into(),
+                        ),
+                        span: span.clone(),
+                    };
+                    return HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(unsupported_expr),
+                        span: span.clone(),
+                    };
+                };
+
+                // Only variant-constructor patterns with at least one
+                // payload binding are lowered. Unit-variant patterns
+                // (`None`), wildcards, literals, and plain bindings fail
+                // closed — a `while let None = ...` would never terminate
+                // (the condition is "tag matches None") and a plain
+                // identifier pattern is semantically a `while true` with
+                // a re-bind which is not what users mean.
+                let (PatternKind::VariantCtor, Some(variant_match)) =
+                    (resolution.pattern_kind, resolution.variant_match)
+                else {
+                    self.unsupported(
+                        pattern_span.clone(),
+                        "while-let supports only payload-bearing enum-variant patterns \
+                         (e.g. `Some(x)`); unit variants, wildcards, literals, \
+                         plain bindings, and or-patterns are reserved for a future lane",
+                        "while-let-substrate",
+                    );
+                    self.push_scope();
+                    let _ = self.lower_block(body, &ResolvedTy::Unit);
+                    self.pop_scope();
+                    let unsupported_expr = HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        ty: ResolvedTy::Unit,
+                        value_class: ValueClass::BitCopy,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::Unsupported(
+                            "while-let with unsupported pattern shape".into(),
+                        ),
+                        span: span.clone(),
+                    };
+                    return HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(unsupported_expr),
+                        span: span.clone(),
+                    };
+                };
+
+                // Resolve variant_idx via `machine_ctor_registry` (same
+                // qualified-key lookup used by `lower_match_expr` so that
+                // MIR/codegen consume identical indices).
+                let qualified = format!(
+                    "{}::{}",
+                    variant_match.type_name, variant_match.variant_name
+                );
+                let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned()
+                else {
+                    self.unsupported(
+                        pattern_span.clone(),
+                        "while-let variant not registered in machine/enum ctor registry",
+                        "while-let-substrate",
+                    );
+                    self.push_scope();
+                    let _ = self.lower_block(body, &ResolvedTy::Unit);
+                    self.pop_scope();
+                    let unsupported_expr = HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        ty: ResolvedTy::Unit,
+                        value_class: ValueClass::BitCopy,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::Unsupported("while-let variant index unresolved".into()),
+                        span: span.clone(),
+                    };
+                    return HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(unsupported_expr),
+                        span: span.clone(),
+                    };
+                };
+                let variant_idx = u32::try_from(idx_usize)
+                    .expect("variant index exceeds u32::MAX — impossible in Hew");
+
+                // Build per-arm bindings (same shape as `Match`).
+                let mut binding_specs = Vec::with_capacity(resolution.payload_bindings.len());
+                let mut binding_error = false;
+                for payload in &resolution.payload_bindings {
+                    let ty = match ResolvedTy::from_ty(&payload.ty) {
+                        Ok(ty) => ty,
+                        Err(err) => {
+                            self.unsupported(
+                                pattern_span.clone(),
+                                format!("unresolved payload binding type in while-let ({err:?})"),
+                                "while-let-substrate",
+                            );
+                            binding_error = true;
+                            continue;
+                        }
+                    };
+                    let Ok(field_idx) = u32::try_from(payload.field_idx) else {
+                        self.unsupported(
+                            pattern_span.clone(),
+                            "while-let payload binding field index exceeds u32::MAX",
+                            "while-let-substrate",
+                        );
+                        binding_error = true;
+                        continue;
+                    };
+                    binding_specs.push((field_idx, payload.binding_name.clone(), ty));
+                }
+
+                self.push_scope();
+                let bindings: Vec<HirMatchArmBinding> = if binding_error {
+                    Vec::new()
+                } else {
+                    binding_specs
+                        .into_iter()
+                        .map(|(field_idx, name, ty)| {
+                            let bound =
+                                self.bind(name.clone(), ty.clone(), false, pattern_span.clone());
+                            HirMatchArmBinding {
+                                binding: bound.id,
+                                field_idx,
+                                name,
+                                ty,
+                            }
+                        })
+                        .collect()
+                };
+                let body_block = self.lower_block(body, &ResolvedTy::Unit);
+                self.pop_scope();
+
+                if binding_error {
+                    let unsupported_expr = HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        ty: ResolvedTy::Unit,
+                        value_class: ValueClass::BitCopy,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::Unsupported(
+                            "while-let payload binding could not be resolved".into(),
+                        ),
+                        span: span.clone(),
+                    };
+                    return HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(unsupported_expr),
+                        span: span.clone(),
+                    };
+                }
+
+                let while_let_expr = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: ResolvedTy::Unit,
+                    value_class: ValueClass::BitCopy,
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::WhileLet {
+                        scrutinee: Box::new(scrutinee_hir),
+                        variant_match,
+                        variant_idx,
+                        bindings,
+                        body: body_block,
+                    },
+                    span: span.clone(),
+                };
+                HirStmtKind::Expr(while_let_expr)
             }
             Stmt::For {
                 label: _,
@@ -8173,6 +8406,12 @@ fn collect_captures_walk(
                 collect_captures_walk(&arm.body, param_ids, seen, captures, self_id);
             }
         }
+        HirExprKind::WhileLet {
+            scrutinee, body, ..
+        } => {
+            collect_captures_walk(scrutinee, param_ids, seen, captures, self_id);
+            collect_captures_walk_block(body, param_ids, seen, captures, self_id);
+        }
     }
 }
 
@@ -8397,6 +8636,12 @@ fn collect_general_closure_captures_walk(
             for arm in arms {
                 collect_general_closure_captures_walk(&arm.body, outer_bindings, seen, captures);
             }
+        }
+        HirExprKind::WhileLet {
+            scrutinee, body, ..
+        } => {
+            collect_general_closure_captures_walk(scrutinee, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
         }
     }
 }

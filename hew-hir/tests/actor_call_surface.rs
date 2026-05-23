@@ -146,6 +146,12 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 visit_expr(&arm.body, out);
             }
         }
+        HirExprKind::WhileLet {
+            scrutinee, body, ..
+        } => {
+            visit_expr(scrutinee, out);
+            visit_block(body, out);
+        }
         HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::Select(_)
         | HirExprKind::AwaitTask { .. }

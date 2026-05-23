@@ -427,6 +427,22 @@ impl Verifier {
                 self.expr(end);
                 self.block(body);
             }
+            HirExprKind::WhileLet {
+                scrutinee,
+                bindings,
+                body,
+                ..
+            } => {
+                self.expr(scrutinee);
+                for binding in bindings {
+                    // While-let payload bindings are scoped to the body
+                    // (one fresh BindingId allocated by HIR lowering);
+                    // register them here so the duplicate-binding check
+                    // covers the new shape, mirroring `Match` arm bindings.
+                    self.binding(binding.binding, expr.span.clone());
+                }
+                self.block(body);
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive
                 // to verification without a prior NotYetImplemented diagnostic.

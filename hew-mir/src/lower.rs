@@ -2805,6 +2805,12 @@ fn collect_unknown_self_fields_in_expr(
                 collect_unknown_self_fields_in_expr(&arm.body, state_fields, seen, unknown);
             }
         }
+        HirExprKind::WhileLet {
+            scrutinee, body, ..
+        } => {
+            collect_unknown_self_fields_in_expr(scrutinee, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
+        }
     }
 }
 
@@ -4771,6 +4777,13 @@ impl Builder {
                 body,
             } => self.lower_for_range(binding, start, end, *inclusive, body),
             HirExprKind::Match { scrutinee, arms } => self.lower_match(scrutinee, arms, &expr.ty),
+            HirExprKind::WhileLet {
+                scrutinee,
+                variant_idx,
+                bindings,
+                body,
+                ..
+            } => self.lower_while_let(scrutinee, *variant_idx, bindings, body),
             HirExprKind::RegexLiteralRef { .. } => {
                 // Standalone regex literal expressions (as opposed to match-arm
                 // patterns) require a module-level global slot for the compiled
@@ -6423,6 +6436,167 @@ impl Builder {
         if let Some(tail) = &body.tail {
             let _ = self.lower_value(tail);
         }
+        self.finish_current_block(Terminator::Goto { target: header_bb });
+
+        // Exit: subsequent lowering continues here.
+        self.start_block(exit_bb);
+        None
+    }
+
+    /// Lower `while let <Ctor>(bindings) = scrutinee { body }` to a four-block
+    /// CFG that re-evaluates the scrutinee each iteration and dispatches on
+    /// the resulting enum tag:
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   Goto header_bb
+    ///
+    /// header_bb:
+    ///   scrutinee_place = lower(scrutinee)        ← re-evaluated each iter
+    ///   tag_local = Move { src: Place::EnumTag(scrutinee_local) }
+    ///   k_local = ConstI64(variant_idx)
+    ///   cond_local = IntCmp(Eq, tag_local, k_local)
+    ///   Branch { cond: cond_local, then: body_bb, else: exit_bb }
+    ///
+    /// body_bb:
+    ///   for each binding:
+    ///     dest = Move { src: Place::MachineVariant { scrutinee_local,
+    ///                                                variant_idx, field_idx } }
+    ///     register binding_locals[binding.id] = dest
+    ///   lower(body)
+    ///   Goto header_bb                            ← back-edge
+    ///
+    /// exit_bb:
+    ///   (subsequent lowering continues here)
+    /// ```
+    ///
+    /// The CFG is a hybrid of `lower_while` (header/body/exit shape) and
+    /// `lower_match_enum_tag` (tag-compare + payload extraction). The
+    /// scrutinee is evaluated inside the header block so each loop iteration
+    /// produces a fresh enum value — matching the surface semantics of
+    /// `while let` re-checking the pattern on every pass.
+    ///
+    /// The expression always has type `Unit`; `None` is returned (no value
+    /// Place) matching `lower_while`.
+    fn lower_while_let(
+        &mut self,
+        scrutinee: &HirExpr,
+        variant_idx: u32,
+        bindings: &[hew_hir::HirMatchArmBinding],
+        body: &hew_hir::HirBlock,
+    ) -> Option<Place> {
+        let header_bb = self.alloc_block();
+        let body_bb = self.alloc_block();
+        let exit_bb = self.alloc_block();
+
+        // Entry → header.
+        self.finish_current_block(Terminator::Goto { target: header_bb });
+
+        // Header: re-evaluate scrutinee, load enum tag, compare to variant_idx,
+        // branch to body or exit.
+        self.start_block(header_bb);
+        let scrutinee_place = self.lower_value(scrutinee)?;
+        let scrutinee_local = match scrutinee_place {
+            Place::Local(n) => n,
+            other => {
+                // Fail closed: a poisoned scrutinee shape leaves no half-built
+                // CFG (same fail-closed pattern as `lower_match_enum_tag`).
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "while-let scrutinee place shape".to_string(),
+                        site: scrutinee.site,
+                    },
+                    note: format!(
+                        "while-let scrutinee must lower to Place::Local; got {other:?}. \
+                         The HIR producer should only emit WhileLet for enum-typed scrutinees \
+                         backed by a local slot"
+                    ),
+                });
+                return None;
+            }
+        };
+
+        // Load the variant tag into a fresh i64 local, mirroring
+        // `lower_match_enum_tag`. `Place::EnumTag(local)` is the substrate
+        // primitive that codegen GEPs to outer-struct field 0; widening from
+        // the per-enum tag width to i64 happens inside the Move arm.
+        let tag_local = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::Move {
+            dest: tag_local,
+            src: Place::EnumTag(scrutinee_local),
+        });
+
+        // Compare tag against the continue-arm variant index.
+        let k_local = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: k_local,
+            value: i64::from(variant_idx),
+        });
+        let cond_local = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            pred: crate::model::CmpPred::Eq,
+            lhs: tag_local,
+            rhs: k_local,
+            dest: cond_local,
+        });
+        self.finish_current_block(Terminator::Branch {
+            cond: cond_local,
+            then_target: body_bb,
+            else_target: exit_bb,
+        });
+
+        // Body: bind payload fields, lower body, loop back to header.
+        // The binding writes use `Place::MachineVariant` (same primitive used
+        // by `lower_match_enum_tag` arm-body entry); MIR codegen GEPs to the
+        // variant payload field.
+        //
+        // Bindings live for the body block only — we save and restore any
+        // pre-existing entries in `binding_locals` so nested while-let loops
+        // can shadow the same name without confusion.
+        self.start_block(body_bb);
+        let mut overwritten_bindings = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            let binding_ty = self.subst_ty(&binding.ty);
+            self.statements.push(MirStatement::Bind {
+                binding: binding.binding,
+                name: binding.name.clone(),
+                site: scrutinee.site,
+                ty: binding_ty.clone(),
+            });
+            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+                self.owned_locals
+                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+            }
+            let dest = self.alloc_local(binding.ty.clone());
+            self.instructions.push(Instr::Move {
+                dest,
+                src: Place::MachineVariant {
+                    local: scrutinee_local,
+                    variant_idx,
+                    field_idx: binding.field_idx,
+                },
+            });
+            let previous = self.binding_locals.insert(binding.binding, dest);
+            overwritten_bindings.push((binding.binding, previous));
+        }
+
+        for stmt in &body.statements {
+            self.stmt(stmt);
+        }
+        if let Some(tail) = &body.tail {
+            let _ = self.lower_value(tail);
+        }
+
+        // Restore the prior `binding_locals` entries so the binding scope
+        // ends at the body's end — matches Match-arm body-block semantics.
+        for (binding, previous) in overwritten_bindings.into_iter().rev() {
+            if let Some(previous) = previous {
+                self.binding_locals.insert(binding, previous);
+            } else {
+                self.binding_locals.remove(&binding);
+            }
+        }
+
         self.finish_current_block(Terminator::Goto { target: header_bb });
 
         // Exit: subsequent lowering continues here.

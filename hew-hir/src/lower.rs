@@ -693,7 +693,7 @@ pub fn lower_program_with_mono_cap(
                     ctx.lower_supervisor(decl, span.clone()),
                 ));
             }
-            Item::Import(_) => {
+            Item::Import(_) | Item::Trait(_) => {
                 // Imports are frontend-resolved: module-path imports
                 // (`import greeting;`) are lowered from `program.module_graph`
                 // below under their qualified mangled name (e.g. `greeting$hello`).
@@ -702,8 +702,16 @@ pub fn lower_program_with_mono_cap(
                 // the loop above.  The residual `Item::Import` stub is kept in
                 // `program.items` for diagnostic source-map attribution (removing
                 // it would require auditing every span consumer — out of scope).
+                //
+                // User-defined `trait` declarations likewise have no runtime
+                // artefact — the type checker harvests their `trait_defs`
+                // entry (and any `#[lang_item("...")]` registry mapping)
+                // during its registration sweep, and impl-side method bodies
+                // become flattened `HirItem::Function` entries via
+                // `lower_impl_block`. We accept the trait declaration silently
+                // here rather than fail-closing.
             }
-            Item::Const(_) | Item::TypeAlias(_) | Item::Trait(_) | Item::Wire(_) => {
+            Item::Const(_) | Item::TypeAlias(_) | Item::Wire(_) => {
                 ctx.unsupported(span.clone(), "top-level-item", "slice-2");
             }
             Item::ExternBlock(block) => {
@@ -1890,6 +1898,46 @@ impl LowerCtx {
     }
 }
 
+/// Classify whether an impl block's `where_clause` (if any) is one of the
+/// V0b-admissible shapes. Returns `None` when the impl is admissible (no
+/// where-clause, or a where-clause whose predicates are all single-bound
+/// `where T: Trait` on the impl's own outer type parameters) and `Some(shape)`
+/// describing the offending predicate otherwise. The bound itself is consumed
+/// by the checker (`enter_impl_scope` / `register_impl_method` already harvest
+/// `decl.where_clause`); the HIR carries no extra metadata beyond the existing
+/// `type_params` list because trait bounds have no runtime artefact.
+fn classify_unsupported_where_clause(decl: &hew_parser::ast::ImplDecl) -> Option<String> {
+    let where_clause = decl.where_clause.as_ref()?;
+    let type_param_names: Vec<&str> = decl
+        .type_params
+        .as_ref()
+        .map(|ps| ps.iter().map(|p| p.name.as_str()).collect())
+        .unwrap_or_default();
+    for predicate in &where_clause.predicates {
+        let TypeExpr::Named {
+            name: pred_ty_name,
+            type_args,
+        } = &predicate.ty.0
+        else {
+            return Some("where-clause predicate on non-named type".to_string());
+        };
+        if type_args.is_some() {
+            return Some(format!(
+                "where-clause predicate on parameterised type `{pred_ty_name}<...>`"
+            ));
+        }
+        if !type_param_names.contains(&pred_ty_name.as_str()) {
+            return Some(format!(
+                "where-clause predicate on non-type-param `{pred_ty_name}`"
+            ));
+        }
+        if predicate.bounds.len() != 1 {
+            return Some(format!("multi-bound where-clause on `{pred_ty_name}`"));
+        }
+    }
+    None
+}
+
 impl LowerCtx {
     fn seed_stdlib_fn_registry(&mut self) {
         for (index, builtin) in stdlib_catalog::entries().iter().enumerate() {
@@ -2414,15 +2462,14 @@ impl LowerCtx {
     ) {
         // Pre-flight: classify the impl shape. Bail with a precise diagnostic
         // on any unsupported variant before lowering bodies.
-        if decl.where_clause.is_some() {
+        if let Some(shape) = classify_unsupported_where_clause(decl) {
             self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::ImplBlockShapeNotLowered {
-                    shape: "impl with where-clause".to_string(),
-                },
+                HirDiagnosticKind::ImplBlockShapeNotLowered { shape },
                 span,
-                "impl-block shape not yet lowered: impl with where-clause; \
-                 V0b admits only un-bounded `impl<T> [Trait for] Target<T>` \
-                 forms — split the bound into a trait-supertype or remove it",
+                "impl-block shape not yet lowered: only single-bound \
+                 `where T: Trait` predicates on the impl's own type \
+                 parameters are admitted in V0b — multi-bound and \
+                 non-type-param predicates require later slices",
             ));
             return;
         }

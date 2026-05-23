@@ -33,6 +33,60 @@ const _: () = assert!(
     "Hew requires 64-bit target for actor ID encoding"
 );
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransportSelection {
+    Tcp,
+    #[cfg(feature = "quic")]
+    Quic,
+    #[cfg(feature = "quic")]
+    QuicMesh,
+}
+
+fn normalize_transport_name(name: &str) -> Result<&'static str, String> {
+    if name.eq_ignore_ascii_case("tcp") {
+        return Ok("tcp");
+    }
+    if name.eq_ignore_ascii_case("quic") {
+        #[cfg(feature = "quic")]
+        {
+            return Ok("quic");
+        }
+        #[cfg(not(feature = "quic"))]
+        {
+            return Err("transport 'quic' requires the hew-runtime quic feature".into());
+        }
+    }
+    if name.eq_ignore_ascii_case("quic-mesh") {
+        #[cfg(feature = "quic")]
+        {
+            return Ok("quic-mesh");
+        }
+        #[cfg(not(feature = "quic"))]
+        {
+            return Err("transport 'quic-mesh' requires the hew-runtime quic feature".into());
+        }
+    }
+    Err(format!(
+        "unknown transport '{name}'; supported values: tcp, quic, quic-mesh"
+    ))
+}
+
+fn transport_selection_from_env() -> Result<TransportSelection, String> {
+    let value = crate::env::ENV_LOCK.read_access(|()| std::env::var("HEW_TRANSPORT").ok());
+    let Some(value) = value else {
+        return Ok(TransportSelection::Tcp);
+    };
+
+    match normalize_transport_name(&value)? {
+        "tcp" => Ok(TransportSelection::Tcp),
+        #[cfg(feature = "quic")]
+        "quic" => Ok(TransportSelection::Quic),
+        #[cfg(feature = "quic")]
+        "quic-mesh" => Ok(TransportSelection::QuicMesh),
+        _ => unreachable!("normalize_transport_name returns only supported transport keys"),
+    }
+}
+
 /// Global reference to the active node for remote message routing.
 ///
 /// Only one `HewNode` may be active per process. Starting a second node
@@ -1291,7 +1345,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     let mut created_conn_mgr = false;
     let mut joined_cluster = false;
     macro_rules! fail_start {
-        ($msg:literal) => {{
+        ($msg:expr) => {{
             // SAFETY: pointers belong to this node; flags track what was created in this start call.
             unsafe {
                 cleanup_start_failure(
@@ -1310,24 +1364,26 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     if node.transport.is_null() {
-        // Check HEW_TRANSPORT env var for transport selection.
-        // SAFETY: ENV_LOCK synchronises access to the process-global environ array.
-        #[cfg(feature = "quic")]
-        let use_quic = crate::env::ENV_LOCK.read_access(|()| {
-            std::env::var("HEW_TRANSPORT").is_ok_and(|v| v.eq_ignore_ascii_case("quic"))
-        });
-        #[cfg(not(feature = "quic"))]
-        let use_quic = false;
+        let selection = match transport_selection_from_env() {
+            Ok(selection) => selection,
+            Err(err) => fail_start!(format!("hew_node_start: {err}")),
+        };
 
-        if use_quic {
+        match selection {
+            TransportSelection::Tcp => {
+                // SAFETY: constructor returns owned transport pointer or null.
+                node.transport = unsafe { transport::hew_transport_tcp_new() };
+            }
             #[cfg(feature = "quic")]
-            {
+            TransportSelection::Quic => {
                 // SAFETY: constructor returns owned transport pointer or null.
                 node.transport = unsafe { crate::quic_transport::hew_transport_quic_new() };
             }
-        } else {
-            // SAFETY: constructor returns owned transport pointer or null.
-            node.transport = unsafe { transport::hew_transport_tcp_new() };
+            #[cfg(feature = "quic")]
+            TransportSelection::QuicMesh => {
+                // SAFETY: constructor returns owned transport pointer or null.
+                node.transport = unsafe { crate::quic_mesh::hew_transport_quic_mesh_new() };
+            }
         }
         if node.transport.is_null() {
             fail_start!("hew_node_start: failed to create transport");
@@ -1998,7 +2054,7 @@ pub unsafe extern "C" fn hew_node_api_lookup(name: *const c_char) -> u64 {
 
 /// `Node::set_transport(name)` — Set the transport type before starting.
 ///
-/// Supported values: `"tcp"` (default), `"quic"`.
+/// Supported values: `"tcp"` (default), `"quic"`, `"quic-mesh"`.
 /// Must be called before `Node::start`.
 ///
 /// # Safety
@@ -2010,21 +2066,16 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
     let Some(s) = (unsafe { crate::util::cstr_to_str(&name, "hew_node_set_transport") }) else {
         return -1;
     };
-    match s {
-        "tcp" => {
+    match normalize_transport_name(s) {
+        Ok(normalized) => {
             // SAFETY: ENV_LOCK synchronises access to the process-global environ
             // array; set_var is safe under exclusive write access.
-            crate::env::ENV_LOCK.access(|()| unsafe { std::env::set_var("HEW_TRANSPORT", "tcp") });
+            crate::env::ENV_LOCK
+                .access(|()| unsafe { std::env::set_var("HEW_TRANSPORT", normalized) });
             0
         }
-        "quic" => {
-            // SAFETY: ENV_LOCK synchronises access to the process-global environ
-            // array; set_var is safe under exclusive write access.
-            crate::env::ENV_LOCK.access(|()| unsafe { std::env::set_var("HEW_TRANSPORT", "quic") });
-            0
-        }
-        _ => {
-            set_last_error(format!("Node::set_transport: unknown transport '{s}'"));
+        Err(err) => {
+            set_last_error(format!("Node::set_transport: {err}"));
             -1
         }
     }

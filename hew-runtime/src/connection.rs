@@ -1470,7 +1470,10 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         {
             // QUIC provides TLS 1.3 encryption — skip Noise when using QUIC transport.
             // SAFETY: mgr.transport is valid while the connection manager is alive.
-            unsafe { crate::quic_transport::hew_transport_is_quic(mgr.transport) }
+            unsafe {
+                crate::quic_transport::hew_transport_is_quic(mgr.transport)
+                    || crate::quic_mesh::hew_transport_is_quic_mesh(mgr.transport)
+            }
         }
         #[cfg(not(feature = "quic"))]
         {

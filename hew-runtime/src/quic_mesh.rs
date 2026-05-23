@@ -58,19 +58,29 @@
 //!
 //! # Transport selector
 //!
-//! This module is NOT wired into the [`crate::transport`] vtable. A4 owns
-//! selector wiring (`HEW_TRANSPORT=quic-mesh`).
+//! This module exposes a [`crate::transport`] vtable adapter selected by
+//! `HEW_TRANSPORT=quic-mesh`. The adapter uses a single control stream for the
+//! existing byte-stream connection-manager contract; W4/A5 move actor payloads
+//! onto typed per-actor-pair lanes once the CBOR envelope cut-over lands.
 //!
 //! [`quic_transport`]: crate::quic_transport
 
 use std::collections::VecDeque;
+use std::ffi::{c_char, c_int, c_void, CStr};
+use std::net::ToSocketAddrs;
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use bytes::Bytes;
 use quinn::{Endpoint, RecvStream, SendStream, VarInt};
 use rcgen::generate_simple_self_signed;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
+
+use crate::set_last_error;
+use crate::transport::{HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -491,6 +501,519 @@ impl std::fmt::Display for MeshError {
 impl std::error::Error for MeshError {}
 
 // ---------------------------------------------------------------------------
+// HewTransport vtable adapter
+// ---------------------------------------------------------------------------
+
+const MAX_CONNS: usize = 64;
+const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
+const QUIC_MESH_WORKER_THREADS: usize = 2;
+
+struct QuicMeshConn {
+    peer: PeerConn,
+    send: Option<SendStream>,
+    recv: Option<RecvStream>,
+    is_initiator: bool,
+    close_reason: Arc<OnceLock<String>>,
+}
+
+impl QuicMeshConn {
+    fn new(peer: PeerConn, is_initiator: bool, rt: &Runtime) -> Self {
+        let close_reason = Arc::new(OnceLock::new());
+        spawn_close_watcher(rt, peer.conn.clone(), Arc::clone(&close_reason));
+        Self {
+            peer,
+            send: None,
+            recv: None,
+            is_initiator,
+            close_reason,
+        }
+    }
+
+    fn new_in_current_runtime(peer: PeerConn, is_initiator: bool) -> Self {
+        let close_reason = Arc::new(OnceLock::new());
+        let watcher_conn = peer.conn.clone();
+        let watcher_reason = Arc::clone(&close_reason);
+        tokio::spawn(async move {
+            let err = watcher_conn.closed().await;
+            let _ = watcher_reason.set(format!("quic_mesh connection closed: {err}"));
+        });
+        Self {
+            peer,
+            send: None,
+            recv: None,
+            is_initiator,
+            close_reason,
+        }
+    }
+
+    fn ensure_control_stream(&mut self, rt: &Runtime) -> Result<(), String> {
+        if self.send.is_some() && self.recv.is_some() {
+            return Ok(());
+        }
+
+        if self.is_initiator {
+            let (send, recv) = rt
+                .block_on(async { self.peer.conn.open_bi().await })
+                .map_err(|e| format!("control open_bi: {e}"))?;
+            self.send = Some(send);
+            self.recv = Some(recv);
+        } else {
+            let (send, recv) = rt
+                .block_on(async { self.peer.conn.accept_bi().await })
+                .map_err(|e| format!("control accept_bi: {e}"))?;
+            self.send = Some(send);
+            self.recv = Some(recv);
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct QuicMeshTransport {
+    rt: Arc<Runtime>,
+    mesh: Option<Mesh>,
+    conns: Vec<std::sync::Mutex<Option<QuicMeshConn>>>,
+    incoming_rx: std::sync::Mutex<Option<std::sync::mpsc::Receiver<QuicMeshConn>>>,
+}
+
+impl QuicMeshTransport {
+    fn new(rt: Arc<Runtime>) -> Self {
+        let conns = (0..MAX_CONNS)
+            .map(|_| std::sync::Mutex::new(None))
+            .collect();
+        Self {
+            rt,
+            mesh: None,
+            conns,
+            incoming_rx: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn store_conn(&self, conn: QuicMeshConn) -> c_int {
+        for (i, slot) in self.conns.iter().enumerate() {
+            let mut guard = slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if guard.is_none() {
+                *guard = Some(conn);
+                return c_int::try_from(i).unwrap_or(HEW_CONN_INVALID);
+            }
+        }
+        HEW_CONN_INVALID
+    }
+
+    fn remove_conn(&self, id: c_int) {
+        let Ok(idx) = usize::try_from(id) else { return };
+        if let Some(slot) = self.conns.get(idx) {
+            let mut guard = slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(conn) = guard.take() {
+                conn.peer
+                    .conn
+                    .close(VarInt::from_u32(0), b"quic-mesh conn closed");
+            }
+        }
+    }
+}
+
+fn parse_socket_addr(addr_str: &str) -> Result<std::net::SocketAddr, String> {
+    match addr_str.parse() {
+        Ok(addr) => Ok(addr),
+        Err(_) => addr_str
+            .to_socket_addrs()
+            .map_err(|e| format!("resolve {addr_str}: {e}"))?
+            .next()
+            .ok_or_else(|| format!("resolve {addr_str}: no addresses")),
+    }
+}
+
+fn self_tls_allowing_own_spki() -> Result<MeshTls, MeshError> {
+    let (mut tls, spki) = MeshTls::self_signed(vec!["hew-mesh.local".into(), "localhost".into()])?;
+    tls.allowed_peer_spkis.insert(spki);
+    Ok(tls)
+}
+
+fn framed_send_mesh(rt: &Runtime, send: &mut SendStream, data: &[u8]) -> c_int {
+    if data.len() > MAX_FRAME_SIZE {
+        set_last_error("quic_mesh send: frame exceeds MAX_FRAME_SIZE");
+        return -1;
+    }
+    let frame_len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+    let header = frame_len.to_le_bytes();
+
+    let result = rt.block_on(async {
+        send.write_all(&header).await?;
+        send.write_all(data).await?;
+        Ok::<_, quinn::WriteError>(())
+    });
+
+    match result {
+        Ok(()) => c_int::try_from(data.len()).unwrap_or(-1),
+        Err(e) => {
+            set_last_error(format!("quic_mesh send: {e}"));
+            -1
+        }
+    }
+}
+
+fn framed_recv_mesh(rt: &Runtime, recv: &mut RecvStream, buf: &mut [u8]) -> c_int {
+    let result = rt.block_on(async {
+        let mut header = [0u8; 4];
+        recv.read_exact(&mut header)
+            .await
+            .map_err(|e| format!("header: {e}"))?;
+
+        let frame_len = u32::from_le_bytes(header) as usize;
+        if frame_len > MAX_FRAME_SIZE {
+            return Err(format!("frame too large: {frame_len}"));
+        }
+        if frame_len > buf.len() {
+            return Err(format!("frame {frame_len} exceeds buffer {}", buf.len()));
+        }
+
+        recv.read_exact(&mut buf[..frame_len])
+            .await
+            .map_err(|e| format!("payload: {e}"))?;
+
+        Ok(c_int::try_from(frame_len).unwrap_or(-1))
+    });
+
+    match result {
+        Ok(n) => n,
+        Err(e) => {
+            set_last_error(format!("quic_mesh recv: {e}"));
+            -1
+        }
+    }
+}
+
+fn spawn_close_watcher(rt: &Runtime, conn: quinn::Connection, close_reason: Arc<OnceLock<String>>) {
+    rt.spawn(async move {
+        let err = conn.closed().await;
+        let _ = close_reason.set(format!("quic_mesh connection closed: {err}"));
+    });
+}
+
+unsafe extern "C" fn quic_mesh_connect(impl_ptr: *mut c_void, address: *const c_char) -> c_int {
+    if impl_ptr.is_null() || address.is_null() {
+        return HEW_CONN_INVALID;
+    }
+
+    // SAFETY: impl_ptr checked non-null above; it is allocated by hew_transport_quic_mesh_new.
+    let qmt = unsafe { &*impl_ptr.cast::<QuicMeshTransport>() };
+    let Some(mesh) = &qmt.mesh else {
+        set_last_error("quic_mesh connect: no listening mesh endpoint");
+        return HEW_CONN_INVALID;
+    };
+    // SAFETY: address checked non-null above; caller guarantees a valid C string.
+    let Ok(addr_str) = unsafe { CStr::from_ptr(address) }.to_str() else {
+        set_last_error("quic_mesh connect: address is not valid UTF-8");
+        return HEW_CONN_INVALID;
+    };
+    let addr = match parse_socket_addr(addr_str) {
+        Ok(addr) => addr,
+        Err(e) => {
+            set_last_error(format!("quic_mesh connect: {e}"));
+            return HEW_CONN_INVALID;
+        }
+    };
+
+    let result = qmt.rt.block_on(async { mesh.connect(addr).await });
+    match result {
+        Ok(peer) => qmt.store_conn(QuicMeshConn::new(peer, true, &qmt.rt)),
+        Err(e) => {
+            set_last_error(format!("quic_mesh connect: {e}"));
+            HEW_CONN_INVALID
+        }
+    }
+}
+
+unsafe extern "C" fn quic_mesh_listen(impl_ptr: *mut c_void, address: *const c_char) -> c_int {
+    if impl_ptr.is_null() || address.is_null() {
+        return -1;
+    }
+
+    // SAFETY: impl_ptr checked non-null above; it is allocated by hew_transport_quic_mesh_new.
+    let qmt = unsafe { &mut *impl_ptr.cast::<QuicMeshTransport>() };
+    // SAFETY: address checked non-null above; caller guarantees a valid C string.
+    let Ok(addr_str) = unsafe { CStr::from_ptr(address) }.to_str() else {
+        set_last_error("quic_mesh listen: address is not valid UTF-8");
+        return -1;
+    };
+    let addr = match parse_socket_addr(addr_str) {
+        Ok(addr) => addr,
+        Err(e) => {
+            set_last_error(format!("quic_mesh listen: {e}"));
+            return -1;
+        }
+    };
+    let tls = match self_tls_allowing_own_spki() {
+        Ok(tls) => tls,
+        Err(e) => {
+            set_last_error(format!("quic_mesh listen: {e}"));
+            return -1;
+        }
+    };
+
+    let mesh = {
+        let _guard = qmt.rt.enter();
+        match QuicMesh::listen(addr, tls) {
+            Ok(mesh) => mesh,
+            Err(e) => {
+                set_last_error(format!("quic_mesh listen: {e}"));
+                return -1;
+            }
+        }
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel::<QuicMeshConn>();
+    let accept_mesh = mesh.clone_endpoint();
+    qmt.rt.spawn(async move {
+        loop {
+            let Some(result) = accept_mesh.accept().await else {
+                break;
+            };
+            let Ok(peer) = result else {
+                continue;
+            };
+            let conn = QuicMeshConn::new_in_current_runtime(peer, false);
+            if tx.send(conn).is_err() {
+                break;
+            }
+        }
+    });
+
+    qmt.mesh = Some(mesh);
+    *qmt.incoming_rx
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(rx);
+    0
+}
+
+unsafe extern "C" fn quic_mesh_accept(impl_ptr: *mut c_void, timeout_ms: c_int) -> c_int {
+    if impl_ptr.is_null() {
+        return HEW_CONN_INVALID;
+    }
+    // SAFETY: impl_ptr checked non-null above; it is allocated by hew_transport_quic_mesh_new.
+    let qmt = unsafe { &*impl_ptr.cast::<QuicMeshTransport>() };
+    let guard = qmt
+        .incoming_rx
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(rx) = guard.as_ref() else {
+        return HEW_CONN_INVALID;
+    };
+
+    let result = if timeout_ms < 0 {
+        rx.recv().ok()
+    } else {
+        rx.recv_timeout(Duration::from_millis(
+            u64::try_from(timeout_ms).unwrap_or(0),
+        ))
+        .ok()
+    };
+
+    match result {
+        Some(conn) => qmt.store_conn(conn),
+        None => HEW_CONN_INVALID,
+    }
+}
+
+unsafe extern "C" fn quic_mesh_send(
+    impl_ptr: *mut c_void,
+    conn: c_int,
+    data: *const c_void,
+    len: usize,
+) -> c_int {
+    if impl_ptr.is_null() || data.is_null() {
+        return -1;
+    }
+    // SAFETY: impl_ptr checked non-null above; it is allocated by hew_transport_quic_mesh_new.
+    let qmt = unsafe { &*impl_ptr.cast::<QuicMeshTransport>() };
+    // SAFETY: data checked non-null above; caller guarantees len readable bytes.
+    let slice = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
+
+    let Ok(idx) = usize::try_from(conn) else {
+        return -1;
+    };
+    let Some(slot) = qmt.conns.get(idx) else {
+        return -1;
+    };
+    let mut guard = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(mesh_conn) = guard.as_mut() else {
+        return -1;
+    };
+
+    if let Some(reason) = mesh_conn.close_reason.get() {
+        set_last_error(reason.clone());
+        return -1;
+    }
+    if let Err(e) = mesh_conn.ensure_control_stream(&qmt.rt) {
+        set_last_error(format!("quic_mesh send: {e}"));
+        return -1;
+    }
+
+    framed_send_mesh(&qmt.rt, mesh_conn.send.as_mut().unwrap(), slice)
+}
+
+unsafe extern "C" fn quic_mesh_recv(
+    impl_ptr: *mut c_void,
+    conn: c_int,
+    buf: *mut c_void,
+    buf_size: usize,
+) -> c_int {
+    if impl_ptr.is_null() || buf.is_null() {
+        return -1;
+    }
+    // SAFETY: impl_ptr checked non-null above; it is allocated by hew_transport_quic_mesh_new.
+    let qmt = unsafe { &*impl_ptr.cast::<QuicMeshTransport>() };
+    // SAFETY: buf checked non-null above; caller guarantees buf_size writable bytes.
+    let slice = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_size) };
+
+    let Ok(idx) = usize::try_from(conn) else {
+        return -1;
+    };
+    let Some(slot) = qmt.conns.get(idx) else {
+        return -1;
+    };
+    let mut guard = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(mesh_conn) = guard.as_mut() else {
+        return -1;
+    };
+
+    if let Some(reason) = mesh_conn.close_reason.get() {
+        set_last_error(reason.clone());
+        return -1;
+    }
+    if let Err(e) = mesh_conn.ensure_control_stream(&qmt.rt) {
+        set_last_error(format!("quic_mesh recv: {e}"));
+        return -1;
+    }
+
+    framed_recv_mesh(&qmt.rt, mesh_conn.recv.as_mut().unwrap(), slice)
+}
+
+unsafe extern "C" fn quic_mesh_close_conn(impl_ptr: *mut c_void, conn: c_int) {
+    if impl_ptr.is_null() {
+        return;
+    }
+    // SAFETY: impl_ptr checked non-null above; it is allocated by hew_transport_quic_mesh_new.
+    let qmt = unsafe { &*impl_ptr.cast::<QuicMeshTransport>() };
+    qmt.remove_conn(conn);
+}
+
+unsafe extern "C" fn quic_mesh_destroy(impl_ptr: *mut c_void) {
+    if impl_ptr.is_null() {
+        return;
+    }
+    // SAFETY: takes ownership of the Box allocated in hew_transport_quic_mesh_new.
+    let mut qmt = unsafe { Box::from_raw(impl_ptr.cast::<QuicMeshTransport>()) };
+    if let Some(mesh) = qmt.mesh.take() {
+        mesh.close();
+    }
+    for slot in &qmt.conns {
+        let mut guard = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(conn) = guard.take() {
+            conn.peer.conn.close(VarInt::from_u32(0), b"shutdown");
+        }
+    }
+    *qmt.incoming_rx
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+
+    let rt_arc = Arc::clone(&qmt.rt);
+    drop(qmt);
+    match Arc::try_unwrap(rt_arc) {
+        Ok(rt) => rt.shutdown_background(),
+        Err(arc) => {
+            #[cfg(debug_assertions)]
+            eprintln!("[hew-runtime] quic_mesh_destroy: Arc::try_unwrap failed, runtime leaked");
+            std::mem::forget(arc);
+        }
+    }
+}
+
+static QUIC_MESH_OPS: HewTransportOps = HewTransportOps {
+    connect: Some(quic_mesh_connect),
+    listen: Some(quic_mesh_listen),
+    accept: Some(quic_mesh_accept),
+    send: Some(quic_mesh_send),
+    recv: Some(quic_mesh_recv),
+    close_conn: Some(quic_mesh_close_conn),
+    destroy: Some(quic_mesh_destroy),
+};
+
+/// Check whether a transport is the native `quic_mesh` transport.
+///
+/// # Safety
+///
+/// `transport` must be a valid, non-null pointer to a [`HewTransport`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_transport_is_quic_mesh(transport: *const HewTransport) -> bool {
+    if transport.is_null() {
+        return false;
+    }
+    // SAFETY: transport checked non-null above; caller guarantees a live HewTransport.
+    let t = unsafe { &*transport };
+    std::ptr::eq(t.ops, &raw const QUIC_MESH_OPS)
+}
+
+/// Create a new native `quic_mesh` transport.
+///
+/// # Safety
+///
+/// The returned pointer must not be used after its vtable `destroy` is called.
+#[no_mangle]
+pub unsafe extern "C" fn hew_transport_quic_mesh_new() -> *mut HewTransport {
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(QUIC_MESH_WORKER_THREADS)
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => Arc::new(rt),
+        Err(e) => {
+            set_last_error(format!("quic_mesh runtime: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+
+    let qmt = Box::new(QuicMeshTransport::new(rt));
+    let transport = Box::new(HewTransport {
+        ops: &raw const QUIC_MESH_OPS,
+        r#impl: Box::into_raw(qmt).cast::<c_void>(),
+    });
+    Box::into_raw(transport)
+}
+
+/// Free a native `quic_mesh` transport created by [`hew_transport_quic_mesh_new`].
+///
+/// # Safety
+///
+/// `transport` must have been returned by [`hew_transport_quic_mesh_new`] and
+/// must not have been freed already.
+#[no_mangle]
+pub unsafe extern "C" fn hew_transport_quic_mesh_free(transport: *mut HewTransport) {
+    if transport.is_null() {
+        return;
+    }
+    // SAFETY: transport checked non-null above and belongs to this free call.
+    let t = unsafe { &*transport };
+    // SAFETY: t.ops points to the static QUIC_MESH_OPS vtable.
+    if let Some(destroy_fn) = unsafe { (*t.ops).destroy } {
+        // SAFETY: t.impl is the QuicMeshTransport pointer from the constructor.
+        unsafe { destroy_fn(t.r#impl) };
+    }
+    // SAFETY: reclaims the Box<HewTransport> allocated by the constructor.
+    let _ = unsafe { Box::from_raw(transport) };
+}
+
+// ---------------------------------------------------------------------------
 // QuicMesh — listener factory
 // ---------------------------------------------------------------------------
 
@@ -649,6 +1172,13 @@ impl std::fmt::Debug for Mesh {
 }
 
 impl Mesh {
+    fn clone_endpoint(&self) -> Self {
+        Self {
+            endpoint: self.endpoint.clone(),
+            tls: Arc::clone(&self.tls),
+        }
+    }
+
     /// Local socket address of this endpoint.
     ///
     /// # Errors

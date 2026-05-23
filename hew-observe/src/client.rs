@@ -993,12 +993,16 @@ mod tests {
     /// with the `event_type` field populated (wire-contract-test-presence).
     #[test]
     fn channel_event_types_deserialise_with_populated_fields() {
-        for et in crate::events::ACTIONABLE_TRACE_EVENT_TYPES {
-            if matches!(*et, "send" | "spawn" | "crash" | "stop") {
+        for et in crate::events::CURRENT_TRACE_EVENT_METADATA
+            .iter()
+            .filter(|meta| meta.is_actionable())
+            .map(|meta| meta.name)
+        {
+            if matches!(et, "send" | "spawn" | "crash" | "stop") {
                 continue;
             }
             let ev = make_trace_event(et);
-            assert_eq!(ev.event_type, *et, "event_type must round-trip for {et}");
+            assert_eq!(ev.event_type, et, "event_type must round-trip for {et}");
             assert_eq!(
                 ev.actor_id, 12_345_678,
                 "actor_id must be populated for {et}"
@@ -1013,7 +1017,11 @@ mod tests {
     /// Channel lifecycle events are actionable (visible in the trace UI).
     #[test]
     fn channel_event_types_are_actionable() {
-        for et in crate::events::ACTIONABLE_TRACE_EVENT_TYPES {
+        for et in crate::events::CURRENT_TRACE_EVENT_METADATA
+            .iter()
+            .filter(|meta| meta.is_actionable())
+            .map(|meta| meta.name)
+        {
             let ev = make_trace_event(et);
             assert!(
                 ev.is_actionable(),

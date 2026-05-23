@@ -116,7 +116,7 @@ pub fn lookup_dispatch_type_by_ptr(dispatch_ptr: usize) -> &'static str {
 ///
 /// Returns `Some("ActorName::handler_name")` when registered, `None` otherwise.
 /// This variant avoids a `transmute` by operating on the raw `usize` pointer.
-pub fn lookup_handler_name_by_ptr(dispatch_ptr: usize, msg_type: i32) -> Option<String> {
+pub fn handler_name_by_ptr(dispatch_ptr: usize, msg_type: i32) -> Option<String> {
     if dispatch_ptr == 0 {
         return None;
     }
@@ -149,22 +149,6 @@ pub fn register_handler_name(
             .entry((key, msg_type))
             .or_insert(handler_name);
     });
-}
-
-/// Look up the fully-qualified handler name for a `(dispatch_fn_ptr, msg_type)` pair.
-///
-/// Returns `Some("ActorName::handler_name")` when the pair was previously registered
-/// via `register_handler_name`, or `None` if not found.
-pub fn lookup_handler_name(dispatch_fn: Option<HewDispatchFn>, msg_type: i32) -> Option<String> {
-    let key = dispatch_fn.map_or(0, |f| f as usize);
-    if key == 0 {
-        return None;
-    }
-    HANDLER_NAME_REGISTRY.access(|guard| {
-        guard
-            .as_ref()
-            .and_then(|m| m.get(&(key, msg_type)).cloned())
-    })
 }
 
 /// Look up the dispatch function pointer (as `usize`) for a live actor by its ID.
@@ -639,7 +623,7 @@ mod tests {
             "Counter::on_increment".to_owned(),
         );
         let ptr = fake_dispatch_handler as *const () as usize;
-        let result = lookup_handler_name_by_ptr(ptr, 7);
+        let result = handler_name_by_ptr(ptr, 7);
         assert_eq!(
             result.as_deref(),
             Some("Counter::on_increment"),
@@ -650,7 +634,7 @@ mod tests {
     /// Unknown (`dispatch_ptr`, `msg_type`) pair returns None.
     #[test]
     fn handler_name_unknown_pair_returns_none() {
-        let result = lookup_handler_name_by_ptr(0xdead_beef_cafe_babe, 42);
+        let result = handler_name_by_ptr(0xdead_beef_cafe_babe, 42);
         assert!(result.is_none(), "unknown pair must return None");
     }
 
@@ -664,7 +648,7 @@ mod tests {
         register_handler_name(Some(fake_dispatch_handler), 99, "Actor::first".to_owned());
         register_handler_name(Some(fake_dispatch_handler), 99, "Actor::second".to_owned());
         let ptr = fake_dispatch_handler as *const () as usize;
-        let result = lookup_handler_name_by_ptr(ptr, 99);
+        let result = handler_name_by_ptr(ptr, 99);
         // First registration wins.
         assert_eq!(result.as_deref(), Some("Actor::first"));
     }
@@ -679,12 +663,12 @@ mod tests {
         register_handler_name(Some(fake_dispatch_handler), 55, "MyType::on_msg".to_owned());
         let ptr = fake_dispatch_handler as *const () as usize;
         assert!(
-            lookup_handler_name_by_ptr(ptr, 55).is_some(),
+            handler_name_by_ptr(ptr, 55).is_some(),
             "handler name must be present before clear"
         );
         clear_dispatch_registry();
         assert!(
-            lookup_handler_name_by_ptr(ptr, 55).is_none(),
+            handler_name_by_ptr(ptr, 55).is_none(),
             "handler name must be absent after clear_dispatch_registry"
         );
     }

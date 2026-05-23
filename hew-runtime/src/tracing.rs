@@ -839,7 +839,7 @@ pub fn drain_events_json() -> String {
                 let type_id = dispatch_ptr as u64;
                 let type_name =
                     crate::profiler::actor_registry::lookup_dispatch_type_by_ptr(dispatch_ptr);
-                let hname = crate::profiler::actor_registry::lookup_handler_name_by_ptr(
+                let hname = crate::profiler::actor_registry::handler_name_by_ptr(
                     dispatch_ptr,
                     ev.msg_type,
                 );

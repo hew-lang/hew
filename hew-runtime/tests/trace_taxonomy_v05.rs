@@ -2,7 +2,7 @@
 //!
 //! Producer: `hew_runtime::tracing` (the trace ring buffer drained as JSON
 //! via [`drain_events_json`]).
-//! Consumer: `hew-observe`'s closed `TraceEventKind` (mirrored here as
+//! Consumer: `hew-observe`'s known event metadata names (mirrored here as
 //! [`KNOWN_EVENT_NAMES`] — same pattern as the
 //! `divide_by_zero_trap_surfaces_trap_kind_on_observe_event_surface`
 //! test mirrors observe's `CrashEntry`).
@@ -16,8 +16,7 @@
 //! Then drain the trace events as JSON and assert:
 //! - The drain is non-empty.
 //! - Every `event_type` string in the JSON resolves to a name in the
-//!   closed taxonomy ([`KNOWN_EVENT_NAMES`], mirrored from
-//!   `hew-observe`'s `TraceEventKind`). Zero fall-throughs to `"unknown"`.
+//!   known metadata names ([`KNOWN_EVENT_NAMES`]). Zero fall-throughs to `"unknown"`.
 //! - The expected canonical events for the exercised scenario are present
 //!   (`spawn`, `send`, `crash`, `duplex_created`, `duplex_closed`).
 //!
@@ -55,7 +54,7 @@ use hew_runtime::tracing::{
 };
 use hew_runtime_testkit::{ensure_scheduler, TestSupervisor};
 
-/// Mirror of `hew_observe::events::TraceEventKind::ALL.iter().map(name)`.
+/// Mirror of `hew_observe::events` known producer-emitted metadata names.
 /// `hew-observe` is a bin-only crate today and cannot be a dev-dependency
 /// of `hew-runtime`; the canonical name set is mirrored here so a producer
 /// rename would fail the assertion in
@@ -150,8 +149,7 @@ fn canonical_names_mirror_producer_and_consumer() {
         "trace-event taxonomy diverged between producer (hew-runtime) and \
          consumer mirror (KNOWN_EVENT_NAMES). Missing on consumer mirror: \
          {missing_consumer:?}; missing on producer: {missing_producer:?}. \
-         Update hew-observe::events::TraceEventKind and \
-         hew-observe::events::RUNTIME_EMITTED_EVENT_NAMES to match.",
+         Update hew-observe::events metadata names to match.",
         missing_consumer = producer.difference(&consumer).collect::<Vec<_>>(),
         missing_producer = consumer.difference(&producer).collect::<Vec<_>>(),
     );
@@ -264,7 +262,7 @@ fn v05_concurrency_program_has_no_unknown_trace_events() {
         "v0.5 program produced trace events outside the closed taxonomy: \
          {unknown:?}. Every event_type must be added to \
          hew_runtime::tracing::EVENT_TYPE_NAMES and \
-         hew_observe::events::TraceEventKind together. Drained JSON: {json}"
+         hew_observe::events metadata names together. Drained JSON: {json}"
     );
 
     // Canonical events the exercised scenario MUST surface. A drain that

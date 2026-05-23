@@ -114,39 +114,6 @@ pub enum HewTaskError {
     Panic = 3,
 }
 
-/// Restart policy for supervised actors.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HewRestartPolicy {
-    Permanent = 0,
-    Transient = 1,
-    Temporary = 2,
-}
-
-/// Restart strategy for supervisors.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HewRestartStrategy {
-    /// Restart only the failed child.
-    OneForOne = 0,
-    /// Restart all children when any child fails.
-    OneForAll = 1,
-    /// Restart the failed child and all children started after it.
-    RestForOne = 2,
-}
-
-/// Circuit breaker states for supervised actors.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HewCircuitBreakerState {
-    /// Normal operation, restarts are allowed.
-    Closed = 0,
-    /// Circuit is open, restarts are blocked.
-    Open = 1,
-    /// Circuit allows one probe restart to test if the issue is resolved.
-    HalfOpen = 2,
-}
-
 /// Typed failure reason for an ask (local or remote).
 ///
 /// Written to a thread-local slot whenever `hew_node_api_ask` or

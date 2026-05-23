@@ -1492,7 +1492,7 @@ impl<'src> Parser<'src> {
                     }
                     Some(Token::Trait) => {
                         self.advance();
-                        let mut t = self.parse_trait_decl(vis)?;
+                        let mut t = self.parse_trait_decl(vis, &attrs)?;
                         t.doc_comment = doc_comment;
                         Item::Trait(t)
                     }
@@ -1582,7 +1582,7 @@ impl<'src> Parser<'src> {
             }
             Some(Token::Trait) => {
                 self.advance();
-                let mut t = self.parse_trait_decl(Visibility::Private)?;
+                let mut t = self.parse_trait_decl(Visibility::Private, &attrs)?;
                 t.doc_comment = doc_comment;
                 Item::Trait(t)
             }
@@ -2217,7 +2217,11 @@ impl<'src> Parser<'src> {
         }
     }
 
-    fn parse_trait_decl(&mut self, visibility: Visibility) -> Option<TraitDecl> {
+    fn parse_trait_decl(
+        &mut self,
+        visibility: Visibility,
+        attrs: &[Attribute],
+    ) -> Option<TraitDecl> {
         let name = self.expect_ident()?;
 
         let type_params = self.parse_opt_type_params()?;
@@ -2241,6 +2245,11 @@ impl<'src> Parser<'src> {
 
         self.expect(&Token::RightBrace)?;
 
+        let lang_item = attrs
+            .iter()
+            .find(|a| a.name == "lang_item")
+            .and_then(|a| a.args.first().map(|arg| arg.as_str().to_string()));
+
         Some(TraitDecl {
             visibility,
             name,
@@ -2248,11 +2257,13 @@ impl<'src> Parser<'src> {
             super_traits,
             items,
             doc_comment: None,
+            lang_item,
         })
     }
 
     fn parse_trait_item(&mut self) -> Option<TraitItem> {
         let doc_comment = self.collect_doc_comments();
+        let attrs = self.parse_attributes();
         let is_pure = self.eat(&Token::Pure);
         match self.peek() {
             Some(Token::Fn) => {
@@ -2276,6 +2287,11 @@ impl<'src> Parser<'src> {
                 };
                 let fn_end = self.peek_span().start;
 
+                let lang_item = attrs
+                    .iter()
+                    .find(|a| a.name == "lang_item")
+                    .and_then(|a| a.args.first().map(|arg| arg.as_str().to_string()));
+
                 Some(TraitItem::Method(TraitMethod {
                     name,
                     is_pure,
@@ -2286,6 +2302,7 @@ impl<'src> Parser<'src> {
                     body,
                     span: fn_start..fn_end,
                     doc_comment,
+                    lang_item,
                 }))
             }
             Some(Token::Type) => {

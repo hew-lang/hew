@@ -996,6 +996,16 @@ pub struct TraitDecl {
     pub super_traits: Option<Vec<TraitBound>>,
     pub items: Vec<TraitItem>,
     pub doc_comment: Option<String>,
+    /// Lang-item key from `#[lang_item("key")]`, if present.
+    ///
+    /// Tags this trait as a compiler-recognised "lang item" — e.g.
+    /// `#[lang_item("display")]` marks the trait the f-string lowering
+    /// pass dispatches through. The checker populates a side registry
+    /// (`(key → trait name)`) from these tags; HIR lowering looks up
+    /// the trait/method names through the registry instead of hardcoding
+    /// the literal `"Display"` / `"fmt"` symbols.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang_item: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1024,6 +1034,13 @@ pub struct TraitMethod {
     pub span: Span,
     #[serde(default)]
     pub doc_comment: Option<String>,
+    /// Lang-item key from `#[lang_item("key")]`, if present.
+    ///
+    /// Tags this method as a compiler-recognised "lang item" — e.g.
+    /// `#[lang_item("display_fmt")]` marks the method the f-string
+    /// lowering pass dispatches through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang_item: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

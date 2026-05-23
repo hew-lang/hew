@@ -11,6 +11,7 @@ pub mod check;
 pub mod cycle;
 pub mod env;
 pub mod error;
+pub mod lang_items;
 pub mod lowering_facts;
 pub mod method_resolution;
 pub mod module_registry;
@@ -37,6 +38,7 @@ pub use check::{
     VariantDef, VariantMatch,
 };
 pub use error::TypeError;
+pub use lang_items::{LangItemBinding, LangItemRegistry, LANG_ITEM_DISPLAY, LANG_ITEM_DISPLAY_FMT};
 pub use lowering_facts::{
     DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringFactError, LoweringKind,
 };

@@ -2483,6 +2483,7 @@ mod tests {
             intrinsic_declarations: std::collections::HashMap::new(),
             machine_method_dispatch: std::collections::HashMap::new(),
             pattern_resolutions: std::collections::HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
         };
 
         let err = enrich_program_ast(

@@ -678,6 +678,7 @@ mod tests {
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
         }
     }
 

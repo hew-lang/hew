@@ -306,6 +306,12 @@ pub struct TypeCheckOutput {
     /// WHEN-OBSOLETE: never; this table is the checker's authoritative
     /// output for match semantics downstream.
     pub pattern_resolutions: HashMap<SpanKey, ArmResolution>,
+    /// Compiler-recognised lang-item registry built from `#[lang_item("…")]`
+    /// attributes on traits and trait methods during trait registration.
+    /// HIR lowering consults this table to discover the trait/method names
+    /// for f-string `Display` dispatch instead of hard-coding `"Display"` /
+    /// `"fmt"` symbols. See [`crate::LangItemRegistry`].
+    pub lang_items: crate::LangItemRegistry,
 }
 
 /// By-value capture mode selected for one closure environment field.
@@ -627,6 +633,7 @@ impl Default for TypeCheckOutput {
             actor_protocol_descriptors: HashMap::new(),
             intrinsic_declarations: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: crate::LangItemRegistry::new(),
         }
     }
 }
@@ -1616,6 +1623,18 @@ pub struct Checker {
     /// time; `Substitution::resolve` is applied at the `check_program` output
     /// boundary before the map is moved into `TypeCheckOutput`.
     pub(super) pending_pattern_resolutions: HashMap<SpanKey, ArmResolution>,
+    /// Lang-item registry accumulated during trait registration.
+    ///
+    /// Mirrors [`TypeCheckOutput::lang_items`]. Populated in the
+    /// `Item::Trait(td)` arm of `register_top_level` (registration.rs) by
+    /// walking `TraitDecl.lang_item` and each `TraitItem::Method.lang_item`
+    /// attribute. Duplicate keys raise a `duplicate_definition` error so
+    /// the registry remains one-binding-per-key. Moved into the output at
+    /// `check_program` exit.
+    pub(super) lang_items: crate::LangItemRegistry,
+    /// Spans of previously registered lang-item keys, for duplicate-key
+    /// diagnostics. Keyed by lang-item string.
+    pub(super) lang_item_spans: HashMap<String, Span>,
     /// When a `let name = |...| ...` is being synthesised, holds `name` so that
     /// `synthesize_identifier` can detect a recursive self-reference inside the
     /// closure body and emit `ClosureRecursive` instead of `UndefinedVariable`.
@@ -1754,6 +1773,8 @@ impl Checker {
             intrinsic_declarations: HashMap::new(),
             pending_let_closure_name: None,
             pending_pattern_resolutions: HashMap::new(),
+            lang_items: crate::LangItemRegistry::new(),
+            lang_item_spans: HashMap::new(),
         }
     }
 

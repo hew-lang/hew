@@ -743,6 +743,14 @@ impl Checker {
                         .or_insert_with(|| info.clone());
                     let qualified = format!("builtins.{}", tr.name);
                     self.trait_defs.entry(qualified).or_insert(info);
+                    // Harvest #[lang_item("...")] from the stdlib-shipped trait
+                    // declaration so HIR f-string lowering can discover the
+                    // canonical Display::fmt name through `LangItemRegistry`
+                    // even when the user's program never declares the trait
+                    // itself. Without this, every `f"…"` lowering in user code
+                    // would fail-closed with "no lang-item registered for key
+                    // `display_fmt`".
+                    self.register_trait_lang_items(tr, 0..0);
                 }
                 Item::TypeDecl(td) if td.visibility.is_pub() => {
                     self.pre_register_type_decl(td);
@@ -1037,6 +1045,14 @@ impl Checker {
                             supers.iter().map(|s| s.name.clone()).collect();
                         self.trait_super.insert(td.name.clone(), super_names);
                     }
+                    // Harvest `#[lang_item("…")]` attributes into the
+                    // lang-item registry so downstream passes (HIR f-string
+                    // lowering) can discover the trait/method names by role
+                    // rather than by hard-coded surface symbols. Trait-level
+                    // tags register with `method_name: None`; method-level
+                    // tags carry the enclosing trait's name so HIR can build
+                    // the `<SelfType>::<method>` impl symbol.
+                    self.register_trait_lang_items(td, span.clone());
                 }
                 Item::Supervisor(sd) => {
                     self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
@@ -2677,6 +2693,59 @@ impl Checker {
 
     pub(super) fn trait_info_from_decl(tr: &TraitDecl) -> TraitInfo {
         Self::trait_info_from_decl_with_diagnostics(tr, &mut Vec::new())
+    }
+
+    /// Harvest `#[lang_item("…")]` tags from a trait declaration into
+    /// [`Checker::lang_items`].
+    ///
+    /// Two kinds of entries are produced:
+    ///
+    /// * Trait-level (`#[lang_item("display")]` on the `trait` itself) →
+    ///   `LangItemBinding { trait_name: <td.name>, method_name: None }`.
+    /// * Method-level (`#[lang_item("display_fmt")]` on a `TraitItem::Method`)
+    ///   → `LangItemBinding { trait_name: <td.name>, method_name:
+    ///   Some(<m.name>) }`. The enclosing trait name is propagated so HIR
+    ///   lowering can derive `<SelfType>::<method_name>` impl symbols.
+    ///
+    /// Duplicate keys raise `TypeError::duplicate_definition` against the
+    /// trait's span so the registry remains one-binding-per-key.
+    pub(super) fn register_trait_lang_items(&mut self, td: &TraitDecl, span: Span) {
+        if let Some(key) = &td.lang_item {
+            if let Some(prev) = self.lang_item_spans.insert(key.clone(), span.clone()) {
+                self.errors
+                    .push(TypeError::duplicate_definition(span.clone(), key, prev));
+            } else {
+                self.lang_items.insert(
+                    key.clone(),
+                    crate::LangItemBinding {
+                        trait_name: td.name.clone(),
+                        method_name: None,
+                    },
+                );
+            }
+        }
+        for item in &td.items {
+            if let TraitItem::Method(m) = item {
+                if let Some(key) = &m.lang_item {
+                    let method_span = m.span.clone();
+                    if let Some(prev) = self
+                        .lang_item_spans
+                        .insert(key.clone(), method_span.clone())
+                    {
+                        self.errors
+                            .push(TypeError::duplicate_definition(method_span, key, prev));
+                    } else {
+                        self.lang_items.insert(
+                            key.clone(),
+                            crate::LangItemBinding {
+                                trait_name: td.name.clone(),
+                                method_name: Some(m.name.clone()),
+                            },
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Build `TraitInfo` and surface trait-body diagnostics. Duplicate

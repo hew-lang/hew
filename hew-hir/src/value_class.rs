@@ -48,17 +48,13 @@ impl ResourceMarker {
 /// for compatibility with existing HIR/MIR construction sites; callers must use
 /// `lookup_type_marker` so `BitCopy` registrations that have no parser spelling
 /// are still observed. LESSONS: `type-info-survival`.
-pub type TypeClassTable = HashMap<String, (AstResourceMarker, Option<String>)>;
+pub type TypeClassTable = HashMap<String, (ResourceMarker, Option<String>)>;
 
 #[must_use]
 pub fn lookup_type_marker(name: &str, type_classes: &TypeClassTable) -> Option<ResourceMarker> {
     crate::builtin_type_classes::builtin_type_registration(name)
         .map(|registration| registration.marker)
-        .or_else(|| {
-            type_classes
-                .get(name)
-                .map(|(marker, _)| ResourceMarker::from(*marker))
-        })
+        .or_else(|| type_classes.get(name).map(|(marker, _)| *marker))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -228,6 +228,7 @@ mod tests {
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
         }
     }
 
@@ -386,6 +387,7 @@ mod tests {
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());
@@ -468,6 +470,7 @@ mod tests {
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());

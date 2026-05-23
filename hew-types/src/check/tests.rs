@@ -6209,8 +6209,10 @@ fn import_trait_from_module_glob() {
             body: None,
             span: 0..0,
             doc_comment: None,
+            lang_item: None,
         })],
         doc_comment: None,
+        lang_item: None,
     };
     let import = make_user_import(
         &["mylib", "fmt"],
@@ -6250,8 +6252,10 @@ fn import_private_trait_not_registered() {
             body: None,
             span: 0..0,
             doc_comment: None,
+            lang_item: None,
         })],
         doc_comment: None,
+        lang_item: None,
     };
     let import = make_user_import(
         &["mylib", "internals"],
@@ -9345,6 +9349,7 @@ fn make_checker_with_trait(
                 body: None,
                 span: 0..0,
                 doc_comment: None,
+                lang_item: None,
             })
         })
         .collect();
@@ -9365,6 +9370,7 @@ fn make_checker_with_trait(
         super_traits: None,
         items,
         doc_comment: None,
+        lang_item: None,
     };
 
     let info = Checker::trait_info_from_decl(&td);
@@ -10931,9 +10937,11 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
                 body: None,
                 span: 0..0,
                 doc_comment: None,
+                lang_item: None,
             }),
         ],
         doc_comment: None,
+        lang_item: None,
     };
     let info_super = Checker::trait_info_from_decl(&assoc_super);
     checker
@@ -10970,8 +10978,10 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
             body: None,
             span: 0..0,
             doc_comment: None,
+            lang_item: None,
         })],
         doc_comment: None,
+        lang_item: None,
     };
     let info_child = Checker::trait_info_from_decl(&child);
     checker
@@ -11022,8 +11032,10 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             body: None,
             span: 0..0,
             doc_comment: None,
+            lang_item: None,
         })],
         doc_comment: None,
+        lang_item: None,
     };
     let info_super = Checker::trait_info_from_decl(&generic_super);
     checker
@@ -11059,8 +11071,10 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             body: None,
             span: 0..0,
             doc_comment: None,
+            lang_item: None,
         })],
         doc_comment: None,
+        lang_item: None,
     };
     let info_child = Checker::trait_info_from_decl(&child);
     checker
@@ -11635,8 +11649,10 @@ mod non_root_module_inference_scope {
                 }),
                 span: 0..0,
                 doc_comment: None,
+                lang_item: None,
             })],
             doc_comment: None,
+            lang_item: None,
         };
         let program = Program {
             module_graph: None,
@@ -11677,8 +11693,10 @@ mod non_root_module_inference_scope {
                 }),
                 span: 0..0,
                 doc_comment: None,
+                lang_item: None,
             })],
             doc_comment: None,
+            lang_item: None,
         };
         let program = Program {
             module_graph: None,
@@ -11736,8 +11754,10 @@ mod non_root_module_inference_scope {
                 }),
                 span: 0..0,
                 doc_comment: None,
+                lang_item: None,
             })],
             doc_comment: None,
+            lang_item: None,
         };
         let greeter = TypeDecl {
             visibility: Visibility::Private,

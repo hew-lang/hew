@@ -164,7 +164,9 @@ impl<T> Index for Vec<T> {
 ///
 /// Blanket impls below cover the primitive numeric kinds, `bool`,
 /// `char`, and `string`; user types add their own impls per receiver.
+#[lang_item("display")]
 pub trait Display {
+    #[lang_item("display_fmt")]
     fn fmt(val: Self) -> string;
 }
 
@@ -230,6 +232,18 @@ impl Display for bool {
 impl Display for char {
     fn fmt(val: char) -> string {
         to_string(val)
+    }
+}
+
+impl Display for f64 {
+    fn fmt(val: f64) -> string {
+        to_string(val)
+    }
+}
+
+impl Display for string {
+    fn fmt(val: string) -> string {
+        val
     }
 }
 

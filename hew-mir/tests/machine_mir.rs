@@ -5,13 +5,13 @@
 //! dispatch shell. Transition bodies and lifecycle hooks lower into matched
 //! arms; transition-out drops are emitted for tag-dominated resource payloads.
 
+use hew_hir::ResourceMarker as HirResourceMarker;
 use hew_hir::{
     BindingId, HirBlock, HirExpr, HirExprKind, HirField, HirItem, HirMachineDecl, HirMachineEvent,
     HirMachineState, HirMachineTransition, HirModule, HirStmt, HirStmtKind, IntentKind,
     ResolvedRef, ValueClass,
 };
 use hew_mir::{lower_hir_module, FunctionCallConv, Instr, Place, Terminator, TrapKind};
-use hew_parser::ast::ResourceMarker as AstResourceMarker;
 use hew_types::ResolvedTy;
 use std::collections::{BTreeSet, HashMap};
 
@@ -509,7 +509,7 @@ fn resource_field_transition_out_drops() {
     let mut module = empty_module(vec![HirItem::Machine(machine.clone())]);
     module.type_classes.insert(
         "FileHandle".to_string(),
-        (AstResourceMarker::Resource, Some("close".to_string())),
+        (HirResourceMarker::Resource, Some("close".to_string())),
     );
 
     let pipeline = lower_hir_module(&module);

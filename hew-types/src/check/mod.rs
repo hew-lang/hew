@@ -430,6 +430,7 @@ impl Checker {
                     (k, arm)
                 })
                 .collect(),
+            lang_items: std::mem::take(&mut self.lang_items),
         };
 
         // Detect actor reference cycles and emit warnings.

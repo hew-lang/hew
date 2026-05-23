@@ -126,6 +126,62 @@ impl Checker {
         }
     }
 
+    /// Verify that `ty` has a `Display` impl reachable by f-string
+    /// interpolation lowering. The Display trait is identified through the
+    /// lang-item registry (`LANG_ITEM_DISPLAY` key) so stdlib can rename or
+    /// move the trait by relocating its `#[lang_item("display")]` attribute
+    /// without code changes here. Mirrors the lookup that
+    /// `lower_display_dispatch` performs in HIR: primitives consult
+    /// `primitive_trait_impls`, user-named types consult `trait_impls_set`,
+    /// and `string` is accepted as a passthrough. Emits a clear
+    /// `BoundsNotSatisfied` diagnostic on miss so the negative gate is
+    /// raised at check time rather than as an opaque HIR/MIR error.
+    pub(super) fn require_display_impl(&mut self, ty: &Ty, span: &Span) {
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        if matches!(resolved, Ty::String) {
+            return;
+        }
+        if matches!(resolved, Ty::Var(_) | Ty::Error) {
+            return;
+        }
+        // Resolve the Display trait name through the lang-item registry.
+        // No `#[lang_item("display")]` in scope means the program defines no
+        // Display trait at all — in which case f-string interpolation can
+        // only accept the trivially-string / inference-pending cases handled
+        // above. Falling back to the literal name `"Display"` keeps
+        // pre-lang-item check-time tests (no stdlib loaded) working with the
+        // implicit naming convention.
+        let display_trait = self
+            .lang_items
+            .display_trait()
+            .map_or_else(|| "Display".to_string(), str::to_owned);
+        if let Some(canonical) = resolved.canonical_lowering_name() {
+            if self
+                .primitive_trait_impls
+                .contains_key(&(canonical.to_string(), display_trait.clone()))
+            {
+                return;
+            }
+        }
+        if let Ty::Named { name, .. } = &resolved {
+            if self
+                .trait_impls_set
+                .contains(&(name.clone(), display_trait.clone()))
+            {
+                return;
+            }
+        }
+        let ty_str = format!("{}", resolved.user_facing());
+        self.report_error(
+            TypeErrorKind::BoundsNotSatisfied,
+            span,
+            format!(
+                "type `{ty_str}` does not implement `{display_trait}` \
+                 (f-string interpolation requires `impl {display_trait} for {ty_str}`)"
+            ),
+        );
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "expression check covers all AST variants"
@@ -165,7 +221,8 @@ impl Checker {
             Expr::InterpolatedString(parts) => {
                 for part in parts {
                     if let StringPart::Expr((expr, expr_span)) = part {
-                        self.synthesize(expr, expr_span);
+                        let part_ty = self.synthesize(expr, expr_span);
+                        self.require_display_impl(&part_ty, expr_span);
                     }
                 }
                 Ty::String

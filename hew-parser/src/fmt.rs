@@ -630,6 +630,10 @@ impl<'a> Formatter<'a> {
 
     fn format_trait(&mut self, decl: &TraitDecl, _span_end: usize) {
         self.write_outer_doc(decl.doc_comment.as_ref());
+        if let Some(key) = &decl.lang_item {
+            self.write_indent();
+            self.write(&format!("#[lang_item(\"{key}\")]\n"));
+        }
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("trait ");
@@ -685,6 +689,10 @@ impl<'a> Formatter<'a> {
 
     fn format_trait_method(&mut self, m: &TraitMethod) {
         self.write_outer_doc(m.doc_comment.as_ref());
+        if let Some(key) = &m.lang_item {
+            self.write_indent();
+            self.write(&format!("#[lang_item(\"{key}\")]\n"));
+        }
         self.write_indent();
         if m.is_pure {
             self.write("pure ");

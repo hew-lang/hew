@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use hew_parser::ast::{
     ActorDecl, AttributeArg, BinaryOp, Block, CompoundAssignOp, Expr, FnDecl, Item, LambdaParam,
     Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind,
-    ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt,
+    ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart,
     SupervisorDecl, SupervisorStrategy, TimeoutClause, TypeBodyItem, TypeDecl, TypeDeclKind,
     TypeExpr, VariantKind,
 };
@@ -566,13 +566,8 @@ pub fn lower_program_with_mono_cap(
             } else {
                 None
             };
-            ctx.type_classes.insert(
-                hir_decl.name.clone(),
-                (
-                    marker.to_ast_marker().unwrap_or(AstResourceMarker::None),
-                    close_method,
-                ),
-            );
+            ctx.type_classes
+                .insert(hir_decl.name.clone(), (marker, close_method));
             // Snapshot the enum's variant descriptors so call/struct-init
             // lowering can resolve payload ctors to `MachineVariantCtor`
             // without re-walking the parser AST.
@@ -588,6 +583,54 @@ pub fn lower_program_with_mono_cap(
                 .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
             ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
             type_decl_cache.insert(decl as *const _, hir_decl);
+        }
+    }
+
+    // Structural BitCopy inference: a user-defined struct whose every field
+    // is BitCopy is itself BitCopy. Run as a fixed-point so that records
+    // composed of other inferred-BitCopy records are also promoted. Generic
+    // type-params remain unknown (we don't infer through them), and any
+    // type that already carries an explicit ownership marker keeps it.
+    // Enums are left alone here — their layout decisions go through the
+    // EnumLayout pass, not the value-class table.
+    {
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let candidates: Vec<(String, Vec<ResolvedTy>)> = type_decl_cache
+                .values()
+                .filter(|d| {
+                    d.marker == ResourceMarker::None
+                        && d.variants.is_empty()
+                        && d.type_params.is_empty()
+                        && !d.fields.is_empty()
+                })
+                .filter(|d| {
+                    ctx.type_classes
+                        .get(&d.name)
+                        .is_some_and(|(m, _)| *m == ResourceMarker::None)
+                })
+                .map(|d| {
+                    (
+                        d.name.clone(),
+                        d.fields.iter().map(|f| f.ty.clone()).collect(),
+                    )
+                })
+                .collect();
+            for (name, field_tys) in candidates {
+                let all_bitcopy = field_tys.iter().all(|ty| {
+                    matches!(
+                        crate::value_class::ValueClass::of_ty(ty, &ctx.type_classes),
+                        crate::value_class::ValueClass::BitCopy
+                    )
+                });
+                if all_bitcopy {
+                    if let Some(entry) = ctx.type_classes.get_mut(&name) {
+                        entry.0 = ResourceMarker::BitCopy;
+                        changed = true;
+                    }
+                }
+            }
         }
     }
 
@@ -1428,6 +1471,13 @@ struct LowerCtx {
     /// `Expr::Match` lowering to map arms to their resolved enum variant
     /// (or wildcard) without re-resolving names against the type registry.
     pattern_resolutions: HashMap<SpanKey, hew_types::ArmResolution>,
+    /// Compiler-recognised lang-item registry surfaced by the checker.
+    ///
+    /// HIR f-string lowering looks up the `Display` trait method here
+    /// (`LANG_ITEM_DISPLAY_FMT` → method name) instead of hard-coding
+    /// `"fmt"`. Without an entry the lowering pass refuses to fabricate
+    /// the dispatch — surfacing a fail-closed diagnostic.
+    lang_items: hew_types::LangItemRegistry,
 }
 
 impl LowerCtx {
@@ -1485,6 +1535,7 @@ impl LowerCtx {
             machine_ctor_registry: HashMap::new(),
             enum_variants_by_name: HashMap::new(),
             pattern_resolutions: tc_output.pattern_resolutions.clone(),
+            lang_items: tc_output.lang_items.clone(),
         }
     }
 
@@ -2002,6 +2053,275 @@ impl LowerCtx {
             },
             span,
         }
+    }
+
+    /// Build a HIR `String` literal expression for the given content.  Used by
+    /// the f-string interpolation lowering to materialise the static segments
+    /// between `{ … }` placeholders.
+    fn build_string_literal_expr(&mut self, value: String, span: Span) -> HirExpr {
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&ResolvedTy::String, &self.type_classes),
+            ty: ResolvedTy::String,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(HirLiteral::String(value)),
+            span,
+        }
+    }
+
+    /// Emit a call to a stdlib catalog entry resolved by name.  Returns a
+    /// fully-typed HIR `Call` expression with the catalog entry's return
+    /// type. Used by f-string lowering to invoke `string_concat` and the
+    /// primitive `to_string_*` overloads that back the built-in `Display`
+    /// impls in stdlib.
+    fn build_catalog_call(
+        &mut self,
+        builtin_name: &str,
+        args: Vec<HirExpr>,
+        span: Span,
+    ) -> HirExpr {
+        let entry = crate::stdlib_catalog::CATALOG
+            .iter()
+            .find(|e| e.name == builtin_name)
+            .expect("catalog entry exists for f-string lowering");
+        let callee = self.lower_stdlib_callee(entry, span.clone());
+        let return_ty = self
+            .fn_registry
+            .get(builtin_name)
+            .map_or(ResolvedTy::String, |e| e.return_ty.clone());
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&return_ty, &self.type_classes),
+            ty: return_ty,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Call {
+                callee: Box::new(callee),
+                args,
+            },
+            span,
+        }
+    }
+
+    /// Emit a call to a user-defined function or impl-method registered in
+    /// `fn_registry` under the given symbol.  Used by f-string interpolation
+    /// to invoke `<Type>::fmt` for user `impl Display for Type` blocks.
+    fn build_user_fn_call(
+        &mut self,
+        fn_name: &str,
+        args: Vec<HirExpr>,
+        span: Span,
+    ) -> Option<HirExpr> {
+        let (id, param_tys, return_ty) = {
+            let entry = self.fn_registry.get(fn_name)?;
+            (entry.id, entry.param_tys.clone(), entry.return_ty.clone())
+        };
+        let fn_ty = ResolvedTy::Function {
+            params: param_tys,
+            ret: Box::new(return_ty.clone()),
+        };
+        let callee = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&fn_ty, &self.type_classes),
+            ty: fn_ty,
+            intent: IntentKind::Read,
+            kind: HirExprKind::BindingRef {
+                name: fn_name.to_string(),
+                resolved: ResolvedRef::Item(id),
+            },
+            span: span.clone(),
+        };
+        Some(HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&return_ty, &self.type_classes),
+            ty: return_ty,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Call {
+                callee: Box::new(callee),
+                args,
+            },
+            span,
+        })
+    }
+
+    /// Lower a single interpolant of an f-string to a `string`-typed HIR
+    /// expression by dispatching through `Display`.
+    ///
+    /// The display *method name* is resolved through
+    /// [`hew_types::LangItemRegistry`] (`LANG_ITEM_DISPLAY_FMT` key)
+    /// rather than hard-coded so renaming the stdlib `fmt` method only
+    /// requires moving the `#[lang_item("display_fmt")]` attribute. With
+    /// no registry entry, every interpolation is rejected fail-closed.
+    ///
+    /// Concretely:
+    ///
+    /// * `string` values prefer a user `impl Display for string` if one
+    ///   exists (resolved through the per-type method symbol); otherwise
+    ///   they pass through identity. The stdlib provides the identity
+    ///   impl so a non-user-overridden `string` interpolation does call
+    ///   it.
+    /// * Primitives route through the per-type `to_string_*` catalog
+    ///   entries that back the built-in `impl Display for <primitive>`
+    ///   blocks in `std::builtins`.
+    /// * Named user types route through the registry-derived method
+    ///   symbol on the user type (`<Type>::<method_name>`).
+    /// * Any path that would reach a fabricated fallback emits a
+    ///   `CheckerBoundaryViolation` and returns an `Unsupported`
+    ///   sentinel — the checker's `require_display_impl` gate is the
+    ///   authoritative reject point. Reaching the sentinel means
+    ///   compilation halts: never a silent empty-string substitute.
+    fn lower_display_dispatch(&mut self, value: HirExpr, span: Span) -> HirExpr {
+        // Resolve the Display method name through the lang-item registry.
+        // Missing entry is fail-closed: f-string lowering cannot synthesise
+        // dispatch without a method-name binding.
+        let Some(method_name) = self.lang_items.display_method().map(str::to_owned) else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "Display::fmt".to_string(),
+                    reason: format!(
+                        "no lang-item registered for key `{}`",
+                        hew_types::LANG_ITEM_DISPLAY_FMT
+                    ),
+                },
+                span.clone(),
+                "f-string lowering requires a trait method tagged \
+                 `#[lang_item(\"display_fmt\")]` in scope",
+            ));
+            return self.unsupported_expr(span, "f-string display dispatch: no display lang-item");
+        };
+        let ty = value.ty.clone();
+        match &ty {
+            // String: route through a user `impl Display for string` if one
+            // is registered; otherwise pass through identity. The stdlib
+            // identity impl ordinarily makes this a real (no-op) call so a
+            // user impl can transparently replace it.
+            ResolvedTy::String => {
+                let symbol = crate::node::HirImplBlock::method_symbol("string", &method_name);
+                if let Some(call) =
+                    self.build_user_fn_call(&symbol, vec![value.clone()], span.clone())
+                {
+                    call
+                } else {
+                    // No registered impl (not even the stdlib identity) —
+                    // fall through to identity. This keeps zero-stdlib unit
+                    // tests working while preserving correctness in normal
+                    // builds.
+                    value
+                }
+            }
+            ResolvedTy::I8
+            | ResolvedTy::I16
+            | ResolvedTy::I32
+            | ResolvedTy::I64
+            | ResolvedTy::U8
+            | ResolvedTy::U16
+            | ResolvedTy::U32
+            | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
+            | ResolvedTy::F32
+            | ResolvedTy::F64
+            | ResolvedTy::Bool
+            | ResolvedTy::Char => {
+                let builtin = match ty {
+                    ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => "to_string_i32",
+                    ResolvedTy::I64 | ResolvedTy::Isize => "to_string_i64",
+                    ResolvedTy::U8 | ResolvedTy::U16 | ResolvedTy::U32 => "to_string_u32",
+                    ResolvedTy::U64 | ResolvedTy::Usize => "to_string_u64",
+                    ResolvedTy::F32 | ResolvedTy::F64 => "to_string_f64",
+                    ResolvedTy::Bool => "to_string_bool",
+                    ResolvedTy::Char => "to_string_char",
+                    _ => unreachable!(),
+                };
+                self.build_catalog_call(builtin, vec![value], span)
+            }
+            ResolvedTy::Named { name, .. } => {
+                let symbol = crate::node::HirImplBlock::method_symbol(name, &method_name);
+                if let Some(call) = self.build_user_fn_call(&symbol, vec![value], span.clone()) {
+                    call
+                } else {
+                    // Invariant: the checker's `require_display_impl` gate
+                    // rejects interpolants whose type lacks an `impl Display`.
+                    // Reaching here means the checker accepted the program
+                    // but the impl symbol is absent from the HIR fn registry,
+                    // which is a checker–HIR contract violation. Surface a
+                    // fail-closed diagnostic and an `Unsupported` sentinel
+                    // — never fabricate an empty string.
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: symbol.clone(),
+                            reason: format!("no fn_registry entry for display impl `{symbol}`"),
+                        },
+                        span.clone(),
+                        "checker accepted a Display interpolant but HIR has no \
+                         corresponding impl symbol — checker–HIR contract violation",
+                    ));
+                    self.unsupported_expr(
+                        span,
+                        format!("f-string display dispatch: missing {symbol}"),
+                    )
+                }
+            }
+            _ => {
+                // Same invariant as the named-type arm: the checker should
+                // have rejected this interpolant via `require_display_impl`.
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: format!("Display::{method_name}"),
+                        reason: format!("no Display dispatch shape for type `{ty:?}`"),
+                    },
+                    span.clone(),
+                    "checker accepted a Display interpolant of an unsupported type \
+                     shape — checker–HIR contract violation",
+                ));
+                self.unsupported_expr(span, "f-string display dispatch: unsupported type shape")
+            }
+        }
+    }
+
+    /// Lower an `Expr::InterpolatedString` to a chain of `string_concat` calls
+    /// joining literal segments with `Display::fmt(…)` results.  Empty
+    /// interpolations collapse to the empty-string literal.  The result type
+    /// is always `ResolvedTy::String` so the surrounding lowering wraps it
+    /// like any other string-typed expression.
+    fn lower_interpolated_string(
+        &mut self,
+        parts: &[StringPart],
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let mut segments: Vec<HirExpr> = Vec::with_capacity(parts.len());
+        for part in parts {
+            match part {
+                StringPart::Literal(text) => {
+                    if !text.is_empty() {
+                        segments.push(self.build_string_literal_expr(text.clone(), span.clone()));
+                    }
+                }
+                StringPart::Expr((expr, expr_span)) => {
+                    let value =
+                        self.lower_expr(&(expr.clone(), expr_span.clone()), IntentKind::Read);
+                    let rendered = self.lower_display_dispatch(value, expr_span.clone());
+                    segments.push(rendered);
+                }
+            }
+        }
+        if segments.is_empty() {
+            return (
+                HirExprKind::Literal(HirLiteral::String(String::new())),
+                ResolvedTy::String,
+            );
+        }
+        let mut iter = segments.into_iter();
+        let mut acc = iter.next().expect("non-empty segments by construction");
+        for next in iter {
+            acc = self.build_catalog_call("string_concat", vec![acc, next], span.clone());
+        }
+        // Unwrap the outer HirExpr into (kind, ty) so the caller can re-wrap
+        // with its own site / value-class layer like other arms.
+        (acc.kind, acc.ty)
     }
 
     fn lower_regular_call(
@@ -4744,6 +5064,7 @@ impl LowerCtx {
                 }
             }
             Expr::Match { scrutinee, arms } => self.lower_match_expr(scrutinee, arms, &span),
+            Expr::InterpolatedString(parts) => self.lower_interpolated_string(parts, span.clone()),
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (

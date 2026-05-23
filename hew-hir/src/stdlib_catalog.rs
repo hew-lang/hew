@@ -28,6 +28,13 @@ pub enum BuiltinLinkage {
     RuntimeFfiShim {
         symbol: &'static str,
     },
+    // NOTE: `PrintIntercept` and `ToStringShim` below are retained as transitional
+    // linkage variants. The L3 Display + f-strings work routes interpolants
+    // through the lang-item registry and user `impl Display for T` methods,
+    // making these shims redundant at the surface level — but their actual
+    // retirement (and the print-macro rewrites that depend on it) belongs to
+    // the Phase-2/3 codegen-rs lane (#340γ follow-on). Deletion is intentionally
+    // deferred to that work to keep this revision boundary surgical.
     PrintIntercept {
         runtime_symbol: &'static str,
         kind: PrintKind,
@@ -252,6 +259,17 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::String,
         BuiltinLinkage::StringCloneShim {
             symbol: "hew_string_clone",
+        },
+    ),
+    // Class A: string concatenation used by f-string interpolation lowering
+    // to join Display::fmt segments.  Resolves by exact name (no overload set).
+    direct(
+        "string_concat",
+        BuiltinClass::ClassA,
+        STRING_STRING,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_concat",
         },
     ),
     // Class A: monomorphic assertion and len overloads.

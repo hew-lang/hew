@@ -92,6 +92,51 @@ pub const SPAN_LAMBDA_SPAWNED: i32 = 13;
 /// `actor_id` holds the pointer address.
 pub const SPAN_LAMBDA_RELEASED: i32 = 14;
 
+/// Closed taxonomy of v0.5 concurrency trace event names emitted by this
+/// runtime. The entries pair each `SPAN_*` constant with the canonical
+/// `event_type` string that appears in the JSON drained by
+/// [`drain_events_json`].
+///
+/// This array is the **producer-side source of truth** for the names the
+/// `hew-observe` consumer must recognise. Adding a new `SPAN_*` constant
+/// without extending this list will be caught by the
+/// `event_type_name_mapping_is_total` unit test in this module.
+///
+/// Per R58 Q138 Option B the QUIC, cancellation, and lock event families
+/// are intentionally absent from this list — the runtime does not yet emit
+/// trace spans for them. The `hew-observe` taxonomy carries deferred
+/// metadata rows for those names as non-actionable shims pending the
+/// native-M3 producer-emission lane.
+pub const EVENT_TYPE_NAMES: &[(i32, &str)] = &[
+    (SPAN_BEGIN, "begin"),
+    (SPAN_END, "end"),
+    (SPAN_SPAWN, "spawn"),
+    (SPAN_CRASH, "crash"),
+    (SPAN_STOP, "stop"),
+    (SPAN_SEND, "send"),
+    (SPAN_IO_ACCEPT, "io_accept"),
+    (SPAN_IO_RECV, "io_recv"),
+    (SPAN_DUPLEX_CREATED, "duplex_created"),
+    (SPAN_DUPLEX_HALF_SPLIT, "duplex_half_split"),
+    (SPAN_DUPLEX_CLOSED, "duplex_closed"),
+    (SPAN_SINK_CLOSED, "sink_closed"),
+    (SPAN_STREAM_CLOSED, "stream_closed"),
+    (SPAN_LAMBDA_SPAWNED, "lambda_spawned"),
+    (SPAN_LAMBDA_RELEASED, "lambda_released"),
+];
+
+/// Resolve a span code to its canonical taxonomy name. Returns `None` for
+/// any value outside [`EVENT_TYPE_NAMES`]; callers that need a fallback
+/// (e.g. JSON serialisation) should map `None` to `"unknown"` explicitly so
+/// invalid codes cannot silently masquerade as a known event type.
+#[must_use]
+pub fn event_type_name(event_type: i32) -> Option<&'static str> {
+    EVENT_TYPE_NAMES
+        .iter()
+        .find(|(code, _)| *code == event_type)
+        .map(|(_, name)| *name)
+}
+
 /// A recorded trace event.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -739,7 +784,11 @@ pub extern "C" fn hew_trace_reset() {
 ///   "actor_id": N,
 ///   "actor_type_id": N,
 ///   "actor_type": "TypeName"|null,
-///   "event_type": "begin"|"end"|"spawn"|"crash"|"stop"|"send",
+///   "event_type": "begin"|"end"|"spawn"|"crash"|"stop"|"send"|
+///                 "io_accept"|"io_recv"|
+///                 "duplex_created"|"duplex_half_split"|"duplex_closed"|
+///                 "sink_closed"|"stream_closed"|
+///                 "lambda_spawned"|"lambda_released"|"unknown",
 ///   "msg_type": N,
 ///   "timestamp_ns": N,
 ///   "handler_name": "ActorType::handler_name"|null
@@ -770,24 +819,7 @@ pub fn drain_events_json() -> String {
             if i > 0 {
                 json.push(',');
             }
-            let event_type_str = match ev.event_type {
-                SPAN_BEGIN => "begin",
-                SPAN_END => "end",
-                SPAN_SPAWN => "spawn",
-                SPAN_CRASH => "crash",
-                SPAN_STOP => "stop",
-                SPAN_SEND => "send",
-                SPAN_IO_ACCEPT => "io_accept",
-                SPAN_IO_RECV => "io_recv",
-                SPAN_DUPLEX_CREATED => "duplex_created",
-                SPAN_DUPLEX_HALF_SPLIT => "duplex_half_split",
-                SPAN_DUPLEX_CLOSED => "duplex_closed",
-                SPAN_SINK_CLOSED => "sink_closed",
-                SPAN_STREAM_CLOSED => "stream_closed",
-                SPAN_LAMBDA_SPAWNED => "lambda_spawned",
-                SPAN_LAMBDA_RELEASED => "lambda_released",
-                _ => "unknown",
-            };
+            let event_type_str = event_type_name(ev.event_type).unwrap_or("unknown");
 
             // Resolve actor_type_id and actor_type via the profiler actor registry.
             // Option B from #1260: drain-time lookup avoids adding a dispatch-fn
@@ -916,6 +948,70 @@ mod tests {
         TraceTestSetup {
             _guard: guard,
             _ctx: ctx,
+        }
+    }
+
+    // ── Closed taxonomy tests ──────────────────────────────────────────
+
+    /// Every `SPAN_*` constant declared at module scope must appear in
+    /// [`EVENT_TYPE_NAMES`]. This is the producer-side gate that holds the
+    /// closed v0.5 trace-event taxonomy in sync with what the runtime
+    /// actually emits.
+    #[test]
+    fn event_type_name_mapping_is_total() {
+        let all_spans = [
+            SPAN_BEGIN,
+            SPAN_END,
+            SPAN_SPAWN,
+            SPAN_CRASH,
+            SPAN_STOP,
+            SPAN_SEND,
+            SPAN_IO_ACCEPT,
+            SPAN_IO_RECV,
+            SPAN_DUPLEX_CREATED,
+            SPAN_DUPLEX_HALF_SPLIT,
+            SPAN_DUPLEX_CLOSED,
+            SPAN_SINK_CLOSED,
+            SPAN_STREAM_CLOSED,
+            SPAN_LAMBDA_SPAWNED,
+            SPAN_LAMBDA_RELEASED,
+        ];
+        for code in all_spans {
+            assert!(
+                event_type_name(code).is_some(),
+                "SPAN_* constant {code} is missing from EVENT_TYPE_NAMES; \
+                 every producer-emitted span must have a taxonomy entry"
+            );
+        }
+        assert_eq!(
+            EVENT_TYPE_NAMES.len(),
+            all_spans.len(),
+            "EVENT_TYPE_NAMES has entries that no SPAN_* constant references; \
+             the closed taxonomy must mirror declared span codes one-for-one"
+        );
+    }
+
+    #[test]
+    fn event_type_name_returns_none_for_unknown_codes() {
+        assert!(event_type_name(i32::MAX).is_none());
+        assert!(event_type_name(-1).is_none());
+        // Any code beyond the last assigned SPAN_* must not resolve.
+        assert!(event_type_name(SPAN_LAMBDA_RELEASED + 1).is_none());
+    }
+
+    #[test]
+    fn event_type_names_are_unique_and_nonempty() {
+        let mut seen = std::collections::HashSet::new();
+        for (code, name) in EVENT_TYPE_NAMES {
+            assert!(!name.is_empty(), "SPAN_{code} has empty name");
+            assert!(
+                seen.insert(*name),
+                "duplicate event_type name {name:?} in EVENT_TYPE_NAMES"
+            );
+            assert_ne!(
+                *name, "unknown",
+                "{name:?} collides with the JSON fallback sentinel"
+            );
         }
     }
 

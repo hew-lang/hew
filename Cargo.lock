@@ -1759,10 +1759,7 @@ version = "0.5.0-pre"
 dependencies = [
  "hew-parser",
  "hew-types",
- "hew-wirecodec",
- "rmp-serde",
  "serde",
- "serde_json",
  "stacker",
 ]
 
@@ -2073,17 +2070,6 @@ dependencies = [
  "serde",
  "serde_json",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "hew-wirecodec"
-version = "0.5.0-pre"
-dependencies = [
- "hew-parser",
- "hew-types",
- "rmp-serde",
- "serde",
- "serde_json",
 ]
 
 [[package]]

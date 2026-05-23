@@ -6,10 +6,9 @@ use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
 use hew_serialize::{
     build_actor_send_aliasing_entries, build_assign_target_kind_entries,
     build_assign_target_shape_entries, build_call_type_args_entries, build_lowering_fact_entries,
-    build_method_call_receiver_kind_entries, serialize_to_json, serialize_to_msgpack,
-    ActorSendAliasingEntry, AssignTargetKindEntry, AssignTargetShapeEntry, CallTypeArgsEntry,
-    ExprTypeEntry, LoweringFactEntry, MethodCallReceiverKindEntry, TypeExprConversionError,
-    TypeExprConversionKind,
+    build_method_call_receiver_kind_entries, ActorSendAliasingEntry, AssignTargetKindEntry,
+    AssignTargetShapeEntry, CallTypeArgsEntry, ExprTypeEntry, LoweringFactEntry,
+    MethodCallReceiverKindEntry, TypeExprConversionError, TypeExprConversionKind,
 };
 use serde::{de::DeserializeOwned, Deserialize};
 
@@ -190,54 +189,6 @@ pub struct FrontendArtifacts {
     pub drop_funcs: Vec<(String, String)>,
     pub abs_source_path: Option<String>,
     pub line_map: Option<Vec<usize>>,
-}
-
-impl FrontendArtifacts {
-    #[must_use]
-    pub fn to_msgpack(&self) -> Vec<u8> {
-        serialize_to_msgpack(
-            &self.program,
-            self.expr_type_entries.clone(),
-            self.method_call_receiver_kinds.clone(),
-            self.call_type_args.clone(),
-            self.actor_send_aliasing.clone(),
-            self.assign_target_kinds.clone(),
-            self.assign_target_shapes.clone(),
-            self.lowering_facts.clone(),
-            self.handle_types.clone(),
-            self.handle_bearing_structs.clone(),
-            self.handle_type_repr.clone(),
-            self.drop_funcs.clone(),
-            self.abs_source_path.as_deref(),
-            self.line_map.as_deref(),
-        )
-    }
-
-    #[must_use]
-    pub fn to_json(&self) -> String {
-        serialize_to_json(
-            &self.program,
-            self.expr_type_entries.clone(),
-            self.method_call_receiver_kinds.clone(),
-            self.call_type_args.clone(),
-            self.actor_send_aliasing.clone(),
-            self.assign_target_kinds.clone(),
-            self.assign_target_shapes.clone(),
-            self.lowering_facts.clone(),
-            self.handle_types.clone(),
-            self.handle_bearing_structs.clone(),
-            self.handle_type_repr.clone(),
-            self.drop_funcs.clone(),
-            self.abs_source_path.as_deref(),
-            self.line_map.as_deref(),
-        )
-    }
-}
-
-#[derive(Debug)]
-pub struct FrontendSerializedOutput<T> {
-    pub diagnostics: Vec<FrontendDiagnostic>,
-    pub data: T,
 }
 
 #[derive(Clone, Debug)]
@@ -1887,43 +1838,6 @@ pub fn compile_program(
     )?;
     artifacts.diagnostics = fail_on_warning_diagnostics(artifacts.diagnostics, options)?;
     Ok(artifacts)
-}
-
-/// Run the full frontend pipeline for a source file and serialize to msgpack.
-///
-/// # Errors
-///
-/// Returns [`FrontendFailure`] when any frontend stage fails.
-pub fn compile_file_to_msgpack(
-    input: &str,
-    options: &FrontendOptions,
-) -> Result<FrontendSerializedOutput<Vec<u8>>, FrontendFailure> {
-    let output = compile_file(input, options)?;
-    let data = output.to_msgpack();
-    Ok(FrontendSerializedOutput {
-        diagnostics: output.diagnostics,
-        data,
-    })
-}
-
-/// Run the full frontend pipeline for an in-memory program and serialize to
-/// msgpack.
-///
-/// # Errors
-///
-/// Returns [`FrontendFailure`] when any frontend stage fails.
-pub fn compile_program_to_msgpack(
-    program: Program,
-    source: &str,
-    source_label: &str,
-    options: &FrontendOptions,
-) -> Result<FrontendSerializedOutput<Vec<u8>>, FrontendFailure> {
-    let output = compile_program(program, source, source_label, options)?;
-    let data = output.to_msgpack();
-    Ok(FrontendSerializedOutput {
-        diagnostics: output.diagnostics,
-        data,
-    })
 }
 
 /// Hew language editions the compiler accepts. Sources in a package whose

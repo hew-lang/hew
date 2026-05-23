@@ -6,7 +6,7 @@ license.workspace = true
 description = "AST serialization for Hew compiler"
 repository = "https://github.com/hew-lang/hew"
 readme = "README.md"
-keywords = ["hew", "programming-language", "msgpack", "serialization"]
+keywords = ["hew", "programming-language", "serialization"]
 categories = ["compilers", "encoding"]
 
 [lints]
@@ -15,8 +15,5 @@ workspace = true
 [dependencies]
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
-hew-wirecodec = { path = "../hew-wirecodec" }
 stacker.workspace = true
-rmp-serde.workspace = true
 serde.workspace = true
-serde_json.workspace = true

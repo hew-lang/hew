@@ -3637,15 +3637,16 @@ impl Checker {
                                 // r-value and non-identifier receivers are also
                                 // rejected because store-back (slice 6) cannot
                                 // target them.
-                                let receiver_is_mutable = match &receiver.0 {
-                                    Expr::Identifier(binding_name) => self
-                                        .env
-                                        .lookup_ref(binding_name)
-                                        .is_some_and(|b| b.is_mutable),
-                                    _ => false,
+                                let receiver_binding_name = match &receiver.0 {
+                                    Expr::Identifier(n) => Some(n.clone()),
+                                    _ => None,
                                 };
+                                let receiver_is_mutable = receiver_binding_name
+                                    .as_deref()
+                                    .and_then(|n| self.env.lookup_ref(n))
+                                    .is_some_and(|b| b.is_mutable);
                                 if !receiver_is_mutable {
-                                    let receiver_name = if let Expr::Identifier(n) = &receiver.0 {
+                                    let receiver_name = if let Some(n) = &receiver_binding_name {
                                         format!("`{n}`")
                                     } else {
                                         "this expression".to_string()
@@ -3658,6 +3659,13 @@ impl Checker {
                                              {receiver_name} is not declared with `var`"
                                         ),
                                     );
+                                } else if let Some(n) = &receiver_binding_name {
+                                    // `.step()` semantically reassigns the binding via the
+                                    // synthesised store-back primitive (slice 6). Mark the
+                                    // binding as written so the unused-mut analysis does
+                                    // not flag `var lc = ...; lc.step(...)` as a
+                                    // never-reassigned mutable binding.
+                                    self.env.mark_written(n);
                                 }
                                 self.machine_method_dispatch.insert(
                                     SpanKey::from(span),

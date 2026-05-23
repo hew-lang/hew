@@ -738,6 +738,69 @@ fn machine_step_dispatch() {
 }
 
 #[test]
+fn machine_step_suppresses_unused_mut_warning() {
+    let output = typecheck_isolated(
+        r"
+        machine Light {
+            state Off;
+            state On;
+            event Toggle;
+            on Toggle: Off -> On;
+            on Toggle: On -> Off;
+        }
+
+        fn main() {
+            var light: Light = Light::Off;
+            light.step(LightEvent::Toggle);
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "machine .step() on var receiver should type-check, got: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("never reassigned")),
+        ".step() must mark its receiver as written so UnusedMut is not warned, got: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn machine_step_on_let_receiver_is_rejected() {
+    let output = typecheck_isolated(
+        r"
+        machine Light {
+            state Off;
+            state On;
+            event Toggle;
+            on Toggle: Off -> On;
+            on Toggle: On -> Off;
+        }
+
+        fn main() {
+            let light: Light = Light::Off;
+            light.step(LightEvent::Toggle);
+        }
+        ",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::MutabilityError),
+        "Expected MutabilityError for .step() on let-bound receiver, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn machine_state_pattern_match_uses_variant_infrastructure() {
     let output = typecheck_isolated(
         r"

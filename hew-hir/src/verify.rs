@@ -86,6 +86,14 @@ impl Verifier {
                     // wired_to validation are S-B's job.
                     self.node(sup.node, sup.span.clone());
                 }
+                HirItem::Impl(block) => {
+                    // V0b: impl-block metadata only contributes its own
+                    // HirNodeId. The per-method bodies are emitted as
+                    // sibling `HirItem::Function` entries and are walked
+                    // through the `Function` arm above, so no recursion
+                    // into `block.method_symbols` is needed here.
+                    self.node(block.node, block.span.clone());
+                }
             }
         }
     }

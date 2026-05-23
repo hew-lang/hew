@@ -193,6 +193,17 @@ pub enum HirDiagnosticKind {
         /// The method name the user wrote (e.g. `send`).
         method: String,
     },
+    /// An `impl` block whose shape the V0b lowering arm does not yet handle
+    /// (e.g. impl on a builtin nominal, where-clauses, default methods,
+    /// blanket impls). Fail-closed per the mission tenet: surface a named
+    /// diagnostic rather than dropping the block via the generic
+    /// `NotYetImplemented` catch-all.
+    ImplBlockShapeNotLowered {
+        /// A short descriptor of the unsupported impl shape — used in the
+        /// rendered diagnostic, e.g. `"impl on builtin nominal `Vec`"` or
+        /// `"impl with where-clause"`.
+        shape: String,
+    },
     /// A method-call expression whose receiver typed as `Ty::TraitObject`
     /// has no entry in `TypeCheckOutput.dyn_trait_method_calls` for its
     /// span. Fail-closed per `checker-output-boundary`: HIR lowering

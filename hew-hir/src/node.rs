@@ -126,6 +126,52 @@ pub enum HirItem {
     Record(HirRecordDecl),
     Actor(HirActorDecl),
     Supervisor(HirSupervisorDecl),
+    /// Lowered `impl [Trait for] TargetType { type X = ...; fn ... }` block.
+    ///
+    /// Methods are *also* emitted as separate [`HirItem::Function`] entries in
+    /// the same module under qualified names (`<self_type_name>::<method>`),
+    /// mirroring the pre-existing `impl Index` lowering precedent. This
+    /// variant carries the structural metadata (trait/self pair, associated
+    /// types) so that checker-side reasoning and future call-site rewrites
+    /// can find it without re-parsing.
+    Impl(HirImplBlock),
+}
+
+/// Lowered impl block — see [`HirItem::Impl`] for the metadata-versus-method
+/// split. `type_aliases` is checker-only metadata (no runtime artifact); it
+/// records each `type Item = ...;` projection on the impl.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirImplBlock {
+    pub id: ItemId,
+    pub node: HirNodeId,
+    /// `Some("Iterator")` for trait impls, `None` for inherent impls.
+    pub trait_name: Option<String>,
+    /// User nominal target, e.g. `"VecIter"`. Builtin nominals are rejected
+    /// at lowering time with `ImplBlockShapeNotLowered`.
+    pub self_type_name: String,
+    /// Outer type parameters on the impl, e.g. `["T"]` for
+    /// `impl<T> Iterator for VecIter<T>`.
+    pub type_params: Vec<String>,
+    /// Associated-type bindings declared on the impl
+    /// (e.g. `type Item = T;` → `("Item", ResolvedTy::TypeParam("T"))`).
+    pub type_aliases: Vec<(String, ResolvedTy)>,
+    /// Names of the per-method symbols emitted as separate
+    /// `HirItem::Function` entries (`<self_type_name>::<method>`). Order
+    /// matches `impl_decl.methods`.
+    pub method_symbols: Vec<String>,
+    pub span: hew_parser::ast::Span,
+}
+
+impl HirImplBlock {
+    /// Build the qualified method symbol used by both the `Impl` metadata
+    /// (in `method_symbols`) and the corresponding flattened
+    /// `HirItem::Function` entry (in `HirFn::name`). Centralised so call-site
+    /// dispatch can re-derive the symbol from the receiver type without
+    /// scanning the impl-block table.
+    #[must_use]
+    pub fn method_symbol(self_type_name: &str, method_name: &str) -> String {
+        format!("{self_type_name}::{method_name}")
+    }
 }
 
 // ── Actor declarations ───────────────────────────────────────────────────────

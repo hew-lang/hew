@@ -167,15 +167,20 @@ pub fn lower_program_with_mono_cap(
             Item::Function(func) => {
                 ctx.register_fn_entry(&func.name, func);
             }
-            Item::Impl(impl_decl)
-                if impl_decl
-                    .trait_bound
-                    .as_ref()
-                    .is_some_and(|bound| bound.name == "Index") =>
-            {
+            Item::Impl(impl_decl) => {
+                // Register methods of any V0b-acceptable impl block under the
+                // qualified `<SelfType>::<method>` name so call sites can
+                // resolve them in the second pass. The Index special-case is
+                // a subset of this — its methods landed in `fn_registry`
+                // historically via the same key shape.
                 if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
-                    for method in &impl_decl.methods {
-                        ctx.register_fn_entry(&format!("{name}::{}", method.name), method);
+                    if impl_decl.where_clause.is_none() {
+                        for method in &impl_decl.methods {
+                            ctx.register_fn_entry(
+                                &crate::node::HirImplBlock::method_symbol(name, &method.name),
+                                method,
+                            );
+                        }
                     }
                 }
             }
@@ -492,22 +497,8 @@ pub fn lower_program_with_mono_cap(
                     items.push(HirItem::Function(ctx.lower_fn(func, span.clone())));
                 }
             }
-            Item::Impl(impl_decl)
-                if impl_decl
-                    .trait_bound
-                    .as_ref()
-                    .is_some_and(|bound| bound.name == "Index") =>
-            {
-                if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
-                    for method in &impl_decl.methods {
-                        let fn_name = format!("{name}::{}", method.name);
-                        items.push(HirItem::Function(ctx.lower_fn_with_name(
-                            method,
-                            &fn_name,
-                            span.clone(),
-                        )));
-                    }
-                }
+            Item::Impl(impl_decl) => {
+                ctx.lower_impl_block(impl_decl, span.clone(), &mut items);
             }
             Item::Machine(machine) => {
                 if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
@@ -535,7 +526,13 @@ pub fn lower_program_with_mono_cap(
                 // `program.items` for diagnostic source-map attribution (removing
                 // it would require auditing every span consumer — out of scope).
             }
-            _ => ctx.unsupported(span.clone(), "top-level-item", "slice-2"),
+            Item::Const(_)
+            | Item::TypeAlias(_)
+            | Item::Trait(_)
+            | Item::Wire(_)
+            | Item::ExternBlock(_) => {
+                ctx.unsupported(span.clone(), "top-level-item", "slice-2");
+            }
         }
     }
 
@@ -1875,6 +1872,120 @@ impl LowerCtx {
 
     fn lower_fn(&mut self, func: &FnDecl, span: std::ops::Range<usize>) -> HirFn {
         self.lower_fn_with_name(func, &func.name, span)
+    }
+
+    /// V0b: lower a top-level `impl [<TypeParams>] [Trait for] TargetType { ... }`
+    /// block. Methods are flattened into per-impl `HirItem::Function` entries
+    /// (named `<SelfType>::<method>`) so the existing MIR / codegen function
+    /// pipeline can pick them up unchanged; a metadata-only [`HirItem::Impl`]
+    /// is also pushed so checker-side reasoning has a single anchor for the
+    /// trait/self pair and the associated-type bindings.
+    ///
+    /// Fail-closed: any shape outside the V0b sufficient surface
+    /// (where-clauses, default-method bodies, non-nominal targets, blanket
+    /// impls) emits a named [`HirDiagnosticKind::ImplBlockShapeNotLowered`]
+    /// rather than falling through to the generic catch-all.
+    fn lower_impl_block(
+        &mut self,
+        decl: &hew_parser::ast::ImplDecl,
+        span: std::ops::Range<usize>,
+        items: &mut Vec<HirItem>,
+    ) {
+        // Pre-flight: classify the impl shape. Bail with a precise diagnostic
+        // on any unsupported variant before lowering bodies.
+        if decl.where_clause.is_some() {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::ImplBlockShapeNotLowered {
+                    shape: "impl with where-clause".to_string(),
+                },
+                span,
+                "impl-block shape not yet lowered: impl with where-clause; \
+                 V0b admits only un-bounded `impl<T> [Trait for] Target<T>` \
+                 forms — split the bound into a trait-supertype or remove it",
+            ));
+            return;
+        }
+        let TypeExpr::Named {
+            name: self_type_name,
+            ..
+        } = &decl.target_type.0
+        else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::ImplBlockShapeNotLowered {
+                    shape: "impl on non-nominal target".to_string(),
+                },
+                span,
+                "impl-block shape not yet lowered: impl target must be a named \
+                 nominal type (e.g. `impl Trait for VecIter<T>`); tuple, array, \
+                 function, and trait-object targets are not yet supported",
+            ));
+            return;
+        };
+        // Outer type-parameter names (e.g. `T` in `impl<T> Iterator for VecIter<T>`).
+        let type_params: Vec<String> = decl
+            .type_params
+            .as_ref()
+            .map(|ps| ps.iter().map(|p| p.name.clone()).collect())
+            .unwrap_or_default();
+        // Blanket-impl guard: reject `impl<T> Trait for T` (target name is
+        // itself one of the outer type parameters) — V0b does not handle the
+        // monomorphisation of blanket impls.
+        if type_params.iter().any(|p| p == self_type_name) {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::ImplBlockShapeNotLowered {
+                    shape: format!(
+                        "blanket impl `impl<{self_type_name}> ... for {self_type_name}`"
+                    ),
+                },
+                span,
+                "impl-block shape not yet lowered: blanket impls (target is a \
+                 bare type parameter) require specialisation infrastructure \
+                 that is not in V0b — restrict the target to a concrete \
+                 nominal type",
+            ));
+            return;
+        }
+        // V0b uses `FnDecl` for impl-block methods (per parser ast), which
+        // always carries a `Block` body — there is no body-less / default-method
+        // shape representable here. Trait-decl default methods live on
+        // `TraitMethod` and are a separate lowering surface (out of scope for
+        // V0b). No body-less guard needed.
+
+        // Lower methods through the standard `lower_fn_with_name` path. Each
+        // method becomes a top-level `HirItem::Function` keyed by
+        // `<SelfType>::<method>` — identical naming to the pre-V0b Index
+        // special-case, so downstream consumers (MIR / codegen / monomorph)
+        // see ordinary functions and need no new wiring per-method.
+        let mut method_symbols: Vec<String> = Vec::with_capacity(decl.methods.len());
+        for method in &decl.methods {
+            let symbol = crate::node::HirImplBlock::method_symbol(self_type_name, &method.name);
+            items.push(HirItem::Function(self.lower_fn_with_name(
+                method,
+                &symbol,
+                span.clone(),
+            )));
+            method_symbols.push(symbol);
+        }
+
+        // Lower associated-type bindings to `ResolvedTy`s. Recorded as
+        // metadata only — no runtime artefact (the type-erasure model in
+        // use treats `type Item = T;` as a checker-only projection).
+        let type_aliases: Vec<(String, ResolvedTy)> = decl
+            .type_aliases
+            .iter()
+            .map(|alias| (alias.name.clone(), self.lower_type(&alias.ty)))
+            .collect();
+
+        items.push(HirItem::Impl(crate::node::HirImplBlock {
+            id: self.ids.item(),
+            node: self.ids.node(),
+            trait_name: decl.trait_bound.as_ref().map(|b| b.name.clone()),
+            self_type_name: self_type_name.clone(),
+            type_params,
+            type_aliases,
+            method_symbols,
+            span,
+        }));
     }
 
     fn lower_fn_with_name(

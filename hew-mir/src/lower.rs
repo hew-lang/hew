@@ -819,9 +819,15 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     diagnostics.extend(lowered.diagnostics);
                 }
             }
-            HirItem::Record(_) | HirItem::TypeDecl(_) => {
+            HirItem::Record(_) | HirItem::TypeDecl(_) | HirItem::Impl(_) => {
                 // Type declarations have no executable MIR bodies. TypeDecl
                 // markers are consumed via `HirModule.type_classes`.
+                //
+                // V0b: `HirItem::Impl` is metadata-only — its method bodies
+                // are emitted as sibling `HirItem::Function` entries
+                // (named `<SelfType>::<method>`) by the HIR lowering pass
+                // and are picked up through the `HirItem::Function` arm
+                // above. Nothing to do here.
             }
             HirItem::Machine(md) => {
                 // Synthesise the public `<Name>__step(self, event) -> Name`

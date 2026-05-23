@@ -220,6 +220,21 @@ pub fn dump_hir(module: &HirModule) -> String {
             HirItem::Supervisor(sup) => {
                 writeln!(out, "supervisor {} {}", sup.id, sup.name).expect("write to string");
             }
+            HirItem::Impl(block) => {
+                writeln!(
+                    out,
+                    "impl {} {} for {} [methods: {}]",
+                    block.id,
+                    block.trait_name.as_deref().unwrap_or("<inherent>"),
+                    block.self_type_name,
+                    block.method_symbols.join(", "),
+                )
+                .expect("write to string");
+                for (name, ty) in &block.type_aliases {
+                    writeln!(out, "  type {} = {}", name, ty.user_facing())
+                        .expect("write to string");
+                }
+            }
         }
     }
     out

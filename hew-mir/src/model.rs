@@ -145,9 +145,14 @@ pub struct RegexLiteral {
 ///    `Ended` state.
 /// 2. `field == 1` — `init_mask` (`u64`). Per-cross-yield-local
 ///    initialisation bitmap. Bit `i` is set when the local in
-///    `live_locals[i]` has been written on the current path. S3b1
-///    declares the field as zero-init; S3b2 wires the
-///    set/test-and-drop discipline that consumes it.
+///    `live_locals[i]` is currently held in the state record (i.e.
+///    checkpointed at the most recent yield and not yet reloaded by
+///    the matching resume). The S3b2 set/clear discipline writes
+///    `init_mask = SITE_MASK` immediately before every `Terminator::Yield`
+///    (after the per-site checkpoint Moves) and writes `init_mask = 0`
+///    at every resume entry (after the per-site reload Moves), so the
+///    `__drop_in_state` shim invoked from any suspension drops exactly
+///    the fields that hold valid data.
 /// 3. `field >= 2` — the cross-yield-live locals in deterministic
 ///    ascending order by their original body-local `u32` id. Index `i`
 ///    of `live_locals` corresponds to `field == i + 2`.
@@ -163,9 +168,61 @@ pub struct GenStateLayout {
     /// at every yield site and reloaded at every resume.
     pub live_locals: Vec<GenStateLiveLocal>,
     /// Number of `Terminator::Yield` sites in the body, in source order.
-    /// Used by codegen (S4) to size the entry-block switch and by S3b2 to
-    /// derive the per-state init-mask sets.
+    /// Used by codegen (S4) to size the entry-block switch and to index
+    /// per-state metadata such as `drop_tables`.
     pub yield_count: u32,
+    /// Name of the synthesised `__drop_in_state` MIR function for this
+    /// generator (one shim per gen-block). The shim is reachable as
+    /// `RawMirFunction { name: drop_shim_name, .. }` in
+    /// `IrPipeline.raw_mir`. Codegen (S4) wires the End / Cancelled /
+    /// Panic / Drop exit paths through this single shim.
+    ///
+    /// **S3b2 status.** S3b2 emits a fail-closed Trap-only shim body and
+    /// surfaces the load-bearing per-state drop information via
+    /// `drop_tables` below; S4 replaces the Trap with the cascade-on-tag
+    /// dispatch that consumes `drop_tables` (each table entry becomes a
+    /// per-state drop block in the regenerated shim). The function name
+    /// is stable across S3b2 → S4 so downstream wiring does not move.
+    pub drop_shim_name: String,
+    /// Per-state drop manifest, keyed by state-tag value. Entry
+    /// `drop_tables[k]` lists the `live_locals` indices that hold valid
+    /// data when the generator is suspended at state `k`, in
+    /// reverse-init drop order (highest index drops first → mirrors
+    /// LIFO drop discipline for affine resources). Index identity:
+    /// `state_tag == 0` is the initial pre-first-yield state (no lifted
+    /// locals valid); `state_tag == j` for `j` in `1..=yield_count` is
+    /// the suspension at the `j`-th `Terminator::Yield` in source
+    /// order; `state_tag == yield_count + 1` is the terminal `Ended`
+    /// state. `drop_tables.len()` is therefore always
+    /// `yield_count + 2`.
+    ///
+    /// Codegen (S4) consumes this to emit the `__drop_in_state` shim's
+    /// per-state drop blocks; the runtime calls the shim from the four
+    /// exit paths and the shim dispatches on the live state tag.
+    pub drop_tables: Vec<GenStateDropTable>,
+}
+
+/// One per-state drop manifest entry in `GenStateLayout.drop_tables`.
+///
+/// The field carries the `live_locals` indices (NOT the field ordinals)
+/// in reverse-init drop order. Codegen translates each index `i` to a
+/// `Place::GenState { local: state_local, field: i + 2 }` drop in the
+/// shim body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenStateDropTable {
+    /// State-tag value this drop table applies to. Range
+    /// `0..=yield_count + 1`. The element is its own index into
+    /// `GenStateLayout.drop_tables` (i.e. `drop_tables[k].state_tag == k`),
+    /// duplicated here so debugging dumps are self-describing without a
+    /// containing index.
+    pub state_tag: u32,
+    /// `live_locals` indices to drop in this state, in reverse-init
+    /// (LIFO) order. Empty for the initial state (`state_tag == 0`) and
+    /// for the terminal `Ended` state (`state_tag == yield_count + 1`)
+    /// because no lifted locals are live in either. For intermediate
+    /// suspension states, the set is exactly the per-site checkpoint
+    /// set at the corresponding `Terminator::Yield`, reversed.
+    pub fields_in_drop_order: Vec<u32>,
 }
 
 /// One cross-yield-live local entry in a `GenStateLayout`.

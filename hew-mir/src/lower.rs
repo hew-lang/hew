@@ -2797,6 +2797,72 @@ struct LoweredFunction {
     gen_state_layouts: Vec<crate::model::GenStateLayout>,
 }
 
+/// Wrap a S3b2 drop-in-state shim `RawMirFunction` in a stub
+/// `LoweredFunction` so it surfaces through `lower_hir_module`'s
+/// generated-functions sweep. The shim's body is the fail-closed
+/// Trap-only placeholder produced by
+/// `gen_state::build_drop_shim_function`; the checked / elaborated
+/// views mirror that single-block shape with no diagnostics and an
+/// empty drop plan.
+///
+/// S4 regenerates the function from `GenStateLayout.drop_tables`, at
+/// which point the full check / elaborate / dataflow pass runs
+/// against the regenerated body. The stub views are only needed for
+/// the time window between MIR emission and S4 landing so that
+/// `lower_hir_module`'s `(thir, raw, checked, elaborated)` zip stays
+/// consistent.
+fn stub_lowered_for_drop_shim(raw: RawMirFunction) -> LoweredFunction {
+    let name = raw.name.clone();
+    let return_ty = raw.return_ty.clone();
+    let thir = ThirFunction {
+        name: name.clone(),
+        return_ty: return_ty.clone(),
+        statements: Vec::new(),
+    };
+    let checked = CheckedMirFunction {
+        name: name.clone(),
+        return_ty: return_ty.clone(),
+        blocks: raw.blocks.clone(),
+        decisions: Vec::new(),
+        checks: Vec::new(),
+        cooperate_sites: Vec::new(),
+    };
+    // The placeholder body is a single Trap block (id 0). Mirror it
+    // in the elaborated view with a single Normal block and no drops;
+    // S4 will replace both raw + elaborated together when it
+    // regenerates the cascade-on-tag shim from `drop_tables`.
+    let elab_block = ElabBlock {
+        id: 0,
+        kind: BlockKind::Normal,
+        drops: Vec::new(),
+        successor: None,
+    };
+    let elaborated = ElaboratedMirFunction {
+        name,
+        return_ty,
+        statements: Vec::new(),
+        decisions: Vec::new(),
+        blocks: vec![elab_block],
+        // `ExitPath::Return` is the conventional empty-drop-plan exit
+        // even though the Trap terminator does not actually return —
+        // codegen does not consume `drop_plans` for Trap-only blocks,
+        // so any non-empty plan would be the wrong signal.
+        drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
+        coroutine: None,
+        lambda_captures: Vec::new(),
+    };
+    LoweredFunction {
+        thir,
+        raw,
+        checked,
+        elaborated,
+        diagnostics: Vec::new(),
+        generated: Vec::new(),
+        record_layouts: Vec::new(),
+        gen_state_layouts: Vec::new(),
+    }
+}
+
 /// Insert execution-context carrier markers into a context-bearing CFG.
 ///
 /// The entry block starts with `EnterContext`; every terminal block (`Return`
@@ -8984,17 +9050,37 @@ impl Builder {
         // body's locals vector. Records a `GenStateLayout` on the
         // enclosing builder so `lower_hir_module` surfaces it in the
         // `IrPipeline.gen_state_layouts` vec.
-        let (blocks, body_locals_with_state, gen_state_layout_opt) =
+        let (blocks, body_locals_with_state, gen_state_layout_opt, drop_shim_opt) =
             match crate::gen_state::synthesise(
                 &body_name,
                 raw_blocks.clone(),
                 body_builder.locals.clone(),
             ) {
-                Some(synth) => (synth.blocks, synth.locals, Some(synth.layout)),
-                None => (raw_blocks, body_builder.locals.clone(), None),
+                Some(synth) => (
+                    synth.blocks,
+                    synth.locals,
+                    Some(synth.layout),
+                    Some(synth.drop_shim),
+                ),
+                None => (raw_blocks, body_builder.locals.clone(), None, None),
             };
         if let Some(layout) = gen_state_layout_opt.clone() {
             self.gen_state_layouts.push(layout);
+        }
+        // S3b2 drop-in-state shim. We surface it as a sibling
+        // `LoweredFunction` alongside the body so it reaches
+        // `IrPipeline.raw_mir` via the same generated-functions sweep
+        // that surfaces the body itself. The shim's checked /
+        // elaborated views are stub-shaped (no diagnostics, single
+        // Normal block, empty drop plan) because the body is a
+        // fail-closed Trap-only placeholder — S4 regenerates the
+        // shim's MIR from `GenStateLayout.drop_tables` and at that
+        // time the full check / elaborate pass runs against the
+        // regenerated body. See `gen_state::build_drop_shim_function`
+        // for the S3b2 / S4 split rationale.
+        if let Some(shim_raw) = drop_shim_opt {
+            self.generated_functions
+                .push(stub_lowered_for_drop_shim(shim_raw));
         }
 
         // Build the THIR/raw/checked/elaborated triple for the body function.

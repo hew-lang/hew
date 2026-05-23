@@ -27,10 +27,10 @@ pub use model::{
     validate_context_markers, ActorLayout, BasicBlock, BlockKind, BorrowKind, CaptureKind,
     CheckedMirFunction, CmpPred, CooperateKind, CooperateSite, CoroutineSchema, DecisionFact,
     Direction, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, EnumLayout,
-    ExitPath, FieldOffset, FloatWidth, FunctionCallConv, GenStateLayout, GenStateLiveLocal, Instr,
-    IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MachineLayout, MachineVariantLayout,
-    MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, RecordLayout,
-    RegexLiteral, RuntimeCall, SelectArm, SelectArmKind, Strategy, SupervisorChildLayout,
-    SupervisorLayout, Terminator, ThirFunction, TrapKind,
+    ExitPath, FieldOffset, FloatWidth, FunctionCallConv, GenStateDropTable, GenStateLayout,
+    GenStateLiveLocal, Instr, IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MachineLayout,
+    MachineVariantLayout, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
+    RawMirFunction, RecordLayout, RegexLiteral, RuntimeCall, SelectArm, SelectArmKind, Strategy,
+    SupervisorChildLayout, SupervisorLayout, Terminator, ThirFunction, TrapKind,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;

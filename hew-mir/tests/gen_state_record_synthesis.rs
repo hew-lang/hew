@@ -17,7 +17,9 @@
 
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::gen_state::{LIVE_LOCAL_BASE, STATE_INIT_MASK_FIELD, STATE_TAG_FIELD};
-use hew_mir::{GenStateLayout, Instr, IrPipeline, Place, RawMirFunction, Terminator};
+use hew_mir::{
+    GenStateDropTable, GenStateLayout, Instr, IrPipeline, Place, RawMirFunction, Terminator,
+};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn lower_checked(source: &str) -> IrPipeline {
@@ -353,5 +355,287 @@ fn cross_yield_live_locals_lifted_to_state() {
          lifted local; instructions: {:?}",
         third_resume,
         resume3.instructions
+    );
+}
+
+fn find_raw<'a>(pipeline: &'a IrPipeline, name: &str) -> &'a RawMirFunction {
+    pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected RawMirFunction named {name:?}; available: {:?}",
+                pipeline.raw_mir.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Gate #3 of plan §6 S3b: `gen_drop_in_state_shim_per_exit`.
+///
+/// Validates the two halves S3b2 owns:
+///
+/// 1. **Init-mask discipline** — at every yield bookend the synthesis
+///    pass writes the per-site mask to `Place::GenState { local:
+///    state_local, field: STATE_INIT_MASK_FIELD (= 1) }`. The
+///    discipline is symmetric: each yield emits a `set` (mask = site
+///    bit pattern) and each resume emits a `clear` (mask = 0). Both
+///    writes flow through a shared u64 scratch local because MIR has
+///    no Const-to-GenState direct instruction; the scratch is unique
+///    per body and is the only U64-typed local introduced by
+///    synthesis.
+///
+/// 2. **`__drop_in_state` shim** — synthesis emits a per-gen-body
+///    `RawMirFunction` named `__hew_gen_drop_in_state_{owner}_{id}` and
+///    populates `GenStateLayout.drop_shim_name` to match. The shim's
+///    structured drop manifest lives in `GenStateLayout.drop_tables`:
+///    one entry per state tag, where state 0 (initial) and state
+///    `yield_count + 1` (Ended) hold zero lifted locals, and the
+///    intermediate suspension states list exactly the per-site
+///    cross-yield-live set in reverse-init drop order.
+///
+/// The fixture mixes two yields with one lifted local and one yield
+/// with NO lifted local across its resume boundary, so the intermediate
+/// drop tables cover both shapes (non-empty + empty).
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "single-assertion test keeps the init-mask discipline and \
+              the per-state drop-table manifest contract in one body \
+              so a regression of either half surfaces in one failure \
+              rather than two separate tests sharing the gen-fixture \
+              setup; mirrors the policy in \
+              `cross_yield_live_locals_lifted_to_state` above."
+)]
+fn gen_drop_in_state_shim_per_exit() {
+    let pipeline = lower_checked(
+        r"
+        fn main() {
+            let g = gen {
+                let acc = 1;
+                yield acc;
+                yield acc;
+                yield acc;
+            };
+        }
+        ",
+    );
+
+    let body = find_gen_body(&pipeline, "main");
+    let layout = find_layout(&pipeline, &body.name);
+
+    // ─── Half A: init-mask discipline ────────────────────────────────
+    //
+    // STATE_INIT_MASK_FIELD is the ordinal contract; pin it here so
+    // any future shuffle of field layout breaks this test loudly.
+    assert_eq!(
+        STATE_INIT_MASK_FIELD, 1,
+        "init-mask must live at field ordinal 1; codegen and S3b2 \
+         synthesis are both pinned to this"
+    );
+
+    let state_local: u32 = u32::try_from(body.locals.len() - 1).unwrap();
+    let mask_field_place = Place::GenState {
+        local: state_local,
+        field: STATE_INIT_MASK_FIELD,
+    };
+
+    // Find the shared U64 mask scratch local: synthesis allocates
+    // exactly one U64 local in the body's locals vector. It cannot be
+    // the parameter (which is the gen-state record itself) nor any
+    // pre-existing body local (the fixture uses I64 / Unit).
+    let mask_scratch_locals: Vec<u32> = body
+        .locals
+        .iter()
+        .enumerate()
+        .filter(|(_, ty)| matches!(ty, hew_types::ResolvedTy::U64))
+        .map(|(i, _)| u32::try_from(i).unwrap())
+        .collect();
+    assert_eq!(
+        mask_scratch_locals.len(),
+        1,
+        "exactly one U64 mask-scratch local must be allocated by S3b2; \
+         got {mask_scratch_locals:?}"
+    );
+    let mask_scratch = mask_scratch_locals[0];
+
+    // Every yield block writes the mask via `ConstI64 mask_scratch =
+    // <site bits>` followed by `Move mask_field_place = mask_scratch`.
+    // We assert structurally: each yield block must contain a
+    // mask-Move whose dest is the GenState init-mask field and whose
+    // src is `Place::Local(mask_scratch)`, IMMEDIATELY preceded by a
+    // `ConstI64` to the same scratch.
+    let yield_blocks: Vec<&hew_mir::BasicBlock> = body
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.terminator, Terminator::Yield { .. }))
+        .collect();
+    assert!(
+        !yield_blocks.is_empty(),
+        "fixture must contain at least one Terminator::Yield; got 0"
+    );
+
+    for yb in &yield_blocks {
+        let mask_pair = yb.instructions.windows(2).find(|w| {
+            matches!(
+                w,
+                [
+                    Instr::ConstI64 { dest, .. },
+                    Instr::Move { dest: mdest, src }
+                ]
+                if *dest == Place::Local(mask_scratch)
+                    && *mdest == mask_field_place
+                    && *src == Place::Local(mask_scratch)
+            )
+        });
+        assert!(
+            mask_pair.is_some(),
+            "yield block {}: missing init-mask set (ConstI64 → \
+             Move into field {STATE_INIT_MASK_FIELD}). Instructions: {:?}",
+            yb.id,
+            yb.instructions
+        );
+
+        // Resume block must clear the mask: ConstI64 mask_scratch = 0,
+        // Move mask_field_place = mask_scratch.
+        let Terminator::Yield { next, .. } = yb.terminator else {
+            unreachable!("filtered to Yield terminators")
+        };
+        let resume = body
+            .blocks
+            .iter()
+            .find(|b| b.id == next)
+            .unwrap_or_else(|| panic!("resume block {next} not found"));
+        let clear_pair = resume.instructions.windows(2).find(|w| {
+            matches!(
+                w,
+                [
+                    Instr::ConstI64 { dest, value: 0 },
+                    Instr::Move { dest: mdest, src }
+                ]
+                if *dest == Place::Local(mask_scratch)
+                    && *mdest == mask_field_place
+                    && *src == Place::Local(mask_scratch)
+            )
+        });
+        assert!(
+            clear_pair.is_some(),
+            "resume block {next} (after yield block {}): missing \
+             init-mask clear (ConstI64 0 → Move into field \
+             {STATE_INIT_MASK_FIELD}). Instructions: {:?}",
+            yb.id,
+            resume.instructions
+        );
+    }
+
+    // ─── Half B: drop shim function + per-state drop tables ─────────
+    //
+    // The shim name must follow the `__hew_gen_drop_in_state_*`
+    // convention and be the same string the layout carries. A
+    // RawMirFunction with that name must exist in the pipeline.
+    assert!(
+        layout
+            .drop_shim_name
+            .starts_with("__hew_gen_drop_in_state_"),
+        "drop_shim_name must use the `__hew_gen_drop_in_state_` \
+         prefix so codegen + diagnostics can recognise the shim; got \
+         {:?}",
+        layout.drop_shim_name
+    );
+    let shim = find_raw(&pipeline, &layout.drop_shim_name);
+
+    // Shim's parameter is the state-record carrier (one param, one
+    // local in the prefix). Body is a single Trap block today; S4
+    // regenerates the cascade-on-tag dispatch.
+    assert_eq!(
+        shim.params.len(),
+        1,
+        "shim must take exactly one parameter (the state-record \
+         carrier); got {:?}",
+        shim.params
+    );
+    let single_block = shim
+        .blocks
+        .first()
+        .unwrap_or_else(|| panic!("shim {:?} must contain at least one block", shim.name));
+    assert!(
+        matches!(single_block.terminator, Terminator::Trap { .. }),
+        "shim's entry block must terminate with Trap (the fail-closed \
+         placeholder until S4 wires the cascade); got {:?}",
+        single_block.terminator
+    );
+
+    // drop_tables shape: one entry per state tag, total = yield_count + 2.
+    let yield_count = layout.yield_count;
+    assert_eq!(
+        u32::try_from(layout.drop_tables.len()).expect("drop_tables length fits in u32"),
+        yield_count + 2,
+        "drop_tables must have one entry per state tag (initial + \
+         per-yield-suspension + Ended = yield_count + 2 = {}); got \
+         {} entries",
+        yield_count + 2,
+        layout.drop_tables.len()
+    );
+
+    // Each entry's state_tag must equal its index (self-describing
+    // invariant codegen relies on).
+    for (idx, table) in layout.drop_tables.iter().enumerate() {
+        let idx_u32 = u32::try_from(idx).unwrap();
+        assert_eq!(
+            table.state_tag, idx_u32,
+            "drop_tables[{idx}].state_tag must equal its index; got \
+             {} (full table: {:?})",
+            table.state_tag, table
+        );
+    }
+
+    // The initial state (tag 0) holds NO lifted locals (nothing was
+    // checkpointed yet).
+    assert!(
+        layout.drop_tables[0].fields_in_drop_order.is_empty(),
+        "drop_tables[0] (initial state) must hold no lifted locals; \
+         got {:?}",
+        layout.drop_tables[0].fields_in_drop_order
+    );
+
+    // The Ended state (tag yield_count + 1) also holds NO lifted
+    // locals (every checkpoint reloaded into the body before the
+    // generator returned).
+    let ended_idx = (yield_count + 1) as usize;
+    assert!(
+        layout.drop_tables[ended_idx]
+            .fields_in_drop_order
+            .is_empty(),
+        "drop_tables[{ended_idx}] (Ended state) must hold no lifted \
+         locals; got {:?}",
+        layout.drop_tables[ended_idx].fields_in_drop_order
+    );
+
+    // The two intermediate suspension states (tags 1 and 2) each
+    // correspond to a yield whose resume reads `acc`, so they must
+    // list the lifted index 0 (the only live_locals entry) in
+    // reverse-init order — which for a single-element list is just
+    // `[0]`.
+    for tag in 1..=2u32 {
+        let entry: &GenStateDropTable = &layout.drop_tables[tag as usize];
+        assert_eq!(
+            entry.fields_in_drop_order,
+            vec![0u32],
+            "drop_tables[{tag}] (suspension after yield #{tag}, whose \
+             resume reads `acc`) must list lifted index 0; got {:?}",
+            entry.fields_in_drop_order
+        );
+    }
+
+    // The third intermediate state (tag 3) corresponds to yield #3
+    // whose resume does NOT read `acc`. The analysis must not
+    // checkpoint at yield #3, therefore that state's drop table must
+    // be empty. (This is the symmetric counter-case to test #2's
+    // over-lift assertion: no over-drop either.)
+    assert!(
+        layout.drop_tables[3].fields_in_drop_order.is_empty(),
+        "drop_tables[3] (suspension after yield #3, whose resume does \
+         not read `acc`) must be empty (no over-drop). Got {:?}",
+        layout.drop_tables[3].fields_in_drop_order
     );
 }

@@ -43,14 +43,19 @@ pub enum HewOverflowPolicy {
     Coalesce = 4,
 }
 
-/// Actor state (8-state CAS machine).
+/// Actor state CAS machine.
+///
+/// Discriminant `3` is intentionally unused: it was previously assigned to a
+/// `Blocked` variant that the v0.5 actor model never transitions into.  The
+/// gap is preserved so that any cached integer state value coming back from
+/// a stale profiler snapshot maps to the catch-all "unknown" label rather
+/// than silently aliasing onto a different state.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HewActorState {
     Idle = 0,
     Runnable = 1,
     Running = 2,
-    Blocked = 3,
     Stopping = 4,
     Crashed = 5,
     Stopped = 6,

@@ -922,7 +922,7 @@ impl App {
                 id: 3,
                 pid: 102,
                 actor_type: "Logger".to_owned(),
-                state: "blocked".to_owned(),
+                state: "runnable".to_owned(),
                 msgs: 920,
                 time_ns: 450_000_000,
                 mbox_depth: 15,

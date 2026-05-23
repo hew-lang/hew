@@ -27,9 +27,6 @@ pub const STATE_WARNING: Color = Color::Yellow;
 /// Idle / stopped / inactive element.
 pub const STATE_IDLE: Color = Color::Gray;
 
-/// Blocking state indicator.
-pub const STATE_BLOCKED: Color = Color::Blue;
-
 /// Stopping-in-progress state.
 pub const STATE_STOPPING: Color = Color::Magenta;
 
@@ -139,7 +136,6 @@ pub fn actor_state_colour(state: &str) -> Color {
         "idle" => STATE_IDLE,
         "runnable" => STATE_WARNING,
         "running" => STATE_HEALTHY,
-        "blocked" => STATE_BLOCKED,
         "stopping" => STATE_STOPPING,
         "crashed" => STATE_ERROR,
         "stopped" => STATE_STOPPED,

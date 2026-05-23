@@ -296,8 +296,6 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
                 "runnable"
             } else if state_int == HewActorState::Running as i32 {
                 "running"
-            } else if state_int == HewActorState::Blocked as i32 {
-                "blocked"
             } else if state_int == HewActorState::Stopping as i32 {
                 "stopping"
             } else if state_int == HewActorState::Crashed as i32 {
@@ -542,6 +540,79 @@ mod tests {
         );
 
         // Clean up: unregister before actor is dropped.
+        // SAFETY: actor_ptr is still valid; actor has not been freed.
+        unsafe { unregister(actor_ptr) };
+    }
+
+    /// Removal-of-Blocked invariant: cycling an actor through every valid
+    /// state (and through the stale legacy discriminant `3`) must never
+    /// surface `"blocked"` on a snapshot.  Discriminant `3` falls through to
+    /// the catch-all `"unknown"` label — the variant has been excised from
+    /// the runtime enum and the registry's stringifier no longer recognises
+    /// it as a real state.
+    #[test]
+    fn snapshot_never_reports_blocked_state() {
+        use std::sync::atomic::Ordering;
+
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        clear_dispatch_registry();
+        REGISTRY.access(|reg| {
+            if let Some(m) = reg.as_mut() {
+                m.clear();
+            }
+        });
+
+        register_dispatch_type(Some(fake_dispatch_e), "CooperativeActor");
+
+        // SAFETY: zero-init of a #[repr(C)] HewActor is sound — every atomic
+        // field has a valid zero pattern and every pointer field is null.
+        let mut actor: Box<HewActor> = unsafe { Box::new(std::mem::zeroed()) };
+        actor.id = 0x1234_5678_9abc_def0;
+        actor.pid = 0x1234_5678_9abc_def0;
+        actor.dispatch = Some(fake_dispatch_e);
+
+        let actor_ptr: *mut HewActor = &raw mut *actor;
+        // SAFETY: actor_ptr is valid for the duration of this test.
+        unsafe { register(actor_ptr) };
+
+        // Every state the runtime is allowed to transition into, plus the
+        // stale legacy `3` discriminant that used to mean Blocked.  The
+        // probe asserts that none of these states stringify to "blocked".
+        let states: &[(i32, &str)] = &[
+            (HewActorState::Idle as i32, "idle"),
+            (HewActorState::Runnable as i32, "runnable"),
+            (HewActorState::Running as i32, "running"),
+            (HewActorState::Stopping as i32, "stopping"),
+            (HewActorState::Crashed as i32, "crashed"),
+            (HewActorState::Stopped as i32, "stopped"),
+            // Legacy Blocked discriminant — must now be "unknown".
+            (3, "unknown"),
+            // Out-of-range value — catch-all.
+            (999, "unknown"),
+        ];
+
+        for (raw, expected_label) in states {
+            actor.actor_state.store(*raw, Ordering::Relaxed);
+
+            let snaps = snapshot_all();
+            let snap = snaps
+                .iter()
+                .find(|s| s.id == actor.id)
+                .expect("registered actor must appear in snapshot");
+
+            assert_ne!(
+                snap.state, "blocked",
+                "snapshot must never report \"blocked\" (raw state={raw})"
+            );
+            assert_eq!(
+                snap.state, *expected_label,
+                "snapshot label for raw state {raw} should be {expected_label}"
+            );
+        }
+
         // SAFETY: actor_ptr is still valid; actor has not been freed.
         unsafe { unregister(actor_ptr) };
     }

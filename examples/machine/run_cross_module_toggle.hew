@@ -1,0 +1,21 @@
+// Runnable fixture: cross-module Moore machine driven end-to-end.
+//
+// Imports `Toggle` from `std::machines::toggle` and exercises the HIR
+// cross-module machine-binding path: the qualified `Toggle::Off` ctor and
+// the bare `Flip` event reference resolve through
+// `machine_ctor_registry` only when the HIR pre-pass walks
+// `program.module_graph` to register imported machines (see
+// `hew-hir/src/lower.rs`). Before that fix, this file failed at HIR with
+// `UnresolvedSymbol { name: "Toggle::Off" }` and `UnresolvedSymbol { name: "Flip" }`.
+//
+// Gate: stdout must match `run_cross_module_toggle.expected` exactly.
+import std::machines::toggle;
+
+fn main() {
+    var t: Toggle = Toggle::Off;
+    println(t.state_name());
+    t.step(Flip);
+    println(t.state_name());
+    t.step(Flip);
+    println(t.state_name());
+}

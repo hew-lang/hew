@@ -419,6 +419,49 @@ pub fn lower_program_with_mono_cap(
                 _ => {}
             }
         }
+        // Mirror the bare-count scan over `program.module_graph` non-root
+        // modules so cross-module machine states/events and enum variants
+        // participate in the same bare-ambiguity decision as root items.
+        // Without this, a bare `On` used by a root function that imports
+        // `std::machines::toggle` would not be marked ambiguous against any
+        // other `On` in scope, and — more importantly — the qualified form
+        // `Toggle::On` would not be registered in `machine_ctor_registry`
+        // (next module-graph loop below) since the registration loop is the
+        // producer side of the same walk.
+        //
+        // Gated on `is_pub()` for cross-module emission: a private machine
+        // or enum in an imported module is invisible to consumers.
+        if let Some(ref mg) = program.module_graph {
+            for mod_id in &mg.topo_order {
+                if *mod_id == mg.root {
+                    continue;
+                }
+                if let Some(module) = mg.modules.get(mod_id) {
+                    for (item, _) in &module.items {
+                        match item {
+                            Item::Machine(md) if md.visibility.is_pub() => {
+                                for state in &md.states {
+                                    *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
+                                }
+                                for event in &md.events {
+                                    *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
+                                }
+                            }
+                            Item::TypeDecl(td)
+                                if td.visibility.is_pub() && td.kind == TypeDeclKind::Enum =>
+                            {
+                                for body_item in &td.body {
+                                    if let TypeBodyItem::Variant(v) = body_item {
+                                        *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
         for (item, _) in &program.items {
             match item {
                 Item::Machine(md) => {
@@ -468,6 +511,74 @@ pub fn lower_program_with_mono_cap(
                     }
                 }
                 _ => {}
+            }
+        }
+        // Mirror the machine_ctor_registry fill over `program.module_graph`
+        // non-root modules. The checker's `register_machine_decl` walk in
+        // `hew-types/src/check/registration.rs` already populates `type_defs`
+        // for imported pub machines and enums; this loop is the HIR-side
+        // symmetric producer so `resolve_identifier_variant` hits in
+        // `lower_identifier` (machine_ctor_registry lookup) for cross-module
+        // ctors. Without this, a root `fn main() { var t: Toggle = Toggle::Off; }`
+        // that imports `std::machines::toggle` would emit `UnresolvedSymbol`
+        // at HIR even though the checker accepted the reference.
+        //
+        // Same Pub gating as the bare-count walk above so private machines /
+        // enums in imported modules are invisible to consumers.
+        if let Some(ref mg) = program.module_graph {
+            for mod_id in &mg.topo_order {
+                if *mod_id == mg.root {
+                    continue;
+                }
+                if let Some(module) = mg.modules.get(mod_id) {
+                    for (item, _) in &module.items {
+                        match item {
+                            Item::Machine(md) if md.visibility.is_pub() => {
+                                let event_type_name = format!("{}Event", md.name);
+                                for (idx, state) in md.states.iter().enumerate() {
+                                    let qualified = format!("{}::{}", md.name, state.name);
+                                    ctx.machine_ctor_registry
+                                        .insert(qualified, (md.name.clone(), idx));
+                                    if bare_counts.get(&state.name).copied().unwrap_or(0) == 1 {
+                                        ctx.machine_ctor_registry
+                                            .insert(state.name.clone(), (md.name.clone(), idx));
+                                    }
+                                }
+                                for (idx, event) in md.events.iter().enumerate() {
+                                    let qualified = format!("{}::{}", event_type_name, event.name);
+                                    ctx.machine_ctor_registry
+                                        .insert(qualified, (event_type_name.clone(), idx));
+                                    if bare_counts.get(&event.name).copied().unwrap_or(0) == 1 {
+                                        ctx.machine_ctor_registry.insert(
+                                            event.name.clone(),
+                                            (event_type_name.clone(), idx),
+                                        );
+                                    }
+                                }
+                            }
+                            Item::TypeDecl(td)
+                                if td.visibility.is_pub() && td.kind == TypeDeclKind::Enum =>
+                            {
+                                let mut variant_idx: usize = 0;
+                                for body_item in &td.body {
+                                    if let TypeBodyItem::Variant(v) = body_item {
+                                        let qualified = format!("{}::{}", td.name, v.name);
+                                        ctx.machine_ctor_registry
+                                            .insert(qualified, (td.name.clone(), variant_idx));
+                                        if bare_counts.get(&v.name).copied().unwrap_or(0) == 1 {
+                                            ctx.machine_ctor_registry.insert(
+                                                v.name.clone(),
+                                                (td.name.clone(), variant_idx),
+                                            );
+                                        }
+                                        variant_idx += 1;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
         // Register built-in tagged unions (`Option<T>`, `Result<T, E>`).
@@ -583,6 +694,121 @@ pub fn lower_program_with_mono_cap(
                 .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
             ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
             type_decl_cache.insert(decl as *const _, hir_decl);
+        }
+    }
+
+    // §4b — Imported-module type-decl + machine pre-pass.
+    //
+    // Mirror the root second pass above for `program.module_graph` non-root
+    // modules so cross-module enum and machine variant descriptors are
+    // available before any function body in either the root or an imported
+    // module is lowered. Without this, `lookup_variant_ctor` (which consults
+    // `enum_variants_by_name`) misses for imported enum tuple/struct variants
+    // and for imported machine struct-states, and struct-init lowering falls
+    // through to the regular-record path which then fails at MIR.
+    //
+    // For imported enum TypeDecls: lower once via `lower_type_decl`, cache
+    // the result so the fourth-pass HirItem-emit walk reuses it (avoiding
+    // double lowering and the resulting `ItemId` mismatch between the id
+    // seeded into `enum_item_ids` and the id stamped on the emitted
+    // `HirItem::TypeDecl`).
+    //
+    // For imported machines: synthesise `HirVariant` descriptors directly
+    // from the AST state + event lists (machines have no `HirTypeDecl`),
+    // seeding `enum_variants_by_name` under both the machine name (states)
+    // and the synthesised `{Name}Event` companion (events). The checker's
+    // `register_machine_decl` produces the same two `TypeDef` entries; this
+    // is the HIR-side symmetric producer.
+    if let Some(ref mg) = program.module_graph {
+        for mod_id in &mg.topo_order {
+            if *mod_id == mg.root {
+                continue;
+            }
+            if let Some(module) = mg.modules.get(mod_id) {
+                for (item, span) in &module.items {
+                    match item {
+                        Item::TypeDecl(decl)
+                            if decl.visibility.is_pub() && decl.kind == TypeDeclKind::Enum =>
+                        {
+                            let hir_decl = ctx.lower_type_decl(decl, span.clone());
+                            let marker = builtin_or_hir_marker(&hir_decl.name, hir_decl.marker);
+                            ctx.type_classes
+                                .entry(hir_decl.name.clone())
+                                .or_insert((marker, None));
+                            if !hir_decl.variants.is_empty() {
+                                ctx.enum_variants_by_name
+                                    .insert(hir_decl.name.clone(), hir_decl.variants.clone());
+                            }
+                            ctx.enum_type_params
+                                .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
+                            ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
+                            type_decl_cache.insert(decl as *const _, hir_decl);
+                        }
+                        Item::Machine(md) if md.visibility.is_pub() => {
+                            // Synthesise state variants. Unit when stateless,
+                            // Struct otherwise — mirrors how `lookup_variant_ctor`
+                            // dispatches on `HirVariantKind` at struct-init /
+                            // identifier resolution sites.
+                            let state_variants: Vec<HirVariant> = md
+                                .states
+                                .iter()
+                                .map(|state| {
+                                    let kind = if state.fields.is_empty() {
+                                        HirVariantKind::Unit
+                                    } else {
+                                        HirVariantKind::Struct(
+                                            state
+                                                .fields
+                                                .iter()
+                                                .map(|(name, ty)| {
+                                                    (name.clone(), ctx.lower_type(ty))
+                                                })
+                                                .collect(),
+                                        )
+                                    };
+                                    HirVariant {
+                                        name: state.name.clone(),
+                                        kind,
+                                    }
+                                })
+                                .collect();
+                            ctx.enum_variants_by_name
+                                .insert(md.name.clone(), state_variants);
+
+                            // Synthesise event companion variants under the
+                            // `{Name}Event` key, matching the checker's
+                            // generated event-type TypeDef.
+                            let event_type_name = format!("{}Event", md.name);
+                            let event_variants: Vec<HirVariant> = md
+                                .events
+                                .iter()
+                                .map(|event| {
+                                    let kind = if event.fields.is_empty() {
+                                        HirVariantKind::Unit
+                                    } else {
+                                        HirVariantKind::Struct(
+                                            event
+                                                .fields
+                                                .iter()
+                                                .map(|(name, ty)| {
+                                                    (name.clone(), ctx.lower_type(ty))
+                                                })
+                                                .collect(),
+                                        )
+                                    };
+                                    HirVariant {
+                                        name: event.name.clone(),
+                                        kind,
+                                    }
+                                })
+                                .collect();
+                            ctx.enum_variants_by_name
+                                .insert(event_type_name, event_variants);
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
     }
 
@@ -774,7 +1000,36 @@ pub fn lower_program_with_mono_cap(
                             )));
                         }
                         Item::TypeDecl(decl) if decl.visibility.is_pub() => {
-                            items.push(HirItem::TypeDecl(ctx.lower_type_decl(decl, span.clone())));
+                            // Consume the cached `HirTypeDecl` produced by the
+                            // §4b imported-module pre-pass so the emitted item
+                            // shares the same `ItemId` already seeded into
+                            // `enum_item_ids`. Re-lowering here would mint a
+                            // fresh id and silently drift the registry's view
+                            // of the enum from the emitted decl. Non-enum
+                            // TypeDecls (records) were not cached above — fall
+                            // back to lowering them inline.
+                            if let Some(hir_decl) = type_decl_cache.remove(&(decl as *const _)) {
+                                items.push(HirItem::TypeDecl(hir_decl));
+                            } else {
+                                items.push(HirItem::TypeDecl(
+                                    ctx.lower_type_decl(decl, span.clone()),
+                                ));
+                            }
+                        }
+                        // Emit `HirItem::Machine` entries for imported pub
+                        // machines so MIR's `machine_layout_names` set (built
+                        // from `module.items`) includes their names. Without
+                        // this, the MIR `Builder::is_known_actor_runtime_ty`
+                        // classifies `Named { name: "Toggle" }` as
+                        // `ValueClass::Unknown` → `Strategy::UnknownBlocked` →
+                        // `DecisionMapTotal` + `UnknownType` diagnostics, even
+                        // though HIR's `machine_ctor_registry` already resolved
+                        // the qualified ctor reference. The visibility gate
+                        // mirrors the TypeDecl arm above.
+                        Item::Machine(machine) if machine.visibility.is_pub() => {
+                            if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
+                                items.push(HirItem::Machine(hir_machine));
+                            }
                         }
                         // Emit HirItem::ExternFn entries for extern declarations
                         // in imported modules so MIR/codegen sees them in the

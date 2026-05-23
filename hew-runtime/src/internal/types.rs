@@ -329,6 +329,30 @@ pub enum ExitReason {
 }
 
 impl ExitReason {
+    /// Return the canonical slug name for this exit reason.
+    ///
+    /// Stable string identifiers consumed by the profiler/observe event
+    /// surface (`/api/crashes` JSON `trap_kind` field). The "Signal" variant
+    /// collapses every OS-signal exit into a single bucket; downstream
+    /// consumers can still inspect the raw `signal` field for the signal
+    /// number. "Normal" appears when an actor stops cleanly (no trap).
+    #[must_use]
+    pub const fn trap_kind_name(self) -> &'static str {
+        match self {
+            ExitReason::HeapExceeded => "HeapExceeded",
+            ExitReason::IntegerOverflow => "IntegerOverflow",
+            ExitReason::DivideByZero => "DivideByZero",
+            ExitReason::SignedMinDivNegOne => "SignedMinDivNegOne",
+            ExitReason::ShiftOutOfRange => "ShiftOutOfRange",
+            ExitReason::IndexOutOfBounds => "IndexOutOfBounds",
+            ExitReason::ActorSendFailed => "ActorSendFailed",
+            ExitReason::MachineDispatchUnreachable => "MachineDispatchUnreachable",
+            ExitReason::ExhaustivenessFallthrough => "ExhaustivenessFallthrough",
+            ExitReason::Signal(_) => "Signal",
+            ExitReason::Normal => "Normal",
+        }
+    }
+
     /// Convert a raw `error_code` from `hew_actor_get_error` into a named
     /// `ExitReason`.
     #[must_use]

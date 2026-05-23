@@ -330,6 +330,15 @@ pub struct CrashEntry {
     pub actor_id: u64,
     #[serde(default)]
     pub signal: i32,
+    /// Canonical Hew trap discriminator resolved from the raw `signal`
+    /// (`HEW_TRAP_*` band → `"DivideByZero"`, `"IntegerOverflow"`, …; an OS
+    /// signal number → `"Signal"`; clean stop → `"Normal"`).
+    ///
+    /// Populated by `hew_runtime::crash::snapshot_crashes_json` via
+    /// `ExitReason::from_error_code(signal).trap_kind_name()`. Defaults to the
+    /// empty string when a profiler/runtime predating this field is observed.
+    #[serde(default)]
+    pub trap_kind: String,
     #[serde(default)]
     pub msg_type: i32,
     #[serde(default)]
@@ -648,6 +657,48 @@ mod tests {
                 // conn drops here, closing the socket → EOF for reader.
             }
         });
+    }
+
+    // ── crash entry deserialization ──────────────────────────────────────
+
+    /// Pins the `/api/crashes` JSON contract from the consumer side: the
+    /// `trap_kind` field MUST land on `CrashEntry` populated with the
+    /// canonical Hew trap-kind slug (e.g. `"DivideByZero"`), not silently
+    /// dropped or defaulted to the empty string when the producer supplies
+    /// it. Producer-side coverage lives in
+    /// `hew-runtime/tests/crashinfo_observe_event.rs`, which round-trips a
+    /// real actor trap through `snapshot_crashes_json`.
+    #[test]
+    fn crash_entry_deserialises_trap_kind_from_profiler_payload() {
+        // Shape mirrors what `hew_runtime::crash::snapshot_crashes_json`
+        // emits for an actor that trapped with `HEW_TRAP_DIVIDE_BY_ZERO`
+        // (202). The runtime test asserts the exact same shape is
+        // produced by a live trap; this test asserts the observe consumer
+        // parses it correctly.
+        let body = r#"[{"time_s":1.5,"actor_id":42,"signal":202,"trap_kind":"DivideByZero","msg_type":7,"fault_addr":0}]"#;
+        let entries: Vec<CrashEntry> =
+            serde_json::from_str(body).expect("profiler crash payload must parse");
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.actor_id, 42);
+        assert_eq!(entry.signal, 202);
+        assert_eq!(entry.trap_kind, "DivideByZero");
+        assert_eq!(entry.msg_type, 7);
+    }
+
+    /// Pre-existing profiler payloads that do not carry `trap_kind` (e.g.
+    /// older runtimes) must still parse — `trap_kind` is `#[serde(default)]`
+    /// and defaults to the empty string. Prevents a flag-day break on the
+    /// consumer when a downstream tool inspects an older /api/crashes body.
+    #[test]
+    fn crash_entry_trap_kind_defaults_when_field_absent() {
+        let body = r#"[{"time_s":0.0,"actor_id":1,"signal":11,"msg_type":0,"fault_addr":0}]"#;
+        let entries: Vec<CrashEntry> = serde_json::from_str(body).expect("parse");
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0].trap_kind.is_empty(),
+            "missing trap_kind must default to the empty string for forward-compat"
+        );
     }
 
     // ── connect error ─────────────────────────────────────────────────────

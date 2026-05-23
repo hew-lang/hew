@@ -347,9 +347,17 @@ pub fn snapshot_crashes_json() -> String {
                 reason = "nanosecond precision loss is acceptable for display"
             )]
             let time_s = crash.timestamp_ns as f64 / 1_000_000_000.0;
+            // The `signal` field carries either an OS signal number (SIGSEGV,
+            // SIGILL, SIGBUS, SIGFPE, …) or a canonical `HEW_TRAP_*` discriminator
+            // (200-band) depending on the crash path. `trap_kind` is the resolved
+            // human-readable slug derived through `ExitReason::from_error_code`,
+            // so downstream observe/profiler consumers no longer need their own
+            // copy of the trap-code → name table.
+            let trap_kind =
+                crate::internal::types::ExitReason::from_error_code(crash.signal).trap_kind_name();
             let _ = write!(
                 json,
-                r#"{{"time_s":{time_s},"actor_id":{},"signal":{},"msg_type":{},"fault_addr":{}}}"#,
+                r#"{{"time_s":{time_s},"actor_id":{},"signal":{},"trap_kind":"{trap_kind}","msg_type":{},"fault_addr":{}}}"#,
                 crash.actor_id, crash.signal, crash.msg_type, crash.fault_addr,
             );
         }

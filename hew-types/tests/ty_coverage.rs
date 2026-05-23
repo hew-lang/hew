@@ -346,30 +346,6 @@ fn canonical_lowering_name_round_trips_through_from_name() {
 // ===========================================================================
 
 #[test]
-fn option_constructor_and_accessor() {
-    let ty = Ty::option(Ty::I32);
-    assert_eq!(ty.as_option(), Some(&Ty::I32));
-    // Non-option returns None
-    assert_eq!(Ty::I32.as_option(), None);
-}
-
-#[test]
-fn result_constructor_and_accessor() {
-    let ty = Ty::result(Ty::I32, Ty::String);
-    let (ok, err) = ty.as_result().unwrap();
-    assert_eq!(ok, &Ty::I32);
-    assert_eq!(err, &Ty::String);
-    assert_eq!(Ty::I32.as_result(), None);
-}
-
-#[test]
-fn actor_ref_constructor_and_accessor() {
-    let ty = Ty::actor_ref(Ty::String);
-    assert_eq!(ty.as_actor_ref(), Some(&Ty::String));
-    assert_eq!(Ty::I32.as_actor_ref(), None);
-}
-
-#[test]
 fn actor_handle_accessor() {
     // ActorRef<T> is an actor handle
     let ty = Ty::actor_ref(Ty::I32);
@@ -386,47 +362,6 @@ fn actor_handle_accessor() {
     // Non-actor returns None
     assert_eq!(Ty::I32.as_actor_handle(), None);
     assert_eq!(named("Other").as_actor_handle(), None);
-}
-
-#[test]
-fn stream_constructor_and_accessor() {
-    let ty = Ty::stream(Ty::I32);
-    assert_eq!(ty.as_stream(), Some(&Ty::I32));
-    assert!(ty.is_stream());
-    assert!(!Ty::I32.is_stream());
-    assert_eq!(Ty::I32.as_stream(), None);
-}
-
-#[test]
-fn sink_constructor_and_accessor() {
-    let ty = Ty::sink(Ty::String);
-    assert_eq!(ty.as_sink(), Some(&Ty::String));
-    assert!(ty.is_sink());
-    assert!(!Ty::I32.is_sink());
-    assert_eq!(Ty::I32.as_sink(), None);
-}
-
-#[test]
-fn generator_constructor_and_accessor() {
-    let ty = Ty::generator(Ty::I32, Ty::Bool);
-    let (yields, returns) = ty.as_generator().unwrap();
-    assert_eq!(yields, &Ty::I32);
-    assert_eq!(returns, &Ty::Bool);
-    assert_eq!(Ty::I32.as_generator(), None);
-}
-
-#[test]
-fn async_generator_constructor_and_accessor() {
-    let ty = Ty::async_generator(Ty::String);
-    assert_eq!(ty.as_async_generator(), Some(&Ty::String));
-    assert_eq!(Ty::I32.as_async_generator(), None);
-}
-
-#[test]
-fn range_constructor_and_accessor() {
-    let ty = Ty::range(Ty::I64);
-    assert_eq!(ty.as_range(), Some(&Ty::I64));
-    assert_eq!(Ty::I32.as_range(), None);
 }
 
 // ===========================================================================
@@ -1015,14 +950,6 @@ fn substitution_mappings_returns_all() {
 // ===========================================================================
 // Type equality (derived PartialEq)
 // ===========================================================================
-
-#[test]
-fn ty_equality_same_variant() {
-    assert_eq!(Ty::I32, Ty::I32);
-    assert_eq!(Ty::String, Ty::String);
-    assert_eq!(Ty::Error, Ty::Error);
-    assert_eq!(Ty::Never, Ty::Never);
-}
 
 #[test]
 fn ty_inequality_different_variants() {

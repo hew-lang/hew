@@ -80,7 +80,7 @@ fn eval_inline_expression_succeeds() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_file_in_repl_context_succeeds() {
     require_codegen();
@@ -109,7 +109,7 @@ fn eval_file_in_repl_context_succeeds() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_file_resolves_sibling_imports_relative_to_file_path() {
     require_codegen();
@@ -141,7 +141,7 @@ fn eval_file_resolves_sibling_imports_relative_to_file_path() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_stdin_in_repl_context_succeeds() {
     require_codegen();
@@ -159,7 +159,7 @@ fn eval_stdin_in_repl_context_succeeds() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_stdin_file_mode_resolves_imports_from_cwd() {
     require_codegen();
@@ -339,7 +339,7 @@ fn repl_type_command_surfaces_diagnostic_when_no_type_info() {
     assert!(!stderr.contains("unknown"), "stderr: {stderr}");
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_timeout_exit_code_is_non_zero() {
     require_codegen();
@@ -367,7 +367,7 @@ fn eval_timeout_exit_code_is_non_zero() {
     assert!(stderr.contains("Error: evaluation timed out after 1s"));
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on println builtin overload for scope/Unit context"]
 #[test]
 fn eval_large_stdout_completes_before_timeout() {
     require_codegen();
@@ -406,7 +406,7 @@ fn eval_large_stdout_completes_before_timeout() {
     assert!(stdout.ends_with("line\n"), "stdout: {stdout}");
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation in MIR codegen (spam_err is called with identity monomorphic but HIR doesn't support function references in scope context)"]
 #[test]
 fn eval_large_stderr_completes_before_timeout() {
     require_codegen();
@@ -441,7 +441,7 @@ fn eval_large_stderr_completes_before_timeout() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_repl_timeout_is_reported_and_quit_still_works() {
     require_codegen();
@@ -819,7 +819,7 @@ fn eval_repl_load_valid_file_succeeds() {
     assert!(stdout.contains("42\n"), "stdout: {stdout}");
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_repl_load_resolves_sibling_imports_relative_to_file_path() {
     require_codegen();
@@ -1217,7 +1217,7 @@ fn eval_wasm_fast_typecheck_rejects_for_await_receiver() {
 // (Rust's panic convention), which is distinct from the CLI's own error exit
 // code (1) and therefore makes propagation detectable.
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_inline_runtime_failure_exits_with_child_exit_code() {
     require_codegen();
@@ -1239,7 +1239,7 @@ fn eval_inline_runtime_failure_exits_with_child_exit_code() {
     );
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_inline_runtime_failure_surfaces_child_stderr() {
     require_codegen();
@@ -1258,7 +1258,7 @@ fn eval_inline_runtime_failure_surfaces_child_stderr() {
     );
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_file_runtime_failure_exits_with_child_exit_code() {
     require_codegen();
@@ -1287,7 +1287,7 @@ fn eval_file_runtime_failure_exits_with_child_exit_code() {
     );
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_file_runtime_failure_preserves_pre_failure_stdout() {
     require_codegen();
@@ -1502,7 +1502,7 @@ fn eval_json_ok_inline_expression() {
     assert_eq!(v["diagnostics"], "", "diagnostics must be empty on ok: {v}");
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_json_runtime_failure() {
     require_codegen();
@@ -1544,7 +1544,7 @@ fn eval_json_runtime_failure() {
     );
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_json_runtime_failure_preserves_stdout() {
     require_codegen();
@@ -1871,7 +1871,7 @@ fn cross_chunk_failure_ctx(output: &Output, path: &Path) -> String {
     )
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
     require_codegen();
@@ -1904,7 +1904,7 @@ fn eval_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
     );
 }
 
-#[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
     require_codegen();

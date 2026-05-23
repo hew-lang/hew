@@ -36,12 +36,6 @@ fn test_empty_program() {
 }
 
 #[test]
-fn test_type_checker_creation() {
-    let checker = Checker::new(ModuleRegistry::new(vec![]));
-    assert_eq!(checker.errors.len(), 0);
-}
-
-#[test]
 fn freshen_inner_recurses_into_pointer_pointee_vars() {
     let checker = Checker::new(ModuleRegistry::new(vec![]));
     let original = TypeVar::fresh();

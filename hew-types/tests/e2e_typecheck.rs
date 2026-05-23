@@ -299,6 +299,108 @@ fn consume(s: Stream<string>) {
     );
 }
 
+/// V0a: built-in Vec methods (`push`/`pop`/`get`/`set`/`len`/`clear`/
+/// `is_empty`/`contains`/`remove`/`append`/`clone`) must populate
+/// `method_call_rewrites` with the element-typed `hew_vec_*` runtime symbol
+/// so HIR lowering can rewrite the call to a free-function dispatch. Each
+/// assertion below corresponds to one arm in `check_vec_method`; together
+/// they exercise the full V0a surface.
+#[test]
+fn method_call_rewrites_record_vec_builtin_runtime_dispatch() {
+    fn has_rewrite(output: &hew_types::TypeCheckOutput, expected_symbol: &str) -> bool {
+        output.method_call_rewrites.values().any(|rewrite| {
+            matches!(
+                rewrite,
+                hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+                    if c_symbol == expected_symbol
+            )
+        })
+    }
+
+    // i64 element: covers push/pop/get/set/contains/remove-by-index + the
+    // element-agnostic len/is_empty/clear/clone/append family in one program.
+    let output = typecheck_inline(
+        r"
+fn drive(v: Vec<i64>, other: Vec<i64>) {
+    v.push(1);
+    let _ = v.pop();
+    let _ = v.get(0);
+    v.set(0, 42);
+    let _ = v.contains(1);
+    let _ = v.is_empty();
+    let _ = v.len();
+    v.clear();
+    let _ = v.clone();
+    v.append(other);
+    v.remove(0);
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck for Vec<i64>, got: {:#?}",
+        output.errors
+    );
+    for expected in [
+        "hew_vec_push_i64",
+        "hew_vec_pop_i64",
+        "hew_vec_get_i64",
+        "hew_vec_set_i64",
+        "hew_vec_contains_i64",
+        "hew_vec_is_empty",
+        "hew_vec_clear",
+        "hew_vec_clone",
+        "hew_vec_append",
+        "hew_vec_remove_at",
+    ] {
+        assert!(
+            has_rewrite(&output, expected),
+            "expected method_call_rewrites to include `{expected}` for Vec<i64>, got: {:?}",
+            output.method_call_rewrites
+        );
+    }
+    // `len` is wired through the catalog overload key (`len_vec`), not a raw
+    // `hew_vec_*` symbol; assert that path too so a future refactor that
+    // moves it onto `resolve_vec_method` does not silently regress the
+    // catalog-driven dispatch.
+    assert!(
+        has_rewrite(&output, "len_vec"),
+        "expected `len_vec` catalog rewrite for `Vec::len`, got: {:?}",
+        output.method_call_rewrites
+    );
+
+    // String element: per-elem-type symbols differ for push/pop/get/set/contains.
+    let output_str = typecheck_inline(
+        r#"
+fn drive(v: Vec<string>) {
+    v.push("a");
+    let _ = v.pop();
+    let _ = v.get(0);
+    v.set(0, "b");
+    let _ = v.contains("a");
+}
+"#,
+    );
+    assert!(
+        output_str.errors.is_empty(),
+        "expected clean typecheck for Vec<string>, got: {:#?}",
+        output_str.errors
+    );
+    for expected in [
+        "hew_vec_push_str",
+        "hew_vec_pop_str",
+        "hew_vec_get_str",
+        "hew_vec_set_str",
+        "hew_vec_contains_str",
+    ] {
+        assert!(
+            has_rewrite(&output_str, expected),
+            "expected method_call_rewrites to include `{expected}` for Vec<string>, got: {:?}",
+            output_str.method_call_rewrites
+        );
+    }
+}
+
 #[test]
 fn method_call_rewrites_record_deferred_stream_lowering() {
     let output = typecheck_inline(

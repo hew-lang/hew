@@ -49,6 +49,98 @@ pub fn resolve_stream_method(
     resolve_builtin_method_symbol(kind, method, None, element_type)
 }
 
+/// Map a `Vec<T>` element type to its monomorphic runtime symbol suffix.
+///
+/// Suffixes correspond to the `hew_vec_*_<suffix>` entry points exported by
+/// `hew-runtime/src/vec.rs`. Returns `None` for element kinds the runtime
+/// has no monomorphic shim for (literal placeholders, `Bool`/`Char`, tuples,
+/// inference variables, etc.); callers should leave the call site absent
+/// from `method_call_rewrites` in that case so HIR/codegen fail closed.
+#[must_use]
+pub fn vec_element_runtime_suffix(ty: &crate::Ty) -> Option<&'static str> {
+    match ty {
+        crate::Ty::I32 | crate::Ty::U32 => Some("i32"),
+        crate::Ty::I64 | crate::Ty::U64 => Some("i64"),
+        crate::Ty::F64 => Some("f64"),
+        crate::Ty::String => Some("str"),
+        // Heap-handle / nominal element types share the pointer-shaped ABI.
+        crate::Ty::Named { .. } => Some("ptr"),
+        _ => None,
+    }
+}
+
+/// Resolve a `Vec<T>` method call to its `hew_*` C-ABI runtime symbol.
+///
+/// Mirrors [`resolve_channel_method`] / [`resolve_stream_method`]: the checker
+/// calls this when wiring `method_call_rewrites`, and `None` means "no runtime
+/// symbol for this (method, element-type) pair — leave the rewrite entry
+/// absent so the downstream HIR/MIR/codegen fail closed".
+///
+/// In-scope V0a methods (per the vec-iterator substrate plan):
+/// - Monomorphic: `len`, `is_empty`, `clear`, `clone`, `append`/`extend`,
+///   `remove` (by index — uses `hew_vec_remove_at`).
+/// - Element-typed: `push`, `pop`, `get`, `set`, `contains` (the last has no
+///   pointer-shaped overload in the runtime today).
+///
+/// Out of V0a: `map`, `filter`, `fold`, `iter` (closure substrate / V0b
+/// dependencies), and any element type the runtime has no monomorphic shim
+/// for (returns `None`).
+#[must_use]
+pub fn resolve_vec_method(method: &str, elem_ty: &crate::Ty) -> Option<&'static str> {
+    match method {
+        "len" => Some("hew_vec_len"),
+        "is_empty" => Some("hew_vec_is_empty"),
+        "clear" => Some("hew_vec_clear"),
+        "clone" => Some("hew_vec_clone"),
+        "append" | "extend" => Some("hew_vec_append"),
+        // `Vec::remove(i64)` removes by index, not by value. The runtime entry
+        // is `hew_vec_remove_at`; the by-value `hew_vec_remove_<elem>` family
+        // backs a different (currently unbound) surface and is not wired here.
+        "remove" => Some("hew_vec_remove_at"),
+        "push" => match vec_element_runtime_suffix(elem_ty)? {
+            "i32" => Some("hew_vec_push_i32"),
+            "i64" => Some("hew_vec_push_i64"),
+            "f64" => Some("hew_vec_push_f64"),
+            "str" => Some("hew_vec_push_str"),
+            "ptr" => Some("hew_vec_push_ptr"),
+            _ => None,
+        },
+        "pop" => match vec_element_runtime_suffix(elem_ty)? {
+            "i32" => Some("hew_vec_pop_i32"),
+            "i64" => Some("hew_vec_pop_i64"),
+            "f64" => Some("hew_vec_pop_f64"),
+            "str" => Some("hew_vec_pop_str"),
+            "ptr" => Some("hew_vec_pop_ptr"),
+            _ => None,
+        },
+        "get" => match vec_element_runtime_suffix(elem_ty)? {
+            "i32" => Some("hew_vec_get_i32"),
+            "i64" => Some("hew_vec_get_i64"),
+            "f64" => Some("hew_vec_get_f64"),
+            "str" => Some("hew_vec_get_str"),
+            "ptr" => Some("hew_vec_get_ptr"),
+            _ => None,
+        },
+        "set" => match vec_element_runtime_suffix(elem_ty)? {
+            "i32" => Some("hew_vec_set_i32"),
+            "i64" => Some("hew_vec_set_i64"),
+            "f64" => Some("hew_vec_set_f64"),
+            "str" => Some("hew_vec_set_str"),
+            "ptr" => Some("hew_vec_set_ptr"),
+            _ => None,
+        },
+        "contains" => match vec_element_runtime_suffix(elem_ty)? {
+            "i32" => Some("hew_vec_contains_i32"),
+            "i64" => Some("hew_vec_contains_i64"),
+            "f64" => Some("hew_vec_contains_f64"),
+            "str" => Some("hew_vec_contains_str"),
+            // No `hew_vec_contains_ptr` in the runtime today — fail closed.
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Returns the MLIR representation for a handle type.
 ///
 /// Most handle types are opaque pointers (`"handle"`).
@@ -186,6 +278,140 @@ mod tests {
             Some("hew_sink_write_string")
         );
         assert_eq!(resolve_stream_method(SINK, "send", Some("str")), None);
+    }
+
+    // ── resolve_vec_method ───────────────────────────────────────────────────
+
+    #[test]
+    fn vec_monomorphic_methods_resolve_regardless_of_element_type() {
+        use crate::Ty;
+        // These do not depend on element type — the runtime exports a single
+        // entry point shared across every Vec<T> instantiation.
+        for (method, expected) in [
+            ("len", "hew_vec_len"),
+            ("is_empty", "hew_vec_is_empty"),
+            ("clear", "hew_vec_clear"),
+            ("clone", "hew_vec_clone"),
+            ("append", "hew_vec_append"),
+            ("extend", "hew_vec_append"),
+            ("remove", "hew_vec_remove_at"),
+        ] {
+            assert_eq!(
+                resolve_vec_method(method, &Ty::I64),
+                Some(expected),
+                "Vec::{method} should resolve to {expected}"
+            );
+            // Element-agnostic methods resolve even when the element is a
+            // fresh inference variable — the runtime symbol does not depend
+            // on suffix in that case.
+            assert_eq!(
+                resolve_vec_method(method, &Ty::Var(crate::ty::TypeVar::fresh()),),
+                Some(expected),
+                "Vec::{method} should still resolve for unresolved element",
+            );
+        }
+    }
+
+    #[test]
+    fn vec_element_typed_methods_resolve_per_runtime_abi() {
+        use crate::Ty;
+        // push
+        assert_eq!(
+            resolve_vec_method("push", &Ty::I32),
+            Some("hew_vec_push_i32")
+        );
+        assert_eq!(
+            resolve_vec_method("push", &Ty::U32),
+            Some("hew_vec_push_i32")
+        );
+        assert_eq!(
+            resolve_vec_method("push", &Ty::I64),
+            Some("hew_vec_push_i64")
+        );
+        assert_eq!(
+            resolve_vec_method("push", &Ty::U64),
+            Some("hew_vec_push_i64")
+        );
+        assert_eq!(
+            resolve_vec_method("push", &Ty::F64),
+            Some("hew_vec_push_f64")
+        );
+        assert_eq!(
+            resolve_vec_method("push", &Ty::String),
+            Some("hew_vec_push_str")
+        );
+        // pop
+        assert_eq!(resolve_vec_method("pop", &Ty::I64), Some("hew_vec_pop_i64"));
+        assert_eq!(
+            resolve_vec_method("pop", &Ty::String),
+            Some("hew_vec_pop_str")
+        );
+        // get
+        assert_eq!(resolve_vec_method("get", &Ty::I64), Some("hew_vec_get_i64"));
+        assert_eq!(resolve_vec_method("get", &Ty::F64), Some("hew_vec_get_f64"));
+        // set
+        assert_eq!(resolve_vec_method("set", &Ty::I32), Some("hew_vec_set_i32"));
+        assert_eq!(
+            resolve_vec_method("set", &Ty::String),
+            Some("hew_vec_set_str")
+        );
+        // contains
+        assert_eq!(
+            resolve_vec_method("contains", &Ty::I64),
+            Some("hew_vec_contains_i64")
+        );
+        assert_eq!(
+            resolve_vec_method("contains", &Ty::String),
+            Some("hew_vec_contains_str")
+        );
+
+        // Pointer-shaped (Named) elements share one runtime symbol per method,
+        // except `contains` which the runtime does not expose for ptr today.
+        let named = Ty::Named {
+            name: "Foo".into(),
+            args: vec![],
+            builtin: None,
+        };
+        assert_eq!(resolve_vec_method("push", &named), Some("hew_vec_push_ptr"));
+        assert_eq!(resolve_vec_method("pop", &named), Some("hew_vec_pop_ptr"));
+        assert_eq!(resolve_vec_method("get", &named), Some("hew_vec_get_ptr"));
+        assert_eq!(resolve_vec_method("set", &named), Some("hew_vec_set_ptr"));
+        assert_eq!(resolve_vec_method("contains", &named), None);
+    }
+
+    #[test]
+    fn vec_element_typed_methods_fail_closed_for_unresolved_element() {
+        use crate::Ty;
+        // Inference variable: no monomorphic suffix can be chosen — return
+        // None so the caller leaves method_call_rewrites absent and HIR
+        // fails closed.
+        let var = Ty::Var(crate::ty::TypeVar::fresh());
+        for method in ["push", "pop", "get", "set", "contains"] {
+            assert_eq!(
+                resolve_vec_method(method, &var),
+                None,
+                "Vec::{method} must not resolve when element type is a Var",
+            );
+        }
+        // Bool/Char are not in the runtime ABI today.
+        for elem in [Ty::Bool, Ty::Char] {
+            for method in ["push", "pop", "get", "set", "contains"] {
+                assert_eq!(
+                    resolve_vec_method(method, &elem),
+                    None,
+                    "Vec::{method} must not resolve for {elem:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vec_unsupported_methods_return_none() {
+        use crate::Ty;
+        // map/filter/fold/iter are explicitly out of V0a (closure substrate).
+        for method in ["map", "filter", "fold", "iter", "nonexistent"] {
+            assert_eq!(resolve_vec_method(method, &Ty::I64), None);
+        }
     }
 
     // ── constants match expected string values ──────────────────────────────

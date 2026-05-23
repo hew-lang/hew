@@ -1890,11 +1890,19 @@ impl Checker {
                     self.check_against(expr, sp, &elem_ty);
                 }
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("push", &resolved_elem) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 Ty::Unit
             }
             "pop" => {
                 self.check_arity(args, 0, "`Vec::pop`", span);
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("pop", &resolved_elem) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 elem_ty.clone()
             }
             "len" => {
@@ -1908,6 +1916,10 @@ impl Checker {
                     self.check_against(expr, sp, &Ty::I64);
                 }
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method(method, &resolved_elem) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 elem_ty.clone()
             }
             "contains" => {
@@ -1915,15 +1927,32 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &elem_ty);
                 }
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if let Some(c_symbol) =
+                    crate::stdlib::resolve_vec_method("contains", &resolved_elem)
+                {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 Ty::Bool
             }
-            "is_empty" => Ty::Bool,
+            "is_empty" => {
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("is_empty", &elem_ty) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
+                Ty::Bool
+            }
             "clear" => {
                 self.check_arity(args, 0, "`Vec::clear`", span);
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("clear", &elem_ty) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 Ty::Unit
             }
             "clone" => {
                 self.check_arity(args, 0, "`Vec::clone`", span);
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("clone", &elem_ty) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 resolved.clone()
             }
             "set" => {
@@ -1936,6 +1965,10 @@ impl Checker {
                     self.check_against(expr, sp, &elem_ty);
                 }
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("set", &resolved_elem) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 Ty::Unit
             }
             "append" | "extend" => {
@@ -1944,6 +1977,9 @@ impl Checker {
                     self.check_against(expr, sp, receiver_ty);
                 }
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method(method, &elem_ty) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 Ty::Unit
             }
             "join" => {

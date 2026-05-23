@@ -23,7 +23,7 @@ use common::typecheck;
 
 fn has_rewrite(output: &hew_types::TypeCheckOutput, symbol: &str) -> bool {
     output.method_call_rewrites.values().any(
-        |rw| matches!(rw, MethodCallRewrite::RewriteToFunction { c_symbol } if c_symbol == symbol),
+        |rw| matches!(rw, MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == symbol),
     )
 }
 

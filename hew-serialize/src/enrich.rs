@@ -1903,7 +1903,7 @@ fn enrich_method_call(
 
     // Rewrite module-qualified stdlib calls: e.g. os.pid() → hew_os_pid()
     if let Expr::Identifier(module_name) = &receiver.0 {
-        if let Some(MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol }) =
+        if let Some(MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }) =
             tco.method_call_rewrites.get(&method_call_key)
         {
             let old_args = std::mem::take(args);
@@ -1951,7 +1951,7 @@ fn enrich_method_call(
     let receiver_ty = tco.expr_types.get(&key);
     if let Some(rewrite) = tco.method_call_rewrites.get(&method_call_key) {
         match rewrite {
-            MethodCallRewrite::RewriteToFunction { c_symbol } => {
+            MethodCallRewrite::RewriteToFunction { c_symbol, .. } => {
                 let c_symbol =
                     refine_channel_runtime_rewrite(c_symbol, receiver_ty).unwrap_or(c_symbol);
                 let span = expr.1.clone();
@@ -1976,7 +1976,7 @@ fn enrich_method_call(
                     is_tail_call: false,
                 };
             }
-            MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol } => {
+            MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. } => {
                 let old_args = std::mem::take(args);
                 expr.0 = make_direct_call_expr(receiver.1.clone(), c_symbol.clone(), old_args);
             }
@@ -4797,6 +4797,7 @@ mod tests {
             },
             hew_types::MethodCallRewrite::RewriteToFunction {
                 c_symbol: c_symbol.to_string(),
+                elem_ty: None,
             },
         );
     }
@@ -4817,6 +4818,7 @@ mod tests {
             },
             hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction {
                 c_symbol: c_symbol.to_string(),
+                elem_ty: None,
             },
         );
     }

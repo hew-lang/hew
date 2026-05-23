@@ -391,6 +391,7 @@ impl Checker {
                     span_key,
                     MethodCallRewrite::RewriteToFunction {
                         c_symbol: c_symbol.to_string(),
+                        elem_ty: None,
                     },
                 );
             } else {
@@ -512,6 +513,7 @@ impl Checker {
             span,
             MethodCallRewrite::RewriteToFunction {
                 c_symbol: c_symbol.into(),
+                elem_ty: None,
             },
         );
     }
@@ -567,6 +569,7 @@ impl Checker {
             span,
             MethodCallRewrite::RewriteModuleQualifiedToFunction {
                 c_symbol: c_symbol.into(),
+                elem_ty: None,
             },
         );
     }

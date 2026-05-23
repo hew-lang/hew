@@ -3176,6 +3176,7 @@ mod tests {
                 },
                 hew_types::MethodCallRewrite::RewriteToFunction {
                     c_symbol: "hew_tcp_close".to_string(),
+                    elem_ty: None,
                 },
             )]),
             numeric_method_lowerings: HashMap::new(),

@@ -5991,7 +5991,7 @@ impl LowerCtx {
         }
         let rewrite = self.method_call_rewrites.get(&key).cloned();
         match rewrite {
-            Some(MethodCallRewrite::RewriteToFunction { c_symbol }) => {
+            Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. }) => {
                 // Lower receiver + args, then prepend receiver as first argument.
                 let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
                 let mut lowered_args = vec![lowered_receiver];
@@ -6032,7 +6032,7 @@ impl LowerCtx {
                     ret_ty,
                 )
             }
-            Some(MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol }) => {
+            Some(MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }) => {
                 // Module-qualified direct call: the receiver expression is the
                 // module identifier, not a value.  Lower the args only — do
                 // NOT prepend the receiver (LESSONS

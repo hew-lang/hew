@@ -770,6 +770,7 @@ fn checker_output_contract_prunes_orphaned_method_call_metadata() {
         SpanKey { start: 30, end: 40 },
         MethodCallRewrite::RewriteToFunction {
             c_symbol: "hew_bar_method".to_string(),
+            elem_ty: None,
         },
     );
 
@@ -926,7 +927,7 @@ fn main() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol }
+            MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }
                 if c_symbol == "hew_file_read"
         )),
         "expected checker-owned module-qualified rewrite metadata, got: {:?}",

@@ -814,13 +814,24 @@ pub enum MethodCallReceiverKind {
 pub enum MethodCallRewrite {
     /// Rewrite a receiver-based method call to a runtime function and inject
     /// the receiver as the first argument.
+    ///
+    /// `elem_ty` is a forward-compatible carry-channel for the element type
+    /// of generic containers (e.g. `Vec<T>`). It is currently always `None`
+    /// — the per-suffix C symbol (`hew_vec_get_f64`) still encodes the
+    /// element type. A later slice will collapse those per-suffix symbols
+    /// to a single generic symbol (`hew_vec_get_generic`) and route the
+    /// element type through this field instead.
     RewriteToFunction {
         c_symbol: String,
+        elem_ty: Option<crate::resolved_ty::ResolvedTy>,
     },
     /// Rewrite a module-qualified stdlib call directly to a runtime function
     /// without injecting the receiver/module identifier as an argument.
+    ///
+    /// See `RewriteToFunction::elem_ty` for the semantics of `elem_ty`.
     RewriteModuleQualifiedToFunction {
         c_symbol: String,
+        elem_ty: Option<crate::resolved_ty::ResolvedTy>,
     },
     DeferToLowering,
 }

@@ -1,0 +1,19 @@
+type Holder<T> {
+    value: T;
+}
+
+impl<T> Holder<T> where T: Display {
+    fn show(holder: Holder<T>) {
+        println(holder.value);
+    }
+}
+
+fn impl_where_clause_probe() -> i64 {
+    let holder = Holder { value: 7 };
+    holder.show();
+    7
+}
+
+fn impl_where_clause_use() -> i64 {
+    impl_where_clause_probe()
+}

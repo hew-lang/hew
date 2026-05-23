@@ -179,8 +179,15 @@ impl Checker {
                                 // Parallel to the TypeDecl arm: seed the machine's
                                 // name so orphan-rule and locally_non_generic checks
                                 // inside the body pass see it as locally-defined.
+                                // Also seed the synthesised `<Name>Event` companion
+                                // type so event-typed parameters and bare event
+                                // ctors in imported machine modules resolve as
+                                // locally-non-generic.
                                 self.local_type_defs.insert(md.name.clone());
                                 self.source_type_defs.insert(md.name.clone());
+                                let event_type_name = format!("{}Event", md.name);
+                                self.local_type_defs.insert(event_type_name.clone());
+                                self.source_type_defs.insert(event_type_name);
                             }
                             Item::Trait(tr) => {
                                 self.local_trait_defs.insert(tr.name.clone());

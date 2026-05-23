@@ -886,9 +886,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         .iter()
                         .map(|s| crate::model::MachineVariantLayout {
                             name: s.name.clone(),
-                            // Slice 5: populate from HirMachineState.fields in
-                            // declaration order. Empty for zero-payload states.
-                            field_tys: s.fields.iter().map(|f| f.ty.clone()).collect(),
+                            field_tys: s
+                                .fields
+                                .iter()
+                                .map(|f| default_machine_type_params_to_i64(&f.ty, md))
+                                .collect(),
                         })
                         .collect(),
                     events: md
@@ -896,7 +898,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         .iter()
                         .map(|e| crate::model::MachineVariantLayout {
                             name: e.name.clone(),
-                            field_tys: e.fields.iter().map(|f| f.ty.clone()).collect(),
+                            field_tys: e
+                                .fields
+                                .iter()
+                                .map(|f| default_machine_type_params_to_i64(&f.ty, md))
+                                .collect(),
                         })
                         .collect(),
                 });
@@ -1664,21 +1670,14 @@ fn synthesize_machine_step_fn(
     // For generic machines, build the self-type with each type-param as a
     // free `ResolvedTy::Named` arg (the same convention as registration in
     // `hew-types`). Non-generic machines have an empty args vec.
-    let type_args: Vec<ResolvedTy> = md
-        .type_params
-        .iter()
-        .map(|param| ResolvedTy::Named {
-            name: param.clone(),
-            args: vec![],
-        })
-        .collect();
+    let type_args: Vec<ResolvedTy> = md.type_params.iter().map(|_| ResolvedTy::I64).collect();
     let self_ty = ResolvedTy::Named {
         name: md.name.clone(),
         args: type_args.clone(),
     };
     let event_ty = ResolvedTy::Named {
         name: format!("{}Event", md.name),
-        args: vec![],
+        args: type_args.clone(),
     };
     let return_ty = self_ty.clone();
 
@@ -1708,6 +1707,9 @@ fn synthesize_machine_step_fn(
         current_function_symbol: emit_name.clone(),
         ..Builder::default()
     };
+    for param in &md.type_params {
+        builder.subst.insert(param.clone(), ResolvedTy::I64);
+    }
 
     // Allocate parameter locals. `self` → Local(0), `event` → Local(1).
     let self_place = builder.alloc_local(self_ty.clone());
@@ -1864,6 +1866,7 @@ fn synthesize_machine_step_fn(
                 state_idx,
                 transition,
                 (self_binding, self_place),
+                (event_binding, event_place),
             );
             builder.finish_current_block(Terminator::Return);
         }
@@ -1960,8 +1963,10 @@ fn emit_machine_step_transition_return(
     state_idx: usize,
     transition: &HirMachineTransition,
     self_info: (BindingId, Place),
+    event_info: (BindingId, Place),
 ) {
     let (self_binding, self_place) = self_info;
+    let (event_binding, event_place) = event_info;
 
     let target_idx = md
         .states
@@ -1978,14 +1983,26 @@ fn emit_machine_step_transition_return(
     }
 
     let prev_machine_self = builder.current_machine_self_binding.replace(self_binding);
+    let prev_machine_event = builder.current_machine_event_binding.replace(event_binding);
     let prev_self_place = builder.binding_locals.insert(self_binding, self_place);
-    let next = builder.lower_value(&transition.body);
+    let prev_event_place = builder.binding_locals.insert(event_binding, event_place);
+    let next = if is_machine_state_passthrough(&transition.body) {
+        Some(self_place)
+    } else {
+        builder.lower_value(&transition.body)
+    };
     if let Some(place) = prev_self_place {
         builder.binding_locals.insert(self_binding, place);
     } else {
         builder.binding_locals.remove(&self_binding);
     }
+    if let Some(place) = prev_event_place {
+        builder.binding_locals.insert(event_binding, place);
+    } else {
+        builder.binding_locals.remove(&event_binding);
+    }
     builder.current_machine_self_binding = prev_machine_self;
+    builder.current_machine_event_binding = prev_machine_event;
 
     let Some(next) = next else {
         builder.diagnostics.push(MirDiagnostic {
@@ -2034,6 +2051,74 @@ fn emit_machine_step_transition_return(
         dest: Place::ReturnSlot,
         src: next,
     });
+}
+
+fn is_machine_state_passthrough(expr: &hew_hir::HirExpr) -> bool {
+    match &expr.kind {
+        HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(_),
+        } if name == "state" => true,
+        HirExprKind::Block(block) => block
+            .tail
+            .as_deref()
+            .is_some_and(is_machine_state_passthrough),
+        _ => false,
+    }
+}
+
+fn default_machine_type_params_to_i64(ty: &ResolvedTy, md: &HirMachineDecl) -> ResolvedTy {
+    match ty {
+        ResolvedTy::Named { name, args } if args.is_empty() && md.type_params.contains(name) => {
+            ResolvedTy::I64
+        }
+        ResolvedTy::Named { name, args } => ResolvedTy::Named {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|arg| default_machine_type_params_to_i64(arg, md))
+                .collect(),
+        },
+        ResolvedTy::Tuple(elems) => ResolvedTy::Tuple(
+            elems
+                .iter()
+                .map(|elem| default_machine_type_params_to_i64(elem, md))
+                .collect(),
+        ),
+        ResolvedTy::Function { params, ret } => ResolvedTy::Function {
+            params: params
+                .iter()
+                .map(|param| default_machine_type_params_to_i64(param, md))
+                .collect(),
+            ret: Box::new(default_machine_type_params_to_i64(ret, md)),
+        },
+        ResolvedTy::Closure {
+            params,
+            ret,
+            captures,
+        } => ResolvedTy::Closure {
+            params: params
+                .iter()
+                .map(|param| default_machine_type_params_to_i64(param, md))
+                .collect(),
+            ret: Box::new(default_machine_type_params_to_i64(ret, md)),
+            captures: captures
+                .iter()
+                .map(|capture| default_machine_type_params_to_i64(capture, md))
+                .collect(),
+        },
+        ResolvedTy::Pointer {
+            is_mutable,
+            pointee,
+        } => ResolvedTy::Pointer {
+            is_mutable: *is_mutable,
+            pointee: Box::new(default_machine_type_params_to_i64(pointee, md)),
+        },
+        ResolvedTy::Task(inner) => {
+            ResolvedTy::Task(Box::new(default_machine_type_params_to_i64(inner, md)))
+        }
+        other => other.clone(),
+    }
 }
 
 fn emit_machine_transition_out_drops(
@@ -2642,6 +2727,7 @@ fn collect_unknown_self_fields_in_expr(
         | HirExprKind::AwaitTask { .. }
         | HirExprKind::ContextReader { .. }
         | HirExprKind::MachineFieldAccess { .. }
+        | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_unknown_self_fields_in_expr(left, state_fields, seen, unknown);
@@ -3171,7 +3257,7 @@ fn push_unknown_type_diagnostics(
             || matches!(name.as_str(), "Vec" | "HashMap" | "HashSet")
             || builder.actor_layouts.contains_key(&name)
             || builder.supervisor_layout_map.contains_key(&name)
-            || builder.machine_layout_names.contains(&name)
+            || machine_layout_name_matches(&builder.machine_layout_names, &name)
             // `Generator<Y, R>` is the checker-supplied type for gen-block
             // expressions. The S3a shell uses it as a placeholder; S3b/S4
             // replace the shell with a real state-record type. Silence the
@@ -3200,6 +3286,16 @@ fn push_unknown_type_diagnostic(
                 .to_string(),
         });
     }
+}
+
+fn machine_layout_name_matches(layout_names: &HashSet<String>, name: &str) -> bool {
+    layout_names
+        .iter()
+        .any(|known| known == name || short_name(known) == short_name(name))
+}
+
+fn short_name(name: &str) -> &str {
+    name.rsplit_once('.').map_or(name, |(_, short)| short)
 }
 
 #[derive(Debug, Default)]
@@ -3375,6 +3471,7 @@ struct Builder {
     /// not lowered. Slice 4b sets it while walking transition bodies; Slice
     /// 4c reads the emitted `Place::MachineVariant` places.
     current_machine_self_binding: Option<BindingId>,
+    current_machine_event_binding: Option<BindingId>,
     /// Set to `true` inside a gen-block body builder to enable
     /// `HirExprKind::Yield` → `Terminator::Yield` construction.
     /// The parent builder's field stays `false` (the `Default`).
@@ -3909,7 +4006,7 @@ impl Builder {
                 let (Some(lhs), Some(rhs)) = (lhs, rhs) else {
                     return None;
                 };
-                let dest = self.alloc_local(expr.ty.clone());
+                let dest = self.alloc_local(self.subst_ty(&expr.ty));
                 let op = numeric_method_op(*op);
                 let signed = numeric_method_signedness(*signedness);
                 match *family {
@@ -4174,7 +4271,7 @@ impl Builder {
                     }
                 }
 
-                let dest = self.alloc_local(expr.ty.clone());
+                let dest = self.alloc_local(self.subst_ty(&expr.ty));
                 self.instructions.push(Instr::RecordInit {
                     ty: expr.ty.clone(),
                     fields: field_pairs,
@@ -4334,7 +4431,7 @@ impl Builder {
                     return None;
                 };
                 let record_place = self.lower_value(object)?;
-                let dest = self.alloc_local(expr.ty.clone());
+                let dest = self.alloc_local(self.subst_ty(&expr.ty));
                 self.instructions.push(Instr::RecordFieldLoad {
                     record: record_place,
                     field_offset,
@@ -4661,6 +4758,65 @@ impl Builder {
                 });
                 Some(dest)
             }
+            HirExprKind::MachineEventFieldAccess {
+                machine_name,
+                event_idx,
+                field_idx,
+                field_name,
+            } => {
+                let Some(event_binding) = self.current_machine_event_binding else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "MachineEventFieldAccess({machine_name}Event[{event_idx}].{field_name}) — \
+                                 outside a machine transition body"
+                            ),
+                        },
+                        note: "machine event-field reads are only legal inside a transition body"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                let Some(event_place) = self.binding_locals.get(&event_binding).copied() else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "MachineEventFieldAccess({machine_name}Event[{event_idx}].{field_name}) — \
+                                 event binding has no allocated local"
+                            ),
+                        },
+                        note: "internal: synthesize_machine_step_fn must allocate the event parameter local"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                let Place::Local(event_local) = event_place else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "MachineEventFieldAccess({machine_name}Event[{event_idx}].{field_name}) — \
+                                 event binding maps to non-Local place {event_place:?}"
+                            ),
+                        },
+                        note: "internal: machine event parameter must be a Place::Local".to_string(),
+                    });
+                    return None;
+                };
+                let dest = self.alloc_local(expr.ty.clone());
+                let variant_idx_u32 =
+                    u32::try_from(*event_idx).expect("event index exceeds u32::MAX");
+                let field_idx_u32 =
+                    u32::try_from(*field_idx).expect("field index exceeds u32::MAX");
+                self.instructions.push(Instr::Move {
+                    dest,
+                    src: Place::MachineVariant {
+                        local: event_local,
+                        variant_idx: variant_idx_u32,
+                        field_idx: field_idx_u32,
+                    },
+                });
+                Some(dest)
+            }
             HirExprKind::MachineStep {
                 machine_name,
                 receiver,
@@ -4713,13 +4869,19 @@ impl Builder {
                 let self_arg = self.lower_value(receiver)?;
                 let event_arg = self.lower_value(event)?;
                 let ret_ty = ResolvedTy::Named {
-                    name: machine_name.clone(),
-                    args: Vec::new(),
+                    name: match &receiver.ty {
+                        ResolvedTy::Named { name, .. } => name.clone(),
+                        _ => machine_name.clone(),
+                    },
+                    args: match &receiver.ty {
+                        ResolvedTy::Named { args, .. } => args.clone(),
+                        _ => Vec::new(),
+                    },
                 };
                 let ret_local = self.alloc_local(ret_ty.clone());
                 let next = self.alloc_block();
                 self.finish_current_block(Terminator::Call {
-                    callee: mangle_machine_step(machine_name),
+                    callee: mangle_machine_step(short_name(machine_name)),
                     args: vec![self_arg, event_arg],
                     dest: Some(ret_local),
                     next,
@@ -9574,7 +9736,8 @@ impl Builder {
             // wires the constructor; the real drop kind will replace this.
             ResolvedTy::Named { name, .. } if name == "Generator" => true,
             ResolvedTy::Named { name, args } if args.is_empty() => {
-                self.actor_layouts.contains_key(name) || self.machine_layout_names.contains(name)
+                self.actor_layouts.contains_key(name)
+                    || machine_layout_name_matches(&self.machine_layout_names, name)
             }
             // Generic enum applications (`Named { name: "Option", args: [I64] }`):
             // the origin name is in `machine_layout_names` if the HIR mono pass
@@ -9583,7 +9746,9 @@ impl Builder {
             // arm is purely for generic enum types. Classifying as `BitCopy`
             // matches the tagged-union substrate — enums are stack-allocated
             // discriminated unions with no drop side-effect.
-            ResolvedTy::Named { name, .. } => self.machine_layout_names.contains(name),
+            ResolvedTy::Named { name, .. } => {
+                machine_layout_name_matches(&self.machine_layout_names, name)
+            }
             _ => actor_name_from_handle_ty(ty).is_some(),
         }
     }

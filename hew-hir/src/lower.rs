@@ -530,6 +530,7 @@ pub fn lower_program_with_mono_cap(
                 if *mod_id == mg.root {
                     continue;
                 }
+                let module_short = mod_id.path.last().map_or("", String::as_str);
                 if let Some(module) = mg.modules.get(mod_id) {
                     for (item, _) in &module.items {
                         match item {
@@ -539,6 +540,10 @@ pub fn lower_program_with_mono_cap(
                                     let qualified = format!("{}::{}", md.name, state.name);
                                     ctx.machine_ctor_registry
                                         .insert(qualified, (md.name.clone(), idx));
+                                    let module_qualified =
+                                        format!("{module_short}.{}::{}", md.name, state.name);
+                                    ctx.machine_ctor_registry
+                                        .insert(module_qualified, (md.name.clone(), idx));
                                     if bare_counts.get(&state.name).copied().unwrap_or(0) == 1 {
                                         ctx.machine_ctor_registry
                                             .insert(state.name.clone(), (md.name.clone(), idx));
@@ -548,6 +553,10 @@ pub fn lower_program_with_mono_cap(
                                     let qualified = format!("{}::{}", event_type_name, event.name);
                                     ctx.machine_ctor_registry
                                         .insert(qualified, (event_type_name.clone(), idx));
+                                    let module_qualified =
+                                        format!("{module_short}.{event_type_name}::{}", event.name);
+                                    ctx.machine_ctor_registry
+                                        .insert(module_qualified, (event_type_name.clone(), idx));
                                     if bare_counts.get(&event.name).copied().unwrap_or(0) == 1 {
                                         ctx.machine_ctor_registry.insert(
                                             event.name.clone(),
@@ -565,6 +574,12 @@ pub fn lower_program_with_mono_cap(
                                         let qualified = format!("{}::{}", td.name, v.name);
                                         ctx.machine_ctor_registry
                                             .insert(qualified, (td.name.clone(), variant_idx));
+                                        let module_qualified =
+                                            format!("{module_short}.{}::{}", td.name, v.name);
+                                        ctx.machine_ctor_registry.insert(
+                                            module_qualified,
+                                            (td.name.clone(), variant_idx),
+                                        );
                                         if bare_counts.get(&v.name).copied().unwrap_or(0) == 1 {
                                             ctx.machine_ctor_registry.insert(
                                                 v.name.clone(),
@@ -694,6 +709,51 @@ pub fn lower_program_with_mono_cap(
                 .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
             ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
             type_decl_cache.insert(decl as *const _, hir_decl);
+        }
+    }
+    for (item, _) in &program.items {
+        if let Item::Machine(machine) = item {
+            ctx.register_machine_ctor_variant_metadata(None, machine);
+        }
+    }
+    if let Some(ref mg) = program.module_graph {
+        for mod_id in &mg.topo_order {
+            if *mod_id == mg.root {
+                continue;
+            }
+            let module_short = mod_id.path.last().map_or("", String::as_str);
+            if let Some(module) = mg.modules.get(mod_id) {
+                for (item, span) in &module.items {
+                    match item {
+                        Item::TypeDecl(decl)
+                            if decl.visibility.is_pub() && decl.kind == TypeDeclKind::Enum =>
+                        {
+                            let hir_decl = ctx.lower_type_decl(decl, span.clone());
+                            if !hir_decl.variants.is_empty() {
+                                ctx.enum_variants_by_name
+                                    .insert(hir_decl.name.clone(), hir_decl.variants.clone());
+                                ctx.enum_variants_by_name.insert(
+                                    format!("{module_short}.{}", hir_decl.name),
+                                    hir_decl.variants.clone(),
+                                );
+                            }
+                            ctx.enum_type_params
+                                .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
+                            ctx.enum_type_params.insert(
+                                format!("{module_short}.{}", hir_decl.name),
+                                hir_decl.type_params.clone(),
+                            );
+                            ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
+                            ctx.enum_item_ids
+                                .insert(format!("{module_short}.{}", hir_decl.name), hir_decl.id);
+                        }
+                        Item::Machine(machine) if machine.visibility.is_pub() => {
+                            ctx.register_machine_ctor_variant_metadata(Some(module_short), machine);
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
     }
 
@@ -1699,6 +1759,7 @@ struct LowerCtx {
     ///
     /// `None` outside a machine body. Set alongside `current_machine_events`.
     current_machine_states: Option<Vec<(String, Vec<HirField>)>>,
+    current_machine_transition_event: Option<(usize, Vec<HirField>)>,
     /// Source-state index for the transition currently being lowered.
     /// `Some(idx)` inside a transition body; `None` inside entry/exit blocks
     /// (where `self.field` reads are not valid surface syntax today).
@@ -1809,6 +1870,7 @@ impl LowerCtx {
             current_machine_events: None,
             current_machine_name: None,
             current_machine_states: None,
+            current_machine_transition_event: None,
             current_machine_source_state: None,
             machine_ctor_registry: HashMap::new(),
             enum_variants_by_name: HashMap::new(),
@@ -3103,6 +3165,69 @@ impl LowerCtx {
         }
     }
 
+    fn register_machine_ctor_variant_metadata(
+        &mut self,
+        module_short: Option<&str>,
+        decl: &MachineDecl,
+    ) {
+        let state_variants: Vec<HirVariant> = decl
+            .states
+            .iter()
+            .map(|state| {
+                let kind = if state.fields.is_empty() {
+                    HirVariantKind::Unit
+                } else {
+                    HirVariantKind::Struct(
+                        state
+                            .fields
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), self.lower_type(ty)))
+                            .collect(),
+                    )
+                };
+                HirVariant {
+                    name: state.name.clone(),
+                    kind,
+                }
+            })
+            .collect();
+        self.enum_variants_by_name
+            .insert(decl.name.clone(), state_variants.clone());
+        if let Some(module_short) = module_short {
+            self.enum_variants_by_name
+                .insert(format!("{module_short}.{}", decl.name), state_variants);
+        }
+
+        let event_type_name = format!("{}Event", decl.name);
+        let event_variants: Vec<HirVariant> = decl
+            .events
+            .iter()
+            .map(|event| {
+                let kind = if event.fields.is_empty() {
+                    HirVariantKind::Unit
+                } else {
+                    HirVariantKind::Struct(
+                        event
+                            .fields
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), self.lower_type(ty)))
+                            .collect(),
+                    )
+                };
+                HirVariant {
+                    name: event.name.clone(),
+                    kind,
+                }
+            })
+            .collect();
+        self.enum_variants_by_name
+            .insert(event_type_name.clone(), event_variants.clone());
+        if let Some(module_short) = module_short {
+            self.enum_variants_by_name
+                .insert(format!("{module_short}.{event_type_name}"), event_variants);
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "machine lowering has three distinct phases (structure, checks, assembly) \
@@ -3247,9 +3372,15 @@ impl LowerCtx {
             let src_state_idx = decl.states.iter().position(|s| s.name == tr.source_state);
             let prev_source_state = self.current_machine_source_state;
             self.current_machine_source_state = src_state_idx;
+            let prev_transition_event = self.current_machine_transition_event.take();
+            self.current_machine_transition_event = hir_events
+                .iter()
+                .position(|ev| ev.name == tr.event_name)
+                .map(|idx| (idx, hir_events[idx].fields.clone()));
             let body =
                 self.lower_machine_expr_filtered(&tr.body, &state_names, event_names.clone());
             self.current_machine_source_state = prev_source_state;
+            self.current_machine_transition_event = prev_transition_event;
             // body_emits is derived from the lowered HIR body by walking
             // `HirExprKind::MachineEmit { event_idx, .. }` rather than the
             // AST summary shape, so emit expressions nested inside
@@ -4951,14 +5082,6 @@ impl LowerCtx {
                             }
                         }
                     } else {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CheckerBoundaryViolation {
-                                name: type_name.clone(),
-                                reason: "expr_types has no entry for struct-variant ctor site".into(),
-                            },
-                            span.clone(),
-                            "checker did not record a result type for this struct-variant constructor",
-                        ));
                         ResolvedTy::Named {
                             name: type_name.clone(),
                             args: Vec::new(),
@@ -5491,6 +5614,15 @@ impl LowerCtx {
                     // If we're not in a machine body with a known source state, fall
                     // through to the catch-all below (which will emit `NotYetImplemented`
                     // because `Expr::This` is not otherwise handled).
+                }
+                if matches!(&object.0, Expr::Identifier(name) if name == "event")
+                    && self.current_machine_name.is_some()
+                {
+                    if let Some(hir_expr) =
+                        self.try_lower_machine_event_field_access(field, &span, site, intent)
+                    {
+                        return hir_expr;
+                    }
                 }
                 let missing_import = if let Expr::Identifier(module_name) = &object.0 {
                     self.missing_stdlib_module_import(module_name)
@@ -6583,7 +6715,7 @@ impl LowerCtx {
             let key = SpanKey::from(&span);
             let checker_agrees = match self.expr_types.get(&key) {
                 None => true,
-                Some(Ty::Named { name: n, .. }) => n == &tagged_union_name,
+                Some(Ty::Named { name: n, .. }) => Ty::names_match_qualified(n, &tagged_union_name),
                 Some(_) => false,
             };
             if checker_agrees {
@@ -7642,6 +7774,57 @@ impl LowerCtx {
         }
     }
 
+    fn try_lower_machine_event_field_access(
+        &mut self,
+        field: &str,
+        span: &std::ops::Range<usize>,
+        site: SiteId,
+        intent: IntentKind,
+    ) -> Option<HirExpr> {
+        let machine_name = self.current_machine_name.as_ref()?.clone();
+        let (event_idx, event_fields) = self.current_machine_transition_event.clone()?;
+        if let Some((field_idx, hir_field)) = event_fields
+            .iter()
+            .enumerate()
+            .find(|(_, f)| f.name == field)
+        {
+            let field_ty = hir_field.ty.clone();
+            let vc = ValueClass::of_ty(&field_ty, &self.type_classes);
+            return Some(HirExpr {
+                node: self.ids.node(),
+                site,
+                ty: field_ty,
+                value_class: vc,
+                intent,
+                kind: HirExprKind::MachineEventFieldAccess {
+                    machine_name,
+                    event_idx,
+                    field_idx,
+                    field_name: field.to_string(),
+                },
+                span: span.clone(),
+            });
+        }
+
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::NotYetImplemented {
+                construct: format!("`event.{field}` — field not declared on current event"),
+                owning_pass: "machine event payload field validation".to_string(),
+            },
+            span.clone(),
+            "event payload field is not declared on this transition's event",
+        ));
+        Some(HirExpr {
+            node: self.ids.node(),
+            site,
+            ty: ResolvedTy::Unit,
+            value_class: ValueClass::BitCopy,
+            intent,
+            kind: HirExprKind::Unsupported(format!("event.{field} not found")),
+            span: span.clone(),
+        })
+    }
+
     fn bind_machine_transition_implicits(&mut self, span: std::ops::Range<usize>) {
         let Some(machine_name) = self.current_machine_name.clone() else {
             return;
@@ -8244,6 +8427,7 @@ fn collect_captures_walk(
         | HirExprKind::SpawnLambdaActor { .. }
         | HirExprKind::Closure { .. }
         | HirExprKind::MachineFieldAccess { .. }
+        | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_captures_walk(left, param_ids, seen, captures, self_id);
@@ -8472,6 +8656,7 @@ fn collect_general_closure_captures_walk(
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::SpawnLambdaActor { .. }
         | HirExprKind::MachineFieldAccess { .. }
+        | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_general_closure_captures_walk(left, outer_bindings, seen, captures);

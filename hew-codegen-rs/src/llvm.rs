@@ -1600,14 +1600,22 @@ fn machine_layout_for_local<'a, 'ctx>(
     } else {
         let key = mangle(name, args);
         if !fn_ctx.machine_layouts.contains_key(&key) {
-            return Err(CodegenError::FailClosed(format!(
-                "Place::MachineTag/MachineVariant references generic enum `{name}` \
-                 with type args {args:?}: mangled key `{key}` is not in \
-                 IrPipeline.machine_layouts — the monomorphisation was not registered \
-                 by `register_enum_layouts` (registration-mismatch)"
-            )));
+            let short_key = mangle(short_name(name), args);
+            if fn_ctx.machine_layouts.contains_key(&short_key) {
+                short_key
+            } else if fn_ctx.machine_layouts.contains_key(short_name(name)) {
+                short_name(name).to_string()
+            } else {
+                return Err(CodegenError::FailClosed(format!(
+                    "Place::MachineTag/MachineVariant references generic enum `{name}` \
+                     with type args {args:?}: mangled key `{key}` is not in \
+                     IrPipeline.machine_layouts — the monomorphisation was not registered \
+                     by `register_enum_layouts` (registration-mismatch)"
+                )));
+            }
+        } else {
+            key
         }
-        key
     };
     fn_ctx.machine_layouts.get(&lookup_key).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -1616,6 +1624,10 @@ fn machine_layout_for_local<'a, 'ctx>(
              and codegen"
         ))
     })
+}
+
+fn short_name(name: &str) -> &str {
+    name.rsplit_once('.').map_or(name, |(_, short)| short)
 }
 
 /// Resolve any `ResolvedTy` to its LLVM `BasicTypeEnum`, consulting the
@@ -1666,6 +1678,15 @@ fn resolve_ty<'ctx>(
         };
         if let Some(st) = record_layouts.get(lookup_key.as_ref()) {
             return Ok((*st).into());
+        }
+        if !args.is_empty() {
+            let short_key = mangle(short_name(name), args);
+            if let Some(st) = record_layouts.get(short_key.as_str()) {
+                return Ok((*st).into());
+            }
+            if let Some(st) = record_layouts.get(short_name(name)) {
+                return Ok((*st).into());
+            }
         }
     }
     if let ResolvedTy::Tuple(elems) = ty {
@@ -9645,20 +9666,9 @@ fn build_module_for_target<'ctx>(
     // be populated up front. Empty `record_layouts` (most existing pipelines)
     // produces an empty map and changes no behaviour for record-free code.
     let mut record_layouts = register_record_layouts(ctx, &pipeline.record_layouts)?;
-    // Slice 5: register machine tagged-union types alongside records.
-    // `register_machine_layouts` inserts the outer struct of each machine
-    // and its `<Name>Event` companion into `record_layouts` so `resolve_ty`
-    // resolves `ResolvedTy::Named { name: "Foo" }` to the machine's outer
-    // struct the same way it resolves a record. The richer per-variant
-    // metadata (inner structs, tag int type) lives in `machine_layouts`.
-    let mut machine_layouts = register_machine_layouts(
-        ctx,
-        &llvm_mod,
-        &pipeline.machine_layouts,
-        &mut record_layouts,
-        target_data.as_ref(),
-    )?;
-    // Register user-defined enum layouts into the same `machine_layouts` map.
+    let mut machine_layouts: MachineLayoutMap<'ctx> = HashMap::new();
+    // Register user-defined enum layouts before machines so machine payloads
+    // can name enum types declared in imported stdlib modules.
     // Enum-typed locals use the same `Place::MachineTag` / `Place::MachineVariant`
     // addressing as machine-typed locals; the map lookup in
     // `machine_layout_for_local` is keyed by type name and does not
@@ -9670,6 +9680,20 @@ fn build_module_for_target<'ctx>(
         &mut machine_layouts,
         target_data.as_ref(),
     )?;
+    // Slice 5: register machine tagged-union types alongside records.
+    // `register_machine_layouts` inserts the outer struct of each machine
+    // and its `<Name>Event` companion into `record_layouts` so `resolve_ty`
+    // resolves `ResolvedTy::Named { name: "Foo" }` to the machine's outer
+    // struct the same way it resolves a record. The richer per-variant
+    // metadata (inner structs, tag int type) lives in `machine_layouts`.
+    let machine_layout_map = register_machine_layouts(
+        ctx,
+        &llvm_mod,
+        &pipeline.machine_layouts,
+        &mut record_layouts,
+        target_data.as_ref(),
+    )?;
+    machine_layouts.extend(machine_layout_map);
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;
     predeclare_extern_decls(

@@ -1120,6 +1120,13 @@ pub enum HirExprKind {
         field_idx: usize,
         field_name: String,
     },
+    /// Read a payload field from the transition's matched `event` value.
+    MachineEventFieldAccess {
+        machine_name: String,
+        event_idx: usize,
+        field_idx: usize,
+        field_name: String,
+    },
     /// `while cond { body }` — loops until `cond` evaluates to false.
     ///
     /// The expression type is always `Unit`; a while loop never produces

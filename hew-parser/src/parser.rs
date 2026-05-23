@@ -17,6 +17,7 @@ use serde::Serialize;
 use std::cell::Cell;
 
 type ParsedTraitBoundArgs = (Option<Vec<Spanned<TypeExpr>>>, Vec<AssocTypeBinding>);
+type StructInitFields = (Vec<(String, Spanned<Expr>)>, Option<Box<Spanned<Expr>>>);
 
 /// Parse an integer literal string, returning both value and radix.
 ///
@@ -6130,6 +6131,10 @@ impl<'src> Parser<'src> {
         Some(params)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single dispatch over all postfix-dot syntactic forms; splitting fragments shared start/cursor state"
+    )]
     fn parse_dot_postfix(&mut self, lhs: Spanned<Expr>) -> Option<Spanned<Expr>> {
         let start = lhs.1.start;
         self.advance(); // consume .
@@ -6159,6 +6164,29 @@ impl<'src> Parser<'src> {
                 method = format!("{method}::{segment}");
             } else {
                 break;
+            }
+        }
+
+        if method.contains("::") {
+            if let Some(mut name) = Self::dotted_expr_name(&lhs.0) {
+                name.push('.');
+                name.push_str(&method);
+                if self.peek() == Some(&Token::LeftBrace) {
+                    self.advance(); // consume {
+                    let (fields, base) = self.parse_struct_init_fields()?;
+                    let end = self.peek_span().start;
+                    return Some((
+                        Expr::StructInit {
+                            name,
+                            fields,
+                            type_args: None,
+                            base,
+                        },
+                        start..end,
+                    ));
+                }
+                let end = self.peek_span().start;
+                return Some((Expr::Identifier(name), start..end));
             }
         }
 
@@ -6254,6 +6282,49 @@ impl<'src> Parser<'src> {
                 },
                 start..end,
             ))
+        }
+    }
+
+    fn parse_struct_init_fields(&mut self) -> Option<StructInitFields> {
+        let mut fields = Vec::new();
+        let mut base: Option<Box<Spanned<Expr>>> = None;
+        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            if self.peek() == Some(&Token::DotDot) {
+                self.advance(); // consume `..`
+                let base_expr = self.parse_expr()?;
+                base = Some(Box::new(base_expr));
+                self.eat(&Token::Comma);
+                if self.peek() != Some(&Token::RightBrace) {
+                    self.error(
+                        "functional-update `..base` must be the last item in the field list"
+                            .to_string(),
+                    );
+                }
+                break;
+            }
+            let field_name = self.expect_ident()?;
+            self.expect(&Token::Colon)?;
+            let value = self.parse_expr()?;
+            fields.push((field_name, value));
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+        self.expect(&Token::RightBrace)?;
+        Some((fields, base))
+    }
+
+    fn dotted_expr_name(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Identifier(name) => Some(name.clone()),
+            Expr::FieldAccess { object, field } => {
+                let mut name = Self::dotted_expr_name(&object.0)?;
+                name.push('.');
+                name.push_str(field);
+                Some(name)
+            }
+            _ => None,
         }
     }
 

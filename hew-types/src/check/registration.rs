@@ -950,8 +950,14 @@ impl Checker {
                                 // Pre-seed the machine name so that resolve_type_expr
                                 // inside state/event field resolution sees the machine
                                 // as locally-non-generic instead of injecting a fresh var.
+                                // Also seed the synthesised `<Name>Event` companion so
+                                // imported machines surface their event union as a
+                                // locally-defined type for the non-root module body.
                                 self.local_type_defs.insert(md.name.clone());
                                 self.source_type_defs.insert(md.name.clone());
+                                let event_type_name = format!("{}Event", md.name);
+                                self.local_type_defs.insert(event_type_name.clone());
+                                self.source_type_defs.insert(event_type_name);
                             }
                             _ => {}
                         }
@@ -3102,9 +3108,19 @@ impl Checker {
                     let saved_local_type_defs = self.local_type_defs.clone();
                     let saved_source_type_defs = self.source_type_defs.clone();
                     for (item, _) in &module.items {
-                        if let Item::TypeDecl(td) = item {
-                            self.local_type_defs.insert(td.name.clone());
-                            self.source_type_defs.insert(td.name.clone());
+                        match item {
+                            Item::TypeDecl(td) => {
+                                self.local_type_defs.insert(td.name.clone());
+                                self.source_type_defs.insert(td.name.clone());
+                            }
+                            Item::Machine(md) => {
+                                self.local_type_defs.insert(md.name.clone());
+                                self.source_type_defs.insert(md.name.clone());
+                                let event_type_name = format!("{}Event", md.name);
+                                self.local_type_defs.insert(event_type_name.clone());
+                                self.source_type_defs.insert(event_type_name);
+                            }
+                            _ => {}
                         }
                     }
 
@@ -4355,9 +4371,19 @@ impl Checker {
         let saved_local_type_defs = self.local_type_defs.clone();
         let saved_source_type_defs = self.source_type_defs.clone();
         for (item, _) in items {
-            if let Item::TypeDecl(td) = item {
-                self.local_type_defs.insert(td.name.clone());
-                self.source_type_defs.insert(td.name.clone());
+            match item {
+                Item::TypeDecl(td) => {
+                    self.local_type_defs.insert(td.name.clone());
+                    self.source_type_defs.insert(td.name.clone());
+                }
+                Item::Machine(md) => {
+                    self.local_type_defs.insert(md.name.clone());
+                    self.source_type_defs.insert(md.name.clone());
+                    let event_type_name = format!("{}Event", md.name);
+                    self.local_type_defs.insert(event_type_name.clone());
+                    self.source_type_defs.insert(event_type_name);
+                }
+                _ => {}
             }
         }
 
@@ -4373,6 +4399,17 @@ impl Checker {
                     }
                     self.register_type_decl(td);
                     self.known_types.insert(td.name.clone());
+                }
+                Item::Machine(md) => {
+                    if !md.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.register_machine_type_namespace_names(&md.name, span) {
+                        continue;
+                    }
+                    self.register_machine_decl(md);
+                    self.known_types.insert(md.name.clone());
+                    self.known_types.insert(format!("{}Event", md.name));
                 }
                 Item::Trait(tr) => {
                     if !tr.visibility.is_pub() {
@@ -4486,6 +4523,13 @@ impl Checker {
                     self.register_qualified_type_alias(module_short, &td.name);
                     self.record_module_type_export(module_short, &td.name);
                 }
+                Item::Machine(md) => {
+                    if !md.visibility.is_pub() {
+                        continue;
+                    }
+                    self.register_qualified_type_alias(module_short, &md.name);
+                    self.register_qualified_type_alias(module_short, &format!("{}Event", md.name));
+                }
                 Item::Actor(ad) => {
                     self.register_qualified_type_alias(module_short, &ad.name);
                     self.record_module_type_export(module_short, &ad.name);
@@ -4550,6 +4594,31 @@ impl Checker {
                     }
                     self.register_type_decl(td);
                     self.known_types.insert(td.name.clone());
+                }
+                Item::Machine(md) => {
+                    if !md.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.register_flat_file_import_type_name(
+                        &mut current_import_pub_spans,
+                        &md.name,
+                        span,
+                    ) {
+                        skipped_type_names.insert(md.name.clone());
+                        continue;
+                    }
+                    let event_type_name = format!("{}Event", md.name);
+                    if !self.register_flat_file_import_type_name(
+                        &mut current_import_pub_spans,
+                        &event_type_name,
+                        span,
+                    ) {
+                        skipped_type_names.insert(event_type_name);
+                        continue;
+                    }
+                    self.register_machine_decl(md);
+                    self.known_types.insert(md.name.clone());
+                    self.known_types.insert(format!("{}Event", md.name));
                 }
                 Item::Trait(tr) => {
                     if !tr.visibility.is_pub() {
@@ -4706,9 +4775,19 @@ impl Checker {
         let saved_local_type_defs = self.local_type_defs.clone();
         let saved_source_type_defs = self.source_type_defs.clone();
         for (item, _) in items {
-            if let Item::TypeDecl(td) = item {
-                self.local_type_defs.insert(td.name.clone());
-                self.source_type_defs.insert(td.name.clone());
+            match item {
+                Item::TypeDecl(td) => {
+                    self.local_type_defs.insert(td.name.clone());
+                    self.source_type_defs.insert(td.name.clone());
+                }
+                Item::Machine(md) => {
+                    self.local_type_defs.insert(md.name.clone());
+                    self.source_type_defs.insert(md.name.clone());
+                    let event_type_name = format!("{}Event", md.name);
+                    self.local_type_defs.insert(event_type_name.clone());
+                    self.source_type_defs.insert(event_type_name);
+                }
+                _ => {}
             }
         }
 
@@ -4747,6 +4826,19 @@ impl Checker {
                     self.register_qualified_type_alias(module_short, &td.name);
                     self.record_module_type_export(module_short, &td.name);
                     self.known_types.insert(td.name.clone());
+                }
+                Item::Machine(md) => {
+                    if !md.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.register_machine_type_namespace_names(&md.name, span) {
+                        continue;
+                    }
+                    self.register_machine_decl(md);
+                    self.register_qualified_type_alias(module_short, &md.name);
+                    self.register_qualified_type_alias(module_short, &format!("{}Event", md.name));
+                    self.known_types.insert(md.name.clone());
+                    self.known_types.insert(format!("{}Event", md.name));
                 }
                 Item::Trait(tr) => {
                     if !tr.visibility.is_pub() {

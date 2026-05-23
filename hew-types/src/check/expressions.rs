@@ -1014,7 +1014,7 @@ impl Checker {
                                 let sig_names_correct_enum = sig
                                     .return_type
                                     .type_name()
-                                    .is_some_and(|n| n == type_prefix);
+                                    .is_some_and(|n| Ty::names_match_qualified(n, type_prefix));
                                 if sig_names_correct_enum {
                                     let mut ret = sig.return_type.clone();
                                     for tp in &sig.type_params {
@@ -2205,7 +2205,10 @@ impl Checker {
                 // Reject mismatched qualified prefix (e.g. OtherEnum::Variant
                 // when expected is MyEnum).
                 let prefix_ok = !name.contains("::")
-                    || name.split("::").next().unwrap_or("") == expected_enum_name.as_str();
+                    || Ty::names_match_qualified(
+                        name.split("::").next().unwrap_or(""),
+                        expected_enum_name,
+                    );
 
                 let mut handled = false;
                 if prefix_ok {

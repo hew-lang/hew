@@ -769,6 +769,18 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             )
             .expect("write to string");
         }
+        HirExprKind::MachineEventFieldAccess {
+            machine_name,
+            event_idx,
+            field_idx,
+            field_name,
+        } => {
+            writeln!(
+                out,
+                "{pad}  machine-event-field-access {machine_name}Event[{event_idx}].{field_name}[{field_idx}]"
+            )
+            .expect("write to string");
+        }
         HirExprKind::While { condition, body } => {
             writeln!(out, "{pad}  while").expect("write to string");
             dump_expr(out, condition, indent + 4);

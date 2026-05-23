@@ -1,0 +1,19 @@
+type Point {
+    x: i64;
+}
+
+impl Display for Point {
+    fn fmt(p: Point) -> string {
+        f"Point({p.x})"
+    }
+}
+
+fn display_probe() -> i64 {
+    7
+}
+
+fn display_fstring() -> string {
+    let p = Point { x: display_probe() };
+    let _ = display_probe();
+    f"value={p}"
+}

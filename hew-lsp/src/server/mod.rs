@@ -6326,4 +6326,69 @@ machine Traffic {
             &["async_value", "async_probe", "async_await"],
         );
     }
+
+    #[test]
+    fn v05_generators_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_generators",
+            include_str!("../../tests/fixtures/v05_generators.hew"),
+            "generator_probe",
+            &["generator_probe", "generators"],
+        );
+    }
+
+    #[test]
+    fn v05_closures_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_closures",
+            include_str!("../../tests/fixtures/v05_closures.hew"),
+            "closure_probe",
+            &["closure_probe", "closures"],
+        );
+    }
+
+    #[test]
+    fn v05_result_option_ctors_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_result_option_ctors",
+            include_str!("../../tests/fixtures/v05_result_option_ctors.hew"),
+            "result_option_probe",
+            &[
+                "Result",
+                "Ok",
+                "Err",
+                "Option",
+                "Some",
+                "None",
+                "result_option_probe",
+                "result_option_ctors",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_match_enum_variant_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_match_enum_variant",
+            include_str!("../../tests/fixtures/v05_match_enum_variant.hew"),
+            "match_enum_probe",
+            &[
+                "Shape",
+                "Circle",
+                "Square",
+                "match_enum_probe",
+                "match_enum_variant",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_display_fstring_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_display_fstring",
+            include_str!("../../tests/fixtures/v05_display_fstring.hew"),
+            "display_probe",
+            &["Point", "display_probe", "display_fstring"],
+        );
+    }
 }

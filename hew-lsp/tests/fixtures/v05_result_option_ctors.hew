@@ -1,0 +1,21 @@
+enum Result<T, E> {
+    Ok(T);
+    Err(E);
+}
+
+enum Option<T> {
+    Some(T);
+    None;
+}
+
+fn result_option_probe() -> i64 {
+    7
+}
+
+fn result_option_ctors() -> i64 {
+    let _ok: Result<i64, bool> = Result::Ok(result_option_probe());
+    let _err: Result<i64, bool> = Result::Err(true);
+    let _some: Option<i64> = Option::Some(result_option_probe());
+    let _none: Option<i64> = Option::None;
+    result_option_probe()
+}

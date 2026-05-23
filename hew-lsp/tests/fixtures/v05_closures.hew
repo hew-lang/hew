@@ -1,0 +1,9 @@
+fn closure_probe(x: i32) -> i32 {
+    x + 1
+}
+
+fn closures() -> i32 {
+    let inc = |x: i32| -> i32 { closure_probe(x) };
+    let twice = |x: i32| -> i32 { inc(inc(x)) };
+    twice(closure_probe(5))
+}

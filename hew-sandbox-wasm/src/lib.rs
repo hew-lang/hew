@@ -650,6 +650,104 @@ fn main() {
     }
 
     #[test]
+    fn native_ffi_is_profile_rejected() {
+        assert_profile_rejection(
+            r#"
+extern "rt" {
+    fn hew_datetime_now_ms() -> i64;
+}
+
+fn main() {
+    println("ffi declaration");
+}
+"#,
+            "Unsupported::NATIVE_ONLY",
+        );
+    }
+
+    #[test]
+    fn unsafe_block_is_profile_rejected() {
+        assert_profile_rejection(
+            r#"
+fn main() {
+    unsafe {
+        println("unsafe");
+    }
+}
+"#,
+            "unsafe_rejected",
+        );
+    }
+
+    #[test]
+    fn while_let_is_reserved_control_flow() {
+        assert_profile_rejection(
+            r"
+fn main() {
+    var current = Some(1);
+    while let Some(value) = current {
+        println(value);
+        current = None;
+    }
+}
+",
+            "reserved_control_flow",
+        );
+    }
+
+    #[test]
+    fn broader_string_methods_remain_catalogued_divergence() {
+        assert_profile_rejection(
+            r#"
+fn main() {
+    println("aba".replace("a", "x"));
+}
+"#,
+            "unknown_method_symbol",
+        );
+    }
+
+    #[test]
+    fn machine_generics_are_reserved_runtime_feature() {
+        assert_profile_rejection(
+            r#"
+machine Boxed<T> {
+    event Store;
+    state Idle;
+    state Full;
+    on Store: Idle -> Full;
+    on Store: Full -> Full;
+}
+
+fn main() {
+    println("machine generic");
+}
+"#,
+            "reserved_runtime_feature",
+        );
+    }
+
+    #[test]
+    fn is_operator_is_reserved_runtime_feature() {
+        assert_profile_rejection(
+            r#"
+type Node {
+    value: i64;
+}
+
+fn same(left: Node, right: Node) -> bool {
+    left is right
+}
+
+fn main() {
+    println("identity compare");
+}
+"#,
+            "reserved_runtime_feature",
+        );
+    }
+
+    #[test]
     fn bytecode_output_is_stable_for_same_source() {
         let source = fixture("01-hello-world");
         let first = compile_to_sandbox_bytecode(&source, Some("sandbox-vm-export"))
@@ -675,6 +773,24 @@ fn main() {
         .expect("compile diagnostics should be returned, not thrown");
         assert!(output.bytecode.is_none());
         assert!(output.diagnostics.iter().any(|d| d.phase == "typecheck"));
+    }
+
+    fn assert_profile_rejection(source: &str, expected_kind: &str) {
+        set_test_hewpath();
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.bytecode.is_none(),
+            "profile rejection should not emit bytecode; got {:#?}",
+            output.bytecode
+        );
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.phase == "profile" && diagnostic.kind == expected_kind
+            }),
+            "expected profile diagnostic kind {expected_kind:?}, got {:#?}",
+            output.diagnostics
+        );
     }
 
     fn all_instruction_ops(bytecode: &SandboxBytecodePackage) -> std::collections::BTreeSet<&str> {

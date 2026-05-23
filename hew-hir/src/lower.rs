@@ -251,6 +251,18 @@ pub fn lower_program_with_mono_cap(
                                 },
                             );
                         }
+                        // Register extern fn signatures declared by imported
+                        // modules so call sites in user code resolve them
+                        // through `BindingRef::Item` like any other top-level
+                        // function. Without this, `import std::io; io.write(s)`
+                        // fails with `UnresolvedSymbol("hew_io_write")` because
+                        // the std/io.hew `extern "C" { fn hew_io_write(...); }`
+                        // block never reaches `fn_registry`.
+                        Item::ExternBlock(block) => {
+                            for extern_fn in &block.functions {
+                                ctx.register_extern_fn_entry(extern_fn);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -599,6 +611,32 @@ pub fn lower_program_with_mono_cap(
                         }
                         Item::TypeDecl(decl) if decl.visibility.is_pub() => {
                             items.push(HirItem::TypeDecl(ctx.lower_type_decl(decl, span.clone())));
+                        }
+                        // Emit HirItem::ExternFn entries for extern declarations
+                        // in imported modules so MIR/codegen sees them in the
+                        // lowered item list. Mirrors the root-item arm at the
+                        // third pass.
+                        Item::ExternBlock(block) => {
+                            for func in &block.functions {
+                                let param_tys = func
+                                    .params
+                                    .iter()
+                                    .map(|p| ctx.lower_type(&p.ty))
+                                    .collect::<Vec<_>>();
+                                let return_ty = func
+                                    .return_type
+                                    .as_ref()
+                                    .map_or(ResolvedTy::Unit, |ret| ctx.lower_type(ret));
+                                items.push(HirItem::ExternFn(crate::node::HirExternFn {
+                                    id: ctx.ids.item(),
+                                    node: ctx.ids.node(),
+                                    name: func.name.clone(),
+                                    abi: block.abi.clone(),
+                                    param_tys,
+                                    return_ty,
+                                    span: func.span.clone(),
+                                }));
+                            }
                         }
                         _ => {}
                     }

@@ -116,6 +116,10 @@ const I64_I64: &[BuiltinTy] = &[BuiltinTy::I64, BuiltinTy::I64];
 const F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64];
 const BOOL_BOOL: &[BuiltinTy] = &[BuiltinTy::Bool, BuiltinTy::Bool];
 const STRING_STRING: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::String];
+const STRING_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64];
+const STRING_I64_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64, BuiltinTy::I64];
+const STRING_STRING_STRING: &[BuiltinTy] =
+    &[BuiltinTy::String, BuiltinTy::String, BuiltinTy::String];
 const F64_F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64, BuiltinTy::F64];
 const EMPTY: &[BuiltinTy] = &[];
 
@@ -356,6 +360,33 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_is_empty",
         },
     ),
+    overload(
+        "is_digit_str",
+        "is_digit",
+        STRING,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_is_digit",
+        },
+    ),
+    overload(
+        "is_alpha_str",
+        "is_alpha",
+        STRING,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_is_alpha",
+        },
+    ),
+    overload(
+        "is_alphanumeric_str",
+        "is_alphanumeric",
+        STRING,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_is_alphanumeric",
+        },
+    ),
     // Class A: string transform overloads (return String via the C-string-clone path).
     overload(
         "trim_str",
@@ -382,6 +413,96 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::String,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_string_to_uppercase",
+        },
+    ),
+    overload(
+        "clone_str",
+        "clone",
+        STRING,
+        BuiltinTy::String,
+        BuiltinLinkage::StringCloneShim {
+            symbol: "hew_string_clone",
+        },
+    ),
+    overload(
+        "replace_str",
+        "replace",
+        STRING_STRING_STRING,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_replace",
+        },
+    ),
+    overload(
+        "split_str",
+        "split",
+        STRING_STRING,
+        BuiltinTy::VecAny,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_split",
+        },
+    ),
+    overload(
+        "lines_str",
+        "lines",
+        STRING,
+        BuiltinTy::VecAny,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_lines",
+        },
+    ),
+    overload(
+        "find_str",
+        "find",
+        STRING_STRING,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_find",
+        },
+    ),
+    overload(
+        "index_of_str",
+        "index_of",
+        STRING_STRING,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_index_of_start",
+        },
+    ),
+    overload(
+        "slice_str",
+        "slice",
+        STRING_I64_I64,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_slice",
+        },
+    ),
+    overload(
+        "repeat_str",
+        "repeat",
+        STRING_I64,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_repeat",
+        },
+    ),
+    overload(
+        "char_at_str",
+        "char_at",
+        STRING_I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_char_at",
+        },
+    ),
+    overload(
+        "chars_str",
+        "chars",
+        STRING,
+        BuiltinTy::VecAny,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_chars",
         },
     ),
     // Class B: math module intrinsics.

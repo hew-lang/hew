@@ -1477,9 +1477,22 @@ impl Checker {
             "starts_with" => "starts_with_str",
             "ends_with" => "ends_with_str",
             "is_empty" => "is_empty_str",
+            "is_digit" => "is_digit_str",
+            "is_alpha" => "is_alpha_str",
+            "is_alphanumeric" => "is_alphanumeric_str",
             "trim" => "trim_str",
             "to_uppercase" | "to_upper" => "to_uppercase_str",
             "to_lowercase" | "to_lower" => "to_lowercase_str",
+            "clone" => "clone_str",
+            "replace" => "replace_str",
+            "split" => "split_str",
+            "lines" => "lines_str",
+            "find" => "find_str",
+            "index_of" => "index_of_str",
+            "slice" => "slice_str",
+            "repeat" => "repeat_str",
+            "char_at" => "char_at_str",
+            "chars" => "chars_str",
             _ => return None,
         })
     }
@@ -1561,6 +1574,14 @@ impl Checker {
             }
             "is_digit" | "is_alpha" | "is_alphanumeric" => {
                 self.check_arity(args, 0, &format!("`String::{method}`"), span);
+                self.record_runtime_method_call_rewrite(
+                    span,
+                    match method {
+                        "is_digit" => "is_digit_str",
+                        "is_alpha" => "is_alpha_str",
+                        _ => "is_alphanumeric_str",
+                    },
+                );
                 Ty::Bool
             }
             "to_uppercase" | "to_upper" => {
@@ -1575,7 +1596,12 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, "trim_str");
                 Ty::String
             }
-            "clone" => Ty::String,
+            "clone" => {
+                // v0.5 uses the stable clone shim (`hew_string_clone`); when the string ABI
+                // grows a header/refcount, revisit per `.tmp/orchestration/sota-string-cow-research-2026-05-23.md`.
+                self.record_runtime_method_call_rewrite(span, "clone_str");
+                Ty::String
+            }
             "replace" => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
@@ -1585,6 +1611,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::String);
                 }
+                self.record_runtime_method_call_rewrite(span, "replace_str");
                 Ty::String
             }
             "split" => {
@@ -1592,10 +1619,12 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::String);
                 }
+                self.record_runtime_method_call_rewrite(span, "split_str");
                 self.make_vec_type(Ty::String, span)
             }
             "lines" => {
                 self.check_arity(args, 0, "`String::lines`", span);
+                self.record_runtime_method_call_rewrite(span, "lines_str");
                 self.make_vec_type(Ty::String, span)
             }
             "find" | "index_of" => {
@@ -1603,6 +1632,14 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::String);
                 }
+                self.record_runtime_method_call_rewrite(
+                    span,
+                    if method == "find" {
+                        "find_str"
+                    } else {
+                        "index_of_str"
+                    },
+                );
                 Ty::I64
             }
             "slice" => {
@@ -1614,6 +1651,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::I64);
                 }
+                self.record_runtime_method_call_rewrite(span, "slice_str");
                 Ty::String
             }
             "repeat" => {
@@ -1621,6 +1659,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::I64);
                 }
+                self.record_runtime_method_call_rewrite(span, "repeat_str");
                 Ty::String
             }
             "char_at" => {
@@ -1628,10 +1667,12 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::I64);
                 }
+                self.record_runtime_method_call_rewrite(span, "char_at_str");
                 Ty::I64
             }
             "chars" => {
                 self.check_arity(args, 0, "`String::chars`", span);
+                self.record_runtime_method_call_rewrite(span, "chars_str");
                 self.make_vec_type(Ty::Char, span)
             }
             _ => {

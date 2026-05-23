@@ -120,7 +120,13 @@ impl ValueClass {
                 Some(ResourceMarker::BitCopy) => Self::BitCopy,
                 Some(ResourceMarker::Resource) => Self::AffineResource,
                 Some(ResourceMarker::Linear) => Self::Linear,
-                Some(ResourceMarker::None) | None => Self::Unknown,
+                Some(ResourceMarker::None) | None => {
+                    if matches!(name.as_str(), "Vec" | "HashMap" | "HashSet") {
+                        Self::CowValue
+                    } else {
+                        Self::Unknown
+                    }
+                }
             },
             // Task handles are consume-once: MirCheck::MustConsume fires if a
             // ForkTaskHandle binding is live at an exit without being consumed

@@ -3,7 +3,7 @@ mod support;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use support::{hew_binary, repo_root, require_codegen};
+use support::{hew_binary, repo_root, require_codegen, strip_ansi};
 
 /// Verify that `hew run --timeout` kills the entire process tree spawned by
 /// the compiled Hew program, not just the root binary.
@@ -180,6 +180,33 @@ fn run_program_with_simple_arithmetic_succeeds() {
         String::from_utf8_lossy(&output.stderr),
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
+}
+
+#[test]
+fn run_string_methods_smoke_matches_expected() {
+    require_codegen();
+
+    let source = repo_root().join("examples/string_methods_smoke.hew");
+    let expected =
+        std::fs::read_to_string(repo_root().join("examples/string_methods_smoke.expected"))
+            .expect("read string_methods_smoke.expected");
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
 /// Stdin round-trip through `std::io`. Guards against the regression that

@@ -970,6 +970,20 @@ pub unsafe extern "C" fn hew_string_index_of(
     unsafe { p.offset_from(s) as i32 }
 }
 
+/// Method-call shim for `string.index_of(needle)`.
+///
+/// The language surface takes no explicit `from` argument; it always starts at
+/// the beginning of the string.
+///
+/// # Safety
+///
+/// Both `s` and `substr` must be valid NUL-terminated C strings (or null).
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_index_of_start(s: *const c_char, substr: *const c_char) -> i32 {
+    // SAFETY: Delegates to `hew_string_index_of` with a fixed start offset.
+    unsafe { hew_string_index_of(s, substr, 0) }
+}
+
 // ── Static string detection ─────────────────────────────────────────────
 //
 // String literals live in the binary's read-only data segment. We must
@@ -1616,6 +1630,17 @@ mod tests {
             // SAFETY: Both args are valid NUL-terminated C strings.
             unsafe { hew_string_index_of(s.as_ptr(), sub.as_ptr(), 0) },
             1
+        );
+    }
+
+    #[test]
+    fn test_string_index_of_start() {
+        let s = CString::new("banana").unwrap();
+        let sub = CString::new("na").unwrap();
+        assert_eq!(
+            // SAFETY: Both args are valid NUL-terminated C strings.
+            unsafe { hew_string_index_of_start(s.as_ptr(), sub.as_ptr()) },
+            2
         );
     }
 

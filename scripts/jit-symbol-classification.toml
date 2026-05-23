@@ -524,6 +524,7 @@ stable = [
   "hew_string_find",
   "hew_string_from_char",
   "hew_string_index_of",
+  "hew_string_index_of_start",
   "hew_string_is_alpha",
   "hew_string_is_alphanumeric",
   "hew_string_is_ascii",

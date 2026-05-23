@@ -3168,6 +3168,7 @@ fn push_unknown_type_diagnostics(
     for name in named_type_names(ty) {
         if builder.type_classes.contains_key(&name)
             || matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor")
+            || matches!(name.as_str(), "Vec" | "HashMap" | "HashSet")
             || builder.actor_layouts.contains_key(&name)
             || builder.supervisor_layout_map.contains_key(&name)
             || builder.machine_layout_names.contains(&name)

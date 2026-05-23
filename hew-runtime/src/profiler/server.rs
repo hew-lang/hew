@@ -80,6 +80,32 @@ pub fn run_tcp(bind_addr: &str, ctx: Arc<ProfilerContext>) {
     });
 }
 
+/// Start the profiling HTTP server on a pre-bound `std::net::TcpListener`,
+/// blocking the current thread.
+///
+/// Like [`run_tcp`] but the caller owns the bind step — useful for tests that
+/// need to know the ephemeral port (`bind("127.0.0.1:0")`) before any client
+/// can connect. The listener is set to non-blocking and converted to a tokio
+/// listener inside the runtime.
+pub fn run_tcp_with_listener(listener: std::net::TcpListener, ctx: Arc<ProfilerContext>) {
+    let Some(rt) = build_runtime() else { return };
+    if let Err(e) = listener.set_nonblocking(true) {
+        eprintln!("[hew-pprof] failed to set listener nonblocking: {e}");
+        return;
+    }
+
+    rt.block_on(async move {
+        let tokio_listener = match TcpListener::from_std(listener) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[hew-pprof] failed to wrap std listener: {e}");
+                return;
+            }
+        };
+        serve_loop(Listener::Tcp(tokio_listener), ctx).await;
+    });
+}
+
 #[cfg(unix)]
 /// Start the profiling HTTP server on a unix domain socket, blocking the
 /// current thread.
@@ -230,11 +256,41 @@ fn text_response(body: String, content_type: &str) -> Response<Full<Bytes>> {
         .expect("valid response")
 }
 
-fn json_response(body: String) -> Response<Full<Bytes>> {
+/// Canonical schema version stamped on every JSON envelope emitted by the
+/// profiler/observe HTTP surface.
+///
+/// Consumers (`hew-observe`, sandbox-VM bridges, dashboard) read this value
+/// to detect when the producer's event shape has drifted. The string is
+/// duplicated on the consumer side (`hew_observe::client::OBSERVE_SCHEMA_VERSION`)
+/// because `hew-observe` does not depend on `hew-runtime`; both copies must
+/// move together when the envelope shape evolves. Per R58 Q136 (Option B),
+/// the field lives on the JSON envelope only — the `#[repr(C)]` payloads
+/// crossing the FFI boundary (e.g. `CrashReport`) are untouched.
+pub const OBSERVE_SCHEMA_VERSION: &str = "v0.5";
+
+/// Wrap a raw JSON document body in the canonical observe envelope:
+/// `{"schema_version":"<OBSERVE_SCHEMA_VERSION>","data":<body>}`.
+///
+/// `body` MUST already be a valid JSON value (object, array, string, number,
+/// boolean, or null). The function does not validate; callers in this module
+/// build the inner JSON via `serde_json` / manual `format!` and always emit
+/// well-formed JSON.
+pub(crate) fn envelope_json(body: &str) -> String {
+    let mut out = String::with_capacity(body.len() + OBSERVE_SCHEMA_VERSION.len() + 32);
+    out.push_str(r#"{"schema_version":""#);
+    out.push_str(OBSERVE_SCHEMA_VERSION);
+    out.push_str(r#"","data":"#);
+    out.push_str(body);
+    out.push('}');
+    out
+}
+
+fn json_response(body: &str) -> Response<Full<Bytes>> {
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json; charset=utf-8")
-        .body(Full::new(Bytes::from(body)))
+        .header("X-Hew-Schema-Version", OBSERVE_SCHEMA_VERSION)
+        .body(Full::new(Bytes::from(envelope_json(body))))
         .expect("valid response")
 }
 
@@ -254,7 +310,7 @@ fn serve_current_metrics(ring: &Arc<Mutex<MetricsRing>>) -> Response<Full<Bytes>
     let snap = crate::profiler::metrics::MetricsSnapshot::capture(ring_guard.epoch());
     drop(ring_guard);
 
-    json_response(current_metrics_json(&snap))
+    json_response(&current_metrics_json(&snap))
 }
 
 fn current_metrics_json(snap: &crate::profiler::metrics::MetricsSnapshot) -> String {
@@ -293,7 +349,7 @@ fn serve_memory() -> Response<Full<Bytes>> {
         stats.bytes_live,
         stats.peak_bytes_live,
     );
-    json_response(json)
+    json_response(&json)
 }
 
 /// `GET /api/metrics/history` — time-series from ring buffer.
@@ -302,7 +358,7 @@ fn serve_history(ring: &Arc<Mutex<MetricsRing>>) -> Response<Full<Bytes>> {
     let entries = ring_guard.read_all();
     drop(ring_guard);
 
-    json_response(history_json(&entries))
+    json_response(&history_json(&entries))
 }
 
 fn history_json(entries: &[crate::profiler::metrics::MetricsSnapshot]) -> String {
@@ -380,7 +436,7 @@ fn actors_json(actors: &[crate::profiler::actor_registry::ActorSnapshot]) -> Str
 /// `GET /api/actors` — per-actor stats and mailbox depths.
 fn serve_actors() -> Response<Full<Bytes>> {
     let actors = crate::profiler::actor_registry::snapshot_all();
-    json_response(actors_json(&actors))
+    json_response(&actors_json(&actors))
 }
 
 // ── Distributed runtime endpoints ───────────────────────────────────────
@@ -388,55 +444,55 @@ fn serve_actors() -> Response<Full<Bytes>> {
 /// `GET /api/cluster/members` — cluster membership snapshot.
 fn serve_cluster_members(ctx: &ProfilerContext) -> Response<Full<Bytes>> {
     if ctx.cluster.is_null() {
-        return json_response("[]".to_owned());
+        return json_response("[]");
     }
     // SAFETY: pointer is non-null and points to a valid HewCluster that
     // outlives the profiler thread. Internal access is mutex-protected.
     let cluster = unsafe { &*ctx.cluster };
     let json = crate::cluster::snapshot_members_json(cluster);
-    json_response(json)
+    json_response(&json)
 }
 
 /// `GET /api/connections` — connection snapshot.
 fn serve_connections(ctx: &ProfilerContext) -> Response<Full<Bytes>> {
     if ctx.connmgr.is_null() {
-        return json_response("[]".to_owned());
+        return json_response("[]");
     }
     // SAFETY: pointer is non-null and points to a valid HewConnMgr that
     // outlives the profiler thread. Internal access is mutex-protected.
     let mgr = unsafe { &*ctx.connmgr };
     let json = crate::connection::snapshot_connections_json(mgr);
-    json_response(json)
+    json_response(&json)
 }
 
 /// `GET /api/routing/table` — routing table snapshot.
 fn serve_routing_table(ctx: &ProfilerContext) -> Response<Full<Bytes>> {
     if ctx.routing.is_null() {
-        return json_response(r#"{"local_node_id":0,"routes":[]}"#.to_owned());
+        return json_response(r#"{"local_node_id":0,"routes":[]}"#);
     }
     // SAFETY: pointer is non-null and points to a valid HewRoutingTable
     // that outlives the profiler thread. Internal access is RwLock-protected.
     let table = unsafe { &*ctx.routing };
     let json = crate::routing::snapshot_routing_json(table);
-    json_response(json)
+    json_response(&json)
 }
 
 /// `GET /api/traces` — drain trace events.
 fn serve_traces() -> Response<Full<Bytes>> {
     let json = crate::tracing::drain_events_json();
-    json_response(json)
+    json_response(&json)
 }
 
 /// `GET /api/supervisors` — supervision tree rows.
 fn serve_supervisors() -> Response<Full<Bytes>> {
     let json = crate::supervisor::snapshot_tree_json();
-    json_response(json)
+    json_response(&json)
 }
 
 /// `GET /api/crashes` — recent crash log entries.
 fn serve_crashes() -> Response<Full<Bytes>> {
     let json = crate::crash::snapshot_crashes_json();
-    json_response(json)
+    json_response(&json)
 }
 
 #[cfg(test)]
@@ -542,6 +598,32 @@ mod tests {
                 "tec": 18
             }])
         );
+    }
+
+    #[test]
+    fn envelope_json_wraps_array_body_with_schema_version() {
+        let env = envelope_json("[]");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&env).expect("envelope must be valid JSON");
+        assert_eq!(parsed["schema_version"], json!("v0.5"));
+        assert_eq!(parsed["data"], json!([]));
+    }
+
+    #[test]
+    fn envelope_json_wraps_object_body_with_schema_version() {
+        let env = envelope_json(r#"{"local_node_id":1,"routes":[]}"#);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&env).expect("envelope must be valid JSON");
+        assert_eq!(parsed["schema_version"], json!("v0.5"));
+        assert_eq!(parsed["data"]["local_node_id"], json!(1));
+    }
+
+    #[test]
+    fn observe_schema_version_matches_canonical_constant() {
+        // The producer + consumer copies of the schema-version string must
+        // stay in lockstep. Hard-coded here so a drift in either crate trips
+        // a producer-side test alongside any consumer-side mismatch.
+        assert_eq!(OBSERVE_SCHEMA_VERSION, "v0.5");
     }
 
     #[test]

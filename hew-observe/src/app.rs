@@ -1360,7 +1360,14 @@ mod tests {
             .split_whitespace()
             .nth(1)
             .expect("extract trace request path");
-        let body = trace_response_body(path, state);
+        let inner = trace_response_body(path, state);
+        // Wrap in the canonical observe envelope so the production
+        // ProfilerClient (which unwraps `{schema_version, data}`) can parse
+        // these test responses. Mirrors hew_runtime::profiler::server::envelope_json.
+        let body = format!(
+            r#"{{"schema_version":"{}","data":{inner}}}"#,
+            crate::client::OBSERVE_SCHEMA_VERSION,
+        );
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()

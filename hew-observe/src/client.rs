@@ -10,6 +10,29 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+/// Canonical schema version expected on every JSON envelope returned by the
+/// profiler/observe HTTP surface.
+///
+/// Mirrors `hew_runtime::profiler::OBSERVE_SCHEMA_VERSION`. The two crates
+/// duplicate the literal because `hew-observe` deliberately does not depend on
+/// `hew-runtime`; both copies must move together when the envelope shape
+/// evolves. Producer and consumer at v0.5 emit/accept `"v0.5"`; no
+/// cross-version compatibility shims (per R58 Q136 Option B).
+pub const OBSERVE_SCHEMA_VERSION: &str = "v0.5";
+
+/// Canonical envelope returned by every `/api/*` JSON endpoint:
+/// `{"schema_version": "<OBSERVE_SCHEMA_VERSION>", "data": <body>}`.
+///
+/// The producer (`hew_runtime::profiler::server::envelope_json`) wraps every
+/// response body in this shape so downstream consumers (this client, the
+/// dashboard, the sandbox-VM bridge) can detect when the producer's event
+/// shape has drifted.
+#[derive(Debug, Deserialize)]
+struct Envelope<T> {
+    schema_version: String,
+    data: T,
+}
+
 /// Typed failure categories from a profiler client request.
 ///
 /// Available via [`ProfilerClient::last_error`] after any `fetch_*` call
@@ -457,15 +480,31 @@ impl ProfilerClient {
     }
 
     /// Fetch JSON from an endpoint. Does NOT affect connection status.
+    ///
+    /// Parses the canonical observe envelope
+    /// (`{"schema_version":"v0.5","data":<T>}`) — bare bodies emitted by a
+    /// pre-envelope producer fail with `ClientError::Parse`. The envelope's
+    /// `schema_version` field is checked against [`OBSERVE_SCHEMA_VERSION`];
+    /// a mismatch surfaces as `ClientError::BadStatus` so the caller's
+    /// `last_error` flags the version drift instead of silently returning
+    /// possibly-shape-shifted data.
     fn get_json<T: serde::de::DeserializeOwned>(&mut self, path: &str) -> Option<T> {
         let body = self.get_bytes(path)?;
-        match serde_json::from_slice(&body) {
-            Ok(v) => Some(v),
+        let envelope: Envelope<T> = match serde_json::from_slice(&body) {
+            Ok(v) => v,
             Err(e) => {
                 self.last_error = Some(ClientError::Parse(e));
-                None
+                return None;
             }
+        };
+        if envelope.schema_version != OBSERVE_SCHEMA_VERSION {
+            self.last_error = Some(ClientError::BadStatus(format!(
+                "schema_version mismatch: expected {OBSERVE_SCHEMA_VERSION}, got {}",
+                envelope.schema_version
+            )));
+            return None;
         }
+        Some(envelope.data)
     }
 
     /// Raw GET request returning the response body bytes.
@@ -701,6 +740,96 @@ mod tests {
         );
     }
 
+    // ── Schema-version envelope unwrapping ────────────────────────────────
+
+    /// `get_json` MUST peel the canonical envelope
+    /// (`{"schema_version":"v0.5","data":<body>}`) before handing the inner
+    /// `T` back. Producer-side coverage lives in
+    /// `hew_runtime::profiler::server`; this test pins the consumer half.
+    #[test]
+    fn get_json_unwraps_canonical_envelope_and_returns_inner_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("envelope_ok.sock");
+
+        let inner = r#"[{"time_s":2.5,"actor_id":17,"signal":202,"trap_kind":"DivideByZero","msg_type":3,"fault_addr":0}]"#;
+        let body = format!(r#"{{"schema_version":"{OBSERVE_SCHEMA_VERSION}","data":{inner}}}"#);
+        let body_len = body.len();
+        let response: &'static str = Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{body}").into_boxed_str(),
+        );
+        serve_once(&sock, response);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut client = ProfilerClient::new_unix(&sock);
+        let crashes = client
+            .fetch_crashes()
+            .expect("envelope-wrapped crash list must parse");
+        assert_eq!(crashes.len(), 1);
+        assert_eq!(crashes[0].actor_id, 17);
+        assert_eq!(crashes[0].trap_kind, "DivideByZero");
+        assert!(
+            client.last_error.is_none(),
+            "successful envelope fetch must clear last_error, got {:?}",
+            client.last_error
+        );
+    }
+
+    /// A producer that drifts to a non-canonical `schema_version` MUST be
+    /// surfaced via `last_error` (not silently returned) so downstream tools
+    /// can prompt the user to upgrade either side.
+    #[test]
+    fn get_json_rejects_envelope_with_mismatched_schema_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("envelope_drift.sock");
+
+        let body = r#"{"schema_version":"v9.9","data":[]}"#;
+        let body_len = body.len();
+        let response: &'static str = Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{body}").into_boxed_str(),
+        );
+        serve_once(&sock, response);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut client = ProfilerClient::new_unix(&sock);
+        let result = client.fetch_crashes();
+        assert!(result.is_none(), "schema drift must short-circuit fetch");
+        assert!(
+            matches!(
+                client.last_error,
+                Some(ClientError::BadStatus(ref s)) if s.contains("schema_version") && s.contains("v9.9")
+            ),
+            "expected schema_version drift to surface as BadStatus, got {:?}",
+            client.last_error
+        );
+    }
+
+    /// A bare (un-wrapped) body emitted by a pre-envelope producer fails with
+    /// `ClientError::Parse` rather than silently degrading — R58 Q136 Option
+    /// B is field-only with no compat shims, so version drift on the wire
+    /// must be loud.
+    #[test]
+    fn get_json_rejects_bare_body_without_envelope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("envelope_bare.sock");
+
+        let body = "[]";
+        let body_len = body.len();
+        let response: &'static str = Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{body}").into_boxed_str(),
+        );
+        serve_once(&sock, response);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut client = ProfilerClient::new_unix(&sock);
+        let result = client.fetch_crashes();
+        assert!(result.is_none(), "bare body must fail without envelope");
+        assert!(
+            matches!(client.last_error, Some(ClientError::Parse(_))),
+            "expected ClientError::Parse for bare body, got {:?}",
+            client.last_error
+        );
+    }
+
     // ── connect error ─────────────────────────────────────────────────────
 
     #[test]
@@ -778,8 +907,12 @@ mod tests {
         client.fetch_metrics();
         assert!(client.last_error.is_some());
 
-        // Swap to a socket that serves valid metrics JSON.
-        let metrics_json = r#"{"timestamp_secs":1.0,"tasks_spawned":0,"tasks_completed":0,"steals":0,"messages_sent":0,"messages_received":0,"active_workers":0,"alloc_count":0,"dealloc_count":0,"bytes_allocated":0,"bytes_freed":0,"bytes_live":0,"peak_bytes_live":0,"tcp_bytes_read":0,"tcp_bytes_written":0,"tcp_accept_count":0,"tcp_connect_count":0,"tcp_error_count":0}"#;
+        // Swap to a socket that serves valid metrics JSON wrapped in the
+        // canonical observe envelope (producer/consumer at v0.5 emit/accept
+        // `{"schema_version":"v0.5","data":<body>}`).
+        let metrics_inner = r#"{"timestamp_secs":1.0,"tasks_spawned":0,"tasks_completed":0,"steals":0,"messages_sent":0,"messages_received":0,"active_workers":0,"alloc_count":0,"dealloc_count":0,"bytes_allocated":0,"bytes_freed":0,"bytes_live":0,"peak_bytes_live":0,"tcp_bytes_read":0,"tcp_bytes_written":0,"tcp_accept_count":0,"tcp_connect_count":0,"tcp_error_count":0}"#;
+        let metrics_json =
+            format!(r#"{{"schema_version":"{OBSERVE_SCHEMA_VERSION}","data":{metrics_inner}}}"#);
         let body_len = metrics_json.len();
         let response =
             format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{metrics_json}");

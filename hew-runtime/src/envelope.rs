@@ -1,10 +1,8 @@
 //! CBOR wire envelope types — the Rust-native representation of the Hew wire
 //! protocol described by `schemas/envelope.cddl`.
 //!
-//! This module contains **type definitions only**. Encoding and decoding
-//! are implemented in `cbor_envelope.rs` (W2). The types here carry enough
-//! serde machinery for ciborium to round-trip them, but no codec surface is
-//! exposed from this module.
+//! This module contains the native CBOR type definitions plus the small
+//! fail-closed codec surface used by runtime call sites.
 //!
 //! # Payload encoding
 //!
@@ -126,6 +124,50 @@ pub struct EnvelopeFrame {
     pub source_node_id: u16,
 }
 
+/// Errors returned by the fail-closed envelope encoder.
+#[derive(Debug)]
+pub enum EncodeError {
+    /// A caller supplied a non-zero payload length with a null payload pointer.
+    NullPayload { payload_len: usize },
+    /// The message type is outside the range supported by the legacy runtime
+    /// message dispatch surface.
+    InvalidMsgType { msg_type: i32 },
+    /// The underlying CBOR writer failed.
+    Cbor(ciborium::ser::Error<std::io::Error>),
+}
+
+impl std::fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NullPayload { payload_len } => {
+                write!(
+                    f,
+                    "payload pointer is null for non-zero payload_len {payload_len}"
+                )
+            }
+            Self::InvalidMsgType { msg_type } => {
+                write!(f, "msg_type {msg_type} out of valid range")
+            }
+            Self::Cbor(e) => write!(f, "CBOR encode failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for EncodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Cbor(e) => Some(e),
+            Self::NullPayload { .. } | Self::InvalidMsgType { .. } => None,
+        }
+    }
+}
+
+impl From<ciborium::ser::Error<std::io::Error>> for EncodeError {
+    fn from(e: ciborium::ser::Error<std::io::Error>) -> Self {
+        Self::Cbor(e)
+    }
+}
+
 impl EnvelopeFrame {
     /// Construct a fire-and-forget envelope with no reply routing.
     ///
@@ -148,6 +190,58 @@ impl EnvelopeFrame {
             source_node_id: 0,
         }
     }
+}
+
+/// Encode a CBOR [`EnvelopeFrame`].
+///
+/// # Errors
+///
+/// Returns [`EncodeError::InvalidMsgType`] when `msg_type` is outside the
+/// runtime dispatch range and [`EncodeError::Cbor`] when ciborium fails to
+/// serialise the frame.
+pub fn encode_envelope_frame(frame: &EnvelopeFrame) -> Result<Vec<u8>, EncodeError> {
+    if !(0..=65_535).contains(&frame.msg_type) {
+        return Err(EncodeError::InvalidMsgType {
+            msg_type: frame.msg_type,
+        });
+    }
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(frame, &mut bytes)?;
+    Ok(bytes)
+}
+
+/// Build and encode an [`EnvelopeFrame`] from a C-ABI payload pointer.
+///
+/// # Safety
+///
+/// `payload` must be valid for `payload_len` readable bytes, or null when
+/// `payload_len` is zero.
+pub(crate) unsafe fn encode_envelope_frame_from_raw_parts(
+    target_actor_id: u64,
+    source_actor_id: u64,
+    msg_type: i32,
+    payload: *const u8,
+    payload_len: usize,
+    request_id: u64,
+    source_node_id: u16,
+) -> Result<Vec<u8>, EncodeError> {
+    let payload = if payload_len == 0 {
+        Vec::new()
+    } else if payload.is_null() {
+        return Err(EncodeError::NullPayload { payload_len });
+    } else {
+        // SAFETY: caller guarantees `payload` is valid for `payload_len` bytes.
+        unsafe { std::slice::from_raw_parts(payload, payload_len) }.to_vec()
+    };
+    encode_envelope_frame(&EnvelopeFrame {
+        version: WIRE_VERSION,
+        target_actor_id,
+        source_actor_id,
+        msg_type,
+        payload,
+        request_id,
+        source_node_id,
+    })
 }
 
 // ── Fail-closed decode surface ────────────────────────────────────────────

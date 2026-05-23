@@ -21,6 +21,7 @@ use std::thread::{self, JoinHandle};
 
 use crate::cluster::{self, ClusterConfig, HewCluster};
 use crate::connection::{self, HewConnMgr};
+use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::routing::{self, HewRoutingTable};
 use crate::transport::{self, HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
@@ -1001,37 +1002,33 @@ fn send_rejection_reply(
             return;
         }
 
-        let mut reason_payload = [AskRejectionReasonCode::encode(reason)
+        let reason_payload = [AskRejectionReasonCode::encode(reason)
             .expect("remote ask rejection reason must use a supported rejection-reason code")];
         // Encode the rejection envelope: request_id identifies the pending ask;
         // source_node_id = 0 marks it as a reply; msg_type = HEW_REPLY_REJECT_MSG_TYPE
         // distinguishes it from a normal (possibly void) success reply.
-        let env = crate::wire::HewWireEnvelope {
-            target_actor_id: 0,
-            source_actor_id: 0,
-            msg_type: HEW_REPLY_REJECT_MSG_TYPE,
-            payload_size: 1,
-            payload: reason_payload.as_mut_ptr(),
-            request_id,
-            source_node_id: 0,
+        // SAFETY: `reason_payload` is a stack byte array valid for its length.
+        let bytes = match unsafe {
+            encode_envelope_frame_from_raw_parts(
+                0,
+                0,
+                HEW_REPLY_REJECT_MSG_TYPE,
+                reason_payload.as_ptr(),
+                reason_payload.len(),
+                request_id,
+                0,
+            )
+        } {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                set_last_error(format!("send_rejection_reply: {err}"));
+                return;
+            }
         };
-        // SAFETY: zeroed is valid for HewWireBuf.
-        let mut wire_buf: crate::wire::HewWireBuf = unsafe { std::mem::zeroed() };
-        // SAFETY: wire_buf is a valid stack allocation.
-        unsafe { crate::wire::hew_wire_buf_init(&raw mut wire_buf) };
-        // SAFETY: wire_buf and env are valid stack locals.
-        if unsafe { crate::wire::hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0
-        {
-            // SAFETY: wire_buf was initialised above.
-            unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
-            return;
-        }
-        // SAFETY: conn_mgr and conn_id are valid; wire_buf is initialised.
+        // SAFETY: conn_mgr and conn_id are valid; bytes is CBOR encoded.
         unsafe {
-            connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, wire_buf.data, wire_buf.len)
+            connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, bytes.as_ptr(), bytes.len())
         };
-        // SAFETY: wire_buf was initialised above.
-        unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
     });
 }
 
@@ -1079,40 +1076,32 @@ fn send_reply_envelope(
 
         // Encode the reply envelope with request_id set and source_node_id = 0
         // to mark it as a reply (not a new request).
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "reply payload size bounded by wire buffer limits"
-        )]
-        let env = crate::wire::HewWireEnvelope {
-            target_actor_id: 0,
-            source_actor_id: 0,
-            msg_type: 0,
-            payload_size: reply_data.len() as u32,
-            payload: reply_data.as_ptr().cast_mut(),
-            request_id,
-            source_node_id: 0,
+        // SAFETY: `reply_data.as_ptr()` is valid for `reply_data.len()` bytes.
+        let bytes = match unsafe {
+            encode_envelope_frame_from_raw_parts(
+                0,
+                0,
+                0,
+                reply_data.as_ptr(),
+                reply_data.len(),
+                request_id,
+                0,
+            )
+        } {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                set_last_error(format!("send_reply_envelope: {err}"));
+                return;
+            }
         };
-        // SAFETY: zeroed is valid for HewWireBuf.
-        let mut wire_buf: crate::wire::HewWireBuf = unsafe { std::mem::zeroed() };
-        // SAFETY: wire_buf is a valid stack allocation.
-        unsafe { crate::wire::hew_wire_buf_init(&raw mut wire_buf) };
-        // SAFETY: wire_buf and env are valid stack locals.
-        if unsafe { crate::wire::hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0
-        {
-            // SAFETY: wire_buf was initialised above.
-            unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
-            return;
-        }
 
         // Send via conn_mgr so noise encryption is applied when the connection
         // is encrypted. This replaces the former raw transport send which would
         // send unencrypted data over an encrypted connection.
-        // SAFETY: conn_mgr and conn_id are valid; wire_buf is initialised.
+        // SAFETY: conn_mgr and conn_id are valid; bytes is CBOR encoded.
         unsafe {
-            connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, wire_buf.data, wire_buf.len)
+            connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, bytes.as_ptr(), bytes.len())
         };
-        // SAFETY: wire_buf was initialised above.
-        unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
     });
 }
 
@@ -2113,10 +2102,6 @@ enum RemoteAskSetupResult {
 /// - `data` must point to at least `size` readable bytes, or be null when
 ///   `size` is 0.
 #[no_mangle]
-#[expect(
-    clippy::too_many_lines,
-    reason = "hew_node_api_ask is a complex remote RPC entrypoint with setup + wait stages"
-)]
 pub unsafe extern "C" fn hew_node_api_ask(
     pid: u64,
     msg_type: i32,
@@ -2165,45 +2150,37 @@ pub unsafe extern "C" fn hew_node_api_ask(
             REPLY_TABLE.register(ConnectionKey::new(node.conn_mgr.cast_const(), conn_id));
 
         // Encode the ask envelope with request_id and source_node_id.
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "payload size bounded by wire buffer limits"
-        )]
-        let env = crate::wire::HewWireEnvelope {
-            target_actor_id: pid,
-            source_actor_id: 0,
-            msg_type,
-            payload_size: size as u32,
-            payload: data.cast::<u8>(),
-            request_id,
-            source_node_id: node.node_id,
+        // SAFETY: caller guarantees `data` is valid for `size` bytes.
+        let bytes = match unsafe {
+            encode_envelope_frame_from_raw_parts(
+                pid,
+                0,
+                msg_type,
+                data.cast::<u8>(),
+                size,
+                request_id,
+                node.node_id,
+            )
+        } {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                set_last_error(format!("hew_node_api_ask: {err}"));
+                REPLY_TABLE.remove(request_id);
+                return RemoteAskSetupResult::Error(AskError::EncodeFailed);
+            }
         };
-        // SAFETY: HewWireBuf is a plain-old-data struct; zeroing is valid initialisation.
-        let mut wire_buf: crate::wire::HewWireBuf = unsafe { std::mem::zeroed() };
-        // SAFETY: wire_buf is a valid stack allocation.
-        unsafe { crate::wire::hew_wire_buf_init(&raw mut wire_buf) };
-        // SAFETY: wire_buf and env are valid stack locals.
-        if unsafe { crate::wire::hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0
-        {
-            // SAFETY: wire_buf was initialised above.
-            unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
-            REPLY_TABLE.remove(request_id);
-            return RemoteAskSetupResult::Error(AskError::EncodeFailed);
-        }
 
         // Send the encoded envelope through the connection manager so noise
         // encryption is applied when the connection is encrypted.
-        // SAFETY: conn_mgr is valid while node is running; wire_buf is valid.
+        // SAFETY: conn_mgr is valid while node is running; bytes is CBOR encoded.
         let send_ok = unsafe {
             connection::hew_connmgr_send_preencoded(
                 node.conn_mgr,
                 conn_id,
-                wire_buf.data,
-                wire_buf.len,
+                bytes.as_ptr(),
+                bytes.len(),
             ) == 0
         };
-        // SAFETY: wire_buf was initialised above.
-        unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
 
         if !send_ok {
             REPLY_TABLE.remove(request_id);

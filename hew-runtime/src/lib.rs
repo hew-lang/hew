@@ -122,8 +122,8 @@ pub(crate) mod lifetime;
 pub(crate) mod util;
 
 /// CBOR wire envelope types — the Rust-native representation of the Hew wire
-/// protocol. Codec (encode/decode) is added in W2; this module is type-shape
-/// only.
+/// protocol plus the fail-closed encode/decode helpers used by runtime
+/// transport paths.
 pub mod envelope;
 
 #[cfg(test)]

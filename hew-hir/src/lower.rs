@@ -39,6 +39,45 @@ type ScopeMap = HashMap<String, ScopeBinding>;
 type OuterClosureBinding = (String, ResolvedTy, std::ops::Range<usize>);
 type ClosureCaptureCandidate = (BindingId, String, std::ops::Range<usize>);
 const SYNTHETIC_OPTION_ITEM: ItemId = ItemId(u32::MAX - 1);
+const SYNTHETIC_RESULT_ITEM: ItemId = ItemId(u32::MAX - 2);
+
+/// Bare-name variants of built-in tagged unions. Counted into the pre-pass's
+/// `bare_counts` so a user enum that redeclares one of them correctly marks
+/// the bare form as ambiguous.
+const BUILTIN_ENUM_VARIANT_BARE_NAMES: &[&str] = &["Some", "None", "Ok", "Err"];
+
+/// Description of a built-in tagged union for the HIR pre-pass that seeds
+/// the same registries user enums populate (`machine_ctor_registry`,
+/// `enum_variants_by_name`, `enum_type_params`, `enum_item_ids`). Variant
+/// payload type-parameter names index into `type_params`.
+struct BuiltinEnumSpec {
+    type_name: &'static str,
+    item_id: ItemId,
+    type_params: &'static [&'static str],
+    variant_names: &'static [&'static str],
+    /// Per-variant payload, listed as the type-parameter names that appear
+    /// in the variant. Empty inner slice means a unit variant.
+    variant_payloads: &'static [&'static [&'static str]],
+}
+
+fn builtin_enum_specs() -> &'static [BuiltinEnumSpec] {
+    &[
+        BuiltinEnumSpec {
+            type_name: "Option",
+            item_id: SYNTHETIC_OPTION_ITEM,
+            type_params: &["T"],
+            variant_names: &["Some", "None"],
+            variant_payloads: &[&["T"], &[]],
+        },
+        BuiltinEnumSpec {
+            type_name: "Result",
+            item_id: SYNTHETIC_RESULT_ITEM,
+            type_params: &["T", "E"],
+            variant_names: &["Ok", "Err"],
+            variant_payloads: &[&["T"], &["E"]],
+        },
+    ]
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct ResolutionCtx;
@@ -344,7 +383,18 @@ pub fn lower_program_with_mono_cap(
         // First scan: count bare-name occurrences across machines' states,
         // machine events, and user enum unit variants. A bare name with
         // count > 1 is ambiguous and only the qualified form is registered.
+        //
+        // Built-in tagged unions (`Option<T>`, `Result<T, E>`) participate
+        // in the same registry so `Ok(42)`, `None`, etc. lower through the
+        // same `MachineVariantCtor` / match-arm path as user enums. Each
+        // builtin variant contributes one count, so a user enum that
+        // redeclares `Some` or `Ok` will correctly mark the bare name as
+        // ambiguous (qualified forms still resolve via `Option::Some`,
+        // `Result::Ok`).
         let mut bare_counts: HashMap<String, usize> = HashMap::new();
+        for name in BUILTIN_ENUM_VARIANT_BARE_NAMES {
+            *bare_counts.entry((*name).to_string()).or_insert(0) += 1;
+        }
         for (item, _) in &program.items {
             match item {
                 Item::Machine(md) => {
@@ -420,6 +470,69 @@ pub fn lower_program_with_mono_cap(
                 _ => {}
             }
         }
+        // Register built-in tagged unions (`Option<T>`, `Result<T, E>`).
+        // These have no `Item::TypeDecl` in user source — the checker treats
+        // them as primitive — but the HIR lowering pipeline routes their
+        // constructors (`Some/None/Ok/Err`) and match arms through the same
+        // `machine_ctor_registry` / `enum_variants_by_name` registries as
+        // user enums. Without these entries, `Ok(42)` would lower as an
+        // unresolved identifier and `match r { Ok(n) => ... }` would emit
+        // `match arm variant not registered in machine/enum ctor registry`.
+        for spec in builtin_enum_specs() {
+            for (variant_idx, variant_name) in spec.variant_names.iter().enumerate() {
+                let qualified = format!("{}::{}", spec.type_name, variant_name);
+                ctx.machine_ctor_registry
+                    .insert(qualified, (spec.type_name.to_string(), variant_idx));
+                if bare_counts.get(*variant_name).copied().unwrap_or(0) == 1 {
+                    ctx.machine_ctor_registry.insert(
+                        (*variant_name).to_string(),
+                        (spec.type_name.to_string(), variant_idx),
+                    );
+                }
+            }
+        }
+    }
+
+    // Seed `enum_variants_by_name`, `enum_type_params`, and `enum_item_ids`
+    // for the built-in tagged unions. These mirror what the type-decl second
+    // pass below populates for user enums; the variant payload types reference
+    // the generic type-parameter names (e.g. `Named { name: "T", args: [] }`)
+    // so `substitute_type_params` in `try_register_enum_instantiation`
+    // produces correctly substituted per-instantiation layouts that flow into
+    // MIR via `module.enum_layouts`.
+    for spec in builtin_enum_specs() {
+        let variants: Vec<HirVariant> = spec
+            .variant_names
+            .iter()
+            .zip(spec.variant_payloads.iter())
+            .map(|(name, payload_params)| {
+                let kind = if payload_params.is_empty() {
+                    HirVariantKind::Unit
+                } else {
+                    HirVariantKind::Tuple(
+                        payload_params
+                            .iter()
+                            .map(|p| ResolvedTy::Named {
+                                name: (*p).to_string(),
+                                args: Vec::new(),
+                            })
+                            .collect(),
+                    )
+                };
+                HirVariant {
+                    name: (*name).to_string(),
+                    kind,
+                }
+            })
+            .collect();
+        ctx.enum_variants_by_name
+            .insert(spec.type_name.to_string(), variants);
+        ctx.enum_type_params.insert(
+            spec.type_name.to_string(),
+            spec.type_params.iter().map(|s| (*s).to_string()).collect(),
+        );
+        ctx.enum_item_ids
+            .insert(spec.type_name.to_string(), spec.item_id);
     }
 
     // Discard pre-pass diagnostics from `lower_type`; the third pass re-emits
@@ -3554,6 +3667,25 @@ impl LowerCtx {
                     span: span.clone(),
                 };
                 HirStmtKind::Expr(for_expr)
+            }
+            Stmt::Match { scrutinee, arms } => {
+                // `match scrut { ... }` in statement position. The parser
+                // produces `Stmt::Match` distinct from `Stmt::Expression(Expr::Match)`,
+                // so we route through the same `lower_match_expr` builder used by
+                // expression-position match and wrap the result as a Unit-typed
+                // statement-expression. The match's result type is discarded —
+                // a statement-position match's value is unused.
+                let (kind, ty) = self.lower_match_expr(scrutinee, arms, &span);
+                let match_expr = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                    ty,
+                    intent: IntentKind::Read,
+                    kind,
+                    span: span.clone(),
+                };
+                HirStmtKind::Expr(match_expr)
             }
             _ => {
                 self.unsupported(span.clone(), "statement", "slice-2");

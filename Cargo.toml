@@ -35,7 +35,6 @@ members = [
   "std/misc/uuid",
   "std/misc/log",
   "hew-cli",
-  "hew-serialize",
   "hew-lexer",
   "hew-lib",
   "hew-lsp",

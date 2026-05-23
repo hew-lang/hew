@@ -1552,7 +1552,6 @@ dependencies = [
  "hew-mir",
  "hew-parser",
  "hew-runtime",
- "hew-serialize",
  "hew-types",
  "libc",
  "notify",
@@ -1584,7 +1583,6 @@ version = "0.5.0-pre"
 dependencies = [
  "hew-lexer",
  "hew-parser",
- "hew-serialize",
  "hew-types",
  "serde",
  "tempfile",
@@ -1751,16 +1749,6 @@ dependencies = [
  "tempfile",
  "walkdir",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "hew-serialize"
-version = "0.5.0-pre"
-dependencies = [
- "hew-parser",
- "hew-types",
- "serde",
- "stacker",
 ]
 
 [[package]]

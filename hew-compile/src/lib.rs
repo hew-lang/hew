@@ -3,13 +3,6 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
-use hew_serialize::{
-    build_actor_send_aliasing_entries, build_assign_target_kind_entries,
-    build_assign_target_shape_entries, build_call_type_args_entries, build_lowering_fact_entries,
-    build_method_call_receiver_kind_entries, ActorSendAliasingEntry, AssignTargetKindEntry,
-    AssignTargetShapeEntry, CallTypeArgsEntry, ExprTypeEntry, LoweringFactEntry,
-    MethodCallReceiverKindEntry, TypeExprConversionError, TypeExprConversionKind,
-};
 use serde::{de::DeserializeOwned, Deserialize};
 
 #[derive(Debug, Clone, Default)]
@@ -37,10 +30,6 @@ pub enum FrontendDiagnosticKind {
     Message(String),
     Parse(hew_parser::ParseError),
     Type(hew_types::TypeError),
-    InferredType {
-        error: TypeExprConversionError,
-        fatal: bool,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -72,19 +61,6 @@ impl FrontendDiagnostic {
             source: Some(source.to_string()),
             filename: Some(filename.to_string()),
             kind: FrontendDiagnosticKind::Type(diagnostic),
-        }
-    }
-
-    fn inferred(
-        source: Option<String>,
-        filename: Option<String>,
-        error: TypeExprConversionError,
-        fatal: bool,
-    ) -> Self {
-        Self {
-            source,
-            filename,
-            kind: FrontendDiagnosticKind::InferredType { error, fatal },
         }
     }
 }
@@ -120,7 +96,6 @@ fn is_warning_diagnostic(d: &FrontendDiagnostic) -> bool {
     match &d.kind {
         FrontendDiagnosticKind::Type(e) => e.severity == hew_types::error::Severity::Warning,
         FrontendDiagnosticKind::Parse(e) => e.severity == hew_parser::Severity::Warning,
-        FrontendDiagnosticKind::InferredType { fatal, .. } => !fatal,
         FrontendDiagnosticKind::Message(_) => false,
     }
 }
@@ -130,8 +105,8 @@ fn is_warning_diagnostic(d: &FrontendDiagnostic) -> bool {
 /// accumulated diagnostics.  Otherwise return `Ok(())`.
 ///
 /// Call this in the success arm of every top-level pipeline function
-/// (`check_file`, `check_program`, `compile_file`, `compile_program`) so the
-/// behaviour is uniform across all public entry points.
+/// (`check_file`, `check_program`) so the behaviour is uniform across all
+/// public entry points.
 fn fail_on_warning_diagnostics(
     diagnostics: Vec<FrontendDiagnostic>,
     options: &FrontendOptions,
@@ -158,37 +133,16 @@ pub struct CheckOutput {
     /// available. Empty when `FrontendOptions::no_typecheck` is set or when
     /// type errors prevent the checker from completing.
     ///
-    /// The entries are sorted by `(start, end)` for stable output rendering.
-    ///
-    /// Intended for `--explain-cow` diagnostic rendering in `hew check`.
-    pub actor_send_aliasing: Vec<ActorSendAliasingEntry>,
+    /// Cloned directly from `TypeCheckOutput::actor_send_aliasing`; consumed
+    /// by `--explain-cow` rendering in `hew check`.
+    pub actor_send_aliasing:
+        HashMap<hew_types::check::SpanKey, hew_types::check::ActorSendAliasing>,
     /// Source content of the checked file, used for line/column mapping in
     /// `--explain-cow` output. Empty when type-checking is skipped.
     /// Source text of the checked file, retained so the CLI can render
     /// `--show-stack-hints` / `--explain-cow` lines with `file:line:col` attribution.
     /// Empty when the input could not be loaded.
     pub source: String,
-}
-
-#[derive(Debug)]
-pub struct FrontendArtifacts {
-    pub diagnostics: Vec<FrontendDiagnostic>,
-    pub source: String,
-    pub source_label: String,
-    pub program: Program,
-    pub expr_type_entries: Vec<ExprTypeEntry>,
-    pub method_call_receiver_kinds: Vec<MethodCallReceiverKindEntry>,
-    pub call_type_args: Vec<CallTypeArgsEntry>,
-    pub actor_send_aliasing: Vec<ActorSendAliasingEntry>,
-    pub assign_target_kinds: Vec<AssignTargetKindEntry>,
-    pub assign_target_shapes: Vec<AssignTargetShapeEntry>,
-    pub lowering_facts: Vec<LoweringFactEntry>,
-    pub handle_types: Vec<String>,
-    pub handle_bearing_structs: Vec<String>,
-    pub handle_type_repr: HashMap<String, String>,
-    pub drop_funcs: Vec<(String, String)>,
-    pub abs_source_path: Option<String>,
-    pub line_map: Option<Vec<usize>>,
 }
 
 #[derive(Clone, Debug)]
@@ -221,15 +175,6 @@ struct ProjectContext {
     manifest_deps: Option<Vec<String>>,
     package_name: Option<String>,
     locked_versions: Option<Vec<(String, String)>>,
-}
-
-struct CodegenMetadata {
-    handle_types: Vec<String>,
-    handle_bearing_structs: Vec<String>,
-    handle_type_repr: HashMap<String, String>,
-    drop_funcs: Vec<(String, String)>,
-    abs_source_path: Option<String>,
-    line_map: Option<Vec<usize>>,
 }
 
 type ModuleSourceMap = HashMap<String, (String, String)>;
@@ -564,7 +509,8 @@ pub fn check_program(
             let actor_send_aliasing = tcr
                 .tco
                 .as_ref()
-                .map_or_else(Vec::new, build_actor_send_aliasing_entries);
+                .map(|tco| tco.actor_send_aliasing.clone())
+                .unwrap_or_default();
             Ok(CheckOutput {
                 diagnostics,
                 stack_hints,
@@ -573,316 +519,6 @@ pub fn check_program(
             })
         }
         Err(failure) => Err(merge_prior_diagnostics(diagnostics, failure)),
-    }
-}
-
-fn inferred_type_serialization_diagnostic_is_fatal(error: &TypeExprConversionError) -> bool {
-    matches!(
-        error.kind(),
-        TypeExprConversionKind::UnresolvedVar
-            | TypeExprConversionKind::ErrorSentinel
-            | TypeExprConversionKind::LiteralKind
-            | TypeExprConversionKind::MethodCallRewriteFailed
-            | TypeExprConversionKind::Unsupported
-    )
-}
-
-enum DiagnosticSourceHint {
-    Root,
-    Imported(PathBuf),
-    UnknownImported,
-}
-
-fn diagnostic_source_hint(
-    span: &hew_parser::ast::Span,
-    imported_item_sources: &[(hew_parser::ast::Span, Option<PathBuf>)],
-) -> DiagnosticSourceHint {
-    match imported_item_sources
-        .iter()
-        .filter(|(item_span, _)| item_span.start <= span.start && item_span.end >= span.end)
-        .min_by_key(|(item_span, _)| item_span.end.saturating_sub(item_span.start))
-    {
-        Some((_, Some(path))) => DiagnosticSourceHint::Imported(path.clone()),
-        Some((_, None)) => DiagnosticSourceHint::UnknownImported,
-        None => DiagnosticSourceHint::Root,
-    }
-}
-
-fn diagnostic_span_key(
-    error: &TypeExprConversionError,
-    root_filename: &str,
-    imported_item_sources: &[(hew_parser::ast::Span, Option<PathBuf>)],
-) -> Option<(String, usize, usize)> {
-    let span = error.span()?;
-    match diagnostic_source_hint(span, imported_item_sources) {
-        DiagnosticSourceHint::Imported(path) => {
-            Some((path.display().to_string(), span.start, span.end))
-        }
-        DiagnosticSourceHint::UnknownImported => None,
-        DiagnosticSourceHint::Root => Some((root_filename.to_string(), span.start, span.end)),
-    }
-}
-
-#[expect(
-    clippy::implicit_hasher,
-    reason = "the CLI/frontend dedup set uses the default hasher today"
-)]
-pub fn collect_new_inferred_type_diagnostics<'a>(
-    diagnostics: &'a [TypeExprConversionError],
-    root_filename: &str,
-    imported_item_sources: &[(hew_parser::ast::Span, Option<PathBuf>)],
-    seen_spans: &mut HashSet<(String, usize, usize)>,
-) -> Vec<&'a TypeExprConversionError> {
-    diagnostics
-        .iter()
-        .filter(|diagnostic| {
-            match diagnostic_span_key(diagnostic, root_filename, imported_item_sources) {
-                Some(key) => seen_spans.insert(key),
-                None => true,
-            }
-        })
-        .collect()
-}
-
-fn inferred_type_diagnostic(
-    source: &str,
-    input: &str,
-    imported_item_sources: &[(hew_parser::ast::Span, Option<PathBuf>)],
-    error: &TypeExprConversionError,
-    fatal: bool,
-) -> FrontendDiagnostic {
-    if let Some(span) = error.span() {
-        match diagnostic_source_hint(span, imported_item_sources) {
-            DiagnosticSourceHint::Imported(path) => FrontendDiagnostic::inferred(
-                std::fs::read_to_string(&path).ok(),
-                Some(path.display().to_string()),
-                error.clone(),
-                fatal,
-            ),
-            DiagnosticSourceHint::UnknownImported => {
-                FrontendDiagnostic::inferred(None, None, error.clone(), fatal)
-            }
-            DiagnosticSourceHint::Root => FrontendDiagnostic::inferred(
-                Some(source.to_string()),
-                Some(input.to_string()),
-                error.clone(),
-                fatal,
-            ),
-        }
-    } else {
-        FrontendDiagnostic::inferred(None, None, error.clone(), fatal)
-    }
-}
-
-fn non_root_module_item_sources(
-    program: &Program,
-) -> Vec<(hew_parser::ast::Span, Option<PathBuf>)> {
-    let Some(module_graph) = &program.module_graph else {
-        return Vec::new();
-    };
-
-    let mut item_sources = Vec::new();
-    for mod_id in &module_graph.topo_order {
-        if *mod_id == module_graph.root {
-            continue;
-        }
-        let Some(module) = module_graph.modules.get(mod_id) else {
-            continue;
-        };
-        let source_path = module.source_paths.first().cloned();
-        item_sources.extend(
-            module
-                .items
-                .iter()
-                .map(|(_, span)| (span.clone(), source_path.clone())),
-        );
-    }
-    item_sources
-}
-
-#[expect(
-    clippy::type_complexity,
-    reason = "threads serializer side tables together with collected diagnostics"
-)]
-fn enrich_program_ast_with_diagnostics(
-    program: &mut Program,
-    tco: Option<&hew_types::check::TypeCheckOutput>,
-    module_registry: &hew_types::module_registry::ModuleRegistry,
-    source: &str,
-    input: &str,
-) -> Result<
-    (
-        (Vec<ExprTypeEntry>, Vec<MethodCallReceiverKindEntry>),
-        Vec<FrontendDiagnostic>,
-    ),
-    FrontendFailure,
-> {
-    let root_module_item_count = program.module_graph.as_ref().and_then(|graph| {
-        graph
-            .modules
-            .get(&graph.root)
-            .map(|module| module.items.len())
-    });
-    let mut imported_item_sources = flatten_import_items(program);
-    imported_item_sources.extend(non_root_module_item_sources(program));
-    let mut diagnostics = Vec::new();
-
-    let (expr_type_map, method_call_receiver_kinds) = if let Some(tco) = tco {
-        let mut seen_inferred_type_diagnostics = HashSet::new();
-        let mut fatal_inferred_type_diagnostic = false;
-        let enrich_diagnostics = hew_serialize::enrich_program(program, tco, module_registry)
-            .map_err(|e| {
-                FrontendFailure::message_only(format!("Error: cannot enrich inferred types: {e}"))
-            })?;
-
-        for diagnostic in collect_new_inferred_type_diagnostics(
-            enrich_diagnostics.diagnostics(),
-            input,
-            &imported_item_sources,
-            &mut seen_inferred_type_diagnostics,
-        ) {
-            let fatal = inferred_type_serialization_diagnostic_is_fatal(diagnostic);
-            fatal_inferred_type_diagnostic |= fatal;
-            diagnostics.push(inferred_type_diagnostic(
-                source,
-                input,
-                &imported_item_sources,
-                diagnostic,
-                fatal,
-            ));
-        }
-
-        if let Some(ref mut module_graph) = program.module_graph {
-            if let Some(root_module) = module_graph.modules.get_mut(&module_graph.root) {
-                if let Some(root_len) = root_module_item_count {
-                    root_module.items = program.items.iter().take(root_len).cloned().collect();
-                } else {
-                    root_module.items.clone_from(&program.items);
-                }
-            }
-            for (id, module) in &mut module_graph.modules {
-                if *id != module_graph.root {
-                    let module_diagnostics =
-                        hew_serialize::enrich_items(&mut module.items, tco, module_registry)
-                            .map_err(|e| {
-                                FrontendFailure::message_only(format!(
-                                    "Error: cannot enrich inferred types: {e}"
-                                ))
-                            })?;
-
-                    for diagnostic in collect_new_inferred_type_diagnostics(
-                        module_diagnostics.diagnostics(),
-                        input,
-                        &imported_item_sources,
-                        &mut seen_inferred_type_diagnostics,
-                    ) {
-                        let fatal = inferred_type_serialization_diagnostic_is_fatal(diagnostic);
-                        fatal_inferred_type_diagnostic |= fatal;
-                        diagnostics.push(inferred_type_diagnostic(
-                            source,
-                            input,
-                            &imported_item_sources,
-                            diagnostic,
-                            fatal,
-                        ));
-                    }
-                }
-            }
-        }
-
-        let expr_type_map_build = hew_serialize::build_expr_type_map(tco);
-        let method_call_receiver_kinds = build_method_call_receiver_kind_entries(program, tco);
-
-        for diagnostic in collect_new_inferred_type_diagnostics(
-            expr_type_map_build.diagnostics(),
-            input,
-            &imported_item_sources,
-            &mut seen_inferred_type_diagnostics,
-        ) {
-            let fatal = inferred_type_serialization_diagnostic_is_fatal(diagnostic);
-            fatal_inferred_type_diagnostic |= fatal;
-            diagnostics.push(inferred_type_diagnostic(
-                source,
-                input,
-                &imported_item_sources,
-                diagnostic,
-                fatal,
-            ));
-        }
-
-        if fatal_inferred_type_diagnostic {
-            return Err(FrontendFailure::new(
-                "inferred type serialization failed",
-                diagnostics,
-            ));
-        }
-
-        (expr_type_map_build.entries, method_call_receiver_kinds)
-    } else {
-        (Vec::new(), Vec::new())
-    };
-
-    hew_parser::tail_call::mark_tail_calls(program);
-    Ok(((expr_type_map, method_call_receiver_kinds), diagnostics))
-}
-
-/// Enrich a program with inferred types and serializer side tables.
-///
-/// # Errors
-///
-/// Returns [`FrontendFailure`] when enrichment fails or inferred-type
-/// serialization must fail closed.
-pub fn enrich_program_ast(
-    program: &mut Program,
-    tco: Option<&hew_types::check::TypeCheckOutput>,
-    module_registry: &hew_types::module_registry::ModuleRegistry,
-    source: &str,
-    input: &str,
-) -> Result<(Vec<ExprTypeEntry>, Vec<MethodCallReceiverKindEntry>), FrontendFailure> {
-    enrich_program_ast_with_diagnostics(program, tco, module_registry, source, input)
-        .map(|(result, _)| result)
-}
-
-fn build_codegen_metadata(
-    module_registry: &hew_types::module_registry::ModuleRegistry,
-    tco: Option<&hew_types::check::TypeCheckOutput>,
-    input: &str,
-    source: &str,
-) -> CodegenMetadata {
-    let handle_types = module_registry.all_handle_types();
-    let handle_type_repr = handle_types
-        .iter()
-        .filter(|ty| hew_types::stdlib::handle_type_representation(ty) != "handle")
-        .map(|ty| {
-            (
-                ty.clone(),
-                hew_types::stdlib::handle_type_representation(ty).to_string(),
-            )
-        })
-        .collect();
-    let abs_source_path = Some(
-        std::fs::canonicalize(input)
-            .map_or_else(|_| input.to_string(), |path| path.display().to_string()),
-    );
-    let line_map = Some(line_map_from_source(source));
-    let drop_funcs = module_registry.all_drop_funcs();
-    let mut handle_bearing_structs = tco
-        .map(|output| {
-            output
-                .handle_bearing_structs
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    handle_bearing_structs.sort();
-    CodegenMetadata {
-        handle_types,
-        handle_bearing_structs,
-        handle_type_repr,
-        drop_funcs,
-        abs_source_path,
-        line_map,
     }
 }
 
@@ -1125,44 +761,6 @@ fn extract_module_info(
     }
 
     imports
-}
-
-fn flatten_import_items(program: &mut Program) -> Vec<(hew_parser::ast::Span, Option<PathBuf>)> {
-    let mut extra = Vec::new();
-    let mut imported_item_sources = Vec::new();
-    for (item, _) in &mut program.items {
-        if let Item::Import(decl) = item {
-            // Module-path imports (`import greeting;`) are NOT flattened here.
-            // Their pub fn bodies are lowered directly from `program.module_graph`
-            // by HIR under the qualified mangled symbol (e.g. `greeting$hello`).
-            // Flattening them would produce double-registration: once as bare
-            // `hello` (from the flattened item) and once as `greeting$hello`
-            // (from the HIR module-graph walk) — the HIR would then emit two
-            // `HirFn` items for the same body, and `module_fn_names` in MIR
-            // would contain both, causing a duplicate symbol in codegen.
-            //
-            // File-path imports (`import "util.hew";`) continue to be flattened
-            // because they produce anonymous, unqualified items with no
-            // `module_graph` entry to walk.
-            if !decl.path.is_empty() && decl.file_path.is_none() {
-                // Module-path import: leave resolved_items untouched; HIR owns it.
-                continue;
-            }
-            if let Some(resolved) = decl.resolved_items.take() {
-                let mut item_source_paths =
-                    std::mem::take(&mut decl.resolved_item_source_paths).into_iter();
-                for resolved_item in resolved {
-                    let source_path = item_source_paths.next();
-                    if !matches!(&resolved_item.0, Item::Import(_)) {
-                        imported_item_sources.push((resolved_item.1.clone(), source_path));
-                        extra.push(resolved_item);
-                    }
-                }
-            }
-        }
-    }
-    program.items.extend(extra);
-    imported_item_sources
 }
 
 #[expect(
@@ -1660,86 +1258,6 @@ pub fn run_program_frontend_to_typecheck(
     })
 }
 
-/// Shared enrichment and codegen-metadata assembly stage.
-///
-/// Takes the already type-checked program state and runs AST enrichment,
-/// side-table construction, and metadata assembly, returning the final
-/// [`FrontendArtifacts`].  Used by both `compile_file` and `compile_program`.
-fn finish_compile(
-    mut program: Program,
-    mut diagnostics: Vec<FrontendDiagnostic>,
-    typecheck_result: &TypeCheckResult,
-    source: String,
-    source_label: String,
-) -> Result<FrontendArtifacts, FrontendFailure> {
-    let ((expr_type_entries, method_call_receiver_kinds), enrich_diagnostics) =
-        match enrich_program_ast_with_diagnostics(
-            &mut program,
-            typecheck_result.tco.as_ref(),
-            &typecheck_result.module_registry,
-            &source,
-            &source_label,
-        ) {
-            Ok(result) => result,
-            Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
-        };
-    diagnostics.extend(enrich_diagnostics);
-
-    let actor_send_aliasing = typecheck_result
-        .tco
-        .as_ref()
-        .map_or_else(Vec::new, build_actor_send_aliasing_entries);
-    let assign_target_kinds = typecheck_result.tco.as_ref().map_or_else(Vec::new, |tco| {
-        build_assign_target_kind_entries(&program, tco)
-    });
-    let assign_target_shapes = typecheck_result.tco.as_ref().map_or_else(Vec::new, |tco| {
-        build_assign_target_shape_entries(&program, tco)
-    });
-    let lowering_facts = typecheck_result
-        .tco
-        .as_ref()
-        .map_or_else(Vec::new, |tco| build_lowering_fact_entries(&program, tco));
-    let (call_type_args, call_type_args_errors) = typecheck_result.tco.as_ref().map_or_else(
-        || (Vec::new(), Vec::new()),
-        |tco| build_call_type_args_entries(&program, tco),
-    );
-    for error in &call_type_args_errors {
-        let fatal = inferred_type_serialization_diagnostic_is_fatal(error);
-        diagnostics.push(FrontendDiagnostic::inferred(
-            Some(source.clone()),
-            Some(source_label.clone()),
-            error.clone(),
-            fatal,
-        ));
-    }
-    let metadata = build_codegen_metadata(
-        &typecheck_result.module_registry,
-        typecheck_result.tco.as_ref(),
-        &source_label,
-        &source,
-    );
-
-    Ok(FrontendArtifacts {
-        diagnostics,
-        source,
-        source_label,
-        program,
-        expr_type_entries,
-        method_call_receiver_kinds,
-        call_type_args,
-        actor_send_aliasing,
-        assign_target_kinds,
-        assign_target_shapes,
-        lowering_facts,
-        handle_types: metadata.handle_types,
-        handle_bearing_structs: metadata.handle_bearing_structs,
-        handle_type_repr: metadata.handle_type_repr,
-        drop_funcs: metadata.drop_funcs,
-        abs_source_path: metadata.abs_source_path,
-        line_map: metadata.line_map,
-    })
-}
-
 /// Parse, resolve imports, and type-check a Hew source file.
 ///
 /// # Errors
@@ -1759,85 +1277,14 @@ pub fn check_file(input: &str, options: &FrontendOptions) -> Result<CheckOutput,
         .typecheck_result
         .tco
         .as_ref()
-        .map_or_else(Vec::new, build_actor_send_aliasing_entries);
+        .map(|tco| tco.actor_send_aliasing.clone())
+        .unwrap_or_default();
     Ok(CheckOutput {
         diagnostics,
         stack_hints,
         actor_send_aliasing,
         source: state.source,
     })
-}
-
-/// Run the full frontend pipeline for an on-disk source file.
-///
-/// # Errors
-///
-/// Returns [`FrontendFailure`] when any frontend stage fails.
-pub fn compile_file(
-    input: &str,
-    options: &FrontendOptions,
-) -> Result<FrontendArtifacts, FrontendFailure> {
-    let FileFrontendState {
-        program,
-        diagnostics,
-        typecheck_result,
-        source,
-    } = run_file_frontend_to_typecheck(input, options)?;
-    let mut artifacts = finish_compile(
-        program,
-        diagnostics,
-        &typecheck_result,
-        source,
-        input.to_string(),
-    )?;
-    artifacts.diagnostics = fail_on_warning_diagnostics(artifacts.diagnostics, options)?;
-    Ok(artifacts)
-}
-
-/// Run the full frontend pipeline for an already-parsed in-memory program.
-///
-/// # Errors
-///
-/// Returns [`FrontendFailure`] when import resolution, type checking, or
-/// enrichment fails.
-pub fn compile_program(
-    mut program: Program,
-    source: &str,
-    source_label: &str,
-    options: &FrontendOptions,
-) -> Result<FrontendArtifacts, FrontendFailure> {
-    let project = project_context_for_program(source, options)?;
-    let mut diagnostics = Vec::new();
-
-    if let Err(failure) = resolve_imports_internal(
-        &mut program,
-        source,
-        source_label,
-        &project,
-        options,
-        &mut diagnostics,
-    ) {
-        return Err(merge_prior_diagnostics(diagnostics, failure));
-    }
-
-    let typecheck_result =
-        match typecheck_program_with_diagnostics(&program, source, source_label, options) {
-            Ok((result, type_diagnostics)) => {
-                diagnostics.extend(type_diagnostics);
-                result
-            }
-            Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
-        };
-
-    let mut artifacts = finish_compile(
-        program,
-        diagnostics,
-        &typecheck_result,
-        source.to_string(),
-        source_label.to_string(),
-    )?;
-    artifacts.diagnostics = fail_on_warning_diagnostics(artifacts.diagnostics, options)?;
-    Ok(artifacts)
 }
 
 /// Hew language editions the compiler accepts. Sources in a package whose
@@ -1952,17 +1399,8 @@ fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure>
 #[cfg(test)]
 mod tests {
     use super::{
-        check_file, check_program, compile_file, enrich_program_ast, load_dependencies,
-        load_lockfile, load_package_name, parse_source, project_context_for_program,
-        resolve_imports_internal, typecheck_program_with_diagnostics, FrontendDiagnosticKind,
-        FrontendOptions,
-    };
-    use hew_parser::ast::{Item, Stmt};
-    use hew_serialize::TypeExprConversionKind;
-    use hew_types::{
-        check::{SpanKey, TypeCheckOutput},
-        module_registry::ModuleRegistry,
-        Ty,
+        check_file, check_program, load_dependencies, load_lockfile, load_package_name,
+        parse_source, FrontendOptions,
     };
     use std::fs::{self, File};
     use std::io::Write;
@@ -2230,28 +1668,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn compile_file_fails_when_warnings_are_errors() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let input = write_source(dir.path(), "main.hew", "fn main() { let unused = 42; }\n");
-
-        let failure = compile_file(
-            &input,
-            &FrontendOptions {
-                warnings_as_errors: true,
-                ..Default::default()
-            },
-        )
-        .expect_err("frontend compile should fail when warnings_as_errors is enabled");
-
-        assert_eq!(failure.message, "warnings treated as errors");
-        assert!(
-            failure.diagnostics.iter().any(super::is_warning_diagnostic),
-            "expected warning diagnostics, got: {:?}",
-            failure.diagnostics
-        );
-    }
-
     // ── check_program tests ───────────────────────────────────────────────
 
     #[test]
@@ -2346,230 +1762,6 @@ mod tests {
             err.message.contains("type error"),
             "expected type-error message, got: {}",
             err.message
-        );
-    }
-
-    #[test]
-    fn enrich_program_ast_fails_closed_on_ty_error_expr_type() {
-        let source = "fn main() { let x = 1; }\n";
-        let mut program = parse_source(source, "main.hew").expect("source should parse");
-        let initializer_span = match &program.items[0].0 {
-            Item::Function(function) => match &function.body.stmts[0].0 {
-                Stmt::Let {
-                    value: Some((_, span)),
-                    ..
-                } => span.clone(),
-                other => panic!("expected leading let statement, got {other:?}"),
-            },
-            other => panic!("expected root function item, got {other:?}"),
-        };
-        let tco = TypeCheckOutput {
-            expr_types: std::collections::HashMap::from([(
-                SpanKey::from(&initializer_span),
-                Ty::Error,
-            )]),
-            method_call_receiver_kinds: std::collections::HashMap::new(),
-            lowering_facts: std::collections::HashMap::new(),
-            method_call_rewrites: std::collections::HashMap::new(),
-            numeric_method_lowerings: std::collections::HashMap::new(),
-            actor_method_dispatch: std::collections::HashMap::new(),
-            assign_target_kinds: std::collections::HashMap::new(),
-            assign_target_shapes: std::collections::HashMap::new(),
-            errors: Vec::new(),
-            warnings: Vec::new(),
-            type_defs: std::collections::HashMap::new(),
-            fn_sigs: std::collections::HashMap::new(),
-            handle_bearing_structs: std::collections::HashSet::new(),
-            method_call_consumes_receiver: std::collections::HashSet::new(),
-            cycle_capable_actors: std::collections::HashSet::new(),
-            user_modules: std::collections::HashSet::new(),
-            call_type_args: std::collections::HashMap::new(),
-            record_init_type_args: std::collections::HashMap::new(),
-            stack_hints: Vec::new(),
-            actor_send_aliasing: std::collections::HashMap::new(),
-            actor_handler_state_guards: std::collections::HashMap::new(),
-            actor_max_heap: std::collections::HashMap::new(),
-            supervisor_child_slots: std::collections::HashMap::new(),
-            dyn_trait_coercions: std::collections::HashMap::new(),
-            dyn_trait_method_calls: std::collections::HashMap::new(),
-            closure_capture_facts: std::collections::HashMap::new(),
-            actor_protocol_descriptors: std::collections::HashMap::new(),
-            intrinsic_declarations: std::collections::HashMap::new(),
-            machine_method_dispatch: std::collections::HashMap::new(),
-            pattern_resolutions: std::collections::HashMap::new(),
-            lang_items: hew_types::LangItemRegistry::new(),
-        };
-
-        let err = enrich_program_ast(
-            &mut program,
-            Some(&tco),
-            &ModuleRegistry::new(vec![]),
-            source,
-            "main.hew",
-        )
-        .expect_err("Ty::Error expr_types entry should fail closed during enrichment");
-
-        assert_eq!(err.message, "inferred type serialization failed");
-        assert!(
-            err.diagnostics.iter().any(|diagnostic| matches!(
-                &diagnostic.kind,
-                FrontendDiagnosticKind::InferredType { error, fatal }
-                    if *fatal && error.kind() == TypeExprConversionKind::ErrorSentinel
-            )),
-            "expected fatal ErrorSentinel diagnostic, got: {:?}",
-            err.diagnostics
-        );
-    }
-
-    #[test]
-    fn enrich_program_ast_populates_non_root_module_binding_types() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let root_input = write_source(
-            dir.path(),
-            "main.hew",
-            "import \"helper.hew\";\nfn main() {}\n",
-        );
-        write_source(
-            dir.path(),
-            "helper.hew",
-            "fn helper() -> i32 { let value = 1; value }\n",
-        );
-
-        let source = fs::read_to_string(&root_input).expect("read root source");
-        let options = FrontendOptions {
-            project_dir: Some(dir.path().to_path_buf()),
-            ..Default::default()
-        };
-        let mut program = parse_source(&source, &root_input).expect("source should parse");
-        let project =
-            project_context_for_program(&source, &options).expect("project context should load");
-        let mut resolve_diagnostics = Vec::new();
-
-        resolve_imports_internal(
-            &mut program,
-            &source,
-            &root_input,
-            &project,
-            &options,
-            &mut resolve_diagnostics,
-        )
-        .expect("imports should resolve");
-
-        let (typecheck, _) =
-            typecheck_program_with_diagnostics(&program, &source, &root_input, &options)
-                .expect("typecheck should succeed");
-
-        enrich_program_ast(
-            &mut program,
-            typecheck.tco.as_ref(),
-            &typecheck.module_registry,
-            &source,
-            &root_input,
-        )
-        .expect("enrichment should succeed");
-
-        let module_graph = program
-            .module_graph
-            .as_ref()
-            .expect("resolved program should have module graph");
-        let helper_module = module_graph
-            .modules
-            .iter()
-            .find_map(|(id, module)| (*id != module_graph.root).then_some(module))
-            .expect("expected non-root helper module");
-
-        let helper_function = helper_module
-            .items
-            .iter()
-            .find_map(|(item, _)| match item {
-                Item::Function(function) if function.name == "helper" => Some(function),
-                _ => None,
-            })
-            .expect("expected helper function in non-root module");
-
-        let inferred_binding = match &helper_function.body.stmts[0].0 {
-            Stmt::Let { ty, .. } => ty,
-            other => panic!("expected helper body to start with let binding, got {other:?}"),
-        };
-        assert!(
-            inferred_binding.is_some(),
-            "non-root module let binding should be enriched with stmt.ty"
-        );
-    }
-
-    #[test]
-    fn enrich_program_ast_skips_non_root_module_string_binding_types() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let root_input = write_source(
-            dir.path(),
-            "main.hew",
-            "import \"helper.hew\";\nfn main() {}\n",
-        );
-        write_source(
-            dir.path(),
-            "helper.hew",
-            "fn helper() -> string { let value = \"ok\"; value }\n",
-        );
-
-        let source = fs::read_to_string(&root_input).expect("read root source");
-        let options = FrontendOptions {
-            project_dir: Some(dir.path().to_path_buf()),
-            ..Default::default()
-        };
-        let mut program = parse_source(&source, &root_input).expect("source should parse");
-        let project =
-            project_context_for_program(&source, &options).expect("project context should load");
-        let mut resolve_diagnostics = Vec::new();
-
-        resolve_imports_internal(
-            &mut program,
-            &source,
-            &root_input,
-            &project,
-            &options,
-            &mut resolve_diagnostics,
-        )
-        .expect("imports should resolve");
-
-        let (typecheck, _) =
-            typecheck_program_with_diagnostics(&program, &source, &root_input, &options)
-                .expect("typecheck should succeed");
-
-        enrich_program_ast(
-            &mut program,
-            typecheck.tco.as_ref(),
-            &typecheck.module_registry,
-            &source,
-            &root_input,
-        )
-        .expect("enrichment should succeed");
-
-        let module_graph = program
-            .module_graph
-            .as_ref()
-            .expect("resolved program should have module graph");
-        let helper_module = module_graph
-            .modules
-            .iter()
-            .find_map(|(id, module)| (*id != module_graph.root).then_some(module))
-            .expect("expected non-root helper module");
-
-        let helper_function = helper_module
-            .items
-            .iter()
-            .find_map(|(item, _)| match item {
-                Item::Function(function) if function.name == "helper" => Some(function),
-                _ => None,
-            })
-            .expect("expected helper function in non-root module");
-
-        let inferred_binding = match &helper_function.body.stmts[0].0 {
-            Stmt::Let { ty, .. } => ty,
-            other => panic!("expected helper body to start with let binding, got {other:?}"),
-        };
-        assert!(
-            inferred_binding.is_none(),
-            "ownership-sensitive non-root module let binding should keep stmt.ty unset"
         );
     }
 

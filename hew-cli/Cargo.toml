@@ -22,7 +22,6 @@ hew-mir = { path = "../hew-mir" }
 hew-codegen-rs = { path = "../hew-codegen-rs" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
-hew-serialize = { path = "../hew-serialize" }
 # Pulls the runtime rlib into the hew binary so dlsym can resolve C-ABI symbols
 # at JIT session startup. The anchor module (generated at build time from
 # kStableJitHostSymbols) keeps all 653 symbols alive through LTO. The staticlib

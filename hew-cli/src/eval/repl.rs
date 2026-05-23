@@ -2108,12 +2108,12 @@ mod tests {
             "parse errors: {:?}",
             parse_result.errors
         );
-        // compile_program must not error; previously it would ignore project_dir.
+        // check_program must not error; previously it would ignore project_dir.
         // With the fix, manifest_deps is loaded from the temp dir.
-        let result = hew_compile::compile_program(parse_result.program, source, "<test>", &options);
+        let result = hew_compile::check_program(parse_result.program, source, "<test>", &options);
         assert!(
             result.is_ok(),
-            "compile_program with project_dir failed: {result:?}"
+            "check_program with project_dir failed: {result:?}"
         );
     }
 

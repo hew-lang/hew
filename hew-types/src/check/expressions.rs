@@ -4899,6 +4899,9 @@ impl Checker {
     /// don't double-poison.
     fn synthesize_is(&mut self, lhs: &Spanned<Expr>, rhs: &Spanned<Expr>, span: &Span) -> Ty {
         let lhs_ty = self.synthesize(&lhs.0, &lhs.1);
+        if let Some(rhs_ty) = self.resolve_is_type_pattern(&rhs.0) {
+            return self.synthesize_is_type_pattern(lhs, &lhs_ty, rhs, &rhs_ty, span);
+        }
         let rhs_ty = self.synthesize(&rhs.0, &rhs.1);
         let lhs_resolved = self.subst.resolve(&lhs_ty);
         let rhs_resolved = self.subst.resolve(&rhs_ty);
@@ -4940,6 +4943,73 @@ impl Checker {
                     rhs_resolved.user_facing()
                 ),
             );
+        }
+
+        Ty::Bool
+    }
+
+    fn resolve_is_type_pattern(&self, rhs: &Expr) -> Option<Ty> {
+        let Expr::Identifier(name) = rhs else {
+            return None;
+        };
+        Ty::from_name(name).or_else(|| {
+            self.lookup_type_def(name)
+                .map(|type_def| Ty::normalize_named(type_def.name, vec![]))
+        })
+    }
+
+    fn synthesize_is_type_pattern(
+        &mut self,
+        lhs: &Spanned<Expr>,
+        lhs_ty: &Ty,
+        rhs: &Spanned<Expr>,
+        rhs_ty: &Ty,
+        span: &Span,
+    ) -> Ty {
+        let lhs_resolved = self.subst.resolve(lhs_ty);
+        let rhs_resolved = self.subst.resolve(rhs_ty);
+
+        if matches!(lhs_resolved, Ty::Error | Ty::Var(_))
+            || matches!(rhs_resolved, Ty::Error | Ty::Var(_))
+        {
+            return Ty::Bool;
+        }
+
+        let lhs_ok = self.is_identity_capable(&lhs_resolved);
+        let rhs_ok = self.is_identity_capable(&rhs_resolved);
+
+        if !lhs_ok {
+            self.report_is_value_type(&lhs.1, &lhs_resolved);
+        }
+        if !rhs_ok {
+            self.report_is_value_type(&rhs.1, &rhs_resolved);
+        }
+
+        if lhs_ok && rhs_ok && lhs_resolved != rhs_resolved {
+            self.report_error(
+                TypeErrorKind::Mismatch {
+                    expected: lhs_resolved.user_facing().to_string(),
+                    actual: rhs_resolved.user_facing().to_string(),
+                },
+                span,
+                format!(
+                    "`is` type pattern must match the operand type; found `{}` and `{}`",
+                    lhs_resolved.user_facing(),
+                    rhs_resolved.user_facing()
+                ),
+            );
+        } else if lhs_ok && rhs_ok {
+            if !matches!(lhs.0, Expr::Identifier(_)) {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    &lhs.1,
+                    "`is` type patterns currently require an identifier operand".to_string(),
+                );
+                return Ty::Bool;
+            }
+            let rhs_key = SpanKey::from(&rhs.1);
+            self.is_type_patterns.insert(rhs_key, rhs_resolved.clone());
+            self.record_type(&rhs.1, &rhs_resolved);
         }
 
         Ty::Bool

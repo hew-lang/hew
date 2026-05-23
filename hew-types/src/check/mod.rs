@@ -387,6 +387,7 @@ impl Checker {
 
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
+            is_type_patterns: std::mem::take(&mut self.is_type_patterns),
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
             method_call_consumes_receiver: std::mem::take(&mut self.method_call_consumes_receiver),
             actor_send_aliasing: std::mem::take(&mut self.actor_send_aliasing),

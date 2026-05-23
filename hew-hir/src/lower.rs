@@ -1487,6 +1487,10 @@ struct LowerCtx {
     /// (e.g. `duplex_pair`) that have no AST `fn` entry and therefore no
     /// `fn_registry` hit.
     expr_types: HashMap<SpanKey, Ty>,
+    /// Checker-authoritative RHS spans for accepted `lhs is TypeName`
+    /// patterns. When present, the RHS identifier is a type pattern, not a
+    /// value expression to lower through lexical bindings.
+    is_type_patterns: HashMap<SpanKey, Ty>,
     /// Checker-authoritative general-closure capture facts keyed by closure
     /// literal span. HIR consumes this ledger fail-closed when materialising
     /// `HirExprKind::Closure`; it does not infer capture legality from syntax.
@@ -1774,6 +1778,7 @@ impl LowerCtx {
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
+            is_type_patterns: tc_output.is_type_patterns.clone(),
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
             generator_yield_tys: Vec::new(),
             scope_depth: 0,
@@ -5436,20 +5441,30 @@ impl LowerCtx {
                 }
             }
             Expr::Is { lhs, rhs } => {
-                // Identity comparison: `lhs is rhs`. The checker (D-2) has already
-                // validated that both operands carry identity-bearing types and
-                // that neither is a scalar/String/record. The result is `bool`.
-                // LESSONS: `checker-authority` P0 — we do not re-validate the
-                // allowance set here; that is the checker's sole responsibility.
-                let left = self.lower_expr(lhs, IntentKind::Read);
-                let right = self.lower_expr(rhs, IntentKind::Read);
-                (
-                    HirExprKind::IdentityCompare {
-                        left: Box::new(left),
-                        right: Box::new(right),
-                    },
-                    ResolvedTy::Bool,
-                )
+                if self.is_type_patterns.contains_key(&SpanKey::from(&rhs.1)) {
+                    // The checker only records this side-table entry after
+                    // proving the static lhs type matches the RHS type pattern.
+                    // Do not lower the RHS identifier through the value namespace.
+                    (
+                        HirExprKind::Literal(HirLiteral::Bool(true)),
+                        ResolvedTy::Bool,
+                    )
+                } else {
+                    // Identity comparison: `lhs is rhs`. The checker (D-2) has already
+                    // validated that both operands carry identity-bearing types and
+                    // that neither is a scalar/String/record. The result is `bool`.
+                    // LESSONS: `checker-authority` P0 — we do not re-validate the
+                    // allowance set here; that is the checker's sole responsibility.
+                    let left = self.lower_expr(lhs, IntentKind::Read);
+                    let right = self.lower_expr(rhs, IntentKind::Read);
+                    (
+                        HirExprKind::IdentityCompare {
+                            left: Box::new(left),
+                            right: Box::new(right),
+                        },
+                        ResolvedTy::Bool,
+                    )
+                }
             }
             Expr::FieldAccess { object, field } => {
                 // Inside a machine transition body, `self.field` accesses are

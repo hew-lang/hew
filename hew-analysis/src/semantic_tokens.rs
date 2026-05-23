@@ -60,7 +60,7 @@ fn is_type_decl_context(prev: Option<&Token<'_>>) -> bool {
 /// Returns `true` if the previous token introduces a type annotation context
 /// (`:` or `->`), meaning the next identifier is likely a type name.
 fn is_type_annotation_context(prev: Option<&Token<'_>>) -> bool {
-    matches!(prev, Some(Token::Colon | Token::Arrow))
+    matches!(prev, Some(Token::Colon | Token::Arrow | Token::Is))
 }
 
 /// Build semantic tokens from Hew source code.

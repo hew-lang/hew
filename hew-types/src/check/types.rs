@@ -76,6 +76,12 @@ impl ExecutionContextReader {
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
     pub expr_types: HashMap<SpanKey, Ty>,
+    /// RHS spans of accepted `lhs is TypeName` type patterns.
+    ///
+    /// The parser still represents the RHS as an identifier expression; this
+    /// checker-owned table tells downstream tooling/lowering not to resolve that
+    /// identifier through the value namespace.
+    pub is_type_patterns: HashMap<SpanKey, Ty>,
     pub method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     /// Spans of method calls whose resolved method declares `consumes_receiver`.
     ///
@@ -604,6 +610,7 @@ impl Default for TypeCheckOutput {
     fn default() -> Self {
         Self {
             expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::default(),
             lowering_facts: HashMap::new(),
@@ -1322,6 +1329,7 @@ pub struct Checker {
     pub(super) errors: Vec<TypeError>,
     pub(super) warnings: Vec<TypeError>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
+    pub(super) is_type_patterns: HashMap<SpanKey, Ty>,
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     pub(super) method_call_consumes_receiver: HashSet<SpanKey>,
@@ -1674,6 +1682,7 @@ impl Checker {
             errors: Vec::new(),
             warnings: Vec::new(),
             expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             expr_type_source_modules: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::new(),

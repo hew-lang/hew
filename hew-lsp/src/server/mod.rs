@@ -6228,8 +6228,11 @@ machine Traffic {
     }
 
     #[test]
-    fn v05_is_operator_surfaces_current_rhs_diagnostic_gap() {
+    fn v05_is_operator_rhs_type_pattern_lsp_surfaces_are_correct() {
         let source = include_str!("../../tests/fixtures/v05_is_operator.hew");
+        let doc = make_typed_doc(source);
+        assert_no_hard_type_errors("v05_is_operator", &doc);
+
         let uri = Url::parse(&v05_fixture_path("v05_is_operator")).unwrap();
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         let published = refresh_document_and_dependents(&uri, source, &documents);
@@ -6240,7 +6243,7 @@ machine Traffic {
                 diagnostics.as_slice()
             });
         assert!(
-            diagnostics.iter().any(|diagnostic| {
+            !diagnostics.iter().any(|diagnostic| {
                 diagnostic.source.as_deref() == Some("hew-types")
                     && diagnostic
                         .data
@@ -6250,7 +6253,52 @@ machine Traffic {
                         == Some("UndefinedVariable")
                     && diagnostic.message.contains("Payload")
             }),
-            "`is` operator fixture should surface current RHS resolution gap; got {diagnostics:?}"
+            "`is` operator RHS type pattern should not resolve as a value variable; got {diagnostics:?}"
+        );
+
+        let rhs_offset = source.find("is Payload").expect("is type pattern") + "is ".len();
+        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            uri.as_str(),
+            rhs_offset,
+        )
+        .expect("RHS type pattern should resolve");
+        let def = resolution
+            .def_location()
+            .expect("RHS type pattern should jump to type declaration");
+        assert!(
+            def.1.start < source.find("fn is_probe").expect("probe fn"),
+            "`is` RHS definition should point at Payload type declaration, got {def:?}"
+        );
+
+        let semantic_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
+        let payload_token = semantic_tokens
+            .iter()
+            .find(|token| token.start == rhs_offset)
+            .expect("Payload RHS should produce a semantic token");
+        assert_eq!(
+            payload_token.token_type,
+            hew_analysis::token_types::TYPE,
+            "`is` RHS Payload should be classified as a type token"
+        );
+
+        let completion_offset = rhs_offset;
+        let completions = hew_analysis::completions::complete(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            completion_offset,
+        );
+        let labels: Vec<&str> = completions.iter().map(|item| item.label.as_str()).collect();
+        assert!(
+            labels.contains(&"Payload"),
+            "`is` RHS completion should include Payload type, got {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"is_probe"),
+            "`is` RHS completion should be type-pattern focused, got {labels:?}"
         );
     }
 
@@ -6311,7 +6359,7 @@ machine Traffic {
     }
 
     #[test]
-    fn v05_string_methods_completion_gap_is_visible() {
+    fn v05_string_methods_completion_includes_full_l2_surface() {
         let source = include_str!("../../tests/fixtures/v05_string_methods.hew");
         let doc = make_typed_doc(source);
         assert_no_hard_type_errors("v05_string_methods", &doc);
@@ -6345,8 +6393,8 @@ machine Traffic {
             .collect();
         assert_eq!(
             missing.as_slice(),
-            expected.as_slice(),
-            "string method completion gap changed; missing {missing:?}, got {labels:?}"
+            &[] as &[&str],
+            "string method completion should include all L2-wired methods; missing {missing:?}, got {labels:?}"
         );
     }
 

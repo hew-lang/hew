@@ -237,6 +237,11 @@
       "comment": "Wire field tags (@1, @2) and loop labels (@outer, @inner)",
       "patterns": [
         {
+          "comment": "Machine self-transition marker",
+          "name": "keyword.control.machine.reenter.hew",
+          "match": "@reenter\\b"
+        },
+        {
           "comment": "Wire field tag: @1, @2",
           "name": "constant.numeric.wire-tag.hew",
           "match": "@\\d+"

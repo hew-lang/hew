@@ -4343,9 +4343,11 @@ impl Checker {
                         continue;
                     }
                     self.register_qualified_type_alias(module_short, &td.name);
+                    self.record_module_type_export(module_short, &td.name);
                 }
                 Item::Actor(ad) => {
                     self.register_qualified_type_alias(module_short, &ad.name);
+                    self.record_module_type_export(module_short, &ad.name);
                 }
                 _ => {}
             }
@@ -4602,6 +4604,7 @@ impl Checker {
                     }
                     self.register_type_decl(td);
                     self.register_qualified_type_alias(module_short, &td.name);
+                    self.record_module_type_export(module_short, &td.name);
                     self.known_types.insert(td.name.clone());
                 }
                 Item::Trait(tr) => {
@@ -4719,6 +4722,7 @@ impl Checker {
                     }
                     self.register_actor_base(ad);
                     self.register_qualified_type_alias(module_short, &ad.name);
+                    self.record_module_type_export(module_short, &ad.name);
                     // If named import or glob, also register unqualified
                     if Self::should_import_name(&ad.name, spec) {
                         let binding_name = Self::resolve_import_name(spec, &ad.name)
@@ -4799,5 +4803,20 @@ impl Checker {
             }
             self.handle_bearing_dirty = true;
         }
+    }
+
+    /// Record that an imported module exports a type/actor name.
+    ///
+    /// Mirrors the `module_fn_exports` precedent (`register_builtin_sig` /
+    /// `register_user_module` `Item::Function` arm) for type names.  Drives the
+    /// module-qualified value-constructor pre-dispatch in `check_field_access`
+    /// and `check_struct_init` so we can emit a precise "module `m` has no
+    /// exported type `T`" diagnostic instead of leaking through to the
+    /// "undefined variable" / "undefined type" fallbacks.
+    pub(super) fn record_module_type_export(&mut self, module_short: &str, name: &str) {
+        self.module_type_exports
+            .entry(module_short.to_string())
+            .or_default()
+            .insert(name.to_string());
     }
 }

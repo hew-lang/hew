@@ -770,6 +770,46 @@ impl Checker {
         self.type_defs.get_mut(unqualified)
     }
 
+    /// Resolve a `(module, type)` pair to its `TypeDef`, gated on the type being
+    /// in the imported module's exported set.  Returns `None` if the module is
+    /// not a known alias, the type is not exported, or the qualified type alias
+    /// was not registered (latter would be a registration bug — callers should
+    /// treat as "type not exported" for diagnostic purposes).
+    ///
+    /// Mirrors the `module_fn_exports` guard pattern used by
+    /// `check_method_call` for module-qualified function dispatch.
+    pub(super) fn resolve_module_type(
+        &self,
+        module_short: &str,
+        type_name: &str,
+    ) -> Option<TypeDef> {
+        if !self.modules.contains(module_short) {
+            return None;
+        }
+        let exports = self.module_type_exports.get(module_short)?;
+        if !exports.contains(type_name) {
+            return None;
+        }
+        let qualified = format!("{module_short}.{type_name}");
+        self.type_defs.get(&qualified).cloned()
+    }
+
+    /// Resolve a `(module, type, variant)` triple to its `VariantDef`, gated on
+    /// the type being exported by the module.  Returns `None` if the module
+    /// alias is unknown, the type is not exported, or the variant does not
+    /// exist on the type.  The caller is responsible for emitting the
+    /// fail-closed diagnostic in each failure case.
+    pub(super) fn resolve_module_variant(
+        &self,
+        module_short: &str,
+        type_name: &str,
+        variant_name: &str,
+    ) -> Option<(TypeDef, VariantDef)> {
+        let td = self.resolve_module_type(module_short, type_name)?;
+        let v = td.variants.get(variant_name).cloned()?;
+        Some((td, v))
+    }
+
     /// Look up a non-builtin named method via `type_defs` first, then `fn_sigs`.
     pub(super) fn lookup_named_method_sig(
         &self,

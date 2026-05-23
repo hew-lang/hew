@@ -3553,6 +3553,37 @@ impl Checker {
         field: &str,
         span: &Span,
     ) -> Ty {
+        // Pre-dispatch: module-qualified value-constructor reference, e.g.
+        // `m.Type::Variant` (unit or tuple-naked).  This must run BEFORE
+        // `synthesize(object)` because `module` is not bound in `self.env`
+        // — without the early dispatch the synthesize call would emit the
+        // leaky "undefined variable `module`" diagnostic.
+        //
+        // Mirrors the `module_fn_exports` guard pattern at
+        // `check_method_call` (methods.rs).  Gated on:
+        //   - object is a bare `Expr::Identifier`
+        //   - `field` contains `::` (the type-variant separator)
+        //   - the identifier is neither a value binding nor a known type
+        // The neither-binding-nor-type guard preserves all existing
+        // field-on-value access semantics — only shapes that could only be a
+        // module-qualified reference take the new path.  Nested-module paths
+        // (`a.b.Type::Variant`) are out of scope for v0.5.
+        if let Expr::Identifier(name) = &object.0 {
+            if let Some(pos) = field.find("::") {
+                let receiver_is_binding = self.env.lookup_ref(name).is_some();
+                let receiver_is_known_type = self.type_defs.contains_key(name);
+                if !receiver_is_binding && !receiver_is_known_type {
+                    let type_name = &field[..pos];
+                    let variant_name = &field[pos + 2..];
+                    return self.check_module_qualified_variant_ref(
+                        name,
+                        type_name,
+                        variant_name,
+                        span,
+                    );
+                }
+            }
+        }
         let obj_ty = self.synthesize(&object.0, &object.1);
         let resolved = self.subst.resolve(&obj_ty);
         match &resolved {
@@ -4015,6 +4046,121 @@ impl Checker {
         }
     }
 
+    /// Resolve a module-qualified value-constructor reference of the form
+    /// `module.Type::Variant` to its result type.  Emits a fail-closed
+    /// diagnostic for each of the four error shapes (unknown module alias,
+    /// no exported type, no such variant, struct-variant without braces)
+    /// — never falls through to the leaky "undefined variable" /
+    /// "undefined type" surface.  Called only from the
+    /// `check_field_access` pre-dispatch arm.
+    pub(super) fn check_module_qualified_variant_ref(
+        &mut self,
+        module_short: &str,
+        type_name: &str,
+        variant_name: &str,
+        span: &Span,
+    ) -> Ty {
+        if !self.modules.contains(module_short) {
+            let similar =
+                crate::error::find_similar(module_short, self.modules.iter().map(String::as_str));
+            self.report_error_with_suggestions(
+                TypeErrorKind::UndefinedVariable,
+                span,
+                format!("unknown module alias `{module_short}`"),
+                similar,
+            );
+            return Ty::Error;
+        }
+        self.used_modules.borrow_mut().insert(ImportKey::new(
+            self.current_module.clone(),
+            module_short.to_string(),
+        ));
+        let Some(td) = self.resolve_module_type(module_short, type_name) else {
+            let similar = self
+                .module_type_exports
+                .get(module_short)
+                .map(|set| crate::error::find_similar(type_name, set.iter().map(String::as_str)))
+                .unwrap_or_default();
+            self.report_error_with_suggestions(
+                TypeErrorKind::UndefinedType,
+                span,
+                format!("module `{module_short}` has no exported type `{type_name}`"),
+                similar,
+            );
+            return Ty::Error;
+        };
+        let Some((_td_again, variant)) =
+            self.resolve_module_variant(module_short, type_name, variant_name)
+        else {
+            let similar =
+                crate::error::find_similar(variant_name, td.variants.keys().map(String::as_str));
+            self.report_error_with_suggestions(
+                TypeErrorKind::UndefinedField,
+                span,
+                format!("type `{module_short}.{type_name}` has no variant `{variant_name}`"),
+                similar,
+            );
+            return Ty::Error;
+        };
+        let qualified_type = format!("{module_short}.{type_name}");
+        match variant {
+            VariantDef::Unit => {
+                // Instantiate type params with fresh inference vars so generic
+                // enums (e.g. `Option<T>::None`) unify against later annotations.
+                // Mirrors the unit-variant path in `resolve_identifier_variant`.
+                let args: Vec<Ty> = td
+                    .type_params
+                    .iter()
+                    .map(|_| Ty::Var(TypeVar::fresh()))
+                    .collect();
+                Ty::normalize_named(qualified_type, args)
+            }
+            VariantDef::Tuple(params) => {
+                // Tuple-variant naked reference (no call): treat as a function
+                // value, matching the bare-identifier function-value path at
+                // expressions.rs (resolve_identifier).  The call form
+                // `m.Type::V(args)` is handled by `check_method_call` via
+                // `lookup_variant_constructor`.
+                let args: Vec<Ty> = td
+                    .type_params
+                    .iter()
+                    .map(|_| Ty::Var(TypeVar::fresh()))
+                    .collect();
+                let subst_params: Vec<Ty> = params
+                    .iter()
+                    .map(|p| {
+                        let mut substituted = p.clone();
+                        for (tp, replacement) in td.type_params.iter().zip(args.iter()) {
+                            substituted = substituted.substitute_named_param(tp, replacement);
+                        }
+                        substituted
+                    })
+                    .collect();
+                let ret = Ty::normalize_named(qualified_type, args);
+                Ty::Function {
+                    params: subst_params,
+                    ret: Box::new(ret),
+                }
+            }
+            VariantDef::Struct(_) => {
+                // Struct variants require the braced initialiser; parse never
+                // reaches this arm in the StructInit shape (that goes through
+                // `check_struct_init`).  A naked `m.E::V` for a struct variant
+                // is a user error — emit a hint rather than silently typing it.
+                self.report_error(
+                    TypeErrorKind::UndefinedField,
+                    span,
+                    format!(
+                        "variant `{module_short}.{type_name}::{variant_name}` is a struct \
+                         variant; use `{module_short}.{type_name}::{variant_name} {{ ... }}` \
+                         to construct it"
+                    ),
+                );
+                Ty::Error
+            }
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "trait impl checking requires many cases"
@@ -4027,6 +4173,65 @@ impl Checker {
         base: Option<&Spanned<Expr>>,
         span: &Span,
     ) -> Ty {
+        // Module-qualified diagnostic pre-pass: when `name` has the shape
+        // `module.Type::Variant` and `module` is a known module alias, route
+        // the failure modes (no exported type / no such variant) through the
+        // same fail-closed diagnostics used by `check_field_access`'s
+        // module-qualified pre-dispatch.  Without this pre-pass the
+        // enum-variant fallback in the main body falls through to
+        // "undefined type `module.Type::Variant`" which leaks the
+        // qualified-name layout into the diagnostic and gives the user no
+        // actionable signal.  Success cases (both type and variant exist) fall
+        // through to the existing struct/enum-variant init logic.
+        if let Some(dot) = name.find('.') {
+            let module_short = &name[..dot];
+            if self.modules.contains(module_short) {
+                let after_dot = &name[dot + 1..];
+                if let Some(colon) = after_dot.find("::") {
+                    let type_name = &after_dot[..colon];
+                    let variant_name = &after_dot[colon + 2..];
+                    self.used_modules.borrow_mut().insert(ImportKey::new(
+                        self.current_module.clone(),
+                        module_short.to_string(),
+                    ));
+                    let Some(td) = self.resolve_module_type(module_short, type_name) else {
+                        let similar = self
+                            .module_type_exports
+                            .get(module_short)
+                            .map(|set| {
+                                crate::error::find_similar(
+                                    type_name,
+                                    set.iter().map(String::as_str),
+                                )
+                            })
+                            .unwrap_or_default();
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedType,
+                            span,
+                            format!("module `{module_short}` has no exported type `{type_name}`"),
+                            similar,
+                        );
+                        return Ty::Error;
+                    };
+                    if !td.variants.contains_key(variant_name) {
+                        let similar = crate::error::find_similar(
+                            variant_name,
+                            td.variants.keys().map(String::as_str),
+                        );
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedField,
+                            span,
+                            format!(
+                                "type `{module_short}.{type_name}` has no variant `{variant_name}`"
+                            ),
+                            similar,
+                        );
+                        return Ty::Error;
+                    }
+                    // Both type and variant exist — fall through.
+                }
+            }
+        }
         if let Some(td) = self.lookup_type_def(name) {
             // Track inferred type arguments for generic structs.
             // If the caller supplied explicit type args (e.g. `Wrapper<String> { ... }`),

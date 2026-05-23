@@ -1479,6 +1479,13 @@ pub struct Checker {
     /// through a module surface. Keeps module-qualified calls from resolving
     /// against private helper signatures that exist only for body checking/codegen.
     pub(super) module_fn_exports: HashSet<String>,
+    /// Per-imported-module set of exported type/actor names. Mirrors the
+    /// `module_fn_exports` precedent but for `module.Type` references. Drives
+    /// the pre-dispatch in `check_field_access` for module-qualified value
+    /// constructors (`m.Type::Variant`) so the diagnostic surface can name the
+    /// failure precisely (e.g. `module 'm' has no exported type 'T'`) instead of
+    /// leaking through to the bare-identifier "undefined variable" fallback.
+    pub(super) module_type_exports: HashMap<String, HashSet<String>>,
     /// Maps (`owner_module`, `unqualified_name`) to the module short name the name
     /// was imported from.  Used to mark the owning import as used when an
     /// unqualified function/type is referenced.
@@ -1693,6 +1700,7 @@ impl Checker {
             used_modules: RefCell::new(HashSet::new()),
             user_modules: HashSet::new(),
             module_fn_exports: HashSet::new(),
+            module_type_exports: HashMap::new(),
             unqualified_to_module: HashMap::new(),
             call_graph: HashMap::new(),
             current_function: None,

@@ -1776,11 +1776,15 @@ impl Checker {
     pub(super) fn register_machine_decl(&mut self, md: &MachineDecl) {
         // Build the machine's self-type: `Machine` or `Machine<T, U, …>`.
         // MachineDecl.type_params is Vec<TypeParam> — we extract bare names
-        // here for the self-type; bound enforcement is not yet wired in
-        // (downstream slice). We treat each param name as a Ty::Named with
-        // no further args, matching how record constructors thread type
-        // params into their return type.
+        // here for the self-type and collect declared trait bounds into a
+        // side table consulted at use sites (struct-state brace init) and
+        // mirrored onto unit-state constructor FnSigs for the call path.
         let type_param_names: Vec<String> = md.type_params.iter().map(|p| p.name.clone()).collect();
+        let type_param_bounds = self.collect_type_param_bounds(Some(&md.type_params), None);
+        if !type_param_bounds.is_empty() {
+            self.machine_type_param_bounds
+                .insert(md.name.clone(), type_param_bounds.clone());
+        }
         let machine_generic_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::Named {
@@ -1815,6 +1819,7 @@ impl Checker {
                     state.name.clone(),
                     FnSig {
                         type_params: type_param_names.clone(),
+                        type_param_bounds: type_param_bounds.clone(),
                         return_type: machine_ty.clone(),
                         is_pure: true,
                         ..FnSig::default()
@@ -2275,12 +2280,56 @@ impl Checker {
         }
     }
 
+    /// Validate that every trait named in a machine's generic bounds resolves
+    /// to a registered trait. Emits `UndefinedType` at the machine decl span
+    /// for any unknown name. Called from `check_machine_exhaustiveness`,
+    /// after Pass 2 has populated `trait_defs` for all in-scope traits.
+    pub(super) fn validate_machine_type_param_bounds(&mut self, md: &MachineDecl, span: &Span) {
+        for param in &md.type_params {
+            for bound in &param.bounds {
+                if self.is_known_trait(&bound.name) {
+                    continue;
+                }
+                let similar = crate::error::find_similar(
+                    &bound.name,
+                    self.trait_defs.keys().map(String::as_str),
+                );
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedType,
+                    span,
+                    format!(
+                        "unknown trait `{bound}` in bound on type parameter `{param_name}` of machine `{machine}`",
+                        bound = bound.name,
+                        param_name = param.name,
+                        machine = md.name,
+                    ),
+                    similar,
+                );
+            }
+        }
+    }
+
+    /// Resolve a trait-bound name against the registered trait table,
+    /// accepting both unqualified and module-qualified forms.
+    fn is_known_trait(&self, name: &str) -> bool {
+        if self.trait_defs.contains_key(name) {
+            return true;
+        }
+        if let Some(uq) = self.strip_module_qualifier(name) {
+            if self.trait_defs.contains_key(uq) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Check that the machine's state × event matrix is fully covered.
     #[expect(
         clippy::too_many_lines,
         reason = "exhaustiveness checking requires many validation steps"
     )]
     pub(super) fn check_machine_exhaustiveness(&mut self, md: &MachineDecl, span: &Span) {
+        self.validate_machine_type_param_bounds(md, span);
         let state_names: Vec<&str> = md.states.iter().map(|s| s.name.as_str()).collect();
         let event_names: Vec<&str> = md.events.iter().map(|e| e.name.as_str()).collect();
 
@@ -2378,6 +2427,18 @@ impl Checker {
                 covered.insert(key);
             }
 
+            // Push the machine's declared generic-param bounds so that
+            // `type_param_carries_bound` / resolver projection inside the
+            // transition body see `T: Resource` and recognise `T` as
+            // satisfying its bound. Pops at the end of this iteration's
+            // body block.
+            let machine_bounds_scope =
+                self.collect_type_param_scope_with_bounds(Some(&md.type_params), None);
+            let pushed_machine_bounds = !machine_bounds_scope.is_empty();
+            if pushed_machine_bounds {
+                self.current_type_param_bounds.push(machine_bounds_scope);
+            }
+
             // Fix 6: Transition body validation with source-state field scoping.
             // Bind `state` as the machine type, and track the source state so
             // that `state.field` access resolves correctly for payload states.
@@ -2464,6 +2525,9 @@ impl Checker {
             }
             self.current_machine_transition = None;
             self.env.pop_scope();
+            if pushed_machine_bounds {
+                self.current_type_param_bounds.pop();
+            }
         }
 
         // Check that every (state, event) pair is covered

@@ -4489,6 +4489,14 @@ impl Checker {
             // Emit unconditionally; see the struct-init branch above for the
             // boundary-prune rationale and validator location.
             self.record_concrete_record_init_type_args(span, &type_args);
+            // Enforce trait bounds declared on the machine's generic type
+            // parameters. Other variant carriers (enum/struct/record) do not
+            // currently route bounds through the brace-init path; the bounds
+            // side table is keyed by machine name, so this is a no-op for
+            // non-machine carriers.
+            if let Some(bounds) = self.machine_type_param_bounds.get(&enum_name).cloned() {
+                self.enforce_named_type_param_bounds(&enum_type_params, &bounds, &type_args, span);
+            }
             Ty::Named {
                 builtin: None,
                 name: enum_name,

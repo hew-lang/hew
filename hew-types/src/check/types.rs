@@ -1417,6 +1417,12 @@ pub struct Checker {
     /// about substitution. Bounds are slice-2-specific. Keeping them apart
     /// avoids invalidating every existing reader.
     pub(super) current_type_param_bounds: Vec<HashMap<String, Vec<String>>>,
+    /// Trait bounds declared on each machine's generic type parameters, keyed
+    /// by machine name. Populated during `register_machine_decl` from
+    /// `MachineDecl.type_params`. Consulted at the use site by
+    /// `check_struct_init` (struct-state brace constructor path) where no
+    /// `FnSig` pipeline carries the bounds.
+    pub(super) machine_type_param_bounds: HashMap<String, HashMap<String, Vec<String>>>,
     pub(super) current_return_type: Option<Ty>,
     pub(super) in_generator: bool,
     pub(super) loop_depth: u32,
@@ -1687,6 +1693,7 @@ impl Checker {
             registered_stdlib_hew_sources: HashSet::new(),
             generic_ctx: Vec::new(),
             current_type_param_bounds: Vec::new(),
+            machine_type_param_bounds: HashMap::new(),
             current_return_type: None,
             in_generator: false,
             loop_depth: 0,

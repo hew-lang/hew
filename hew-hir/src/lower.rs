@@ -2823,7 +2823,7 @@ impl LowerCtx {
             id: self.ids.item(),
             node: self.ids.node(),
             name: decl.name.clone(),
-            type_params: decl.type_params.clone(),
+            type_params: decl.type_params.iter().map(|p| p.name.clone()).collect(),
             states: hir_states,
             events: hir_events,
             transitions: hir_transitions,

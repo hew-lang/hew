@@ -1366,8 +1366,8 @@ mod tests {
     use hew_parser::ast::{
         ChildSpec, FnDecl, IntRadix, Literal, MachineDecl, MachineEvent, MachineState,
         MachineTransition, NamingCase, Program, RestartPolicy, SupervisorDecl, SupervisorStrategy,
-        TypeAliasDecl, TypeDecl, TypeDeclKind, VariantDecl, VariantKind, Visibility, WireDecl,
-        WireDeclKind, WireFieldDecl, WireFieldMeta, WireMetadata,
+        TypeAliasDecl, TypeDecl, TypeDeclKind, TypeParam, VariantDecl, VariantKind, Visibility,
+        WireDecl, WireDeclKind, WireFieldDecl, WireFieldMeta, WireMetadata,
     };
     use std::collections::HashSet;
 
@@ -1798,7 +1798,16 @@ mod tests {
                 Item::Machine(MachineDecl {
                     visibility: Visibility::Pub,
                     name: "Lifecycle".into(),
-                    type_params: vec!["T".into(), "U".into()],
+                    type_params: vec![
+                        TypeParam {
+                            name: "T".into(),
+                            bounds: vec![],
+                        },
+                        TypeParam {
+                            name: "U".into(),
+                            bounds: vec![],
+                        },
+                    ],
                     has_default: false,
                     states: vec![
                         MachineState {
@@ -1869,7 +1878,9 @@ mod tests {
         let Item::Machine(decoded) = &restored.items[0].0 else {
             panic!("expected Machine item after round-trip");
         };
-        assert_eq!(decoded.type_params, vec!["T".to_string(), "U".to_string()]);
+        let names: Vec<String> = decoded.type_params.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names, vec!["T".to_string(), "U".to_string()]);
+        assert!(decoded.type_params.iter().all(|p| p.bounds.is_empty()));
     }
 
     #[test]

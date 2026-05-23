@@ -1775,11 +1775,12 @@ impl Checker {
     )]
     pub(super) fn register_machine_decl(&mut self, md: &MachineDecl) {
         // Build the machine's self-type: `Machine` or `Machine<T, U, …>`.
-        // MachineDecl.type_params is Vec<String> (bare identifiers), unlike
-        // RecordDecl which uses Option<Vec<TypeParam>>. We treat each param
-        // name as a Ty::Named with no further args, matching how record
-        // constructors thread type params into their return type.
-        let type_param_names: Vec<String> = md.type_params.clone();
+        // MachineDecl.type_params is Vec<TypeParam> — we extract bare names
+        // here for the self-type; bound enforcement is not yet wired in
+        // (downstream slice). We treat each param name as a Ty::Named with
+        // no further args, matching how record constructors thread type
+        // params into their return type.
+        let type_param_names: Vec<String> = md.type_params.iter().map(|p| p.name.clone()).collect();
         let machine_generic_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::Named {
@@ -2387,9 +2388,9 @@ impl Checker {
             let transition_machine_args: Vec<Ty> = md
                 .type_params
                 .iter()
-                .map(|name| Ty::Named {
+                .map(|param| Ty::Named {
                     builtin: None,
-                    name: name.clone(),
+                    name: param.name.clone(),
                     args: vec![],
                 })
                 .collect();
@@ -2413,9 +2414,9 @@ impl Checker {
                     args: md
                         .type_params
                         .iter()
-                        .map(|name| Ty::Named {
+                        .map(|param| Ty::Named {
                             builtin: None,
-                            name: name.clone(),
+                            name: param.name.clone(),
                             args: vec![],
                         })
                         .collect(),
@@ -2452,9 +2453,9 @@ impl Checker {
                     args: md
                         .type_params
                         .iter()
-                        .map(|name| Ty::Named {
+                        .map(|param| Ty::Named {
                             builtin: None,
-                            name: name.clone(),
+                            name: param.name.clone(),
                             args: vec![],
                         })
                         .collect(),

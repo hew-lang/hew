@@ -600,7 +600,13 @@ fn make_generic_machine(name: &str, type_params: &[&str]) -> MachineDecl {
     MachineDecl {
         visibility: Visibility::Pub,
         name: name.to_string(),
-        type_params: type_params.iter().map(ToString::to_string).collect(),
+        type_params: type_params
+            .iter()
+            .map(|n| TypeParam {
+                name: (*n).to_string(),
+                bounds: vec![],
+            })
+            .collect(),
         has_default: false,
         states: vec![unit_state("Idle"), unit_state("Active")],
         events: vec![unit_event("Start"), unit_event("Stop")],
@@ -1197,7 +1203,10 @@ fn imported_generic_machine_type_params_survive_registration() {
     let md = MachineDecl {
         visibility: Visibility::Pub,
         name: "Worker".to_string(),
-        type_params: vec!["T".to_string()],
+        type_params: vec![TypeParam {
+            name: "T".to_string(),
+            bounds: vec![],
+        }],
         has_default: false,
         states: vec![unit_state("Idle"), unit_state("Active")],
         events: vec![unit_event("Start"), unit_event("Stop")],
@@ -1329,4 +1338,41 @@ fn two_modules_with_different_machines_no_collision() {
         output.fn_sigs.contains_key("Idle"),
         "Beta::Idle constructor must be registered"
     );
+}
+
+/// Gate program: a machine declaring `<T: Resource>` parses and
+/// type-checks cleanly. Bound enforcement is parsed-only at this layer;
+/// downstream slices will validate bound resolution against trait
+/// definitions.
+#[test]
+fn machine_with_trait_bound_parses_and_checks() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+machine Lifecycle<T: Resource> {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+";
+    let output = typecheck_isolated(source);
+    assert!(
+        output.errors.is_empty(),
+        "trait-bounded machine should type-check, got: {:?}",
+        output.errors
+    );
+    let td = output
+        .type_defs
+        .get("Lifecycle")
+        .expect("Lifecycle should be registered as a type");
+    assert_eq!(td.type_params, vec!["T".to_string()]);
 }

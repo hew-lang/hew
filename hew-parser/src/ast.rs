@@ -1394,16 +1394,16 @@ pub struct MachineDecl {
     #[serde(default)]
     pub visibility: Visibility,
     pub name: String,
-    /// Optional generic type parameters declared as `machine Name<T, U> { ... }`.
+    /// Optional generic type parameters declared as `machine Name<T, U> { ... }`
+    /// or `machine Name<T: Trait> { ... }`.
     ///
-    /// v0.5 accepts bare identifiers only — trait bounds, variance markers,
-    /// defaults, and machine-over-machine generics are not supported (see
-    /// `docs/specs/HEW-SPEC-2026.md` §3.11.8). The names are threaded through
-    /// to HIR so generic machine shapes (e.g. `Lifecycle<T>`) can be declared;
-    /// type-checker registration and codegen for generic machine values are
-    /// not implemented at this layer.
+    /// Trait bounds are parsed and stored verbatim. Bound enforcement is
+    /// handled by downstream passes (type-checker / HIR); the parser only
+    /// accepts the syntax. Variance markers, defaults, and
+    /// machine-over-machine generics are not yet supported (see
+    /// `docs/specs/HEW-SPEC-2026.md` §3.11.8).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub type_params: Vec<String>,
+    pub type_params: Vec<TypeParam>,
     pub states: Vec<MachineState>,
     pub events: Vec<MachineEvent>,
     pub transitions: Vec<MachineTransition>,

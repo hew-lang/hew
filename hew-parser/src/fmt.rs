@@ -992,11 +992,15 @@ impl<'a> Formatter<'a> {
         self.write(&decl.name);
         if !decl.type_params.is_empty() {
             self.write("<");
-            for (i, name) in decl.type_params.iter().enumerate() {
+            for (i, param) in decl.type_params.iter().enumerate() {
                 if i > 0 {
                     self.write(", ");
                 }
-                self.write(name);
+                self.write(&param.name);
+                if !param.bounds.is_empty() {
+                    self.write(": ");
+                    self.format_trait_bound_list(&param.bounds);
+                }
             }
             self.write(">");
         }

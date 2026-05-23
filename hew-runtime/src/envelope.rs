@@ -149,3 +149,111 @@ impl EnvelopeFrame {
         }
     }
 }
+
+// ── Fail-closed decode surface ────────────────────────────────────────────
+//
+// The W1 module docstring and `WIRE_VERSION` doc-comment both assert that
+// "Frames carrying any other version value MUST be rejected". The types
+// themselves cannot enforce this — ciborium will happily deserialise a
+// frame whose `version` field is, say, `0` or `7`. Callers MUST decode
+// through [`decode_envelope_frame`] / [`decode_control_frame`] (or perform
+// an equivalent version check themselves) to honour the CDDL contract.
+//
+// # Frame-type discrimination
+//
+// The CDDL `wire-frame = control-frame / envelope-frame` choice carries a
+// `frame_type` key (CBOR map key `2`) that selects the branch. The Rust
+// representation here splits the choice at the *type* level — [`ControlFrame`]
+// and [`EnvelopeFrame`] are separate structs — rather than carrying a runtime
+// discriminant byte. Frame-type "mismatch" is therefore caught one layer up,
+// by the codec choosing which struct to decode into based on the wire
+// `frame_type` byte. A truly mis-typed payload (a control frame's bytes fed
+// to `decode_envelope_frame`) surfaces as a `Cbor` decode error from ciborium
+// because the required field set will not match — exercised by the
+// `mismatched_frame_type_is_rejected` test.
+
+/// Errors returned by the fail-closed envelope decoders.
+#[derive(Debug)]
+pub enum DecodeError {
+    /// The underlying CBOR bytes were malformed, truncated, or did not match
+    /// the expected struct shape.
+    Cbor(ciborium::de::Error<std::io::Error>),
+    /// The frame's `version` field did not equal [`WIRE_VERSION`]. The
+    /// CDDL contract requires decoders to refuse rather than try to interpret
+    /// unknown versions.
+    UnknownVersion { found: u8, expected: u8 },
+}
+
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cbor(e) => write!(f, "CBOR decode failed: {e}"),
+            Self::UnknownVersion { found, expected } => write!(
+                f,
+                "unknown wire version {found}, expected {expected}; \
+                 decoders MUST reject unknown versions (see schemas/envelope.cddl)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DecodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Cbor(e) => Some(e),
+            Self::UnknownVersion { .. } => None,
+        }
+    }
+}
+
+impl From<ciborium::de::Error<std::io::Error>> for DecodeError {
+    fn from(e: ciborium::de::Error<std::io::Error>) -> Self {
+        Self::Cbor(e)
+    }
+}
+
+/// Decode a CBOR-encoded [`EnvelopeFrame`] from `bytes`, enforcing the
+/// wire-version invariant.
+///
+/// Returns [`DecodeError::Cbor`] for malformed or truncated input (ciborium
+/// surfaces short reads as decode errors) and [`DecodeError::UnknownVersion`]
+/// if the decoded frame's `version` field is not [`WIRE_VERSION`].
+///
+/// # Errors
+///
+/// - [`DecodeError::Cbor`] if `bytes` are not a valid CBOR encoding of an
+///   [`EnvelopeFrame`] (malformed, truncated, missing required fields, or
+///   the bytes of a different frame type — see the module docs on
+///   frame-type discrimination).
+/// - [`DecodeError::UnknownVersion`] if decode succeeded but the frame's
+///   `version` field does not equal [`WIRE_VERSION`].
+pub fn decode_envelope_frame(bytes: &[u8]) -> Result<EnvelopeFrame, DecodeError> {
+    let frame: EnvelopeFrame = ciborium::de::from_reader(bytes)?;
+    if frame.version != WIRE_VERSION {
+        return Err(DecodeError::UnknownVersion {
+            found: frame.version,
+            expected: WIRE_VERSION,
+        });
+    }
+    Ok(frame)
+}
+
+/// Decode a CBOR-encoded [`ControlFrame`] from `bytes`, enforcing the
+/// wire-version invariant. See [`decode_envelope_frame`] for the error
+/// contract.
+///
+/// # Errors
+///
+/// Mirrors [`decode_envelope_frame`]: [`DecodeError::Cbor`] for malformed
+/// or wrong-shape input; [`DecodeError::UnknownVersion`] if the decoded
+/// frame's `version` field is not [`WIRE_VERSION`].
+pub fn decode_control_frame(bytes: &[u8]) -> Result<ControlFrame, DecodeError> {
+    let frame: ControlFrame = ciborium::de::from_reader(bytes)?;
+    if frame.version != WIRE_VERSION {
+        return Err(DecodeError::UnknownVersion {
+            found: frame.version,
+            expected: WIRE_VERSION,
+        });
+    }
+    Ok(frame)
+}

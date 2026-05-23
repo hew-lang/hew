@@ -165,3 +165,115 @@ fn same_envelope_produces_same_bytes() {
     let bytes2 = to_cbor(&frame);
     assert_eq!(bytes1, bytes2, "serialisation must be deterministic");
 }
+
+// ── Fail-closed decode invariants ─────────────────────────────────────────
+//
+// These exercise the `decode_*` surface in `envelope.rs`. The module's
+// docstring on `WIRE_VERSION` asserts "Frames carrying any other version
+// value MUST be rejected" — these tests pin that invariant so a future
+// edit can't silently drop the version check.
+
+use hew_runtime::envelope::{decode_control_frame, decode_envelope_frame, DecodeError};
+
+#[test]
+fn wrong_version_frame_is_rejected() {
+    // Construct a syntactically valid frame but with a bogus version byte.
+    let bogus = EnvelopeFrame {
+        version: WIRE_VERSION + 1,
+        target_actor_id: 1,
+        source_actor_id: 2,
+        msg_type: 0,
+        payload: vec![],
+        request_id: 0,
+        source_node_id: 0,
+    };
+    let bytes = to_cbor(&bogus);
+
+    match decode_envelope_frame(&bytes) {
+        Err(DecodeError::UnknownVersion { found, expected }) => {
+            assert_eq!(found, WIRE_VERSION + 1);
+            assert_eq!(expected, WIRE_VERSION);
+        }
+        Ok(_) => panic!("decoder accepted a frame with a non-current wire version"),
+        Err(other) => panic!("expected UnknownVersion, got {other:?}"),
+    }
+
+    // Same invariant on the control frame decoder.
+    let bogus_ctrl = ControlFrame {
+        version: 0,
+        ctrl_kind: 0,
+        payload: vec![],
+    };
+    let ctrl_bytes = to_cbor(&bogus_ctrl);
+    assert!(
+        matches!(
+            decode_control_frame(&ctrl_bytes),
+            Err(DecodeError::UnknownVersion { found: 0, .. })
+        ),
+        "control-frame decoder must also reject unknown versions",
+    );
+}
+
+#[test]
+fn truncated_cbor_returns_error() {
+    let frame = EnvelopeFrame::fire_and_forget(42, 7, 3, vec![1, 2, 3, 4, 5]);
+    let bytes = to_cbor(&frame);
+    assert!(bytes.len() > 4, "need a non-trivial frame to truncate");
+
+    // Chop the encoding mid-map; ciborium should surface an Err. The
+    // important invariant is that the decoder NEVER returns Ok on partial
+    // input — that would let a peer feed half a frame and have us act on
+    // unset fields.
+    for cut in 1..bytes.len() {
+        let truncated = &bytes[..cut];
+        match decode_envelope_frame(truncated) {
+            Err(DecodeError::Cbor(_) | DecodeError::UnknownVersion { .. }) => {
+                // Either is acceptable. The truncated prefix either fails to
+                // deserialise outright (Cbor) or happens to produce a struct
+                // whose `version` byte differs from WIRE_VERSION
+                // (UnknownVersion). Both honour the fail-closed contract.
+            }
+            Ok(decoded) => panic!(
+                "decoder returned Ok({decoded:?}) on a {cut}-byte truncation \
+                 of a {}-byte frame; fail-closed contract violated",
+                bytes.len()
+            ),
+        }
+    }
+}
+
+#[test]
+fn mismatched_frame_type_is_rejected() {
+    // The Rust representation splits the CDDL `wire-frame` choice at the
+    // type level (separate `ControlFrame` / `EnvelopeFrame` structs) rather
+    // than carrying a runtime discriminant byte. "Mismatched frame type"
+    // therefore surfaces when bytes encoded as one variant are fed to the
+    // decoder for the other — ciborium reports the missing required fields
+    // as a decode error. This test pins that behaviour so a future change
+    // (e.g. adding `#[serde(default)]` to envelope fields) can't silently
+    // turn a control frame into a half-filled envelope.
+
+    let ctrl = ControlFrame {
+        version: WIRE_VERSION,
+        ctrl_kind: 9,
+        payload: b"keepalive".to_vec(),
+    };
+    let ctrl_bytes = to_cbor(&ctrl);
+
+    match decode_envelope_frame(&ctrl_bytes) {
+        Err(DecodeError::Cbor(_)) => {}
+        Ok(decoded) => panic!(
+            "envelope decoder accepted a control-frame payload as an \
+             EnvelopeFrame: {decoded:?}"
+        ),
+        Err(other) => panic!("expected Cbor decode error, got {other:?}"),
+    }
+
+    // And vice versa: an envelope frame must not decode as a control frame.
+    let env = EnvelopeFrame::fire_and_forget(1, 2, 0, vec![]);
+    let env_bytes = to_cbor(&env);
+    assert!(
+        matches!(decode_control_frame(&env_bytes), Err(DecodeError::Cbor(_))),
+        "control-frame decoder accepted envelope-frame bytes",
+    );
+}

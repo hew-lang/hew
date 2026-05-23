@@ -487,7 +487,6 @@ pub mod transport;
 // gate enforces this and excludes wasm32 per HEW-DIST-SPEC §15.
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "sim-transport")))]
 pub mod sim_transport;
-pub mod wire;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cluster;

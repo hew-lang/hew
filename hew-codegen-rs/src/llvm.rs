@@ -880,6 +880,21 @@ fn intern_runtime_decl<'ctx>(
         // Emitted by MIR at arm-body exit (success path) and on the partial-failure
         // cleanup paths (captures[0..j] already allocated when capture[j] is null).
         "hew_regex_free_capture" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_gen_yield(ctx: *mut HewGenCtx, value: *mut c_void, size: usize) -> bool
+        // (`hew-runtime/src/generator.rs:229`). Sends a yielded value on the
+        // generator's yield channel, deep-copying `size` bytes from `value`,
+        // then blocks until the consumer either resumes (returns `true`) or
+        // cancels (returns `false`). Codegen emits this from the
+        // `Terminator::Yield` arm of the gen-body lowering. The body fn must
+        // declare its `ctx` parameter as `Local(1)` (per the lower_gen_block
+        // contract); the codegen arm loads the pointer from that slot.
+        // `value` is the address of the yielded value's slot (taken via
+        // `actor_payload_ptr_size`); `size` is its byte length. The runtime
+        // copies `size` bytes by value, so the lifetime of the original slot
+        // ends at the call and the caller may keep using the slot afterwards.
+        "hew_gen_yield" => ctx
+            .bool_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false),
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "intern_runtime_decl: codegen has no LLVM signature for runtime \
@@ -7348,14 +7363,111 @@ fn lower_terminator<'ctx>(
             };
             emit_trap_with_code(fn_ctx, code, "trap")?;
         }
-        Terminator::Yield { .. } => {
-            // The variant is declared so Checked MIR's borrow-liveness
-            // check has a suspension point to look for; the v0.5
-            // integer spine never constructs it. Generator lowering
-            // arrives with the construction surface in a later release.
-            return Err(CodegenError::Unsupported(
-                "Terminator::Yield — generator lowering not yet implemented",
-            ));
+        Terminator::Yield { value, next } => {
+            // Generator suspension (thread-based runtime, `hew-runtime/src/generator.rs`).
+            //
+            // Producer contract (`lower_gen_block`): the enclosing gen-body
+            // function has two leading pointer parameters — `Local(0)` is the
+            // body-argument copy (unused here) and `Local(1)` is the
+            // `*mut HewGenCtx` runtime context. The body fn signature matches
+            // the runtime's `body_fn: extern "C" fn(*mut c_void, *mut HewGenCtx)`
+            // that `hew_gen_ctx_create` expects.
+            //
+            // Lowering shape:
+            //   1. Load `ctx = *Local(1)` (the gen-context pointer).
+            //   2. Materialise `(payload_ptr, payload_size)` for `value`.
+            //   3. Call `hew_gen_yield(ctx, payload_ptr, payload_size) -> i1`.
+            //      The runtime deep-copies `payload_size` bytes from
+            //      `payload_ptr` (so the local slot may continue to be used
+            //      after the call) and blocks on the resume channel.
+            //   4. If the return is `true`, branch to `next` (resume point).
+            //      If `false`, the consumer cancelled / dropped the generator:
+            //      return immediately from the body function so the runtime
+            //      thread can hit its `catch_unwind`/done-sentinel path.
+            //
+            // `Local(1)` is the only place where the ctx pointer lives; the
+            // producer never writes to it after the prologue. The load type
+            // is `ptr` (opaque LLVM pointer) because the slot's resolved
+            // type is `ResolvedTy::Pointer { is_mutable: true, pointee: Unit }`
+            // which `primitive_to_llvm` lowers to an opaque pointer.
+            let (ctx_slot, _ctx_slot_ty) = fn_ctx.locals.get(&1).copied().ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "Terminator::Yield: gen-body function has no Local(1) \
+                         ctx-pointer parameter — the `lower_gen_block` producer \
+                         must prepend `*mut HewGenCtx` as the body fn's second \
+                         parameter before codegen runs"
+                        .to_string(),
+                )
+            })?;
+            let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+            let ctx_ptr = fn_ctx
+                .builder
+                .build_load(ptr_ty, ctx_slot, "gen_ctx_load")
+                .map_err(|e| CodegenError::Llvm(format!("gen ctx load: {e:?}")))?
+                .into_pointer_value();
+            let (payload_ptr, payload_size) =
+                actor_payload_ptr_size(fn_ctx, *value, "gen_yield_payload")?;
+            let yield_fn = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_gen_yield",
+            )?;
+            let keep_going = fn_ctx
+                .builder
+                .build_call(
+                    yield_fn,
+                    &[ctx_ptr.into(), payload_ptr.into(), payload_size.into()],
+                    "hew_gen_yield_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_gen_yield call: {e:?}")))?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_gen_yield returned void".into()))?
+                .into_int_value();
+
+            let parent_fn = fn_ctx
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .ok_or_else(|| CodegenError::Llvm("yield block has no parent function".into()))?;
+            let cancel_bb = fn_ctx
+                .ctx
+                .append_basic_block(parent_fn, "gen_yield_cancelled");
+            let next_bb = *fn_ctx
+                .blocks
+                .get(next)
+                .ok_or_else(|| CodegenError::FailClosed(format!("Yield next bb{next} missing")))?;
+            // `hew_gen_yield` returns `true` when the consumer asked for
+            // another value; `false` when the consumer cancelled (or the
+            // channel was dropped). Branch accordingly.
+            fn_ctx
+                .builder
+                .build_conditional_branch(keep_going, next_bb, cancel_bb)
+                .map_err(|e| CodegenError::Llvm(format!("yield cont branch: {e:?}")))?;
+
+            // Cancel path: return from the body function. The runtime thread
+            // unwraps the return at the catch_unwind boundary, frees the
+            // body_arg copy, and sends the done sentinel to the consumer.
+            // The return value is undef because the consumer never observes
+            // a body-completion value through the thread-based runtime
+            // (only yields propagate over the channel); the return slot is
+            // never reached on this cancel path. Returning unit/void would
+            // require declare_function to accept Unit returns, which is out
+            // of the current spine — fall back to an `unreachable` after a
+            // trap-style `return ConstNull` would be misleading. Use the
+            // return slot's existing alloca (which may be uninit) to
+            // satisfy LLVM's typing without changing the body fn signature
+            // contract.
+            fn_ctx.builder.position_at_end(cancel_bb);
+            let ret_val = fn_ctx
+                .builder
+                .build_load(fn_ctx.return_ty, fn_ctx.return_slot, "gen_cancel_ret")
+                .map_err(|e| CodegenError::Llvm(format!("gen cancel ret load: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_return(Some(&ret_val))
+                .map_err(|e| CodegenError::Llvm(format!("gen cancel ret: {e:?}")))?;
         }
         Terminator::Send {
             actor,
@@ -11120,6 +11232,81 @@ mod tests {
             m.verify().is_ok(),
             "emitted module must pass LLVM verify:\n{}",
             m.print_to_string().to_string()
+        );
+    }
+
+    /// Synthetic gen-body function (mirrors what `lower_gen_block` produces):
+    /// two leading pointer params (Local(0)=arg, Local(1)=ctx), one i64 local
+    /// for the yielded value, and a single Yield → Return chain. Asserts the
+    /// module verifies and that the emitted IR calls `hew_gen_yield`. This is
+    /// the codegen-side contract for `Terminator::Yield` — full e2e execution
+    /// of `g.next()` requires `.next()` HIR rewrite + `hew_gen_ctx_create`
+    /// emission from the enclosing fn, both of which are tracked separately.
+    #[test]
+    fn yield_terminator_emits_hew_gen_yield_call_and_module_verifies() {
+        let ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        let gen_body = RawMirFunction {
+            name: "__hew_gen_body_test_0".to_string(),
+            return_ty: ResolvedTy::I64,
+            call_conv: FunctionCallConv::Default,
+            // Local(0) = body arg ptr, Local(1) = *mut HewGenCtx — must match
+            // the runtime body_fn signature `extern "C" fn(*mut c_void, *mut HewGenCtx)`.
+            params: vec![ptr_ty.clone(), ptr_ty.clone()],
+            locals: vec![ptr_ty.clone(), ptr_ty.clone(), ResolvedTy::I64],
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: vec![Instr::ConstI64 {
+                        dest: Place::Local(2),
+                        value: 7,
+                    }],
+                    terminator: Terminator::Yield {
+                        value: Place::Local(2),
+                        next: 1,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: Vec::new(),
+                    instructions: vec![Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(2),
+                    }],
+                    terminator: Terminator::Return,
+                },
+            ],
+            decisions: Vec::new(),
+        };
+        let pipeline = IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![gen_body],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+        };
+        let ctx = Context::create();
+        let m = build_module(&ctx, &pipeline, "gen_yield_codegen_test")
+            .expect("Terminator::Yield must lower without error");
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("call i1 @hew_gen_yield"),
+            "Yield arm must emit a call to hew_gen_yield; got IR:\n{ir}"
+        );
+        assert!(
+            m.verify().is_ok(),
+            "gen-body module with Yield must pass LLVM verify:\n{ir}"
         );
     }
 }

@@ -9049,6 +9049,23 @@ impl Builder {
             ..Builder::default()
         };
 
+        // Prepend the thread-based generator runtime parameters:
+        //   Local(0) — `*mut c_void` body-argument pointer (unused by simple
+        //              capture-free gen blocks; reserved so the LLVM signature
+        //              matches `hew_gen_ctx_create`'s `body_fn` contract
+        //              `extern "C" fn(*mut c_void, *mut HewGenCtx)`).
+        //   Local(1) — `*mut HewGenCtx` runtime context pointer. Loaded by
+        //              the codegen `Terminator::Yield` arm to invoke
+        //              `hew_gen_yield(ctx, &value, sizeof(value))`.
+        // Subsequent user-statement local allocations naturally start at
+        // Local(2) because `alloc_local` indexes from `locals.len()`.
+        let gen_ctx_ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        body_builder.locals.push(gen_ctx_ptr_ty.clone());
+        body_builder.locals.push(gen_ctx_ptr_ty.clone());
+
         // Lower all statements in the gen-block body. Yields inside the body
         // call `lower_yield_expr` which emits `Terminator::Yield` and advances
         // the cursor to a fresh resume block.
@@ -9136,7 +9153,22 @@ impl Builder {
             name: body_name.clone(),
             return_ty: return_ty.clone(),
             call_conv: crate::model::FunctionCallConv::Default,
-            params: Vec::new(),
+            // Two leading pointer parameters matching the runtime contract for
+            // `hew_gen_ctx_create`'s `body_fn` (`extern "C" fn(*mut c_void,
+            // *mut HewGenCtx)`): `params[0]` is the body-argument copy,
+            // `params[1]` is the runtime context pointer. The codegen
+            // `Terminator::Yield` arm loads `Local(1)` to invoke
+            // `hew_gen_yield(ctx, &value, sizeof(value))`.
+            params: vec![
+                ResolvedTy::Pointer {
+                    is_mutable: true,
+                    pointee: Box::new(ResolvedTy::Unit),
+                },
+                ResolvedTy::Pointer {
+                    is_mutable: true,
+                    pointee: Box::new(ResolvedTy::Unit),
+                },
+            ],
             locals: body_locals_with_state.clone(),
             blocks: blocks.clone(),
             decisions: body_builder.decisions.clone(),

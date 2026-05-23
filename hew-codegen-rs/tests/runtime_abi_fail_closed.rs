@@ -92,6 +92,7 @@ fn pipeline_with_call_runtime_abi_parts(
         enum_layouts: vec![],
         regex_literals: vec![],
         gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 

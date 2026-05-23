@@ -105,6 +105,24 @@ pub struct IrPipeline {
     /// Empty when the module contains no `gen { … }` blocks; the field is
     /// always present so codegen + tests can index it uniformly.
     pub gen_state_layouts: Vec<GenStateLayout>,
+    /// User-declared `extern "<abi>" { fn ...; }` functions lowered from HIR.
+    ///
+    /// Populated by `lower_hir_module` from `HirItem::ExternFn`. Codegen
+    /// pre-declares each entry as an LLVM external symbol BEFORE walking user
+    /// functions so `Terminator::Call` lookups by name resolve transparently.
+    /// The symbol itself is satisfied at link time — by `hew-runtime` for
+    /// `extern "rt"` symbols on the stable JIT ABI, or by a sibling stdlib
+    /// staticlib that the driver adds to the native link line.
+    pub extern_decls: Vec<ExternDecl>,
+}
+
+/// One user-declared extern fn — see [`IrPipeline::extern_decls`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternDecl {
+    pub name: String,
+    pub abi: String,
+    pub param_tys: Vec<ResolvedTy>,
+    pub return_ty: ResolvedTy,
 }
 
 /// A regex literal compiled at module-init time.

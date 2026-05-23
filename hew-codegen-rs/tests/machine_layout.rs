@@ -19,6 +19,7 @@ fn empty_pipeline(machine_layouts: Vec<MachineLayout>) -> IrPipeline {
         enum_layouts: Vec::new(),
         regex_literals: Vec::new(),
         gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 

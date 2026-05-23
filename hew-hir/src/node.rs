@@ -135,6 +135,33 @@ pub enum HirItem {
     /// types) so that checker-side reasoning and future call-site rewrites
     /// can find it without re-parsing.
     Impl(HirImplBlock),
+    /// Lowered `extern "<abi>" { fn name(params) -> ret; ... }` declaration.
+    ///
+    /// One [`HirItem::ExternFn`] is emitted per [`hew_parser::ast::ExternFnDecl`]
+    /// inside the surface `Item::ExternBlock`. Distinct from [`HirItem::Function`]
+    /// because extern fns have no body — the symbol is satisfied at link time by
+    /// the runtime or a sibling stdlib staticlib. Downstream MIR includes the
+    /// extern name in `module_fn_names` so `Expr::Call` to it dispatches as
+    /// `Terminator::Call`; codegen predeclares the symbol with external linkage
+    /// before user functions are declared so the `Terminator::Call` lookup
+    /// resolves transparently.
+    ExternFn(HirExternFn),
+}
+
+/// Lowered extern function declaration — see [`HirItem::ExternFn`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirExternFn {
+    pub id: ItemId,
+    pub node: HirNodeId,
+    pub name: String,
+    /// `"rt"`, `"C"`, etc. The checker validates `"rt"` against the JIT-stable
+    /// symbol allowlist; other ABIs pass through unchanged.
+    pub abi: String,
+    /// Parameter types in declaration order. Names are dropped — extern fns
+    /// have no body, so there is no scope to bind names into.
+    pub param_tys: Vec<ResolvedTy>,
+    pub return_ty: ResolvedTy,
+    pub span: Span,
 }
 
 /// Lowered impl block — see [`HirItem::Impl`] for the metadata-versus-method

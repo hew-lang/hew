@@ -84,12 +84,17 @@ pub enum CrashAction {
 const JIT_CLASSIFICATION_TOML: &str =
     include_str!("../../../scripts/jit-symbol-classification.toml");
 
-/// Parse the `stable = [ ... ]` block from `JIT_CLASSIFICATION_TOML`.
+/// Parse the `stable = [ ... ]` and `stable-stdlib = [ ... ]` blocks from
+/// `JIT_CLASSIFICATION_TOML` and return their union.
 ///
 /// Returns a `HashSet<&'static str>` so membership checks are O(1).
 /// The parsing is line-based (no full TOML dep): each quoted string inside
-/// `stable = [` ... `]` is extracted. The `codegen-stable` and `internal`
-/// blocks are excluded — those tiers are not user-callable via `extern "rt"`.
+/// either block is extracted. The `codegen-stable` and `internal` blocks
+/// are excluded — those tiers are not user-callable via `extern "rt"`.
+///
+/// `stable` covers runtime exports; `stable-stdlib` covers sibling stdlib
+/// crate exports (e.g. `hew_datetime_*`) that user code is permitted to
+/// name from an `extern "rt"` block and that the native linker pulls in.
 ///
 /// WHY no dep: the block format is simple and has been stable since the file
 /// was introduced; adding a toml dep to hew-types for a single string-list
@@ -98,21 +103,23 @@ fn jit_stable_symbols() -> &'static std::collections::HashSet<&'static str> {
     static SET: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
     SET.get_or_init(|| {
         let mut set = std::collections::HashSet::new();
-        let mut inside = false;
-        for line in JIT_CLASSIFICATION_TOML.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("stable = [") {
-                inside = true;
-                continue;
-            }
-            if inside && trimmed == "]" {
-                break;
-            }
-            if inside {
-                if let Some(rest) = trimmed.strip_prefix('"') {
-                    if let Some(sym) = rest.split('"').next() {
-                        if !sym.is_empty() {
-                            set.insert(sym);
+        for header in ["stable = [", "stable-stdlib = ["] {
+            let mut inside = false;
+            for line in JIT_CLASSIFICATION_TOML.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with(header) {
+                    inside = true;
+                    continue;
+                }
+                if inside && trimmed == "]" {
+                    break;
+                }
+                if inside {
+                    if let Some(rest) = trimmed.strip_prefix('"') {
+                        if let Some(sym) = rest.split('"').next() {
+                            if !sym.is_empty() {
+                                set.insert(sym);
+                            }
                         }
                     }
                 }

@@ -180,6 +180,7 @@ fn vec_index_i64_pipeline() -> IrPipeline {
         enum_layouts: vec![],
         regex_literals: vec![],
         gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 

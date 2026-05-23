@@ -235,6 +235,23 @@ pub fn dump_hir(module: &HirModule) -> String {
                         .expect("write to string");
                 }
             }
+            HirItem::ExternFn(ef) => {
+                let params = ef
+                    .param_tys
+                    .iter()
+                    .map(|ty| ty.user_facing().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                writeln!(
+                    out,
+                    "extern \"{}\" fn {}({}) -> {}",
+                    ef.abi,
+                    ef.name,
+                    params,
+                    ef.return_ty.user_facing(),
+                )
+                .expect("write to string");
+            }
         }
     }
     out

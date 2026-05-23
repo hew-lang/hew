@@ -1012,6 +1012,59 @@ fn predeclare_stdlib_catalog<'ctx>(
     Ok(())
 }
 
+/// Predeclare every user-authored `extern "<abi>" { fn ...; }` symbol as an
+/// LLVM external function so `Terminator::Call` lookups by name resolve
+/// transparently. The symbol is satisfied at link time — by `hew-runtime`
+/// for stable JIT-ABI symbols, or by a sibling stdlib staticlib that the
+/// driver adds to the native link line.
+///
+/// Must run BEFORE user-fn declaration so that an extern fn whose name
+/// happens to collide with a user fn (a checker-rejected case in practice)
+/// would still get a deterministic registration order; in normal flow the
+/// two sets are disjoint and the insertion order does not matter.
+fn predeclare_extern_decls<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    fn_symbols: &mut FnSymbolMap<'ctx>,
+    extern_decls: &[hew_mir::model::ExternDecl],
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<()> {
+    for decl in extern_decls {
+        if fn_symbols.contains_key(&decl.name) {
+            // Already registered as a stdlib-catalog shim (e.g. user redeclares
+            // a runtime symbol that the catalog already wired with the correct
+            // signature). Skip to preserve the catalog's typed FnSymbol entry.
+            continue;
+        }
+        let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(decl.param_tys.len());
+        for ty in &decl.param_tys {
+            param_tys.push(metadata_type_from_basic(resolve_ty(
+                ctx,
+                ty,
+                record_layouts,
+            )?));
+        }
+        let return_ty = if matches!(decl.return_ty, ResolvedTy::Unit) {
+            None
+        } else {
+            Some(resolve_ty(ctx, &decl.return_ty, record_layouts)?)
+        };
+        let fn_ty = fn_type_for_return(ctx, return_ty, &param_tys);
+        let value = llvm_mod
+            .get_function(&decl.name)
+            .unwrap_or_else(|| llvm_mod.add_function(&decl.name, fn_ty, Some(Linkage::External)));
+        fn_symbols.insert(
+            decl.name.clone(),
+            FnSymbol::Real {
+                value,
+                return_ty: return_ty.unwrap_or_else(|| ctx.i8_type().into()),
+                returns_unit: return_ty.is_none(),
+            },
+        );
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Type mapping
 // ---------------------------------------------------------------------------
@@ -9507,6 +9560,13 @@ fn build_module_for_target<'ctx>(
     )?;
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;
+    predeclare_extern_decls(
+        ctx,
+        &llvm_mod,
+        &mut fn_symbols,
+        &pipeline.extern_decls,
+        &record_layouts,
+    )?;
     for func in &pipeline.raw_mir {
         let sym = declare_function(ctx, &llvm_mod, func, &record_layouts)?;
         fn_symbols.insert(func.name.clone(), sym);
@@ -9889,6 +9949,7 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
+            extern_decls: vec![],
         }
     }
 
@@ -9936,6 +9997,7 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
+            extern_decls: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -10001,6 +10063,7 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
+            extern_decls: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -10060,6 +10123,7 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
+            extern_decls: vec![],
         };
         let ctx = Context::create();
         let m =
@@ -10104,6 +10168,7 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
+            extern_decls: vec![],
         };
         let ctx = Context::create();
         let err =
@@ -10164,6 +10229,7 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
+            extern_decls: vec![],
         }
     }
 
@@ -10358,6 +10424,7 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
+            extern_decls: vec![],
         }
     }
 
@@ -11043,6 +11110,7 @@ mod tests {
             enum_layouts: vec![enum_layout],
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
+            extern_decls: vec![],
         };
 
         let ctx = Context::create();

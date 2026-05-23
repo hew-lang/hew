@@ -167,6 +167,15 @@ pub fn lower_program_with_mono_cap(
             Item::Function(func) => {
                 ctx.register_fn_entry(&func.name, func);
             }
+            Item::ExternBlock(block) => {
+                // Register extern fn signatures so call sites resolve them
+                // to a `BindingRef::Item` like any other top-level function.
+                // Codegen pre-declares the LLVM symbol with external linkage
+                // (see `predeclare_extern_decls` in hew-codegen-rs).
+                for extern_fn in &block.functions {
+                    ctx.register_extern_fn_entry(extern_fn);
+                }
+            }
             Item::Impl(impl_decl) => {
                 // Register methods of any V0b-acceptable impl block under the
                 // qualified `<SelfType>::<method>` name so call sites can
@@ -526,12 +535,30 @@ pub fn lower_program_with_mono_cap(
                 // `program.items` for diagnostic source-map attribution (removing
                 // it would require auditing every span consumer — out of scope).
             }
-            Item::Const(_)
-            | Item::TypeAlias(_)
-            | Item::Trait(_)
-            | Item::Wire(_)
-            | Item::ExternBlock(_) => {
+            Item::Const(_) | Item::TypeAlias(_) | Item::Trait(_) | Item::Wire(_) => {
                 ctx.unsupported(span.clone(), "top-level-item", "slice-2");
+            }
+            Item::ExternBlock(block) => {
+                for func in &block.functions {
+                    let param_tys = func
+                        .params
+                        .iter()
+                        .map(|p| ctx.lower_type(&p.ty))
+                        .collect::<Vec<_>>();
+                    let return_ty = func
+                        .return_type
+                        .as_ref()
+                        .map_or(ResolvedTy::Unit, |ret| ctx.lower_type(ret));
+                    items.push(HirItem::ExternFn(crate::node::HirExternFn {
+                        id: ctx.ids.item(),
+                        node: ctx.ids.node(),
+                        name: func.name.clone(),
+                        abi: block.abi.clone(),
+                        param_tys,
+                        return_ty,
+                        span: func.span.clone(),
+                    }));
+                }
             }
         }
     }
@@ -1739,6 +1766,29 @@ impl LowerCtx {
                 param_tys,
                 linkage: None,
                 type_params,
+            },
+        );
+    }
+
+    /// Register an `extern "..." { fn ...; }` declaration in `fn_registry`
+    /// so call sites resolve the bare name to an item just like a regular
+    /// `fn`. Extern fns are monomorphic (no type params) and have no body
+    /// — codegen pre-declares the LLVM symbol with external linkage.
+    fn register_extern_fn_entry(&mut self, decl: &hew_parser::ast::ExternFnDecl) {
+        let id = self.ids.item();
+        let return_ty = decl
+            .return_type
+            .as_ref()
+            .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
+        let param_tys = decl.params.iter().map(|p| self.lower_type(&p.ty)).collect();
+        self.fn_registry.insert(
+            decl.name.clone(),
+            FnEntry {
+                id,
+                return_ty,
+                param_tys,
+                linkage: None,
+                type_params: Vec::new(),
             },
         );
     }

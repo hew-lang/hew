@@ -94,6 +94,12 @@ impl Verifier {
                     // into `block.method_symbols` is needed here.
                     self.node(block.node, block.span.clone());
                 }
+                HirItem::ExternFn(ef) => {
+                    // Extern fns have no body, no parameter bindings — only
+                    // their own HirNodeId contributes to uniqueness. The
+                    // signature is verified by the checker before lowering.
+                    self.node(ef.node, ef.span.clone());
+                }
             }
         }
     }

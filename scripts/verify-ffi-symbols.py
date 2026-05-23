@@ -147,7 +147,7 @@ def classify(name: str, runtime_exports: set[str]) -> str:
 def load_jit_symbol_classification() -> dict[str, set[str]]:
     text = JIT_SYMBOL_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
     classification: dict[str, set[str]] = {}
-    for key in ("stable", "codegen-stable", "internal"):
+    for key in ("stable", "stable-stdlib", "codegen-stable", "internal"):
         match = re.search(rf"(?ms)^{re.escape(key)}\s*=\s*\[(.*?)^\]", text)
         if match is None:
             raise ValueError(f"{JIT_SYMBOL_CLASSIFICATION}: missing {key} list")
@@ -163,12 +163,16 @@ def validate_jit_symbol_classification(
 ) -> list[str]:
     errors: list[str] = []
     stable = classification["stable"]
+    stable_stdlib = classification["stable-stdlib"]
     codegen_stable = classification["codegen-stable"]
     internal = classification["internal"]
-    # Pairwise overlap checks across all three tiers.
+    # Pairwise overlap checks across all tiers.
     for tier_a, set_a, tier_b, set_b in [
+        ("stable", stable, "stable-stdlib", stable_stdlib),
         ("stable", stable, "codegen-stable", codegen_stable),
         ("stable", stable, "internal", internal),
+        ("stable-stdlib", stable_stdlib, "codegen-stable", codegen_stable),
+        ("stable-stdlib", stable_stdlib, "internal", internal),
         ("codegen-stable", codegen_stable, "internal", internal),
     ]:
         overlap = sorted(set_a & set_b)
@@ -178,6 +182,9 @@ def validate_jit_symbol_classification(
                 + ", ".join(overlap)
                 + f" (update {JIT_SYMBOL_CLASSIFICATION})"
             )
+    # `stable-stdlib` is intentionally NOT unioned into the runtime-coverage
+    # check: those symbols come from sibling stdlib crates, not hew-runtime,
+    # so they would always show up as "extra" runtime classifications.
     classified = stable | codegen_stable | internal
     missing = sorted(runtime_exports - classified)
     extra = sorted(classified - runtime_exports)

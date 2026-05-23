@@ -695,6 +695,12 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 module_fn_names.insert(f.name.clone());
             }
         }
+        if let HirItem::ExternFn(ef) = item {
+            // Extern fns participate in direct-call dispatch: `Expr::Call` of
+            // an extern symbol lowers through the `Terminator::Call` arm,
+            // not the runtime-ABI fail-closed path.
+            module_fn_names.insert(ef.name.clone());
+        }
     }
     for mono in &module.monomorphisations {
         module_fn_names.insert(mono.mangled_name.clone());
@@ -819,7 +825,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     diagnostics.extend(lowered.diagnostics);
                 }
             }
-            HirItem::Record(_) | HirItem::TypeDecl(_) | HirItem::Impl(_) => {
+            HirItem::Record(_) | HirItem::TypeDecl(_) | HirItem::Impl(_) | HirItem::ExternFn(_) => {
                 // Type declarations have no executable MIR bodies. TypeDecl
                 // markers are consumed via `HirModule.type_classes`.
                 //
@@ -828,6 +834,12 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 // (named `<SelfType>::<method>`) by the HIR lowering pass
                 // and are picked up through the `HirItem::Function` arm
                 // above. Nothing to do here.
+                //
+                // Extern fns have no body to lower; they are registered
+                // into `module_fn_names` above so `Call` lowering dispatches
+                // them as `Terminator::Call`, and the
+                // `IrPipeline.extern_decls` table populated below carries
+                // the signature to codegen for symbol predeclaration.
             }
             HirItem::Machine(md) => {
                 // Synthesise the public `<Name>__step(self, event) -> Name`
@@ -968,6 +980,20 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         })
         .collect();
 
+    let extern_decls: Vec<crate::model::ExternDecl> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::ExternFn(ef) => Some(crate::model::ExternDecl {
+                name: ef.name.clone(),
+                abi: ef.abi.clone(),
+                param_tys: ef.param_tys.clone(),
+                return_ty: ef.return_ty.clone(),
+            }),
+            _ => None,
+        })
+        .collect();
+
     IrPipeline {
         thir,
         raw_mir,
@@ -981,6 +1007,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         enum_layouts,
         regex_literals,
         gen_state_layouts,
+        extern_decls,
     }
 }
 

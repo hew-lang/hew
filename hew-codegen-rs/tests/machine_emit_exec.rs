@@ -179,6 +179,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         enum_layouts: Vec::new(),
         regex_literals: vec![],
         gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 

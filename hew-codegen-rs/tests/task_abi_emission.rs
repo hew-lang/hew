@@ -91,6 +91,7 @@ fn pipeline_with_task_abi_call(
         enum_layouts: vec![],
         regex_literals: vec![],
         gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 
@@ -174,6 +175,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         enum_layouts: vec![],
         regex_literals: vec![],
         gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 
@@ -248,6 +250,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         enum_layouts: vec![],
         regex_literals: vec![],
         gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 
@@ -344,6 +347,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         enum_layouts: vec![],
         regex_literals: vec![],
         gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 

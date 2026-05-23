@@ -2181,3 +2181,84 @@ fn match_wrong_variant_against_result_scrutinee_is_compile_time_type_error() {
         "stderr should name the offending variant `Some` and the scrutinee enum `Result`; got: {stderr}"
     );
 }
+
+/// Positive probe: a `.len()` / `.starts_with(...)` / `.to_uppercase()` chain
+/// on a string runs end-to-end via the `impl string` block in
+/// std/builtins.hew rather than the legacy per-symbol FFI dispatch table
+/// in `check_string_method`.  Asserts byte-level stdout so codegen actually
+/// executes the runtime FFI symbols selected by method dispatch.
+#[test]
+fn run_string_methods_dispatch_through_impl_block() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("string_impl_methods.hew");
+    std::fs::write(
+        &hew_src,
+        "fn main() {\n\
+         \x20   let s: string = \"hello world\";\n\
+         \x20   println(s.len());\n\
+         \x20   if s.starts_with(\"hello\") {\n\
+         \x20       println(\"matched\");\n\
+         \x20   }\n\
+         \x20   let upper = s.to_uppercase();\n\
+         \x20   println(upper);\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&hew_src)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "11\nmatched\nHELLO WORLD\n",
+    );
+}
+
+/// Negative probe: calling a nonexistent string method must error at check
+/// time with an undefined-method diagnostic, not silently miscompile or
+/// fail at runtime.  Guards against the impl-block raise accidentally
+/// admitting any identifier as a method on `Ty::String`.
+#[test]
+fn unknown_string_method_errors_at_check_time() {
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("string_unknown_method.hew");
+    std::fs::write(
+        &hew_src,
+        "fn main() {\n\
+         \x20   let s: string = \"hello\";\n\
+         \x20   let _ = s.no_such_method();\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&hew_src)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "hew run should fail on unknown string method; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("no_such_method"),
+        "stderr should name the missing method `no_such_method`; got: {stderr}"
+    );
+}

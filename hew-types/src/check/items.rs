@@ -401,10 +401,25 @@ impl Checker {
             let mut ty = self.resolve_type_expr(&p.ty);
             if i == 0 && self.is_receiver_param(p) {
                 if let Some((self_name, self_args)) = &self.current_self_type {
-                    ty = Ty::Named {
-                        builtin: None,
-                        name: self_name.clone(),
-                        args: self_args.clone(),
+                    // When the impl target is a primitive (e.g. `impl string`,
+                    // `impl bool`), bind the receiver to the canonical `Ty`
+                    // primitive so the body type-checks against `Ty::String`
+                    // rather than `Ty::Named { name: "string" }`.  Without
+                    // this, `s.method()` calls on the receiver inside the
+                    // body would not route through the primitive dispatch
+                    // arms in methods.rs.
+                    ty = if self_args.is_empty() {
+                        Ty::from_name(self_name).unwrap_or_else(|| Ty::Named {
+                            builtin: None,
+                            name: self_name.clone(),
+                            args: self_args.clone(),
+                        })
+                    } else {
+                        Ty::Named {
+                            builtin: None,
+                            name: self_name.clone(),
+                            args: self_args.clone(),
+                        }
                     };
                 }
             }

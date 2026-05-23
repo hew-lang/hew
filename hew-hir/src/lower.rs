@@ -6232,6 +6232,16 @@ impl LowerCtx {
                     params: Vec::new(),
                     ret: Box::new(ret_ty.clone()),
                 };
+                // Resolve the rewrite-target c_symbol against the seeded
+                // stdlib fn_registry (`seed_stdlib_fn_registry`), matching
+                // the `RewriteModuleQualifiedToFunction` arm just below.
+                // Without this, the BindingRef stays `Unresolved` and the
+                // verifier emits `UnresolvedSymbol(<c_symbol>)`, even though
+                // the catalog entry exists.
+                let resolved_ref = self
+                    .fn_registry
+                    .get(&c_symbol)
+                    .map_or(ResolvedRef::Unresolved, |entry| ResolvedRef::Item(entry.id));
                 let callee = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -6240,7 +6250,7 @@ impl LowerCtx {
                     intent: IntentKind::Read,
                     kind: HirExprKind::BindingRef {
                         name: c_symbol,
-                        resolved: ResolvedRef::Unresolved,
+                        resolved: resolved_ref,
                     },
                     span: span.clone(),
                 };

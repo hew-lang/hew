@@ -1466,6 +1466,55 @@ impl Checker {
         }
     }
 
+    /// Map a `string` method name to the catalog FFI symbol that backs it
+    /// at runtime, or `None` when no direct FFI rewrite is wired (the call
+    /// will then resolve through other catalog/HIR mechanisms or surface a
+    /// downstream error if unsupported).
+    fn string_method_runtime_symbol(method: &str) -> Option<&'static str> {
+        Some(match method {
+            "len" => "len_str",
+            "contains" => "contains_str",
+            "starts_with" => "starts_with_str",
+            "ends_with" => "ends_with_str",
+            "is_empty" => "is_empty_str",
+            "trim" => "trim_str",
+            "to_uppercase" | "to_upper" => "to_uppercase_str",
+            "to_lowercase" | "to_lower" => "to_lowercase_str",
+            _ => return None,
+        })
+    }
+
+    /// Resolve a method call on `Ty::String` through the `impl string` block
+    /// declared in `std/builtins.hew` when the method is a built-in inherent
+    /// (one with a known runtime FFI symbol).  Anything else — including
+    /// user `impl MyTrait for string` dispatch — falls back to the legacy
+    /// path so primitive-trait-impl metadata continues to be recorded for
+    /// codegen.
+    pub(super) fn dispatch_string_method(
+        &mut self,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        if let Some(c_symbol) = Self::string_method_runtime_symbol(method) {
+            if let Some(sig) = self.lookup_named_method_sig("string", &[], method) {
+                let applied = self.apply_instantiated_call_signature(
+                    &sig,
+                    None,
+                    args,
+                    span,
+                    SignatureArgApplication::PositionalOnly {
+                        arity_context: format!("method '{method}'"),
+                    },
+                    true,
+                );
+                self.record_runtime_method_call_rewrite(span, c_symbol);
+                return applied.return_type;
+            }
+        }
+        self.check_string_method(method, args, span)
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "String has many methods to type-check"
@@ -3172,8 +3221,15 @@ impl Checker {
                 }
                 Ty::Unit
             }
-            // String methods
-            (Ty::String, _) => self.check_string_method(method, args, span),
+            // String methods — prefer the `impl string` block declared in
+            // std/builtins.hew (registered via register_builtins_hew_impls).
+            // If the method exists on that impl, type-check the call against
+            // the impl signature and record the runtime FFI rewrite mapping
+            // (catalog overload symbol).  Falls back to the legacy hardcoded
+            // dispatch in `check_string_method` only when the impl block has
+            // no matching method, preserving today's behaviour for methods
+            // whose rewrite isn't yet wired through the catalog.
+            (Ty::String, _) => self.dispatch_string_method(method, args, span),
             // Generator methods route through the Iterator contract:
             // .next() returns Option<yielded type>.
             (

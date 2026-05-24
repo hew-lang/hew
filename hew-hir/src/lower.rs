@@ -1356,7 +1356,8 @@ fn collect_call_sites_in_stmt(stmt: &HirStmt, out: &mut Vec<(String, SiteId)>) {
             collect_call_sites_in_expr(target, out);
             collect_call_sites_in_expr(value, out);
         }
-        _ => {}
+        // Let-without-value and bare return have no sub-expression to collect.
+        HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
     }
 }
 
@@ -1382,7 +1383,8 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
             }
         }
         HirExprKind::ActorSend { receiver, args, .. }
-        | HirExprKind::ActorAsk { receiver, args, .. } => {
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. } => {
             collect_call_sites_in_expr(receiver, out);
             for arg in args {
                 collect_call_sites_in_expr(arg, out);
@@ -1469,7 +1471,67 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
             collect_call_sites_in_expr(scrutinee, out);
             collect_call_sites_in_block(body, out);
         }
-        _ => {}
+        // Variants that carry sub-expressions not yet covered above.
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            collect_call_sites_in_expr(receiver, out);
+            collect_call_sites_in_expr(arg, out);
+        }
+        HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_call_sites_in_expr(value, out);
+        }
+        HirExprKind::MachineEmit { fields, .. } => {
+            for (_, e) in fields {
+                collect_call_sites_in_expr(e, out);
+            }
+        }
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            collect_call_sites_in_expr(receiver, out);
+            collect_call_sites_in_expr(event, out);
+        }
+        HirExprKind::MachineStateName { receiver, .. } => {
+            collect_call_sites_in_expr(receiver, out);
+        }
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            if let Some(fields) = payload {
+                for (_, e) in fields {
+                    collect_call_sites_in_expr(e, out);
+                }
+            }
+        }
+        HirExprKind::Select(sel) => {
+            for arm in &sel.arms {
+                match &arm.kind {
+                    HirSelectArmKind::StreamNext { stream } => {
+                        collect_call_sites_in_expr(stream, out);
+                    }
+                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                        collect_call_sites_in_expr(actor, out);
+                        for a in args {
+                            collect_call_sites_in_expr(a, out);
+                        }
+                    }
+                    HirSelectArmKind::TaskAwait { task } => {
+                        collect_call_sites_in_expr(task, out);
+                    }
+                    HirSelectArmKind::AfterTimer { duration } => {
+                        collect_call_sites_in_expr(duration, out);
+                    }
+                }
+                collect_call_sites_in_expr(&arm.body, out);
+            }
+        }
+        // Leaf variants: no sub-expressions, so no call sites to collect.
+        HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
+        | HirExprKind::BindingRef { .. }
+        | HirExprKind::ContextReader { .. }
+        | HirExprKind::AwaitTask { .. }
+        | HirExprKind::MachineFieldAccess { .. }
+        | HirExprKind::MachineEventFieldAccess { .. }
+        | HirExprKind::Yield { value: None, .. }
+        | HirExprKind::Unsupported(_) => {}
     }
 }
 
@@ -9372,14 +9434,19 @@ fn collect_hir_emitted_events(expr: &HirExpr, event_names: &[String]) -> Vec<Str
     events
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "single recursive walker spanning all HirExprKind variants"
+)]
 fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: &mut Vec<String>) {
     match &expr.kind {
-        HirExprKind::MachineEmit {
-            event_idx,
-            fields: _,
-        } => {
+        HirExprKind::MachineEmit { event_idx, fields } => {
             if let Some(name) = event_names.get(*event_idx) {
                 out.push(name.clone());
+            }
+            // Recurse into field expressions — they may contain nested emits.
+            for (_, e) in fields {
+                collect_hir_emitted_events_walk(e, event_names, out);
             }
         }
         HirExprKind::Block(block) => {
@@ -9391,9 +9458,10 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                         collect_hir_emitted_events_walk(e, event_names, out);
                     }
                     HirStmtKind::Assign { value, .. } => {
+                        // Assignment targets are never emit-bearing expressions.
                         collect_hir_emitted_events_walk(value, event_names, out);
                     }
-                    _ => {}
+                    HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
                 }
             }
             if let Some(tail) = &block.tail {
@@ -9411,7 +9479,7 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                     HirStmtKind::Assign { value, .. } => {
                         collect_hir_emitted_events_walk(value, event_names, out);
                     }
-                    _ => {}
+                    HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
                 }
             }
             if let Some(tail) = &body.tail {
@@ -9432,11 +9500,11 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                 collect_hir_emitted_events_walk(e, event_names, out);
             }
         }
-        HirExprKind::Binary { left, right, .. } => {
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_hir_emitted_events_walk(left, event_names, out);
             collect_hir_emitted_events_walk(right, event_names, out);
         }
-        HirExprKind::Call { callee, args } => {
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_hir_emitted_events_walk(callee, event_names, out);
             for a in args {
                 collect_hir_emitted_events_walk(a, event_names, out);
@@ -9448,7 +9516,215 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                 collect_hir_emitted_events_walk(&arm.body, event_names, out);
             }
         }
-        _ => {}
+        // Additional expression forms whose sub-expressions can contain emits.
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+            collect_hir_emitted_events_walk(receiver, event_names, out);
+            for a in args {
+                collect_hir_emitted_events_walk(a, event_names, out);
+            }
+        }
+        HirExprKind::Spawn { args, .. } => {
+            for (_, e) in args {
+                collect_hir_emitted_events_walk(e, event_names, out);
+            }
+        }
+        HirExprKind::StructInit { fields, base, .. } => {
+            for (_, e) in fields {
+                collect_hir_emitted_events_walk(e, event_names, out);
+            }
+            if let Some(b) = base {
+                collect_hir_emitted_events_walk(b, event_names, out);
+            }
+        }
+        HirExprKind::FieldAccess { object, .. } => {
+            collect_hir_emitted_events_walk(object, event_names, out);
+        }
+        HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => {
+            for stmt in &body.statements {
+                match &stmt.kind {
+                    HirStmtKind::Expr(e)
+                    | HirStmtKind::Let(_, Some(e))
+                    | HirStmtKind::Return(Some(e)) => {
+                        collect_hir_emitted_events_walk(e, event_names, out);
+                    }
+                    HirStmtKind::Assign { value, .. } => {
+                        collect_hir_emitted_events_walk(value, event_names, out);
+                    }
+                    HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+                }
+            }
+            if let Some(tail) = &body.tail {
+                collect_hir_emitted_events_walk(tail, event_names, out);
+            }
+        }
+        HirExprKind::ScopeDeadline { duration, body } => {
+            collect_hir_emitted_events_walk(duration, event_names, out);
+            for stmt in &body.statements {
+                match &stmt.kind {
+                    HirStmtKind::Expr(e)
+                    | HirStmtKind::Let(_, Some(e))
+                    | HirStmtKind::Return(Some(e)) => {
+                        collect_hir_emitted_events_walk(e, event_names, out);
+                    }
+                    HirStmtKind::Assign { value, .. } => {
+                        collect_hir_emitted_events_walk(value, event_names, out);
+                    }
+                    HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+                }
+            }
+            if let Some(tail) = &body.tail {
+                collect_hir_emitted_events_walk(tail, event_names, out);
+            }
+        }
+        HirExprKind::While { condition, body } => {
+            collect_hir_emitted_events_walk(condition, event_names, out);
+            for stmt in &body.statements {
+                match &stmt.kind {
+                    HirStmtKind::Expr(e)
+                    | HirStmtKind::Let(_, Some(e))
+                    | HirStmtKind::Return(Some(e)) => {
+                        collect_hir_emitted_events_walk(e, event_names, out);
+                    }
+                    HirStmtKind::Assign { value, .. } => {
+                        collect_hir_emitted_events_walk(value, event_names, out);
+                    }
+                    HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+                }
+            }
+            if let Some(tail) = &body.tail {
+                collect_hir_emitted_events_walk(tail, event_names, out);
+            }
+        }
+        HirExprKind::ForRange {
+            start, end, body, ..
+        } => {
+            collect_hir_emitted_events_walk(start, event_names, out);
+            collect_hir_emitted_events_walk(end, event_names, out);
+            for stmt in &body.statements {
+                match &stmt.kind {
+                    HirStmtKind::Expr(e)
+                    | HirStmtKind::Let(_, Some(e))
+                    | HirStmtKind::Return(Some(e)) => {
+                        collect_hir_emitted_events_walk(e, event_names, out);
+                    }
+                    HirStmtKind::Assign { value, .. } => {
+                        collect_hir_emitted_events_walk(value, event_names, out);
+                    }
+                    HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+                }
+            }
+            if let Some(tail) = &body.tail {
+                collect_hir_emitted_events_walk(tail, event_names, out);
+            }
+        }
+        HirExprKind::WhileLet {
+            scrutinee, body, ..
+        } => {
+            collect_hir_emitted_events_walk(scrutinee, event_names, out);
+            for stmt in &body.statements {
+                match &stmt.kind {
+                    HirStmtKind::Expr(e)
+                    | HirStmtKind::Let(_, Some(e))
+                    | HirStmtKind::Return(Some(e)) => {
+                        collect_hir_emitted_events_walk(e, event_names, out);
+                    }
+                    HirStmtKind::Assign { value, .. } => {
+                        collect_hir_emitted_events_walk(value, event_names, out);
+                    }
+                    HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+                }
+            }
+            if let Some(tail) = &body.tail {
+                collect_hir_emitted_events_walk(tail, event_names, out);
+            }
+        }
+        HirExprKind::TupleIndex { tuple, .. } => {
+            collect_hir_emitted_events_walk(tuple, event_names, out);
+        }
+        HirExprKind::Index { container, index } => {
+            collect_hir_emitted_events_walk(container, event_names, out);
+            collect_hir_emitted_events_walk(index, event_names, out);
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            ..
+        } => {
+            collect_hir_emitted_events_walk(container, event_names, out);
+            if let Some(s) = start {
+                collect_hir_emitted_events_walk(s, event_names, out);
+            }
+            if let Some(e) = end {
+                collect_hir_emitted_events_walk(e, event_names, out);
+            }
+        }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            collect_hir_emitted_events_walk(receiver, event_names, out);
+            collect_hir_emitted_events_walk(arg, event_names, out);
+        }
+        HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_hir_emitted_events_walk(value, event_names, out);
+        }
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            collect_hir_emitted_events_walk(receiver, event_names, out);
+            collect_hir_emitted_events_walk(event, event_names, out);
+        }
+        HirExprKind::MachineStateName { receiver, .. } => {
+            collect_hir_emitted_events_walk(receiver, event_names, out);
+        }
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            if let Some(fields) = payload {
+                for (_, e) in fields {
+                    collect_hir_emitted_events_walk(e, event_names, out);
+                }
+            }
+        }
+        HirExprKind::Select(sel) => {
+            for arm in &sel.arms {
+                match &arm.kind {
+                    HirSelectArmKind::StreamNext { stream } => {
+                        collect_hir_emitted_events_walk(stream, event_names, out);
+                    }
+                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                        collect_hir_emitted_events_walk(actor, event_names, out);
+                        for a in args {
+                            collect_hir_emitted_events_walk(a, event_names, out);
+                        }
+                    }
+                    HirSelectArmKind::TaskAwait { task } => {
+                        collect_hir_emitted_events_walk(task, event_names, out);
+                    }
+                    HirSelectArmKind::AfterTimer { duration } => {
+                        collect_hir_emitted_events_walk(duration, event_names, out);
+                    }
+                }
+                collect_hir_emitted_events_walk(&arm.body, event_names, out);
+            }
+        }
+        // A general closure executes inline in the current lowering flow;
+        // emits in its body belong to the enclosing transition.
+        HirExprKind::Closure { body, .. } => {
+            collect_hir_emitted_events_walk(body, event_names, out);
+        }
+        // Lambda-actors run on a separate actor substrate; MIR materialises
+        // only the handle/captures. Emits in their bodies belong to the inner
+        // actor, not the enclosing transition.
+        // Leaf variants also produce no emits.
+        HirExprKind::SpawnLambdaActor { .. }
+        | HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
+        | HirExprKind::BindingRef { .. }
+        | HirExprKind::ContextReader { .. }
+        | HirExprKind::AwaitTask { .. }
+        | HirExprKind::MachineFieldAccess { .. }
+        | HirExprKind::MachineEventFieldAccess { .. }
+        | HirExprKind::Yield { value: None, .. }
+        | HirExprKind::Unsupported(_) => {}
     }
 }
 
@@ -10160,6 +10436,142 @@ mod tests {
         assert!(
             has_option_option_i64,
             "registry must contain Option<Option<i64>>; got {layouts:#?}"
+        );
+    }
+
+    // ── Walker recursion regression tests ────────────────────────────────────
+    //
+    // These tests construct HIR nodes directly and call the private walker
+    // functions.  They guard against a future variant arm accidentally dropping
+    // recursion — exhaustivity catches a *missing* arm, but not an arm that
+    // exists yet skips sub-expressions.
+
+    /// Build a minimal `HirExpr` wrapping a given `kind`.  All identity fields
+    /// are set to zero/default; they have no effect on the walker functions.
+    fn dummy_expr(kind: HirExprKind) -> HirExpr {
+        use crate::ids::HirNodeId;
+        HirExpr {
+            node: HirNodeId(0),
+            site: SiteId(0),
+            ty: ResolvedTy::Unit,
+            value_class: ValueClass::BitCopy,
+            intent: IntentKind::Read,
+            kind,
+            span: 0..0,
+        }
+    }
+
+    /// `collect_call_sites_in_expr` must recurse into the field expressions of
+    /// a `MachineEmit` node.  Without the arm added in the exhaustivity fix, a
+    /// `Call` nested in an emit field was silently ignored, so the call site
+    /// would never surface in the monomorphisation registry.
+    #[test]
+    fn collect_call_sites_in_expr_recurses_through_machine_emit_fields() {
+        let call_expr = dummy_expr(HirExprKind::Call {
+            callee: Box::new(dummy_expr(HirExprKind::BindingRef {
+                name: "call_some_fn".to_string(),
+                resolved: ResolvedRef::Unresolved,
+            })),
+            args: vec![],
+        });
+        let emit_expr = dummy_expr(HirExprKind::MachineEmit {
+            event_idx: 0,
+            fields: vec![("x".to_string(), call_expr)],
+        });
+
+        let mut sites: Vec<(String, SiteId)> = Vec::new();
+        collect_call_sites_in_expr(&emit_expr, &mut sites);
+
+        assert!(
+            sites.iter().any(|(name, _)| name == "call_some_fn"),
+            "collect_call_sites_in_expr must recurse into MachineEmit fields; \
+             got sites: {sites:?}"
+        );
+    }
+
+    /// `collect_hir_emitted_events_walk` must recurse into the field
+    /// expressions of a `MachineEmit` node so that a nested emit is reported.
+    /// Before the exhaustivity fix the field loop was absent; `Inner` would be
+    /// silently dropped from `body_emits`.
+    #[test]
+    fn collect_hir_emitted_events_walk_recurses_through_machine_emit_fields() {
+        let inner_emit = dummy_expr(HirExprKind::MachineEmit {
+            event_idx: 1,
+            fields: vec![],
+        });
+        let outer_emit = dummy_expr(HirExprKind::MachineEmit {
+            event_idx: 0,
+            fields: vec![("x".to_string(), inner_emit)],
+        });
+        let event_names = vec!["Outer".to_string(), "Inner".to_string()];
+
+        let mut out: Vec<String> = Vec::new();
+        collect_hir_emitted_events_walk(&outer_emit, &event_names, &mut out);
+
+        assert!(
+            out.contains(&"Outer".to_string()),
+            "Outer emit must be reported; got: {out:?}"
+        );
+        assert!(
+            out.contains(&"Inner".to_string()),
+            "Inner emit nested in Outer field must be reported; got: {out:?}"
+        );
+    }
+
+    /// A general `Closure` body executes inline — its emits belong to the
+    /// enclosing transition and must bubble out.  Before revision 1 of the
+    /// exhaustivity fix, `Closure { .. }` was grouped with `SpawnLambdaActor`
+    /// as a scope boundary, so `emit Beep` inside a closure was silently
+    /// dropped from `body_emits`.
+    #[test]
+    fn collect_hir_emitted_events_walk_recurses_into_closure_body() {
+        let emit_expr = dummy_expr(HirExprKind::MachineEmit {
+            event_idx: 0,
+            fields: vec![],
+        });
+        let closure_expr = dummy_expr(HirExprKind::Closure {
+            params: vec![],
+            ret_ty: ResolvedTy::Unit,
+            body: Box::new(emit_expr),
+            captures: vec![],
+        });
+        let event_names = vec!["Beep".to_string()];
+
+        let mut out: Vec<String> = Vec::new();
+        collect_hir_emitted_events_walk(&closure_expr, &event_names, &mut out);
+
+        assert!(
+            out.contains(&"Beep".to_string()),
+            "emit inside a Closure body must bubble to the enclosing transition; \
+             got: {out:?}"
+        );
+    }
+
+    /// A `SpawnLambdaActor` body runs on a separate actor substrate; its emits
+    /// must NOT bubble out to the parent transition.  This is the inverse of
+    /// the `Closure` test above and guards that the `SpawnLambdaActor` leaf
+    /// boundary is preserved by the revision-1 fix.
+    #[test]
+    fn collect_hir_emitted_events_walk_does_not_recurse_into_spawn_lambda_actor_body() {
+        let emit_expr = dummy_expr(HirExprKind::MachineEmit {
+            event_idx: 0,
+            fields: vec![],
+        });
+        let spawn_expr = dummy_expr(HirExprKind::SpawnLambdaActor {
+            params: vec![],
+            reply_ty: ResolvedTy::Unit,
+            body: Box::new(emit_expr),
+            captures: vec![],
+        });
+        let event_names = vec!["Inner".to_string()];
+
+        let mut out: Vec<String> = Vec::new();
+        collect_hir_emitted_events_walk(&spawn_expr, &event_names, &mut out);
+
+        assert!(
+            out.is_empty(),
+            "emit inside a SpawnLambdaActor body must NOT bubble to the parent \
+             transition; got: {out:?}"
         );
     }
 }

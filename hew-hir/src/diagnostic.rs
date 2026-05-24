@@ -286,6 +286,18 @@ pub enum HirDiagnosticKind {
         /// registry).
         cap: usize,
     },
+    /// A generic record init site has no `record_init_type_args` entry
+    /// despite the checker having accepted the expression (the span
+    /// appears in `expr_types`).  This signals a missed re-record path
+    /// in the checker: the type arguments exist at the source level but
+    /// were never written to the side-table.  Fail-closed:
+    /// `unwrap_or_default()` on the missing layout would silently
+    /// produce `Named { args: [] }` — an under-instantiated shape that
+    /// downstream MIR/codegen would treat as monomorphic.
+    RecordLayoutMissing {
+        /// The user-declared record name at the offending init site.
+        record: String,
+    },
     /// A generic record's substituted field shape mentions the same
     /// origin record with *different* concrete type arguments — e.g.
     /// `pub type Node<T> { next: Box<Node<int>> }` instantiated at

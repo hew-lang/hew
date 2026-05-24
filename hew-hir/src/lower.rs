@@ -136,9 +136,16 @@ pub struct LowerOutput {
 }
 
 impl LowerOutput {
-    /// Converts `self` into `Ok(module)` when no checker-boundary violations
-    /// are present, or `Err(diagnostics)` when at least one
-    /// [`HirDiagnosticKind::CheckerBoundaryViolation`] exists.
+    /// Converts `self` into `Ok(module)` when no fatal diagnostics are
+    /// present, or `Err(diagnostics)` when at least one fatal diagnostic
+    /// exists.
+    ///
+    /// **Fatal diagnostic kinds** (fail-closed set):
+    /// - [`HirDiagnosticKind::CheckerBoundaryViolation`] — a checker-authority
+    ///   invariant was violated (e.g. a leaked inference variable).
+    /// - [`HirDiagnosticKind::RecordLayoutMissing`] — a generic record init
+    ///   site was accepted by the checker but its type-arg entry was absent,
+    ///   meaning the downstream `Named { args: [] }` shape would be wrong.
     ///
     /// Callers that want to continue despite non-fatal diagnostics should
     /// check `.diagnostics` directly.  This method is the recommended
@@ -147,16 +154,21 @@ impl LowerOutput {
     ///
     /// # Errors
     ///
-    /// Returns `Err(diagnostics)` when the output contains at least one
-    /// [`HirDiagnosticKind::CheckerBoundaryViolation`] diagnostic.
+    /// Returns `Err(diagnostics)` when the output contains at least one fatal
+    /// diagnostic (see above).
+    ///
+    /// TODO: if more fail-closed diagnostic kinds are added, consider a
+    /// `severity()` method on `HirDiagnosticKind` returning `Fatal | NonFatal`
+    /// so this match does not need updating each time (approach (b)).
     pub fn into_result(self) -> Result<HirModule, Vec<HirDiagnostic>> {
-        let has_boundary_violation = self.diagnostics.iter().any(|d| {
+        let has_fatal = self.diagnostics.iter().any(|d| {
             matches!(
                 d.kind,
                 crate::HirDiagnosticKind::CheckerBoundaryViolation { .. }
+                    | crate::HirDiagnosticKind::RecordLayoutMissing { .. }
             )
         });
-        if has_boundary_violation {
+        if has_fatal {
             Err(self.diagnostics)
         } else {
             Ok(self.module)
@@ -2202,12 +2214,31 @@ impl LowerCtx {
 
         let key = SpanKey::from(init_span);
         let Some(type_args_raw) = self.record_init_type_args.get(&key).cloned() else {
-            // Generic record-init with no recorded type args at this
-            // site. Per the checker output contract this can only
-            // happen when the site failed type-checking (and was
-            // pruned at the boundary) or when an explicit type-arg
-            // syntax took a path that doesn't re-record. Either way
-            // there's nothing to monomorphise here.
+            // No recorded type args at this init site.  Two legitimate
+            // causes: (1) the site failed type-checking and was pruned
+            // by `validate_record_init_type_args_output_contract` —
+            // `expr_types` will also be missing the span, so a checker
+            // error already owns the failure; (2) an explicit type-arg
+            // path in the checker did not call
+            // `record_concrete_record_init_type_args` — a missed
+            // re-record that would silently produce `Named{args:[]}`.
+            //
+            // Fail-closed: if `expr_types` still carries this span the
+            // checker accepted the expression but never wrote the type
+            // args.  Surface `RecordLayoutMissing` so the downstream
+            // shape is not silently wrong.
+            if self.expr_types.contains_key(&key) {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::RecordLayoutMissing {
+                        record: origin_name.clone(),
+                    },
+                    init_span.clone(),
+                    "generic record init accepted by the checker but \
+                     `record_init_type_args` has no entry for this site; \
+                     downstream MIR would see an under-instantiated \
+                     Named{args:[]}",
+                ));
+            }
             return None;
         };
 
@@ -5247,8 +5278,11 @@ impl LowerCtx {
                     // Record the per-instantiation `RecordLayout` for
                     // generic user records and capture the concrete type-args
                     // for propagation onto this expression's resolved type.
-                    // `None` indicates a monomorphic record or builtin; for
-                    // those, the resulting `Named` carries `args: []` as before.
+                    // `None` is legitimate for monomorphic/builtin records
+                    // (args: [] is correct).  For generic records with a
+                    // checker-accepted span but missing type-arg entry,
+                    // `record_record_layout` emits `RecordLayoutMissing`
+                    // before returning `None` — fail-closed, not pretend.
                     let resolved_type_args =
                         self.record_record_layout(name, &span).unwrap_or_default();
                     let hir_fields = fields

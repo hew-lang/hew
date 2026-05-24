@@ -13008,7 +13008,7 @@ mod enum_layout_tests {
         let user_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
-            .filter(|l| l.name != "LookupError")
+            .filter(|l| l.name != "LookupError" && l.name != "SendError")
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Shape");
         let layout = user_layouts[0];
@@ -13057,7 +13057,7 @@ mod enum_layout_tests {
         let user_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
-            .filter(|l| l.name != "LookupError")
+            .filter(|l| l.name != "LookupError" && l.name != "SendError")
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Colour");
         assert_eq!(user_layouts[0].name, "Colour");
@@ -13129,7 +13129,7 @@ mod enum_layout_tests {
         let user_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
-            .filter(|l| l.name != "LookupError")
+            .filter(|l| l.name != "LookupError" && l.name != "SendError")
             .collect();
         assert_eq!(
             user_layouts.len(),

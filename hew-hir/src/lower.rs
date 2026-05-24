@@ -7278,6 +7278,21 @@ impl LowerCtx {
         let rewrite = self.method_call_rewrites.get(&key).cloned();
         match rewrite {
             Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. }) => {
+                // S5: a method-call rewrite that lands on a builtin-generic
+                // enum result type (e.g. `Result<(), SendError>` for
+                // `RemotePid<T>::tell`) needs the per-instantiation enum
+                // layout registered here. Unlike struct-ctor/variant-ctor/
+                // match-scrutinee paths — which already invoke
+                // `try_register_enum_instantiation` — the rewrite arm builds
+                // a synthetic `HirExprKind::Call` whose return type is the
+                // checker-recorded `Result<...>`. Without explicit
+                // registration MIR sees the `Named { name: "Result", .. }`
+                // type but `module.enum_layouts` lacks the matching key,
+                // and `machine_layout_names` therefore omits "Result" →
+                // `UnknownType { name: "Result" }` plus
+                // `ValueClass::Unknown → Strategy::UnknownBlocked` at the
+                // MIR boundary.
+                self.try_register_enum_instantiation(&span);
                 // Lower receiver + args, then prepend receiver as first argument.
                 let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
                 let mut lowered_args = vec![lowered_receiver];

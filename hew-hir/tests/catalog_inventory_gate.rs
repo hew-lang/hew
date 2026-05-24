@@ -80,8 +80,12 @@ fn catalog_runtime_symbols_are_classified() {
             | BuiltinLinkage::StringCloneShim { symbol } => symbol,
             BuiltinLinkage::PrintIntercept { runtime_symbol, .. } => runtime_symbol,
             // CompilerIntrinsic entries do not name a C-ABI symbol; they map to
-            // MLIR/LLVM backend ops. Always considered classified.
-            BuiltinLinkage::CompilerIntrinsic { .. } => continue,
+            // MLIR/LLVM backend ops. CalleeNameDispatchOnly entries are
+            // intercepted in codegen by callee name and never declare an LLVM
+            // extern of their own. Always considered classified.
+            BuiltinLinkage::CompilerIntrinsic { .. } | BuiltinLinkage::CalleeNameDispatchOnly => {
+                continue;
+            }
             // NodeRegisterByPid declares two C-ABI symbols; check both.
             BuiltinLinkage::NodeRegisterByPid {
                 register_symbol,

@@ -112,7 +112,16 @@ impl<T> RemotePid<T> {
 impl<T: ActorMsg> RemotePid<T> {
     /// Send a message to this remote actor.
     ///
-    /// Fail-closed stub until routing via `hew_actor_send_remote` is wired.
+    /// Lowered by codegen: the checker rewrites every `pid.tell(msg)` site
+    /// on a `RemotePid<T>` receiver to a direct call to
+    /// `hew_remote_pid_tell`, and the LLVM backend intercepts that call
+    /// and emits the `hew_actor_send_by_id(pid, msg_type, ptr, size)`
+    /// runtime ABI plus an in-place `Result<(), SendError>` construction.
+    /// The body below is unreachable on the native path and is retained
+    /// only for type-check seeding (so the trait surface matches `LocalPid`)
+    /// and as a fail-closed fallback on targets without the codegen
+    /// interception (notably WASM, where remote routing is not wired —
+    /// WASM-TODO(#1451)).
     fn tell(pid: RemotePid<T>, msg: T::Msg) -> Result<(), SendError> {
         Err(SendError::NodeRoutingNotWired)
     }

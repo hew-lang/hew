@@ -402,7 +402,8 @@ impl Checker {
             monomorphic_builtin_enums()
                 .iter()
                 .filter(|spec| {
-                    resolved_type_defs.contains_key(spec.name)
+                    spec.suppress_from_sandbox_emit
+                        && resolved_type_defs.contains_key(spec.name)
                         && !self.source_type_defs.contains(spec.name)
                 })
                 .map(|spec| spec.name.to_string())

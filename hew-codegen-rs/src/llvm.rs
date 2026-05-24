@@ -1084,6 +1084,12 @@ fn predeclare_stdlib_catalog<'ctx>(
                 );
             }
             BuiltinLinkage::CompilerIntrinsic { .. } => {}
+            BuiltinLinkage::CalleeNameDispatchOnly => {
+                // No LLVM extern: the call is intercepted in
+                // `Terminator::Call` lowering by callee name. fn_symbols
+                // is not populated; codegen never reaches the
+                // `FnSymbol::Real` arm for this catalog row.
+            }
             BuiltinLinkage::NodeRegisterByPid {
                 register_symbol,
                 pid_accessor,
@@ -7285,6 +7291,304 @@ fn emit_trap_with_code(fn_ctx: &FnCtx<'_, '_>, code: u64, label: &str) -> Codege
     Ok(())
 }
 
+/// Emit the call sequence for `RemotePid<T>::tell(pid, msg) -> Result<(), SendError>`.
+///
+/// The checker rewrites `pid.tell(msg)` on a `RemotePid<T>` receiver into a
+/// direct call to `hew_remote_pid_tell` (see hew-types::check::methods); the
+/// HIR catalog entry (CompilerIntrinsic) satisfies fn_registry. This function
+/// is the codegen interception that replaces the direct call with a
+/// hew_actor_send_by_id call sequence plus user-visible Result construction.
+///
+/// Lowering:
+///   * Load `args[0]` (the `RemotePid<T>` place) as a `u64` packed pid.
+///   * Derive the msg_type i32: resolve T from `args[0]`'s `ResolvedTy`, look
+///     up the matching `ActorLayout` in `fn_ctx.actor_layouts`, and find the
+///     handler whose `param_tys[0]` equals `args[1]`'s resolved type. This
+///     consumes checker-recorded types (no re-inference) — per
+///     `checker-authority` and `codegen-abi-authority`.
+///   * Extract `(payload_ptr, payload_size)` from `args[1]` via
+///     `actor_payload_ptr_size`.
+///   * Call `hew_actor_send_by_id(pid, msg_type, ptr, size) -> i32`.
+///   * `rc == 0` → tag=0 (Ok), payload = `()` (no field store).
+///   * `rc != 0` → tag=1 (Err), payload = `SendError::NodeRoutingNotWired`
+///     (variant 2). The runtime currently collapses all failure modes into
+///     a single `-1` rc, so any failure maps to the broadest "transport
+///     unavailable" variant; narrowing requires a new runtime ABI.
+///
+/// Dispatch is by callee name (not a new `FnSymbol` variant), matching the
+/// Node::lookup precedent (R82-era generalisation).
+fn emit_remote_pid_tell_call<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    let [pid_arg, msg_arg] = args else {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_remote_pid_tell expects exactly 2 arguments (pid, msg), got {}",
+            args.len()
+        )));
+    };
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "hew_remote_pid_tell must carry a Terminator::Call dest \
+             (Result<(), SendError> return value)"
+                .into(),
+        )
+    })?;
+    let dest_local = match dest_place {
+        Place::Local(id) => *id,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_remote_pid_tell dest must be Place::Local(_), got {other:?}"
+            )));
+        }
+    };
+
+    // Resolve T from RemotePid<T> on the pid arg, then locate the matching
+    // ActorLayout and the handler whose first param type equals the msg
+    // arg's resolved type. The checker has already concretized both types
+    // by the time we reach codegen.
+    let pid_ty = place_resolved_ty(fn_ctx, *pid_arg)?;
+    let actor_name = match pid_ty {
+        ResolvedTy::Named { name, args } if name == "RemotePid" => {
+            let inner = args.first().ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_remote_pid_tell pid arg `RemotePid<T>` is missing its T type \
+                     parameter"
+                        .into(),
+                )
+            })?;
+            match inner {
+                ResolvedTy::Named { name: t_name, .. } => t_name.clone(),
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "hew_remote_pid_tell: RemotePid<T> inner T must be a named actor \
+                         type, got {other:?}"
+                    )));
+                }
+            }
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_remote_pid_tell pid arg must have resolved type \
+                 ResolvedTy::Named {{ name: \"RemotePid\", .. }}, got {other:?}"
+            )));
+        }
+    };
+    let msg_ty = place_resolved_ty(fn_ctx, *msg_arg)?.clone();
+    let actor_layout = fn_ctx
+        .actor_layouts
+        .iter()
+        .find(|layout| layout.name == actor_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "hew_remote_pid_tell: no ActorLayout for `{actor_name}` (RemotePid<T> \
+                 receiver T)"
+            ))
+        })?;
+    let handler = actor_layout
+        .handlers
+        .iter()
+        .find(|h| h.param_tys.first().is_some_and(|p| *p == msg_ty))
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "hew_remote_pid_tell: actor `{actor_name}` has no receive handler whose \
+                 first param type matches the msg type `{msg_ty:?}` (handlers: {:?})",
+                actor_layout
+                    .handlers
+                    .iter()
+                    .map(|h| (h.name.as_str(), &h.param_tys))
+                    .collect::<Vec<_>>()
+            ))
+        })?;
+    let msg_type_const = fn_ctx
+        .ctx
+        .i32_type()
+        .const_int(handler.msg_type as u64, true);
+
+    // Load the packed u64 pid out of the RemotePid<T> alloca (which is an i64
+    // slot per the `Named { name: "RemotePid" }` arm of `resolve_ty`).
+    let (pid_slot, pid_slot_ty) = place_pointer(fn_ctx, *pid_arg)?;
+    if !matches!(pid_slot_ty, BasicTypeEnum::IntType(t) if t.get_bit_width() == 64) {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_remote_pid_tell: RemotePid<T> slot must be i64, got {pid_slot_ty:?}"
+        )));
+    }
+    let pid_val = fn_ctx
+        .builder
+        .build_load(pid_slot_ty, pid_slot, "remote_tell_pid")
+        .map_err(|e| CodegenError::Llvm(format!("load RemotePid u64: {e:?}")))?
+        .into_int_value();
+
+    // Extract the msg payload pointer and byte size from the msg arg's place.
+    let (payload_ptr, payload_size) =
+        actor_payload_ptr_size(fn_ctx, *msg_arg, "remote_tell_payload")?;
+
+    // Call `hew_actor_send_by_id(pid: u64, msg_type: i32, data: ptr, size: usize) -> i32`.
+    let send_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_send_by_id",
+    )?;
+    let rc_basic = fn_ctx
+        .builder
+        .build_call(
+            send_fn,
+            &[
+                pid_val.into(),
+                msg_type_const.into(),
+                payload_ptr.into(),
+                payload_size.into(),
+            ],
+            "remote_tell_rc",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_actor_send_by_id call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_actor_send_by_id returned void — expected i32 rc".into())
+        })?;
+    let rc = rc_basic.into_int_value();
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let zero32 = i32_ty.const_zero();
+    let is_ok = fn_ctx
+        .builder
+        .build_int_compare(IntPredicate::EQ, rc, zero32, "remote_tell_is_ok")
+        .map_err(|e| CodegenError::Llvm(format!("remote_tell icmp: {e:?}")))?;
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_remote_pid_tell call has no parent function".into())
+        })?;
+    let ok_bb = fn_ctx.ctx.append_basic_block(parent, "remote_tell_ok_bb");
+    let err_bb = fn_ctx.ctx.append_basic_block(parent, "remote_tell_err_bb");
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_ok, ok_bb, err_bb)
+        .map_err(|e| CodegenError::Llvm(format!("remote_tell condbr: {e:?}")))?;
+
+    let next_bb = *fn_ctx.blocks.get(&next).ok_or_else(|| {
+        CodegenError::FailClosed(format!("hew_remote_pid_tell next bb{next} missing"))
+    })?;
+
+    // --- Ok branch: tag=0, payload = `()` (no field store) -------------------
+    fn_ctx.builder.position_at_end(ok_bb);
+    let (tag_ptr_ok, tag_ty_ok) = place_pointer(fn_ctx, Place::MachineTag(dest_local))?;
+    let tag_int_ty_ok = match tag_ty_ok {
+        BasicTypeEnum::IntType(t) => t,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_remote_pid_tell dest Result tag type is not an integer: {other:?}"
+            )));
+        }
+    };
+    fn_ctx
+        .builder
+        .build_store(tag_ptr_ok, tag_int_ty_ok.const_zero())
+        .map_err(|e| CodegenError::Llvm(format!("store Ok tag: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .map_err(|e| CodegenError::Llvm(format!("remote_tell ok br next: {e:?}")))?;
+
+    // --- Err branch: tag=1, payload = SendError::NodeRoutingNotWired ---------
+    fn_ctx.builder.position_at_end(err_bb);
+    let (tag_ptr_err, tag_ty_err) = place_pointer(fn_ctx, Place::MachineTag(dest_local))?;
+    let tag_int_ty_err = match tag_ty_err {
+        BasicTypeEnum::IntType(t) => t,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_remote_pid_tell dest Result tag type is not an integer: {other:?}"
+            )));
+        }
+    };
+    fn_ctx
+        .builder
+        .build_store(tag_ptr_err, tag_int_ty_err.const_int(1, false))
+        .map_err(|e| CodegenError::Llvm(format!("store Err tag: {e:?}")))?;
+    // Result<(), SendError>: variant 1 is the Err arm, field 0 is the
+    // SendError outer struct.  SendError is a 3-variant payload-less enum
+    // (Full=0, Closed=1, NodeRoutingNotWired=2); we write the SendError
+    // tag into its first slot.
+    let (send_err_ptr, send_err_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 1,
+            field_idx: 0,
+        },
+    )?;
+    // The SendError outer struct's first integer slot is its discriminant
+    // tag. Writing `2` (NodeRoutingNotWired) followed by a zero-init of any
+    // padding is the same shape `LookupError::NotFound` writes via
+    // `const_zero` in emit_node_lookup_call, except SendError carries a
+    // non-zero discriminant.  We zero-initialise the outer struct (so any
+    // payload field after the tag is well-defined) and then patch the tag
+    // through a tag-slot projection equivalent.  Because SendError has no
+    // payload, a const struct with tag=2 + zeroed padding is sufficient.
+    let send_err_struct_ty = match send_err_ty {
+        BasicTypeEnum::StructType(st) => st,
+        BasicTypeEnum::IntType(_) => {
+            // Single-int representation: write the discriminant directly.
+            let int_ty = send_err_ty.into_int_type();
+            fn_ctx
+                .builder
+                .build_store(send_err_ptr, int_ty.const_int(2, false))
+                .map_err(|e| CodegenError::Llvm(format!("store SendError discriminant: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(next_bb)
+                .map_err(|e| CodegenError::Llvm(format!("remote_tell err br next: {e:?}")))?;
+            return Ok(());
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_remote_pid_tell Err payload (SendError) must be a struct or int, \
+                 got {other:?}"
+            )));
+        }
+    };
+    // Zero-initialise SendError struct, then overwrite the tag field with 2.
+    fn_ctx
+        .builder
+        .build_store(send_err_ptr, send_err_struct_ty.const_zero())
+        .map_err(|e| CodegenError::Llvm(format!("zero SendError struct: {e:?}")))?;
+    // SendError's tag is at MachineTag of the dest's variant 1 field 0
+    // local. For payload-less enums the layout is just a tag (no
+    // MachineVariant projection needed), so we GEP into the struct's
+    // first element.
+    let tag_field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(send_err_struct_ty, send_err_ptr, 0, "send_err_tag_ptr")
+        .map_err(|e| CodegenError::Llvm(format!("SendError tag gep: {e:?}")))?;
+    let tag_field_ty = send_err_struct_ty
+        .get_field_type_at_index(0)
+        .ok_or_else(|| CodegenError::FailClosed("SendError struct has no field 0 (tag)".into()))?;
+    let tag_field_int_ty = match tag_field_ty {
+        BasicTypeEnum::IntType(t) => t,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "SendError tag field must be an integer, got {other:?}"
+            )));
+        }
+    };
+    fn_ctx
+        .builder
+        .build_store(tag_field_ptr, tag_field_int_ty.const_int(2, false))
+        .map_err(|e| CodegenError::Llvm(format!("store SendError tag: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .map_err(|e| CodegenError::Llvm(format!("remote_tell err br next: {e:?}")))?;
+
+    Ok(())
+}
+
 /// Emit the call sequence for `Node::lookup<T>(name) -> Result<RemotePid<T>, LookupError>`.
 ///
 /// The runtime extern `hew_node_api_lookup(name: *const c_char) -> u64` returns a
@@ -7545,6 +7849,18 @@ fn lower_terminator<'ctx>(
             // lookup. See `emit_node_lookup_call`.
             if callee == "Node::lookup" {
                 emit_node_lookup_call(fn_ctx, fn_symbols, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
+            // `hew_remote_pid_tell` is the checker's MethodCallRewrite target
+            // for `pid.tell(msg)` on a `RemotePid<T>` receiver. The catalog
+            // entry declares an unused stub extern (`__hew_remote_pid_tell_stub`)
+            // only so the call appears in MIR's `module_fn_names`; we intercept
+            // by name here and emit the real `hew_actor_send_by_id` sequence
+            // plus the user-visible `Result<(), SendError>` construction.
+            // Dispatch is callee-name-based (no new `FnSymbol::*Pid*` variant),
+            // matching the R82-era Node::lookup precedent.
+            if callee == "hew_remote_pid_tell" {
+                emit_remote_pid_tell_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
             let callee_symbol_entry = *fn_symbols.get(callee).ok_or_else(|| {

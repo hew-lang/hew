@@ -50,6 +50,19 @@ pub struct BuiltinMonomorphicEnum {
     /// Variant names in declaration order. All payloads are empty (unit
     /// variants) by current substrate contract — see module docs.
     pub variants: &'static [BuiltinMonomorphicEnumVariant],
+    /// Whether `hew-sandbox-wasm`'s eager `type_defs` sweep should
+    /// suppress emission of this type when the program does not author
+    /// it. Set `true` for types whose machine layout MIR carries
+    /// out-of-band but which user programs never reference directly
+    /// (e.g. `LookupError`, which only appears as `Result<_, LookupError>`
+    /// payload via the `Node::lookup` codegen intercept and therefore
+    /// would only land in fixtures as dead descriptor churn). Set
+    /// `false` for types that DO surface in user-visible signatures and
+    /// must remain in sandbox bytecode descriptor tables for fixture
+    /// stability (e.g. `SendError`, the `Err` variant of every
+    /// `Result<(), SendError>` returned by `.tell` / `.send` family
+    /// methods declared in `std/builtins.hew`).
+    pub suppress_from_sandbox_emit: bool,
 }
 
 /// One variant of a monomorphic builtin enum. Unit-only today.
@@ -68,8 +81,45 @@ pub struct BuiltinMonomorphicEnumVariant {
 /// struct-shaped builtins.
 #[must_use]
 pub fn monomorphic_builtin_enums() -> &'static [BuiltinMonomorphicEnum] {
-    &[BuiltinMonomorphicEnum {
-        name: "LookupError",
-        variants: &[BuiltinMonomorphicEnumVariant { name: "NotFound" }],
-    }]
+    &[
+        BuiltinMonomorphicEnum {
+            name: "LookupError",
+            variants: &[BuiltinMonomorphicEnumVariant { name: "NotFound" }],
+            suppress_from_sandbox_emit: true,
+        },
+        // `SendError` is the `Err` variant of `Result<(), SendError>`
+        // returned by every `.tell` shaped surface: `LocalPid<T>::tell`,
+        // `RemotePid<T>::tell`, `Duplex<…>::send`, and the channel
+        // `SendHalf::send`/`try_send` family. Until S5, the only consumer
+        // that needed the layout in MIR was the inline body of
+        // `RemotePid<T>::tell` (which returned `Err(NodeRoutingNotWired)`
+        // as a constant); the v0.5 inline-stdlib path lowered the literal
+        // through ordinary enum-ctor lowering, so MIR learned the layout
+        // from the generic `EnumLayoutRegistry`.
+        //
+        // S5 changes that contract: the checker rewrites
+        // `pid.tell(msg)` on a `RemotePid<T>` receiver into a direct call
+        // to the catalog-declared `hew_remote_pid_tell`. Codegen
+        // intercepts that call and constructs the user-visible
+        // `Result<(), SendError>` in place from the runtime rc, but MIR
+        // still needs the `SendError` layout to size the dest local for
+        // the Call terminator's dest place. Carry the layout out-of-band
+        // here, parallel to `LookupError`.
+        //
+        // Unlike `LookupError`, `SendError` is surfaced in user-visible
+        // trait signatures (`fn tell(...) -> Result<(), SendError>`), so
+        // its bytecode descriptor IS present in baseline sandbox fixtures
+        // and must stay there — hence `suppress_from_sandbox_emit: false`.
+        BuiltinMonomorphicEnum {
+            name: "SendError",
+            variants: &[
+                BuiltinMonomorphicEnumVariant { name: "Full" },
+                BuiltinMonomorphicEnumVariant { name: "Closed" },
+                BuiltinMonomorphicEnumVariant {
+                    name: "NodeRoutingNotWired",
+                },
+            ],
+            suppress_from_sandbox_emit: false,
+        },
+    ]
 }

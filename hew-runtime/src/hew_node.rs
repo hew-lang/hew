@@ -2021,6 +2021,58 @@ pub unsafe extern "C" fn hew_node_api_register(
     })
 }
 
+/// `Node::register<T>(name, pid)` — Register a named actor by bare PID.
+///
+/// Per registry R81 (2026-05-23), `LocalPid<T>` lowers to a bare `u64` PID
+/// at this ABI boundary rather than a `*mut HewActor` pointer. The caller
+/// extracts the PID via `hew_actor_pid` before passing it here.
+///
+/// Returns 0 on success, -1 on any of the fail-closed conditions:
+/// - `name` is null
+/// - `pid` is 0 (sentinel for an invalid actor)
+/// - The actor is not found in the live-actor table
+/// - No node has been started (`hew_node_api_start` not yet called)
+/// - Internal name-string allocation fails
+///
+/// On failure, the last error is set via `set_last_error` so callers can
+/// retrieve a diagnostic string.
+///
+/// # Safety
+///
+/// `name` must be a valid null-terminated C string that remains live for
+/// the duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_register_by_pid(name: *const c_char, pid: u64) -> c_int {
+    if name.is_null() {
+        set_last_error("Node::register: name pointer is null");
+        return -1;
+    }
+    if pid == 0 {
+        set_last_error("Node::register: pid is zero (invalid actor)");
+        return -1;
+    }
+    // Verify the actor is currently live in the actor table before attempting
+    // to register it.  This prevents dangling registrations after an actor
+    // stops between spawn and register.
+    let is_live = crate::lifetime::live_actors::get_actor_ptr_by_id(pid).is_some();
+    if !is_live {
+        set_last_error(format!(
+            "Node::register: actor with pid {pid} not found in live-actor table"
+        ));
+        return -1;
+    }
+    CURRENT_NODE.read_access(|guard| {
+        let node = *guard as *mut HewNode;
+        if node.is_null() {
+            set_last_error("Node::register: no active node (call Node::start first)");
+            return -1;
+        }
+        // SAFETY: node is non-null; name is non-null and caller guarantees a
+        // valid C string; pid was validated above.
+        unsafe { hew_node_register(node, name, pid) }
+    })
+}
+
 /// `Node::lookup(name)` — Look up a registered actor by name.
 ///
 /// # Safety

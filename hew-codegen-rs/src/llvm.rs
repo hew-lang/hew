@@ -477,6 +477,20 @@ enum FnSymbol<'ctx> {
         kind: PrintKind,
         newline: bool,
     },
+    /// Two-step call shim for `Node::register<T>(name, pid)`.
+    ///
+    /// R81 mandates that `LocalPid<T>` reaches the C-ABI extern as a bare
+    /// `u64` PID, but the LLVM alloca for a `LocalPid<T>` local is a `ptr`
+    /// (a `*mut HewActor`). Codegen must therefore synthesise:
+    ///   1. `hew_actor_pid(actor_ptr) -> u64`
+    ///   2. `hew_node_api_register_by_pid(name_ptr, pid_u64) -> i32`
+    ///
+    /// `register_fn` is `hew_node_api_register_by_pid(ptr, i64) -> i32`.
+    /// `pid_fn`      is `hew_actor_pid(ptr) -> i64`.
+    NodeRegisterPid {
+        register_fn: FunctionValue<'ctx>,
+        pid_fn: FunctionValue<'ctx>,
+    },
 }
 
 impl<'ctx> FnSymbol<'ctx> {
@@ -494,6 +508,11 @@ impl<'ctx> FnSymbol<'ctx> {
             Self::PrintIntercept { .. } => Err(CodegenError::FailClosed(format!(
                 "{context} expected `{callee}` to be a callable LLVM function, \
                  but it is a stdlib print intercept"
+            ))),
+            Self::NodeRegisterPid { .. } => Err(CodegenError::FailClosed(format!(
+                "{context} expected `{callee}` to be a callable LLVM function, \
+                 but it is the Node::register PID-extraction shim — \
+                 handle FnSymbol::NodeRegisterPid in Terminator::Call instead"
             ))),
         }
     }
@@ -1022,6 +1041,38 @@ fn predeclare_stdlib_catalog<'ctx>(
                 );
             }
             BuiltinLinkage::CompilerIntrinsic { .. } => {}
+            BuiltinLinkage::NodeRegisterByPid {
+                register_symbol,
+                pid_accessor,
+            } => {
+                // Declare both LLVM functions manually: the catalog param list
+                // is a placeholder and cannot be fed through `declare_catalog_ffi`
+                // (which would produce the wrong LLVM types for the LocalPid<T>
+                // argument).
+                let ptr_ty = ctx.ptr_type(AddressSpace::default());
+                let i64_ty = ctx.i64_type();
+                let i32_ty = ctx.i32_type();
+
+                // hew_actor_pid(actor: *mut HewActor) -> u64
+                let pid_fn_ty = i64_ty.fn_type(&[ptr_ty.into()], false);
+                let pid_fn = llvm_mod.get_function(pid_accessor).unwrap_or_else(|| {
+                    llvm_mod.add_function(pid_accessor, pid_fn_ty, Some(Linkage::External))
+                });
+
+                // hew_node_api_register_by_pid(name: *const c_char, pid: u64) -> c_int
+                let reg_fn_ty = i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
+                let register_fn = llvm_mod.get_function(register_symbol).unwrap_or_else(|| {
+                    llvm_mod.add_function(register_symbol, reg_fn_ty, Some(Linkage::External))
+                });
+
+                fn_symbols.insert(
+                    entry.name.to_string(),
+                    FnSymbol::NodeRegisterPid {
+                        register_fn,
+                        pid_fn,
+                    },
+                );
+            }
         }
     }
     Ok(())
@@ -7339,6 +7390,88 @@ fn lower_terminator<'ctx>(
                     if let Some(queue) = machine_step_queue {
                         emit_machine_step_exit_call(fn_ctx, queue)?;
                     }
+                }
+                FnSymbol::NodeRegisterPid {
+                    register_fn,
+                    pid_fn,
+                } => {
+                    // Two-step lowering per R81:
+                    //   step 1: pid_u64 = hew_actor_pid(actor_ptr)
+                    //   step 2: result  = hew_node_api_register_by_pid(name_ptr, pid_u64)
+                    //
+                    // The `LocalPid<T>` alloca is a `ptr` (not u64); we must
+                    // load it as a pointer value and pass it to `hew_actor_pid`
+                    // before passing the numeric PID to the register extern.
+                    let [name_arg, pid_arg] = args.as_slice() else {
+                        return Err(CodegenError::FailClosed(format!(
+                            "Node::register expects exactly 2 arguments (name, pid), got {}",
+                            args.len()
+                        )));
+                    };
+                    let dest_place = dest.as_ref().ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "Node::register (i32-returning) must carry a Terminator::Call dest"
+                                .into(),
+                        )
+                    })?;
+
+                    // Load the name string pointer (ptr-typed alloca).
+                    let (name_ptr, name_ty) = place_pointer(fn_ctx, *name_arg)?;
+                    let name_val = fn_ctx
+                        .builder
+                        .build_load(name_ty, name_ptr, "reg_name")
+                        .map_err(|e| CodegenError::Llvm(format!("load reg name: {e:?}")))?;
+
+                    // Load the LocalPid<T> alloca as a raw pointer.
+                    let (actor_alloca_ptr, actor_alloca_ty) = place_pointer(fn_ctx, *pid_arg)?;
+                    let actor_ptr = fn_ctx
+                        .builder
+                        .build_load(actor_alloca_ty, actor_alloca_ptr, "reg_actor_ptr")
+                        .map_err(|e| CodegenError::Llvm(format!("load LocalPid<T> ptr: {e:?}")))?;
+
+                    // Step 1: extract the u64 PID from the actor pointer.
+                    let pid_call = fn_ctx
+                        .builder
+                        .build_call(pid_fn, &[metadata_value_from_basic(actor_ptr)], "actor_pid")
+                        .map_err(|e| CodegenError::Llvm(format!("hew_actor_pid call: {e:?}")))?;
+                    let pid_u64 = pid_call.try_as_basic_value().basic().ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "hew_actor_pid returned void — expected u64".into(),
+                        )
+                    })?;
+
+                    // Step 2: register by PID.
+                    let reg_call = fn_ctx
+                        .builder
+                        .build_call(
+                            register_fn,
+                            &[
+                                metadata_value_from_basic(name_val),
+                                metadata_value_from_basic(pid_u64),
+                            ],
+                            "reg_result",
+                        )
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("hew_node_api_register_by_pid call: {e:?}"))
+                        })?;
+                    let reg_i32 = reg_call.try_as_basic_value().basic().ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "hew_node_api_register_by_pid returned void — expected i32".into(),
+                        )
+                    })?;
+
+                    // Store the i32 return value into the destination.
+                    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+                    let i32_ty = fn_ctx.ctx.i32_type();
+                    if dest_ty != BasicTypeEnum::IntType(i32_ty) {
+                        return Err(CodegenError::FailClosed(format!(
+                            "Node::register dest type {dest_ty:?} does not match i32"
+                        )));
+                    }
+                    fn_ctx
+                        .builder
+                        .build_store(dest_ptr, reg_i32)
+                        .map_err(|e| CodegenError::Llvm(format!("store reg result: {e:?}")))?;
                 }
             }
             let next_bb = *fn_ctx

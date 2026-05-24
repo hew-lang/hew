@@ -530,7 +530,7 @@ impl Checker {
         self.register_builtin_fn(
             "Node::register",
             vec![Ty::String, Ty::Var(TypeVar::fresh())],
-            Ty::Unit,
+            Ty::I32,
         );
         self.register_builtin_fn("Node::lookup", vec![Ty::String], Ty::Var(TypeVar::fresh()));
 

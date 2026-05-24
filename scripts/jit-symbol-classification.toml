@@ -320,6 +320,7 @@ stable = [
   "hew_msg_envelope_release",
   "hew_msg_node_free",
   "hew_node_api_connect",
+  "hew_node_api_register_by_pid",
   "hew_node_api_set_transport",
   "hew_node_api_shutdown",
   "hew_node_api_start",

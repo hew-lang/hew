@@ -49,6 +49,23 @@ pub enum BuiltinLinkage {
     CompilerIntrinsic {
         intrinsic: &'static str,
     },
+    /// `Node::register<T>(name, pid)` — register an actor by bare PID.
+    ///
+    /// Per registry R81 (2026-05-23), `LocalPid<T>` lowers to a `u64` at
+    /// the C-ABI boundary, not a `*mut HewActor`. Codegen must therefore
+    /// synthesise a two-step call sequence:
+    /// 1. `hew_actor_pid(actor_ptr: ptr) -> u64` — extract the numeric PID
+    ///    from the `LocalPid<T>` alloca (which is a `ptr` in LLVM).
+    /// 2. `hew_node_api_register_by_pid(name: ptr, pid: u64) -> i32` — the
+    ///    actual C-ABI registration call.
+    ///
+    /// `RuntimeFfiShim` cannot be used here because the LLVM call sequence
+    /// requires an intermediate PID-extraction step that the generic
+    /// `Terminator::Call` handler cannot express.
+    NodeRegisterByPid {
+        register_symbol: &'static str,
+        pid_accessor: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -793,6 +810,23 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_node_api_shutdown",
+        },
+    ),
+    // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`
+    //
+    // Per R81, `LocalPid<T>` lowers to a bare `u64` PID at the C-ABI
+    // boundary.  The catalog param list `[String, U64]` is a placeholder
+    // for HIR/MIR name-resolution purposes — codegen handles this linkage
+    // variant specially and does not use the generic `declare_catalog_ffi`
+    // path (which would construct the wrong LLVM function type).
+    direct(
+        "Node::register",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::String, BuiltinTy::U64],
+        BuiltinTy::I32,
+        BuiltinLinkage::NodeRegisterByPid {
+            register_symbol: "hew_node_api_register_by_pid",
+            pid_accessor: "hew_actor_pid",
         },
     ),
 ];

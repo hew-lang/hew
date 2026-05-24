@@ -82,6 +82,22 @@ fn catalog_runtime_symbols_are_classified() {
             // CompilerIntrinsic entries do not name a C-ABI symbol; they map to
             // MLIR/LLVM backend ops. Always considered classified.
             BuiltinLinkage::CompilerIntrinsic { .. } => continue,
+            // NodeRegisterByPid declares two C-ABI symbols; check both.
+            BuiltinLinkage::NodeRegisterByPid {
+                register_symbol,
+                pid_accessor,
+            } => {
+                for sym in [register_symbol, pid_accessor] {
+                    if !stable.contains(sym) {
+                        failures.push(format!(
+                            "catalog row `{}` (linkage symbol `{sym}`) is not in the \
+                             `stable` section of scripts/jit-symbol-classification.toml",
+                            entry.name,
+                        ));
+                    }
+                }
+                continue;
+            }
         };
 
         if !stable.contains(symbol) {

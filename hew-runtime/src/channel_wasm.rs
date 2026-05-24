@@ -270,10 +270,11 @@ impl Clone for WasmChannelSender {
 fn send_bytes(sender: &HewWasmChannelSender, bytes: Vec<u8>, api_name: &str) {
     match sender.inner.try_send(bytes) {
         Ok(()) | Err(TrySendError::Closed) => {}
-        Err(TrySendError::Full) => panic!(
-            "{api_name}: wasm32 channels trap on full queues; blocking send \
-             yield/resume parity is not implemented yet"
-        ),
+        Err(TrySendError::Full) => {
+            crate::set_last_error(format!(
+                "{api_name}: channel is full; message dropped (blocking send not yet implemented for wasm32)"
+            ));
+        }
     }
 }
 
@@ -747,16 +748,11 @@ mod tests {
         }
     }
 
-    // On wasm32-wasip1 panics abort the test binary, so the explicit panic
-    // wrapper must be asserted on host targets where unwinding is available.
-    // The fail-closed queue-full path itself is still covered everywhere by
-    // `bounded_capacity_returns_full`, which exercises the underlying
-    // fallible send helper.
+    // When a WASM channel is full, hew_channel_send must set the last error
+    // and silently drop the message rather than trapping with a panic.
     #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn abi_send_traps_explicitly_when_queue_is_full() {
-        use std::panic::{catch_unwind, AssertUnwindSafe};
-
+    fn abi_send_full_sets_last_error() {
+        crate::hew_clear_error();
         let _guard = crate::runtime_test_guard();
         let pair = hew_channel_new(1);
         // SAFETY: extracted handles are used only within this test and are
@@ -766,23 +762,90 @@ mod tests {
             let rx = hew_channel_pair_receiver(pair);
             hew_channel_pair_free(pair);
 
+            // Fill the channel to capacity.
             let first = CString::new("first").unwrap();
             hew_channel_send(tx, first.as_ptr());
 
-            let sender = &*tx;
-            let panic = catch_unwind(AssertUnwindSafe(|| {
-                send_bytes(sender, b"second".to_vec(), "hew_channel_send");
-            }))
-            .expect_err("full wasm channel should panic before silent drop");
-            let message = if let Some(message) = panic.downcast_ref::<String>() {
-                message.clone()
-            } else if let Some(message) = panic.downcast_ref::<&str>() {
-                (*message).to_string()
-            } else {
-                String::new()
-            };
-            assert!(message.contains("hew_channel_send"));
-            assert!(message.contains("full queues"));
+            // Send to a full channel — must NOT panic; must set last error.
+            let second = CString::new("second").unwrap();
+            hew_channel_send(tx, second.as_ptr());
+
+            let err_ptr = crate::hew_last_error();
+            assert!(
+                !err_ptr.is_null(),
+                "hew_last_error should be set after send on full channel"
+            );
+            let err = std::ffi::CStr::from_ptr(err_ptr).to_str().unwrap();
+            assert!(
+                err.contains("full") || err.contains("Full"),
+                "error message should mention full channel, got: {err:?}"
+            );
+
+            // Only the first message should be in the queue.
+            let msg = hew_channel_try_recv(rx);
+            assert!(!msg.is_null());
+            assert_eq!(
+                std::ffi::CStr::from_ptr(msg).to_str().unwrap(),
+                "first",
+                "first message should be dequeued"
+            );
+            libc::free(msg.cast());
+
+            // The second message must have been dropped (not enqueued).
+            let nothing = hew_channel_try_recv(rx);
+            assert!(
+                nothing.is_null(),
+                "full-channel send must not enqueue the dropped message"
+            );
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    // Same coverage for hew_channel_send_int on a full channel.
+    #[test]
+    fn abi_send_int_full_sets_last_error() {
+        crate::hew_clear_error();
+        let _guard = crate::runtime_test_guard();
+        let pair = hew_channel_new(1);
+        // SAFETY: extracted handles are used only within this test and are
+        // closed exactly once before returning.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            // Fill the channel to capacity.
+            hew_channel_send_int(tx, 1);
+
+            // Send int to a full channel — must NOT panic; must set last error.
+            hew_channel_send_int(tx, 2);
+
+            let err_ptr = crate::hew_last_error();
+            assert!(
+                !err_ptr.is_null(),
+                "hew_last_error should be set after send_int on full channel"
+            );
+            let err = std::ffi::CStr::from_ptr(err_ptr).to_str().unwrap();
+            assert!(
+                err.contains("full") || err.contains("Full"),
+                "error message should mention full channel, got: {err:?}"
+            );
+
+            // Only the first message (value 1) should be in the queue.
+            let mut valid: i32 = -1;
+            let value = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
+            assert_eq!(valid, 1);
+            assert_eq!(value, 1, "first integer must be dequeued");
+
+            // The second message must have been dropped.
+            let mut valid2: i32 = -1;
+            let _ = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid2));
+            assert_eq!(
+                valid2, 0,
+                "full-channel send_int must not enqueue the dropped message"
+            );
 
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);

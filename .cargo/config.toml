@@ -1,2 +1,19 @@
 [target.x86_64-pc-windows-msvc]
 linker = "lld-link"
+
+# ── macOS deployment target ────────────────────────────────────────────────────
+# Default MACOSX_DEPLOYMENT_TARGET to 13.0 (Ventura — project minimum; see
+# Makefile and PR #771) so that Rust-compiled objects inside libhew.a carry
+# the same minimum-OS tag as the link step.  Without this, objects compiled
+# against a newer Xcode SDK are tagged with that SDK's version, causing
+# ld64.lld to emit "has version X, which is newer than target minimum of 13.0"
+# for every archive member.
+#
+# `force = false` means this is only applied when MACOSX_DEPLOYMENT_TARGET is
+# not already set in the caller's environment, so explicit overrides are still
+# honoured (e.g. `MACOSX_DEPLOYMENT_TARGET=14.0 cargo build`).
+#
+# On Linux and Windows this variable is ignored by the Rust toolchain, so the
+# entry is safe on all platforms.
+[env]
+MACOSX_DEPLOYMENT_TARGET = { value = "13.0", force = false }

@@ -216,8 +216,7 @@ pub fn emit_module(
 
     if options.native {
         let obj_path = options.out_dir.join(format!("{}.o", options.module_name));
-        let host_triple = TargetMachine::get_default_triple();
-        let triple_str = host_triple.as_str().to_string_lossy().into_owned();
+        let triple_str = native_emission_triple();
         emit_object_in_process(pipeline, options.module_name, &triple_str, &obj_path)?;
         artefacts.native_obj_path = Some(obj_path);
     }
@@ -377,6 +376,50 @@ fn emit_object_in_process(
 fn llvm_codegen_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Returns the target triple to use when emitting native object files.
+///
+/// On macOS, `TargetMachine::get_default_triple()` returns the *system* triple
+/// (e.g. `aarch64-apple-macosx26.0.0` on a host with the macOS 26 SDK installed),
+/// which embeds a higher OS-minimum version into the object than the link step
+/// targets.  This causes ld64.lld to emit a "has version X, which is newer than
+/// target minimum of 13.0.0" warning for every object in the archive.
+///
+/// The fix is to construct the triple from the intended deployment target
+/// (read from `MACOSX_DEPLOYMENT_TARGET`, defaulting to `"13.0"`) so the
+/// emitted object's minimum-OS tag matches the linker's target minimum.
+///
+/// On non-macOS hosts the system default triple is returned unchanged.
+#[cfg(target_os = "macos")]
+fn native_emission_triple() -> String {
+    let default = TargetMachine::get_default_triple();
+    let default_str = default.as_str().to_string_lossy();
+
+    // Determine the arch prefix from the system default triple so we don't
+    // hard-code it; fall back to the raw default when the arch is unrecognised.
+    let arch = if default_str.starts_with("x86_64") {
+        "x86_64"
+    } else if default_str.starts_with("aarch64") || default_str.starts_with("arm64") {
+        "aarch64"
+    } else {
+        return default_str.into_owned();
+    };
+
+    let deployment = std::env::var("MACOSX_DEPLOYMENT_TARGET")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "13.0".to_string());
+
+    format!("{arch}-apple-macosx{deployment}")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_emission_triple() -> String {
+    TargetMachine::get_default_triple()
+        .as_str()
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn target_machine_for_triple(triple: &str) -> CodegenResult<TargetMachine> {

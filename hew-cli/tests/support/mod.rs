@@ -255,6 +255,22 @@ fn build_codegen_artifacts(target_dir: &Path, build_profile: &str) -> Result<Out
         command.arg("--release");
     }
 
+    // On macOS, pin the deployment target so the Rust-compiled objects inside
+    // libhew.a are tagged with the same minimum-OS version as the link step
+    // (which uses MACOSX_DEPLOYMENT_TARGET or defaults to "13.0" via
+    // `TargetSpec::linker_triple`).  Without this, objects compiled against a
+    // newer Xcode SDK are tagged with a higher OS version, causing ld64.lld to
+    // emit "has version X, which is newer than target minimum of 13.0.0"
+    // warnings for every archive member.
+    #[cfg(target_os = "macos")]
+    {
+        let deployment = std::env::var("MACOSX_DEPLOYMENT_TARGET")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "13.0".to_string());
+        command.env("MACOSX_DEPLOYMENT_TARGET", deployment);
+    }
+
     command.output().map_err(|error| {
         format!(
             "failed to invoke `cargo build -p hew-lib{}`: {error}",

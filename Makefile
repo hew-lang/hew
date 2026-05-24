@@ -52,7 +52,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release
+.PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release check-libhew-fresh
 .PHONY: test test-all test-rust test-parser test-types test-cli test-runtime-net test-runtime-unit test-stdlib test-hew test-release-binary asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
@@ -96,6 +96,10 @@ FUZZ_SMOKE_SECONDS ?= 45
 # ── Default target ──────────────────────────────────────────────────────────
 
 all: hew adze runtime stdlib assemble
+
+# Convenience alias — rebuilds all debug artifacts including libhew.a.
+# Equivalent to `make all`; exists so that `make build` behaves as expected.
+build: all
 
 # ── Rust targets ────────────────────────────────────────────────────────────
 
@@ -161,6 +165,11 @@ playground-wasi-check:
 # Usage: make ci-preflight ARGS="--dry-run" or ARGS="--base origin/main"
 ci-preflight:
 	scripts/ci-preflight-dispatcher.sh $(ARGS)
+
+# Assert that target/debug/libhew.a is not stale relative to hew-lib and hew-runtime sources.
+# Run after `make stdlib` as a fast gate; exits non-zero if the .a predates any source input.
+check-libhew-fresh:
+	scripts/check-libhew-fresh.sh
 
 # Opt-in merge-queue parity preflight.
 ci-preflight-strict:

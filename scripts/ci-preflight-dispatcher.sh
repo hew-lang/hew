@@ -155,6 +155,15 @@ is_runtime_path() {
     return 1
 }
 
+is_hew_lib_path() {
+    case "$1" in
+        hew-lib/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 is_stdlib_net_path() {
     case "$1" in
         std/net/*)
@@ -343,7 +352,7 @@ for path in "${CHANGED_FILES[@]}"; do
         has_types=1
     elif is_cli_path "$path"; then
         has_cli=1
-    elif is_runtime_path "$path" || is_stdlib_net_path "$path" || is_analysis_path "$path" || is_lsp_path "$path"; then
+    elif is_runtime_path "$path" || is_hew_lib_path "$path" || is_stdlib_net_path "$path" || is_analysis_path "$path" || is_lsp_path "$path"; then
         has_runtime_net=1
     elif is_wasm_path "$path"; then
         has_wasm=1
@@ -417,6 +426,8 @@ case "$LANE" in
     runtime-net)
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
+        add_command "make stdlib"
+        add_command "scripts/check-libhew-fresh.sh"
         add_command "make test-runtime-net"
         ;;
     wasm)

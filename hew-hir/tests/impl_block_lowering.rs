@@ -258,12 +258,11 @@ fn impl_block_with_single_bound_where_clause_lowers() {
 }
 
 #[test]
-fn impl_block_with_multi_bound_where_clause_emits_fail_closed_shape_diagnostic() {
-    // Fail-closed boundary: multi-bound `where T: A + B` predicates are
-    // outside V0b's sufficient surface (γ1 lifts only single-bound
-    // `where T: Trait`). The diagnostic must surface as
-    // `ImplBlockShapeNotLowered { shape: "multi-bound where-clause on `T`" }`
-    // rather than fall through to the generic `top-level-item` catch-all.
+fn impl_block_with_multi_bound_where_clause_lowers() {
+    // Slice ε lift: multi-bound `where T: A + B` predicates are now admitted
+    // (the checker already enforces them; HIR has no runtime artefact for bounds).
+    // Both the single-bound and multi-bound forms must lower cleanly and emit
+    // the impl's method as a top-level `HirItem::Function`.
     let output = lower(
         r"
         pub trait Eq {
@@ -286,6 +285,7 @@ fn impl_block_with_multi_bound_where_clause_emits_fail_closed_shape_diagnostic()
         ",
     );
 
+    assert_no_top_level_item_unsupported(&output);
     let shape_diag = output.diagnostics.iter().find_map(|d| {
         if let HirDiagnosticKind::ImplBlockShapeNotLowered { shape } = &d.kind {
             Some(shape.clone())
@@ -293,12 +293,20 @@ fn impl_block_with_multi_bound_where_clause_emits_fail_closed_shape_diagnostic()
             None
         }
     });
-    assert_eq!(
-        shape_diag.as_deref(),
-        Some("multi-bound where-clause on `T`"),
-        "V0b must surface a precise shape diagnostic for multi-bound \
-         where-clauses; got diagnostics: {:#?}",
+    assert!(
+        shape_diag.is_none(),
+        "multi-bound `where T: A + B` impl must lower in slice ε; \
+         got shape diagnostic: {shape_diag:?} out of full diagnostics: {:#?}",
         output.diagnostics,
+    );
+    let has_first = output
+        .module
+        .items
+        .iter()
+        .any(|item| matches!(item, HirItem::Function(f) if f.name == "Wrap::first"));
+    assert!(
+        has_first,
+        "Wrap::first must be emitted when the multi-bound where-clause is admitted"
     );
 }
 

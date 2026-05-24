@@ -248,7 +248,9 @@ pub fn lower_program_with_mono_cap(
                 // a subset of this — its methods landed in `fn_registry`
                 // historically via the same key shape.
                 if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
-                    if impl_decl.where_clause.is_none() {
+                    if impl_decl.where_clause.is_none()
+                        || classify_unsupported_where_clause(impl_decl).is_none()
+                    {
                         for method in &impl_decl.methods {
                             ctx.register_fn_entry(
                                 &crate::node::HirImplBlock::method_symbol(name, &method.name),
@@ -2284,10 +2286,12 @@ impl LowerCtx {
 
 /// Classify whether an impl block's `where_clause` (if any) is one of the
 /// V0b-admissible shapes. Returns `None` when the impl is admissible (no
-/// where-clause, or a where-clause whose predicates are all single-bound
-/// `where T: Trait` on the impl's own outer type parameters) and `Some(shape)`
-/// describing the offending predicate otherwise. The bound itself is consumed
-/// by the checker (`enter_impl_scope` / `register_impl_method` already harvest
+/// where-clause, or a where-clause whose predicates are all `where T: Bound(s)`
+/// on the impl's own outer type parameters) and `Some(shape)` describing the
+/// offending predicate otherwise. Multi-bound predicates (`where T: A + B`) are
+/// admitted; only predicates on parameterised types and non-type-param names
+/// remain fail-closed. The bound itself is consumed by the checker
+/// (`enter_impl_scope` / `register_impl_method` already harvest
 /// `decl.where_clause`); the HIR carries no extra metadata beyond the existing
 /// `type_params` list because trait bounds have no runtime artefact.
 fn classify_unsupported_where_clause(decl: &hew_parser::ast::ImplDecl) -> Option<String> {
@@ -2314,9 +2318,6 @@ fn classify_unsupported_where_clause(decl: &hew_parser::ast::ImplDecl) -> Option
             return Some(format!(
                 "where-clause predicate on non-type-param `{pred_ty_name}`"
             ));
-        }
-        if predicate.bounds.len() != 1 {
-            return Some(format!("multi-bound where-clause on `{pred_ty_name}`"));
         }
     }
     None
@@ -2850,10 +2851,9 @@ impl LowerCtx {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ImplBlockShapeNotLowered { shape },
                 span,
-                "impl-block shape not yet lowered: only single-bound \
-                 `where T: Trait` predicates on the impl's own type \
-                 parameters are admitted in V0b — multi-bound and \
-                 non-type-param predicates require later slices",
+                "impl-block shape not yet lowered: only where-clause predicates of the form \
+                 `where T: Bound(s)` on the impl's own type parameters are admitted — \
+                 predicates on parameterised types and non-type-param names require later slices",
             ));
             return;
         }

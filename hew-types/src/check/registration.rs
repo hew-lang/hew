@@ -1029,7 +1029,7 @@ impl Checker {
                     }
                     let err_before = self.errors.len();
                     let warn_before = self.warnings.len();
-                    for (item, _) in &module.items {
+                    for (item, item_span) in &module.items {
                         match item {
                             Item::TypeDecl(td) => {
                                 self.pre_register_type_decl(td);
@@ -1044,7 +1044,7 @@ impl Checker {
                             // errors when the import path later registers the same
                             // machine. Idempotency guard matches `pre_register_type_decl`.
                             Item::Machine(md) if !self.type_defs.contains_key(&md.name) => {
-                                self.register_machine_decl(md);
+                                self.register_machine_decl(md, item_span);
                             }
                             _ => {}
                         }
@@ -1149,7 +1149,7 @@ impl Checker {
                     if !self.register_machine_type_namespace_names(&md.name, span) {
                         continue;
                     }
-                    self.register_machine_decl(md);
+                    self.register_machine_decl(md, span);
                     self.local_type_defs.insert(md.name.clone());
                     self.source_type_defs.insert(md.name.clone());
                 }
@@ -1860,12 +1860,15 @@ impl Checker {
         clippy::too_many_lines,
         reason = "machine registration covers states, events, and generated methods"
     )]
-    pub(super) fn register_machine_decl(&mut self, md: &MachineDecl) {
+    pub(super) fn register_machine_decl(&mut self, md: &MachineDecl, span: &Span) {
         // Build the machine's self-type: `Machine` or `Machine<T, U, …>`.
         // MachineDecl.type_params is Vec<TypeParam> — we extract bare names
         // here for the self-type and collect declared trait bounds into a
         // side table consulted at use sites (struct-state brace init) and
         // mirrored onto unit-state constructor FnSigs for the call path.
+        //
+        // Validate before collect_type_param_bounds erases positional type args.
+        self.validate_type_param_bound_shapes(Some(&md.type_params), None, span);
         let type_param_names: Vec<String> = md.type_params.iter().map(|p| p.name.clone()).collect();
         let type_param_bounds = self.collect_type_param_bounds(Some(&md.type_params), None);
         if !type_param_bounds.is_empty() {
@@ -2365,6 +2368,77 @@ impl Checker {
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}
         }
+    }
+
+    /// Validate that no trait bound in the given type parameters or
+    /// where-clause carries positional type arguments (e.g. `T: Eq<U>`).
+    /// Such forms are not valid in Hew — the checker cannot enforce
+    /// phantom-parameterised marker bounds, and admitting them would silently
+    /// erase the type arguments in `collect_type_param_bounds`, reducing
+    /// `Eq<U>` to bare `Eq` without any diagnostic.
+    ///
+    /// Emits `UnknownTraitBoundShape` at `span` for every offending bound.
+    /// Must be called before `collect_type_param_bounds` erases `type_args`.
+    /// Covers fn/impl/impl-method/machine declaration positions.
+    pub(super) fn validate_type_param_bound_shapes(
+        &mut self,
+        type_params: Option<&Vec<TypeParam>>,
+        where_clause: Option<&WhereClause>,
+        span: &Span,
+    ) {
+        // Check inline type-param bounds: e.g. `<T: Eq<U>>`.
+        if let Some(params) = type_params {
+            for param in params {
+                for bound in &param.bounds {
+                    if bound.type_args.as_ref().is_some_and(|a| !a.is_empty()) {
+                        self.report_error(
+                            TypeErrorKind::UnknownTraitBoundShape {
+                                trait_name: bound.name.clone(),
+                            },
+                            span,
+                            format!(
+                                "trait bound `{}` on type parameter `{}` carries positional \
+                                 type arguments, which are not supported; use associated-type \
+                                 bindings (`Trait<Assoc = Ty>`) instead",
+                                bound.name, param.name,
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        // Check where-clause bounds: `where T: Eq<U>`.
+        if let Some(wc) = where_clause {
+            for predicate in &wc.predicates {
+                for bound in &predicate.bounds {
+                    if bound.type_args.as_ref().is_some_and(|a| !a.is_empty()) {
+                        self.report_error(
+                            TypeErrorKind::UnknownTraitBoundShape {
+                                trait_name: bound.name.clone(),
+                            },
+                            span,
+                            format!(
+                                "trait bound `{}` in where-clause carries positional \
+                                 type arguments, which are not supported; use associated-type \
+                                 bindings (`Trait<Assoc = Ty>`) instead",
+                                bound.name,
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Thin wrapper for the fn-decl path; delegates to
+    /// `validate_type_param_bound_shapes` using the function's own
+    /// type-param list, where-clause, and declaration span.
+    pub(super) fn validate_fn_type_param_bound_shapes(&mut self, fd: &FnDecl) {
+        self.validate_type_param_bound_shapes(
+            fd.type_params.as_ref(),
+            fd.where_clause.as_ref(),
+            &fd.decl_span,
+        );
     }
 
     /// Validate that every trait named in a machine's generic bounds resolves
@@ -2923,6 +2997,12 @@ impl Checker {
         let Some(target_name) = type_name else {
             return false;
         };
+        // Validate before collect_type_param_scope_with_bounds erases positional type args.
+        self.validate_type_param_bound_shapes(
+            id.type_params.as_ref(),
+            id.where_clause.as_ref(),
+            span,
+        );
         let entries = self.build_impl_alias_entries(id);
         let impl_bounds_map = self.collect_type_param_scope_with_bounds(
             id.type_params.as_ref(),
@@ -3653,6 +3733,9 @@ impl Checker {
         } else {
             0
         };
+        // Validate that no bound carries unsupported positional type arguments
+        // (e.g. `T: Eq<U>`) before `collect_type_param_bounds` erases them.
+        self.validate_fn_type_param_bound_shapes(fd);
         // Push the type-param bounds map BEFORE resolving the signature so
         // the resolver can validate `T::Bar` projections that appear in
         // param/return types. Includes type params with no bounds so the
@@ -4472,7 +4555,7 @@ impl Checker {
                     if !self.register_machine_type_namespace_names(&md.name, span) {
                         continue;
                     }
-                    self.register_machine_decl(md);
+                    self.register_machine_decl(md, span);
                     self.known_types.insert(md.name.clone());
                     self.known_types.insert(format!("{}Event", md.name));
                 }
@@ -4681,7 +4764,7 @@ impl Checker {
                         skipped_type_names.insert(event_type_name);
                         continue;
                     }
-                    self.register_machine_decl(md);
+                    self.register_machine_decl(md, span);
                     self.known_types.insert(md.name.clone());
                     self.known_types.insert(format!("{}Event", md.name));
                 }
@@ -4720,6 +4803,13 @@ impl Checker {
                         if skipped_type_names.contains(type_name) {
                             continue;
                         }
+                        // Validate before collect_type_param_bounds erases positional type args.
+                        // This path bypasses enter_impl_scope so validation must be explicit.
+                        self.validate_type_param_bound_shapes(
+                            id.type_params.as_ref(),
+                            id.where_clause.as_ref(),
+                            span,
+                        );
                         let primitive_key = id.trait_bound.as_ref().and_then(|_| {
                             Self::canonical_primitive_or_builtin_key_from_name(type_name)
                         });
@@ -4899,7 +4989,7 @@ impl Checker {
                     if !self.register_machine_type_namespace_names(&md.name, span) {
                         continue;
                     }
-                    self.register_machine_decl(md);
+                    self.register_machine_decl(md, span);
                     self.register_qualified_type_alias(module_short, &md.name);
                     self.register_qualified_type_alias(module_short, &format!("{}Event", md.name));
                     self.known_types.insert(md.name.clone());

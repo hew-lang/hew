@@ -17775,6 +17775,124 @@ mod assoc_types_slice2 {
         );
     }
 
+    // ── D4: UnknownTraitBoundShape — reject positional type args on bounds ─────
+    //
+    // `T: Eq<U>` is not a valid bound form in Hew. Positional type arguments
+    // on trait bounds are silently erased by `collect_type_param_bounds`,
+    // which would reduce `Eq<U>` to bare `Eq` without any diagnostic.
+    // The validator fires before erasure and produces `UnknownTraitBoundShape`.
+
+    /// `fn f<T, U>(x: T) where T: Eq<U>` must produce `UnknownTraitBoundShape`
+    /// citing `Eq`. This is the canonical D4 regression test.
+    #[test]
+    fn unknown_trait_bound_shape_rejected_for_positional_type_arg_in_where_clause() {
+        let output = check_source(
+            r"
+            fn f<T, U>(x: T) -> T where T: Eq<U> {
+                x
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.iter().any(|e| matches!(
+                &e.kind,
+                TypeErrorKind::UnknownTraitBoundShape { trait_name }
+                    if trait_name == "Eq"
+            )),
+            "expected UnknownTraitBoundShape for `Eq<U>` in where-clause; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// `fn f<T: Eq<U>, U>(x: T) -> T` must also produce `UnknownTraitBoundShape`
+    /// when the positional arg is an inline type-param bound (not a where-clause).
+    #[test]
+    fn unknown_trait_bound_shape_rejected_for_positional_type_arg_inline() {
+        let output = check_source(
+            r"
+            fn f<T: Eq<U>, U>(x: T) -> T {
+                x
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.iter().any(|e| matches!(
+                &e.kind,
+                TypeErrorKind::UnknownTraitBoundShape { trait_name }
+                    if trait_name == "Eq"
+            )),
+            "expected UnknownTraitBoundShape for inline `T: Eq<U>`; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// `impl<T: Eq<U>> Foo<T> { }` must produce `UnknownTraitBoundShape` for
+    /// the inline bound `Eq<U>` on the impl type parameter.
+    #[test]
+    fn unknown_trait_bound_shape_rejected_for_impl_inline_type_param_bound() {
+        let output = check_source(
+            r"
+            type Foo<T> { value: T; }
+            impl<T: Eq<U>, U> Foo<T> { }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.iter().any(|e| matches!(
+                &e.kind,
+                TypeErrorKind::UnknownTraitBoundShape { trait_name }
+                    if trait_name == "Eq"
+            )),
+            "expected UnknownTraitBoundShape for inline `T: Eq<U>` on impl; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// `impl<T, U> Foo<T> where T: Eq<U>` must produce `UnknownTraitBoundShape`
+    /// for the where-clause bound `Eq<U>` on the impl type parameter.
+    #[test]
+    fn unknown_trait_bound_shape_rejected_for_impl_where_clause_bound() {
+        let output = check_source(
+            r"
+            type Foo<T> { value: T; }
+            impl<T, U> Foo<T> where T: Eq<U> { }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.iter().any(|e| matches!(
+                &e.kind,
+                TypeErrorKind::UnknownTraitBoundShape { trait_name }
+                    if trait_name == "Eq"
+            )),
+            "expected UnknownTraitBoundShape for where-clause `T: Eq<U>` on impl; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// `machine M<T: Eq<U>> { }` must produce `UnknownTraitBoundShape` for
+    /// the inline bound `Eq<U>` on the machine type parameter.
+    #[test]
+    fn unknown_trait_bound_shape_rejected_for_machine_type_param_bound() {
+        let output = check_source(
+            r"
+            machine M<T: Eq<U>, U> { }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.iter().any(|e| matches!(
+                &e.kind,
+                TypeErrorKind::UnknownTraitBoundShape { trait_name }
+                    if trait_name == "Eq"
+            )),
+            "expected UnknownTraitBoundShape for machine `T: Eq<U>`; got: {:?}",
+            output.errors
+        );
+    }
+
     // ── extern "rt" validation ─────────────────────────────────────────────────
     //
     // `extern "rt"` declares JIT-visible runtime functions. Every symbol must

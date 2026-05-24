@@ -2262,3 +2262,160 @@ fn unknown_string_method_errors_at_check_time() {
         "stderr should name the missing method `no_such_method`; got: {stderr}"
     );
 }
+
+/// Slice ε probe 1 — generic machine with a `<T: Display>` where-clause runs
+/// end-to-end.  The machine `Tagger<T: Display>` has states `Empty` and
+/// `Tagged { value: T }` plus a `Tag { value: T }` event.  The main function
+/// drives a `Tagger<i64>` from `Empty` → `Tagged` via one `step()` call and
+/// then prints the current state name.  Expected output: `Tagged`.
+#[test]
+fn trait_bound_probe1_bounded_machine_runs() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("tagger.hew");
+    std::fs::write(
+        &hew_src,
+        "machine Tagger<T: Display> {\n\
+         \x20   state Empty;\n\
+         \x20   state Tagged { value: T; }\n\
+         \x20   event Tag { value: T; }\n\
+         \x20   on Tag: Empty -> Tagged { Tagged { value: event.value } }\n\
+         \x20   on Tag: Tagged -> Tagged @reenter { Tagged { value: event.value } }\n\
+         }\n\
+         fn main() {\n\
+         \x20   var t: Tagger<i64> = Empty;\n\
+         \x20   t.step(Tag { value: 42 });\n\
+         \x20   println(t.state_name());\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&hew_src)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed for bounded machine; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Tagged\n",
+        "state_name() should return \"Tagged\" after stepping through Tag event",
+    );
+}
+
+/// Slice ε probe 2 — machine with two independent bounded type parameters
+/// `<A: Display, B: Display>` runs end-to-end.  Instantiated as
+/// `Pair<i64, string>`, this exercises the multi-type-param generics surface
+/// on machines: state fields, event fields, and state-name dispatch all work
+/// across different concrete monomorphisations.  Uses only machine dispatch
+/// (`.step()` / `.state_name()`) so the probe is not blocked by the L1
+/// generic monomorphisation gap in MIR codegen.
+#[test]
+fn trait_bound_probe2_multi_bound_machine_runs() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("pair_machine.hew");
+    std::fs::write(
+        &hew_src,
+        "machine Pair<A: Display, B: Display> {\n\
+         \x20   state Empty;\n\
+         \x20   state Full { first: A; second: B; }\n\
+         \x20   event Load { first: A; second: B; }\n\
+         \x20   event Clear;\n\
+         \x20   on Load: Empty -> Full { Full { first: event.first, second: event.second } }\n\
+         \x20   on Load: Full -> Full @reenter { Full { first: event.first, second: event.second } }\n\
+         \x20   on Clear: Empty -> Empty @reenter { Empty }\n\
+         \x20   on Clear: Full -> Empty { Empty }\n\
+         }\n\
+         fn main() {\n\
+         \x20   var p: Pair<i64, i64> = Empty;\n\
+         \x20   p.step(Load { first: 42, second: 99 });\n\
+         \x20   println(p.state_name());\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&hew_src)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed for multi-param bounded machine; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Full\n",
+        "state_name() should return \"Full\" after loading both fields",
+    );
+}
+
+/// Slice ε probe 3 — `impl<T> Trait for UserType<T> where T: Bound` method
+/// is pre-registered (D2 fix) and lowered without diagnostic.  This probe
+/// captures the intended runtime behaviour once MIR supports user-defined
+/// record types and HIR gains a dot-syntax dispatch path for user impl methods.
+/// Until then, the program fails at the MIR boundary after successful
+/// type-checking and HIR lowering.
+///
+/// Blocked on:
+///   (a) HIR dot-syntax dispatch for user impl methods (`MethodCallNoRewrite`)
+///   (b) L1 generic type instantiation / monomorphisation in MIR codegen
+#[test]
+#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
+fn trait_bound_probe3_where_clause_impl_dispatch_runs() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("pair_iter.hew");
+    std::fs::write(
+        &hew_src,
+        "pub type Pair<T> { left: T; right: T; }\n\
+         impl<T> Iterator for Pair<T> where T: Display {\n\
+         \x20   type Item = T;\n\
+         \x20   fn next(p: Pair<T>) -> Option<T> {\n\
+         \x20       Some(p.left)\n\
+         \x20   }\n\
+         }\n\
+         fn main() {\n\
+         \x20   let p = Pair { left: 77, right: 88 };\n\
+         \x20   match p.next() {\n\
+         \x20       Some(x) => println(x),\n\
+         \x20       None => println(-1),\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&hew_src)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed for where-clause impl dispatch; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "77\n",
+        "Pair::next under where T: Display must return Some(left) and print 77",
+    );
+}

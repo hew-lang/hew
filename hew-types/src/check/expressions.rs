@@ -879,6 +879,10 @@ impl Checker {
         Ty::Unit
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single dispatch over all identifier forms (context readers, module-qualified variants, bindings, fn sigs, constructors, type aliases); splitting would fragment shared error-reporting state"
+    )]
     pub(super) fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
         if let Some(reader) = ExecutionContextReader::from_surface_name(name) {
             if self.in_actor_handler_context {
@@ -905,6 +909,39 @@ impl Checker {
                 ),
             );
             return Ty::Error;
+        }
+        // Module-qualified value constructor reference encoded as a flat
+        // `Identifier("module.Type::Variant")` by `parse_dot_postfix` when no
+        // call-args or brace-body follow.  Dispatch to the fail-closed
+        // module-aware checker before falling through to the generic
+        // "undefined variable" path, which would produce a misleading error.
+        //
+        // Guard: only intercept when:
+        //  - the module part isn't a known binding or local type (mirrors
+        //    the check_field_access guard at line 3631)
+        //  - the combined "module.Type" key is NOT already in type_defs
+        //    (registered module-qualified types like "lifecycle.Lifecycle"
+        //    are correctly resolved by resolve_identifier_variant via the
+        //    type_defs flat-key path — don't short-circuit that path)
+        if let Some(dot_pos) = name.find('.') {
+            let candidate_module = &name[..dot_pos];
+            let rest = &name[dot_pos + 1..];
+            if let Some(colon_pos) = rest.find("::") {
+                let type_name = &rest[..colon_pos];
+                let variant_name = &rest[colon_pos + 2..];
+                let is_binding = self.env.lookup_ref(candidate_module).is_some();
+                let is_known_type = self.type_defs.contains_key(candidate_module);
+                let qualified_key = format!("{candidate_module}.{type_name}");
+                let qualified_in_type_defs = self.type_defs.contains_key(&qualified_key);
+                if !is_binding && !is_known_type && !qualified_in_type_defs {
+                    return self.check_module_qualified_variant_ref(
+                        candidate_module,
+                        type_name,
+                        variant_name,
+                        span,
+                    );
+                }
+            }
         }
         if let Some((depth, binding)) = self.env.lookup_with_depth(name) {
             let binding_id = binding.id;

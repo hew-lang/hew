@@ -127,27 +127,27 @@ fn module_qualified_struct_literal_trailing_comma_parses() {
     assert_eq!(fields.len(), 1);
 }
 
-// ── Regression: `fs.IoError::TimedOut(0)` still emits MethodCall ─────────────
+// ── Regression: `fs.IoError::TimedOut(0)` still emits Call ──────────────────
 
-/// Cross-module enum variant with tuple payload must still produce a
-/// `MethodCall`, not a `StructInit`.
+/// Cross-module enum variant with tuple payload must produce a flat
+/// `Call { function: Identifier("fs.IoError::TimedOut"), ... }`, not a
+/// `StructInit` or a `MethodCall`.
+///
+/// The dot-postfix path converts `receiver.Type::Variant` to the composite
+/// `Identifier("receiver.Type::Variant")` which the outer call-expression
+/// parser wraps in `Call`.  This is the shape downstream consumers (enrich,
+/// codegen) expect for variant construction via a module alias.
 #[test]
 fn regression_cross_module_enum_variant_call_unaffected() {
     let expr = first_body_expr("fn f() { fs.IoError::TimedOut(0) }");
-    let Expr::MethodCall {
-        receiver,
-        method,
-        args,
-    } = expr
-    else {
-        panic!("expected MethodCall (regression: call form broken), got: {expr:?}");
+    let Expr::Call { function, args, .. } = expr else {
+        panic!("expected Call (regression: call form broken), got: {expr:?}");
     };
     assert!(
-        matches!(receiver.0, Expr::Identifier(ref n) if n == "fs"),
-        "receiver must be Identifier(fs), got: {:?}",
-        receiver.0
+        matches!(function.0, Expr::Identifier(ref n) if n == "fs.IoError::TimedOut"),
+        "callee must be Identifier(fs.IoError::TimedOut), got: {:?}",
+        function.0
     );
-    assert_eq!(method, "IoError::TimedOut");
     assert_eq!(args.len(), 1);
 }
 

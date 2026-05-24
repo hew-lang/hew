@@ -750,6 +750,51 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_random_choices_vec",
         },
     ),
+    // Class B: Node namespace — distributed-node lifecycle builtins (A7 S1).
+    //
+    // Each entry maps the Hew `Node::X` call form to its `hew_node_api_X` C
+    // extern in `hew-runtime/src/hew_node.rs`.  The C functions return `c_int`
+    // (0 = success, -1 = error) but are declared `Unit` here so HIR/MIR treat
+    // them as void-returning and the call is emitted without a destination slot.
+    // On x86-64 and arm64 the callee's return value sits in rax/x0 and is
+    // harmlessly discarded by the caller — this is the standard C idiom for
+    // ignoring a return value.  Error surfacing is deferred to a follow-on lane.
+    direct(
+        "Node::set_transport",
+        BuiltinClass::ClassB,
+        STRING,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_set_transport",
+        },
+    ),
+    direct(
+        "Node::start",
+        BuiltinClass::ClassB,
+        STRING,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_start",
+        },
+    ),
+    direct(
+        "Node::connect",
+        BuiltinClass::ClassB,
+        STRING,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_connect",
+        },
+    ),
+    direct(
+        "Node::shutdown",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_shutdown",
+        },
+    ),
 ];
 
 #[must_use]

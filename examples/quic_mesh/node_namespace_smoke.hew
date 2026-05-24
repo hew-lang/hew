@@ -1,0 +1,19 @@
+// node_namespace_smoke.hew — exercises all four Node:: namespace builtins (A7 S1).
+//
+// Validates that Node::set_transport, Node::start, Node::connect, and
+// Node::shutdown resolve in HIR (no UnresolvedSymbol) and run without panicking.
+//
+// Node::connect targets a loopback address with no listener; the underlying
+// hew_node_api_connect returns -1 and sets the last-error string, but since
+// the builtin is typed Unit the return value is discarded.  The program still
+// exits 0, which is the expected outcome for this smoke gate.
+//
+// Run:
+//   hew run examples/quic_mesh/node_namespace_smoke.hew
+fn main() {
+    Node::set_transport("tcp");
+    Node::start("127.0.0.1:0");
+    Node::connect("127.0.0.1:9001");
+    Node::shutdown();
+    println("node_namespace_smoke: ok");
+}

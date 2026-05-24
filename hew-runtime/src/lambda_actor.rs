@@ -169,6 +169,46 @@ unsafe fn unframe_ask_envelope(env: &[u8]) -> (*mut HewReplyChannel, &[u8]) {
     (ch, &env[ASK_REPLY_CH_PREFIX_LEN..])
 }
 
+// ── Allocator-pairing helpers ──────────────────────────────────────────────
+
+/// Free a body-allocated reply buffer via Rust's `GlobalAlloc`.
+///
+/// # Allocator pairing contract
+///
+/// Body callbacks allocate reply payloads with
+/// `Box::into_raw(bytes.into_boxed_slice())`, using Rust's `GlobalAlloc`.
+/// This function is the **symmetric deallocation** path for those buffers.
+///
+/// Reply-channel reply copies use `libc::malloc` (inside
+/// [`crate::reply_channel::alloc_reply_buffer`]) and **must** be freed with
+/// [`crate::reply_channel::hew_reply_payload_free`] — see that module for the
+/// counterpart.  Mixing the two allocators is **undefined behaviour** on any
+/// platform where `GlobalAlloc ≠ libc malloc` (e.g. jemalloc, mimalloc).
+///
+/// A `#[cfg(debug_assertions)]` assert verifies the pointer is not
+/// libc-tracked before deallocating.
+///
+/// # Safety
+///
+/// `ptr` must be a non-null pointer previously produced by a body callback via
+/// `Box<[u8]>` with the given `len`.
+#[inline]
+unsafe fn free_body_reply_buf(ptr: *mut u8, len: usize) {
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        !crate::reply_channel::debug_is_libc_tracked(ptr),
+        "allocator-pairing contract violation: reply_out {ptr:p} is libc-tracked \
+         (allocated via the reply channel); the body must allocate via Box. \
+         See reply_channel::hew_reply_payload_free for the libc-allocated free path.",
+    );
+    // SAFETY: ptr was allocated by the body via Box<[u8]>-compatible GlobalAlloc;
+    // we are the sole owner at this point.
+    unsafe {
+        let slice = std::slice::from_raw_parts_mut(ptr, len);
+        drop(Box::from_raw(slice as *mut [u8]));
+    }
+}
+
 // ── Internal shared state ──────────────────────────────────────────────────
 
 /// Internal shared state. Shared between the dispatch thread (via
@@ -512,12 +552,9 @@ fn dispatch_tell(inner: &LambdaActorInner, msg: &[u8]) {
         // Tell-shape contract: reply_out must be null. If the body sets
         // it (contract violation), free it and mark stopped.
         if !reply_out.is_null() {
-            // SAFETY: body_fn allocated this via Box/hew_duplex_payload_free
-            // compatible allocator; reclaim it before marking stopped.
-            unsafe {
-                let slice = std::slice::from_raw_parts_mut(reply_out, reply_len_out);
-                drop(Box::from_raw(slice as *mut [u8]));
-            }
+            // SAFETY: body_fn allocated this via Box-compatible GlobalAlloc;
+            // reclaim it before marking stopped.
+            unsafe { free_body_reply_buf(reply_out, reply_len_out) };
             crate::set_last_error(
                 "hew_lambda_actor: tell-shape body set reply_out (contract violation); actor stopped"
                     .to_string(),
@@ -607,12 +644,9 @@ fn dispatch_ask(inner: &LambdaActorInner, envelope: &[u8]) {
             // == false`), the waiter already abandoned this reply and the
             // runtime must reclaim the memory.
             if !reply_ptr.is_null() {
-                // SAFETY: body allocated this via Box<[u8]> compatible allocator;
+                // SAFETY: body allocated this via Box<[u8]>-compatible GlobalAlloc;
                 // hew_reply took a copy, so original buffer is ours to free.
-                unsafe {
-                    let slice = std::slice::from_raw_parts_mut(reply_ptr, reply_len);
-                    drop(Box::from_raw(slice as *mut [u8]));
-                }
+                unsafe { free_body_reply_buf(reply_ptr, reply_len) };
             }
             let _ = delivered;
         }
@@ -620,13 +654,9 @@ fn dispatch_ask(inner: &LambdaActorInner, envelope: &[u8]) {
             // Non-zero return: actor stopped. Free any partial reply and
             // orphan the reply channel.
             if !reply_ptr.is_null() {
-                // SAFETY: body allocated this via Box<[u8]>-compatible
-                // allocator; body returned non-zero so the channel is orphaned
-                // and we must reclaim the buffer.
-                unsafe {
-                    let slice = std::slice::from_raw_parts_mut(reply_ptr, reply_len);
-                    drop(Box::from_raw(slice as *mut [u8]));
-                }
+                // SAFETY: body allocated this via Box<[u8]>-compatible GlobalAlloc;
+                // body returned non-zero so the channel is orphaned and we reclaim.
+                unsafe { free_body_reply_buf(reply_ptr, reply_len) };
             }
             // Signal the waiter with a null reply (orphaned path).
             // SAFETY: reply_ch is alive; orphan_ask_sender_ref takes the
@@ -641,12 +671,9 @@ fn dispatch_ask(inner: &LambdaActorInner, envelope: &[u8]) {
             // before panicking (hoisted reply_out captures it), then orphan
             // the reply channel so the waiter unblocks.
             if !reply_ptr.is_null() {
-                // SAFETY: body allocated this via Box<[u8]>-compatible
-                // allocator and then panicked; we are the sole owner.
-                unsafe {
-                    let slice = std::slice::from_raw_parts_mut(reply_ptr, reply_len);
-                    drop(Box::from_raw(slice as *mut [u8]));
-                }
+                // SAFETY: body allocated this via Box<[u8]>-compatible GlobalAlloc
+                // and then panicked; we are the sole owner.
+                unsafe { free_body_reply_buf(reply_ptr, reply_len) };
             }
             // SAFETY: same as non-zero path above.
             unsafe {
@@ -661,13 +688,30 @@ fn dispatch_ask(inner: &LambdaActorInner, envelope: &[u8]) {
 /// orphaned so waiters unblock; tell envelopes are discarded.
 fn drain_stopped(inner: &LambdaActorInner) {
     while let Ok(envelope) = inner.recv() {
-        if inner.shape() == LambdaShape::Ask && envelope.len() >= ASK_REPLY_CH_PREFIX_LEN {
-            // SAFETY: envelope from frame_ask_envelope; reply_ch pointer valid
-            // (still ref-counted by the sending side).
-            let (reply_ch, _msg) = unsafe { unframe_ask_envelope(&envelope) };
-            // SAFETY: retire_orphaned_ask_sender_ref consumes the ref.
-            unsafe {
-                hew_reply_channel_retire_orphaned_ask_sender_ref(reply_ch);
+        if inner.shape() == LambdaShape::Ask {
+            if envelope.len() >= ASK_REPLY_CH_PREFIX_LEN {
+                // SAFETY: envelope from frame_ask_envelope; reply_ch pointer valid
+                // (still ref-counted by the sending side).
+                let (reply_ch, _msg) = unsafe { unframe_ask_envelope(&envelope) };
+                // SAFETY: retire_orphaned_ask_sender_ref consumes the ref.
+                unsafe {
+                    hew_reply_channel_retire_orphaned_ask_sender_ref(reply_ch);
+                }
+            } else {
+                // Malformed ask envelope: too short to hold a reply-channel pointer.
+                // The reply-channel sender ref cannot be recovered; log diagnostics
+                // for post-mortem. The waiter will see a timeout rather than a
+                // deterministic orphan error — this is an unrecoverable corruption.
+                let preview: Vec<u8> = envelope
+                    .iter()
+                    .copied()
+                    .take(ASK_REPLY_CH_PREFIX_LEN)
+                    .collect();
+                crate::set_last_error(format!(
+                    "hew_lambda_actor: drain_stopped: malformed ask envelope \
+                     (len={}, prefix={preview:?}); reply-channel sender ref could not be recovered",
+                    envelope.len(),
+                ));
             }
         }
         // Tell envelopes are simply dropped.
@@ -1952,5 +1996,77 @@ mod tests {
             1,
             "state_drop must be called exactly once"
         );
+    }
+
+    // ── H2 regression: drain_stopped malformed-envelope ───────────────────
+
+    /// Regression test for H2: `drain_stopped` receiving a malformed ask
+    /// envelope (< `ASK_REPLY_CH_PREFIX_LEN` bytes) must set `last_error`
+    /// rather than silently dropping it.
+    ///
+    /// Calls `drain_stopped` directly on the test thread so the
+    /// thread-local `set_last_error` is observable here.
+    #[test]
+    fn drain_stopped_malformed_ask_envelope_sets_last_error() {
+        // Build inner + send-half directly — no dispatch thread spawned.
+        let (inner, mailbox_in) = LambdaActorInner::new(
+            4,
+            LambdaShape::Ask,
+            noop_tell_body,
+            ptr::null_mut(),
+            noop_state_drop,
+        );
+        // Send a malformed ask envelope: only 3 bytes, shorter than
+        // ASK_REPLY_CH_PREFIX_LEN (8).  The send half accepts raw Vec<u8>.
+        assert_eq!(
+            mailbox_in.send(vec![0xDE, 0xAD, 0xBE]),
+            SendError::Ok,
+            "mailbox send must succeed before close"
+        );
+        // Drop the send half to close the mailbox so recv() returns Closed
+        // after processing the one queued message.
+        drop(mailbox_in);
+        // Clear any prior error on this thread.
+        crate::hew_clear_error();
+        // Call drain_stopped on this thread — set_last_error is thread-local,
+        // so calling it here makes it visible to the assert below.
+        drain_stopped(&inner);
+        let err_ptr = crate::hew_last_error();
+        assert!(
+            !err_ptr.is_null(),
+            "malformed ask envelope must set last_error"
+        );
+        let err = unsafe { std::ffi::CStr::from_ptr(err_ptr).to_str().unwrap() };
+        assert!(
+            err.contains("malformed ask envelope"),
+            "error message must mention 'malformed ask envelope'; got: {err}"
+        );
+    }
+
+    // ── H3 regression: allocator-pairing tracker ──────────────────────────
+
+    /// Regression test for H3: `free_body_reply_buf` must panic with an
+    /// "allocator-pairing" message when passed a libc-tracked pointer
+    /// (i.e., a pointer that was allocated via `libc::malloc` inside the
+    /// reply channel, not via `Box`).
+    ///
+    /// Active only in debug builds; the `debug_assert!` is elided in
+    /// release mode.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "allocator-pairing")]
+    fn allocator_pairing_body_reply_buf_panics_if_libc_tracked() {
+        // Allocate a small buffer via libc::malloc and register it in the
+        // libc-alloc tracker — simulating what alloc_reply_buffer does.
+        let ptr = unsafe { libc::malloc(8) }.cast::<u8>();
+        assert!(!ptr.is_null());
+        crate::reply_channel::debug_track_libc_alloc(ptr);
+        // free_body_reply_buf asserts the pointer is NOT libc-tracked.
+        // The debug_assert fires before Box::from_raw, so no UB occurs.
+        // SAFETY: the assert panics; Box::from_raw is never reached.
+        unsafe { free_body_reply_buf(ptr, 8) };
+        // Cleanup if somehow reached (e.g., release build running a
+        // `#[cfg(debug_assertions)]` test block — shouldn't happen).
+        unsafe { libc::free(ptr.cast()) };
     }
 }

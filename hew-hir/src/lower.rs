@@ -6817,10 +6817,25 @@ impl LowerCtx {
         // entry — pure HIR-side resolution at a span the checker did not
         // type (rare; mostly synthesised code) — we accept the registry
         // hit unconditionally.
-        if let Some((tagged_union_name, variant_idx)) =
-            self.machine_ctor_registry.get(name).cloned()
-        {
-            let key = SpanKey::from(&span);
+        // Checker-authoritative qualified-name fallback: when the bare-name
+        // registry entry disagrees with the checker (e.g. a user `state Closed`
+        // in scope alongside the synthetic `SendError::Closed` makes the bare
+        // name ambiguous-or-missing, while the checker has already chosen
+        // `TcpHandshake` for this identifier span), promote the checker's
+        // chosen type into a qualified lookup. This keeps bare references to
+        // unit ctors resolving correctly across builtin/user name collisions
+        // without depending on registration-order races in the pre-pass.
+        let key = SpanKey::from(&span);
+        let checker_qualified = match self.expr_types.get(&key) {
+            Some(Ty::Named { name: n, .. }) => Some(format!("{n}::{name}")),
+            _ => None,
+        };
+        let registry_hit = self.machine_ctor_registry.get(name).cloned().or_else(|| {
+            checker_qualified
+                .as_deref()
+                .and_then(|q| self.machine_ctor_registry.get(q).cloned())
+        });
+        if let Some((tagged_union_name, variant_idx)) = registry_hit {
             let checker_agrees = match self.expr_types.get(&key) {
                 None => true,
                 Some(Ty::Named { name: n, .. }) => Ty::names_match_qualified(n, &tagged_union_name),

@@ -55,8 +55,22 @@ const SYNTHETIC_SEND_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1001);
 
 /// Bare-name variants of built-in tagged unions. Counted into the pre-pass's
 /// `bare_counts` so a user enum that redeclares one of them correctly marks
-/// the bare form as ambiguous.
-const BUILTIN_ENUM_VARIANT_BARE_NAMES: &[&str] = &["Some", "None", "Ok", "Err"];
+/// the bare form as ambiguous. Must include every variant of every spec in
+/// `builtin_enum_specs()` — omissions cause silent overwrites of user
+/// machine-state ctor entries in `machine_ctor_registry` (the `Full` /
+/// `Closed` / `NodeRoutingNotWired` `SendError` variants and `NotFound`
+/// `LookupError` variant were the original regression that motivated this
+/// completeness rule).
+const BUILTIN_ENUM_VARIANT_BARE_NAMES: &[&str] = &[
+    "Some",
+    "None",
+    "Ok",
+    "Err",
+    "NotFound",
+    "Full",
+    "Closed",
+    "NodeRoutingNotWired",
+];
 
 /// Description of a built-in tagged union for the HIR pre-pass that seeds
 /// the same registries user enums populate (`machine_ctor_registry`,

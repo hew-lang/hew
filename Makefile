@@ -185,14 +185,16 @@ fuzz-corpus:
 fuzz-smoke: fuzz-corpus
 	@command -v cargo-fuzz >/dev/null 2>&1 || { echo "error: cargo-fuzz is required (cargo install cargo-fuzz)"; exit 127; }
 	@rustup toolchain list | grep -q '^nightly' || { echo "error: Rust nightly toolchain is required (rustup install nightly)"; exit 127; }
-	@cd hew-parser && for target in $(FUZZ_TARGETS); do \
+	@cd hew-parser && rc=0 && for target in $(FUZZ_TARGETS); do \
 		echo "==> cargo fuzz build $$target"; \
-		cargo +nightly fuzz build "$$target"; \
-	done
-	@cd hew-parser && for target in $(FUZZ_TARGETS); do \
+		cargo +nightly fuzz build "$$target" || rc=$$?; \
+	done; \
+	exit $$rc
+	@cd hew-parser && rc=0 && for target in $(FUZZ_TARGETS); do \
 		echo "==> cargo fuzz smoke $$target ($(FUZZ_SMOKE_SECONDS)s)"; \
-		cargo +nightly fuzz run "$$target" -- -max_total_time=$(FUZZ_SMOKE_SECONDS); \
-	done
+		cargo +nightly fuzz run "$$target" -- -max_total_time=$(FUZZ_SMOKE_SECONDS) || rc=$$?; \
+	done; \
+	exit $$rc
 
 bootstrap: install-hooks
 

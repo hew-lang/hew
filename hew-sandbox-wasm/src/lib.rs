@@ -775,6 +775,29 @@ fn main() {
         assert!(output.diagnostics.iter().any(|d| d.phase == "typecheck"));
     }
 
+    // Source matches hew-lsp/tests/fixtures/v05_impl_where_clause.hew.
+    const IMPL_WHERE_SOURCE: &str = r"
+type Holder<T> {
+    value: T;
+}
+
+impl<T> Holder<T> where T: Display {
+    fn show(holder: Holder<T>) {
+        println(holder.value);
+    }
+}
+
+fn main() {
+    let holder = Holder { value: 7 };
+    holder.show();
+}
+";
+
+    #[test]
+    fn impl_where_clause_is_reserved_runtime_feature() {
+        assert_profile_rejection(IMPL_WHERE_SOURCE, "reserved_runtime_feature");
+    }
+
     fn assert_profile_rejection(source: &str, expected_kind: &str) {
         set_test_hewpath();
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))

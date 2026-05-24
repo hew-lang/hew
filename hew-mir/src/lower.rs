@@ -3727,7 +3727,23 @@ impl Builder {
                     site: value.site,
                     ty: binding_ty.clone(),
                 });
-                if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+                if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy
+                    && (pending || value_place.is_some())
+                {
+                    // Only register the binding in `owned_locals` when
+                    // the same iteration will also wire `binding_locals`
+                    // (either pre-emptively via the lambda-actor
+                    // `pending` path above, or via the `Some(src)` arm
+                    // below). Keeping the two ledgers in sync is the
+                    // structural invariant that `build_lifo_drops`
+                    // depends on: an `owned_locals` entry without a
+                    // matching `binding_locals` Place panics drop
+                    // elaboration. When `lower_value` returns `None`
+                    // (e.g. `lower_spawn_actor` emitted a `spawn of
+                    // unknown actor` MIR diagnostic), the binding has
+                    // no backend Place, so it must not enter
+                    // `owned_locals` either. LESSONS:
+                    // boundary-fail-closed, raii-null-after-move.
                     self.owned_locals
                         .push((binding.id, binding.name.clone(), binding_ty.clone()));
                 }

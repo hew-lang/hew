@@ -1,0 +1,58 @@
+//! Regression: spawning an actor with no MIR layout (e.g. an undefined
+//! actor name that the checker did not reject) must not leave a binding
+//! in `owned_locals` without a matching `binding_locals` entry.
+//!
+//! Before the fix, `let p = spawn Probe;` for an undefined `Probe`
+//! pushed `p` into `owned_locals` (because `LocalPid<Probe>` is not
+//! `BitCopy`) but skipped `binding_locals` insertion (the let-arm only
+//! wires `binding_locals` when `lower_value` returns `Some`). The
+//! drop-elaboration pass then panicked with `build_lifo_drops
+//! invariant`. The fix gates the `owned_locals` push on the same
+//! condition that wires `binding_locals`, so the two ledgers stay in
+//! agreement.
+//!
+//! Crash artifact: `fuzz_mir/crash-259306105545067b47125ebbb163feaa185b97cc`.
+
+use hew_hir::{lower_program, ResolutionCtx};
+use hew_mir::lower_hir_module;
+use hew_types::module_registry::ModuleRegistry;
+use hew_types::Checker;
+
+const FIXTURE: &str = include_str!("fixtures/link_monitor_spawn_binding.hew");
+
+#[test]
+fn link_monitor_after_four_spawns_lowers_without_panic() {
+    let parsed = hew_parser::parse(FIXTURE);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc = checker.check_program(&parsed.program);
+    assert!(tc.errors.is_empty(), "type-check errors: {:#?}", tc.errors);
+
+    let hir = lower_program(&parsed.program, &tc, &ResolutionCtx);
+    assert!(
+        hir.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        hir.diagnostics
+    );
+
+    // Pre-fix: this panics at `build_lifo_drops invariant`.
+    // Post-fix: lowering completes; MIR diagnostics may report
+    // `spawn of unknown actor `Probe`` but no panic.
+    let pipeline = lower_hir_module(&hir.module);
+    let mir_diag_kinds: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .map(|d| format!("{:?}", d.kind))
+        .collect();
+    assert!(
+        mir_diag_kinds
+            .iter()
+            .any(|s| s.contains("spawn of unknown actor")),
+        "expected `spawn of unknown actor` diagnostic, got: {mir_diag_kinds:#?}"
+    );
+}

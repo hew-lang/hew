@@ -829,6 +829,22 @@ pub const CATALOG: &[BuiltinEntry] = &[
             pid_accessor: "hew_actor_pid",
         },
     ),
+    // `RemotePid::from_raw(node_id: u64, serial: u64) -> RemotePid<T>`
+    //
+    // Constructs a `RemotePid<T>` from a raw (node_id, serial) pair.  The
+    // `RemotePid<T>` type lowers to a bare `u64` PID — identical encoding to
+    // `LocalPid<T>` — so the return type is `U64` at the C-ABI boundary.
+    // The runtime validates that `node_id` is non-zero and fits in u16 (the
+    // packed encoding constraint).  See `hew-runtime/src/hew_node.rs`.
+    direct(
+        "RemotePid::from_raw",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::U64, BuiltinTy::U64],
+        BuiltinTy::U64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_remote_pid_from_raw",
+        },
+    ),
 ];
 
 #[must_use]

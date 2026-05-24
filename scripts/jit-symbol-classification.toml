@@ -415,6 +415,7 @@ stable = [
   "hew_registry_lookup",
   "hew_registry_register",
   "hew_registry_unregister",
+  "hew_remote_pid_from_raw",
   "hew_remote_sup_free",
   "hew_remote_sup_monitor",
   "hew_remote_sup_new",

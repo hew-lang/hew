@@ -2093,6 +2093,41 @@ pub unsafe extern "C" fn hew_node_api_lookup(name: *const c_char) -> u64 {
     })
 }
 
+/// `RemotePid::from_raw(node_id, serial) -> u64`
+///
+/// Constructs a `RemotePid<T>` PID value from a raw `(node_id, serial)` pair.
+/// `RemotePid<T>` is encoded identically to `LocalPid<T>`: a packed `u64`
+/// produced by `hew_pid_make(node_id as u16, serial)`.
+///
+/// Returns `0` (the null-PID sentinel) and sets the last error string when
+/// either validation constraint fails:
+/// - `node_id` must be non-zero (a zero `node_id` would alias the local node,
+///   which is always node 0 in the current encoding scheme).
+/// - `node_id` must not exceed `u16::MAX` (the packed encoding constraint).
+#[no_mangle]
+pub extern "C" fn hew_remote_pid_from_raw(node_id: u64, serial: u64) -> u64 {
+    if node_id == 0 {
+        set_last_error(
+            "RemotePid::from_raw: node_id must be non-zero \
+             (use LocalPid for local actors)",
+        );
+        return 0;
+    }
+    if node_id > u64::from(u16::MAX) {
+        set_last_error(format!(
+            "RemotePid::from_raw: node_id {node_id} exceeds u16::MAX ({})",
+            u16::MAX
+        ));
+        return 0;
+    }
+    // SAFETY: node_id <= u16::MAX is verified above; truncation cannot occur.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "node_id <= u16::MAX is verified by the guard above"
+    )]
+    crate::pid::hew_pid_make(node_id as u16, serial)
+}
+
 /// `Node::set_transport(name)` — Set the transport type before starting.
 ///
 /// Supported values: `"tcp"` (default), `"quic"`, `"quic-mesh"`.

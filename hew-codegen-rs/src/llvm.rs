@@ -1868,6 +1868,14 @@ fn primitive_to_llvm<'ctx>(
         ResolvedTy::Named { name, .. } if name == "HewTaskScope" => {
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
+        ResolvedTy::Named { name, .. } if name == "RemotePid" => {
+            // `RemotePid<T>` lowers to a bare u64 PID (same encoding as
+            // `LocalPid<T>` at the wire level, but `LocalPid<T>` uses a ptr
+            // alloca because it holds a `*mut HewActor`).  `RemotePid<T>` is
+            // always a packed (node_id: u16, serial: u64) PID — a numeric
+            // value, not a heap pointer.
+            Ok(ctx.i64_type().into())
+        }
         ResolvedTy::Named { name, .. } => Err(CodegenError::FailClosed(format!(
             "D10 violation: Named/user type `{name}` reached the LLVM emitter; \
              the MIR D10 gate should have rejected this earlier"

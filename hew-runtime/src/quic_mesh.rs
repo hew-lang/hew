@@ -71,6 +71,7 @@
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::net::ToSocketAddrs;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -513,9 +514,20 @@ const QUIC_MESH_WORKER_THREADS: usize = 2;
 
 struct QuicMeshConn {
     peer: PeerConn,
-    send: Option<SendStream>,
-    recv: Option<RecvStream>,
+    send: std::sync::Mutex<Option<SendStream>>,
+    recv: std::sync::Mutex<Option<RecvStream>>,
     is_initiator: bool,
+    /// Set once the control stream has been opened (or accepted) and both
+    /// halves are stashed in `send`/`recv`. Once true, the per-direction
+    /// mutexes hold the streams stably and callers can lock just the
+    /// direction they need. Required to avoid deadlock between the reader
+    /// loop (holding `recv` across `read_exact`) and a concurrent sender
+    /// that would otherwise try to lock `recv` to verify initialisation.
+    streams_ready: AtomicBool,
+    /// Serialises lazy first-time initialisation of the control stream.
+    /// Held only during `open_bi`/`accept_bi`; never while doing I/O on
+    /// the streams.
+    init_lock: std::sync::Mutex<()>,
     close_reason: Arc<OnceLock<String>>,
 }
 
@@ -525,9 +537,11 @@ impl QuicMeshConn {
         spawn_close_watcher(rt, peer.conn.clone(), Arc::clone(&close_reason));
         Self {
             peer,
-            send: None,
-            recv: None,
+            send: std::sync::Mutex::new(None),
+            recv: std::sync::Mutex::new(None),
             is_initiator,
+            streams_ready: AtomicBool::new(false),
+            init_lock: std::sync::Mutex::new(()),
             close_reason,
         }
     }
@@ -542,31 +556,51 @@ impl QuicMeshConn {
         });
         Self {
             peer,
-            send: None,
-            recv: None,
+            send: std::sync::Mutex::new(None),
+            recv: std::sync::Mutex::new(None),
             is_initiator,
+            streams_ready: AtomicBool::new(false),
+            init_lock: std::sync::Mutex::new(()),
             close_reason,
         }
     }
 
-    fn ensure_control_stream(&mut self, rt: &Runtime) -> Result<(), String> {
-        if self.send.is_some() && self.recv.is_some() {
+    /// Establish the bidirectional control stream lazily on first use. Both
+    /// halves are opened together (Quinn binds them) and then stashed in the
+    /// per-direction mutexes. Subsequent calls observe `streams_ready` and
+    /// return immediately without touching the `send`/`recv` mutexes — this
+    /// is critical so concurrent senders do not deadlock against the reader
+    /// loop, which holds the `recv` mutex across a blocking `read_exact`.
+    fn ensure_control_stream(&self, rt: &Runtime) -> Result<(), String> {
+        if self.streams_ready.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        // Serialise the first-time setup; do NOT touch send/recv mutexes
+        // until after the streams are populated.
+        let _init_guard = self
+            .init_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.streams_ready.load(Ordering::Acquire) {
             return Ok(());
         }
 
-        if self.is_initiator {
-            let (send, recv) = rt
-                .block_on(async { self.peer.conn.open_bi().await })
-                .map_err(|e| format!("control open_bi: {e}"))?;
-            self.send = Some(send);
-            self.recv = Some(recv);
+        let (send, recv) = if self.is_initiator {
+            rt.block_on(async { self.peer.conn.open_bi().await })
+                .map_err(|e| format!("control open_bi: {e}"))?
         } else {
-            let (send, recv) = rt
-                .block_on(async { self.peer.conn.accept_bi().await })
-                .map_err(|e| format!("control accept_bi: {e}"))?;
-            self.send = Some(send);
-            self.recv = Some(recv);
-        }
+            rt.block_on(async { self.peer.conn.accept_bi().await })
+                .map_err(|e| format!("control accept_bi: {e}"))?
+        };
+        *self
+            .send
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(send);
+        *self
+            .recv
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(recv);
+        self.streams_ready.store(true, Ordering::Release);
         Ok(())
     }
 }
@@ -574,7 +608,7 @@ impl QuicMeshConn {
 pub(crate) struct QuicMeshTransport {
     rt: Arc<Runtime>,
     mesh: Option<Mesh>,
-    conns: Vec<std::sync::Mutex<Option<QuicMeshConn>>>,
+    conns: Vec<std::sync::Mutex<Option<Arc<QuicMeshConn>>>>,
     /// Per-peer connection LRU bookkeeping. Tracks occupancy + access recency
     /// for the fixed-size [`QuicMeshTransport::conns`] slot vector. When the
     /// slot vector is saturated, [`SlotLru::alloc`] selects the
@@ -584,6 +618,13 @@ pub(crate) struct QuicMeshTransport {
     /// Native-M3 A5: bounded peer-connection cache with LRU eviction.
     slot_lru: std::sync::Mutex<SlotLru>,
     incoming_rx: std::sync::Mutex<Option<std::sync::mpsc::Receiver<QuicMeshConn>>>,
+    /// Optional TLS override injected by tests or trusted callers before
+    /// `listen` is invoked. When `Some`, `quic_mesh_listen` consumes this
+    /// value instead of generating a fresh self-signed certificate that
+    /// allow-lists only the local node's SPKI. This is the bridge by which
+    /// two in-process nodes can mutually pin each other's SPKIs for
+    /// cross-node integration tests until the A3 Noise→X.509 bridge lands.
+    tls_override: std::sync::Mutex<Option<MeshTls>>,
 }
 
 impl QuicMeshTransport {
@@ -597,6 +638,7 @@ impl QuicMeshTransport {
             conns,
             slot_lru: std::sync::Mutex::new(SlotLru::new(MAX_CONNS)),
             incoming_rx: std::sync::Mutex::new(None),
+            tls_override: std::sync::Mutex::new(None),
         }
     }
 
@@ -630,8 +672,17 @@ impl QuicMeshTransport {
                 );
             }
         }
-        *guard = Some(conn);
+        *guard = Some(Arc::new(conn));
         c_int::try_from(idx).unwrap_or(HEW_CONN_INVALID)
+    }
+
+    fn get_conn(&self, id: c_int) -> Option<Arc<QuicMeshConn>> {
+        let idx = usize::try_from(id).ok()?;
+        let slot = self.conns.get(idx)?;
+        let guard = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.as_ref().map(Arc::clone)
     }
 
     fn remove_conn(&self, id: c_int) {
@@ -941,11 +992,21 @@ unsafe extern "C" fn quic_mesh_listen(impl_ptr: *mut c_void, address: *const c_c
             return -1;
         }
     };
-    let tls = match self_tls_allowing_own_spki() {
-        Ok(tls) => tls,
-        Err(e) => {
-            set_last_error(format!("quic_mesh listen: {e}"));
-            return -1;
+    let tls = {
+        let override_tls = qmt
+            .tls_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        match override_tls {
+            Some(tls) => tls,
+            None => match self_tls_allowing_own_spki() {
+                Ok(tls) => tls,
+                Err(e) => {
+                    set_last_error(format!("quic_mesh listen: {e}"));
+                    return -1;
+                }
+            },
         }
     };
 
@@ -1040,16 +1101,7 @@ unsafe extern "C" fn quic_mesh_send(
     // SAFETY: data checked non-null above; caller guarantees len readable bytes.
     let slice = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
 
-    let Ok(idx) = usize::try_from(conn) else {
-        return -1;
-    };
-    let Some(slot) = qmt.conns.get(idx) else {
-        return -1;
-    };
-    let mut guard = slot
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(mesh_conn) = guard.as_mut() else {
+    let Some(mesh_conn) = qmt.get_conn(conn) else {
         return -1;
     };
 
@@ -1062,9 +1114,19 @@ unsafe extern "C" fn quic_mesh_send(
         return -1;
     }
 
-    let result = framed_send_mesh(&qmt.rt, mesh_conn.send.as_mut().unwrap(), slice);
-    drop(guard);
-    qmt.touch_slot(idx);
+    let mut send_guard = mesh_conn
+        .send
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(send) = send_guard.as_mut() else {
+        set_last_error("quic_mesh send: control send stream missing".to_string());
+        return -1;
+    };
+    let result = framed_send_mesh(&qmt.rt, send, slice);
+    drop(send_guard);
+    if let Ok(idx) = usize::try_from(conn) {
+        qmt.touch_slot(idx);
+    }
     result
 }
 
@@ -1082,16 +1144,7 @@ unsafe extern "C" fn quic_mesh_recv(
     // SAFETY: buf checked non-null above; caller guarantees buf_size writable bytes.
     let slice = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_size) };
 
-    let Ok(idx) = usize::try_from(conn) else {
-        return -1;
-    };
-    let Some(slot) = qmt.conns.get(idx) else {
-        return -1;
-    };
-    let mut guard = slot
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(mesh_conn) = guard.as_mut() else {
+    let Some(mesh_conn) = qmt.get_conn(conn) else {
         return -1;
     };
 
@@ -1104,9 +1157,19 @@ unsafe extern "C" fn quic_mesh_recv(
         return -1;
     }
 
-    let result = framed_recv_mesh(&qmt.rt, mesh_conn.recv.as_mut().unwrap(), slice);
-    drop(guard);
-    qmt.touch_slot(idx);
+    let mut recv_guard = mesh_conn
+        .recv
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(recv) = recv_guard.as_mut() else {
+        set_last_error("quic_mesh recv: control recv stream missing".to_string());
+        return -1;
+    };
+    let result = framed_recv_mesh(&qmt.rt, recv, slice);
+    drop(recv_guard);
+    if let Ok(idx) = usize::try_from(conn) {
+        qmt.touch_slot(idx);
+    }
     result
 }
 
@@ -1224,6 +1287,70 @@ pub unsafe extern "C" fn hew_transport_quic_mesh_free(transport: *mut HewTranspo
     }
     // SAFETY: reclaims the Box<HewTransport> allocated by the constructor.
     let _ = unsafe { Box::from_raw(transport) };
+}
+
+/// Inject a [`MeshTls`] configuration that the next `listen` call will
+/// consume in place of the default self-signed-only allowlist.
+///
+/// This is the bridge by which two in-process nodes (e.g. in integration
+/// tests) can mutually pin each other's SPKIs before the A3 Noise → X.509
+/// allowlist bridge lands. Once A3 lands, callers should populate the
+/// global allowlist instead.
+///
+/// Returns `0` on success, `-1` if the transport pointer is null or is not
+/// a `quic_mesh` transport.
+///
+/// # Safety
+///
+/// `transport` must be a valid pointer returned by
+/// [`hew_transport_quic_mesh_new`] (and not yet freed). `listen` must not
+/// have been called yet, or the override will only apply to the *next*
+/// listen on this transport.
+#[cfg(test)]
+pub(crate) unsafe fn hew_transport_quic_mesh_set_tls_override(
+    transport: *mut HewTransport,
+    tls: MeshTls,
+) -> c_int {
+    if transport.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees transport is valid for the duration of this call.
+    let t = unsafe { &*transport };
+    if !std::ptr::eq(t.ops, &raw const QUIC_MESH_OPS) || t.r#impl.is_null() {
+        return -1;
+    }
+    // SAFETY: ops-check above guarantees impl is a QuicMeshTransport.
+    let qmt = unsafe { &*t.r#impl.cast::<QuicMeshTransport>() };
+    *qmt.tls_override
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tls);
+    0
+}
+
+/// Return the bound local port of a listening `quic_mesh` transport.
+///
+/// Returns `None` if the transport is null, is not a `quic_mesh` transport,
+/// or has not yet been bound by `listen`.
+///
+/// # Safety
+///
+/// `transport` must be a valid pointer returned by
+/// [`hew_transport_quic_mesh_new`] (and not yet freed).
+#[cfg(test)]
+pub(crate) unsafe fn hew_transport_quic_mesh_bound_port(
+    transport: *mut HewTransport,
+) -> Option<u16> {
+    if transport.is_null() {
+        return None;
+    }
+    // SAFETY: caller guarantees transport is valid for the duration of this call.
+    let t = unsafe { &*transport };
+    if !std::ptr::eq(t.ops, &raw const QUIC_MESH_OPS) || t.r#impl.is_null() {
+        return None;
+    }
+    // SAFETY: ops-check above guarantees impl is a QuicMeshTransport.
+    let qmt = unsafe { &*t.r#impl.cast::<QuicMeshTransport>() };
+    qmt.mesh.as_ref()?.local_addr().ok().map(|a| a.port())
 }
 
 // ---------------------------------------------------------------------------

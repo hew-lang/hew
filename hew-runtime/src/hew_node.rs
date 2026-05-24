@@ -2295,6 +2295,61 @@ mod tests {
         (node, port)
     }
 
+    /// Start a node whose transport has been pre-allocated as a `quic_mesh`
+    /// transport with the supplied [`MeshTls`] config. The override path
+    /// bypasses `HEW_TRANSPORT`'s default self-signed allowlist so that two
+    /// in-process nodes can mutually pin each other's SPKIs.
+    ///
+    /// Returns the [`TestNode`] handle and the bound UDP port.
+    ///
+    /// Mirrors [`start_tcp_test_listener_node`] but for the native `quic_mesh`
+    /// transport. Used by the cross-node `quic_mesh` integration tests below.
+    #[cfg(feature = "quic")]
+    fn start_quic_mesh_test_listener_node(
+        node_id: u16,
+        tls: crate::quic_mesh::MeshTls,
+    ) -> (TestNode, u16) {
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string for the duration of this helper.
+        let node = unsafe { TestNode::new(node_id, &bind_addr) };
+        assert!(!node.as_ptr().is_null(), "test node allocation failed");
+
+        // SAFETY: hew_transport_quic_mesh_new returns an owned transport
+        // pointer (or null on runtime build failure).
+        let transport = unsafe { crate::quic_mesh::hew_transport_quic_mesh_new() };
+        assert!(
+            !transport.is_null(),
+            "quic_mesh transport allocation failed: {:?}",
+            hew_cabi::sink::take_last_error()
+        );
+        // SAFETY: transport pointer was just allocated by the constructor.
+        let rc =
+            unsafe { crate::quic_mesh::hew_transport_quic_mesh_set_tls_override(transport, tls) };
+        assert_eq!(rc, 0, "set TLS override on quic_mesh transport");
+
+        // SAFETY: node owns the previously null transport slot; we replace it
+        // with the pre-allocated quic_mesh transport before start.
+        unsafe {
+            (*node.as_ptr()).transport = transport;
+        }
+
+        // SAFETY: node and transport pointers are valid; start consumes the
+        // injected transport instead of selecting from HEW_TRANSPORT.
+        let rc = unsafe { hew_node_start(node.as_ptr()) };
+        assert_eq!(
+            rc,
+            0,
+            "hew_node_start({node_id}) on quic_mesh failed: {:?}",
+            hew_cabi::sink::take_last_error()
+        );
+        // SAFETY: node started successfully and is using the quic_mesh transport.
+        let port = unsafe {
+            crate::quic_mesh::hew_transport_quic_mesh_bound_port((*node.as_ptr()).transport)
+        }
+        .expect("started quic_mesh test node must expose its bound listener port");
+        (node, port)
+    }
+
     unsafe extern "C-unwind" fn noop_dispatch(
         _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
@@ -3280,6 +3335,213 @@ mod tests {
         // SAFETY: actor and nodes were allocated in this test and are valid.
         unsafe {
             let _ = crate::actor::hew_actor_free(probe_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    // ── Test: fire-and-forget remote message delivery (quic_mesh) ─────────
+    //
+    // Mirrors `two_node_remote_send_delivery` but routes the payload over the
+    // native `quic_mesh` transport (mTLS-pinned per-actor-pair streams) rather
+    // than TCP. Two in-process nodes mutually pin each other's SPKIs via the
+    // `tls_override` injection helper. Until the A3 Noise→X.509 bridge lands,
+    // this injection is the only way two in-process nodes can authenticate
+    // each other; production deployments pin via the global allowlist.
+
+    /// Stores the `msg_type` of the most-recently received remote message on
+    /// the `quic_mesh` path.  Separate from `SEND_PROBE_MSG_TYPE` so the two
+    /// tests can run independently without static-state cross-talk.
+    #[cfg(feature = "quic")]
+    static SEND_PROBE_MSG_TYPE_QM: AtomicU32 = AtomicU32::new(0);
+
+    #[cfg(feature = "quic")]
+    unsafe extern "C-unwind" fn send_probe_dispatch_qm(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "msg_type is a non-negative tag in this test"
+        )]
+        SEND_PROBE_MSG_TYPE_QM.store(msg_type as u32, Ordering::Release);
+    }
+
+    /// Build a mutually-pinned `(MeshTls, MeshTls)` pair so two in-process
+    /// `quic_mesh` nodes can complete the handshake. Returns
+    /// `(tls_a, tls_b, spki_a, spki_b)`. The two SPKIs are returned so
+    /// fail-closed tests can construct asymmetric trust configurations.
+    #[cfg(feature = "quic")]
+    fn make_mutually_pinned_mesh_tls(
+        sni_a: &str,
+        sni_b: &str,
+    ) -> (
+        crate::quic_mesh::MeshTls,
+        crate::quic_mesh::MeshTls,
+        Vec<u8>,
+        Vec<u8>,
+    ) {
+        use crate::quic_mesh::MeshTls;
+        let (tls_a, spki_a) = MeshTls::self_signed(vec![sni_a.into()]).expect("tls_a self_signed");
+        let (tls_b, spki_b) = MeshTls::self_signed(vec![sni_b.into()]).expect("tls_b self_signed");
+        let tls_a = tls_a.with_peer_spki(spki_b.clone());
+        let tls_b = tls_b.with_peer_spki(spki_a.clone());
+        (tls_a, tls_b, spki_a, spki_b)
+    }
+
+    #[cfg(feature = "quic")]
+    #[test]
+    fn two_node_remote_send_delivery_quic_mesh() {
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+
+        // Build mutually-pinned TLS for the two in-process nodes.
+        let (tls_a, tls_b, _spki_a, _spki_b) =
+            make_mutually_pinned_mesh_tls("node-401", "node-402");
+
+        // Node 1 (initiator) starts first → CURRENT_NODE = node1, LOCAL_NODE_ID = 401.
+        let (node1, _node1_port) = start_quic_mesh_test_listener_node(401, tls_a);
+        thread::sleep(Duration::from_millis(50));
+        // Node 2 (responder) starts second; CURRENT_NODE remains node1.
+        let (node2, node2_port) = start_quic_mesh_test_listener_node(402, tls_b);
+
+        // Ensure the scheduler is running so actor dispatches work.
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        // Temporarily set LOCAL_NODE_ID = 402 to assign a node-2 PID to the actor.
+        // This makes the actor look remote from node1's routing perspective.
+        SEND_PROBE_MSG_TYPE_QM.store(0, Ordering::Release);
+        crate::pid::hew_pid_set_local_node(402);
+        // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
+        let probe_actor = unsafe {
+            crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(send_probe_dispatch_qm))
+        };
+        // Restore node1 as the local node before any routing decisions.
+        crate::pid::hew_pid_set_local_node(401);
+        assert!(!probe_actor.is_null(), "actor spawn failed");
+        // SAFETY: actor was just spawned and is valid.
+        let actor_pid = unsafe { (*probe_actor).id };
+        assert_eq!(
+            crate::pid::hew_pid_node(actor_pid),
+            402,
+            "actor PID must encode node2's ID"
+        );
+
+        let connect_addr = CString::new(format!("402@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this call.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers are valid.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // Fire-and-forget from node1 to the actor on node2 over quic_mesh.
+        // This exercises a real CBOR-framed round-trip across the mTLS-pinned
+        // mesh transport — not just process startup.
+        let msg_type_sent: i32 = 91;
+        // SAFETY: null payload / size 0 is valid for a bare signal message.
+        let rc = unsafe { hew_node_send(node1.as_ptr(), actor_pid, msg_type_sent, ptr::null(), 0) };
+        assert_eq!(rc, 0, "hew_node_send should succeed");
+
+        let delivered = (0..200).any(|_| {
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "msg_type_sent is a non-negative tag value"
+            )]
+            let got = SEND_PROBE_MSG_TYPE_QM.load(Ordering::Acquire) == msg_type_sent as u32;
+            if !got {
+                thread::sleep(Duration::from_millis(20));
+            }
+            got
+        });
+        assert!(
+            delivered,
+            "actor on node2 did not receive the remote message over quic_mesh"
+        );
+
+        // SAFETY: actor and nodes were allocated in this test and are valid.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(probe_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    /// Fail-closed: when the two in-process nodes do NOT mutually pin each
+    /// other's SPKIs, the mTLS handshake must fail and `hew_node_connect`
+    /// must surface a typed diagnostic rather than silently degrading or
+    /// hanging.
+    ///
+    /// Per the M3 trust-bar: no silent fallback. The connect-with-retry loop
+    /// is therefore tolerable in the success test but here we want a single
+    /// `hew_node_connect` call to return -1 (the transport adapter sets
+    /// `last_error` to a `quic_mesh connect: …` diagnostic).
+    #[cfg(feature = "quic")]
+    #[test]
+    fn two_node_remote_send_quic_mesh_rejects_unknown_peer() {
+        use crate::quic_mesh::MeshTls;
+
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+
+        // Build asymmetric TLS: node A pins no peer SPKIs, node B pins no
+        // peer SPKIs. Either side rejects the other → fail-closed.
+        let (tls_a, _spki_a) =
+            MeshTls::self_signed(vec!["node-411".into()]).expect("tls_a self_signed");
+        let (tls_b, _spki_b) =
+            MeshTls::self_signed(vec!["node-412".into()]).expect("tls_b self_signed");
+
+        let (node1, _node1_port) = start_quic_mesh_test_listener_node(411, tls_a);
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_quic_mesh_test_listener_node(412, tls_b);
+
+        let connect_addr = CString::new(format!("412@127.0.0.1:{node2_port}")).unwrap();
+
+        // Try once — the mTLS handshake must fail. We loop briefly to allow
+        // for connection-attempt teardown, but every attempt must return -1.
+        // (We deliberately do NOT call `connect_with_retry`, which would
+        //  panic on persistent failure: here failure IS the success case.)
+        let mut last_rc = 0;
+        for _ in 0..3 {
+            // SAFETY: node1 and connect_addr are valid for this call.
+            last_rc = unsafe { hew_node_connect(node1.as_ptr(), connect_addr.as_ptr()) };
+            if last_rc != 0 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(
+            last_rc, -1,
+            "quic_mesh connect to an SPKI-unpinned peer must fail-closed"
+        );
+
+        // Verify a typed diagnostic was emitted to LAST_ERROR. Use the C-API
+        // because the runtime's `set_last_error` is internal to `hew-runtime`,
+        // not the `hew_cabi::sink` last-error slot.
+        let err_ptr = crate::hew_last_error();
+        assert!(
+            !err_ptr.is_null(),
+            "quic_mesh fail-closed path must populate hew_last_error()"
+        );
+        // SAFETY: hew_last_error returns a thread-local C string valid until
+        // the next set_last_error on this thread.
+        let err = unsafe { std::ffi::CStr::from_ptr(err_ptr) }
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            err.contains("connect") || err.contains("quic_mesh") || err.contains("transport"),
+            "expected a typed quic_mesh/transport diagnostic, got: {err:?}"
+        );
+
+        // SAFETY: nodes were allocated in this test and remain valid.
+        unsafe {
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
             assert_eq!(hew_node_stop(node2.as_ptr()), 0);
         }

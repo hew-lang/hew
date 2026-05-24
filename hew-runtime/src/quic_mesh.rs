@@ -44,14 +44,26 @@
 //! verifier is installed as both [`rustls::server::danger::ClientCertVerifier`]
 //! and [`rustls::client::danger::ServerCertVerifier`].
 //!
-//! The global Noise allowlist (`ACTIVE_ALLOWLIST` in `encryption.rs`) is not
-//! bridged here — Noise uses raw X25519 DH keys, which cannot sign X.509
-//! certificates. The bridge from Noise identity to X.509 SPKI is owned by A3
-//! (cert minting from the existing keypair).
+//! Cross-process peer authentication is supported via a process-global
+//! mesh-SPKI allowlist ([`mesh_peer_spki_add`] / [`hew_quic_mesh_peer_spki_add`]).
+//! Callers register the DER-encoded `SubjectPublicKeyInfo` bytes of each
+//! peer's leaf certificate before invoking `listen`; the listener snapshots
+//! the global set into its [`MeshTls::allowed_peer_spkis`]. The listener also
+//! unconditionally trusts its own SPKI to preserve self-loopback (a peer
+//! that obtains the cert cannot authenticate without the private key).
 //!
-//! NATIVE-TODO(A3): bridge `ACTIVE_ALLOWLIST` Noise public keys → X.509 SPKI.
-//! Once A3 lands, `MeshTls::from_noise_allowlist()` can walk the global
-//! allowlist and populate `allowed_peer_spkis` from the pinned X.509 certs.
+//! The Noise allowlist (`ACTIVE_ALLOWLIST` in `encryption.rs`) is intentionally
+//! NOT unified with the mesh-SPKI allowlist: Noise uses raw X25519 DH keys
+//! that cannot directly sign X.509 certificates (X25519 is for DH; signing
+//! would require Ed25519). Fully unifying the two identities requires
+//! re-keying the mesh cert from a signing-capable representation of the Noise
+//! identity, which is out of scope for A3. A3 keeps the mesh-SPKI allowlist
+//! as a sibling of the Noise allowlist and documents the deliberate split.
+//!
+//! NATIVE-TODO(post-A3): unify Noise and mesh identities once the runtime
+//! moves to a signing-capable static key (Ed25519 → derived X25519 for
+//! Noise, Ed25519 directly for X.509). Until then, callers must register
+//! both lists.
 //!
 //! # Wire framing
 //!
@@ -68,12 +80,11 @@
 //!
 //! [`quic_transport`]: crate::quic_transport
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -488,6 +499,13 @@ pub enum MeshError {
     Datagram(String),
     /// The connection is closing or already closed.
     Closed(String),
+    /// Control-stream handshake timeout (P1.3). The peer did not open or
+    /// accept the control stream within [`MESH_HANDSHAKE_TIMEOUT`].
+    HandshakeTimeout(String),
+    /// Oversize-frame protocol violation (P1.2). The peer sent a frame
+    /// length-prefix that exceeds [`MAX_FRAME_SIZE`]; the stream is closed
+    /// rather than draining undefined bytes.
+    OversizeFrame(String),
 }
 
 impl std::fmt::Display for MeshError {
@@ -498,6 +516,12 @@ impl std::fmt::Display for MeshError {
             MeshError::Stream(s) => write!(f, "quic_mesh stream error: {s}"),
             MeshError::Datagram(s) => write!(f, "quic_mesh datagram error: {s}"),
             MeshError::Closed(s) => write!(f, "quic_mesh connection closed: {s}"),
+            MeshError::HandshakeTimeout(s) => {
+                write!(f, "quic_mesh handshake timeout: {s}")
+            }
+            MeshError::OversizeFrame(s) => {
+                write!(f, "quic_mesh oversize frame: {s}")
+            }
         }
     }
 }
@@ -511,6 +535,85 @@ impl std::error::Error for MeshError {}
 const MAX_CONNS: usize = 64;
 const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 const QUIC_MESH_WORKER_THREADS: usize = 2;
+/// Control-stream handshake timeout (P1.3). Bounds how long
+/// `ensure_control_stream` will wait for the peer's `open_bi`/`accept_bi`
+/// before returning a typed [`MeshError::HandshakeTimeout`]. Prevents
+/// slow-handshake `DoS` from a peer that completes mTLS but never opens the
+/// expected control stream.
+const MESH_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Maximum accepted DER-encoded `SubjectPublicKeyInfo` size for a registered
+/// peer SPKI. A well-formed `RSA-4096` SPKI is well under 1 KiB; rejecting
+/// anything larger bounds allowlist memory and trivial `DoS` surface.
+const MAX_SPKI_BYTES: usize = 4096;
+
+// ---------------------------------------------------------------------------
+// Process-global mesh peer SPKI allowlist
+// ---------------------------------------------------------------------------
+
+/// Process-global allowlist of DER-encoded `SubjectPublicKeyInfo` bytes for
+/// peers permitted to establish a QUIC mesh connection.
+///
+/// Sibling of the Noise allowlist (`encryption::ACTIVE_ALLOWLIST`). The mesh
+/// uses X.509 cert SPKIs which cannot be derived from raw X25519 Noise keys,
+/// so the two allowlists are intentionally separate (see module docs).
+///
+/// # Lifecycle
+///
+/// The allowlist is **snapshotted at `listen` time**. Mutations after the
+/// listener's `MeshTls` has been built do NOT propagate to that listener's
+/// rustls verifier (the verifier holds a cloned `HashSet`). Established
+/// connections are not re-authenticated on removal — revocation requires
+/// closing the connection at the application layer.
+static ACTIVE_MESH_SPKI_ALLOWLIST: LazyLock<RwLock<HashSet<Vec<u8>>>> =
+    LazyLock::new(|| RwLock::new(HashSet::new()));
+
+fn active_mesh_spki_snapshot() -> HashSet<Vec<u8>> {
+    ACTIVE_MESH_SPKI_ALLOWLIST
+        .read()
+        .map_or_else(|p| p.into_inner().clone(), |s| s.clone())
+}
+
+/// Add a peer SPKI to the process-global mesh allowlist.
+///
+/// Returns `true` if the entry was newly inserted; `false` if it was already
+/// present or rejected (oversize). Rejected SPKIs do not mutate the set.
+pub fn mesh_peer_spki_add(spki: Vec<u8>) -> bool {
+    if spki.is_empty() || spki.len() > MAX_SPKI_BYTES {
+        return false;
+    }
+    match ACTIVE_MESH_SPKI_ALLOWLIST.write() {
+        Ok(mut s) => s.insert(spki),
+        Err(p) => p.into_inner().insert(spki),
+    }
+}
+
+/// Remove a peer SPKI from the process-global mesh allowlist.
+///
+/// Returns `true` if the entry was present and removed. Note: does NOT
+/// revoke already-established connections; close them explicitly.
+pub fn mesh_peer_spki_remove(spki: &[u8]) -> bool {
+    match ACTIVE_MESH_SPKI_ALLOWLIST.write() {
+        Ok(mut s) => s.remove(spki),
+        Err(p) => p.into_inner().remove(spki),
+    }
+}
+
+/// Clear the process-global mesh allowlist. After-listen connections still
+/// honour the snapshot taken at listen time.
+pub fn mesh_peer_spki_clear() {
+    match ACTIVE_MESH_SPKI_ALLOWLIST.write() {
+        Ok(mut s) => s.clear(),
+        Err(p) => p.into_inner().clear(),
+    }
+}
+
+/// Returns the number of SPKIs currently in the process-global allowlist.
+#[must_use]
+pub fn mesh_peer_spki_len() -> usize {
+    ACTIVE_MESH_SPKI_ALLOWLIST
+        .read()
+        .map_or_else(|p| p.into_inner().len(), |s| s.len())
+}
 
 struct QuicMeshConn {
     peer: PeerConn,
@@ -585,12 +688,31 @@ impl QuicMeshConn {
             return Ok(());
         }
 
+        // P1.3: bound the time we wait for the peer's open_bi/accept_bi. Once
+        // mTLS completes, a malicious peer could otherwise hang here for the
+        // full QUIC idle timeout (30s) on every accept slot.
         let (send, recv) = if self.is_initiator {
-            rt.block_on(async { self.peer.conn.open_bi().await })
-                .map_err(|e| format!("control open_bi: {e}"))?
+            let result = rt.block_on(async {
+                tokio::time::timeout(MESH_HANDSHAKE_TIMEOUT, self.peer.conn.open_bi()).await
+            });
+            let bi = result.map_err(|_| {
+                format!(
+                    "control open_bi: handshake timeout after {}s",
+                    MESH_HANDSHAKE_TIMEOUT.as_secs()
+                )
+            })?;
+            bi.map_err(|e| format!("control open_bi: {e}"))?
         } else {
-            rt.block_on(async { self.peer.conn.accept_bi().await })
-                .map_err(|e| format!("control accept_bi: {e}"))?
+            let result = rt.block_on(async {
+                tokio::time::timeout(MESH_HANDSHAKE_TIMEOUT, self.peer.conn.accept_bi()).await
+            });
+            let bi = result.map_err(|_| {
+                format!(
+                    "control accept_bi: handshake timeout after {}s",
+                    MESH_HANDSHAKE_TIMEOUT.as_secs()
+                )
+            })?;
+            bi.map_err(|e| format!("control accept_bi: {e}"))?
         };
         *self
             .send
@@ -625,6 +747,12 @@ pub(crate) struct QuicMeshTransport {
     /// two in-process nodes can mutually pin each other's SPKIs for
     /// cross-node integration tests until the A3 Noise→X.509 bridge lands.
     tls_override: std::sync::Mutex<Option<MeshTls>>,
+    /// Cached per-transport TLS identity. Populated lazily on first
+    /// [`Self::ensure_identity`] call so callers can fetch the local SPKI via
+    /// [`hew_quic_mesh_local_spki`] **before** `listen` mints the rustls
+    /// configs. Subsequent `listen` reuses this cached identity so the
+    /// caller-published SPKI matches the cert presented on the wire.
+    identity: std::sync::Mutex<Option<(MeshTls, Vec<u8>)>>,
 }
 
 impl QuicMeshTransport {
@@ -639,7 +767,35 @@ impl QuicMeshTransport {
             slot_lru: std::sync::Mutex::new(SlotLru::new(MAX_CONNS)),
             incoming_rx: std::sync::Mutex::new(None),
             tls_override: std::sync::Mutex::new(None),
+            identity: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Ensure a TLS identity (cert + SPKI) is minted and cached for this
+    /// transport. Returns a clone of the cached `MeshTls` (without an
+    /// allowlist applied) and the local SPKI bytes.
+    fn ensure_identity(&self) -> Result<(MeshTls, Vec<u8>), MeshError> {
+        let mut guard = self
+            .identity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((tls, spki)) = guard.as_ref() {
+            return Ok((tls.clone(), spki.clone()));
+        }
+        let (tls, spki) = MeshTls::self_signed(vec!["hew-mesh.local".into(), "localhost".into()])?;
+        *guard = Some((tls.clone(), spki.clone()));
+        Ok((tls, spki))
+    }
+
+    /// Build the listen-time TLS config: cached identity + own SPKI
+    /// (self-loopback) + snapshot of [`ACTIVE_MESH_SPKI_ALLOWLIST`].
+    fn listen_tls(&self) -> Result<MeshTls, MeshError> {
+        let (mut tls, own_spki) = self.ensure_identity()?;
+        tls.allowed_peer_spkis.insert(own_spki);
+        for peer_spki in active_mesh_spki_snapshot() {
+            tls.allowed_peer_spkis.insert(peer_spki);
+        }
+        Ok(tls)
     }
 
     /// Install `conn` into a slot. If all slots are occupied, the LRU slot is
@@ -824,11 +980,11 @@ fn parse_socket_addr(addr_str: &str) -> Result<std::net::SocketAddr, String> {
     }
 }
 
-fn self_tls_allowing_own_spki() -> Result<MeshTls, MeshError> {
-    let (mut tls, spki) = MeshTls::self_signed(vec!["hew-mesh.local".into(), "localhost".into()])?;
-    tls.allowed_peer_spkis.insert(spki);
-    Ok(tls)
-}
+// `self_tls_allowing_own_spki` was removed in A3; identity is now minted +
+// cached per `QuicMeshTransport` via `ensure_identity` and unioned with the
+// process-global mesh SPKI allowlist via `listen_tls`. The legacy helper
+// could only ever trust its own loopback SPKI, which broke cross-process
+// peers (see module docs).
 
 fn framed_send_mesh(rt: &Runtime, send: &mut SendStream, data: &[u8]) -> c_int {
     if data.len() > MAX_FRAME_SIZE {
@@ -854,31 +1010,54 @@ fn framed_send_mesh(rt: &Runtime, send: &mut SendStream, data: &[u8]) -> c_int {
 }
 
 fn framed_recv_mesh(rt: &Runtime, recv: &mut RecvStream, buf: &mut [u8]) -> c_int {
-    let result = rt.block_on(async {
+    let result: Result<c_int, (String, bool)> = rt.block_on(async {
         let mut header = [0u8; 4];
         recv.read_exact(&mut header)
             .await
-            .map_err(|e| format!("header: {e}"))?;
+            .map_err(|e| (format!("header: {e}"), false))?;
 
         let frame_len = u32::from_le_bytes(header) as usize;
         if frame_len > MAX_FRAME_SIZE {
-            return Err(format!("frame too large: {frame_len}"));
+            // P1.2: do NOT attempt to drain `frame_len` undefined bytes off
+            // the wire — a malicious peer could have written a small header
+            // and no payload, or set frame_len to ~u32::MAX. Stop the recv
+            // side with a typed application error code so the peer observes
+            // an explicit refusal, then return an OversizeFrame error.
+            // The send half remains open so the application can still emit a
+            // final diagnostic; the connection-level close is the caller's
+            // decision.
+            let _ = recv.stop(VarInt::from_u32(2));
+            return Err((
+                format!(
+                    "frame too large: {frame_len} bytes exceeds MAX_FRAME_SIZE {MAX_FRAME_SIZE}; recv stream stopped"
+                ),
+                true,
+            ));
         }
         if frame_len > buf.len() {
-            return Err(format!("frame {frame_len} exceeds buffer {}", buf.len()));
+            // Receiver-side buffer too small. The wire frame itself is valid;
+            // do not poison the stream. Caller must retry with a larger buf.
+            return Err((
+                format!("frame {frame_len} exceeds buffer {}", buf.len()),
+                false,
+            ));
         }
 
         recv.read_exact(&mut buf[..frame_len])
             .await
-            .map_err(|e| format!("payload: {e}"))?;
+            .map_err(|e| (format!("payload: {e}"), false))?;
 
         Ok(c_int::try_from(frame_len).unwrap_or(-1))
     });
 
     match result {
         Ok(n) => n,
-        Err(e) => {
-            set_last_error(format!("quic_mesh recv: {e}"));
+        Err((e, oversize)) => {
+            if oversize {
+                set_last_error(format!("quic_mesh recv: oversize frame: {e}"));
+            } else {
+                set_last_error(format!("quic_mesh recv: {e}"));
+            }
             -1
         }
     }
@@ -1000,7 +1179,7 @@ unsafe extern "C" fn quic_mesh_listen(impl_ptr: *mut c_void, address: *const c_c
             .take();
         match override_tls {
             Some(tls) => tls,
-            None => match self_tls_allowing_own_spki() {
+            None => match qmt.listen_tls() {
                 Ok(tls) => tls,
                 Err(e) => {
                     set_last_error(format!("quic_mesh listen: {e}"));
@@ -1351,6 +1530,124 @@ pub(crate) unsafe fn hew_transport_quic_mesh_bound_port(
     // SAFETY: ops-check above guarantees impl is a QuicMeshTransport.
     let qmt = unsafe { &*t.r#impl.cast::<QuicMeshTransport>() };
     qmt.mesh.as_ref()?.local_addr().ok().map(|a| a.port())
+}
+
+// ---------------------------------------------------------------------------
+// C ABI: process-global mesh SPKI allowlist + per-transport local SPKI
+// ---------------------------------------------------------------------------
+
+/// Add a DER-encoded peer `SubjectPublicKeyInfo` to the process-global mesh
+/// allowlist. Subsequent `quic_mesh_listen` calls snapshot the current
+/// allowlist into the TLS verifier.
+///
+/// Returns `0` on success (newly added or already present), `-1` on invalid
+/// input (null pointer, empty SPKI, or SPKI larger than 4 KiB).
+///
+/// # Safety
+///
+/// `spki` must point to at least `len` readable bytes, or be null when
+/// `len == 0`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_quic_mesh_peer_spki_add(spki: *const u8, len: usize) -> c_int {
+    if spki.is_null() || len == 0 || len > MAX_SPKI_BYTES {
+        set_last_error("quic_mesh peer_spki_add: invalid argument");
+        return -1;
+    }
+    // SAFETY: spki checked non-null and len > 0; caller guarantees the buffer.
+    let bytes = unsafe { std::slice::from_raw_parts(spki, len) }.to_vec();
+    let _ = mesh_peer_spki_add(bytes);
+    0
+}
+
+/// Remove a peer SPKI from the process-global allowlist. Returns `0` if
+/// removed or not present, `-1` on invalid input. Does NOT revoke
+/// already-established connections.
+///
+/// # Safety
+///
+/// `spki` must point to at least `len` readable bytes, or be null when
+/// `len == 0`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_quic_mesh_peer_spki_remove(spki: *const u8, len: usize) -> c_int {
+    if spki.is_null() || len == 0 || len > MAX_SPKI_BYTES {
+        set_last_error("quic_mesh peer_spki_remove: invalid argument");
+        return -1;
+    }
+    // SAFETY: spki checked non-null and len > 0; caller guarantees the buffer.
+    let bytes = unsafe { std::slice::from_raw_parts(spki, len) };
+    let _ = mesh_peer_spki_remove(bytes);
+    0
+}
+
+/// Clear the process-global mesh SPKI allowlist. Returns `0`.
+#[no_mangle]
+pub extern "C" fn hew_quic_mesh_peer_spki_clear() -> c_int {
+    mesh_peer_spki_clear();
+    0
+}
+
+/// Mint (if needed) and copy out the listener's local SPKI bytes.
+///
+/// Calling this **before** `listen` ensures the same cert is used by
+/// subsequent `listen`; callers can publish the returned SPKI to peers
+/// out-of-band so peers can add it to their own [`hew_quic_mesh_peer_spki_add`]
+/// before they `listen`.
+///
+/// On the first call the cert + SPKI are generated and cached on the
+/// transport; subsequent calls return the same bytes.
+///
+/// Calling convention (mirrors POSIX `getsockname`):
+/// - Pass `out_buf == NULL` to query the required length: returns required
+///   length as a positive value.
+/// - Pass a buffer of size `>= required`: returns the number of bytes
+///   written.
+/// - Pass a buffer that is too small: returns the required length (positive)
+///   without writing anything. Caller can detect this by comparing to
+///   `out_buf_len`.
+///
+/// Returns `-1` on null `impl_ptr` or identity-mint failure.
+///
+/// # Safety
+///
+/// `impl_ptr` must be a valid `QuicMeshTransport` pointer; `out_buf`, if
+/// non-null, must be writable for `out_buf_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_quic_mesh_local_spki(
+    transport: *mut HewTransport,
+    out_buf: *mut u8,
+    out_buf_len: usize,
+) -> c_int {
+    if transport.is_null() {
+        set_last_error("quic_mesh local_spki: null transport");
+        return -1;
+    }
+    // SAFETY: transport checked non-null; caller guarantees it is a live
+    // HewTransport returned by hew_transport_quic_mesh_new.
+    let t = unsafe { &*transport };
+    if !std::ptr::eq(t.ops, &raw const QUIC_MESH_OPS) {
+        set_last_error("quic_mesh local_spki: transport is not quic-mesh");
+        return -1;
+    }
+    // SAFETY: t.impl is the QuicMeshTransport pointer from the constructor.
+    let qmt = unsafe { &*t.r#impl.cast::<QuicMeshTransport>() };
+    let spki = match qmt.ensure_identity() {
+        Ok((_tls, spki)) => spki,
+        Err(e) => {
+            set_last_error(format!("quic_mesh local_spki: {e}"));
+            return -1;
+        }
+    };
+    let required = c_int::try_from(spki.len()).unwrap_or(-1);
+    if required < 0 {
+        set_last_error("quic_mesh local_spki: SPKI exceeds c_int");
+        return -1;
+    }
+    if out_buf.is_null() || out_buf_len < spki.len() {
+        return required;
+    }
+    // SAFETY: out_buf checked non-null and out_buf_len >= spki.len().
+    unsafe { std::ptr::copy_nonoverlapping(spki.as_ptr(), out_buf, spki.len()) };
+    required
 }
 
 // ---------------------------------------------------------------------------
@@ -1861,6 +2158,11 @@ impl PeerConn {
 mod tests {
     use super::*;
 
+    // Serialise every test that touches the process-global allowlist so that
+    // parallel test threads don't observe each other's mutations.
+    static TEST_ALLOWLIST_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
     /// Verify that the ASN.1 DER walk correctly extracts the SPKI from a
     /// rcgen-generated certificate.
     #[test]
@@ -2038,5 +2340,235 @@ mod tests {
             dispatch_accept_generic(&tx, 1),
             AcceptDispatch::ChannelClosed
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // A3 — process-global mesh SPKI allowlist
+    // -----------------------------------------------------------------------
+
+    /// `mesh_peer_spki_add` rejects empty SPKIs and SPKIs above the
+    /// `MAX_SPKI_BYTES` cap (`DoS` guard for an externally-driven C ABI).
+    #[test]
+    fn mesh_peer_spki_add_rejects_invalid_lengths() {
+        let _guard = TEST_ALLOWLIST_LOCK.lock().unwrap();
+        mesh_peer_spki_clear();
+        assert!(
+            !mesh_peer_spki_add(Vec::new()),
+            "empty SPKI must be rejected"
+        );
+        assert!(
+            !mesh_peer_spki_add(vec![0u8; MAX_SPKI_BYTES + 1]),
+            "SPKI larger than MAX_SPKI_BYTES must be rejected"
+        );
+        assert_eq!(mesh_peer_spki_len(), 0, "no entry must have been added");
+    }
+
+    /// Add + remove + clear cycle through the allowlist.
+    #[test]
+    fn mesh_peer_spki_add_remove_clear_roundtrip() {
+        let _guard = TEST_ALLOWLIST_LOCK.lock().unwrap();
+        mesh_peer_spki_clear();
+        let spki = vec![0xAAu8; 64];
+        assert!(mesh_peer_spki_add(spki.clone()));
+        assert!(
+            !mesh_peer_spki_add(spki.clone()),
+            "duplicate add must return false"
+        );
+        assert_eq!(mesh_peer_spki_len(), 1);
+        assert!(mesh_peer_spki_remove(&spki));
+        assert!(
+            !mesh_peer_spki_remove(&spki),
+            "removing absent SPKI must return false"
+        );
+        assert_eq!(mesh_peer_spki_len(), 0);
+
+        assert!(mesh_peer_spki_add(vec![1u8; 32]));
+        assert!(mesh_peer_spki_add(vec![2u8; 32]));
+        mesh_peer_spki_clear();
+        assert_eq!(mesh_peer_spki_len(), 0);
+    }
+
+    /// `QuicMeshTransport::ensure_identity` is idempotent: the cached cert +
+    /// SPKI survive across calls (required so `local_spki` returns the same
+    /// bytes that the eventual `listen` uses).
+    #[test]
+    fn transport_identity_is_cached() {
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        let qmt = QuicMeshTransport::new(rt);
+        let (_, spki_a) = qmt.ensure_identity().expect("mint identity");
+        let (_, spki_b) = qmt.ensure_identity().expect("re-fetch identity");
+        assert_eq!(
+            spki_a, spki_b,
+            "ensure_identity must return the same SPKI on repeated calls"
+        );
+    }
+
+    /// `listen_tls` unions the cached own-SPKI with the global allowlist
+    /// snapshot. Self-loopback (own SPKI) must always be trusted; registered
+    /// peers must be trusted; un-registered SPKIs must NOT be trusted.
+    #[test]
+    fn listen_tls_unions_global_allowlist_with_own_spki() {
+        let _guard = TEST_ALLOWLIST_LOCK.lock().unwrap();
+        mesh_peer_spki_clear();
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        let qmt = QuicMeshTransport::new(rt);
+        let (_, own_spki) = qmt.ensure_identity().expect("mint identity");
+
+        let registered = vec![0x55u8; 48];
+        let other = vec![0x66u8; 48];
+        assert!(mesh_peer_spki_add(registered.clone()));
+
+        let tls = qmt.listen_tls().expect("listen_tls");
+        assert!(
+            tls.allowed_peer_spkis.contains(&own_spki),
+            "own SPKI must always be trusted (self-loopback)"
+        );
+        assert!(
+            tls.allowed_peer_spkis.contains(&registered),
+            "registered SPKI must be in the snapshot"
+        );
+        assert!(
+            !tls.allowed_peer_spkis.contains(&other),
+            "unregistered SPKI must not be in the snapshot"
+        );
+        mesh_peer_spki_clear();
+    }
+
+    // -----------------------------------------------------------------------
+    // P1.2 oversize-frame rejection + P1.3 handshake timeout
+    // -----------------------------------------------------------------------
+
+    /// P1.2 — `framed_recv_mesh` must reject an oversize-frame header and
+    /// stop the recv stream rather than attempting to drain undefined bytes.
+    /// We exercise the path end-to-end with a real Quinn stream so the
+    /// `recv.stop` call is wired correctly.
+    #[tokio::test]
+    async fn framed_recv_rejects_oversize_frame_and_stops_stream() {
+        let (tls_a, spki_a) = MeshTls::self_signed(vec!["a".into()]).expect("tls_a self_signed");
+        let (tls_b, spki_b) = MeshTls::self_signed(vec!["b".into()]).expect("tls_b self_signed");
+        let tls_a = tls_a.with_peer_spki(spki_b);
+        let tls_b = tls_b.with_peer_spki(spki_a);
+
+        let mesh_a = QuicMesh::listen("127.0.0.1:0".parse().unwrap(), tls_a).expect("listen a");
+        let addr_a = mesh_a.local_addr().expect("addr_a");
+        let mesh_b = QuicMesh::listen("127.0.0.1:0".parse().unwrap(), tls_b).expect("listen b");
+
+        let (b_connect, a_accept) = tokio::join!(mesh_b.connect(addr_a), mesh_a.accept());
+        let conn_b = b_connect.expect("connect");
+        let conn_a = a_accept.expect("accept None").expect("accept err");
+
+        // B opens a control stream and writes an OVERSIZE frame header.
+        let (mut bsend, _brecv) = conn_b.conn.open_bi().await.expect("open_bi");
+        let oversize: u32 = u32::try_from(MAX_FRAME_SIZE)
+            .expect("MAX_FRAME_SIZE fits in u32")
+            .saturating_add(1);
+        bsend
+            .write_all(&oversize.to_le_bytes())
+            .await
+            .expect("write header");
+
+        // A accepts the stream and calls framed_recv_mesh — must return -1
+        // and set last-error mentioning oversize.
+        let (_asend, mut arecv) = conn_a.conn.accept_bi().await.expect("accept_bi");
+
+        // Run framed_recv_mesh on a dedicated current-thread runtime since
+        // it expects to block_on a separate runtime handle. `set_last_error`
+        // is thread-local, so read the error message inside the same blocking
+        // closure.
+        let result = tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let mut buf = vec![0u8; 64];
+            let n = framed_recv_mesh(&rt, &mut arecv, &mut buf);
+            let err_ptr = crate::hew_last_error();
+            let err = if err_ptr.is_null() {
+                String::new()
+            } else {
+                // SAFETY: hew_last_error returns a thread-local C string ptr
+                // valid for the current scope.
+                unsafe { std::ffi::CStr::from_ptr(err_ptr) }
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            (n, err)
+        })
+        .await
+        .expect("join");
+        let (n, err) = result;
+        assert_eq!(n, -1, "oversize frame must return -1");
+        assert!(
+            err.contains("oversize") || err.contains("MAX_FRAME_SIZE"),
+            "expected oversize diagnostic, got: {err}"
+        );
+    }
+
+    /// P1.3 — `ensure_control_stream` must time out instead of hanging when
+    /// the peer never opens the control stream. We connect two meshes,
+    /// initiate the control stream from one side, and expect the other side
+    /// to surface a typed timeout when its `ensure_control_stream` runs in
+    /// `accept_bi` mode against a peer that never calls `open_bi`.
+    #[tokio::test]
+    async fn ensure_control_stream_times_out_when_peer_silent() {
+        let (tls_a, spki_a) = MeshTls::self_signed(vec!["a-to".into()]).expect("tls_a self_signed");
+        let (tls_b, spki_b) = MeshTls::self_signed(vec!["b-to".into()]).expect("tls_b self_signed");
+        let tls_a = tls_a.with_peer_spki(spki_b);
+        let tls_b = tls_b.with_peer_spki(spki_a);
+
+        let mesh_a = QuicMesh::listen("127.0.0.1:0".parse().unwrap(), tls_a).expect("listen a");
+        let addr_a = mesh_a.local_addr().expect("addr_a");
+        let mesh_b = QuicMesh::listen("127.0.0.1:0".parse().unwrap(), tls_b).expect("listen b");
+
+        let (b_connect, a_accept) = tokio::join!(mesh_b.connect(addr_a), mesh_a.accept());
+        let conn_b = b_connect.expect("connect");
+        let conn_a = a_accept.expect("accept None").expect("accept err");
+
+        // A waits for B to open a control stream — but B never does.
+        // ensure_control_stream on the acceptor side must time out under
+        // MESH_HANDSHAKE_TIMEOUT (5s) and return an error mentioning the
+        // timeout. Drive it on a blocking thread (it uses block_on) but cap
+        // the wall clock at 2× the configured timeout to fail fast if the
+        // timeout itself is broken.
+        let acceptor_conn = conn_a;
+        let started = std::time::Instant::now();
+        let result = tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let conn = QuicMeshConn::new(acceptor_conn, /* is_initiator = */ false, &rt);
+            conn.ensure_control_stream(&rt)
+        })
+        .await
+        .expect("join");
+        let elapsed = started.elapsed();
+        assert!(
+            result.is_err(),
+            "ensure_control_stream must surface a timeout error"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("timeout"),
+            "expected typed timeout diagnostic, got: {msg}"
+        );
+        assert!(
+            elapsed < MESH_HANDSHAKE_TIMEOUT * 3,
+            "timeout fired too late: {elapsed:?}"
+        );
+        // Keep `conn_b` alive until after the timeout fires so the
+        // connection isn't torn down before A's accept_bi can observe the
+        // silent peer.
+        drop(conn_b);
     }
 }

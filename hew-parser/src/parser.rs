@@ -5327,12 +5327,66 @@ impl<'src> Parser<'src> {
                 self.advance();
 
                 // Handle path expressions like Vec::new, HashMap::new
+                // Optionally accept Rust-style turbofish on a path segment:
+                // `Type::<T, U>::method` — the `<...>` are stashed and surface
+                // as the call's `type_args` when the path is invoked with `(`.
+                let mut turbofish: Option<Vec<Spanned<TypeExpr>>> = None;
                 while self.eat(&Token::DoubleColon) {
+                    if self.peek() == Some(&Token::Less) {
+                        let saved = self.save_pos();
+                        self.advance(); // consume '<'
+                        if let Some(args) = self.parse_type_args() {
+                            if turbofish.is_some() {
+                                self.error(
+                                    "turbofish `::<...>` may appear at most once in a path"
+                                        .to_string(),
+                                );
+                            }
+                            turbofish = Some(args);
+                            // A turbofish must be followed by another `::ident`
+                            // segment or the call site `(`. If we don't see
+                            // `::` next we fall out of the loop and let the
+                            // surrounding logic (`(args)`) consume the call.
+                            continue;
+                        }
+                        self.restore_pos(saved);
+                        break;
+                    }
                     if let Some(segment) = self.expect_ident() {
                         name = format!("{name}::{segment}");
                     } else {
                         break;
                     }
+                }
+
+                // If turbofish was present, the path must be invoked as a call.
+                // Build the `Expr::Call` here so the explicit type args reach the
+                // checker via `Call.type_args` exactly as for the bare-call form
+                // `Type::method<T>(args)`. The struct-init / generic-call paths
+                // below are skipped because turbofish is unambiguously a call.
+                if let Some(type_args) = turbofish {
+                    if self.peek() != Some(&Token::LeftParen) {
+                        self.error(
+                            "turbofish `::<...>` must be followed by a function call `(...)`"
+                                .to_string(),
+                        );
+                        return None;
+                    }
+                    self.advance(); // consume '('
+                    let args = self.parse_call_args()?;
+                    self.expect(&Token::RightParen)?;
+                    let end = self.peek_span().start;
+                    let func_span = start..end;
+                    let func = (Expr::Identifier(name), func_span.clone());
+                    return Some((
+                        Expr::Call {
+                            function: Box::new(func),
+                            type_args: Some(type_args),
+                            args,
+                            is_tail_call: false,
+                        },
+                        start..end,
+                    ));
                 }
 
                 // Check for struct initialization — including the explicit-type-arg form

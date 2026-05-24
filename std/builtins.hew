@@ -74,7 +74,7 @@ impl<T: ActorMsg> LocalPid<T> {
     }
 }
 
-impl LocalPid<T> {
+impl<T> LocalPid<T> {
     // WASM-TODO(#1451): RemotePid cross-node routing is native-only until
     // a wasm peer transport is decided.
     /// Obtain a remote pid that routes to the same actor via `node_handle`.
@@ -84,7 +84,7 @@ impl LocalPid<T> {
     fn to_remote_via(pid: LocalPid<T>, node_handle: dyn Display) -> RemotePid<T> {}
 }
 
-impl RemotePid<T> {
+impl<T> RemotePid<T> {
     // WASM-TODO(#1451): RemotePid construction is native-only until a wasm
     // peer transport is decided.
     /// Construct a remote pid from raw node/serial components.

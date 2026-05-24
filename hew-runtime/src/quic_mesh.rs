@@ -506,6 +506,15 @@ pub enum MeshError {
     /// length-prefix that exceeds [`MAX_FRAME_SIZE`]; the stream is closed
     /// rather than draining undefined bytes.
     OversizeFrame(String),
+    /// `connect` was called but no mesh endpoint is listening at the target
+    /// address; routing is not wired up.
+    RoutingNotWired,
+    /// The supplied address is not valid UTF-8 (byte sequences from C callers
+    /// may be malformed).  The inner string names the operation that failed.
+    InvalidAddress(String),
+    /// The control stream for the named direction ("send" or "recv") is
+    /// absent; the connection never completed its control-stream handshake.
+    ControlStreamMissing(String),
 }
 
 impl std::fmt::Display for MeshError {
@@ -521,6 +530,15 @@ impl std::fmt::Display for MeshError {
             }
             MeshError::OversizeFrame(s) => {
                 write!(f, "quic_mesh oversize frame: {s}")
+            }
+            MeshError::RoutingNotWired => {
+                write!(f, "quic_mesh connect: no listening mesh endpoint")
+            }
+            MeshError::InvalidAddress(op) => {
+                write!(f, "quic_mesh {op}: address is not valid UTF-8")
+            }
+            MeshError::ControlStreamMissing(dir) => {
+                write!(f, "quic_mesh {dir}: control {dir} stream missing")
             }
         }
     }
@@ -988,7 +1006,9 @@ fn parse_socket_addr(addr_str: &str) -> Result<std::net::SocketAddr, String> {
 
 fn framed_send_mesh(rt: &Runtime, send: &mut SendStream, data: &[u8]) -> c_int {
     if data.len() > MAX_FRAME_SIZE {
-        set_last_error("quic_mesh send: frame exceeds MAX_FRAME_SIZE");
+        set_last_error(
+            MeshError::OversizeFrame("send: frame exceeds MAX_FRAME_SIZE".into()).to_string(),
+        );
         return -1;
     }
     let frame_len = u32::try_from(data.len()).unwrap_or(u32::MAX);
@@ -1126,12 +1146,12 @@ unsafe extern "C" fn quic_mesh_connect(impl_ptr: *mut c_void, address: *const c_
     // SAFETY: impl_ptr checked non-null above; it is allocated by hew_transport_quic_mesh_new.
     let qmt = unsafe { &*impl_ptr.cast::<QuicMeshTransport>() };
     let Some(mesh) = &qmt.mesh else {
-        set_last_error("quic_mesh connect: no listening mesh endpoint");
+        set_last_error(MeshError::RoutingNotWired.to_string());
         return HEW_CONN_INVALID;
     };
     // SAFETY: address checked non-null above; caller guarantees a valid C string.
     let Ok(addr_str) = unsafe { CStr::from_ptr(address) }.to_str() else {
-        set_last_error("quic_mesh connect: address is not valid UTF-8");
+        set_last_error(MeshError::InvalidAddress("connect".into()).to_string());
         return HEW_CONN_INVALID;
     };
     let addr = match parse_socket_addr(addr_str) {
@@ -1161,7 +1181,7 @@ unsafe extern "C" fn quic_mesh_listen(impl_ptr: *mut c_void, address: *const c_c
     let qmt = unsafe { &mut *impl_ptr.cast::<QuicMeshTransport>() };
     // SAFETY: address checked non-null above; caller guarantees a valid C string.
     let Ok(addr_str) = unsafe { CStr::from_ptr(address) }.to_str() else {
-        set_last_error("quic_mesh listen: address is not valid UTF-8");
+        set_last_error(MeshError::InvalidAddress("listen".into()).to_string());
         return -1;
     };
     let addr = match parse_socket_addr(addr_str) {
@@ -1298,7 +1318,7 @@ unsafe extern "C" fn quic_mesh_send(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(send) = send_guard.as_mut() else {
-        set_last_error("quic_mesh send: control send stream missing".to_string());
+        set_last_error(MeshError::ControlStreamMissing("send".into()).to_string());
         return -1;
     };
     let result = framed_send_mesh(&qmt.rt, send, slice);
@@ -1341,7 +1361,7 @@ unsafe extern "C" fn quic_mesh_recv(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(recv) = recv_guard.as_mut() else {
-        set_last_error("quic_mesh recv: control recv stream missing".to_string());
+        set_last_error(MeshError::ControlStreamMissing("recv".into()).to_string());
         return -1;
     };
     let result = framed_recv_mesh(&qmt.rt, recv, slice);

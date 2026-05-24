@@ -540,11 +540,20 @@ impl Checker {
         self.register_builtin_fn("Node::shutdown", vec![], Ty::Unit);
         self.register_builtin_fn("Node::connect", vec![Ty::String], Ty::Unit);
         self.register_builtin_fn("Node::set_transport", vec![Ty::String], Ty::Unit);
-        self.register_builtin_fn(
-            "Node::register",
-            vec![Ty::String, Ty::Var(TypeVar::fresh())],
-            Ty::I32,
-        );
+        // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`
+        // The second argument is tightened to `LocalPid<T>` so that passing a
+        // `RemotePid<T>` or bare `u64` is caught at the checker rather than
+        // failing with a cryptic codegen error. Codegen already assumes a
+        // `LocalPid<T>` alloca (it calls `hew_actor_pid` to extract the u64
+        // before forwarding to `hew_node_api_register_by_pid`).
+        {
+            let t = TypeVar::fresh();
+            self.register_builtin_fn(
+                "Node::register",
+                vec![Ty::String, Ty::local_pid(Ty::Var(t))],
+                Ty::I32,
+            );
+        }
         // `Node::lookup<T>(name: String) -> Result<RemotePid<T>, LookupError>`.
         // The runtime extern returns a packed `u64` pid (0 == not found); the
         // codegen branch lowers this into a `Result` construction inline.

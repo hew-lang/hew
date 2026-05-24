@@ -4817,7 +4817,25 @@ impl LowerCtx {
         // allocated node before site at the same call).
         let site = self.ids.site();
         let (kind, ty) = match &expr.0 {
-            Expr::Literal(lit) => Self::lower_literal(lit),
+            Expr::Literal(lit) => {
+                let (kind, default_ty) = Self::lower_literal(lit);
+                // Apply checker authority for integer literals: the checker may have
+                // recorded a concrete width (e.g. `I32`) via `check_against` when the
+                // literal appears in a comparison with a fixed-width integer
+                // (e.g. `register("w", pid) == 0`). Without this override the literal
+                // always defaults to `I64`, causing `IntCmp` to see mismatched widths.
+                // If checker recorded `IntLiteral` (unconstrained) or no entry exists,
+                // `from_ty` returns Err and we fall back to the `lower_literal` default.
+                let ty = {
+                    let checker_key = SpanKey::from(&span);
+                    if let Some(checker_ty) = self.expr_types.get(&checker_key) {
+                        ResolvedTy::from_ty(checker_ty).unwrap_or(default_ty)
+                    } else {
+                        default_ty
+                    }
+                };
+                (kind, ty)
+            }
             Expr::RegexLiteral(pattern) => {
                 // A standalone `re"..."` expression. Allocate (or reuse) the
                 // module-level literal-table entry. The checker-assigned type is

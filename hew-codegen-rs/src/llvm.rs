@@ -4151,16 +4151,24 @@ fn lower_instruction(
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let lhs_int = match lhs_ty {
                 BasicTypeEnum::IntType(t) => t,
-                _ => return Err(CodegenError::FailClosed("IntCmp lhs is not an i64".into())),
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntCmp lhs is not an integer".into(),
+                    ))
+                }
             };
             if rhs_ty != lhs_ty {
                 return Err(CodegenError::FailClosed(
-                    "IntCmp operands must share the same i64 type".into(),
+                    "IntCmp operands must share the same integer type".into(),
                 ));
             }
             let dest_int = match dest_ty {
                 BasicTypeEnum::IntType(t) => t,
-                _ => return Err(CodegenError::FailClosed("IntCmp dest is not an i64".into())),
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntCmp dest is not an integer".into(),
+                    ))
+                }
             };
             let lhs_v = fn_ctx
                 .builder

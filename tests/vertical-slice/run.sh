@@ -533,3 +533,14 @@ run_accept_expect_status "generic_enum_result_ok" 7
 # layouts. Exit 5 proves both layouts lower and the nested match dispatched
 # correctly.
 run_accept_expect_status "generic_enum_nested_option" 5
+
+# ---------------------------------------------------------------------------
+# RemotePid<T>::tell — in-place Result<(), SendError> construction gate
+# ---------------------------------------------------------------------------
+
+# Accept: RemotePid<T>::tell on a synthetic pid (no peer online) must lower
+# end-to-end and return SendError::NodeRoutingNotWired (variant 2) in the Err
+# arm. Exit 42 asserts the correct tag/payload written by
+# emit_remote_pid_tell_call. Regression in the in-place construction would
+# produce a wrong SendError discriminant, exiting 1 or 2 instead.
+run_accept_expect_status "remote_pid_tell" 42

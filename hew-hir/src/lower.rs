@@ -46,6 +46,12 @@ const SYNTHETIC_RESULT_ITEM: ItemId = ItemId(u32::MAX - 2);
 /// path as `Option` / `Result` so `Err(LookupError::NotFound)` match arms
 /// resolve via `machine_ctor_registry`.
 const SYNTHETIC_LOOKUP_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1000);
+/// `SendError` is also declared in `std/builtins.hew` and likewise invisible
+/// to the user-enum walk. Surface it so `match e { SendError::NodeRoutingNotWired
+/// => ... }` arms inside `Result<(), SendError>` matches resolve via
+/// `machine_ctor_registry`. Variant order matches `hew-codegen-rs/src/llvm.rs`:
+/// Full=0, Closed=1, NodeRoutingNotWired=2.
+const SYNTHETIC_SEND_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1001);
 
 /// Bare-name variants of built-in tagged unions. Counted into the pre-pass's
 /// `bare_counts` so a user enum that redeclares one of them correctly marks
@@ -88,6 +94,13 @@ fn builtin_enum_specs() -> &'static [BuiltinEnumSpec] {
             type_params: &[],
             variant_names: &["NotFound"],
             variant_payloads: &[&[]],
+        },
+        BuiltinEnumSpec {
+            type_name: "SendError",
+            item_id: SYNTHETIC_SEND_ERROR_ITEM,
+            type_params: &[],
+            variant_names: &["Full", "Closed", "NodeRoutingNotWired"],
+            variant_payloads: &[&[], &[], &[]],
         },
     ]
 }
@@ -6947,6 +6960,7 @@ impl LowerCtx {
                 ));
                 ResolvedTy::Unit
             }
+            TypeExpr::Tuple(elems) if elems.is_empty() => ResolvedTy::Unit,
             TypeExpr::Tuple(elems) => {
                 ResolvedTy::Tuple(elems.iter().map(|elem| self.lower_type(elem)).collect())
             }
@@ -7606,11 +7620,8 @@ impl LowerCtx {
                     }
                 })
                 .collect();
-            if self
-                .enum_layout_registry
-                .insert(key, variant_layouts)
-                .is_err()
-            {
+            let insert_result = self.enum_layout_registry.insert(key, variant_layouts);
+            if insert_result.is_err() {
                 // Cap exceeded — emit diagnostic and abort further expansion.
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::EnumLayoutCapExceeded {

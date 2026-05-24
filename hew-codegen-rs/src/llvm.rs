@@ -7860,11 +7860,17 @@ fn lower_terminator<'ctx>(
                 return Ok(());
             }
             // `hew_remote_pid_tell` is the checker's MethodCallRewrite target
-            // for `pid.tell(msg)` on a `RemotePid<T>` receiver. The catalog
-            // entry declares an unused stub extern (`__hew_remote_pid_tell_stub`)
-            // only so the call appears in MIR's `module_fn_names`; we intercept
-            // by name here and emit the real `hew_actor_send_by_id` sequence
-            // plus the user-visible `Result<(), SendError>` construction.
+            // for `pid.tell(msg)` on a `RemotePid<T>` receiver.  The catalog
+            // entry uses `BuiltinLinkage::CalleeNameDispatchOnly` (a fieldless
+            // variant — no `symbol` field) so no LLVM extern is declared.
+            // Membership in MIR's `module_fn_names` comes from the
+            // non-`CompilerIntrinsic` filter at `hew-mir/src/lower.rs:761-767`,
+            // which inserts every catalog entry whose linkage is not
+            // `CompilerIntrinsic { .. }`.  Codegen intercepts by the string
+            // match `callee_name == "hew_remote_pid_tell"` here (in the
+            // `Terminator::Call` lowering arm) and emits the real
+            // `hew_actor_send_by_id` sequence plus the user-visible
+            // `Result<(), SendError>` construction in-place.
             // Dispatch is callee-name-based (no new `FnSymbol::*Pid*` variant),
             // matching the R82-era Node::lookup precedent.
             if callee == "hew_remote_pid_tell" {

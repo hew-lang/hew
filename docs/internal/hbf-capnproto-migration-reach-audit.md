@@ -1,5 +1,7 @@
 # HBF to Cap'n Proto Migration — Reach Audit
 
+> **superseded-by:** [`docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md`](../specs/HEW-WIRE-FORMAT-DOCTRINE.md) — see that document for the v0.5 forward-looking wire-format decision (CBOR + CDDL for inter-process; Cap'n Proto deliberately not adopted).
+>
 > **Status: historical — C++/MLIR was retired in v0.5 (commit 842842bd). Current implementation: hew-codegen-rs direct Rust/Inkwell LLVM emission.**
 > Codegen reachability findings in this audit describe the retired C++ backend;
 > runtime HBF inventory remains useful migration context.

@@ -20,6 +20,14 @@
 
 ### Notice
 
+- **Wire-format doctrine doc landed.** `docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md`
+  is the v0.5 doc-of-truth for wire-format choices: CBOR + CDDL for the
+  runtime's inter-process actor envelope (the substrate that landed in
+  `63a486d6` / `bb8826e7` / `04bfb422`), `std::encoding::*` modules for
+  user-facing wire formats, and consumer-interop tooling
+  (OpenAPI / proto-gen) explicitly deferred to v0.5.1+. The HBF→Cap'n
+  Proto reach audit is retained as historical context but is superseded
+  for forward-looking decisions.
 - **v0.5 compiler-foundation cutover in progress:** The workspace version has
   advanced to `0.5.0-pre`. The new typed HIR/MIR/value semantics foundation is
   under active development. Retired C++ backend internals are historical

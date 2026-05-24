@@ -41,7 +41,7 @@ color brightwhite "\<(yield|defer|select|join|cooperate|after|from|await|scope|i
 
 # Declaration keywords
 color green "\<(let|var|const|fn|gen|async|pub|import|package|super)\>"
-color green "\<(extern|where|type|indirect|enum|trait|impl|as|struct)\>"
+color green "\<(extern|where|type|indirect|enum|trait|impl|as|struct|record)\>"
 
 # Actor & concurrency (v0.5 additions: link, monitor)
 color brightgreen "\<(actor|fork|init|link|monitor|move|receive|spawn|this)\>"
@@ -96,7 +96,8 @@ color white "::"
 # Attributes
 color magenta "#\[[^\]]*\]"
 
-# Labels
+# Labels and decorators
+color red "@reenter"
 color red "@[a-zA-Z_][a-zA-Z0-9_]*"
 
 # TODO/FIXME in comments

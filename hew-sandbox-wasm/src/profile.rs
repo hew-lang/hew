@@ -214,6 +214,10 @@ impl<'a> ProfileChecker<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "check_stmt walks every admitted statement variant fail-closed; splitting would obscure the admission contract"
+    )]
     fn check_stmt(&mut self, stmt: &Stmt, span: &std::ops::Range<usize>) {
         match stmt {
             Stmt::Let { value, ty, .. } | Stmt::Var { value, ty, .. } => {
@@ -260,16 +264,67 @@ impl<'a> ProfileChecker<'a> {
                 }
             }
             Stmt::Expression(expr) => self.check_expr(expr),
-            Stmt::Loop { .. }
-            | Stmt::For { .. }
-            | Stmt::While { .. }
-            | Stmt::WhileLet { .. }
-            | Stmt::Break { .. }
-            | Stmt::Continue { .. } => self.reject(
-                span.clone(),
-                "reserved_control_flow",
-                "this control-flow form is reserved for a later sandbox bytecode lowering pass",
-            ),
+            Stmt::Loop { body, label } => {
+                if label.is_some() {
+                    self.reject(
+                        span.clone(),
+                        "reserved_control_flow",
+                        "labeled loops are not yet admitted in the sandbox profile",
+                    );
+                }
+                self.check_block(body);
+            }
+            Stmt::For { is_await, iterable, body, label, .. } => {
+                if *is_await {
+                    self.reject(
+                        span.clone(),
+                        "reserved_runtime_feature",
+                        "for-await requires async runtime support reserved for a later sandbox VM milestone",
+                    );
+                    return;
+                }
+                if label.is_some() {
+                    self.reject(
+                        span.clone(),
+                        "reserved_control_flow",
+                        "labeled for loops are not yet admitted in the sandbox profile",
+                    );
+                }
+                self.check_expr(iterable);
+                self.check_block(body);
+            }
+            Stmt::While { condition, body, label } => {
+                if label.is_some() {
+                    self.reject(
+                        span.clone(),
+                        "reserved_control_flow",
+                        "labeled while loops are not yet admitted in the sandbox profile",
+                    );
+                }
+                self.check_expr(condition);
+                self.check_block(body);
+            }
+            Stmt::WhileLet { expr, body, label, .. } => {
+                if label.is_some() {
+                    self.reject(
+                        span.clone(),
+                        "reserved_control_flow",
+                        "labeled while-let loops are not yet admitted in the sandbox profile",
+                    );
+                }
+                self.check_expr(expr);
+                self.check_block(body);
+            }
+            Stmt::Break { value, .. } => {
+                if value.is_some() {
+                    self.reject(
+                        span.clone(),
+                        "reserved_control_flow",
+                        "break-with-value is not yet admitted in the sandbox profile",
+                    );
+                }
+            }
+            Stmt::Continue { .. } => {}
             Stmt::IfLet { expr, body, else_body, .. } => {
                 self.check_expr(expr);
                 self.check_block(body);
@@ -467,7 +522,7 @@ impl<'a> ProfileChecker<'a> {
                     || self.enum_variants.contains(name)
                     || matches!(
                         name.as_str(),
-                        "println" | "panic" | "Some" | "None" | "Ok" | "Err" | "Vec::new"
+                        "print" | "println" | "panic" | "Some" | "None" | "Ok" | "Err" | "Vec::new"
                     )
                 {
                     return;

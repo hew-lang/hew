@@ -74,7 +74,9 @@ EXAMPLE_ORDER = {
 # Entries omitted from SANDBOX_CAPABILITY default to "unsupported_native_only".
 SANDBOX_CAPABILITY: dict[str, str] = {
     "basics/hello_world": "runnable",
+    "basics/fibonacci": "runnable",
     "basics/string_interpolation": "runnable",
+    "types/pattern_matching": "runnable",
 }
 
 # Entries omitted from WASI_CAPABILITY default to "runnable".

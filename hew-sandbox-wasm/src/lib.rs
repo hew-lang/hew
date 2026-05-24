@@ -680,8 +680,11 @@ fn main() {
     }
 
     #[test]
-    fn while_let_is_reserved_control_flow() {
-        assert_profile_rejection(
+    fn while_let_is_admitted_by_profile() {
+        // while-let is no longer reserved; the profile checker walks the body
+        // and the emitter lowers Constructor patterns.
+        set_test_hewpath();
+        let output = compile_to_sandbox_bytecode(
             r"
 fn main() {
     var current = Some(1);
@@ -691,7 +694,21 @@ fn main() {
     }
 }
 ",
-            "reserved_control_flow",
+            Some("sandbox-vm-export"),
+        )
+        .expect("compile should not throw");
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .all(|d| d.kind != "reserved_control_flow"),
+            "while-let should no longer produce a reserved_control_flow diagnostic; got {:#?}",
+            output.diagnostics
+        );
+        assert!(
+            output.bytecode.is_some(),
+            "while-let should produce bytecode now; diagnostics: {:#?}",
+            output.diagnostics
         );
     }
 
@@ -824,5 +841,40 @@ fn main() {
             .flat_map(|block| &block.instructions)
             .map(|instruction| instruction.op.as_str())
             .collect()
+    }
+
+    #[test]
+    fn simple_for_range_lowers_to_bytecode() {
+        set_test_hewpath();
+        let output = compile_to_sandbox_bytecode(
+            r"
+fn main() {
+    for i in 0..3 {
+        println(i);
+    }
+}
+",
+            Some("sandbox-vm-export"),
+        )
+        .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "unexpected error diagnostics: {:?}",
+            output.diagnostics
+        );
+        let bc = output
+            .bytecode
+            .as_ref()
+            .expect("for-range should produce bytecode");
+        let main_fn = bc
+            .functions
+            .iter()
+            .find(|f| f.name == "main")
+            .expect("main");
+        assert!(
+            main_fn.blocks.len() > 1,
+            "for-loop should produce multiple blocks, got: {:?}",
+            main_fn.blocks.iter().map(|b| &b.id).collect::<Vec<_>>()
+        );
     }
 }

@@ -2,37 +2,17 @@
 
 ## [Unreleased]
 
-### Removed
+## [0.5.0] — 2026-05-24
 
-- **BREAKING: `int`/`uint` type aliases removed.** Use explicit-width types
-  instead: `i64`/`u64` for fixed 64-bit integers, `isize`/`usize` for
-  pointer-sized integers. The compiler emits a diagnostic with the correct
-  suggestion when these removed names appear in type annotations.
-- **Legacy CLI compile surface removed.** `hew compile` is now the single
-  v0.5 IR-ladder compile entry point; the old `hew build` command, dormant
-  run/build bodies, and the legacy `compile::compile()` entry point are gone.
-- **`hew-codegen` C++/MLIR subtree retired.** The previous C++ MLIR-based
-  code generator, its generated msgpack reader, and the `hew-astgen` helper
-  crate have been deleted from the workspace. `hew-codegen-rs` (LLVM via
-  inkwell) is now the sole compiler backend and is linked into the `hew`
-  binary as a normal Cargo dependency; the old CMake/Ninja/build-script path
-  and C++ codegen sanitizer path are gone.
-
-### Notice
-
-- **Wire-format doctrine doc landed.** `docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md`
-  is the v0.5 doc-of-truth for wire-format choices: CBOR + CDDL for the
-  runtime's inter-process actor envelope (the substrate that landed in
-  `63a486d6` / `bb8826e7` / `04bfb422`), `std::encoding::*` modules for
-  user-facing wire formats, and consumer-interop tooling
-  (OpenAPI / proto-gen) explicitly deferred to v0.5.1+. The HBF→Cap'n
-  Proto reach audit is retained as historical context but is superseded
-  for forward-looking decisions.
-- **v0.5 compiler-foundation cutover in progress:** The workspace version has
-  advanced to `0.5.0-pre`. The new typed HIR/MIR/value semantics foundation is
-  under active development. Retired C++ backend internals are historical
-  only; new compiler work lands in the Rust HIR/MIR/codegen-rs ladder. See
-  `BREAKING.md` for freeze rules and bridge-fix admission criteria.
+v0.5.0 is the user-trust release: the language, runtime, and toolchain
+are aligned around a single substrate that distributed-systems engineers
+can build service backends and real-time pipelines on without reaching
+through the C ABI for the load-bearing parts. The companion narrative
+release notes live at
+[`docs/release-notes/v0.5.0.md`](docs/release-notes/v0.5.0.md) and walk
+through the substrate ladder, the native mesh, the actor-first runtime,
+the sandbox parity harness, and the wire-format doctrine. This entry is
+the structured changelog.
 
 ### Failure semantics
 
@@ -42,9 +22,9 @@
   explicitly; there are no untyped exceptions. The runtime's default posture
   is strong supervision with fail-and-restart, not fail-and-abort.
 
-### Added
+### Added — language surface
 
-- **Generator blocks — `gen { ... }`:** `gen` blocks now type-check as
+- **Generator blocks — `gen { ... }`:** `gen` blocks type-check as
   `Generator<Yield, Return>` from their yielded values and final expression.
   Empty generator blocks fail with `E_EMPTY_GENERATOR`, and `yield` remains
   valid only inside a `gen` block.
@@ -54,119 +34,238 @@
   and `Stream<T>` are the directional halves. The method API is uniform:
   `.send(msg)`, `.recv()` (blocking), `.try_send(msg)`, `.try_recv()`
   (non-blocking), `.close()`, `.send_half()`, `.recv_half()` (split into
-  directional handles). Constructor builtins: `duplex_pair<S,R>()` (creates a
-  matched pair), `channel<T>()` (creates a `(Sink<T>, Stream<T>)` pair).
-  In v0.5 the type surface and constructors are checker-verified; end-to-end
-  compile+run fixtures are not yet included.
+  directional handles). Constructor builtins: `duplex_pair<S,R>()` and
+  `channel<T>()` (the latter returns a `(Sink<T>, Stream<T>)` pair).
 - **Lambda-actor form — `actor |params| { body }`:** A lambda-actor literal
   evaluates to a `Duplex<Msg, Reply>` handle. The actor body runs in a
   supervised child context; the caller holds both send and receive directions
   of the channel. Lambda-actor handles accept both bare-call syntax
-  `handle(msg)` and `.send(msg)` — both are equivalent. Replaces the removed
-  `spawn |...|` form. The form is type-checkable in v0.5; compile-to-binary
-  coverage is not yet included.
+  `handle(msg)` and `.send(msg)` — both are equivalent.
 - **Structured concurrency — `scope` block + `fork` verb:** `scope { ... }`
   is the lexical lifetime bracket for child tasks. Inside a scope block,
   `fork name = call(...)` starts a named child; the scope block does not
   return until all children complete (or one faults and the rest are
-  cancelled). The `fork` keyword is now exclusively the child-start verb; the
-  `scope` keyword is the lifetime container. In v0.5 the surface is parsed and
-  structurally typed; simple no-arg, unit-return fork bodies have a codegen
-  path, while non-unit result propagation and value-bearing fork arms fail
-  closed with a compiler diagnostic.
-- **Actor lifecycle hooks — `#[on(start)]` and `#[on(stop)]`:** Actor methods
-  annotated with `#[on(start)]` run before the actor's message loop begins;
-  methods annotated with `#[on(stop)]` run after the loop exits (whether by
-  normal stop or supervised termination). Multiple `#[on(stop)]` hooks are
-  allowed and execute in lexical declaration order; `#[on(start)]` and
-  `#[on(crash)]` are each allowed at most once per actor. The legacy
-  `terminate { }` block is removed; migrate to `#[on(stop)]`.
+  cancelled). The `fork` keyword is now exclusively the child-start verb;
+  the `scope` keyword is the lifetime container.
+- **Actor lifecycle hooks — `#[on(start)]`, `#[on(stop)]`, `#[on(crash)]`,
+  `#[on(upgrade)]`:** Actor methods annotated with `#[on(start)]` run before
+  the message loop begins; `#[on(stop)]` methods run after the loop exits
+  (whether by normal stop or supervised termination); `#[on(crash)]` runs on
+  the supervisor side when a child faults; `#[on(upgrade)]` runs when a
+  hot-replaced actor body is installed over a live mailbox. Multiple
+  `#[on(stop)]` hooks are allowed and execute in lexical declaration order;
+  `#[on(start)]`, `#[on(crash)]`, and `#[on(upgrade)]` are each allowed at
+  most once per actor.
 - **Bind-and-propagate sugar — `let r? = expr`:** Sugar for `let r = expr?;`.
   The expression must evaluate to `Result<T, E>` or `Option<T>` with a
-  compatible propagation path from the enclosing scope. The desugared form is
-  the canonical lowering with no semantic difference past the parser.
-- **String methods — `.len()`, `.slice(a,b)`, `.find(needle)`:** String
-  method dispatch now covers `.len()` (codepoint count), `.slice(start, end)`
-  (codepoint-indexed substring), and `.find(needle)` (first-match codepoint
-  offset). These methods operate on Unicode codepoints, not raw bytes.
-- **Record structural `Eq` and `Hash`:** A record type automatically satisfies
-  `Eq` and `Hash` when all its fields do. Using a record as a `HashMap` key
-  or in an equality check without qualifying fields is a compile error rather
-  than a silent runtime failure.
-- **Split actor identity types — `LocalPid<T>` and `RemotePid<T>`:** Builtins
-  now distinguish local process identifiers from remote process identifiers
-  instead of treating all actor identities as one unqualified handle shape.
-  The split makes remote dispatch, serialization, and same-node fast paths
-  explicit in the type surface.
-- **Associated types, initial surface:** Edition 2026 now admits the bounded
-  associated type surface: one associated type per trait, `type Item;`
-  declarations in traits, concrete `type Item = ...;` definitions in impls, and
-  `Self::Item` references in type position. Associated-type bounds and
+  compatible propagation path from the enclosing scope.
+- **String methods raised into Hew — `.len()`, `.slice(a, b)`,
+  `.find(needle)`, indexing, concatenation:** String operations that
+  previously lived in extern bridges are now first-class Hew methods
+  operating on Unicode codepoints. Indexing and the `+` concatenation
+  operator desugar through the same method surface.
+- **Display trait + f-string interpolation lowering:** `Display` is the
+  user-facing formatting trait; `f"{x}"` lowers to `x.display(...)` against
+  a `Formatter` argument rather than to an opaque builtin. User types
+  participate by implementing `Display`.
+- **Record types — named-field decl, literal, auto-derive, functional
+  update, tuple-record:** `record Point { x: f64, y: f64 }` declares a
+  named-field record. Literals use brace syntax; structural `Eq` and `Hash`
+  are auto-derived when all fields support them. Functional update —
+  `Point { x: 3.0, ..base }` — is admitted at parse and check time. A
+  tuple-record form (positional fields) is also accepted; the `is` operator
+  performs a structural shape check against either form.
+- **Primitive width canonicalisation + `isize`/`usize`:** Integer widths are
+  explicit: `i8 / i16 / i32 / i64 / u8 / u16 / u32 / u64` for fixed widths,
+  `isize / usize` for pointer-sized integers. Untyped integer literals
+  inherit context width with a defined defaulting rule. Overflow,
+  divide-by-zero, modulo-by-zero, and shift-out-of-range now **trap** rather
+  than silently wrap. Wrapping arithmetic is opt-in via `.wrapping_add(...)`
+  / `.wrapping_sub(...)` / `.wrapping_mul(...)` / `.wrapping_shl(...)` /
+  `.wrapping_shr(...)` on each integer type.
+- **Vec bounds + range slice — OOB traps, `.slice(a, b)`:** `Vec<T>`
+  indexing traps on out-of-bounds access rather than returning garbage or
+  silently masking. `vec.slice(a, b)` returns a borrowed range slice; OOB
+  ranges trap with a typed diagnostic.
+- **Split actor identity types — `LocalPid<T>` and `RemotePid<T>`:**
+  Builtins distinguish local process identifiers from remote process
+  identifiers. The split makes remote dispatch, serialization, and
+  same-node fast paths explicit in the type surface.
+- **Associated types, initial surface:** Edition 2026 admits the bounded
+  associated-type surface: one associated type per trait, `type Item;`
+  declarations in traits, concrete `type Item = ...;` definitions in impls,
+  and `Self::Item` references in type position. Associated-type bounds and
   multi-type trait families remain deferred to `HEW-FUTURE.md` §2.2.
+- **`Result` / `Option` constructors + match-on-enum-variant lowering:**
+  `Ok(x)`, `Err(e)`, `Some(x)`, and `None` are raised to first-class Hew
+  constructors and their match-arm patterns lower through the canonical
+  HIR enum path rather than through an opaque builtin shim.
+- **`extern` / `unsafe` blocks (substrate L0):** Foreign and authority-
+  bearing surfaces are gated by explicit `extern` and `unsafe` blocks; the
+  type checker refuses to admit raw-pointer or foreign-call operations
+  outside them.
 
-### Known WASM behavioral gaps
+### Added — runtime, mesh, and observability
 
-- **Reply-channel state is process-global on WASM:** cooperative scheduling on
-  WASM still routes ask reply-channel state through process-global storage, so
-  concurrent ask races can diverge from native per-execution-context behavior.
-- **`#[on(stop)]` observability is narrower on WASM:** the WASM terminate path
-  runs without the native signal-recovery and lifecycle-tracing path, so stop
-  hook semantics hold but lifecycle tracing is omitted.
+- **Native mesh substrate (`Node::*`):** The runtime exposes a `Node::`
+  namespace for the distribution layer: `Node::start`, `Node::connect`,
+  `Node::shutdown`, `Node::set_transport`, `Node::register`, and
+  `Node::lookup`. A `RemotePid<T>` typed handle names a remote actor; a
+  `LookupError` typed-failure surface (`NotFound`, `WrongType`,
+  `NodeUnreachable`, …) replaces stringly-typed lookup errors. A two-node
+  cross-process integration test exercises register-on-A → lookup-from-B
+  → ask round-trip end-to-end.
+- **mTLS via QUIC mesh:** Inter-node traffic flows over QUIC with mutual
+  TLS. Peer identity is pinned by an SPKI (subject-public-key-info)
+  allowlist rather than CA trust, and the handshake hardens against
+  downgrade, version-mismatch, and identity-mismatch attempts. Anonymous
+  inbound mesh connections are refused.
+- **Supervisor surface — link / monitor / exit, `max_heap`, restart
+  strategies:** Actors expose `link(other)`, `monitor(other)`, and
+  exit-signal handling at the language layer. A per-actor `max_heap`
+  cap bounds runaway allocation: exceeding it triggers a supervised
+  restart rather than an OOM-killed process. Supervisor restart
+  strategies (`one_for_one`, `one_for_all`, `rest_for_one`) are declared
+  alongside the supervised children.
+- **`PartitionDetected` mesh signal:** When the local node loses
+  connectivity to a peer, monitors of remote actors on that peer receive
+  a `PartitionDetected { node, last_seen }` notification distinct from
+  ordinary actor-exit signals.
+- **Actor `Blocked` state removed:** The internal `Blocked` actor state
+  is gone; the scheduler now models awaits and blocking I/O through
+  receive-cursor state on the actor's mailbox/scope, simplifying both
+  the runtime and the traces it emits.
+- **`CrashInfo` and `TrapInfo` exposed at the language surface:** When a
+  supervisor catches a child fault, the structured `CrashInfo`
+  (`reason`, `source_location`, `actor_id`, `restart_count`) and the
+  underlying `TrapInfo` (trap kind, faulting instruction, backtrace) are
+  available to `#[on(crash)]` handlers rather than reduced to an opaque
+  string.
+- **Profiler schema versioning + trace taxonomy v0.5:** Profiler output
+  carries a `schema_version` field and emits the v0.5 concurrency-event
+  taxonomy (`fork`, `join`, `cancel`, `ask`, `reply`, `partition`,
+  `restart`, `upgrade`). Older trace consumers receive a typed mismatch
+  error rather than silently drifting.
+
+### Added — sandbox runtime parity
+
+- **Canonical-frontend bytecode emission:** The sandbox bytecode emitter
+  now goes through the canonical typed-IR frontend rather than a separate
+  AST walker. Bytecode produced by the sandbox path and the native LLVM
+  path share their lowering up through MIR.
+- **Control-flow lowering parity:** `match`, `if`/`else`, `while`, `for`,
+  `?`-propagation, `scope`/`fork`, and `gen`-block lowering all share
+  control-flow shape between native and sandbox targets.
+- **`make sandbox-parity` harness:** A dedicated make target runs every
+  parity fixture through both backends, diffs observable outputs, and
+  fails closed on divergence. The accepted-divergence catalog lives at
+  [`docs/sandbox-vm-divergences.md`](docs/sandbox-vm-divergences.md) —
+  any new divergence must be admitted there with a reason.
+
+### Added — wire format doctrine
+
+- **CDDL + CBOR for inter-process messaging.** The runtime's actor
+  envelope is a CBOR `wire-frame` (control or envelope branch) keyed by
+  small integers, with the schema fixed by
+  `hew-runtime/schemas/envelope.cddl`. The frame carries `version`,
+  `frame_type`, `target_actor_id`, `source_actor_id`, `msg_type`,
+  `payload`, `request_id`, and `source_node_id`. Decoders **must**
+  reject unknown `version` values with `UnknownVersion`; best-effort
+  parsing of an unrecognised version is forbidden.
+- **User-facing encoding modules under `std::encoding::*`.** Programs
+  that need to read or write JSON, CBOR, or other formats at the
+  language layer use the stdlib encoding modules; the runtime envelope
+  is not a user-extension surface.
+- **Wire-format anti-doctrine.** OpenAPI / `proto-gen` /
+  schema-first generators, ad-hoc msgpack frames, and reaching into the
+  runtime envelope from user code are explicitly out-of-scope for v0.5;
+  the full rationale is in
+  [`docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md`](docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md).
+
+### Added — developer trust
+
+- **WASM-LSP analyzer fixture coverage:** Thirty new v0.5-substrate
+  fixtures cover the WASM-hosted language-server analyzer, exercising
+  hover, goto-definition, find-references, signature help, and
+  diagnostics against the new substrate. The browser-LSP compile path
+  (parse → check → diagnostic emission) is covered alongside.
+- **Editor grammar keyword updates:** Sublime, Emacs, and Nano syntax
+  bundles are updated for the v0.5 keyword set (`actor`, `scope`,
+  `fork`, `gen`, `#[on(...)]`, `record`, `isize`, `usize`, and the
+  removed-keyword diagnostics).
 
 ### Changed
 
-- **Machine transition resource lifetimes:** Machine state changes now release
-  `@resource`-typed payload fields when leaving a state or taking an `@reenter`
-  transition. Plain self-transitions without `@reenter` keep their payloads
-  live.
-- **`fork { ... }` block form removed (BREAKING):** The `fork { ... }`
-  syntax, which treated the fork block as a scope, no longer parses. The
-  parser emits a diagnostic with a migration note. Use `scope { ... }` for
-  the lifetime bracket and `fork name = expr;` for each child inside it.
-- **`scope |s| { s.launch / s.spawn / s.cancel }` removed (BREAKING):** The
-  binding form that exposed a scope handle `s` with imperative launch/spawn/
-  cancel methods no longer parses. Migrate child-task lifetime management to
+- **Machine transition resource lifetimes:** Machine state changes
+  release `@resource`-typed payload fields when leaving a state or
+  taking an `@reenter` transition. Plain self-transitions without
+  `@reenter` keep their payloads live.
+- **Lambda-actor handles accept `.send()`:** Prior to v0.5, calling
+  `.send()` on a lambda-actor handle was a type error
+  (`E_LAMBDA_NO_SEND_METHOD`). That restriction is lifted. Both
+  `handle(msg)` (bare call) and `handle.send(msg)` are accepted; actors
+  and channels share a uniform method surface.
+
+### Removed (breaking)
+
+- **`int` / `uint` type aliases.** Use explicit-width types: `i64` /
+  `u64` for fixed 64-bit integers, `isize` / `usize` for pointer-sized
+  integers. The compiler emits a diagnostic with the correct suggestion
+  when these removed names appear in type annotations.
+- **Legacy CLI compile surface.** `hew compile` is the single v0.5
+  IR-ladder compile entry point; the old `hew build` command, dormant
+  run/build bodies, and the legacy `compile::compile()` entry point are
+  gone.
+- **`hew-codegen` C++/MLIR subtree retired.** The previous C++ MLIR-based
+  code generator, its generated msgpack reader, and the `hew-astgen`
+  helper crate have been deleted from the workspace. `hew-codegen-rs`
+  (LLVM via inkwell) is the sole compiler backend and is linked into
+  the `hew` binary as a normal Cargo dependency; the old
+  CMake/Ninja/build-script path and C++ codegen sanitizer path are gone.
+- **`fork { ... }` block form.** The block syntax that treated `fork`
+  as its own scope no longer parses. The parser emits a diagnostic with
+  a migration note. Use `scope { ... }` for the lifetime bracket and
+  `fork name = expr;` for each child inside it.
+- **`scope |s| { s.launch / s.spawn / s.cancel }`.** The binding form
+  that exposed a scope handle `s` with imperative launch/spawn/cancel
+  methods no longer parses. Migrate child-task lifetime management to
   `scope { ... }` with `fork name = expr;` children inside the scope.
-- **Lambda-actor handles accept `.send()`:** Prior to v0.5, calling `.send()`
-  on a lambda-actor handle was a type error (`E_LAMBDA_NO_SEND_METHOD`). That
-  restriction is lifted. Both `handle(msg)` (bare call) and `handle.send(msg)`
-  are accepted; actors and channels share a uniform method surface.
-
-### Removed
-
-- **`fs.read_line` compatibility alias removed:** The `fs.read_line` function,
-  which was a deprecated alias for `io.read_line()`, has been removed
-  from the standard library. Callers must use `io.read_line()`
-  directly.
-- **`ActorStream<Y>` type alias removed:** The deprecated `ActorStream<Y>` alias
-  has been removed from all public surfaces. Use `Stream<Y>` instead.
-- **`legacy-wire-msgpack` Cargo feature removed:** The `hew-serialize` crate no
-  longer exposes the `legacy-wire-msgpack` feature flag or its associated
-  `serialize_wire_decl_legacy` function. Callers using the legacy msgpack wire
-  path must migrate to the standard wire serializer.
-- **`hew_file_last_error` C ABI export removed:** The `hew_file_last_error`
-  symbol has been removed from the runtime. The errno value is now surfaced
-  through the standard LAST_ERRNO path and does not require a separate query.
-- **`=~` and `!~` regex operators removed:** The `=~` (match) and `!~`
-  (non-match) infix operators no longer exist. Use `p.is_match(s)` for a
-  boolean match result or `p.matches(s)` to iterate over all matches.
-- **`terminate { }` block removed:** The `terminate { ... }` block syntax
-  accepted by the v0.4 parser has been removed. Migrate cleanup logic to a
-  `#[on(stop)] fn <name>() { ... }` declaration inside the actor body; the
-  field-access semantics are identical (see spec §9.1.2).
-- **BREAKING CHANGE: `<-` send operator removed** (see HEW-SPEC-2026 §2.1.1):
-  The `<-` infix operator for sending messages to actors no longer exists. The
-  parser emits `E_OPERATOR_REMOVED` when it encounters adjacent `<` and `-`
-  tokens (i.e. the legacy operator spelling). Use `handle.send(msg)` for
-  named-actor sends or call-syntax `handle(msg)` for lambda-actor handles.
-- **BREAKING CHANGE: `spawn (params) => body` lambda-actor syntax removed**
-  (see HEW-SPEC-2026 §2.1.3): The `spawn`-based lambda-actor literal form is
-  no longer accepted. The parser emits `E_SPAWN_LAMBDA_SYNTAX_REMOVED` with a
+- **`<-` send operator** (see HEW-SPEC-2026 §2.1.1). The parser emits
+  `E_OPERATOR_REMOVED` when it encounters adjacent `<` and `-` tokens
+  in expression position. Use `handle.send(msg)` for named-actor sends
+  or call-syntax `handle(msg)` for lambda-actor handles.
+- **`spawn (params) => body` lambda-actor syntax** (see HEW-SPEC-2026
+  §2.1.3). The parser emits `E_SPAWN_LAMBDA_SYNTAX_REMOVED` with a
   fixit note. Use `actor |params| { body }` instead.
-- **`hew_duplex_new` removed from the C ABI:** The `hew_duplex_new` function,
-  which created a self-loopback duplex without a peer, has been removed from
-  the public runtime ABI. Use `hew_duplex_pair` to create a matched
+- **`terminate { }` block.** Migrate cleanup logic to a
+  `#[on(stop)] fn <name>() { ... }` declaration inside the actor body;
+  the field-access semantics are identical (see spec §9.1.2).
+- **`=~` and `!~` regex operators.** Use `p.is_match(s)` for a
+  boolean match result or `p.matches(s)` to iterate over all matches.
+- **`fs.read_line` compatibility alias.** Callers must use
+  `io.read_line()` directly.
+- **`ActorStream<Y>` type alias.** Use `Stream<Y>` instead.
+- **`legacy-wire-msgpack` Cargo feature.** The `hew-serialize` crate no
+  longer exposes the feature flag or its associated
+  `serialize_wire_decl_legacy` function. Callers using the legacy
+  msgpack wire path must migrate to the standard wire serializer.
+- **`hew_file_last_error` C ABI export.** The errno value is surfaced
+  through the standard `LAST_ERRNO` path and does not require a
+  separate query.
+- **`hew_duplex_new` C ABI export.** The self-loopback duplex without a
+  peer is gone. Use `hew_duplex_pair` to create a matched
   bidirectional pair.
+
+### Known WASM behavioral gaps
+
+- **Reply-channel state is process-global on WASM:** cooperative
+  scheduling on WASM still routes ask reply-channel state through
+  process-global storage, so concurrent ask races can diverge from
+  native per-execution-context behavior.
+- **`#[on(stop)]` observability is narrower on WASM:** the WASM
+  terminate path runs without the native signal-recovery and
+  lifecycle-tracing path, so stop-hook semantics hold but lifecycle
+  tracing is omitted.
 
 ## [0.4.0] - 2026-05-03
 

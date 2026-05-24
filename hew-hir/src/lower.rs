@@ -286,7 +286,19 @@ pub fn lower_program_with_mono_cap(
                     }
                 }
             }
-            _ => {}
+            // No fn signatures to register for the variants below in this
+            // pass. If a new Item variant is added, the compiler will force a
+            // conscious decision here.
+            Item::Import(_)
+            | Item::Const(_)
+            | Item::TypeDecl(_)
+            | Item::TypeAlias(_)
+            | Item::Trait(_)
+            | Item::Wire(_)
+            | Item::Machine(_)
+            | Item::Record(_)
+            | Item::Actor(_)
+            | Item::Supervisor(_) => {}
         }
     }
     // Pre-pass: register user-module pub fn signatures under their qualified,
@@ -356,7 +368,25 @@ pub fn lower_program_with_mono_cap(
                                 ctx.register_extern_fn_entry(extern_fn);
                             }
                         }
-                        _ => {}
+                        // TODO(fix/imported-impl-lowering): imported pub impl
+                        // blocks are not registered here; their method bodies
+                        // also cannot be lowered without first resolving their
+                        // same-module private helper dependencies. Tracked as
+                        // a follow-up — cross-module impl dispatch is currently
+                        // unsupported at the HIR level.
+                        // Non-pub Function/TypeDecl fall here (not exported to importers).
+                        Item::Import(_)
+                        | Item::Const(_)
+                        | Item::Function(_)
+                        | Item::TypeDecl(_)
+                        | Item::TypeAlias(_)
+                        | Item::Trait(_)
+                        | Item::Impl(_)
+                        | Item::Wire(_)
+                        | Item::Machine(_)
+                        | Item::Record(_)
+                        | Item::Actor(_)
+                        | Item::Supervisor(_) => {}
                     }
                 }
             }
@@ -417,7 +447,20 @@ pub fn lower_program_with_mono_cap(
                     },
                 );
             }
-            _ => {}
+            // No record shape to register for the variants below. If a new
+            // Item variant with field layout is added, the compiler will force
+            // a conscious decision here.
+            Item::Import(_)
+            | Item::Const(_)
+            | Item::TypeAlias(_)
+            | Item::Trait(_)
+            | Item::Impl(_)
+            | Item::Wire(_)
+            | Item::Function(_)
+            | Item::ExternBlock(_)
+            | Item::Machine(_)
+            | Item::Actor(_)
+            | Item::Supervisor(_) => {}
         }
     }
     // Pre-pass: register module-scope tagged-union constructors so
@@ -470,7 +513,21 @@ pub fn lower_program_with_mono_cap(
                         }
                     }
                 }
-                _ => {}
+                // No variant bare-names to count for these items. If a new
+                // Item variant with enumerable named variants is added, the
+                // compiler will force a conscious decision here.
+                Item::Import(_)
+                | Item::Const(_)
+                | Item::TypeDecl(_)
+                | Item::TypeAlias(_)
+                | Item::Trait(_)
+                | Item::Impl(_)
+                | Item::Wire(_)
+                | Item::Function(_)
+                | Item::ExternBlock(_)
+                | Item::Actor(_)
+                | Item::Supervisor(_)
+                | Item::Record(_) => {}
             }
         }
         // Mirror the bare-count scan over `program.module_graph` non-root
@@ -510,7 +567,22 @@ pub fn lower_program_with_mono_cap(
                                     }
                                 }
                             }
-                            _ => {}
+                            // No pub variant bare-names in imported modules for
+                            // these items. Compiler enforces exhaustivity if a
+                            // new Item variant is added.
+                            Item::Import(_)
+                            | Item::Const(_)
+                            | Item::TypeDecl(_)
+                            | Item::TypeAlias(_)
+                            | Item::Trait(_)
+                            | Item::Impl(_)
+                            | Item::Wire(_)
+                            | Item::Function(_)
+                            | Item::ExternBlock(_)
+                            | Item::Machine(_)
+                            | Item::Actor(_)
+                            | Item::Supervisor(_)
+                            | Item::Record(_) => {}
                         }
                     }
                 }
@@ -564,7 +636,21 @@ pub fn lower_program_with_mono_cap(
                         }
                     }
                 }
-                _ => {}
+                // No ctor entries to register for these items. If a new Item
+                // variant with enumerable ctors is added, the compiler will
+                // force a conscious decision here.
+                Item::Import(_)
+                | Item::Const(_)
+                | Item::TypeDecl(_)
+                | Item::TypeAlias(_)
+                | Item::Trait(_)
+                | Item::Impl(_)
+                | Item::Wire(_)
+                | Item::Function(_)
+                | Item::ExternBlock(_)
+                | Item::Actor(_)
+                | Item::Supervisor(_)
+                | Item::Record(_) => {}
             }
         }
         // Mirror the machine_ctor_registry fill over `program.module_graph`
@@ -644,7 +730,22 @@ pub fn lower_program_with_mono_cap(
                                     }
                                 }
                             }
-                            _ => {}
+                            // No pub ctor entries to register from imported
+                            // modules for these items. Compiler enforces
+                            // exhaustivity if a new Item variant is added.
+                            Item::Import(_)
+                            | Item::Const(_)
+                            | Item::TypeDecl(_)
+                            | Item::TypeAlias(_)
+                            | Item::Trait(_)
+                            | Item::Impl(_)
+                            | Item::Wire(_)
+                            | Item::Function(_)
+                            | Item::ExternBlock(_)
+                            | Item::Machine(_)
+                            | Item::Actor(_)
+                            | Item::Supervisor(_)
+                            | Item::Record(_) => {}
                         }
                     }
                 }
@@ -816,7 +917,22 @@ pub fn lower_program_with_mono_cap(
                         Item::Machine(machine) if machine.visibility.is_pub() => {
                             ctx.register_machine_ctor_variant_metadata(Some(module_short), machine);
                         }
-                        _ => {}
+                        // No enum-variant metadata for these items in imported
+                        // modules. Compiler enforces exhaustivity if a new
+                        // Item variant is added.
+                        Item::Import(_)
+                        | Item::Const(_)
+                        | Item::TypeDecl(_)
+                        | Item::TypeAlias(_)
+                        | Item::Trait(_)
+                        | Item::Impl(_)
+                        | Item::Wire(_)
+                        | Item::Function(_)
+                        | Item::ExternBlock(_)
+                        | Item::Machine(_)
+                        | Item::Actor(_)
+                        | Item::Supervisor(_)
+                        | Item::Record(_) => {}
                     }
                 }
             }
@@ -931,7 +1047,23 @@ pub fn lower_program_with_mono_cap(
                             ctx.enum_variants_by_name
                                 .insert(event_type_name, event_variants);
                         }
-                        _ => {}
+                        // No enum-variant/machine descriptors to cache for
+                        // these items in imported modules (§4b pre-pass). If
+                        // a new Item variant is added, the compiler will force
+                        // a conscious decision here.
+                        Item::Import(_)
+                        | Item::Const(_)
+                        | Item::TypeDecl(_)
+                        | Item::TypeAlias(_)
+                        | Item::Trait(_)
+                        | Item::Impl(_)
+                        | Item::Wire(_)
+                        | Item::Function(_)
+                        | Item::ExternBlock(_)
+                        | Item::Machine(_)
+                        | Item::Actor(_)
+                        | Item::Supervisor(_)
+                        | Item::Record(_) => {}
                     }
                 }
             }
@@ -1183,7 +1315,33 @@ pub fn lower_program_with_mono_cap(
                                 }));
                             }
                         }
-                        _ => {}
+                        // TODO(fix/imported-impl-lowering): Item::Impl is
+                        // omitted here. Imported pub impl methods need both
+                        // fn_registry pre-pass entries AND emitted HirItem
+                        // function bodies; lowering them requires resolving
+                        // private-helper dependencies in the imported module,
+                        // which is a scoped follow-up.
+                        //
+                        // Item::Record, Item::Actor, Item::Supervisor from
+                        // imported modules are intentionally not emitted in
+                        // this slice; their cross-module lowering semantics
+                        // are tracked as separate follow-ups.
+                        //
+                        // Non-pub Function/TypeDecl/Machine fall here (not
+                        // visible to importers). If a new Item variant is
+                        // added, the compiler will force a conscious decision.
+                        Item::Import(_)
+                        | Item::Const(_)
+                        | Item::Function(_)
+                        | Item::TypeDecl(_)
+                        | Item::TypeAlias(_)
+                        | Item::Trait(_)
+                        | Item::Impl(_)
+                        | Item::Wire(_)
+                        | Item::Machine(_)
+                        | Item::Record(_)
+                        | Item::Actor(_)
+                        | Item::Supervisor(_) => {}
                     }
                 }
             }
@@ -9276,13 +9434,11 @@ fn walk_expr_for_machine_allowlist(
                 walk_expr_for_machine_allowlist(item, state_names, out);
             }
         }
-        // Other Expr variants (lambdas, spawn, select, scope, timeout,
-        // for-loops, ...) aren't expected to appear inside a machine
-        // transition body or entry/exit block in v0.5. They are
-        // intentionally not descended-into: the walker's contract is
-        // conservative, so any sub-expression we don't visit cannot
-        // mask an unresolved diagnostic — the diagnostic simply isn't
-        // allowlisted and surfaces normally.
+        // LEGITIMATE-NOOP: conservative Expr walker — only Expr variants
+        // reachable in machine transition/entry/exit bodies are descended into.
+        // Unknown variants cannot mask unresolved diagnostics; they simply
+        // aren't allowlisted and surface normally. Expr has many variants not
+        // valid here (lambdas, spawn, select, scope, timeout, for-loops, …).
         _ => {}
     }
 }
@@ -9334,8 +9490,9 @@ fn walk_stmt_for_machine_allowlist(
             }
         }
         Stmt::Defer(inner) => walk_expr_for_machine_allowlist(inner, state_names, out),
-        // Other statement variants aren't expected inside an entry/exit
-        // block in v0.5; see the walker contract note on `walk_expr_for_machine_allowlist`.
+        // LEGITIMATE-NOOP: conservative Stmt walker — only statement variants
+        // reachable in machine entry/exit blocks are descended into. See the
+        // walker contract note on `walk_expr_for_machine_allowlist`.
         _ => {}
     }
 }
@@ -9416,6 +9573,9 @@ fn collect_emitted_events_inner(expr: &Expr, out: &mut Vec<String>) {
                 collect_emitted_events_inner(&tail.0, out);
             }
         }
+        // LEGITIMATE-NOOP: this walker only collects `MachineEmit` and
+        // descends into `Block` for top-level event counting. Other Expr
+        // variants are irrelevant to direct-emit detection.
         _ => {}
     }
 }

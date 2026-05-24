@@ -148,6 +148,24 @@ pub struct TypeCheckOutput {
     pub errors: Vec<TypeError>,
     pub warnings: Vec<TypeError>,
     pub type_defs: HashMap<String, TypeDef>,
+    /// Names of monomorphic builtin enums (e.g. `LookupError`) that were
+    /// pre-registered into `type_defs` from `std/builtins.hew` for use in
+    /// pattern-matching dispatch (`match Err(LookupError::NotFound) { … }`)
+    /// but whose declarations are NOT part of the user program's authored
+    /// source.
+    ///
+    /// Consumers that emit per-program "everything in `type_defs`" outputs
+    /// (e.g. the sandbox-WASM bytecode descriptor table) must filter out
+    /// these names UNLESS a user `TypeDecl` with the same name was also
+    /// registered (in which case the user declaration is the source of
+    /// truth and the entry is no longer internal-only).
+    ///
+    /// Populated from
+    /// [`crate::builtin_enums::monomorphic_builtin_enums`] at checker
+    /// startup so the marker stays in lockstep with the IR-substrate
+    /// catalog consumed by MIR's
+    /// `register_builtin_monomorphic_enum_layouts`.
+    pub internal_builtin_enum_names: HashSet<String>,
     pub fn_sigs: HashMap<String, FnSig>,
     /// Struct type names whose fields directly or transitively contain opaque
     /// handle values. Used to enforce owned-handle accessor restrictions and
@@ -622,6 +640,7 @@ impl Default for TypeCheckOutput {
             errors: Vec::new(),
             warnings: Vec::new(),
             type_defs: HashMap::new(),
+            internal_builtin_enum_names: HashSet::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: HashSet::default(),
             cycle_capable_actors: HashSet::default(),

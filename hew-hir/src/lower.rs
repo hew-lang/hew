@@ -40,6 +40,12 @@ type OuterClosureBinding = (String, ResolvedTy, std::ops::Range<usize>);
 type ClosureCaptureCandidate = (BindingId, String, std::ops::Range<usize>);
 const SYNTHETIC_OPTION_ITEM: ItemId = ItemId(u32::MAX - 1);
 const SYNTHETIC_RESULT_ITEM: ItemId = ItemId(u32::MAX - 2);
+/// `LookupError` is declared in `std/builtins.hew`, but builtins.hew is
+/// loaded out-of-band (not via `module_graph`), so the user-enum walk in
+/// `lower_program` never sees it. Surface it through the same builtin-enum
+/// path as `Option` / `Result` so `Err(LookupError::NotFound)` match arms
+/// resolve via `machine_ctor_registry`.
+const SYNTHETIC_LOOKUP_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1000);
 
 /// Bare-name variants of built-in tagged unions. Counted into the pre-pass's
 /// `bare_counts` so a user enum that redeclares one of them correctly marks
@@ -75,6 +81,13 @@ fn builtin_enum_specs() -> &'static [BuiltinEnumSpec] {
             type_params: &["T", "E"],
             variant_names: &["Ok", "Err"],
             variant_payloads: &[&["T"], &["E"]],
+        },
+        BuiltinEnumSpec {
+            type_name: "LookupError",
+            item_id: SYNTHETIC_LOOKUP_ERROR_ITEM,
+            type_params: &[],
+            variant_names: &["NotFound"],
+            variant_payloads: &[&[]],
         },
     ]
 }
@@ -659,6 +672,18 @@ pub fn lower_program_with_mono_cap(
         );
         ctx.enum_item_ids
             .insert(spec.type_name.to_string(), spec.item_id);
+        // Tag-only / monomorphic builtin enums (e.g. `LookupError`) need a
+        // `type_classes` registration so MIR `push_unknown_type_diagnostics`
+        // does not flag them, and so `ValueClass::of_ty` resolves them as
+        // `BitCopy` (no payload → no drop work). Generic builtin enums
+        // (`Option`, `Result`) are skipped here: their per-instantiation
+        // origin name is added to `machine_layout_names` via the
+        // `enum_layouts.iter().map(origin_name)` chain in `hew-mir/src/lower.rs`,
+        // and their `ValueClass` is computed on the substituted variants.
+        if spec.type_params.is_empty() {
+            ctx.type_classes
+                .insert(spec.type_name.to_string(), (ResourceMarker::BitCopy, None));
+        }
     }
 
     // Discard pre-pass diagnostics from `lower_type`; the third pass re-emits
@@ -1123,6 +1148,20 @@ pub fn lower_program_with_mono_cap(
             }
         }
     }
+
+    // Monomorphic builtin enums (e.g. `LookupError`) intentionally do NOT
+    // appear in `items` here. Their declarations live in
+    // `std/builtins.hew` and their tagged-union layout is registered
+    // out-of-band into MIR via
+    // `hew-mir::register_builtin_monomorphic_enum_layouts`, which reads
+    // the catalog in `hew_types::builtin_enums::monomorphic_builtin_enums`.
+    // This keeps `HirProgram::items` a faithful mirror of user source —
+    // an earlier prototype injected a synthetic `HirItem::TypeDecl` here
+    // for every monomorphic builtin enum and leaked the type into the
+    // downstream sandbox-VM bytecode descriptor table of every program,
+    // including ones that never referenced `Node::lookup`. Generic
+    // builtin enums (`Option`, `Result`) continue to flow through
+    // `EnumLayoutRegistry` per-instantiation (see below).
 
     let mut monomorphisations = ctx.mono_registry.into_vec();
     let call_site_type_args = ctx.call_site_type_args;

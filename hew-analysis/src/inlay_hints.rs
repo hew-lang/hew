@@ -655,6 +655,7 @@ mod tests {
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
+            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),

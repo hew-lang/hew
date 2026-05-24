@@ -392,6 +392,23 @@ impl Checker {
         let actor_protocol_descriptors =
             build_actor_protocol_descriptors(program, &resolved_fn_sigs, &mut self.errors);
 
+        // Compute the set of monomorphic builtin enum names that landed in
+        // `type_defs` via internal pre-registration (e.g.
+        // `register_builtins_hew_impls`) without a matching user-source
+        // TypeDecl. Sandbox-WASM emit consults this to suppress its eager
+        // `type_defs` sweep for builtin shapes the user did not author.
+        let internal_builtin_enum_names: HashSet<String> = {
+            use crate::builtin_enums::monomorphic_builtin_enums;
+            monomorphic_builtin_enums()
+                .iter()
+                .filter(|spec| {
+                    resolved_type_defs.contains_key(spec.name)
+                        && !self.source_type_defs.contains(spec.name)
+                })
+                .map(|spec| spec.name.to_string())
+                .collect()
+        };
+
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
             is_type_patterns: std::mem::take(&mut self.is_type_patterns),
@@ -411,6 +428,7 @@ impl Checker {
             errors: std::mem::take(&mut self.errors),
             warnings: std::mem::take(&mut self.warnings),
             type_defs: resolved_type_defs,
+            internal_builtin_enum_names,
             fn_sigs: resolved_fn_sigs,
             handle_bearing_structs: {
                 // Flush any pending dirty registration before the set is moved

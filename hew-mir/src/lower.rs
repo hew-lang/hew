@@ -257,6 +257,51 @@ fn register_builtin_record_layouts(
     }
 }
 
+/// Register `EnumLayout` entries for monomorphic builtin enums declared
+/// in `std/builtins.hew` (e.g. `LookupError`).
+///
+/// These enums have no `HirItem::TypeDecl` in user source (builtins.hew
+/// is consumed by the checker for signature wiring, not the HIR third
+/// pass) and no generic-enum-registry entry (they have no type params),
+/// so MIR has no other path to learn their tagged-union layout. Codegen's
+/// `register_enum_layouts` reads `pipeline.enum_layouts` to build LLVM
+/// tagged-union types; `Builder::is_known_actor_runtime_ty` reads
+/// `machine_layout_names` to classify the type as `BitCopy`.
+///
+/// Returns the set of registered names so the caller can fold them into
+/// `machine_layout_names`. Skips any name that already has a layout (e.g.
+/// because a user enum coincidentally shadows the builtin name); the
+/// user-source layout wins, mirroring the precedent in
+/// `register_builtin_record_layouts`.
+fn register_builtin_monomorphic_enum_layouts(
+    enum_layouts: &mut Vec<crate::model::EnumLayout>,
+) -> Vec<String> {
+    let existing: HashSet<String> = enum_layouts.iter().map(|el| el.name.clone()).collect();
+    let mut registered = Vec::new();
+    for spec in hew_types::builtin_enums::monomorphic_builtin_enums() {
+        if existing.contains(spec.name) {
+            continue;
+        }
+        let variant_count = u32::try_from(spec.variants.len().max(1)).unwrap_or(u32::MAX);
+        let tag_width = u32::max(1, variant_count.next_power_of_two().trailing_zeros());
+        let variants: Vec<crate::model::MachineVariantLayout> = spec
+            .variants
+            .iter()
+            .map(|v| crate::model::MachineVariantLayout {
+                name: v.name.to_string(),
+                field_tys: Vec::new(),
+            })
+            .collect();
+        enum_layouts.push(crate::model::EnumLayout {
+            name: spec.name.to_string(),
+            tag_width,
+            variants,
+        });
+        registered.push(spec.name.to_string());
+    }
+    registered
+}
+
 fn method_name_from_id(method_id: &str) -> &str {
     method_id.rsplit("::").next().unwrap_or(method_id)
 }
@@ -550,6 +595,27 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     // emission (this loop) and value-class resolution (Slice 4) must land
     // in the same cluster; the HIR registry is unconsumed scaffolding without
     // this consumer.
+    // Register layouts for monomorphic builtin enums declared in
+    // `std/builtins.hew` (today: `LookupError`). These never appear in
+    // `module.items` (builtins.hew is consumed for signature wiring, not
+    // emitted into the items list) and never appear in
+    // `module.enum_layouts` (they have no type params, so
+    // `EnumLayoutRegistry` produces no per-instantiation entry). Without
+    // this hook MIR/codegen could not see their tagged-union layout.
+    // The returned name list is folded into `machine_layout_names` below
+    // so `Builder::is_known_actor_runtime_ty` classifies sites typed as
+    // the builtin enum.
+    //
+    // ORDER: must run BEFORE the generic-enum instantiation loop below.
+    // `register_enum_layouts` in codegen processes `pipeline.enum_layouts`
+    // in order; an entry's `build_tagged_union_layout` call resolves each
+    // variant's `field_tys` against the layouts registered so far. Generic
+    // instantiations like `Result<RemotePid<T>, LookupError>` reference
+    // `Named { name: "LookupError" }` in their Err variant — that lookup
+    // requires the `LookupError` layout to be registered first.
+    let builtin_monomorphic_enum_names =
+        register_builtin_monomorphic_enum_layouts(&mut enum_layouts);
+
     for hir_layout in &module.enum_layouts {
         let variant_count = u32::try_from(hir_layout.variants.len().max(1)).unwrap_or(u32::MAX);
         let tag_width = u32::max(1, variant_count.next_power_of_two().trailing_zeros());
@@ -667,6 +733,16 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 .enum_layouts
                 .iter()
                 .map(|el| el.key.origin_name.clone()),
+        )
+        .chain(
+            // Include monomorphic builtin enums registered out-of-band above
+            // (e.g. `LookupError`). Their `HirItem::TypeDecl` is intentionally
+            // absent from `module.items` to keep the items list a faithful
+            // mirror of user source — without this chain entry,
+            // `is_known_actor_runtime_ty` would classify the builtin as
+            // `ValueClass::Unknown` and the MIR fail-closed boundary would
+            // reject any local typed `Named { name: "LookupError", args: [] }`.
+            builtin_monomorphic_enum_names,
         )
         .collect();
 
@@ -12929,12 +13005,13 @@ mod enum_layout_tests {
             "no diagnostics expected for monomorphic mixed enum; got: {:?}",
             pipeline.diagnostics
         );
-        assert_eq!(
-            pipeline.enum_layouts.len(),
-            1,
-            "expected one EnumLayout for Shape"
-        );
-        let layout = &pipeline.enum_layouts[0];
+        let user_layouts: Vec<_> = pipeline
+            .enum_layouts
+            .iter()
+            .filter(|l| l.name != "LookupError")
+            .collect();
+        assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Shape");
+        let layout = user_layouts[0];
         assert_eq!(layout.name, "Shape");
         assert_eq!(layout.variants.len(), 3);
         // Declaration order is load-bearing: Point=0, Line=1, Box=2. MIR's
@@ -12977,13 +13054,14 @@ mod enum_layout_tests {
             "no diagnostics expected for all-unit enum; got: {:?}",
             pipeline.diagnostics
         );
-        assert_eq!(
-            pipeline.enum_layouts.len(),
-            1,
-            "expected one EnumLayout for Colour"
-        );
-        assert_eq!(pipeline.enum_layouts[0].name, "Colour");
-        assert_eq!(pipeline.enum_layouts[0].variants.len(), 3);
+        let user_layouts: Vec<_> = pipeline
+            .enum_layouts
+            .iter()
+            .filter(|l| l.name != "LookupError")
+            .collect();
+        assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Colour");
+        assert_eq!(user_layouts[0].name, "Colour");
+        assert_eq!(user_layouts[0].variants.len(), 3);
     }
 
     #[test]
@@ -13046,13 +13124,19 @@ mod enum_layout_tests {
         );
         // The MIR pipeline emits the layout under the mangled name (not "Option").
         // Codegen finds it via the mangled key in machine_layout_map.
+        // The builtin `LookupError` layout is always registered out-of-band; filter
+        // it out so this test asserts on the user-declared layouts only.
+        let user_layouts: Vec<_> = pipeline
+            .enum_layouts
+            .iter()
+            .filter(|l| l.name != "LookupError")
+            .collect();
         assert_eq!(
-            pipeline.enum_layouts.len(),
+            user_layouts.len(),
             1,
-            "expected one MIR EnumLayout for Option$$i64; got: {:?}",
-            pipeline.enum_layouts
+            "expected one MIR EnumLayout for Option$$i64; got: {user_layouts:?}"
         );
-        let layout = &pipeline.enum_layouts[0];
+        let layout = user_layouts[0];
         assert_eq!(
             layout.name, "Option$$i64",
             "layout must be emitted under mangled name"

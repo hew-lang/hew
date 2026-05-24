@@ -259,6 +259,18 @@ impl<'a> PackageEmitter<'a> {
         }
 
         for (name, type_def) in &self.type_output.type_defs {
+            // Suppress emission for monomorphic builtin enums (e.g. `LookupError`)
+            // that were pre-registered into `type_defs` from `std/builtins.hew`
+            // but were not authored by the user. Their machine layout is
+            // registered out-of-band via MIR's
+            // `register_builtin_monomorphic_enum_layouts` and codegen's
+            // builtin-enum-layout pass, so they do not need to appear in
+            // per-program bytecode descriptor tables. If the program actually
+            // references the type, the on-demand `type_id_for_named` path
+            // elsewhere in emit still emits a layout entry.
+            if self.type_output.internal_builtin_enum_names.contains(name) {
+                continue;
+            }
             let type_id = self.type_id_for_named(name, &[]);
             match type_def.kind {
                 TypeDefKind::Struct | TypeDefKind::Record => {

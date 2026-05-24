@@ -7242,6 +7242,184 @@ fn emit_trap_with_code(fn_ctx: &FnCtx<'_, '_>, code: u64, label: &str) -> Codege
     Ok(())
 }
 
+/// Emit the call sequence for `Node::lookup<T>(name) -> Result<RemotePid<T>, LookupError>`.
+///
+/// The runtime extern `hew_node_api_lookup(name: *const c_char) -> u64` returns a
+/// packed pid (0 == not found); user-visible code sees a Result. Codegen
+/// constructs the Result in-place from the raw u64:
+///   * `rc != 0` → tag=0 (Ok), variant 0 field 0 = rc as `RemotePid<T>` (u64).
+///   * `rc == 0` → tag=1 (Err), variant 1 field 0 = `LookupError::NotFound`
+///     (a zero-initialised `LookupError` outer struct).
+///
+/// This bypasses the generic `FnSymbol::Real` `dest_ty == return_ty` check,
+/// which would otherwise reject the Result-typed dest against the catalog's
+/// `u64` return shape. The catalog deliberately advertises the C-ABI shape so
+/// `predeclare_stdlib_catalog` declares the extern with the right LLVM type;
+/// the Result construction lives here, not in a new `FnSymbol` variant
+/// (single-shim per the lane plan; mirrors `RemotePid::from_raw`'s precedent
+/// of catalog-return-as-u64 + user-visible-type-via-codegen).
+fn emit_node_lookup_call<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    fn_symbols: &FnSymbolMap<'ctx>,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    let symbol_entry = *fn_symbols.get("Node::lookup").ok_or_else(|| {
+        CodegenError::FailClosed(
+            "Node::lookup has no declared FFI symbol — predeclare_stdlib_catalog must \
+             register it before Terminator::Call lowering"
+                .into(),
+        )
+    })?;
+    let (lookup_fn, _ret_ty, _returns_unit) =
+        symbol_entry.real("Node::lookup", "Terminator::Call(Node::lookup)")?;
+    let [name_arg] = args else {
+        return Err(CodegenError::FailClosed(format!(
+            "Node::lookup expects exactly 1 argument (name), got {}",
+            args.len()
+        )));
+    };
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "Node::lookup must carry a Terminator::Call dest (Result return value)".into(),
+        )
+    })?;
+    let dest_local = match dest_place {
+        Place::Local(id) => *id,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "Node::lookup dest must be Place::Local(_), got {other:?}"
+            )));
+        }
+    };
+
+    // Load the name string (a `ptr` value stored in the arg's alloca).
+    let (name_ptr_slot, name_slot_ty) = place_pointer(fn_ctx, *name_arg)?;
+    let name_val = fn_ctx
+        .builder
+        .build_load(name_slot_ty, name_ptr_slot, "lookup_name")
+        .map_err(|e| CodegenError::Llvm(format!("load lookup name: {e:?}")))?;
+
+    // Call the runtime extern.
+    let call_site = fn_ctx
+        .builder
+        .build_call(
+            lookup_fn,
+            &[metadata_value_from_basic(name_val)],
+            "lookup_rc",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_node_api_lookup call: {e:?}")))?;
+    let rc_basic = call_site.try_as_basic_value().basic().ok_or_else(|| {
+        CodegenError::FailClosed(
+            "hew_node_api_lookup returned void — expected u64 packed pid".into(),
+        )
+    })?;
+    let rc = rc_basic.into_int_value();
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let zero64 = i64_ty.const_zero();
+    let is_zero = fn_ctx
+        .builder
+        .build_int_compare(IntPredicate::EQ, rc, zero64, "lookup_is_zero")
+        .map_err(|e| CodegenError::Llvm(format!("lookup icmp: {e:?}")))?;
+
+    // Build target basic blocks for the Ok/Err arms; both join at `next`.
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::FailClosed("Node::lookup call has no parent function".into())
+        })?;
+    let err_bb = fn_ctx.ctx.append_basic_block(parent, "lookup_err_bb");
+    let ok_bb = fn_ctx.ctx.append_basic_block(parent, "lookup_ok_bb");
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_zero, err_bb, ok_bb)
+        .map_err(|e| CodegenError::Llvm(format!("lookup condbr: {e:?}")))?;
+
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("Node::lookup next bb{next} missing")))?;
+
+    // --- Err branch: tag=1, payload = LookupError::NotFound ---------------
+    fn_ctx.builder.position_at_end(err_bb);
+    let (tag_ptr_err, tag_ty_err) = place_pointer(fn_ctx, Place::MachineTag(dest_local))?;
+    let tag_int_ty_err = match tag_ty_err {
+        BasicTypeEnum::IntType(t) => t,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "Node::lookup dest Result tag type is not an integer: {other:?}"
+            )));
+        }
+    };
+    let tag_one = tag_int_ty_err.const_int(1, false);
+    fn_ctx
+        .builder
+        .build_store(tag_ptr_err, tag_one)
+        .map_err(|e| CodegenError::Llvm(format!("store Err tag: {e:?}")))?;
+    let (err_field_ptr, err_field_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 1,
+            field_idx: 0,
+        },
+    )?;
+    // `LookupError::NotFound` is variant 0 of a single-variant enum with no
+    // payload — the entire `LookupError` outer struct is zero-initialised.
+    let zero_lookup_err = err_field_ty.const_zero();
+    fn_ctx
+        .builder
+        .build_store(err_field_ptr, zero_lookup_err)
+        .map_err(|e| CodegenError::Llvm(format!("store LookupError::NotFound: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .map_err(|e| CodegenError::Llvm(format!("lookup err br next: {e:?}")))?;
+
+    // --- Ok branch: tag=0, payload = RemotePid<T>(rc as u64) --------------
+    fn_ctx.builder.position_at_end(ok_bb);
+    let (tag_ptr_ok, tag_ty_ok) = place_pointer(fn_ctx, Place::MachineTag(dest_local))?;
+    let tag_int_ty_ok = match tag_ty_ok {
+        BasicTypeEnum::IntType(t) => t,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "Node::lookup dest Result tag type is not an integer: {other:?}"
+            )));
+        }
+    };
+    let tag_zero = tag_int_ty_ok.const_zero();
+    fn_ctx
+        .builder
+        .build_store(tag_ptr_ok, tag_zero)
+        .map_err(|e| CodegenError::Llvm(format!("store Ok tag: {e:?}")))?;
+    let (ok_field_ptr, ok_field_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 0,
+            field_idx: 0,
+        },
+    )?;
+    if !matches!(ok_field_ty, BasicTypeEnum::IntType(t) if t.get_bit_width() == 64) {
+        return Err(CodegenError::FailClosed(format!(
+            "Node::lookup Ok payload (RemotePid<T>) must be i64, got {ok_field_ty:?}"
+        )));
+    }
+    fn_ctx
+        .builder
+        .build_store(ok_field_ptr, rc)
+        .map_err(|e| CodegenError::Llvm(format!("store RemotePid<T> u64: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .map_err(|e| CodegenError::Llvm(format!("lookup ok br next: {e:?}")))?;
+
+    Ok(())
+}
+
 fn lower_terminator<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbols: &FnSymbolMap<'ctx>,
@@ -7317,6 +7495,15 @@ fn lower_terminator<'ctx>(
             dest,
             next,
         } => {
+            // `Node::lookup` constructs `Result<RemotePid<T>, LookupError>` in-place
+            // from the runtime extern's raw `u64` packed-pid return. The generic
+            // FnSymbol::Real arm's `dest_ty == return_ty` check rejects this shape
+            // (Result outer struct vs. i64), so we handle it before the symbol
+            // lookup. See `emit_node_lookup_call`.
+            if callee == "Node::lookup" {
+                emit_node_lookup_call(fn_ctx, fn_symbols, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
             let callee_symbol_entry = *fn_symbols.get(callee).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "Call to `{callee}` with no declared symbol (coroutine targets are not callable yet)"

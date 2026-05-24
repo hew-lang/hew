@@ -845,6 +845,25 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_remote_pid_from_raw",
         },
     ),
+    // `Node::lookup<T>(name: String) -> Result<RemotePid<T>, LookupError>`
+    //
+    // The C-ABI shape is `hew_node_api_lookup(name: ptr) -> u64`: a packed
+    // RemotePid encoding on success, or `0` on not-found / no-node / null-name.
+    // The catalog entry carries the FFI-level types (String → U64); the
+    // codegen Terminator::Call branch for "Node::lookup" wraps the raw `u64`
+    // into the user-visible `Result<RemotePid<T>, LookupError>` by storing
+    // tag and payload directly into the dest enum slot. RuntimeFfiShim is the
+    // correct linkage because the call is a single C extern — no new
+    // `FnSymbol::*` variant is needed (codegen branches by callee name).
+    direct(
+        "Node::lookup",
+        BuiltinClass::ClassB,
+        STRING,
+        BuiltinTy::U64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_lookup",
+        },
+    ),
 ];
 
 #[must_use]

@@ -78,6 +78,19 @@ pub enum CrashAction {
 }
 ";
 
+/// Embedded source for the built-in `LookupError` enum used as the `Err`
+/// variant of `Node::lookup<T>(name) -> Result<RemotePid<T>, LookupError>`.
+///
+/// Inline tests do not flow through the import resolver, so this stdlib
+/// surface is registered directly into the checker via
+/// `register_stdlib_hew_items` the same way `LinkError` / `CrashAction`
+/// are bootstrapped from `MONITOR_REF_HEW` / `FAILURE_HEW`.
+const LOOKUP_ERROR_HEW: &str = r"
+pub enum LookupError {
+    NotFound;
+}
+";
+
 /// Raw TOML text of `scripts/jit-symbol-classification.toml`, embedded at
 /// compile time so `extern "rt"` validation does not require a runtime file
 /// read and works in test environments without a workspace checkout.
@@ -532,7 +545,27 @@ impl Checker {
             vec![Ty::String, Ty::Var(TypeVar::fresh())],
             Ty::I32,
         );
-        self.register_builtin_fn("Node::lookup", vec![Ty::String], Ty::Var(TypeVar::fresh()));
+        // `Node::lookup<T>(name: String) -> Result<RemotePid<T>, LookupError>`.
+        // The runtime extern returns a packed `u64` pid (0 == not found); the
+        // codegen branch lowers this into a `Result` construction inline.
+        self.register_builtin_fn_with_bounds(
+            "Node::lookup",
+            vec!["T".to_string()],
+            HashMap::new(),
+            vec![Ty::String],
+            Ty::result(
+                Ty::remote_pid(Ty::Named {
+                    builtin: None,
+                    name: "T".to_string(),
+                    args: vec![],
+                }),
+                Ty::Named {
+                    builtin: None,
+                    name: "LookupError".to_string(),
+                    args: vec![],
+                },
+            ),
+        );
 
         // std::math module — always available, no import needed
         self.modules.insert("math".to_string());
@@ -675,6 +708,7 @@ impl Checker {
             self.register_builtin_closable_surface();
             self.register_builtin_monitor_ref_surface();
             self.register_builtin_failure_surface();
+            self.register_builtin_lookup_error_surface();
         }
     }
 
@@ -850,6 +884,28 @@ impl Checker {
         if parsed.errors.is_empty() {
             let items: Vec<_> = parsed.program.items.into_iter().collect();
             self.register_stdlib_hew_items("failure", &items);
+        }
+    }
+
+    /// Register the built-in `LookupError` enum so `Node::lookup<T>` callers
+    /// can pattern-match `Err(LookupError::NotFound)` without an explicit
+    /// import (inline-test parity with `LinkError` / `CrashAction`).
+    fn register_builtin_lookup_error_surface(&mut self) {
+        let identity = "module:std::lookup_error";
+        if self.registered_stdlib_hew_sources.contains(identity) {
+            return;
+        }
+        self.registered_stdlib_hew_sources
+            .insert(identity.to_string());
+        let parsed = hew_parser::parse(LOOKUP_ERROR_HEW);
+        debug_assert!(
+            parsed.errors.is_empty(),
+            "std/builtins.hew::LookupError failed to parse: {:?}",
+            parsed.errors
+        );
+        if parsed.errors.is_empty() {
+            let items: Vec<_> = parsed.program.items.into_iter().collect();
+            self.register_stdlib_hew_items("lookup_error", &items);
         }
     }
 

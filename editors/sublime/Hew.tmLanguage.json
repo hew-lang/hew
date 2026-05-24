@@ -256,9 +256,9 @@
     "keywords": {
       "patterns": [
         {
-          "comment": "Control flow",
+          "comment": "Control flow (v0.5 additions: is)",
           "name": "keyword.control.hew",
-          "match": "\\b(after|await|break|continue|cooperate|defer|else|for|from|if|in|join|loop|match|return|scope|select|while|yield)\\b"
+          "match": "\\b(after|await|break|continue|cooperate|defer|else|for|from|if|in|is|join|loop|match|return|scope|select|while|yield)\\b"
         },
         {
           "comment": "Declarations",

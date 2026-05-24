@@ -312,3 +312,117 @@ fn is_after_actor_send_emits_use_after_move() {
         output.errors
     );
 }
+
+// ---------------------------------------------------------------------------
+// `is TypeName` (type-pattern form)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn is_type_pattern_static_tautology_emits_redundant_is_warning() {
+    // Static-tautology: `holder is Holder` where `holder: Holder` is a
+    // user `type` declaration. The checker records the type-pattern in
+    // `is_type_patterns`, HIR lowers it to `HirLiteral::Bool(true)`, and
+    // any `else` branch gated on the negation is dead. A `RedundantIs`
+    // warning surfaces this so the user is told before they wonder why
+    // their else-branch never runs.
+    let output = common::typecheck_isolated(
+        r"
+            type Holder {
+                v: i64;
+            }
+
+            fn main() {
+                let holder = Holder { v: 1 };
+                let _eq: bool = holder is Holder;
+            }
+        ",
+    );
+    let redundant = common::warnings_of_kind(&output, &TypeErrorKind::RedundantIs);
+    assert!(
+        !redundant.is_empty(),
+        "expected at least one RedundantIs warning, got: {:#?}",
+        output.warnings,
+    );
+}
+
+#[test]
+fn is_type_pattern_with_distinct_types_emits_no_redundant_is_warning() {
+    // Positive-control: when the LHS type does NOT equal the RHS type
+    // pattern the comparison is genuinely non-trivial — the checker should
+    // flag the Mismatch (and not the static-tautology warning).
+    let output = common::typecheck_isolated(
+        r"
+            type Holder {
+                v: i64;
+            }
+
+            type Other {
+                w: i64;
+            }
+
+            fn main() {
+                let holder = Holder { v: 1 };
+                let _eq: bool = holder is Other;
+            }
+        ",
+    );
+    let redundant = common::warnings_of_kind(&output, &TypeErrorKind::RedundantIs);
+    assert!(
+        redundant.is_empty(),
+        "expected no RedundantIs warning when types differ, got: {:#?}",
+        output.warnings,
+    );
+}
+
+#[test]
+fn is_type_pattern_value_type_lhs_emits_e_is_value_type() {
+    // Regression coverage for the type-pattern path of E_IS_VALUE_TYPE:
+    // `a is i64` where `a: i64` must reject the LHS as a value type. The
+    // identity-allowance rule is the same in the type-pattern branch as
+    // in the value-pattern branch; without this test the type-pattern
+    // path could regress to silently admitting scalar receivers.
+    assert_has_e_is_value_type(
+        r"
+            fn main() {
+                let a: i64 = 1;
+                let _eq: bool = a is i64;
+            }
+        ",
+    );
+}
+
+#[test]
+fn is_type_pattern_requires_identifier_lhs_emits_invalid_operation() {
+    // Guard test for the "type patterns currently require an identifier
+    // operand" `InvalidOperation` rejection: a non-Identifier LHS that
+    // nonetheless produces an identity-bearing type (here a function-call
+    // result) must trip the guard rather than slip through to the
+    // type-pattern recording path. Using a function-call result keeps
+    // the LHS identity-capable so the value-type rejection (E_IS_VALUE_TYPE)
+    // doesn't fire first.
+    let output = common::typecheck_isolated(
+        r"
+            type Holder {
+                v: i64;
+            }
+
+            fn make() -> Holder {
+                Holder { v: 1 }
+            }
+
+            fn main() {
+                let _eq: bool = make() is Holder;
+            }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::InvalidOperation)
+                && e.message
+                    .contains("type patterns currently require an identifier operand")),
+        "expected InvalidOperation rejecting non-identifier LHS, got: {:#?}",
+        output.errors,
+    );
+}

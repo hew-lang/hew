@@ -2845,6 +2845,30 @@ impl LowerCtx {
             ));
             return;
         }
+        // Inherent-impl on builtin nominal guard: reject `impl Vec<T> { ... }`
+        // and similar bare inherent impls on builtin generic types (`Vec`,
+        // `HashMap`, `Option`, `Result`, etc.). The stdlib ships its own
+        // inherent impls on these types via `std/builtins.hew` (registered
+        // through the checker's `register_builtins_hew_impls` path, not via
+        // HIR lowering), so a user-source inherent impl on the same nominal
+        // collides downstream with a confusing duplicate-definition error.
+        // Fail-closing at the V0b boundary makes the rejection site the
+        // failure site. Trait impls (`impl MyTrait for Vec<T>`) are not
+        // covered here — orphan-rule policing is a separate concern.
+        if decl.trait_bound.is_none() && hew_types::lookup_builtin_type(self_type_name).is_some() {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::ImplBlockShapeNotLowered {
+                    shape: format!("inherent impl on builtin nominal `{self_type_name}`"),
+                },
+                span,
+                "impl-block shape not yet lowered: inherent impls on builtin \
+                 nominal types (`Vec`, `HashMap`, `Option`, `Result`, etc.) are \
+                 reserved for the standard library — user code may add trait \
+                 impls (`impl MyTrait for Vec<T>`) but not bare \
+                 `impl Vec<T> { ... }`",
+            ));
+            return;
+        }
         // V0b uses `FnDecl` for impl-block methods (per parser ast), which
         // always carries a `Block` body — there is no body-less / default-method
         // shape representable here. Trait-decl default methods live on

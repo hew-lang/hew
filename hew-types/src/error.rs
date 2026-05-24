@@ -388,6 +388,10 @@ pub enum TypeErrorKind {
     StyleSuggestion,
     /// Imported module never referenced
     UnusedImport,
+    /// `is TypeName` where the static LHS type already equals the RHS type
+    /// pattern, so the comparison is a compile-time tautology that lowers
+    /// to `true` and silently dead-codes the `else` branch.
+    RedundantIs,
     /// Code after a `return`, `break`, or `continue` is never executed
     UnreachableCode,
     /// A variable binding shadows a binding from an outer scope
@@ -667,6 +671,7 @@ impl TypeErrorKind {
             Self::UnusedMut => "UnusedMut",
             Self::StyleSuggestion => "StyleSuggestion",
             Self::UnusedImport => "UnusedImport",
+            Self::RedundantIs => "RedundantIs",
             Self::UnreachableCode => "UnreachableCode",
             Self::Shadowing => "Shadowing",
             Self::DeadCode => "DeadCode",

@@ -12,11 +12,13 @@ pub mod check;
 pub mod cycle;
 pub mod env;
 pub mod error;
+pub mod extern_symbol;
 pub mod lang_items;
 pub mod lowering_facts;
 pub mod method_resolution;
 pub mod module_registry;
 pub mod resolved_ty;
+pub mod runtime_calling_convention;
 pub mod stdlib;
 pub mod stdlib_loader;
 pub mod traits;
@@ -39,10 +41,14 @@ pub use check::{
     VariantDef, VariantMatch,
 };
 pub use error::TypeError;
+pub use extern_symbol::{
+    ExternSymbolSpec, ExternSymbolTemplate, PlaceholderName, TemplateError, TemplateSegment,
+};
 pub use lang_items::{LangItemBinding, LangItemRegistry, LANG_ITEM_DISPLAY, LANG_ITEM_DISPLAY_FMT};
 pub use lowering_facts::{
     DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringFactError, LoweringKind,
 };
 pub use resolved_ty::{BoundaryError, ResolvedTraitBound, ResolvedTy};
+pub use runtime_calling_convention::RuntimeCallingConvention;
 pub use ty::{TraitObjectBound, Ty};
 pub use type_descriptor::TypeDescriptor;

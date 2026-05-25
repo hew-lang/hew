@@ -1281,6 +1281,25 @@ pub struct FnSig {
     pub is_pure: bool,
     pub accepts_kwargs: bool,
     pub doc_comment: Option<String>,
+    /// Structured `#[extern_symbol("…")]` attribute attached to the
+    /// declaration that produced this signature, if any.
+    ///
+    /// Populated by the registration pass at FnSig-ingest time from
+    /// the `attributes` slot on [`hew_parser::ast::ExternFnDecl`] /
+    /// [`hew_parser::ast::FnDecl`] when the parser recorded an
+    /// `extern_symbol` attribute. The Stage-1 attachment validation
+    /// already rejects the attribute at invalid positions (free fn,
+    /// actor, trait fn, type-decl method), so reaching this field
+    /// means the declaration is a valid attachment site (`extern "C"`
+    /// fn or `impl` method).
+    ///
+    /// Stage 2 (this field) records the parsed template — Stage 3
+    /// expands it at each reachable monomorphization and emits a
+    /// `MethodCallRewrite::RewriteToFunction { c_symbol, .. }`,
+    /// replacing the `crate::stdlib::resolve_vec_method` path.
+    ///
+    /// `None` for every signature that does not carry the attribute.
+    pub extern_symbol: Option<crate::extern_symbol::ExternSymbolSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -1301,6 +1320,7 @@ impl Default for FnSig {
             is_pure: false,
             accepts_kwargs: false,
             doc_comment: None,
+            extern_symbol: None,
         }
     }
 }

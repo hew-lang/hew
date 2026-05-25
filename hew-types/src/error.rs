@@ -650,6 +650,22 @@ pub enum TypeErrorKind {
         /// The trait name that carried the unknown positional type arguments.
         trait_name: String,
     },
+    /// A `#[extern_symbol("…")]` attribute's template payload failed the
+    /// Stage-2 grammar check defined in
+    /// `crate::extern_symbol::ExternSymbolTemplate::parse`.
+    ///
+    /// The grammar is deliberately narrow (literal runs of
+    /// `[A-Za-z0-9_]` interleaved with `{T}` placeholders); see the
+    /// `extern_symbol` module for the full spec. `reason` is the
+    /// short, deterministic string from
+    /// `TemplateError::reason()` — Stage-5 diagnostic-precision tests
+    /// pin against these exact spellings.
+    ///
+    /// Envelope code (planned, wired in Stage 3): `E_W3_001_INVALID_EXTERN_SYMBOL_TEMPLATE`.
+    InvalidExternSymbolTemplate {
+        /// Short deterministic reason; safe to pin in tests.
+        reason: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -717,6 +733,7 @@ impl TypeErrorKind {
             Self::InvalidRegexLiteral { .. } => "InvalidRegexLiteral",
             Self::RegexPatternNotString { .. } => "RegexPatternNotString",
             Self::UnknownTraitBoundShape { .. } => "UnknownTraitBoundShape",
+            Self::InvalidExternSymbolTemplate { .. } => "InvalidExternSymbolTemplate",
         }
     }
 }

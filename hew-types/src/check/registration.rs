@@ -3724,6 +3724,87 @@ impl Checker {
         }
     }
 
+    /// Ingest a `#[extern_symbol("…")]` attribute (Stage 2 of W3.001).
+    ///
+    /// Stage 1 already validated the attribute's **attachment position**
+    /// (parser rejects it on free fns, actors, trait fns,
+    /// type-decl methods). This helper runs at FnSig-ingest time on
+    /// the surviving attachment sites (extern `"C"` block fns,
+    /// inherent impl methods, trait-impl methods) and:
+    ///
+    /// 1. Finds the (at most one) `extern_symbol` attribute.
+    /// 2. Parses its template via
+    ///    [`crate::extern_symbol::ExternSymbolTemplate::parse`].
+    /// 3. On success returns a populated
+    ///    [`crate::extern_symbol::ExternSymbolSpec`].
+    /// 4. On failure emits a span-anchored
+    ///    [`TypeErrorKind::InvalidExternSymbolTemplate`] diagnostic
+    ///    and returns `None` (fail-closed: the `FnSig` records no
+    ///    template, so Stage-3 monomorphic dispatch will surface the
+    ///    same call site as an unresolved-symbol diagnostic rather
+    ///    than silently routing through a malformed template).
+    ///
+    /// Returns `None` when no `extern_symbol` attribute is present —
+    /// the normal case for ordinary functions and methods.
+    pub(super) fn ingest_extern_symbol_attrs(
+        &mut self,
+        attrs: &[Attribute],
+    ) -> Option<crate::extern_symbol::ExternSymbolSpec> {
+        let attr = attrs.iter().find(|a| a.name == "extern_symbol")?;
+        // Stage 1 parser accepts only a single positional string argument
+        // for `#[extern_symbol("...")]` (see hew-parser tests at
+        // `extern_symbol_attribute_on_*_is_captured`). If a future
+        // parser regression lets a malformed shape through, fail closed
+        // with a precise diagnostic rather than panic.
+        let raw_payload = match attr.args.as_slice() {
+            [AttributeArg::Positional(s)] => s.as_str(),
+            [] => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidExternSymbolTemplate {
+                        reason: "missing template string — expected `#[extern_symbol(\"...\")]`"
+                            .to_string(),
+                    },
+                    attr.span.clone(),
+                    "`#[extern_symbol]` requires a single string argument naming the C-ABI \
+                     runtime symbol (with optional `{T}` placeholders for per-monomorphization \
+                     dispatch)"
+                        .to_string(),
+                ));
+                return None;
+            }
+            _ => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidExternSymbolTemplate {
+                        reason: "expected exactly one positional string argument".to_string(),
+                    },
+                    attr.span.clone(),
+                    "`#[extern_symbol(\"hew_symbol\")]` accepts exactly one positional string \
+                     argument; multi-argument and key-value forms are not part of the W3.001 \
+                     grammar"
+                        .to_string(),
+                ));
+                return None;
+            }
+        };
+        match crate::extern_symbol::ExternSymbolTemplate::parse(raw_payload) {
+            Ok(template) => Some(crate::extern_symbol::ExternSymbolSpec {
+                template,
+                span: attr.span.clone(),
+            }),
+            Err(err) => {
+                let reason = err.reason();
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidExternSymbolTemplate {
+                        reason: reason.clone(),
+                    },
+                    attr.span.clone(),
+                    format!("invalid `#[extern_symbol]` template: {reason}"),
+                ));
+                None
+            }
+        }
+    }
+
     pub(super) fn register_fn_sig_with_name(&mut self, name: &str, fd: &FnDecl) {
         // Only filter out the receiver for methods (Type::method), not free
         // functions that happen to have a parameter named `self`.
@@ -3789,6 +3870,7 @@ impl Checker {
             is_async: fd.is_async,
             is_pure: fd.is_pure,
             doc_comment: fd.doc_comment.clone(),
+            extern_symbol: self.ingest_extern_symbol_attrs(&fd.attributes),
             ..FnSig::default()
         };
 
@@ -3819,6 +3901,14 @@ impl Checker {
     ///
     /// Returns the built `FnSig` for callers that need to insert it
     /// on additional type names (e.g., qualified aliases).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single-source-of-truth for impl-method registration; \
+                  factoring sub-passes would obscure the ordering invariants \
+                  the surrounding code relies on (bounds push/pop, \
+                  receiver-skip, double-write of fn_sigs + td.methods, \
+                  W3.001 Stage-2 extern_symbol mirror)"
+    )]
     pub(super) fn register_impl_method(
         &mut self,
         type_name: &str,
@@ -3928,6 +4018,19 @@ impl Checker {
             }
         }
 
+        // Re-use the structured `extern_symbol` already parsed by
+        // `register_fn_sig_with_name` above. Re-parsing the attribute
+        // here would emit duplicate `InvalidExternSymbolTemplate`
+        // diagnostics for the same source span; cloning the resolved
+        // spec keeps the diagnostic surface single-shot while still
+        // propagating the field onto the `td.methods` entry consumed
+        // by Stage-3 method-call rewrites.
+        let extern_symbol = {
+            let key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
+                .unwrap_or_else(|| method_key.clone());
+            self.fn_sigs.get(&key).and_then(|s| s.extern_symbol.clone())
+        };
+
         let sig = FnSig {
             type_params: all_type_params,
             type_param_bounds,
@@ -3936,6 +4039,7 @@ impl Checker {
             return_type,
             is_async: method.is_async,
             is_pure: method.is_pure,
+            extern_symbol,
             ..FnSig::default()
         };
         if let Some(td) = self.lookup_type_def_mut(type_name) {
@@ -4179,6 +4283,7 @@ impl Checker {
                 param_names,
                 params,
                 return_type,
+                extern_symbol: self.ingest_extern_symbol_attrs(&f.attributes),
                 ..FnSig::default()
             };
             let key = scoped_module_item_name(self.current_module.as_deref(), &f.name)

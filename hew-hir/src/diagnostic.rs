@@ -330,4 +330,19 @@ pub enum HirDiagnosticKind {
         /// The intrinsic key that was not found in the catalog.
         intrinsic_key: String,
     },
+    /// An imported `impl` block's method body calls a private helper function
+    /// defined in the same module as the impl. Private functions are not
+    /// exported across module boundaries, so the body cannot be lowered.
+    /// The dependency chain must be resolved (e.g. by making the helper `pub`,
+    /// moving the logic inline, or restructuring the module) before cross-module
+    /// dispatch on this method will work.
+    ///
+    /// Emitted instead of a bare `UnresolvedSymbol` so the diagnostic
+    /// identifies the root cause at the module boundary.
+    ImportedImplBodyMissingPrivateHelper {
+        /// Short name of the module that owns the impl block (e.g. `"shapes"`).
+        module: String,
+        /// Name of the private function that the method body calls.
+        helper_fn: String,
+    },
 }

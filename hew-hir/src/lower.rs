@@ -166,6 +166,7 @@ impl LowerOutput {
                 d.kind,
                 crate::HirDiagnosticKind::CheckerBoundaryViolation { .. }
                     | crate::HirDiagnosticKind::RecordLayoutMissing { .. }
+                    | crate::HirDiagnosticKind::ImportedImplBodyMissingPrivateHelper { .. }
             )
         });
         if has_fatal {
@@ -368,12 +369,35 @@ pub fn lower_program_with_mono_cap(
                                 ctx.register_extern_fn_entry(extern_fn);
                             }
                         }
-                        // TODO(fix/imported-impl-lowering): imported pub impl
-                        // blocks are not registered here; their method bodies
-                        // also cannot be lowered without first resolving their
-                        // same-module private helper dependencies. Tracked as
-                        // a follow-up — cross-module impl dispatch is currently
-                        // unsupported at the HIR level.
+                        // Register imported pub impl block methods in
+                        // `fn_registry` under the same unqualified
+                        // `<SelfType>::<method>` key used for root impl blocks.
+                        // The key must be unqualified because the checker's
+                        // `fn_sigs` table also uses unqualified keys for impl
+                        // methods (see `scoped_module_item_name` in checker).
+                        // Only `pub` methods are registered: private methods are
+                        // not visible to importers and must not leak via
+                        // fn_registry across module boundaries.
+                        Item::Impl(impl_decl) => {
+                            if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
+                                if impl_decl.where_clause.is_none()
+                                    || classify_unsupported_where_clause(impl_decl).is_none()
+                                {
+                                    for method in &impl_decl.methods {
+                                        if !method.visibility.is_pub() {
+                                            continue;
+                                        }
+                                        ctx.register_fn_entry(
+                                            &crate::node::HirImplBlock::method_symbol(
+                                                name,
+                                                &method.name,
+                                            ),
+                                            method,
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         // Non-pub Function/TypeDecl fall here (not exported to importers).
                         Item::Import(_)
                         | Item::Const(_)
@@ -381,7 +405,6 @@ pub fn lower_program_with_mono_cap(
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
                         | Item::Trait(_)
-                        | Item::Impl(_)
                         | Item::Wire(_)
                         | Item::Machine(_)
                         | Item::Record(_)
@@ -1159,7 +1182,7 @@ pub fn lower_program_with_mono_cap(
                 }
             }
             Item::Impl(impl_decl) => {
-                ctx.lower_impl_block(impl_decl, span.clone(), &mut items);
+                ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false);
             }
             Item::Machine(machine) => {
                 if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
@@ -1315,13 +1338,59 @@ pub fn lower_program_with_mono_cap(
                                 }));
                             }
                         }
-                        // TODO(fix/imported-impl-lowering): Item::Impl is
-                        // omitted here. Imported pub impl methods need both
-                        // fn_registry pre-pass entries AND emitted HirItem
-                        // function bodies; lowering them requires resolving
-                        // private-helper dependencies in the imported module,
-                        // which is a scoped follow-up.
-                        //
+                        // Emit `HirItem::Function` entries for each method
+                        // of an imported impl block so that MIR/codegen can
+                        // process cross-module method calls on named types.
+                        // If any method body makes a direct call to a private
+                        // (non-pub) function in the same module the body
+                        // cannot be lowered — emit a fatal diagnostic instead
+                        // so the root cause is identified at the module boundary
+                        // rather than silently producing an `UnresolvedSymbol`.
+                        Item::Impl(impl_decl) => {
+                            let module_short = mod_id.path.last().map_or("", String::as_str);
+                            let private_fns: HashSet<String> = module
+                                .items
+                                .iter()
+                                .filter_map(|(it, _)| {
+                                    if let Item::Function(f) = it {
+                                        if !f.visibility.is_pub() {
+                                            return Some(f.name.clone());
+                                        }
+                                    }
+                                    None
+                                })
+                                .collect();
+                            if let TypeExpr::Named { .. } = &impl_decl.target_type.0 {
+                                let mut any_blocked = false;
+                                for method in &impl_decl.methods {
+                                    // Private imported methods are not visible to
+                                    // importers — skip body scan and emission.
+                                    if !method.visibility.is_pub() {
+                                        continue;
+                                    }
+                                    let blocked =
+                                        collect_private_fn_refs(&method.body, &private_fns);
+                                    for helper_fn in blocked {
+                                        ctx.diagnostics.push(HirDiagnostic::new(
+                                            HirDiagnosticKind::ImportedImplBodyMissingPrivateHelper {
+                                                module: module_short.to_string(),
+                                                helper_fn,
+                                            },
+                                            span.clone(),
+                                            "imported impl method body calls a private helper \
+                                             function from the same module; private functions \
+                                             are not accessible across module boundaries — \
+                                             make the helper `pub`, inline its logic, or \
+                                             restructure the module",
+                                        ));
+                                        any_blocked = true;
+                                    }
+                                }
+                                if !any_blocked {
+                                    ctx.lower_impl_block(impl_decl, span.clone(), &mut items, true);
+                                }
+                            }
+                        }
                         // Item::Record, Item::Actor, Item::Supervisor from
                         // imported modules are intentionally not emitted in
                         // this slice; their cross-module lowering semantics
@@ -1336,7 +1405,6 @@ pub fn lower_program_with_mono_cap(
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
                         | Item::Trait(_)
-                        | Item::Impl(_)
                         | Item::Wire(_)
                         | Item::Machine(_)
                         | Item::Record(_)
@@ -2549,7 +2617,256 @@ impl LowerCtx {
     }
 }
 
-/// Classify whether an impl block's `where_clause` (if any) is one of the
+/// Collect the names of private helper functions that are referenced by direct
+/// `Expr::Call { function: Expr::Identifier(name) }` within `body` and whose
+/// names appear in `private_fns`. Method-call syntax (`foo.bar()`) is not
+/// tracked — only bare identifier callees are considered. Returns a sorted,
+/// deduplicated list of matching names.
+fn collect_private_fn_refs(body: &Block, private_fns: &HashSet<String>) -> Vec<String> {
+    let mut found = Vec::new();
+    scan_block_for_private_refs(body, private_fns, &mut found);
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
+fn scan_block_for_private_refs(block: &Block, pf: &HashSet<String>, out: &mut Vec<String>) {
+    for (stmt, _) in &block.stmts {
+        scan_stmt_for_private_refs(stmt, pf, out);
+    }
+    if let Some(e) = &block.trailing_expr {
+        scan_expr_for_private_refs(&e.0, pf, out);
+    }
+}
+
+fn scan_stmt_for_private_refs(stmt: &Stmt, pf: &HashSet<String>, out: &mut Vec<String>) {
+    match stmt {
+        Stmt::Let { value: Some(v), .. } | Stmt::Var { value: Some(v), .. } => {
+            scan_expr_for_private_refs(&v.0, pf, out);
+        }
+        Stmt::Assign { target, value, .. } => {
+            scan_expr_for_private_refs(&target.0, pf, out);
+            scan_expr_for_private_refs(&value.0, pf, out);
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+            ..
+        } => {
+            scan_expr_for_private_refs(&condition.0, pf, out);
+            scan_block_for_private_refs(then_block, pf, out);
+            if let Some(eb) = else_block {
+                if let Some(b) = &eb.block {
+                    scan_block_for_private_refs(b, pf, out);
+                }
+                if let Some(s) = &eb.if_stmt {
+                    scan_stmt_for_private_refs(&s.0, pf, out);
+                }
+            }
+        }
+        Stmt::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            scan_expr_for_private_refs(&expr.0, pf, out);
+            scan_block_for_private_refs(body, pf, out);
+            if let Some(b) = else_body {
+                scan_block_for_private_refs(b, pf, out);
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            scan_expr_for_private_refs(&scrutinee.0, pf, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_expr_for_private_refs(&g.0, pf, out);
+                }
+                scan_expr_for_private_refs(&arm.body.0, pf, out);
+            }
+        }
+        Stmt::Loop { body, .. } => scan_block_for_private_refs(body, pf, out),
+        Stmt::For { iterable, body, .. } => {
+            scan_expr_for_private_refs(&iterable.0, pf, out);
+            scan_block_for_private_refs(body, pf, out);
+        }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            scan_expr_for_private_refs(&condition.0, pf, out);
+            scan_block_for_private_refs(body, pf, out);
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            scan_expr_for_private_refs(&expr.0, pf, out);
+            scan_block_for_private_refs(body, pf, out);
+        }
+        Stmt::Break { value: Some(v), .. } => scan_expr_for_private_refs(&v.0, pf, out),
+        Stmt::Return(Some(e)) | Stmt::Expression(e) => {
+            scan_expr_for_private_refs(&e.0, pf, out);
+        }
+        Stmt::Defer(e) => scan_expr_for_private_refs(&e.0, pf, out),
+        _ => {}
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive single-pass AST walk; splitting into sub-functions would obscure the traversal structure without adding clarity"
+)]
+fn scan_expr_for_private_refs(expr: &Expr, pf: &HashSet<String>, out: &mut Vec<String>) {
+    match expr {
+        Expr::Call { function, args, .. } => {
+            if let Expr::Identifier(name) = &function.0 {
+                if pf.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+            scan_expr_for_private_refs(&function.0, pf, out);
+            for arg in args {
+                scan_expr_for_private_refs(&arg.expr().0, pf, out);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            scan_expr_for_private_refs(&left.0, pf, out);
+            scan_expr_for_private_refs(&right.0, pf, out);
+        }
+        Expr::Unary { operand, .. } => scan_expr_for_private_refs(&operand.0, pf, out),
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+            for e in es {
+                scan_expr_for_private_refs(&e.0, pf, out);
+            }
+        }
+        Expr::ArrayRepeat { value, count } => {
+            scan_expr_for_private_refs(&value.0, pf, out);
+            scan_expr_for_private_refs(&count.0, pf, out);
+        }
+        Expr::Block(b)
+        | Expr::Scope { body: b }
+        | Expr::ForkBlock { body: b }
+        | Expr::GenBlock { body: b } => {
+            scan_block_for_private_refs(b, pf, out);
+        }
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+            ..
+        } => {
+            scan_expr_for_private_refs(&condition.0, pf, out);
+            scan_expr_for_private_refs(&then_block.0, pf, out);
+            if let Some(e) = else_block {
+                scan_expr_for_private_refs(&e.0, pf, out);
+            }
+        }
+        Expr::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            scan_expr_for_private_refs(&expr.0, pf, out);
+            scan_block_for_private_refs(body, pf, out);
+            if let Some(b) = else_body {
+                scan_block_for_private_refs(b, pf, out);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            scan_expr_for_private_refs(&scrutinee.0, pf, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_expr_for_private_refs(&g.0, pf, out);
+                }
+                scan_expr_for_private_refs(&arm.body.0, pf, out);
+            }
+        }
+        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+            scan_expr_for_private_refs(&body.0, pf, out);
+        }
+        Expr::Spawn { target, args } => {
+            scan_expr_for_private_refs(&target.0, pf, out);
+            for (_, v) in args {
+                scan_expr_for_private_refs(&v.0, pf, out);
+            }
+        }
+        Expr::ScopeDeadline { duration, body } => {
+            scan_expr_for_private_refs(&duration.0, pf, out);
+            scan_block_for_private_refs(body, pf, out);
+        }
+        Expr::ForkChild { expr, .. } | Expr::Cast { expr, .. } => {
+            scan_expr_for_private_refs(&expr.0, pf, out);
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            scan_expr_for_private_refs(&receiver.0, pf, out);
+            for arg in args {
+                scan_expr_for_private_refs(&arg.expr().0, pf, out);
+            }
+        }
+        Expr::StructInit { fields, base, .. } => {
+            for (_, v) in fields {
+                scan_expr_for_private_refs(&v.0, pf, out);
+            }
+            if let Some(b) = base {
+                scan_expr_for_private_refs(&b.0, pf, out);
+            }
+        }
+        Expr::MapLiteral { entries } => {
+            for (k, v) in entries {
+                scan_expr_for_private_refs(&k.0, pf, out);
+                scan_expr_for_private_refs(&v.0, pf, out);
+            }
+        }
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                if let hew_parser::ast::StringPart::Expr(e) = part {
+                    scan_expr_for_private_refs(&e.0, pf, out);
+                }
+            }
+        }
+        Expr::Select { arms, timeout } => {
+            for arm in arms {
+                scan_expr_for_private_refs(&arm.source.0, pf, out);
+                scan_expr_for_private_refs(&arm.body.0, pf, out);
+            }
+            if let Some(t) = timeout {
+                scan_expr_for_private_refs(&t.duration.0, pf, out);
+                scan_expr_for_private_refs(&t.body.0, pf, out);
+            }
+        }
+        Expr::Timeout { expr, duration } => {
+            scan_expr_for_private_refs(&expr.0, pf, out);
+            scan_expr_for_private_refs(&duration.0, pf, out);
+        }
+        Expr::UnsafeBlock(b) => scan_block_for_private_refs(b, pf, out),
+        Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
+            scan_expr_for_private_refs(&object.0, pf, out);
+        }
+        Expr::Index { object, index } => {
+            scan_expr_for_private_refs(&object.0, pf, out);
+            scan_expr_for_private_refs(&index.0, pf, out);
+        }
+        Expr::Is { lhs, rhs } => {
+            scan_expr_for_private_refs(&lhs.0, pf, out);
+            scan_expr_for_private_refs(&rhs.0, pf, out);
+        }
+        Expr::Range { start, end, .. } => {
+            if let Some(s) = start {
+                scan_expr_for_private_refs(&s.0, pf, out);
+            }
+            if let Some(e) = end {
+                scan_expr_for_private_refs(&e.0, pf, out);
+            }
+        }
+        Expr::Yield(Some(e)) => scan_expr_for_private_refs(&e.0, pf, out),
+        Expr::MachineEmit { fields, .. } => {
+            for (_, v) in fields {
+                scan_expr_for_private_refs(&v.0, pf, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// V0b-admissible shapes. Returns `None` when the impl is admissible (no
 /// where-clause, or a where-clause whose predicates are all `where T: Bound(s)`
 /// on the impl's own outer type parameters) and `Some(shape)` describing the
@@ -3109,6 +3426,7 @@ impl LowerCtx {
         decl: &hew_parser::ast::ImplDecl,
         span: std::ops::Range<usize>,
         items: &mut Vec<HirItem>,
+        pub_only: bool,
     ) {
         // Pre-flight: classify the impl shape. Bail with a precise diagnostic
         // on any unsupported variant before lowering bodies.
@@ -3197,8 +3515,14 @@ impl LowerCtx {
         // `<SelfType>::<method>` — identical naming to the pre-V0b Index
         // special-case, so downstream consumers (MIR / codegen / monomorph)
         // see ordinary functions and need no new wiring per-method.
+        // When `pub_only` is true (imported-module path) only pub-visibility
+        // methods are lowered; private methods are not accessible to importers
+        // and must not leak into the emitted HirItem list.
         let mut method_symbols: Vec<String> = Vec::with_capacity(decl.methods.len());
         for method in &decl.methods {
+            if pub_only && !method.visibility.is_pub() {
+                continue;
+            }
             let symbol = crate::node::HirImplBlock::method_symbol(self_type_name, &method.name);
             items.push(HirItem::Function(self.lower_fn_with_name(
                 method,

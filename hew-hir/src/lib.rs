@@ -38,8 +38,8 @@ pub use node::{
     HirSupervisorStrategy, HirTypeDecl, HirVariant, HirVariantKind,
 };
 pub use value_class::{
-    contains_named_type, lookup_type_marker, named_type_names, ResourceMarker, TypeClassTable,
-    ValueClass,
+    contains_named_type, lookup_type_marker, named_type_components, named_type_names,
+    NamedTypeComponent, ResourceMarker, TypeClassTable, ValueClass,
 };
 pub use verify::verify_hir;
 

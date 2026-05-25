@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::ResourceMarker as AstResourceMarker;
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 
 /// HIR-owned type classification marker.
 ///
@@ -147,32 +147,55 @@ pub fn contains_named_type(ty: &ResolvedTy) -> bool {
 
 #[must_use]
 pub fn named_type_names(ty: &ResolvedTy) -> Vec<String> {
-    let mut names = Vec::new();
-    collect_named_type_names(ty, &mut names);
-    names
+    named_type_components(ty)
+        .into_iter()
+        .map(|component| component.name)
+        .collect()
 }
 
-fn collect_named_type_names(ty: &ResolvedTy, names: &mut Vec<String>) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedTypeComponent {
+    pub name: String,
+    pub builtin: Option<BuiltinType>,
+    pub has_args: bool,
+}
+
+#[must_use]
+pub fn named_type_components(ty: &ResolvedTy) -> Vec<NamedTypeComponent> {
+    let mut components = Vec::new();
+    collect_named_type_components(ty, &mut components);
+    components
+}
+
+fn collect_named_type_components(ty: &ResolvedTy, components: &mut Vec<NamedTypeComponent>) {
     match ty {
         ResolvedTy::Tuple(elems) => {
             for elem in elems {
-                collect_named_type_names(elem, names);
+                collect_named_type_components(elem, components);
             }
         }
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
-            collect_named_type_names(elem, names);
+            collect_named_type_components(elem, components);
         }
-        ResolvedTy::Named { name, args, .. } => {
-            names.push(name.clone());
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+        } => {
+            components.push(NamedTypeComponent {
+                name: name.clone(),
+                builtin: *builtin,
+                has_args: !args.is_empty(),
+            });
             for arg in args {
-                collect_named_type_names(arg, names);
+                collect_named_type_components(arg, components);
             }
         }
         ResolvedTy::Function { params, ret } => {
             for param in params {
-                collect_named_type_names(param, names);
+                collect_named_type_components(param, components);
             }
-            collect_named_type_names(ret, names);
+            collect_named_type_components(ret, components);
         }
         ResolvedTy::Closure {
             params,
@@ -180,28 +203,30 @@ fn collect_named_type_names(ty: &ResolvedTy, names: &mut Vec<String>) {
             captures,
         } => {
             for param in params {
-                collect_named_type_names(param, names);
+                collect_named_type_components(param, components);
             }
-            collect_named_type_names(ret, names);
+            collect_named_type_components(ret, components);
             for capture in captures {
-                collect_named_type_names(capture, names);
+                collect_named_type_components(capture, components);
             }
         }
-        ResolvedTy::Pointer { pointee, .. } => collect_named_type_names(pointee, names),
+        ResolvedTy::Pointer { pointee, .. } => {
+            collect_named_type_components(pointee, components);
+        }
         ResolvedTy::TraitObject { traits } => {
             for bound in traits {
                 for arg in &bound.args {
-                    collect_named_type_names(arg, names);
+                    collect_named_type_components(arg, components);
                 }
                 for (_, ty) in &bound.assoc_bindings {
-                    collect_named_type_names(ty, names);
+                    collect_named_type_components(ty, components);
                 }
             }
         }
         // Task<T> is compiler-internal; recurse into T so that a
         // `Task<SomeResource>` binding is still diagnosed correctly if T
         // is a named type with a resource/linear marker.
-        ResolvedTy::Task(inner) => collect_named_type_names(inner, names),
+        ResolvedTy::Task(inner) => collect_named_type_components(inner, components),
         ResolvedTy::I8
         | ResolvedTy::I16
         | ResolvedTy::I32
@@ -226,7 +251,8 @@ fn collect_named_type_names(ty: &ResolvedTy, names: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::named_type_names;
+    use super::{named_type_components, named_type_names};
+    use hew_types::BuiltinType;
     use hew_types::{ResolvedTraitBound, ResolvedTy};
 
     #[test]
@@ -290,5 +316,27 @@ mod tests {
             named_type_names(&ty),
             vec!["Foo".to_string(), "Bar".to_string()]
         );
+    }
+
+    #[test]
+    fn named_type_components_preserve_builtin_discriminator_and_arg_shape() {
+        let ty = ResolvedTy::Named {
+            name: "Vec".to_string(),
+            args: vec![ResolvedTy::Named {
+                name: "Foo".to_string(),
+                args: Vec::new(),
+                builtin: None,
+            }],
+            builtin: Some(BuiltinType::Vec),
+        };
+
+        let components = named_type_components(&ty);
+        assert_eq!(components.len(), 2);
+        assert_eq!(components[0].name, "Vec");
+        assert_eq!(components[0].builtin, Some(BuiltinType::Vec));
+        assert!(components[0].has_args);
+        assert_eq!(components[1].name, "Foo");
+        assert_eq!(components[1].builtin, None);
+        assert!(!components[1].has_args);
     }
 }

@@ -7840,7 +7840,7 @@ impl LowerCtx {
                     "char" | "Char" => ResolvedTy::Char,
                     "string" | "str" => ResolvedTy::String,
                     "duration" => ResolvedTy::Duration,
-                    "Bytes" => ResolvedTy::Bytes,
+                    "bytes" | "Bytes" => ResolvedTy::Bytes,
                     "Unit" | "()" => ResolvedTy::Unit,
                     // `Task` is a compiler-internal value class with no user-source
                     // syntax. Writing `Task<T>` in any annotation position is a
@@ -7855,11 +7855,19 @@ impl LowerCtx {
                         ));
                         ResolvedTy::Unit
                     }
-                    _ => ResolvedTy::Named {
-                        name: name.clone(),
-                        args,
-                        builtin: None,
-                    },
+                    _ => {
+                        if let Some(registration) =
+                            crate::builtin_type_classes::builtin_type_registration(name)
+                        {
+                            ResolvedTy::named_builtin(
+                                registration.name(),
+                                registration.builtin,
+                                args,
+                            )
+                        } else {
+                            ResolvedTy::named_user(name.clone(), args)
+                        }
+                    }
                 }
             }
             TypeExpr::Infer => {

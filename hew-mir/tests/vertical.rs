@@ -487,6 +487,104 @@ fn unknown_user_type_rejected_at_mir_boundary() {
 }
 
 #[test]
+fn registered_fieldless_user_type_still_requires_codegen_readiness() {
+    // A fieldless declared type is present in HIR type_classes but has no record
+    // layout for codegen to resolve. The MIR gate must not treat checker knownness
+    // alone as readiness.
+    let parsed = hew_parser::parse(
+        r"
+        #[linear]
+        type Token {
+            fn consume(consuming self) -> i64 { 0 }
+        }
+        fn f(x: Token) -> i64 { 0 }
+        ",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    let pipeline = lower_hir_module(&output.module);
+
+    assert!(
+        pipeline.diagnostics.iter().any(|d| {
+            matches!(d.kind, MirDiagnosticKind::UnknownType { ref name } if name == "Token")
+        }),
+        "fieldless registered Token must fail MIR readiness: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn record_field_closure_accepts_registered_enum_field_type() {
+    // Mirrors the Stage-1-provable part of the CrashNotification.kind: CrashKind
+    // route: the record field closure is walked, and a registered enum field type
+    // is accepted as codegen-ready by MIR.
+    let parsed = hew_parser::parse(
+        r"
+        type CrashNotification {
+            kind: CrashKind
+        }
+        enum CrashKind { Fatal }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    let pipeline = lower_hir_module(&output.module);
+
+    assert!(
+        !pipeline.diagnostics.iter().any(|d| {
+            matches!(d.kind, MirDiagnosticKind::UnknownType { ref name } if name == "CrashKind")
+        }),
+        "registered CrashKind enum field must be MIR-ready: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn record_field_closure_rejects_unready_user_field_type() {
+    let parsed = hew_parser::parse(
+        r"
+        type Wrapper {
+            missing: Missing
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    let pipeline = lower_hir_module(&output.module);
+
+    assert!(
+        pipeline.diagnostics.iter().any(|d| {
+            matches!(d.kind, MirDiagnosticKind::UnknownType { ref name } if name == "Missing")
+        }),
+        "unready record field type must fail MIR field-closure readiness: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
 fn nested_tuple_user_type_rejected_at_mir_boundary() {
     let parsed = hew_parser::parse("fn f(x: (Foo, i64)) -> (Foo, i64) { return x; }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);

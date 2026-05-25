@@ -2,15 +2,16 @@ use std::collections::{HashMap, HashSet};
 
 use hew_hir::stdlib_catalog;
 use hew_hir::{
-    named_type_names, BindingId, HirActorDecl, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn,
-    HirItem, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineTransition, HirModule,
-    HirNodeId, HirSelect, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild,
-    HirSupervisorDecl, IntentKind, ResolvedRef, ResourceMarker, ScopeId, SiteId, ValueClass,
+    named_type_components, named_type_names, BindingId, HirActorDecl, HirBinding, HirBlock,
+    HirExpr, HirExprKind, HirFn, HirItem, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
+    HirMachineTransition, HirModule, HirNodeId, HirSelect, HirSelectArmKind, HirStmt, HirStmtKind,
+    HirSupervisorChild, HirSupervisorDecl, IntentKind, ResolvedRef, ResourceMarker, ScopeId,
+    SiteId, ValueClass,
 };
 use hew_parser::ast::BinaryOp;
 use hew_types::{
-    ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily, NumericMethodOp,
-    NumericSignedness, ResolvedTy,
+    BuiltinType, ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily,
+    NumericMethodOp, NumericSignedness, ResolvedTy,
 };
 
 use crate::dataflow;
@@ -1143,6 +1144,17 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         }
         diagnostics.extend(lowered.diagnostics);
     }
+
+    collect_layout_field_diagnostics(
+        &record_layouts,
+        &enum_layouts,
+        &machine_layouts,
+        &record_field_orders,
+        &actor_layout_map,
+        &supervisor_layout_map,
+        &machine_layout_names,
+        &mut diagnostics,
+    );
 
     // Mirror HirModule::regex_literals into the IrPipeline so codegen can
     // emit module-init globals without re-reading HIR. Each entry's literal_id
@@ -3421,38 +3433,114 @@ fn collect_unknown_type_diagnostics(
     }
 }
 
-/// Emit `UnknownType` diagnostics for each Named type in `ty` that is absent
-/// from `type_classes`. Names present in the registry are known — they carry
-/// a HIR marker — and must not be treated as unknown.
-/// This implements §3.1 "Checker authority survives downstream": the MIR layer
-/// consumes the HIR checker's `type_classes` decision rather than re-deriving
-/// Named-type knownness independently.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "layout-closure gate mirrors module-scoped record/actor/supervisor/machine readiness tables"
+)]
+fn collect_layout_field_diagnostics(
+    record_layouts: &[crate::model::RecordLayout],
+    enum_layouts: &[crate::model::EnumLayout],
+    machine_layouts: &[crate::model::MachineLayout],
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
+    machine_layout_names: &HashSet<String>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) {
+    let mut reported = HashSet::new();
+    for field_ty in record_layouts
+        .iter()
+        .flat_map(|layout| layout.field_tys.iter())
+        .chain(
+            enum_layouts
+                .iter()
+                .flat_map(|layout| layout.variants.iter())
+                .flat_map(|variant| variant.field_tys.iter()),
+        )
+        .chain(
+            machine_layouts
+                .iter()
+                .flat_map(|layout| layout.variants.iter().chain(layout.events.iter()))
+                .flat_map(|variant| variant.field_tys.iter()),
+        )
+    {
+        push_unknown_type_diagnostics_for_layout_ty(
+            field_ty,
+            record_field_orders,
+            actor_layouts,
+            supervisor_layout_map,
+            machine_layout_names,
+            &mut reported,
+            diagnostics,
+        );
+    }
+}
+
+fn push_unknown_type_diagnostics_for_layout_ty(
+    ty: &ResolvedTy,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
+    machine_layout_names: &HashSet<String>,
+    reported: &mut HashSet<String>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) {
+    for component in named_type_components(ty) {
+        if component.builtin.is_some()
+            || is_codegen_ready_user_name(
+                &component.name,
+                record_field_orders,
+                actor_layouts,
+                supervisor_layout_map,
+                machine_layout_names,
+            )
+        {
+            continue;
+        }
+        push_unknown_type_diagnostic(component.name, reported, diagnostics);
+    }
+}
+
+/// Emit `UnknownType` diagnostics for user-named types that are not part of
+/// the MIR layout graph codegen can resolve. Builtin-discriminated names bypass
+/// only this user-name readiness predicate; unsupported builtin lowering remains
+/// guarded by the downstream fail-closed paths.
 fn push_unknown_type_diagnostics(
     ty: &ResolvedTy,
     builder: &Builder,
     reported: &mut HashSet<String>,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) {
-    for name in named_type_names(ty) {
-        if builder.type_classes.contains_key(&name)
-            || matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor")
-            || matches!(name.as_str(), "Vec" | "HashMap" | "HashSet")
-            || builder.actor_layouts.contains_key(&name)
-            || builder.supervisor_layout_map.contains_key(&name)
-            || machine_layout_name_matches(&builder.machine_layout_names, &name)
-            // `Generator<Y, R>` is the checker-supplied type for gen-block
-            // expressions. The S3a shell uses it as a placeholder; S3b/S4
-            // replace the shell with a real state-record type. Silence the
-            // UnknownType diagnostic so gen-block lowering compiles cleanly
-            // at S3a without requiring a full type-class registration.
-            // WHEN-OBSOLETE: when S3b synthesises the GenN nominal and
-            // registers it in the type-class table, this arm is unreachable.
-            || name == "Generator"
+    for component in named_type_components(ty) {
+        if component.builtin.is_some()
+            || is_codegen_ready_user_name(
+                &component.name,
+                &builder.record_field_orders,
+                &builder.actor_layouts,
+                &builder.supervisor_layout_map,
+                &builder.machine_layout_names,
+            )
         {
             continue;
         }
-        push_unknown_type_diagnostic(name, reported, diagnostics);
+        push_unknown_type_diagnostic(component.name, reported, diagnostics);
     }
+}
+
+fn is_codegen_ready_user_name(
+    name: &str,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
+    machine_layout_names: &HashSet<String>,
+) -> bool {
+    record_field_orders.contains_key(name)
+        || record_field_orders
+            .keys()
+            .any(|known| short_name(known) == short_name(name))
+        || actor_layouts.contains_key(name)
+        || supervisor_layout_map.contains_key(name)
+        || machine_layout_name_matches(machine_layout_names, name)
 }
 
 fn push_unknown_type_diagnostic(
@@ -9935,14 +10023,12 @@ impl Builder {
             // `Generator<Y, R>` is the checker-supplied type for a gen-block
             // expression. The S3a shell allocates a local of this type as a
             // placeholder; S3b replaces it with the real state-record type.
-            // Classify as BitCopy so the decision-map check passes and the
-            // shell compiles. The state-record will carry its own drop
-            // semantics once S3b + S4 land.
-            // WHY BitCopy: the shell is a zero-size placeholder — it has no
-            // heap resources until S3b synthesises the state struct.
-            // WHEN-OBSOLETE: when S3b emits the state record type and S4
-            // wires the constructor; the real drop kind will replace this.
-            ResolvedTy::Named { name, .. } if name == "Generator" => true,
+            // Classify only the builtin-discriminated generator as BitCopy so
+            // a user type named `Generator` still follows normal readiness.
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::Generator),
+                ..
+            } => true,
             ResolvedTy::Named { name, args, .. } if args.is_empty() => {
                 self.actor_layouts.contains_key(name)
                     || machine_layout_name_matches(&self.machine_layout_names, name)

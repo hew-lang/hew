@@ -3255,42 +3255,6 @@ mod registry_tests {
     }
 }
 
-// ── Scope cancellation ──
-
-mod cancellation_tests {
-    use hew_runtime::scope::{
-        hew_scope_cancel, hew_scope_create, hew_scope_free, hew_scope_is_cancelled,
-    };
-
-    #[test]
-    fn is_cancelled_default_false() {
-        unsafe {
-            let scope = hew_scope_create();
-            assert!(!scope.is_null());
-            assert_eq!(hew_scope_is_cancelled(scope), 0);
-            hew_scope_free(scope);
-        }
-    }
-
-    #[test]
-    fn cancel_sets_flag() {
-        unsafe {
-            let scope = hew_scope_create();
-            assert_eq!(hew_scope_is_cancelled(scope), 0);
-            hew_scope_cancel(scope);
-            assert_eq!(hew_scope_is_cancelled(scope), 1);
-            hew_scope_free(scope);
-        }
-    }
-
-    #[test]
-    fn is_cancelled_null_returns_zero() {
-        unsafe {
-            assert_eq!(hew_scope_is_cancelled(std::ptr::null_mut()), 0);
-        }
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════════
 // Supervisor RestForOne strategy tests
 // ═══════════════════════════════════════════════════════════════════════

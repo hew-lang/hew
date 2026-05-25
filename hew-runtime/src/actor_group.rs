@@ -1,11 +1,10 @@
 //! Hew runtime: dynamic actor group with condvar-based waiting.
 //!
 //! [`HewActorGroup`] is a heap-allocated, dynamically-growing actor
-//! container. Unlike the legacy [`HewScope`](super::scope::HewScope), it
-//! has no fixed capacity limit and uses a condvar for efficient waiting.
-//! This is the intended migration target for new structured-concurrency
-//! runtime/codegen paths while [`HewScope`](super::scope::HewScope) remains
-//! as the stable stack-allocated ABI for already-generated code.
+//! container with no fixed capacity limit; it uses a condvar for
+//! efficient waiting. It is the heap-allocated companion to
+//! [`HewTaskScope`](super::task_scope::HewTaskScope), the canonical
+//! structured-concurrency substrate that `scope { … }` lowers to.
 //!
 //! **Note:** `HewActorGroup` is currently unintegrated and retained as a
 //! reference design for future heap-allocated actor groups. It is not

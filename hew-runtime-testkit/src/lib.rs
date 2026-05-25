@@ -2,12 +2,12 @@
 //!
 //! Safe handle wrappers over the raw `extern "C"` `hew-runtime` FFI surface.
 //! The runtime exports primitives as `*mut HewActor`, `*mut HewSupervisor`,
-//! `*mut HewMailbox`, `*mut HewScope`, `*mut HewStream` — every test that
+//! `*mut HewMailbox`, `*mut HewStream` — every test that
 //! touches them today reaches for an `unsafe { … }` block and manages the
 //! `_free` / `_stop` / `_destroy` call by hand.
 //!
 //! This crate provides `TestActor`, `TestSupervisor`, `TestMailbox`,
-//! `TestScope`, and `TestStream` RAII wrappers that
+//! and `TestStream` RAII wrappers that
 //!
 //! 1. Encapsulate the raw pointer (`NonNull`-style invariant: non-null while
 //!    the wrapper is alive).
@@ -15,8 +15,7 @@
 //!    close, ask, get/set budget, …). Each method's `unsafe` block carries the
 //!    six-axis SAFETY justification in this file, so callers don't repeat it.
 //! 3. Run the appropriate `_free` / `_stop` / `_destroy` from `Drop`, in the
-//!    correct order (close before free for actors; stop + free for supervisors;
-//!    `destroy` before `free` for scopes).
+//!    correct order (close before free for actors; stop + free for supervisors).
 //!
 //! The wrappers deliberately do **not** try to be a complete safe Rust API.
 //! Anything the tests don't use is left out — adding a method here is a
@@ -55,8 +54,6 @@
 //!   The runtime owns the supervisor allocation after `stop`.
 //! - [`TestMailbox`]: `hew_mailbox_free`. Pending messages are drained inside
 //!   the runtime.
-//! - [`TestScope`]: `hew_scope_destroy`. (`free` is for the post-destroy
-//!   pointer, but tests destroy and then drop the wrapper.)
 //! - [`TestStream`]: `hew_stream_close` — the test pattern across the codebase.
 //!
 //! Wrappers expose [`leak`] / [`into_raw`] for tests that need to transfer
@@ -65,10 +62,6 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
-#![allow(
-    deprecated,
-    reason = "TestScope wraps HewScope; both deferred to v0.5.1"
-)]
 // This crate's whole purpose is to give tests a safer surface over the runtime
 // FFI; the strict workspace clippy lints aimed at production library code
 // produce false positives here. Each allow names the reason once at module
@@ -99,7 +92,6 @@ pub use hew_runtime::actor::HewActor;
 pub use hew_runtime::execution_context::HewExecutionContext;
 pub use hew_runtime::internal::types::{HewActorState, HewError};
 pub use hew_runtime::mailbox::{HewMailbox, HewMsgNode, OverflowPolicy};
-pub use hew_runtime::scope::HewScope;
 pub use hew_runtime::stream::HewStream;
 pub use hew_runtime::supervisor::HewSupervisor;
 
@@ -674,136 +666,6 @@ impl Drop for TestSupervisor {
         // SAFETY: self.ptr is non-null by invariant; hew_supervisor_stop is
         // documented idempotent and drives all child cleanup.
         unsafe { hew_runtime::supervisor::hew_supervisor_stop(self.ptr) }
-    }
-}
-
-// ── TestScope ──────────────────────────────────────────────────────────────
-
-/// Safe RAII wrapper around a value-typed `HewScope`.
-///
-/// `hew_scope_new` returns a value (the scope's internal fields are owned by
-/// the test); FFI methods then take `*mut HewScope` addresses. The wrapper
-/// stores the scope inline in a `Box` so the address is stable for the
-/// wrapper's lifetime.
-///
-/// On drop, the wrapper calls `hew_scope_destroy`, which cancels and joins
-/// any spawned children. (`hew_scope_free` is reserved for the
-/// `hew_scope_create` pointer form, which the testkit doesn't wrap.)
-#[must_use]
-pub struct TestScope {
-    inner: Box<HewScope>,
-}
-
-impl std::fmt::Debug for TestScope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TestScope").finish()
-    }
-}
-
-// SAFETY: HewScope is internally synchronized.
-unsafe impl Send for TestScope {}
-// SAFETY: same.
-unsafe impl Sync for TestScope {}
-
-impl TestScope {
-    /// Create a new scope.
-    pub fn new() -> Self {
-        // SAFETY: hew_scope_new is total; returns an initialized HewScope.
-        let scope = unsafe { hew_runtime::scope::hew_scope_new() };
-        Self {
-            inner: Box::new(scope),
-        }
-    }
-
-    /// Mutable pointer to the underlying `HewScope` (stable for the
-    /// wrapper's lifetime).
-    #[must_use]
-    pub fn as_mut_ptr(&mut self) -> *mut HewScope {
-        &raw mut *self.inner
-    }
-
-    /// Cancel the scope (request cancellation; in-flight children observe).
-    pub fn cancel(&mut self) {
-        // SAFETY: idempotent on a live HewScope; address is stable inside Box.
-        unsafe { hew_runtime::scope::hew_scope_cancel(self.as_mut_ptr()) }
-    }
-
-    /// Has the scope been cancelled?
-    pub fn is_cancelled(&mut self) -> bool {
-        // SAFETY: read-only accessor.
-        unsafe { hew_runtime::scope::hew_scope_is_cancelled(self.as_mut_ptr()) != 0 }
-    }
-
-    /// Block until all children complete or cancellation is observed.
-    pub fn wait_all(&mut self) {
-        // SAFETY: hew_scope_wait_all blocks on internal condvars; safe to
-        // call from any thread except a scope child itself.
-        unsafe { hew_runtime::scope::hew_scope_wait_all(self.as_mut_ptr()) }
-    }
-
-    /// Adopt an actor handle into the scope; the scope is now responsible
-    /// for closing and freeing it on `wait_all`.
-    ///
-    /// Returns the runtime status code (`0` on success, `-1` if the scope
-    /// is at capacity).
-    pub fn adopt(&mut self, actor: TestActor) -> i32 {
-        let raw = actor.into_raw();
-        // SAFETY: `raw` came from hew_actor_spawn and is being transferred to
-        // the scope's actor list. On rejection (`rc == -1`) we still own
-        // `raw`, so we wrap it back into a TestActor to drop cleanly.
-        let rc = unsafe { hew_runtime::scope::hew_scope_spawn(self.as_mut_ptr(), raw.cast()) };
-        if rc != 0 {
-            // Re-wrap so Drop runs close+free.
-            let _restored = TestActor { ptr: raw };
-        }
-        rc
-    }
-
-    /// Try to spawn a raw actor pointer into the scope without
-    /// consuming a `TestActor`. Caller is responsible for the lifetime
-    /// guarantees of `actor`.
-    ///
-    /// # Safety
-    /// Caller guarantees `actor` is a live `*mut HewActor` and that the
-    /// scope's eventual `wait_all` is allowed to free it (or, on rejection,
-    /// that the caller still owns the pointer and frees it).
-    pub unsafe fn raw_spawn(&mut self, actor: *mut HewActor) -> i32 {
-        let p = self.as_mut_ptr();
-        // SAFETY: `actor` lifetime is guaranteed by the caller (see fn doc);
-        // `p` is a live HewScope by wrapper invariant.
-        unsafe { hew_runtime::scope::hew_scope_spawn(p, actor.cast()) }
-    }
-
-    /// Current `actor_count` field (read of internal state).
-    ///
-    /// Exposed for tests that assert on scope bookkeeping. This is not a
-    /// stable API surface — the scope's internal layout may change.
-    pub fn actor_count(&mut self) -> i32 {
-        // SAFETY: scope is a live HewScope; actor_count is a plain i32 field.
-        unsafe { (*self.as_mut_ptr()).actor_count }
-    }
-
-    /// Read actor-slot `i` without taking ownership.
-    ///
-    /// Tests use this to assert that `wait_all` nulled the slots out.
-    pub fn actor_slot(&mut self, i: usize) -> *mut c_void {
-        // SAFETY: scope is live; actors[] is a fixed-size array within the
-        // HewScope value. Out-of-bounds is a panic via slice indexing.
-        unsafe { (*self.as_mut_ptr()).actors[i] }
-    }
-}
-
-impl Default for TestScope {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Drop for TestScope {
-    fn drop(&mut self) {
-        // SAFETY: address comes from a Box we own; destroy joins children
-        // and is idempotent.
-        unsafe { hew_runtime::scope::hew_scope_destroy(self.as_mut_ptr()) }
     }
 }
 

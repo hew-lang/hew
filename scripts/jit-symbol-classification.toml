@@ -764,15 +764,6 @@ codegen-stable = [
 # drain, and conservative runtime-control hooks that must stay out of any JIT
 # session dylib. AOT-linkable only; never JIT-reachable.
 #
-# W2.006 Stage 1 (HewScope removal):
-#   `hew_scope_*` (8 symbols) were demoted from `stable` to `internal` here
-#   because codegen no longer emits them — the canonical `scope {}` substrate
-#   is `HewTaskScope` / `hew_task_scope_*`. The legacy `hew-runtime/src/scope.rs`
-#   module still defines them as `#[no_mangle] extern "C"` exports so the
-#   FFI verifier (`scripts/verify-ffi-symbols.py`) still requires classification.
-#   Stage 2 of this lane deletes `scope.rs` outright, at which point these
-#   8 rows come back out of this list.
-#
 # Phase α capability boundary:
 #   `hew_actor_send_aliased` and `hew_mailbox_send_aliased` are listed
 #   here, NOT in `stable`, because the alias-send envelope contract is
@@ -823,14 +814,6 @@ internal = [
   "hew_sched_metrics_tasks_spawned",
   "hew_sched_metrics_worker_count",
   "hew_sched_shutdown",
-  "hew_scope_cancel",
-  "hew_scope_create",
-  "hew_scope_destroy",
-  "hew_scope_free",
-  "hew_scope_is_cancelled",
-  "hew_scope_new",
-  "hew_scope_spawn",
-  "hew_scope_wait_all",
   "hew_shutdown_initiate",
   "hew_shutdown_phase",
   "hew_shutdown_register_supervisor",

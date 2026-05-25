@@ -10,6 +10,7 @@ pub mod builtin_names;
 pub mod builtin_type;
 pub mod check;
 pub mod cycle;
+pub mod declarative_vec_ffi;
 pub mod env;
 pub mod error;
 pub mod extern_symbol;
@@ -42,7 +43,8 @@ pub use check::{
 };
 pub use error::TypeError;
 pub use extern_symbol::{
-    ExternSymbolSpec, ExternSymbolTemplate, PlaceholderName, TemplateError, TemplateSegment,
+    ExternSymbolSpec, ExternSymbolTemplate, PlaceholderName, TemplateError, TemplateExpansionError,
+    TemplateSegment,
 };
 pub use lang_items::{LangItemBinding, LangItemRegistry, LANG_ITEM_DISPLAY, LANG_ITEM_DISPLAY_FMT};
 pub use lowering_facts::{

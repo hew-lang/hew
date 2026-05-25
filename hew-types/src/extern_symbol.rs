@@ -36,6 +36,11 @@
 
 use hew_parser::ast::Span;
 
+use crate::check::TypeDef;
+use crate::runtime_calling_convention::RuntimeCallingConvention;
+use crate::ty::Ty;
+use std::collections::HashMap;
+
 /// The closed set of placeholders the W3.001 template grammar accepts.
 ///
 /// Closed by design: adding a placeholder is a deliberate
@@ -299,6 +304,94 @@ impl ExternSymbolTemplate {
     pub fn is_monomorphic(&self) -> bool {
         self.placeholders.is_empty()
     }
+
+    /// Expand this template to a concrete runtime symbol given the
+    /// resolved type argument bound to `{T}`.
+    ///
+    /// Substitution uses the canonical token from
+    /// [`RuntimeCallingConvention`] for the type, computed via
+    /// [`RuntimeCallingConvention::for_ty_with_layout`] — the path that
+    /// can positively prove heap-handle-ness for `Ty::Named` by
+    /// consulting `TypeDef::is_indirect`. Callers without a resolved
+    /// `TypeDef` table (e.g. tests) pass an empty map and the routine
+    /// falls back to the context-free classification, which fails
+    /// closed for unproven `Ty::Named` (routes to `LayoutDescriptor`
+    /// and surfaces as [`TemplateExpansionError::UnsupportedCallingConvention`]).
+    ///
+    /// Stage 3 (W3.001) defines the parallel call path that the
+    /// differential test pins against the legacy `resolve_vec_method`
+    /// magic table. Stage 4 deletes the magic table; Stage 5 wires
+    /// the e2e path so the attribute path drives production codegen.
+    ///
+    /// # Errors
+    ///
+    /// * [`TemplateExpansionError::UnsupportedCallingConvention`] —
+    ///   the substituted type maps to a calling convention with no
+    ///   runtime entry point in W3.001 scope (today: `LayoutDescriptor`).
+    ///   The diagnostic carries the expected `*_layout` symbol name so
+    ///   Stage 5 negative tests can pin it exactly.
+    pub fn expand(
+        &self,
+        type_arg: &Ty,
+        type_defs: &HashMap<String, TypeDef>,
+    ) -> Result<String, TemplateExpansionError> {
+        if self.is_monomorphic() {
+            return Ok(self.raw.clone());
+        }
+        let cc = RuntimeCallingConvention::for_ty_with_layout(type_arg, type_defs);
+        if cc == RuntimeCallingConvention::LayoutDescriptor {
+            // W3.001 fail-closed: no runtime entry points for
+            // `LayoutDescriptor` exist yet (W3.003 wires them). Emit
+            // the *would-be* symbol name so Stage 5 negative tests
+            // can pin the diagnostic exactly.
+            let mut would_be = String::with_capacity(self.raw.len());
+            for seg in &self.segments {
+                match seg {
+                    TemplateSegment::Literal(s) => would_be.push_str(s),
+                    TemplateSegment::Placeholder(_) => {
+                        would_be.push_str(cc.canonical_token());
+                    }
+                }
+            }
+            return Err(TemplateExpansionError::UnsupportedCallingConvention {
+                expected_symbol: would_be,
+                convention: cc,
+            });
+        }
+        let token = cc.canonical_token();
+        let mut out = String::with_capacity(self.raw.len());
+        for seg in &self.segments {
+            match seg {
+                TemplateSegment::Literal(s) => out.push_str(s),
+                TemplateSegment::Placeholder(_) => out.push_str(token),
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Failure produced by [`ExternSymbolTemplate::expand`] when a
+/// monomorphization cannot resolve to a runtime entry point.
+///
+/// W3.001 scope: the only failure mode today is
+/// [`Self::UnsupportedCallingConvention`] — the requested type maps to
+/// [`RuntimeCallingConvention::LayoutDescriptor`], for which no
+/// runtime entry points exist in this wave. The `expected_symbol`
+/// field carries the would-be symbol name so Stage-5 negative tests
+/// can pin the diagnostic verbatim
+/// (`UnsupportedRuntimeCallingConvention { expected_symbol: "hew_vec_push_layout" }`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TemplateExpansionError {
+    /// The substituted type resolves to a calling convention with no
+    /// runtime entry point in W3.001 scope.
+    UnsupportedCallingConvention {
+        /// The fully-expanded would-be symbol (with the convention's
+        /// canonical token substituted). Used by negative-test
+        /// diagnostic pinning in Stage 5.
+        expected_symbol: String,
+        /// The calling convention the type resolved to.
+        convention: RuntimeCallingConvention,
+    },
 }
 
 /// A parsed `#[extern_symbol]` attribute stored on a [`FnSig`].
@@ -472,5 +565,109 @@ mod tests {
         let raw = "hew_vec_push_{T}";
         let t = ExternSymbolTemplate::parse(raw).unwrap();
         assert_eq!(t.raw, raw);
+    }
+
+    // ── expand: substitution semantics ──────────────────────────────
+
+    fn type_defs_with_vec_handle() -> HashMap<String, TypeDef> {
+        // W3.001 differential cutover: stand-in for the checker's
+        // resolved TypeDef table, populated with the heap-handle
+        // nominals the differential matrix exercises (Vec). Pointer
+        // discrimination flows through `TypeDef::is_indirect`, not
+        // via name comparison.
+        use crate::check::TypeDefKind;
+        let mut m = HashMap::new();
+        m.insert(
+            "Vec".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "Vec".to_string(),
+                type_params: vec!["T".to_string()],
+                fields: HashMap::new(),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: true,
+            },
+        );
+        m
+    }
+
+    #[test]
+    fn expand_monomorphic_returns_raw_unchanged() {
+        let t = ExternSymbolTemplate::parse("hew_vec_len").unwrap();
+        let out = t.expand(&Ty::I32, &HashMap::new()).unwrap();
+        assert_eq!(out, "hew_vec_len");
+    }
+
+    #[test]
+    fn expand_substitutes_t_with_calling_convention_canonical_token() {
+        let t = ExternSymbolTemplate::parse("hew_vec_push_{T}").unwrap();
+        let cases = [
+            (Ty::I32, "hew_vec_push_i32"),
+            (Ty::I64, "hew_vec_push_i64"),
+            (Ty::U32, "hew_vec_push_i32"),
+            (Ty::U64, "hew_vec_push_i64"),
+            (Ty::F32, "hew_vec_push_f64"),
+            (Ty::F64, "hew_vec_push_f64"),
+            (Ty::String, "hew_vec_push_str"),
+        ];
+        for (ty, expected) in cases {
+            let out = t.expand(&ty, &HashMap::new()).unwrap();
+            assert_eq!(out, expected, "expand mismatch for {ty:?}");
+        }
+    }
+
+    #[test]
+    fn expand_routes_proven_heap_handle_named_to_ptr_token() {
+        let t = ExternSymbolTemplate::parse("hew_vec_push_{T}").unwrap();
+        let type_defs = type_defs_with_vec_handle();
+        let nested = Ty::Named {
+            name: "Vec".to_string(),
+            args: vec![Ty::I32],
+            builtin: None,
+        };
+        let out = t.expand(&nested, &type_defs).unwrap();
+        assert_eq!(out, "hew_vec_push_ptr");
+    }
+
+    #[test]
+    fn expand_fails_closed_for_layout_descriptor_with_expected_symbol() {
+        let t = ExternSymbolTemplate::parse("hew_vec_push_{T}").unwrap();
+        // No TypeDef entry for `Connection` — fail-closed
+        // `for_ty_with_layout` returns `LayoutDescriptor`, expansion
+        // reports the would-be `_layout`-suffixed symbol.
+        let user = Ty::Named {
+            name: "Connection".to_string(),
+            args: vec![],
+            builtin: None,
+        };
+        let err = t.expand(&user, &HashMap::new()).unwrap_err();
+        match err {
+            TemplateExpansionError::UnsupportedCallingConvention {
+                expected_symbol,
+                convention,
+            } => {
+                assert_eq!(expected_symbol, "hew_vec_push_layout");
+                assert_eq!(convention, RuntimeCallingConvention::LayoutDescriptor);
+            }
+        }
+    }
+
+    #[test]
+    fn expand_fails_closed_for_bool_and_char() {
+        // Stage 5 negative-test cases (per plan §6 Stage 5 table):
+        // `Vec<bool>::push` and `Vec<char>::push` must produce
+        // `UnsupportedRuntimeCallingConvention { expected_symbol:
+        // "hew_vec_push_layout" }`.
+        let t = ExternSymbolTemplate::parse("hew_vec_push_{T}").unwrap();
+        for ty in [Ty::Bool, Ty::Char] {
+            let err = t.expand(&ty, &HashMap::new()).unwrap_err();
+            match err {
+                TemplateExpansionError::UnsupportedCallingConvention {
+                    expected_symbol, ..
+                } => assert_eq!(expected_symbol, "hew_vec_push_layout"),
+            }
+        }
     }
 }

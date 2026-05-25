@@ -2121,7 +2121,11 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::String);
                 }
-                if elem_ty != Ty::String {
+                if elem_ty == Ty::String {
+                    // Register the runtime rewrite for `Vec<string>::join`;
+                    // non-string element rejection remains the type gate.
+                    self.record_runtime_method_call_rewrite(span, "hew_vec_join_str");
+                } else {
                     self.report_error(
                         TypeErrorKind::UndefinedMethod,
                         span,

@@ -5,7 +5,7 @@ use hew_parser::ast::{
     LambdaParam, Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl,
     RecordKind, ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt,
     StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TypeBodyItem, TypeDecl,
-    TypeDeclKind, TypeExpr, VariantKind,
+    TypeDeclKind, TypeExpr, UnaryOp, VariantKind,
 };
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildKind, ChildSlot,
@@ -1949,6 +1949,7 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
             collect_call_sites_in_expr(left, out);
             collect_call_sites_in_expr(right, out);
         }
+        HirExprKind::Unary { operand, .. } => collect_call_sites_in_expr(operand, out),
         HirExprKind::Block(b) => collect_call_sites_in_block(b, out),
         HirExprKind::GenBlock { body, .. } => collect_call_sites_in_block(body, out),
         HirExprKind::Yield {
@@ -5912,6 +5913,7 @@ impl LowerCtx {
                     ty,
                 )
             }
+            Expr::Unary { op, operand } => self.lower_unary_expr(*op, operand, &span),
             Expr::Call { function, args, .. } => {
                 let mut args = args
                     .iter()
@@ -7778,6 +7780,186 @@ impl LowerCtx {
                 HirExprKind::Literal(HirLiteral::Duration(*value)),
                 ResolvedTy::Duration,
             ),
+        }
+    }
+
+    fn lower_unary_expr(
+        &mut self,
+        op: UnaryOp,
+        operand: &Spanned<Expr>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let operand_expr = self.lower_expr(operand, IntentKind::Read);
+
+        if op == UnaryOp::RawDeref {
+            self.unsupported(
+                span.clone(),
+                "raw pointer unary dereference",
+                "m5-raw-pointers",
+            );
+            return (
+                HirExprKind::Unsupported("unsupported raw pointer unary dereference".into()),
+                ResolvedTy::Unit,
+            );
+        }
+
+        let Some(result_ty) = self.checker_expr_ty(span, "unary expression") else {
+            return (
+                HirExprKind::Unsupported("unary expression missing checker result type".into()),
+                ResolvedTy::Unit,
+            );
+        };
+        let Some(operand_ty) = self.checker_unary_operand_ty(op, operand, &result_ty) else {
+            return (
+                HirExprKind::Unsupported("unary expression missing checker operand type".into()),
+                ResolvedTy::Unit,
+            );
+        };
+
+        if !Self::unary_shape_supported(op, &operand_ty, &result_ty) {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::UnaryOperatorUnsupportedInMir {
+                    op: Self::unary_op_label(op).to_string(),
+                    operand_ty: operand_ty.to_string(),
+                    result_ty: result_ty.to_string(),
+                },
+                span.clone(),
+                "checker-approved unary expression has no MIR/codegen lowering for this typed shape",
+            ));
+            return (
+                HirExprKind::Unsupported(format!(
+                    "unsupported unary `{}` for operand `{operand_ty}` -> `{result_ty}`",
+                    Self::unary_op_label(op)
+                )),
+                result_ty,
+            );
+        }
+
+        (
+            HirExprKind::Unary {
+                op,
+                operand: Box::new(operand_expr),
+                operand_ty,
+            },
+            result_ty,
+        )
+    }
+
+    fn checker_expr_ty(&mut self, span: &Span, label: &str) -> Option<ResolvedTy> {
+        let key = SpanKey::from(span);
+        let Some(ty) = self.expr_types.get(&key).cloned() else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: label.to_string(),
+                    reason: "missing expr_types entry".to_string(),
+                },
+                span.clone(),
+                "checker-authoritative expression type is required for unary lowering",
+            ));
+            return None;
+        };
+        match ResolvedTy::from_ty(&ty) {
+            Ok(resolved) => Some(resolved),
+            Err(err) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: label.to_string(),
+                        reason: err.to_string(),
+                    },
+                    span.clone(),
+                    "checker-authoritative unary type failed boundary conversion",
+                ));
+                None
+            }
+        }
+    }
+
+    fn checker_unary_operand_ty(
+        &mut self,
+        op: UnaryOp,
+        operand: &Spanned<Expr>,
+        result_ty: &ResolvedTy,
+    ) -> Option<ResolvedTy> {
+        let key = SpanKey::from(&operand.1);
+        match self.expr_types.get(&key).cloned() {
+            Some(ty) => match ResolvedTy::from_ty(&ty) {
+                Ok(resolved) => Some(resolved),
+                Err(_) if Self::unary_literal_operand_uses_result_ty(op, &operand.0) => {
+                    Some(result_ty.clone())
+                }
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "unary operand".to_string(),
+                            reason: err.to_string(),
+                        },
+                        operand.1.clone(),
+                        "checker-authoritative unary operand type failed boundary conversion",
+                    ));
+                    None
+                }
+            },
+            None if Self::unary_literal_operand_uses_result_ty(op, &operand.0) => {
+                Some(result_ty.clone())
+            }
+            None => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "unary operand".to_string(),
+                        reason: "missing expr_types entry".to_string(),
+                    },
+                    operand.1.clone(),
+                    "checker-authoritative expression type is required for unary lowering",
+                ));
+                None
+            }
+        }
+    }
+
+    fn unary_literal_operand_uses_result_ty(op: UnaryOp, operand: &Expr) -> bool {
+        matches!(operand, Expr::Literal(_))
+            && matches!(op, UnaryOp::Not | UnaryOp::Negate | UnaryOp::BitNot)
+    }
+
+    fn unary_shape_supported(op: UnaryOp, operand_ty: &ResolvedTy, result_ty: &ResolvedTy) -> bool {
+        match op {
+            UnaryOp::Not => operand_ty == &ResolvedTy::Bool && result_ty == &ResolvedTy::Bool,
+            UnaryOp::Negate => {
+                operand_ty == result_ty
+                    && (Self::resolved_is_integer(operand_ty)
+                        || Self::resolved_is_float(operand_ty))
+            }
+            UnaryOp::BitNot => operand_ty == result_ty && Self::resolved_is_integer(operand_ty),
+            UnaryOp::RawDeref => false,
+        }
+    }
+
+    fn resolved_is_integer(ty: &ResolvedTy) -> bool {
+        matches!(
+            ty,
+            ResolvedTy::I8
+                | ResolvedTy::I16
+                | ResolvedTy::I32
+                | ResolvedTy::I64
+                | ResolvedTy::U8
+                | ResolvedTy::U16
+                | ResolvedTy::U32
+                | ResolvedTy::U64
+                | ResolvedTy::Isize
+                | ResolvedTy::Usize
+        )
+    }
+
+    fn resolved_is_float(ty: &ResolvedTy) -> bool {
+        matches!(ty, ResolvedTy::F32 | ResolvedTy::F64)
+    }
+
+    fn unary_op_label(op: UnaryOp) -> &'static str {
+        match op {
+            UnaryOp::Not => "!",
+            UnaryOp::Negate => "-",
+            UnaryOp::BitNot => "~",
+            UnaryOp::RawDeref => "*",
         }
     }
 
@@ -9774,6 +9956,9 @@ fn collect_captures_walk(
             collect_captures_walk(left, param_ids, seen, captures, self_id);
             collect_captures_walk(right, param_ids, seen, captures, self_id);
         }
+        HirExprKind::Unary { operand, .. } => {
+            collect_captures_walk(operand, param_ids, seen, captures, self_id);
+        }
         HirExprKind::NumericMethod { receiver, arg, .. } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
             collect_captures_walk(arg, param_ids, seen, captures, self_id);
@@ -10002,6 +10187,9 @@ fn collect_general_closure_captures_walk(
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_general_closure_captures_walk(left, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(right, outer_bindings, seen, captures);
+        }
+        HirExprKind::Unary { operand, .. } => {
+            collect_general_closure_captures_walk(operand, outer_bindings, seen, captures);
         }
         HirExprKind::NumericMethod { receiver, arg, .. } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
@@ -10614,6 +10802,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_hir_emitted_events_walk(left, event_names, out);
             collect_hir_emitted_events_walk(right, event_names, out);
+        }
+        HirExprKind::Unary { operand, .. } => {
+            collect_hir_emitted_events_walk(operand, event_names, out);
         }
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_hir_emitted_events_walk(callee, event_names, out);
@@ -13400,6 +13591,9 @@ fn scan_expr_for_call_shape(
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             scan_expr_for_call_shape(left, callable, diagnostics);
             scan_expr_for_call_shape(right, callable, diagnostics);
+        }
+        HirExprKind::Unary { operand, .. } => {
+            scan_expr_for_call_shape(operand, callable, diagnostics);
         }
         HirExprKind::Spawn { args, .. } => {
             for (_, v) in args {

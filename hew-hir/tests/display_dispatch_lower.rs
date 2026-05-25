@@ -61,6 +61,7 @@ fn walk_expr(expr: &HirExpr, f: &mut impl FnMut(&HirExpr)) {
             walk_expr(left, f);
             walk_expr(right, f);
         }
+        HirExprKind::Unary { operand, .. } => walk_expr(operand, f),
         HirExprKind::Block(block) => walk_block(block, f),
         HirExprKind::If {
             condition,

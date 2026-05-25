@@ -164,6 +164,7 @@ impl Verifier {
                 self.expr(left);
                 self.expr(right);
             }
+            HirExprKind::Unary { operand, .. } => self.expr(operand),
             HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
                 self.expr(callee);
                 for arg in args {

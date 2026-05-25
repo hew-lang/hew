@@ -531,6 +531,17 @@ pub enum HirDiagnosticKind {
         /// Source-form operator (e.g. `".."`, `"..="`).
         op: String,
     },
+    /// A unary operator reached HIR with checker-authoritative types that the
+    /// MIR/codegen substrate does not support. This is a fail-closed boundary
+    /// diagnostic rather than a fallback to `Unit` or a downstream panic.
+    UnaryOperatorUnsupportedInMir {
+        /// Source-form operator (`"!"`, `"-"`, or `"~"`).
+        op: String,
+        /// Checker-resolved operand type.
+        operand_ty: String,
+        /// Checker-resolved result type.
+        result_ty: String,
+    },
     /// Division (`/`) or modulo (`%`) on a platform-sized signed integer
     /// (`isize`). The `signed-MIN / -1` trap guard requires emitting the
     /// MIN constant for the target's pointer width, which the current MIR

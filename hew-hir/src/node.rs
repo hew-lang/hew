@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use hew_parser::ast::{BinaryOp, OverflowPolicy, Span};
+use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
 use hew_types::{ChildSlot, ExecutionContextReader, ResolvedTy, VariantMatch};
 use hew_types::{NumericMethodFamily, NumericMethodOp, NumericSignedness, NumericWidth};
 
@@ -740,6 +740,17 @@ pub enum HirExprKind {
         op: BinaryOp,
         left: Box<HirExpr>,
         right: Box<HirExpr>,
+    },
+    /// Checker-authoritative unary expression (`!`, `-`, `~`).
+    ///
+    /// Produced only when both operand and result spans have resolved entries in
+    /// `TypeCheckOutput::expr_types`. The parent [`HirExpr::ty`] carries the
+    /// result type; `operand_ty` records the checker-owned operand type so MIR
+    /// can select the unary instruction without re-deriving from syntax.
+    Unary {
+        op: UnaryOp,
+        operand: Box<HirExpr>,
+        operand_ty: ResolvedTy,
     },
     Call {
         callee: Box<HirExpr>,

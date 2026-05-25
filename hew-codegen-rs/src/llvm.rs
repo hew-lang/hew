@@ -5441,6 +5441,78 @@ fn lower_instruction(
                 .build_store(dest_ptr, result)
                 .map_err(|e| CodegenError::Llvm(format!("bitwise store: {e:?}")))?;
         }
+        Instr::BoolNot { dest, operand } => {
+            let (operand_ptr, operand_ty) = place_pointer(fn_ctx, *operand)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let bool_int = match operand_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "BoolNot operand is not an int".into(),
+                    ))
+                }
+            };
+            let dest_int = match dest_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "BoolNot dest is not an int".into(),
+                    ))
+                }
+            };
+            let operand_v = fn_ctx
+                .builder
+                .build_load(bool_int, operand_ptr, "boolnot_operand")
+                .map_err(|e| CodegenError::Llvm(format!("bool not operand load: {e:?}")))?
+                .into_int_value();
+            let bit = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    operand_v,
+                    bool_int.const_zero(),
+                    "boolnot",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("bool not compare: {e:?}")))?;
+            let widened = fn_ctx
+                .builder
+                .build_int_z_extend_or_bit_cast(bit, dest_int, "boolnot_widen")
+                .map_err(|e| CodegenError::Llvm(format!("bool not widen: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, widened)
+                .map_err(|e| CodegenError::Llvm(format!("bool not store: {e:?}")))?;
+        }
+        Instr::IntBitNot { dest, operand } => {
+            let (operand_ptr, operand_ty) = place_pointer(fn_ctx, *operand)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let int_ty = match operand_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntBitNot operand is not an integer".into(),
+                    ));
+                }
+            };
+            if dest_ty != operand_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntBitNot operand and dest must share the same integer type".into(),
+                ));
+            }
+            let operand_v = fn_ctx
+                .builder
+                .build_load(int_ty, operand_ptr, "bitnot_operand")
+                .map_err(|e| CodegenError::Llvm(format!("bitnot operand load: {e:?}")))?
+                .into_int_value();
+            let result = fn_ctx
+                .builder
+                .build_not(operand_v, "bitnot")
+                .map_err(|e| CodegenError::Llvm(format!("bitnot: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result)
+                .map_err(|e| CodegenError::Llvm(format!("bitnot store: {e:?}")))?;
+        }
         Instr::IntArithChecked {
             op,
             signed,
@@ -5560,6 +5632,98 @@ fn lower_instruction(
                 .builder
                 .build_store(flag_ptr, of_widened)
                 .map_err(|e| CodegenError::Llvm(format!("checked flag store: {e:?}")))?;
+            let _ = ctx;
+        }
+        Instr::IntNegChecked {
+            signed,
+            dest,
+            operand,
+            overflow_flag,
+        } => {
+            let (operand_ptr, operand_ty) = place_pointer(fn_ctx, *operand)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let (flag_ptr, flag_ty) = place_pointer(fn_ctx, *overflow_flag)?;
+            let int_ty = match operand_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntNegChecked operand is not an integer".into(),
+                    ));
+                }
+            };
+            if dest_ty != operand_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntNegChecked operand and dest must share the same integer type".into(),
+                ));
+            }
+            let flag_int = match flag_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntNegChecked overflow_flag is not an integer".into(),
+                    ));
+                }
+            };
+            let intrinsic_name = match signed {
+                IntSignedness::Signed => "llvm.ssub.with.overflow",
+                IntSignedness::Unsigned => "llvm.usub.with.overflow",
+            };
+            let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
+                CodegenError::Llvm(format!(
+                    "with-overflow intrinsic `{intrinsic_name}` not found in LLVM build"
+                ))
+            })?;
+            let intrinsic_fn = intrinsic
+                .get_declaration(fn_ctx.llvm_mod, &[int_ty.into()])
+                .ok_or_else(|| {
+                    CodegenError::Llvm(format!(
+                        "with-overflow intrinsic `{intrinsic_name}` declaration failed for width {int_ty:?}"
+                    ))
+                })?;
+            let operand_v = fn_ctx
+                .builder
+                .build_load(int_ty, operand_ptr, "ineg_operand")
+                .map_err(|e| CodegenError::Llvm(format!("ineg operand load: {e:?}")))?
+                .into_int_value();
+            let call_site = fn_ctx
+                .builder
+                .build_call(
+                    intrinsic_fn,
+                    &[int_ty.const_zero().into(), operand_v.into()],
+                    "neg_with_overflow",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("neg with-overflow call: {e:?}")))?;
+            let agg = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::Llvm(format!(
+                        "with-overflow intrinsic `{intrinsic_name}` returned void"
+                    ))
+                })?
+                .into_struct_value();
+            let result_v = fn_ctx
+                .builder
+                .build_extract_value(agg, 0, "neg_result")
+                .map_err(|e| CodegenError::Llvm(format!("neg extract result: {e:?}")))?
+                .into_int_value();
+            let of_bit = fn_ctx
+                .builder
+                .build_extract_value(agg, 1, "neg_overflow")
+                .map_err(|e| CodegenError::Llvm(format!("neg extract flag: {e:?}")))?
+                .into_int_value();
+            let of_widened = fn_ctx
+                .builder
+                .build_int_z_extend_or_bit_cast(of_bit, flag_int, "neg_overflow_widen")
+                .map_err(|e| CodegenError::Llvm(format!("neg flag zext: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result_v)
+                .map_err(|e| CodegenError::Llvm(format!("neg result store: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(flag_ptr, of_widened)
+                .map_err(|e| CodegenError::Llvm(format!("neg flag store: {e:?}")))?;
             let _ = ctx;
         }
         Instr::IntArithCheckedOption {
@@ -6232,6 +6396,37 @@ fn lower_instruction(
                 .builder
                 .build_store(dest_ptr, result)
                 .map_err(|e| CodegenError::Llvm(format!("farith store: {e:?}")))?;
+            let _ = ctx;
+        }
+        Instr::FloatNeg { dest, operand, .. } => {
+            let (operand_ptr, operand_ty) = place_pointer(fn_ctx, *operand)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let float_ty = match operand_ty {
+                BasicTypeEnum::FloatType(f) => f,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "FloatNeg operand is not a float type".into(),
+                    ));
+                }
+            };
+            if dest_ty != operand_ty {
+                return Err(CodegenError::FailClosed(
+                    "FloatNeg operand and dest must share the same float type".into(),
+                ));
+            }
+            let operand_v = fn_ctx
+                .builder
+                .build_load(float_ty, operand_ptr, "fneg_operand")
+                .map_err(|e| CodegenError::Llvm(format!("fneg operand load: {e:?}")))?
+                .into_float_value();
+            let result = fn_ctx
+                .builder
+                .build_float_sub(float_ty.const_float(-0.0), operand_v, "fneg")
+                .map_err(|e| CodegenError::Llvm(format!("fneg: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result)
+                .map_err(|e| CodegenError::Llvm(format!("fneg store: {e:?}")))?;
             let _ = ctx;
         }
         Instr::CharLit { value, dest } => {

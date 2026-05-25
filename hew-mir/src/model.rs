@@ -1477,6 +1477,27 @@ pub enum Instr {
     /// Bitwise XOR `dest = lhs ^ rhs`. Same well-defined semantics as
     /// `IntBitAnd`; no traps or overflow conditions.
     IntBitXor { dest: Place, lhs: Place, rhs: Place },
+    /// Logical boolean NOT `dest = !operand`. Produces canonical bool storage
+    /// (`0` or `1`) rather than bitwise-complementing the bool byte.
+    BoolNot { dest: Place, operand: Place },
+    /// Checked integer unary negation `dest = -operand`.
+    ///
+    /// Codegen lowers this through `llvm.{s,u}sub.with.overflow.iN(0, operand)`
+    /// and stores the overflow flag for the producer-emitted trap branch.
+    IntNegChecked {
+        signed: IntSignedness,
+        dest: Place,
+        operand: Place,
+        overflow_flag: Place,
+    },
+    /// IEEE 754 unary negation `dest = -operand`.
+    FloatNeg {
+        dest: Place,
+        operand: Place,
+        width: FloatWidth,
+    },
+    /// Bitwise NOT `dest = ~operand` for integer operands.
+    IntBitNot { dest: Place, operand: Place },
     /// Left shift `dest = lhs << rhs`. No signedness on the shift
     /// itself (LLVM `shl`). Producers must check `(rhs as unsigned) >=
     /// bit_width(dest)` before emitting this instruction and branch to

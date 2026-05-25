@@ -414,6 +414,7 @@ impl ContextFlowState {
 
 #[allow(
     clippy::match_same_arms,
+    clippy::too_many_lines,
     reason = "semantically distinct Instr variants share an extraction shape (e.g. \
               Move and EnumTagLoad both surface src→dest dataflow); merging arms by \
               pattern would obscure their distinct producer semantics"
@@ -448,6 +449,15 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         | Instr::FloatMul { dest, lhs, rhs, .. }
         | Instr::FloatDiv { dest, lhs, rhs, .. }
         | Instr::FloatRem { dest, lhs, rhs, .. } => (vec![*lhs, *rhs], vec![*dest]),
+        Instr::BoolNot { dest, operand }
+        | Instr::FloatNeg { dest, operand, .. }
+        | Instr::IntBitNot { dest, operand } => (vec![*operand], vec![*dest]),
+        Instr::IntNegChecked {
+            dest,
+            operand,
+            overflow_flag,
+            ..
+        } => (vec![*operand], vec![*dest, *overflow_flag]),
         Instr::IntArithChecked {
             dest,
             lhs,

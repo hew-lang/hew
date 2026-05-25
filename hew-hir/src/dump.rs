@@ -826,6 +826,10 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");
         }
+        HirExprKind::Unary { op, operand, .. } => {
+            writeln!(out, "{pad}  unary {op:?}").expect("write to string");
+            dump_expr(out, operand, indent + 4);
+        }
         HirExprKind::WhileLet {
             scrutinee,
             variant_match,

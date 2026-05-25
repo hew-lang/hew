@@ -54,6 +54,7 @@ fn walk_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             walk_expr(left, out);
             walk_expr(right, out);
         }
+        HirExprKind::Unary { operand, .. } => walk_expr(operand, out),
         HirExprKind::Block(b) => collect_is_exprs(b, out),
         _ => {}
     }

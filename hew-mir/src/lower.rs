@@ -12,7 +12,7 @@ use hew_hir::{
     HirSupervisorChild, HirSupervisorDecl, IntentKind, ResolvedRef, ResourceMarker, ScopeId,
     SiteId, ValueClass,
 };
-use hew_parser::ast::BinaryOp;
+use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_types::{
     BuiltinType, ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily,
     NumericMethodOp, NumericSignedness, ResolvedTy,
@@ -149,6 +149,15 @@ fn float_width(ty: &ResolvedTy) -> Option<FloatWidth> {
         ResolvedTy::F32 => Some(FloatWidth::F32),
         ResolvedTy::F64 => Some(FloatWidth::F64),
         _ => None,
+    }
+}
+
+fn unary_op_label(op: UnaryOp) -> &'static str {
+    match op {
+        UnaryOp::Not => "!",
+        UnaryOp::Negate => "-",
+        UnaryOp::BitNot => "~",
+        UnaryOp::RawDeref => "*",
     }
 }
 
@@ -2984,6 +2993,9 @@ fn collect_unknown_self_fields_in_expr(
             collect_unknown_self_fields_in_expr(left, state_fields, seen, unknown);
             collect_unknown_self_fields_in_expr(right, state_fields, seen, unknown);
         }
+        HirExprKind::Unary { operand, .. } => {
+            collect_unknown_self_fields_in_expr(operand, state_fields, seen, unknown);
+        }
         HirExprKind::NumericMethod { receiver, arg, .. } => {
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
             collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
@@ -4343,6 +4355,11 @@ impl Builder {
                     _ => None,
                 }
             }
+            HirExprKind::Unary {
+                op,
+                operand,
+                operand_ty,
+            } => self.lower_unary(*op, operand, operand_ty, &expr.ty, expr.site),
             HirExprKind::NumericMethod {
                 receiver,
                 arg,
@@ -5694,6 +5711,92 @@ impl Builder {
         // expression's caller can keep emitting into the success path.
         self.start_block(cont_bb);
         Some(dest)
+    }
+
+    fn lower_unary(
+        &mut self,
+        op: UnaryOp,
+        operand: &HirExpr,
+        operand_ty: &ResolvedTy,
+        result_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let operand_place = self.lower_value(operand)?;
+        let dest = self.alloc_local(result_ty.clone());
+        match op {
+            UnaryOp::Not if operand_ty == &ResolvedTy::Bool && result_ty == &ResolvedTy::Bool => {
+                self.instructions.push(Instr::BoolNot {
+                    dest,
+                    operand: operand_place,
+                });
+                Some(dest)
+            }
+            UnaryOp::Negate if operand_ty == result_ty => {
+                if let Some(width) = float_width(result_ty) {
+                    self.instructions.push(Instr::FloatNeg {
+                        dest,
+                        operand: operand_place,
+                        width,
+                    });
+                    return Some(dest);
+                }
+                let Some(signed) = integer_signedness(result_ty) else {
+                    self.locals.pop();
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!("unary `-` on non-numeric type `{result_ty}`"),
+                            site,
+                        },
+                        note: "unary negation requires an integer or float result type".to_string(),
+                    });
+                    return None;
+                };
+                let overflow_flag = self.alloc_local(ResolvedTy::Bool);
+                self.instructions.push(Instr::IntNegChecked {
+                    signed,
+                    dest,
+                    operand: operand_place,
+                    overflow_flag,
+                });
+                let trap_bb = self.alloc_block();
+                let cont_bb = self.alloc_block();
+                self.finish_current_block(Terminator::Branch {
+                    cond: overflow_flag,
+                    then_target: trap_bb,
+                    else_target: cont_bb,
+                });
+                self.start_block(trap_bb);
+                self.finish_current_block(Terminator::Trap {
+                    kind: TrapKind::IntegerOverflow,
+                });
+                self.start_block(cont_bb);
+                Some(dest)
+            }
+            UnaryOp::BitNot
+                if operand_ty == result_ty && integer_signedness(result_ty).is_some() =>
+            {
+                self.instructions.push(Instr::IntBitNot {
+                    dest,
+                    operand: operand_place,
+                });
+                Some(dest)
+            }
+            UnaryOp::RawDeref | UnaryOp::Not | UnaryOp::Negate | UnaryOp::BitNot => {
+                self.locals.pop();
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "unary operator `{}` for operand `{operand_ty}` -> `{result_ty}`",
+                            unary_op_label(op)
+                        ),
+                        site,
+                    },
+                    note: "HIR unary node carried a typed shape the MIR producer does not support"
+                        .to_string(),
+                });
+                None
+            }
+        }
     }
 
     /// Lower integer `/` and `%` with divide-by-zero and (for signed
@@ -11227,6 +11330,15 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             overflow_flag,
             ..
         } => vec![*dest, *lhs, *rhs, *overflow_flag],
+        Instr::BoolNot { dest, operand }
+        | Instr::FloatNeg { dest, operand, .. }
+        | Instr::IntBitNot { dest, operand } => vec![*dest, *operand],
+        Instr::IntNegChecked {
+            dest,
+            operand,
+            overflow_flag,
+            ..
+        } => vec![*dest, *operand, *overflow_flag],
         Instr::Move { dest, src } => vec![*dest, *src],
         Instr::Drop { place, .. } => vec![*place],
         Instr::CallRuntimeAbi(call) => {

@@ -1,0 +1,27 @@
+// Reject fixture: free_fn_scope_spawn_generic - generic free-function task
+// spawning remains fail-closed until the TaskEntry adapter can resolve
+// monomorphised callees.
+//
+// This fixture keeps the fork inside an actor handler so the caller-context
+// reject does not mask the generic-spawn diagnostic.
+//
+// Harness verb: hew compile
+// Expected diagnostics:
+//   - E_NOT_YET_IMPLEMENTED
+//   - "generic free-function task spawning"
+
+fn worker<T>() {}
+
+actor _Driver {
+    receive fn drive() {
+        scope {
+            fork { worker::<i64>(); }
+        };
+    }
+}
+
+fn main() -> i64 {
+    let d = spawn _Driver;
+    d.drive();
+    0
+}

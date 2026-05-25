@@ -358,6 +358,32 @@ grep -q 'MonitorRef' "${reject_output}"
 # scope{} / fork — fail-closed surface pins
 # ---------------------------------------------------------------------------
 
+# Accept: actor-handler `scope { fork { worker(); } }` runs through the W4.010
+# TaskEntry adapter for no-argument unit-returning free functions.
+run_accept_expect_stdout "free_fn_actor_scope_spawn"
+
+# Reject: top-level/default-callconv free-function task spawn has no enclosing
+# ctx-bearing execution context to forward to the task wrapper. This must fail
+# at MIR-lower time, before codegen.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/free_fn_scope_spawn_in_default.hew" >"${reject_output}" 2>&1; then
+  echo "expected free-fn-scope-spawn-in-default fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF "cannot spawn \`worker\` from \`main\`" "${reject_output}"
+grep -qF 'ctx-bearing execution context' "${reject_output}"
+grep -qF 'W4.010-followup-caller-ctx-routing' "${reject_output}"
+
+# Reject: generic free-function task spawn stays fail-closed. The caller is an
+# actor handler so the generic diagnostic is not masked by the caller-context
+# gate.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/free_fn_scope_spawn_generic.hew" >"${reject_output}" 2>&1; then
+  echo "expected free-fn-scope-spawn-generic fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF 'generic free-function task spawning' "${reject_output}"
+
 # Reject: `fork name = expr` outside any scope{} body.
 # The type checker rejects this before HIR lowering — the construct is
 # parser-only in the current build.
@@ -594,16 +620,15 @@ run_accept_expect_status "remote_pid_tell" 42
 # ---------------------------------------------------------------------------
 # W2.006 Stage 1 — HewScope removal: scope{} MIR shape invariant.
 # ---------------------------------------------------------------------------
-# Check-only fixture: `scope { fork { worker(); } }` inside an actor handler
+# Accept fixture: `scope { fork { worker(); } }` inside an actor handler
 # must:
 #   1. typecheck cleanly (`hew check` exits 0).
 #   2. produce a RawMirFunction whose instruction stream contains the
 #      canonical hew_task_scope_* and hew_task_new symbols.
 #   3. NOT mention the legacy hew_scope_* family anywhere in the dump.
-# The full back-end link is blocked by an orthogonal SpawnTaskDirect callee
-# constraint that predates W2.006; the check + MIR-shape gate is what this
-# lane is responsible for.
-w2006_fixture="${ROOT}/tests/vertical-slice/check-only/w2006_scope_spawn.hew"
+#   4. compile and run end-to-end now that W4.010 synthesizes a TaskEntry
+#      adapter for the free-function task body.
+w2006_fixture="${ROOT}/tests/vertical-slice/accept/w2006_scope_spawn.hew"
 
 "${HEW}" check "${w2006_fixture}" >"${accept_output}" 2>&1
 grep -q ": OK$" "${accept_output}" || {
@@ -639,3 +664,5 @@ if grep -qE 'symbol: "hew_scope_(spawn|new|create|free|destroy|cancel|is_cancell
   cat "${accept_output}" >&2
   exit 1
 fi
+
+run_accept_expect_status "w2006_scope_spawn" 0

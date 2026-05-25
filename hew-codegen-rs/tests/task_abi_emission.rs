@@ -142,7 +142,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
             RawMirFunction {
                 name: "long_op".to_string(),
                 return_ty: ResolvedTy::Unit,
-                call_conv: FunctionCallConv::ActorHandler,
+                call_conv: FunctionCallConv::TaskEntry,
                 params: vec![],
                 locals: vec![ResolvedTy::Unit],
                 blocks: vec![long_op_block.clone()],

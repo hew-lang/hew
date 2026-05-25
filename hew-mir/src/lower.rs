@@ -1,4 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 use hew_hir::stdlib_catalog;
 use hew_hir::{
@@ -22,6 +26,8 @@ use crate::model::{
     MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, SelectArm,
     SelectArmKind, Strategy, Terminator, ThirFunction, TrapKind,
 };
+
+type TaskEntryAdapterSymbols = Rc<RefCell<HashSet<String>>>;
 
 const HEW_CTX_OFFSET_ACTOR_ID: usize = 8;
 const HEW_CTX_OFFSET_PARENT_SUPERVISOR: usize = 16;
@@ -792,6 +798,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         .cloned()
         .map(|layout| (layout.name.clone(), layout))
         .collect();
+    let task_entry_adapter_symbols = TaskEntryAdapterSymbols::default();
 
     // Recognised tagged-union type names: every machine plus its synthesised
     // `<Machine>Event` companion. Walks `module.items` directly because the
@@ -877,6 +884,14 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     for mono in &module.monomorphisations {
         module_fn_names.insert(mono.mangled_name.clone());
     }
+    let module_generic_fn_names: HashSet<String> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Function(func) if !func.type_params.is_empty() => Some(func.name.clone()),
+            _ => None,
+        })
+        .collect();
     let mut emitted_actor_handler_symbols: HashMap<String, String> = module_fn_names
         .iter()
         .map(|name| (name.clone(), format!("function `{name}`")))
@@ -912,9 +927,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &machine_layout_names,
                     None,
                     &module_fn_names,
+                    &module_generic_fn_names,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     crate::model::FunctionCallConv::Default,
+                    task_entry_adapter_symbols.clone(),
                 );
                 thir.push(lowered.thir);
                 raw_mir.push(lowered.raw);
@@ -941,9 +958,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &actor_layout_map,
                     &machine_layout_names,
                     &module_fn_names,
+                    &module_generic_fn_names,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     &mut emitted_actor_handler_symbols,
+                    &task_entry_adapter_symbols,
                     &mut diagnostics,
                 );
                 for lowered in lowered_handlers {
@@ -974,9 +993,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &actor_layout_map,
                     &machine_layout_names,
                     &module_fn_names,
+                    &module_generic_fn_names,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     &mut emitted_actor_handler_symbols,
+                    &task_entry_adapter_symbols,
                     &mut diagnostics,
                 ) {
                     thir.push(lowered.thir);
@@ -1029,6 +1050,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &supervisor_layout_map,
                     &machine_layout_names,
                     &module_fn_names,
+                    &module_generic_fn_names,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                 );
@@ -1123,9 +1145,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             &machine_layout_names,
             None,
             &module_fn_names,
+            &module_generic_fn_names,
             &module.call_site_type_args,
             &module.supervisor_child_slots,
             crate::model::FunctionCallConv::Default,
+            task_entry_adapter_symbols.clone(),
         );
         thir.push(lowered.thir);
         raw_mir.push(lowered.raw);
@@ -1211,9 +1235,11 @@ fn lower_actor_receive_handlers(
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     emitted_symbols: &mut HashMap<String, String>,
+    task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Vec<LoweredFunction> {
     let state_fields: HashSet<String> = actor
@@ -1293,9 +1319,11 @@ fn lower_actor_receive_handlers(
             machine_layout_names,
             Some(&actor.name),
             module_fn_names,
+            module_generic_fn_names,
             call_site_type_args,
             supervisor_child_slots,
             crate::model::FunctionCallConv::ActorHandler,
+            task_entry_adapter_symbols.clone(),
         ));
     }
 
@@ -1313,9 +1341,11 @@ fn lower_actor_body_handlers(
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     emitted_symbols: &mut HashMap<String, String>,
+    task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Vec<LoweredFunction> {
     let mut lowered = Vec::new();
@@ -1328,9 +1358,11 @@ fn lower_actor_body_handlers(
             actor_layouts,
             machine_layout_names,
             module_fn_names,
+            module_generic_fn_names,
             call_site_type_args,
             supervisor_child_slots,
             emitted_symbols,
+            task_entry_adapter_symbols,
             diagnostics,
         ) {
             lowered.push(func);
@@ -1343,9 +1375,11 @@ fn lower_actor_body_handlers(
         actor_layouts,
         machine_layout_names,
         module_fn_names,
+        module_generic_fn_names,
         call_site_type_args,
         supervisor_child_slots,
         emitted_symbols,
+        task_entry_adapter_symbols,
         diagnostics,
     ));
     lowered.extend(lower_actor_receive_handlers(
@@ -1355,9 +1389,11 @@ fn lower_actor_body_handlers(
         actor_layouts,
         machine_layout_names,
         module_fn_names,
+        module_generic_fn_names,
         call_site_type_args,
         supervisor_child_slots,
         emitted_symbols,
+        task_entry_adapter_symbols,
         diagnostics,
     ));
     lowered
@@ -1375,9 +1411,11 @@ fn lower_actor_init_handler(
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     emitted_symbols: &mut HashMap<String, String>,
+    task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Option<LoweredFunction> {
     let emit_name = mangle_actor_init_handler(&actor.name);
@@ -1417,9 +1455,11 @@ fn lower_actor_init_handler(
         machine_layout_names,
         Some(&actor.name),
         module_fn_names,
+        module_generic_fn_names,
         call_site_type_args,
         supervisor_child_slots,
         crate::model::FunctionCallConv::ActorHandler,
+        task_entry_adapter_symbols.clone(),
     ))
 }
 
@@ -1438,9 +1478,11 @@ fn lower_actor_lifecycle_handlers(
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     emitted_symbols: &mut HashMap<String, String>,
+    task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Vec<LoweredFunction> {
     let mut lowered = Vec::new();
@@ -1485,9 +1527,11 @@ fn lower_actor_lifecycle_handlers(
                     machine_layout_names,
                     Some(&actor.name),
                     module_fn_names,
+                    module_generic_fn_names,
                     call_site_type_args,
                     supervisor_child_slots,
                     crate::model::FunctionCallConv::ActorHandler,
+                    task_entry_adapter_symbols.clone(),
                 ));
             }
             HirLifecycleHookKind::Stop => {
@@ -1522,9 +1566,11 @@ fn lower_actor_lifecycle_handlers(
                     machine_layout_names,
                     Some(&actor.name),
                     module_fn_names,
+                    module_generic_fn_names,
                     call_site_type_args,
                     supervisor_child_slots,
                     crate::model::FunctionCallConv::ActorHandler,
+                    task_entry_adapter_symbols.clone(),
                 ));
             }
             HirLifecycleHookKind::Crash => {
@@ -1698,9 +1744,11 @@ fn lower_actor_lifecycle_handlers(
                     machine_layout_names,
                     Some(&actor.name),
                     module_fn_names,
+                    module_generic_fn_names,
                     call_site_type_args,
                     supervisor_child_slots,
                     crate::model::FunctionCallConv::ActorHandler,
+                    task_entry_adapter_symbols.clone(),
                 ));
             }
             HirLifecycleHookKind::Upgrade => push_lifecycle_not_wired_diagnostic(
@@ -1845,6 +1893,7 @@ fn synthesize_machine_step_fn(
     supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
     machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
 ) -> LoweredFunction {
@@ -1887,6 +1936,7 @@ fn synthesize_machine_step_fn(
         supervisor_layout_map: supervisor_layout_map.clone(),
         machine_layout_names: machine_layout_names.clone(),
         module_fn_names: module_fn_names.clone(),
+        module_generic_fn_names: module_generic_fn_names.clone(),
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
         current_function_symbol: emit_name.clone(),
@@ -2581,9 +2631,11 @@ fn lower_supervisor_bootstrap(
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     emitted_symbols: &mut HashMap<String, String>,
+    task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Option<LoweredFunction> {
     let emit_name = mangle_supervisor_bootstrap(&sup.name);
@@ -2801,6 +2853,7 @@ fn lower_supervisor_bootstrap(
         // Builder.
         None,
         module_fn_names,
+        module_generic_fn_names,
         call_site_type_args,
         supervisor_child_slots,
         // `FunctionCallConv::Default`: codegen replaces the bootstrap body
@@ -2814,6 +2867,7 @@ fn lower_supervisor_bootstrap(
         // supervisor's own actor is spawned by `hew_supervisor_start`, not
         // by the bootstrap's call_conv.
         crate::model::FunctionCallConv::Default,
+        Rc::clone(task_entry_adapter_symbols),
     ))
 }
 
@@ -3217,9 +3271,11 @@ fn lower_function(
     machine_layout_names: &HashSet<String>,
     current_actor_name: Option<&str>,
     module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     call_conv: crate::model::FunctionCallConv,
+    task_entry_adapter_symbols: TaskEntryAdapterSymbols,
 ) -> LoweredFunction {
     let mut builder = Builder {
         type_classes: type_classes.clone(),
@@ -3251,10 +3307,13 @@ fn lower_function(
             })
             .unwrap_or_default(),
         module_fn_names: module_fn_names.clone(),
+        module_generic_fn_names: module_generic_fn_names.clone(),
         subst,
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
         current_function_symbol: emit_name.clone(),
+        current_function_call_conv: call_conv,
+        task_entry_adapter_symbols,
         ..Builder::default()
     };
     // Allocate parameter locals BEFORE lowering the function body so
@@ -3695,6 +3754,7 @@ struct Builder {
     /// references (calling a function declared later in the file) are
     /// handled correctly.
     module_fn_names: HashSet<String>,
+    module_generic_fn_names: HashSet<String>,
     /// Substitution map from origin-fn type-parameter symbols to
     /// concrete `ResolvedTy`s, populated only when this Builder is
     /// lowering a generic function under a specific monomorphisation.
@@ -3723,6 +3783,8 @@ struct Builder {
     supervisor_child_slots: HashMap<hew_hir::SiteId, hew_types::ChildSlot>,
     current_task_scope: Option<Place>,
     current_function_symbol: String,
+    current_function_call_conv: crate::model::FunctionCallConv,
+    task_entry_adapter_symbols: TaskEntryAdapterSymbols,
     next_closure_id: u32,
     generated_functions: Vec<LoweredFunction>,
     closure_record_layouts: Vec<crate::model::RecordLayout>,
@@ -7814,6 +7876,39 @@ impl Builder {
         site: hew_hir::SiteId,
         construct: &str,
     ) -> Option<String> {
+        if self
+            .call_site_type_args
+            .get(&site)
+            .is_some_and(|type_args| !type_args.is_empty())
+        {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: construct.to_string(),
+                    site,
+                },
+                note: "generic free-function task spawning is not yet implemented; \
+                       W4.010 keeps generic spawned free functions fail-closed until \
+                       the task-entry adapter can resolve monomorphised callees"
+                    .to_string(),
+            });
+            return None;
+        }
+        if matches!(
+            &callee.kind,
+            HirExprKind::BindingRef { name, .. } if self.module_generic_fn_names.contains(name)
+        ) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: construct.to_string(),
+                    site,
+                },
+                note: "generic free-function task spawning is not yet implemented; \
+                       W4.010 keeps generic spawned free functions fail-closed until \
+                       the task-entry adapter can resolve monomorphised callees"
+                    .to_string(),
+            });
+            return None;
+        }
         if !args.is_empty() || !matches!(ret_ty, ResolvedTy::Unit) {
             for arg in args {
                 let _ = self.lower_value(arg);
@@ -7849,6 +7944,121 @@ impl Builder {
         }
     }
 
+    fn mir_sanitize_symbol(symbol: &str) -> String {
+        symbol
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect()
+    }
+
+    fn task_entry_adapter_symbol(callee_symbol: &str) -> String {
+        format!(
+            "__hew_task_entry_{}",
+            Self::mir_sanitize_symbol(callee_symbol)
+        )
+    }
+
+    fn ensure_task_entry_adapter(&mut self, callee_symbol: &str) -> String {
+        let adapter_symbol = Self::task_entry_adapter_symbol(callee_symbol);
+        if !self
+            .task_entry_adapter_symbols
+            .borrow_mut()
+            .insert(adapter_symbol.clone())
+        {
+            return adapter_symbol;
+        }
+        let lowered = self.synthesize_task_entry_adapter(callee_symbol, &adapter_symbol);
+        self.generated_functions.push(lowered);
+        adapter_symbol
+    }
+
+    fn synthesize_task_entry_adapter(
+        &self,
+        callee_symbol: &str,
+        adapter_symbol: &str,
+    ) -> LoweredFunction {
+        let mut blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Call {
+                    callee: callee_symbol.to_string(),
+                    args: vec![],
+                    dest: None,
+                    next: 1,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ];
+        bracket_actor_handler_blocks(&mut blocks);
+
+        let thir = ThirFunction {
+            name: adapter_symbol.to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+        };
+        let raw = RawMirFunction {
+            name: adapter_symbol.to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: crate::model::FunctionCallConv::TaskEntry,
+            params: vec![],
+            locals: vec![],
+            blocks,
+            decisions: vec![],
+        };
+        let builder = Builder {
+            type_classes: self.type_classes.clone(),
+            record_field_orders: self.record_field_orders.clone(),
+            actor_layouts: self.actor_layouts.clone(),
+            supervisor_layout_map: self.supervisor_layout_map.clone(),
+            machine_layout_names: self.machine_layout_names.clone(),
+            module_fn_names: self.module_fn_names.clone(),
+            module_generic_fn_names: self.module_generic_fn_names.clone(),
+            subst: self.subst.clone(),
+            call_site_type_args: self.call_site_type_args.clone(),
+            supervisor_child_slots: self.supervisor_child_slots.clone(),
+            current_function_symbol: adapter_symbol.to_string(),
+            current_function_call_conv: crate::model::FunctionCallConv::TaskEntry,
+            task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
+            ..Builder::default()
+        };
+        let mut dataflow_result = dataflow::analyze(&raw.blocks, &builder.type_classes, &[]);
+        dataflow_result
+            .checks
+            .extend(crate::model::validate_context_markers(&raw));
+        let diagnostics: Vec<MirDiagnostic> = dataflow_result
+            .checks
+            .iter()
+            .filter_map(check_to_diagnostic)
+            .collect();
+        let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
+        let checked = CheckedMirFunction {
+            name: adapter_symbol.to_string(),
+            return_ty: ResolvedTy::Unit,
+            blocks: raw.blocks.clone(),
+            decisions: vec![],
+            checks: dataflow_result.checks.clone(),
+            cooperate_sites,
+        };
+        let elaborated = elaborate(&checked, &builder, &[], &dataflow_result);
+        LoweredFunction {
+            thir,
+            raw,
+            checked,
+            elaborated,
+            diagnostics,
+            generated: vec![],
+            record_layouts: vec![],
+            gen_state_layouts: vec![],
+        }
+    }
+
     fn lower_spawned_call_task(
         &mut self,
         callee: &HirExpr,
@@ -7878,6 +8088,31 @@ impl Builder {
             });
             return None;
         };
+        if !self.current_function_call_conv.carries_execution_context() {
+            let callee_name = match &callee.kind {
+                HirExprKind::BindingRef { name, .. } => name.as_str(),
+                HirExprKind::Closure { .. } => "<closure>",
+                _ => "<callee>",
+            };
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!(
+                        "cannot spawn `{callee_name}` from `{}`",
+                        self.current_function_symbol
+                    ),
+                    site,
+                },
+                note: format!(
+                    "`scope {{ fork ... }}` requires an enclosing ctx-bearing execution context, \
+                     but `{}` has Default call-conv (no execution-context parameter). Move this \
+                     spawn into an actor handler body or an actor-internal helper. Caller-side \
+                     ctx-routing for top-level `fn main` is tracked under \
+                     W4.010-followup-caller-ctx-routing.",
+                    self.current_function_symbol
+                ),
+            });
+            return None;
+        }
         if matches!(callee.kind, HirExprKind::Closure { .. }) {
             return self.lower_spawned_closure_task(
                 callee,
@@ -7888,8 +8123,9 @@ impl Builder {
                 site,
             );
         }
-        let callee_symbol =
+        let user_callee_symbol =
             self.direct_no_arg_unit_callee(callee, args, inner, site, "spawned call")?;
+        let callee_symbol = self.ensure_task_entry_adapter(&user_callee_symbol);
 
         let task_place = self.alloc_local(task_ty.clone());
         self.push_runtime_call("hew_task_new", vec![], Some(task_place));
@@ -9425,6 +9661,7 @@ impl Builder {
             record_field_orders: self.record_field_orders.clone(),
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
+            module_generic_fn_names: self.module_generic_fn_names.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             // A closure may capture a supervisor PID and access a child slot
@@ -9434,6 +9671,8 @@ impl Builder {
             // fires correctly for any closure body that contains such an access.
             supervisor_child_slots: self.supervisor_child_slots.clone(),
             current_function_symbol: shim_name.to_string(),
+            current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
+            task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
             ..Builder::default()
         };
 
@@ -9674,10 +9913,13 @@ impl Builder {
             record_field_orders: self.record_field_orders.clone(),
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
+            module_generic_fn_names: self.module_generic_fn_names.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
             current_function_symbol: body_name.clone(),
+            current_function_call_conv: crate::model::FunctionCallConv::Default,
+            task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
             in_gen_body: true,
             ..Builder::default()
         };
@@ -11548,9 +11790,11 @@ mod slice3_invariants {
                 &HashSet::new(),
                 None,
                 &HashSet::new(),
+                &HashSet::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 crate::model::FunctionCallConv::ActorHandler,
+                TaskEntryAdapterSymbols::default(),
             );
             let offsets: Vec<_> = lowered
                 .raw

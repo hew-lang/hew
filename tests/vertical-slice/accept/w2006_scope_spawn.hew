@@ -1,4 +1,4 @@
-// Check-only fixture: w2006_scope_spawn — positive `scope { fork ... }` MIR
+// Accept fixture: w2006_scope_spawn — positive `scope { fork ... }` MIR
 // invariant for W2.006 Stage 1.
 //
 // What this proves:
@@ -10,14 +10,10 @@
 //     `hew_task_scope_new`/`hew_task_scope_destroy` scope lifecycle pair).
 //   * The legacy `hew_scope_spawn`/`hew_scope_create`/`hew_scope_free`
 //     symbols MUST NOT appear in the MIR dump (W2.006 removal).
+//   * The full native binary links and runs after W4.010's TaskEntry adapter
+//     bridges the free function to SpawnTaskDirect.
 //
-// The full back-end (`hew compile`) cannot yet link this fixture because
-// SpawnTaskDirect requires the callee to declare a leading
-// `HewExecutionContext*` parameter, which free `fn` items in surface Hew
-// do not currently emit. That gap is orthogonal to W2.006 (it predates the
-// HewScope/HewTaskScope split). See worker report for the deviation note.
-//
-// Harness verb: hew check; hew compile --dump-mir raw
+// Harness verb: hew check; hew compile --dump-mir raw; hew compile; execute binary
 
 fn worker() {
     // No-arg, unit-returning callee — the shape lower_spawned_fn_task accepts.

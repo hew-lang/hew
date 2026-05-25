@@ -9,11 +9,19 @@ fn scope_fork_after_lowers_to_executable_task_and_deadline_abi() {
         fn long_op() {
         }
 
-        fn main() {
-            scope {
-                fork { long_op() }
-                after(1ms) { }
+        actor _Driver {
+            receive fn drive() {
+                scope {
+                    fork { long_op() }
+                    after(1ms) { }
+                };
             }
+        }
+
+        fn main() -> i64 {
+            let d = spawn _Driver;
+            d.drive();
+            0
         }
     ";
     let parsed = hew_parser::parse(source);
@@ -44,20 +52,16 @@ fn scope_fork_after_lowers_to_executable_task_and_deadline_abi() {
         mir.diagnostics
     );
 
-    let main = mir
+    let instructions: Vec<_> = mir
         .raw_mir
         .iter()
-        .find(|f| f.name == "main")
-        .expect("main MIR function");
-    let instructions: Vec<_> = main
-        .blocks
-        .iter()
+        .flat_map(|func| &func.blocks)
         .flat_map(|block| block.instructions.iter())
         .collect();
     assert!(
         instructions
             .iter()
-            .any(|instr| matches!(instr, Instr::SpawnTaskDirect { callee_symbol, .. } if callee_symbol == "long_op")),
+            .any(|instr| matches!(instr, Instr::SpawnTaskDirect { callee_symbol, .. } if callee_symbol == "__hew_task_entry_long_op")),
         "scope fork must lower to SpawnTaskDirect; instructions: {instructions:#?}"
     );
     assert!(

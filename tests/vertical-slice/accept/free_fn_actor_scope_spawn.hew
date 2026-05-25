@@ -1,0 +1,23 @@
+// Accept fixture: free_fn_actor_scope_spawn - actor-handler scope{} can fork a
+// no-argument unit-returning free function through the TaskEntry adapter.
+//
+// Harness verb: hew compile; execute binary
+// Expected stdout: free-fn task-entry
+
+fn worker() {
+    println("free-fn task-entry");
+}
+
+actor _Driver {
+    receive fn drive() -> i64 {
+        scope {
+            fork { worker(); }
+        };
+        0
+    }
+}
+
+fn main() -> i64 {
+    let d = spawn _Driver;
+    d.drive()
+}

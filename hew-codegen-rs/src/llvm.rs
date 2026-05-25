@@ -2379,7 +2379,11 @@ fn emit_spawn_task_direct(
     callee_symbol: &str,
 ) -> CodegenResult<()> {
     let parent_ctx = fn_ctx.execution_context.ok_or_else(|| {
-        CodegenError::FailClosed("SpawnTaskDirect spawn site requires an execution context".into())
+        CodegenError::FailClosed(format!(
+            "SpawnTaskDirect spawn site for `{callee_symbol}` requires a caller-side \
+             ctx-bearing execution context; MIR lowering should reject Default-callconv \
+             enclosing functions before codegen"
+        ))
     })?;
     let task_ptr = load_duplex_handle(fn_ctx, task, "SpawnTaskDirect task")?;
     let wrapper = get_or_create_task_wrapper(fn_ctx, callee_symbol)?;
@@ -5177,14 +5181,14 @@ fn lower_instruction(
         Instr::EnterContext | Instr::ExitContext => {
             if fn_ctx.execution_context.is_none() {
                 return Err(CodegenError::FailClosed(
-                    "context boundary marker requires an actor-handler execution context".into(),
+                    "context boundary marker requires a ctx-bearing execution context".into(),
                 ));
             }
         }
         Instr::CheckCancellation => {
             if fn_ctx.execution_context.is_none() {
                 return Err(CodegenError::FailClosed(
-                    "CheckCancellation requires an actor-handler execution context".into(),
+                    "CheckCancellation requires a ctx-bearing execution context".into(),
                 ));
             }
             emit_cooperate_check(fn_ctx, block_id, drop_plans)?;
@@ -6963,7 +6967,7 @@ fn context_field_matches_dest<'ctx>(
 
 fn lower_context_field(fn_ctx: &FnCtx<'_, '_>, dest: Place, offset: usize) -> CodegenResult<()> {
     let ctx_ptr = fn_ctx.execution_context.ok_or_else(|| {
-        CodegenError::FailClosed("ContextField requires an actor-handler execution context".into())
+        CodegenError::FailClosed("ContextField requires a ctx-bearing execution context".into())
     })?;
     if !fn_ctx.execution_context_is_actor_handler
         && matches!(

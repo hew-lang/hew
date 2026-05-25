@@ -623,12 +623,18 @@ pub enum FunctionCallConv {
     Default,
     ActorHandler,
     ClosureInvoke,
+    /// Synthetic adapter that gives a default-callconv free function the
+    /// execution-context-bearing task-entry ABI required by `SpawnTaskDirect`.
+    TaskEntry,
 }
 
 impl FunctionCallConv {
     #[must_use]
     pub fn carries_execution_context(self) -> bool {
-        matches!(self, Self::ActorHandler | Self::ClosureInvoke)
+        matches!(
+            self,
+            Self::ActorHandler | Self::ClosureInvoke | Self::TaskEntry
+        )
     }
 }
 

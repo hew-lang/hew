@@ -9249,6 +9249,14 @@ impl LowerCtx {
                             // `AwaitTaskResultUnsupported` gate at MIR :7871 fires
                             // when the non-unit result is awaited, not when spawned.
                             let call_hir = self.lower_expr(child_expr, IntentKind::Consume);
+                            let call_site = call_hir.site;
+                            let explicit_type_args = match &child_expr.0 {
+                                Expr::Call {
+                                    type_args: Some(type_args),
+                                    ..
+                                } => Some(type_args.clone()),
+                                _ => None,
+                            };
                             let call_ret_ty = call_hir.ty.clone();
 
                             let task_ty = ResolvedTy::Task(Box::new(call_ret_ty));
@@ -9259,9 +9267,23 @@ impl LowerCtx {
                             };
 
                             // Re-wrap as a SpawnedCall node with Task<T> type.
+                            let spawned_site = self.ids.site();
+                            let type_args = self
+                                .call_site_type_args
+                                .get(&call_site)
+                                .cloned()
+                                .or_else(|| {
+                                    explicit_type_args.map(|args| {
+                                        args.iter().map(|arg| self.lower_type(arg)).collect()
+                                    })
+                                });
+                            if let Some(type_args) = type_args {
+                                self.call_site_type_args.insert(spawned_site, type_args);
+                            }
+
                             let spawned = HirExpr {
                                 node: self.ids.node(),
-                                site: self.ids.site(),
+                                site: spawned_site,
                                 value_class: ValueClass::Linear, // Task handles are linear (consume-once).
                                 ty: task_ty.clone(),
                                 intent: IntentKind::Consume,
@@ -9393,6 +9415,14 @@ impl LowerCtx {
         // task is gated (MIR :7871, `AwaitTaskResultUnsupported`). Gating at
         // spawn time would break the TI-1/TI-2/TI-4 canonical invariants.
         let call_hir = self.lower_expr(expr, IntentKind::Consume);
+        let call_site = call_hir.site;
+        let explicit_type_args = match &expr.0 {
+            Expr::Call {
+                type_args: Some(type_args),
+                ..
+            } => Some(type_args.clone()),
+            _ => None,
+        };
         let call_ret_ty = call_hir.ty.clone();
 
         let task_ty = ResolvedTy::Task(Box::new(call_ret_ty));
@@ -9402,9 +9432,21 @@ impl LowerCtx {
             return self.unsupported_expr(span, "lower_spawned_call on non-call");
         };
 
+        let spawned_site = self.ids.site();
+        let type_args = self
+            .call_site_type_args
+            .get(&call_site)
+            .cloned()
+            .or_else(|| {
+                explicit_type_args.map(|args| args.iter().map(|arg| self.lower_type(arg)).collect())
+            });
+        if let Some(type_args) = type_args {
+            self.call_site_type_args.insert(spawned_site, type_args);
+        }
+
         HirExpr {
             node: self.ids.node(),
-            site: self.ids.site(),
+            site: spawned_site,
             value_class: ValueClass::Linear, // Task handles are linear (consume-once).
             ty: task_ty.clone(),
             intent: IntentKind::Consume,

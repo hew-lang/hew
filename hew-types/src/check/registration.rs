@@ -13,6 +13,13 @@ use crate::BuiltinType;
 /// inline programs in tests).
 const CLOSABLE_HEW: &str = include_str!("../../../std/io/closable.hew");
 
+/// Embedded source for `std/concurrency/lambda_actor.hew`.
+///
+/// Like `std::io::closable`, this is a pure-Hew stdlib surface whose
+/// methods must be visible to inline typechecker tests even when the
+/// module graph did not pre-populate `resolved_items`.
+const LAMBDA_ACTOR_HEW: &str = include_str!("../../../std/concurrency/lambda_actor.hew");
+
 /// Embedded source for the built-in actor monitor handle wrapper.
 ///
 /// This copy intentionally omits the `import std::io::closable;` line used by
@@ -4468,6 +4475,28 @@ impl Checker {
                             debug_assert!(
                                 parsed.errors.is_empty(),
                                 "std/io/closable.hew failed to parse: {:?}",
+                                parsed.errors,
+                            );
+                            if parsed.errors.is_empty() {
+                                let items: Vec<_> = parsed.program.items.into_iter().collect();
+                                self.register_stdlib_hew_items(&short, &items);
+                            }
+                        }
+                    }
+
+                    if module_path == "std::concurrency::lambda_actor"
+                        && decl.resolved_items.is_none()
+                    {
+                        let identity = format!("module:{module_path}");
+                        if !self
+                            .registered_stdlib_hew_sources
+                            .contains(identity.as_str())
+                        {
+                            self.registered_stdlib_hew_sources.insert(identity);
+                            let parsed = hew_parser::parse(LAMBDA_ACTOR_HEW);
+                            debug_assert!(
+                                parsed.errors.is_empty(),
+                                "std/concurrency/lambda_actor.hew failed to parse: {:?}",
                                 parsed.errors,
                             );
                             if parsed.errors.is_empty() {

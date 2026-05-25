@@ -92,6 +92,18 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_duplex_send_half",
     "hew_duplex_try_recv",
     "hew_duplex_try_send",
+    // --- Monomorphic time canaries ------------------------------------------
+    "hew_duration_abs",
+    "hew_duration_hours",
+    "hew_duration_is_zero",
+    "hew_duration_micros",
+    "hew_duration_millis",
+    "hew_duration_mins",
+    "hew_duration_nanos",
+    "hew_duration_secs",
+    "hew_instant_duration_since",
+    "hew_instant_elapsed",
+    "hew_instant_now",
     // --- Lambda-actor surface (overlays Duplex<Msg, Reply>) -----
     "hew_lambda_actor_ask",
     "hew_lambda_actor_clone",

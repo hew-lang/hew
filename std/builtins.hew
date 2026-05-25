@@ -345,6 +345,63 @@ impl string {
 }
 
 // ---------------------------------------------------------------------------
+// Time canaries
+// ---------------------------------------------------------------------------
+pub type Instant {
+    nanos: i64;
+}
+
+impl duration {
+    #[extern_symbol("hew_duration_nanos")]
+    fn nanos(d: duration) -> i64 {
+        0
+    }
+    #[extern_symbol("hew_duration_micros")]
+    fn micros(d: duration) -> i64 {
+        0
+    }
+    #[extern_symbol("hew_duration_millis")]
+    fn millis(d: duration) -> i64 {
+        0
+    }
+    #[extern_symbol("hew_duration_secs")]
+    fn secs(d: duration) -> i64 {
+        0
+    }
+    #[extern_symbol("hew_duration_mins")]
+    fn mins(d: duration) -> i64 {
+        0
+    }
+    #[extern_symbol("hew_duration_hours")]
+    fn hours(d: duration) -> i64 {
+        0
+    }
+    #[extern_symbol("hew_duration_abs")]
+    fn abs(d: duration) -> duration {
+        d
+    }
+    #[extern_symbol("hew_duration_is_zero")]
+    fn is_zero(d: duration) -> bool {
+        false
+    }
+}
+
+impl Instant {
+    #[extern_symbol("hew_instant_now")]
+    fn now() -> Instant {
+        Instant { nanos: 0 }
+    }
+    #[extern_symbol("hew_instant_elapsed")]
+    fn elapsed(i: Instant) -> duration {
+        0s
+    }
+    #[extern_symbol("hew_instant_duration_since")]
+    fn duration_since(i: Instant, earlier: Instant) -> duration {
+        0s
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
 /// Print a value followed by a newline.

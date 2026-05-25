@@ -518,6 +518,54 @@ impl Checker {
         );
     }
 
+    fn record_monomorphic_extern_symbol_rewrite_if_any(
+        &mut self,
+        sig: &FnSig,
+        span: &Span,
+    ) -> bool {
+        let Some(spec) = &sig.extern_symbol else {
+            return false;
+        };
+        if !spec.template.is_monomorphic() {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "extern-symbol template `{}` is not monomorphic; Stage 1 only supports \
+                     monomorphic receiver FFI canaries",
+                    spec.template.raw
+                ),
+            );
+            return false;
+        }
+        self.record_runtime_method_call_rewrite(span, spec.template.raw.clone());
+        true
+    }
+
+    fn dispatch_monomorphic_extern_symbol_method(
+        &mut self,
+        receiver_type_name: &str,
+        type_args: &[Ty],
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Option<Ty> {
+        let sig = self.lookup_named_method_sig(receiver_type_name, type_args, method)?;
+        sig.extern_symbol.as_ref()?;
+        let applied_sig = self.apply_instantiated_call_signature(
+            &sig,
+            None,
+            args,
+            span,
+            SignatureArgApplication::PositionalOnly {
+                arity_context: format!("method '{method}'"),
+            },
+            true,
+        );
+        self.record_monomorphic_extern_symbol_rewrite_if_any(&sig, span);
+        Some(applied_sig.return_type)
+    }
+
     fn missing_builtin_contract_error(
         &mut self,
         span: &Span,
@@ -2655,33 +2703,29 @@ impl Checker {
                     Ty::Error
                 }
             },
-            // Duration methods
-            (Ty::Duration, _) => match method {
-                "nanos" | "micros" | "millis" | "secs" | "mins" | "hours" => {
-                    self.check_arity(args, 0, &format!("`duration::{method}`"), span);
-                    Ty::I64
+            // Duration methods are declared in `std/builtins.hew` with
+            // monomorphic `#[extern_symbol]` annotations.
+            (Ty::Duration, _) => {
+                if let Some(ret_ty) = self.dispatch_monomorphic_extern_symbol_method(
+                    "duration",
+                    &[],
+                    method,
+                    args,
+                    span,
+                ) {
+                    return ret_ty;
                 }
-                "abs" => {
-                    self.check_arity(args, 0, "`duration::abs`", span);
-                    Ty::Duration
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
                 }
-                "is_zero" => {
-                    self.check_arity(args, 0, "`duration::is_zero`", span);
-                    Ty::Bool
-                }
-                _ => {
-                    for arg in args {
-                        let (expr, sp) = arg.expr();
-                        self.synthesize(expr, sp);
-                    }
-                    self.report_error(
-                        TypeErrorKind::UndefinedMethod,
-                        span,
-                        format!("no method `{method}` on `duration`"),
-                    );
-                    Ty::Error
-                }
-            },
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!("no method `{method}` on `duration`"),
+                );
+                Ty::Error
+            }
             // Infallible width-widening: `.to_<W>()` — same signedness, strictly wider.
             //
             // Rule (B-1c): For integer sources, only same-sign strictly-wider fixed-width
@@ -3818,6 +3862,7 @@ impl Checker {
                         self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
                     }
                     self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                    self.record_monomorphic_extern_symbol_rewrite_if_any(&sig, span);
                     return applied_sig.return_type;
                 }
                 // Type-parameter method dispatch: resolve from trait bounds.

@@ -490,6 +490,14 @@ pub struct ChildSlot {
     pub index: u32,
     /// Declared actor type of the child (e.g. `"CacheActor"`).
     pub child_ty: String,
+    /// Binding name of the child as declared in the supervisor (e.g. `"cache"`
+    /// for `child cache: CacheActor`). Authoritative source for diagnostics
+    /// — distinguishes two children of the same supervisor that happen to
+    /// share an actor type (e.g. `worker_a: Worker` + `worker_b: Worker`).
+    pub child_name: String,
+    /// Outer supervisor type name owning this slot (e.g. `"RootSupervisor"`).
+    /// Authoritative — paired with `child_name` to identify the exact slot.
+    pub supervisor: String,
 }
 
 /// Discriminates a static child slot from a pool child slot.

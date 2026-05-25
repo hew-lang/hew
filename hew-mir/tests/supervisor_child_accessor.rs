@@ -44,30 +44,6 @@ fn lower_module(source: &str) -> hew_mir::IrPipeline {
     lower_hir_module(&hir.module)
 }
 
-/// Lower a program where we expect MIR diagnostics (e.g., `NotYetImplemented`).
-fn lower_module_expect_mir_diagnostics(source: &str) -> hew_mir::IrPipeline {
-    let parsed = hew_parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let tc_output = checker.check_program(&parsed.program);
-    let hir = lower_program(
-        &parsed.program,
-        &tc_output,
-        &ResolutionCtx,
-        hew_hir::TargetArch::host(),
-    );
-    assert!(
-        hir.diagnostics.is_empty(),
-        "HIR diagnostics: {:#?}",
-        hir.diagnostics
-    );
-    lower_hir_module(&hir.module)
-}
-
 /// A minimal supervisor + child actor program with a function that accesses
 /// the child via the supervisor PID.
 const STATIC_CHILD_ACCESS_SOURCE: &str = r"
@@ -273,11 +249,16 @@ fn static_child_access_does_not_emit_not_yet_implemented() {
     );
 }
 
-/// Pool child access should produce `NotYetImplemented`, NOT a runtime call.
+/// Pool child access is now rejected at HIR pre-pass (Lane FC-P1-C). The MIR
+/// `NotYetImplemented` arm at `hew-mir/src/lower.rs:4413` remains as
+/// defense-in-depth but is no longer reachable from the compile driver because
+/// HIR `into_result()` returns `Err` before MIR lowering begins.
+///
+/// Asserts: the source program emits `SupervisorPoolChildAccessorUnsupported`
+/// at HIR and HIR `into_result()` fails. Reaching MIR is itself a regression.
 #[test]
-fn pool_child_access_emits_not_yet_implemented() {
-    let pipeline = lower_module_expect_mir_diagnostics(
-        r"
+fn pool_child_access_rejected_at_hir_before_mir() {
+    let source = r"
         actor Worker { receive fn ping() {} }
 
         supervisor Pool {
@@ -288,34 +269,38 @@ fn pool_child_access_emits_not_yet_implemented() {
         fn get_pool_worker(sup_pid: LocalPid<Pool>) -> LocalPid<Worker> {
             sup_pid.worker
         }
-        ",
-    );
+        ";
 
-    let func = pipeline
-        .raw_mir
-        .iter()
-        .find(|f| f.name == "get_pool_worker")
-        .expect("get_pool_worker function lowered");
-
-    // The function must be in the MIR (even with diagnostics) — it was accepted
-    // by the checker. The MIR intercept for Pool must not emit CallRuntimeAbi.
-    let has_child_get = func.blocks.iter().flat_map(|b| b.instructions.iter()).any(
-        |i| matches!(i, Instr::CallRuntimeAbi(call) if call.symbol() == "hew_supervisor_child_get"),
-    );
+    let parsed = hew_parser::parse(source);
     assert!(
-        !has_child_get,
-        "pool child access must NOT emit hew_supervisor_child_get"
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    let hir = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
     );
 
-    // A NotYetImplemented diagnostic with "pool child accessor" must be present.
-    let pool_diag = pipeline.diagnostics.iter().find(|d| {
-        matches!(&d.kind,
-            MirDiagnosticKind::NotYetImplemented { construct, .. }
-            if construct.contains("pool child accessor")
+    // HIR must reject the program with the pool-accessor gate diagnostic.
+    let pool_gate_fired = hir.diagnostics.iter().any(|d| {
+        matches!(
+            d.kind,
+            hew_hir::HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported { .. }
         )
     });
     assert!(
-        pool_diag.is_some(),
-        "pool child access must emit NotYetImplemented with 'pool child accessor'"
+        pool_gate_fired,
+        "Pool child accessor must be rejected by HIR pre-pass gate; \
+         diagnostics: {:#?}",
+        hir.diagnostics
+    );
+    assert!(
+        hir.into_result().is_err(),
+        "HIR into_result() must be Err for pool child accessor (Lane FC-P1-C)"
     );
 }

@@ -8,7 +8,7 @@ use hew_parser::ast::{
     TypeDeclKind, TypeExpr, VariantKind,
 };
 use hew_types::{
-    ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildSlot,
+    ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildKind, ChildSlot,
     ClosureCaptureFact, ExecutionContextReader, LoweringFact, MethodCallReceiverKind,
     MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, PatternKind, ResolvedTy,
     SpanKey, Ty, TypeCheckOutput,
@@ -185,6 +185,13 @@ impl LowerOutput {
     ///   actors/tasks/coroutines on a target that does not support them.
     /// - [`HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm`] — the
     ///   program calls blocking channel recv on wasm32.
+    /// - [`HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported`] — the
+    ///   program performs `sup.pool_child` field access on a pool slot
+    ///   (v0.6 `hew_supervisor_pool_route` ABI not yet implemented).
+    /// - [`HirDiagnosticKind::NestedSupervisorAccessorUnsupported`] — the
+    ///   program performs `sup.nested` field access where the named child
+    ///   is itself a supervisor (v0.6 `hew_supervisor_nested_get` ABI not
+    ///   yet implemented).
     ///
     /// Callers that want to continue despite non-fatal diagnostics should
     /// check `.diagnostics` directly.  This method is the recommended
@@ -215,6 +222,8 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::ForkBlockBodyUnsupported { .. }
                     | crate::HirDiagnosticKind::DeadlineBodyUnsupported { .. }
                     | crate::HirDiagnosticKind::AwaitTaskResultUnsupported { .. }
+                    | crate::HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported { .. }
+                    | crate::HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
             )
         });
         if has_fatal {
@@ -939,6 +948,17 @@ pub fn lower_program_with_mono_cap(
     // ctx.diagnostics.clear()) so these fail-closed diagnostics survive into
     // LowerOutput per the FC-P0 diagnostic survival ordering lesson.
     check_task_gates(&mut ctx, program);
+
+    // P1-C: Supervisor child accessor gates. Dispatched HERE (after
+    // diagnostics.clear above) so the gate's diagnostics survive into the
+    // final LowerOutput. Reads checker side-table `supervisor_child_slots`
+    // and emits fail-closed diagnostics for pool-child and nested-supervisor
+    // accessors — both currently land in `unreachable`/`NotYetImplemented`
+    // arms at MIR lowering (hew-mir/src/lower.rs:4413, :4443) because their
+    // backing ABI calls (`hew_supervisor_pool_route`, `hew_supervisor_nested_get`)
+    // are scheduled for v0.6. Gate runs unconditionally on every target
+    // because the underlying ABI gap is target-independent.
+    check_supervisor_child_accessor_gates(&mut ctx, program, type_check_output);
 
     // Second pass: lower type declarations and populate the per-module
     // type-class registry. Stored here so the source-order pass can emit them
@@ -10625,6 +10645,105 @@ fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
     // - `fork` statements (when they exist in surface AST)
     // - `await` expressions (when they appear outside of existing actor/scope)
     // For now, actors and supervisors are the only coroutine entry points.
+}
+
+/// Check for unsupported supervisor child accessor patterns (P1-C).
+///
+/// Reads the checker side-table `supervisor_child_slots` (keyed by the
+/// `SpanKey` of the `sup.child_name` field-access expression) and emits
+/// fail-closed diagnostics for two unsupported v0.5 forms:
+///
+/// 1. **Pool child accessor** — `slot.kind == ChildKind::Pool`. Routing pool
+///    slots requires the `hew_supervisor_pool_route` ABI call (v0.6).
+///    Currently fail-closed at `hew-mir/src/lower.rs:4413` as
+///    `NotYetImplemented`.
+///
+/// 2. **Nested supervisor accessor** — `slot.kind == ChildKind::Static` AND
+///    the declared child type is itself a supervisor (i.e. the result type
+///    is `LocalPid<Supervisor>`). Multi-segment supervisor dotted access
+///    requires the `hew_supervisor_nested_get` ABI call (v0.6). Currently
+///    fail-closed at `hew-mir/src/lower.rs:4443` as `NotYetImplemented`.
+///
+/// The set of supervisor names is built by scanning `program.items` for
+/// `Item::Supervisor` declarations — this is the cheapest source of truth
+/// available at this dispatch point and matches the precedent set by other
+/// HIR pre-passes that scan `program.items` directly rather than requiring
+/// the checker to publish a new side-table.
+///
+/// LESSONS P0 `boundary-fail-closed` / slepp A222: surface the gap as a
+/// compile-time diagnostic rather than letting the program reach a MIR
+/// `NotYetImplemented` trap (or worse, a runtime panic).
+fn check_supervisor_child_accessor_gates(
+    ctx: &mut LowerCtx,
+    program: &Program,
+    tc_output: &TypeCheckOutput,
+) {
+    // Build the set of supervisor names from program items. Cheap one-pass
+    // scan; no need to depend on a new TypeCheckOutput side-table.
+    let supervisor_names: std::collections::HashSet<&str> = program
+        .items
+        .iter()
+        .filter_map(|(item, _)| match item {
+            Item::Supervisor(decl) => Some(decl.name.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    // Iterate checker side-table. ChildSlot now carries authoritative
+    // `supervisor` and `child_name` set by the checker at construction —
+    // no reverse lookup, no string-identifier fragility (A39 invariant),
+    // and two children of the same actor type are correctly disambiguated.
+    for (span_key, slot) in &tc_output.supervisor_child_slots {
+        let span = span_key.start..span_key.end;
+        let sup_name = slot.supervisor.as_str();
+        let child_name = slot.child_name.as_str();
+
+        match slot.kind {
+            ChildKind::Pool => {
+                ctx.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported {
+                        supervisor: sup_name.to_string(),
+                        child: child_name.to_string(),
+                    },
+                    span,
+                    format!(
+                        "pool child accessor `{sup_name}.{child_name}` is not yet \
+                         implemented: pool slot routing requires the \
+                         `hew_supervisor_pool_route` ABI call which lands in v0.6. \
+                         Use a static child (`child {child_name}: {ty}`) if the \
+                         pool semantics are not required.",
+                        ty = slot.child_ty,
+                    ),
+                ));
+            }
+            ChildKind::Static => {
+                // Nested supervisor: the declared child type is itself a
+                // supervisor. The result of the field access is
+                // `LocalPid<NestedSupervisor>`, which the MIR lowering
+                // currently rejects as `NotYetImplemented` because the
+                // multi-hop ABI call (`hew_supervisor_nested_get`) is not
+                // yet implemented.
+                if supervisor_names.contains(slot.child_ty.as_str()) {
+                    ctx.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::NestedSupervisorAccessorUnsupported {
+                            supervisor: sup_name.to_string(),
+                            child: child_name.to_string(),
+                            nested_supervisor: slot.child_ty.clone(),
+                        },
+                        span,
+                        format!(
+                            "nested supervisor accessor `{sup_name}.{child_name}` \
+                             (result type `LocalPid<{nested}>`) is not yet \
+                             implemented: multi-segment supervisor dotted access \
+                             requires the `hew_supervisor_nested_get` ABI call \
+                             which lands in v0.6.",
+                            nested = slot.child_ty,
+                        ),
+                    ));
+                }
+            }
+        }
+    }
 }
 
 /// Check for blocking channel recv usage on wasm32 (P0.3 + P0.4).

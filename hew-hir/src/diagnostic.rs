@@ -419,4 +419,36 @@ pub enum HirDiagnosticKind {
         /// Site identifier for error reporting.
         site: SiteId,
     },
+    /// Pool supervisor child accessor is not yet implemented. The program
+    /// performs a field access on a supervisor-typed handle (`sup.child_name`)
+    /// where the named child is declared with `pool name: Type` rather than
+    /// `child name: Type`. Routing pool slots requires the
+    /// `hew_supervisor_pool_route` ABI call which is scheduled for v0.6;
+    /// reaching the MIR fail-closed arm at `hew-mir/src/lower.rs:4413` from
+    /// the runtime would mean a compile that should have rejected the program.
+    /// Fail-closed per slepp A222: compile-time diagnostic instead of
+    /// `unreachable`/`NotYetImplemented` trap at MIR lowering.
+    SupervisorPoolChildAccessorUnsupported {
+        /// Supervisor type name (e.g. `"Pool"`).
+        supervisor: String,
+        /// Pool child name being accessed (e.g. `"worker"`).
+        child: String,
+    },
+    /// Nested supervisor child accessor is not yet implemented. The program
+    /// performs a field access on a supervisor-typed handle (`root.sub`)
+    /// where the named child is itself a supervisor (rather than an actor).
+    /// Multi-segment supervisor dotted access requires the
+    /// `hew_supervisor_nested_get` ABI call which is scheduled for v0.6;
+    /// reaching the MIR fail-closed arm at `hew-mir/src/lower.rs:4443` from
+    /// the runtime would mean a compile that should have rejected the program.
+    /// Fail-closed per slepp A222: compile-time diagnostic instead of
+    /// `unreachable`/`NotYetImplemented` trap at MIR lowering.
+    NestedSupervisorAccessorUnsupported {
+        /// Outer supervisor type name (e.g. `"RootSupervisor"`).
+        supervisor: String,
+        /// Nested-supervisor child name being accessed (e.g. `"sub"`).
+        child: String,
+        /// Inner supervisor type name (e.g. `"SubSupervisor"`).
+        nested_supervisor: String,
+    },
 }

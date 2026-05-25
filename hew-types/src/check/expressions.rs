@@ -3707,6 +3707,8 @@ impl Checker {
                                             )]
                                             index: idx as u32,
                                             child_ty: ty.clone(),
+                                            child_name: cn.clone(),
+                                            supervisor: sup_name.clone(),
                                         },
                                         ty.clone(),
                                     )
@@ -3729,6 +3731,8 @@ impl Checker {
                                             )]
                                             index: idx as u32,
                                             child_ty: ty.clone(),
+                                            child_name: cn.clone(),
+                                            supervisor: sup_name.clone(),
                                         },
                                         ty.clone(),
                                     )

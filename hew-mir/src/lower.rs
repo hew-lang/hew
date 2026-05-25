@@ -13383,6 +13383,7 @@ mod enum_layout_tests {
     fn minimal_module(items: Vec<HirItem>) -> HirModule {
         HirModule {
             items,
+            diagnostic_source_modules: HashMap::default(),
             type_classes: hew_hir::TypeClassTable::default(),
             monomorphisations: vec![],
             call_site_type_args: HashMap::<SiteId, _>::default(),

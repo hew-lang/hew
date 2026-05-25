@@ -118,6 +118,11 @@ pub fn entry(n: i64) -> i64 { helper(n) }
          helper_fn: \"helper\", item_kind: FreeFn }}; got: {:#?}",
         output.diagnostics
     );
+    assert_eq!(
+        matching[0].source_module.as_deref(),
+        Some("m"),
+        "imported-body HIR diagnostic must retain source module"
+    );
 
     // `entry` must NOT be emitted (mangled `m.entry`) because its body is
     // blocked.
@@ -189,6 +194,11 @@ pub fn entry(n: i64) -> i64 { peer(n) }
         "expected ImportedFreeFnBodyUnresolvedBareCall {{ module: \"m\", \
          callee: \"peer\", suggested_qualified: \"m$peer\" }}; got: {:#?}",
         output.diagnostics
+    );
+    assert_eq!(
+        matching[0].source_module.as_deref(),
+        Some("m"),
+        "imported bare-call HIR diagnostic must retain source module"
     );
 
     // `entry` must NOT be emitted; `peer` itself has no bare-call problem,

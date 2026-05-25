@@ -332,3 +332,78 @@ fn mixed_dep_warning_main_clean_exits_success_warning_attributed_to_dep() {
         "no warning/error line should point at main.hew; got:\n{stderr}"
     );
 }
+
+// ── HIR diagnostic source-routing tests ──────────────────────────────────────
+
+#[test]
+fn root_hir_diagnostic_rendered_with_source_context() {
+    let fixture = write_fixture(&[("main.hew", "const ANSWER: i64 = 42;\nfn main() {}\n")]);
+    let main_path = fixture.path().join("main.hew");
+
+    let output = Command::new(hew_binary())
+        .args(["compile", main_path.to_str().unwrap()])
+        .current_dir(fixture.path())
+        .output()
+        .expect("hew binary must run");
+
+    assert!(
+        !output.status.success(),
+        "hew compile must fail on unsupported HIR item"
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("main.hew:1:1: error: E_NOT_YET_IMPLEMENTED"),
+        "root HIR diagnostic must include file:line:col; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("const ANSWER: i64 = 42;"),
+        "root HIR diagnostic must render source excerpt; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("span:"),
+        "HIR diagnostic output must not contain raw debug spans; got:\n{stderr}"
+    );
+}
+
+#[test]
+fn imported_hir_diagnostic_rendered_with_imported_source_context() {
+    let fixture = write_fixture(&[
+        ("main.hew", "import \"dep.hew\";\nfn main() -> i64 { 0 }\n"),
+        (
+            "dep.hew",
+            "fn helper(n: i64) -> i64 { n }\npub fn entry(n: i64) -> i64 { helper(n) }\n",
+        ),
+    ]);
+    let main_path = fixture.path().join("main.hew");
+
+    let output = Command::new(hew_binary())
+        .args(["compile", main_path.to_str().unwrap()])
+        .current_dir(fixture.path())
+        .output()
+        .expect("hew binary must run");
+
+    assert!(
+        !output.status.success(),
+        "hew compile must fail on imported-body HIR diagnostic"
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("dep.hew:2:1: error: E_HIR"),
+        "imported HIR diagnostic must name dep.hew; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.lines().any(|line| line.contains("main.hew:")
+            && (line.contains("error:") || line.contains("warning:"))),
+        "imported HIR diagnostic must not fall back to main.hew; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("pub fn entry(n: i64) -> i64 { helper(n) }"),
+        "imported HIR diagnostic must render dep.hew excerpt; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("span:"),
+        "HIR diagnostic output must not contain raw debug spans; got:\n{stderr}"
+    );
+}

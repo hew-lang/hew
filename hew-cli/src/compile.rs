@@ -140,6 +140,13 @@ pub(crate) fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
                     ));
                 }
             }
+            FrontendDiagnosticKind::Hir(error) => {
+                crate::diagnostic::render_hir_diagnostic(
+                    diagnostic.source.as_deref(),
+                    diagnostic.filename.as_deref(),
+                    error,
+                );
+            }
         }
     }
 }

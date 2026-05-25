@@ -21,9 +21,15 @@ pub struct HirDiagnostic {
     pub kind: HirDiagnosticKind,
     pub span: Span,
     pub note: String,
+    /// Dotted source module that owns this diagnostic's span.
+    ///
+    /// Matches `TypeError::source_module`: `None` means the root source file,
+    /// `Some("a.b")` means the non-root module with that dotted `ModuleId`.
+    pub source_module: Option<String>,
     /// Additional source locations referenced by this diagnostic.
     /// Each entry is `(span, label)` — e.g. the entry/exit block site for
-    /// effect-parity diagnostics.  Empty for most diagnostics.
+    /// effect-parity diagnostics. Empty for most diagnostics. Secondary
+    /// spans currently share the primary diagnostic's `source_module`.
     pub secondary_spans: Vec<(Span, String)>,
 }
 
@@ -34,8 +40,16 @@ impl HirDiagnostic {
             kind,
             span,
             note: note.into(),
+            source_module: None,
             secondary_spans: Vec::new(),
         }
+    }
+
+    /// Attach a source-module attribution and return `self` (builder pattern).
+    #[must_use]
+    pub fn with_source_module(mut self, source_module: Option<String>) -> Self {
+        self.source_module = source_module;
+        self
     }
 
     /// Attach secondary spans and return `self` (builder pattern).

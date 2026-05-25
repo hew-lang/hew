@@ -75,18 +75,6 @@ fn hew_main() {
 // Sub-commands
 // ---------------------------------------------------------------------------
 
-/// Map an HIR diagnostic kind to a user-visible prefix string.
-/// `NotYetImplemented` uses `E_NOT_YET_IMPLEMENTED` to mirror the MIR
-/// mapping (see `diagnostic_prefix` below). All other HIR diagnostics
-/// use `E_HIR` so the user sees a structured family prefix rather than a
-/// raw `{:?}` dump.
-fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
-    match kind {
-        hew_hir::HirDiagnosticKind::NotYetImplemented { .. } => "E_NOT_YET_IMPLEMENTED",
-        _ => "E_HIR",
-    }
-}
-
 /// Surface the diagnostic family in the CLI prefix so users see what
 /// gate tripped at a glance. `MirCheck` findings (move/init/aliasing
 /// legality) are a distinct family from spine-subset rejections; the
@@ -179,9 +167,13 @@ fn lower_file_to_mir(
         }
     }
     if !hir_diagnostics.is_empty() {
-        for diagnostic in &hir_diagnostics {
-            eprintln!("{} {diagnostic:?}", hir_diagnostic_prefix(&diagnostic.kind));
-        }
+        let frontend_diagnostics = hew_compile::hir_diagnostics_to_frontend(
+            &state.program,
+            &state.source,
+            &input,
+            hir_diagnostics,
+        );
+        compile::render_frontend_diagnostics(&frontend_diagnostics);
         return Err(());
     }
 
@@ -308,9 +300,13 @@ pub(crate) fn compile_native_from_program(
         }
     }
     if !hir_diagnostics.is_empty() {
-        for diagnostic in &hir_diagnostics {
-            eprintln!("{} {diagnostic:?}", hir_diagnostic_prefix(&diagnostic.kind));
-        }
+        let frontend_diagnostics = hew_compile::hir_diagnostics_to_frontend(
+            &state.program,
+            &state.source,
+            source_label,
+            hir_diagnostics,
+        );
+        compile::render_frontend_diagnostics(&frontend_diagnostics);
         return Err(());
     }
 

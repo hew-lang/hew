@@ -18,11 +18,13 @@ struct Verifier {
     sites: HashSet<SiteId>,
     nodes: HashSet<HirNodeId>,
     diagnostics: Vec<HirDiagnostic>,
+    current_source_module: Option<String>,
 }
 
 impl Verifier {
     fn module(&mut self, module: &HirModule) {
         for item in &module.items {
+            self.current_source_module = Self::item_source_module(module, item);
             match item {
                 HirItem::Function(func) => {
                     self.node(func.node, func.span.clone());
@@ -101,7 +103,17 @@ impl Verifier {
                     self.node(ef.node, ef.span.clone());
                 }
             }
+            self.current_source_module = None;
         }
+    }
+
+    fn diagnostic(
+        &self,
+        kind: HirDiagnosticKind,
+        span: std::ops::Range<usize>,
+        note: impl Into<String>,
+    ) -> HirDiagnostic {
+        HirDiagnostic::new(kind, span, note).with_source_module(self.current_source_module.clone())
     }
 
     fn block(&mut self, block: &HirBlock) {
@@ -140,7 +152,7 @@ impl Verifier {
         match &expr.kind {
             HirExprKind::BindingRef { resolved, name } => {
                 if *resolved == ResolvedRef::Unresolved {
-                    self.diagnostics.push(HirDiagnostic::new(
+                    self.diagnostics.push(self.diagnostic(
                         HirDiagnosticKind::UnresolvedSymbol { name: name.clone() },
                         expr.span.clone(),
                         "resolved HIR contains an unresolved binding reference",
@@ -212,7 +224,7 @@ impl Verifier {
                 // Verify the binding-id referenced by the await is known to the verifier.
                 // If it's not in `self.bindings`, that indicates a dangling reference.
                 if !self.bindings.contains(binding_id) {
-                    self.diagnostics.push(HirDiagnostic::new(
+                    self.diagnostics.push(self.diagnostic(
                         HirDiagnosticKind::DanglingRef {
                             resolved: ResolvedRef::Binding(*binding_id),
                         },
@@ -253,7 +265,7 @@ impl Verifier {
                 self.expr(body);
                 for capture in captures {
                     if !self.bindings.contains(&capture.binding) {
-                        self.diagnostics.push(HirDiagnostic::new(
+                        self.diagnostics.push(self.diagnostic(
                             HirDiagnosticKind::DanglingRef {
                                 resolved: ResolvedRef::Binding(capture.binding),
                             },
@@ -268,7 +280,7 @@ impl Verifier {
                 let mut seen = std::collections::HashSet::new();
                 for capture in captures {
                     if !self.bindings.contains(&capture.binding) {
-                        self.diagnostics.push(HirDiagnostic::new(
+                        self.diagnostics.push(self.diagnostic(
                             HirDiagnosticKind::DanglingRef {
                                 resolved: ResolvedRef::Binding(capture.binding),
                             },
@@ -277,7 +289,7 @@ impl Verifier {
                         ));
                     }
                     if !seen.insert(capture.binding) {
-                        self.diagnostics.push(HirDiagnostic::new(
+                        self.diagnostics.push(self.diagnostic(
                             HirDiagnosticKind::DuplicateBindingId {
                                 id: capture.binding,
                             },
@@ -297,7 +309,7 @@ impl Verifier {
                         if name == "Generator" && args.len() == 2 =>
                     {
                         if args[0] != *yield_ty || args[1] != *return_ty {
-                            self.diagnostics.push(HirDiagnostic::new(
+                            self.diagnostics.push(self.diagnostic(
                                 HirDiagnosticKind::CheckerBoundaryViolation {
                                     name: "gen block".to_string(),
                                     reason: format!(
@@ -313,7 +325,7 @@ impl Verifier {
                         }
                     }
                     other => {
-                        self.diagnostics.push(HirDiagnostic::new(
+                        self.diagnostics.push(self.diagnostic(
                             HirDiagnosticKind::CheckerBoundaryViolation {
                                 name: "gen block".to_string(),
                                 reason: format!(
@@ -330,7 +342,7 @@ impl Verifier {
             }
             HirExprKind::Yield { value, yield_ty } => {
                 if expr.ty != ResolvedTy::Unit {
-                    self.diagnostics.push(HirDiagnostic::new(
+                    self.diagnostics.push(self.diagnostic(
                         HirDiagnosticKind::CheckerBoundaryViolation {
                             name: "yield".to_string(),
                             reason: format!(
@@ -345,7 +357,7 @@ impl Verifier {
                 if let Some(value) = value {
                     self.expr(value);
                     if value.ty != *yield_ty {
-                        self.diagnostics.push(HirDiagnostic::new(
+                        self.diagnostics.push(self.diagnostic(
                             HirDiagnosticKind::CheckerBoundaryViolation {
                                 name: "yield".to_string(),
                                 reason: format!(
@@ -451,7 +463,7 @@ impl Verifier {
                 // to verification without a prior NotYetImplemented diagnostic.
                 // This catches any path where unsupported_expr() was called
                 // without a preceding unsupported() call.
-                self.diagnostics.push(HirDiagnostic::new(
+                self.diagnostics.push(self.diagnostic(
                     HirDiagnosticKind::NotYetImplemented {
                         construct: reason.clone(),
                         owning_pass: "hir-lowering".to_string(),
@@ -465,7 +477,7 @@ impl Verifier {
 
     fn binding(&mut self, id: BindingId, span: std::ops::Range<usize>) {
         if !self.bindings.insert(id) {
-            self.diagnostics.push(HirDiagnostic::new(
+            self.diagnostics.push(self.diagnostic(
                 HirDiagnosticKind::DuplicateBindingId { id },
                 span,
                 "binding id reused inside resolved HIR",
@@ -475,7 +487,7 @@ impl Verifier {
 
     fn site(&mut self, id: SiteId, span: std::ops::Range<usize>) {
         if !self.sites.insert(id) {
-            self.diagnostics.push(HirDiagnostic::new(
+            self.diagnostics.push(self.diagnostic(
                 HirDiagnosticKind::DuplicateSiteId { id },
                 span,
                 "site id reused inside resolved HIR",
@@ -485,11 +497,25 @@ impl Verifier {
 
     fn node(&mut self, id: HirNodeId, span: std::ops::Range<usize>) {
         if !self.nodes.insert(id) {
-            self.diagnostics.push(HirDiagnostic::new(
+            self.diagnostics.push(self.diagnostic(
                 HirDiagnosticKind::DuplicateNodeId { id },
                 span,
                 "HIR node id reused inside resolved HIR",
             ));
         }
+    }
+
+    fn item_source_module(module: &HirModule, item: &HirItem) -> Option<String> {
+        let id = match item {
+            HirItem::Function(item) => item.id,
+            HirItem::TypeDecl(item) => item.id,
+            HirItem::Machine(item) => item.id,
+            HirItem::Record(item) => item.id,
+            HirItem::Actor(item) => item.id,
+            HirItem::Supervisor(item) => item.id,
+            HirItem::Impl(item) => item.id,
+            HirItem::ExternFn(item) => item.id,
+        };
+        module.diagnostic_source_modules.get(&id).cloned()
     }
 }

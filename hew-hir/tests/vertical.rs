@@ -135,6 +135,31 @@ fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
     );
 }
 
+#[test]
+fn verifier_diagnostic_retains_item_source_module() {
+    let mut output = lower("fn f() { let t = (1, 2); }");
+    let func_id = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(func) => Some(func.id),
+            _ => None,
+        })
+        .expect("fixture lowers one function");
+    output
+        .module
+        .diagnostic_source_modules
+        .insert(func_id, "dep".to_string());
+
+    let verify = verify_hir(&output.module);
+    let diagnostic = verify
+        .iter()
+        .find(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
+        .expect("verifier should flag unsupported tuple node");
+    assert_eq!(diagnostic.source_module.as_deref(), Some("dep"));
+}
+
 // ── select{} sealed-form recognition ───────────────────────────────────────
 //
 // Per HEW-SPEC-2026 §4.11.1 the four arm forms are exhaustive. These tests

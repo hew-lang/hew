@@ -21,6 +21,7 @@ const MACHINE_SELF_BINDING: BindingId = BindingId(u32::MAX);
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
         items,
+        diagnostic_source_modules: HashMap::default(),
         type_classes: HashMap::default(),
         monomorphisations: vec![],
         call_site_type_args: HashMap::default(),

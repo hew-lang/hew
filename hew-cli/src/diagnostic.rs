@@ -57,6 +57,17 @@ pub(crate) fn emit_plain_diagnostic_line(s: &str) {
     diag_println(s);
 }
 
+const ROOT_SOURCE_CONTEXT_UNAVAILABLE: &str =
+    "source context unavailable: root source not attached to frontend diagnostic";
+
+/// Map an HIR diagnostic kind to a user-visible prefix string.
+pub(crate) fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
+    match kind {
+        hew_hir::HirDiagnosticKind::NotYetImplemented { .. } => "E_NOT_YET_IMPLEMENTED",
+        _ => "E_HIR",
+    }
+}
+
 // ANSI colour helpers
 const RED: &str = "\x1b[1;31m";
 const YELLOW: &str = "\x1b[1;33m";
@@ -415,6 +426,56 @@ pub(crate) fn render_type_diagnostics_with_sources(
     }
 }
 
+fn hir_source_context_unavailable_note(diagnostic: &hew_hir::HirDiagnostic) -> String {
+    diagnostic.source_module.as_ref().map_or_else(
+        || ROOT_SOURCE_CONTEXT_UNAVAILABLE.to_string(),
+        |module| format!("source context unavailable: module '{module}' not in module_source_map"),
+    )
+}
+
+fn hir_diagnostic_message(diagnostic: &hew_hir::HirDiagnostic) -> String {
+    let prefix = hir_diagnostic_prefix(&diagnostic.kind);
+    if diagnostic.note.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}: {}", diagnostic.note)
+    }
+}
+
+/// Render a HIR diagnostic using source context when the frontend was able to
+/// resolve the diagnostic's source module. Non-root source-map misses are
+/// rendered explicitly rather than falling back to the root file.
+pub(crate) fn render_hir_diagnostic(
+    source: Option<&str>,
+    filename: Option<&str>,
+    diagnostic: &hew_hir::HirDiagnostic,
+) {
+    let message = hir_diagnostic_message(diagnostic);
+    let kind_note = format!("HIR kind: {:?}", diagnostic.kind);
+    if let (Some(source), Some(filename)) = (source, filename) {
+        let suggestions = [kind_note];
+        render_diagnostic_with_raw_notes(
+            source,
+            filename,
+            &diagnostic.span,
+            &message,
+            &diagnostic.secondary_spans,
+            &suggestions,
+        );
+        return;
+    }
+
+    emit_plain_diagnostic_line(&format!("error: {message}"));
+    emit_plain_diagnostic_line(&format!("  = note: {kind_note}"));
+    emit_plain_diagnostic_line(&format!(
+        "  = note: {}",
+        hir_source_context_unavailable_note(diagnostic)
+    ));
+    for (_, label) in &diagnostic.secondary_spans {
+        emit_plain_diagnostic_line(&format!("  = note: {label}"));
+    }
+}
+
 /// Render the source line and `^^^` underline for a span.
 fn render_source_underline(
     source: &str,
@@ -596,6 +657,47 @@ mod tests {
             "captured diagnostics must not contain ANSI escapes: {captured:?}"
         );
         assert!(captured.contains("main.hew:1:1: error: bad call"));
+    }
+
+    #[test]
+    fn hir_source_map_miss_reports_unavailable_note() {
+        let diagnostic = hew_hir::HirDiagnostic::new(
+            hew_hir::HirDiagnosticKind::UnresolvedInferenceVar,
+            0..1,
+            "probe",
+        )
+        .with_source_module(Some("dep".to_string()));
+
+        start_diagnostic_capture();
+        render_hir_diagnostic(None, None, &diagnostic);
+        let captured = finish_diagnostic_capture();
+
+        assert!(captured.contains("error: E_HIR: probe"));
+        assert!(captured.contains("HIR kind: UnresolvedInferenceVar"));
+        assert!(
+            captured.contains("source context unavailable: module 'dep' not in module_source_map")
+        );
+    }
+
+    #[test]
+    fn hir_secondary_spans_use_primary_source_context() {
+        let diagnostic = hew_hir::HirDiagnostic::new(
+            hew_hir::HirDiagnosticKind::UnresolvedInferenceVar,
+            0..4,
+            "primary",
+        )
+        .with_secondary_spans(vec![(
+            5..9,
+            "secondary uses primary source module".to_string(),
+        )]);
+
+        start_diagnostic_capture();
+        render_hir_diagnostic(Some("abcd\nefgh\n"), Some("dep.hew"), &diagnostic);
+        let captured = finish_diagnostic_capture();
+
+        assert!(captured.contains("dep.hew:1:1: error: E_HIR: primary"));
+        assert!(captured.contains("dep.hew:2:1: note: secondary uses primary source module"));
+        assert!(captured.contains("efgh"));
     }
 
     #[test]

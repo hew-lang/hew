@@ -12,6 +12,10 @@ use crate::{IntentKind, ValueClass};
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirModule {
     pub items: Vec<HirItem>,
+    /// Source-module attribution for non-root top-level HIR items, keyed by
+    /// item id. Diagnostics emitted while verifying one of these items inherit
+    /// the same dotted module key used by `HirDiagnostic::source_module`.
+    pub diagnostic_source_modules: HashMap<ItemId, String>,
     /// Per-named-type classification table populated during HIR lowering from
     /// each `Item::TypeDecl` carrying a user marker and from compiler-known
     /// substrate registrations.

@@ -1029,6 +1029,7 @@ pub fn lower_program_with_mono_cap(
     // so this pre-pass can safely run before the combined item pass below.
     let mut type_decl_cache: HashMap<*const hew_parser::ast::TypeDecl, HirTypeDecl> =
         HashMap::new();
+    let mut diagnostic_source_modules: HashMap<ItemId, String> = HashMap::new();
     for (item, span) in &program.items {
         if let Item::TypeDecl(decl) = item {
             let hir_decl = ctx.lower_type_decl(decl, span.clone());
@@ -1079,6 +1080,8 @@ pub fn lower_program_with_mono_cap(
             }
             let module_short = mod_id.path.last().map_or("", String::as_str);
             if let Some(module) = mg.modules.get(mod_id) {
+                let source_module = mod_id.path.join(".");
+                let diag_start = ctx.diagnostics.len();
                 for (item, span) in &module.items {
                     match item {
                         Item::TypeDecl(decl)
@@ -1124,6 +1127,7 @@ pub fn lower_program_with_mono_cap(
                         | Item::Record(_) => {}
                     }
                 }
+                ctx.tag_diagnostics_since(diag_start, &source_module);
             }
         }
     }
@@ -1156,6 +1160,8 @@ pub fn lower_program_with_mono_cap(
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
+                let source_module = mod_id.path.join(".");
+                let diag_start = ctx.diagnostics.len();
                 for (item, span) in &module.items {
                     match item {
                         Item::TypeDecl(decl)
@@ -1255,6 +1261,7 @@ pub fn lower_program_with_mono_cap(
                         | Item::Record(_) => {}
                     }
                 }
+                ctx.tag_diagnostics_since(diag_start, &source_module);
             }
         }
     }
@@ -1462,6 +1469,9 @@ pub fn lower_program_with_mono_cap(
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
+                let source_module = mod_id.path.join(".");
+                let diag_start = ctx.diagnostics.len();
+                let item_start = items.len();
                 let module_short = mod_id.path.last().map_or("", String::as_str);
                 // Per-module helper sets used by the imported-body scan in
                 // both the free-fn (Item::Function) and impl-method
@@ -1694,6 +1704,12 @@ pub fn lower_program_with_mono_cap(
                         | Item::Supervisor(_) => {}
                     }
                 }
+                ctx.tag_diagnostics_since(diag_start, &source_module);
+                record_source_modules_for_items(
+                    &items[item_start..],
+                    &source_module,
+                    &mut diagnostic_source_modules,
+                );
             }
         }
     }
@@ -1744,6 +1760,7 @@ pub fn lower_program_with_mono_cap(
     LowerOutput {
         module: HirModule {
             items,
+            diagnostic_source_modules,
             type_classes: ctx.type_classes,
             monomorphisations,
             call_site_type_args,
@@ -1862,6 +1879,26 @@ fn collect_call_sites_in_block(block: &HirBlock, out: &mut Vec<(String, SiteId)>
     }
     if let Some(tail) = &block.tail {
         collect_call_sites_in_expr(tail, out);
+    }
+}
+
+fn record_source_modules_for_items(
+    items: &[HirItem],
+    source_module: &str,
+    diagnostic_source_modules: &mut HashMap<ItemId, String>,
+) {
+    for item in items {
+        let id = match item {
+            HirItem::Function(item) => item.id,
+            HirItem::TypeDecl(item) => item.id,
+            HirItem::Machine(item) => item.id,
+            HirItem::Record(item) => item.id,
+            HirItem::Actor(item) => item.id,
+            HirItem::Supervisor(item) => item.id,
+            HirItem::Impl(item) => item.id,
+            HirItem::ExternFn(item) => item.id,
+        };
+        diagnostic_source_modules.insert(id, source_module.to_string());
     }
 }
 
@@ -2546,6 +2583,15 @@ impl LowerCtx {
             pattern_resolutions: tc_output.pattern_resolutions.clone(),
             lang_items: tc_output.lang_items.clone(),
             target_arch,
+        }
+    }
+
+    fn tag_diagnostics_since(&mut self, start: usize, source_module: &str) {
+        debug_assert!(start <= self.diagnostics.len());
+        for diagnostic in self.diagnostics.iter_mut().skip(start) {
+            if diagnostic.source_module.is_none() {
+                diagnostic.source_module = Some(source_module.to_string());
+            }
         }
     }
 

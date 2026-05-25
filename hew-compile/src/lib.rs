@@ -30,6 +30,7 @@ pub enum FrontendDiagnosticKind {
     Message(String),
     Parse(hew_parser::ParseError),
     Type(hew_types::TypeError),
+    Hir(hew_hir::HirDiagnostic),
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +62,18 @@ impl FrontendDiagnostic {
             source: Some(source.to_string()),
             filename: Some(filename.to_string()),
             kind: FrontendDiagnosticKind::Type(diagnostic),
+        }
+    }
+
+    fn hir(
+        source: Option<&str>,
+        filename: Option<&str>,
+        diagnostic: hew_hir::HirDiagnostic,
+    ) -> Self {
+        Self {
+            source: source.map(str::to_string),
+            filename: filename.map(str::to_string),
+            kind: FrontendDiagnosticKind::Hir(diagnostic),
         }
     }
 }
@@ -96,7 +109,7 @@ fn is_warning_diagnostic(d: &FrontendDiagnostic) -> bool {
     match &d.kind {
         FrontendDiagnosticKind::Type(e) => e.severity == hew_types::error::Severity::Warning,
         FrontendDiagnosticKind::Parse(e) => e.severity == hew_parser::Severity::Warning,
-        FrontendDiagnosticKind::Message(_) => false,
+        FrontendDiagnosticKind::Message(_) | FrontendDiagnosticKind::Hir(_) => false,
     }
 }
 
@@ -391,6 +404,42 @@ fn type_diagnostic_to_frontend(
         (root_source, root_filename)
     };
     FrontendDiagnostic::type_(source, filename, diagnostic)
+}
+
+fn hir_diagnostic_to_frontend(
+    root_source: &str,
+    root_filename: &str,
+    diagnostic: hew_hir::HirDiagnostic,
+    module_source_map: &ModuleSourceMap,
+) -> FrontendDiagnostic {
+    let (source, filename) = match diagnostic.source_module.as_deref() {
+        None => (Some(root_source), Some(root_filename)),
+        Some(module) => module_source_map
+            .get(module)
+            .map_or((None, None), |(source, filename)| {
+                (Some(source.as_str()), Some(filename.as_str()))
+            }),
+    };
+    FrontendDiagnostic::hir(source, filename, diagnostic)
+}
+
+/// Route HIR diagnostics through the same source-map attribution path used by
+/// parser and type diagnostics. Non-root diagnostics never fall back to root
+/// source on a source-map miss; callers render an explicit unavailable note.
+#[must_use]
+pub fn hir_diagnostics_to_frontend(
+    program: &Program,
+    root_source: &str,
+    root_filename: &str,
+    diagnostics: Vec<hew_hir::HirDiagnostic>,
+) -> Vec<FrontendDiagnostic> {
+    let module_source_map = build_module_source_map(program);
+    diagnostics
+        .into_iter()
+        .map(|diagnostic| {
+            hir_diagnostic_to_frontend(root_source, root_filename, diagnostic, &module_source_map)
+        })
+        .collect()
 }
 
 fn typecheck_program_with_diagnostics(
@@ -1399,8 +1448,9 @@ fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure>
 #[cfg(test)]
 mod tests {
     use super::{
-        check_file, check_program, load_dependencies, load_lockfile, load_package_name,
-        parse_source, FrontendOptions,
+        check_file, check_program, hir_diagnostics_to_frontend, load_dependencies, load_lockfile,
+        load_package_name, parse_source, run_file_frontend_to_typecheck, FrontendDiagnosticKind,
+        FrontendOptions,
     };
     use std::fs::{self, File};
     use std::io::Write;
@@ -1829,5 +1879,75 @@ mod tests {
             "expected warnings-as-errors message, got: {}",
             err.message
         );
+    }
+
+    #[test]
+    fn hir_diagnostic_routes_to_imported_module_source() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let main = write_source(
+            dir.path(),
+            "main.hew",
+            "import \"dep.hew\";\nfn main() {}\n",
+        );
+        fs::write(dir.path().join("dep.hew"), "pub fn dep_entry() {}\n").expect("write dep.hew");
+        let state = run_file_frontend_to_typecheck(&main, &FrontendOptions::default())
+            .expect("frontend should accept fixture");
+
+        let diagnostics = hir_diagnostics_to_frontend(
+            &state.program,
+            &state.source,
+            &main,
+            vec![hew_hir::HirDiagnostic::new(
+                hew_hir::HirDiagnosticKind::NotYetImplemented {
+                    construct: "probe".to_string(),
+                    owning_pass: "test".to_string(),
+                },
+                0..3,
+                "probe",
+            )
+            .with_source_module(Some("dep".to_string()))],
+        );
+
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics[0]
+                .filename
+                .as_deref()
+                .is_some_and(|filename| filename.ends_with("dep.hew")),
+            "expected dep.hew filename, got {:?}",
+            diagnostics[0].filename
+        );
+        assert_eq!(
+            diagnostics[0].source.as_deref(),
+            Some("pub fn dep_entry() {}\n")
+        );
+    }
+
+    #[test]
+    fn hir_diagnostic_source_map_miss_does_not_fallback_to_root() {
+        let source = "fn main() {}\n";
+        let program = parse_source(source, "main.hew").expect("source should parse");
+
+        let diagnostics = hir_diagnostics_to_frontend(
+            &program,
+            source,
+            "main.hew",
+            vec![hew_hir::HirDiagnostic::new(
+                hew_hir::HirDiagnosticKind::UnresolvedInferenceVar,
+                0..2,
+                "probe",
+            )
+            .with_source_module(Some("missing".to_string()))],
+        );
+
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].source.is_none());
+        assert!(diagnostics[0].filename.is_none());
+        match &diagnostics[0].kind {
+            FrontendDiagnosticKind::Hir(diagnostic) => {
+                assert_eq!(diagnostic.source_module.as_deref(), Some("missing"));
+            }
+            other => panic!("expected HIR diagnostic, got {other:?}"),
+        }
     }
 }

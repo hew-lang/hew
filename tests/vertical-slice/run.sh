@@ -73,6 +73,35 @@ trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_o
 diff -u "${ROOT}/tests/vertical-slice/accept/hello_println.expected" "${hello_stdout}"
 
 run_accept_expect_status "assert" 0
+
+# ---------------------------------------------------------------------------
+# W4.002: HIR pre-pass Item::Machine coverage for FC-P0 sibling walkers
+# ---------------------------------------------------------------------------
+
+# Reject: `.recv()` inside a machine transition body must be rejected at
+# HIR-lower time when compiling for wasm32. Exercises the Item::Machine arm
+# added to `check_wasm_blocking_recv_gate`.
+if "${HEW}" compile --target wasm32-unknown-unknown \
+    "${ROOT}/tests/vertical-slice/reject/machine_wasm_blocking_recv.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected machine_wasm_blocking_recv fixture to fail" >&2
+  exit 1
+fi
+grep -q 'Blocking channel receive operations are not supported on WASM32' "${reject_output}"
+
+# Reject: `fork child = worker(42)` inside a machine state entry block must
+# be rejected by the task-gate HIR pre-pass. Exercises the Item::Machine arm
+# added to `check_task_gates`. Uses `hew compile` (not `hew check`) because
+# the HIR pre-pass runs as part of the compile pipeline, not the type-check-
+# only path.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/machine_task_gate_fork_args.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected machine_task_gate_fork_args fixture to fail" >&2
+  exit 1
+fi
+grep -q 'TaskSpawnSignatureUnsupported\|spawned function must have zero arguments' "${reject_output}"
+
 run_accept_expect_status "assert_eq" 0
 run_accept_expect_status "assert_ne" 0
 run_accept_expect_status "sleep_ms" 0

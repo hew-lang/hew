@@ -1,0 +1,22 @@
+// W4.002 reject fixture: a `fork child = worker(42)` (fork-child-with-args)
+// inside a machine state entry block must be rejected by the task-gate
+// HIR pre-pass, exercising the Item::Machine arm of `check_task_gates`
+// added in this lane.
+fn worker(x: i64) {}
+
+machine M {
+    state Idle {
+        entry {
+            scope {
+                fork child = worker(42);
+            }
+        }
+    }
+    state Done;
+    event Tick;
+    on Tick: Idle -> Done { Done }
+    default { self }
+}
+
+fn main() {}
+

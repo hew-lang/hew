@@ -10858,7 +10858,32 @@ fn check_wasm_blocking_recv_gate(ctx: &mut LowerCtx, program: &Program) {
                     scan_block_for_blocking_recv(&method.body, &mut ctx.diagnostics);
                 }
             }
-            // Const, Trait, Supervisor, Machine, Struct, Enum, Use, Module, etc.
+            // A242 invariant: HIR pre-pass walkers that visit user expression
+            // bodies in Item::Function/Item::Actor/Item::Impl MUST also visit ALL
+            // FOUR Item::Machine positions:
+            //   1. each state's `entry` block
+            //   2. each state's `exit` block
+            //   3. each transition's `guard` expression (if any)
+            //   4. each transition's `body` expression (action)
+            // Partial coverage (e.g. transitions but not states) is a BLOCK in
+            // cross-eco review.
+            Item::Machine(machine) => {
+                for state in &machine.states {
+                    if let Some(entry) = &state.entry {
+                        scan_block_for_blocking_recv(entry, &mut ctx.diagnostics);
+                    }
+                    if let Some(exit) = &state.exit {
+                        scan_block_for_blocking_recv(exit, &mut ctx.diagnostics);
+                    }
+                }
+                for transition in &machine.transitions {
+                    if let Some(guard) = &transition.guard {
+                        scan_expr_for_blocking_recv(&guard.0, &mut ctx.diagnostics);
+                    }
+                    scan_expr_for_blocking_recv(&transition.body.0, &mut ctx.diagnostics);
+                }
+            }
+            // Const, Trait, Supervisor, Struct, Enum, Use, Module, etc.
             // do not carry user expression bodies that can call `.recv()`.
             _ => {}
         }
@@ -11175,7 +11200,32 @@ fn check_task_gates(ctx: &mut LowerCtx, program: &Program) {
                     scan_block_for_task_gates(&method.body, ctx, program);
                 }
             }
-            // Const, Trait, Supervisor, Machine, Struct, Enum, Use, Module, etc.
+            // A242 invariant: HIR pre-pass walkers that visit user expression
+            // bodies in Item::Function/Item::Actor/Item::Impl MUST also visit ALL
+            // FOUR Item::Machine positions:
+            //   1. each state's `entry` block
+            //   2. each state's `exit` block
+            //   3. each transition's `guard` expression (if any)
+            //   4. each transition's `body` expression (action)
+            // Partial coverage (e.g. transitions but not states) is a BLOCK in
+            // cross-eco review.
+            Item::Machine(machine) => {
+                for state in &machine.states {
+                    if let Some(entry) = &state.entry {
+                        scan_block_for_task_gates(entry, ctx, program);
+                    }
+                    if let Some(exit) = &state.exit {
+                        scan_block_for_task_gates(exit, ctx, program);
+                    }
+                }
+                for transition in &machine.transitions {
+                    if let Some(guard) = &transition.guard {
+                        scan_expr_for_task_gates(&guard.0, &guard.1, ctx, program);
+                    }
+                    scan_expr_for_task_gates(&transition.body.0, &transition.body.1, ctx, program);
+                }
+            }
+            // Const, Trait, Supervisor, Struct, Enum, Use, Module, etc.
             // do not carry user expression bodies with task spawns.
             _ => {}
         }

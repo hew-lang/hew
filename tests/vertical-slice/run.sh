@@ -102,6 +102,17 @@ if "${HEW}" compile \
 fi
 grep -q 'TaskSpawnSignatureUnsupported\|spawned function must have zero arguments' "${reject_output}"
 
+# Reject: spawned closures must not capture non-Send values. This fixture uses
+# a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR
+# diagnostic rather than unrelated Rc construction or lowering diagnostics.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/spawned_closure_non_send_capture.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected spawned_closure_non_send_capture fixture to fail" >&2
+  exit 1
+fi
+grep -q "spawned closure captures non-Send value 'r'" "${reject_output}"
+
 run_accept_expect_status "assert_eq" 0
 run_accept_expect_status "assert_ne" 0
 run_accept_expect_status "sleep_ms" 0

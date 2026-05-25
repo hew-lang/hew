@@ -2,11 +2,10 @@
 //! side tables. Adjacent `TypeCheckOutput::default()` debt outside
 //! `task_gates.rs` is intentionally left to the follow-up lane.
 //!
-//! Current source cannot yet produce all task-gate side-table facts end to end:
-//! `fork name = expr` is still a checker-level parser-only surface, and
-//! block-wrapped closure calls do not present `Expr::Lambda` at the spawn gate.
-//! These tests therefore pin the reachable checker facts plus the task-gate
-//! predicates that consume them without changing production behavior.
+//! Current source cannot yet produce every task-gate side-table fact end to end:
+//! `fork name = expr` is still a checker-level parser-only surface. These tests
+//! pin the reachable checker facts plus the task-gate predicates that consume
+//! them without changing production behavior.
 
 #[path = "support/mod.rs"]
 mod support;
@@ -163,6 +162,51 @@ fn checker_pipeline_i64_capture_fact_is_present_for_second_source_shape() {
         non_send_capture_names(&output.diagnostics).is_empty(),
         "Send capture must not trip SpawnedClosureNonSendCapture: {:#?}",
         output.diagnostics
+    );
+}
+
+#[test]
+fn checker_pipeline_rc_capture_emits_non_send_diagnostic() {
+    let source = r"
+        fn main() {
+            let r = Rc::new(1);
+            scope { (move || { let _ = r; })(); };
+        }
+        ";
+    let (parsed, tco) = support::checker_pipeline::typecheck_source(source);
+    assert!(
+        tco.errors.is_empty(),
+        "Rc capture fixture must typecheck cleanly: {:#?}",
+        tco.errors
+    );
+
+    let captures: Vec<_> = tco
+        .closure_capture_facts
+        .values()
+        .flat_map(|facts| facts.iter())
+        .filter(|fact| fact.name == "r")
+        .collect();
+    assert!(
+        !captures.is_empty(),
+        "checker must produce capture facts for `r`: {:#?}",
+        tco.closure_capture_facts
+    );
+    assert!(
+        captures.iter().any(|fact| !fact.is_send),
+        "`Rc<i64>` capture must be recorded as non-Send: {captures:#?}"
+    );
+
+    let output = lower_program_host_target(&parsed.program, &tco, &ResolutionCtx);
+    let capture_names = non_send_capture_names(&output.diagnostics);
+    assert_eq!(
+        capture_names,
+        vec!["r"],
+        "SpawnedClosureNonSendCapture must report the captured binding name: {:#?}",
+        output.diagnostics
+    );
+    assert!(
+        output.into_result().is_err(),
+        "non-Send spawned closure capture must make lowering fatal"
     );
 }
 

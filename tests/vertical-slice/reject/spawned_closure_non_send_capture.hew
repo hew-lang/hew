@@ -1,0 +1,13 @@
+// Reject fixture: spawned_closure_non_send_capture — spawned closure captures Rc.
+//
+// `Rc<T>` is not Send, so moving it into a closure spawned by `scope { call(); }`
+// is rejected at HIR lowering by SpawnedClosureNonSendCapture.
+//
+// Harness verb: hew compile
+// Expected diagnostic:
+//   - "spawned closure captures non-Send value 'r'"
+
+fn main() {
+    let r = Rc::new(1);
+    scope { (move || { let _ = r; })(); };
+}

@@ -3,9 +3,14 @@
 //! Validates that spawned calls, fork children, fork blocks, deadline scopes,
 //! and await expressions are correctly validated at HIR lowering.
 
-use hew_hir::{lower_program, HirDiagnosticKind, TargetArch};
-use hew_parser::parser;
-use hew_types::TypeCheckOutput;
+#[path = "support/mod.rs"]
+mod support;
+
+use hew_hir::HirDiagnosticKind;
+
+fn lower(source: &str) -> hew_hir::LowerOutput {
+    support::checker_pipeline::lower_through_checker(source)
+}
 
 // ── ForkChild signature/callee tests ────────────────────────────────────────
 
@@ -20,13 +25,7 @@ fn fork_child_direct_fn_unit_accepted() {
             }
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let has_gate_diagnostic = output.diagnostics.iter().any(|d| {
         matches!(
@@ -53,13 +52,7 @@ fn fork_child_with_args_rejected() {
             }
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let has_signature_unsupported = output.diagnostics.iter().any(|d| {
         matches!(
@@ -92,13 +85,7 @@ fn fork_child_indirect_call_rejected() {
             }
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let has_callee_unsupported = output
         .diagnostics
@@ -130,13 +117,7 @@ fn spawned_closure_zero_params_accepted() {
         }
         fn work() {}
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let has_gate_diagnostic = output.diagnostics.iter().any(|d| {
         matches!(
@@ -153,10 +134,8 @@ fn spawned_closure_zero_params_accepted() {
 
 #[test]
 fn spawned_closure_with_params_rejected() {
-    // Invalid: spawned closure has parameters
-    // Note: Without full type checking, we may not have closure capture facts,
-    // so we'll get TaskSpawnCalleeUnsupported instead of the more specific
-    // SpawnedClosureSignatureUnsupported. This is acceptable - the gate fires.
+    // Invalid: spawned closure has parameters. The block-wrapped closure shape
+    // currently reaches the broader callee gate, which still proves rejection.
     let source = r"
         fn main() {
             scope {
@@ -165,13 +144,7 @@ fn spawned_closure_with_params_rejected() {
         }
         fn work(x: int) {}
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let has_closure_gate = output.diagnostics.iter().any(|d| {
         matches!(
@@ -206,13 +179,7 @@ fn fork_block_single_call_accepted() {
             }
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let has_gate_diagnostic = output
         .diagnostics
@@ -235,13 +202,7 @@ fn fork_block_empty_rejected() {
             }
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let has_fork_block_unsupported = output
         .diagnostics
@@ -275,13 +236,7 @@ fn fork_block_multi_statement_rejected() {
             }
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let has_fork_block_unsupported = output
         .diagnostics
@@ -310,13 +265,7 @@ fn fork_block_not_call_rejected() {
             }
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let has_fork_block_unsupported = output
         .diagnostics
@@ -347,13 +296,7 @@ fn deadline_empty_body_accepted() {
             }
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let has_gate_diagnostic = output
         .diagnostics
@@ -379,13 +322,7 @@ fn deadline_non_empty_body_rejected() {
         }
         fn work() {}
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let has_deadline_unsupported = output
         .diagnostics
@@ -408,8 +345,7 @@ fn deadline_non_empty_body_rejected() {
 
 #[test]
 fn await_unit_task_accepted() {
-    // Valid: awaiting task with unit result
-    // Note: This is a syntactic test; actual Task type checking happens in type checker
+    // Valid: awaiting a unit-returning worker must not trip the non-unit gate.
     let source = r"
         fn main() {
             let task = worker();
@@ -417,16 +353,8 @@ fn await_unit_task_accepted() {
         }
         fn worker() {}
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
-    // Without type information, the gate won't fire
-    // This is acceptable - the gate is defense-in-depth for MIR
     let has_gate_diagnostic = output
         .diagnostics
         .iter()
@@ -446,22 +374,17 @@ fn await_expression_parses() {
             await task_handle;
         }
     ";
-    let parsed = parser::parse(source);
+    let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
         "Parse errors: {:?}",
         parsed.errors
     );
 
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     // The walker should traverse await expressions without panicking
-    // Gate diagnostics depend on type information which isn't available in this minimal test
+    // Gate diagnostics depend on checker type information.
     // This test validates that the walker code doesn't crash
     let _ = output;
 }
@@ -483,13 +406,7 @@ fn multiple_gates_can_fire() {
         fn b() {}
         fn work() {}
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let gate_diagnostic_count = output
         .diagnostics
@@ -528,13 +445,7 @@ fn nested_fork_block_detected() {
             }
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let has_fork_block_unsupported = output
         .diagnostics
@@ -566,13 +477,7 @@ fn mod_qualified_spawn_accepted() {
             }
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let has_callee_unsupported = output
         .diagnostics

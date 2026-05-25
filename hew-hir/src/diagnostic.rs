@@ -367,4 +367,56 @@ pub enum HirDiagnosticKind {
         /// User-visible construct name (e.g. `".recv()"`).
         construct: String,
     },
+    /// Spawned task/fork callee has non-unit signature. The spawned
+    /// function must have zero args and unit return type because task result
+    /// propagation is not yet wired. Fail-closed per FC-P1-A1 audit.
+    TaskSpawnSignatureUnsupported {
+        /// Site identifier for error reporting.
+        site: SiteId,
+    },
+    /// Spawned task/fork callee is not a direct module function or supported
+    /// closure. The spawned expression must be a direct function call or
+    /// zero-arg unit closure. Fail-closed per FC-P1-A1 audit.
+    TaskSpawnCalleeUnsupported {
+        /// Site identifier for error reporting.
+        site: SiteId,
+    },
+    /// Spawned closure has params, args, or non-unit result. The spawned
+    /// closure must be zero-arg and return unit because value/result task
+    /// propagation remains fail-closed. Fail-closed per FC-P1-A1 audit.
+    SpawnedClosureSignatureUnsupported {
+        /// Site identifier for error reporting.
+        site: SiteId,
+    },
+    /// Spawned closure captures non-Send value. All captured values must be
+    /// Send for safe task migration. Fail-closed per FC-P1-A1 audit.
+    SpawnedClosureNonSendCapture {
+        /// Site identifier for error reporting.
+        site: SiteId,
+        /// Name of the non-Send captured value.
+        capture_name: String,
+    },
+    /// Fork block body is not supported shape. The fork block must contain
+    /// exactly one statement that is a direct function call with zero args
+    /// and unit return. Fail-closed per FC-P1-A1 audit.
+    ForkBlockBodyUnsupported {
+        /// Site identifier for error reporting.
+        site: SiteId,
+        /// Human-readable reason for rejection (e.g. "empty", "multi-statement").
+        reason: String,
+    },
+    /// Deadline has non-empty body. The `after(...)` deadline must have an
+    /// empty body in v0.5; deadline body execution is not yet wired.
+    /// Fail-closed per FC-P1-A1 audit.
+    DeadlineBodyUnsupported {
+        /// Site identifier for error reporting.
+        site: SiteId,
+    },
+    /// Awaiting non-unit task result. The awaited task must return unit
+    /// because task result value propagation is not yet wired. Fail-closed
+    /// per FC-P1-A1 audit.
+    AwaitTaskResultUnsupported {
+        /// Site identifier for error reporting.
+        site: SiteId,
+    },
 }

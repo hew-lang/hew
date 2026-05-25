@@ -544,3 +544,52 @@ run_accept_expect_status "generic_enum_nested_option" 5
 # emit_remote_pid_tell_call. Regression in the in-place construction would
 # produce a wrong SendError discriminant, exiting 1 or 2 instead.
 run_accept_expect_status "remote_pid_tell" 42
+
+# ---------------------------------------------------------------------------
+# W2.006 Stage 1 — HewScope removal: scope{} MIR shape invariant.
+# ---------------------------------------------------------------------------
+# Check-only fixture: `scope { fork { worker(); } }` inside an actor handler
+# must:
+#   1. typecheck cleanly (`hew check` exits 0).
+#   2. produce a RawMirFunction whose instruction stream contains the
+#      canonical hew_task_scope_* and hew_task_new symbols.
+#   3. NOT mention the legacy hew_scope_* family anywhere in the dump.
+# The full back-end link is blocked by an orthogonal SpawnTaskDirect callee
+# constraint that predates W2.006; the check + MIR-shape gate is what this
+# lane is responsible for.
+w2006_fixture="${ROOT}/tests/vertical-slice/check-only/w2006_scope_spawn.hew"
+
+"${HEW}" check "${w2006_fixture}" >"${accept_output}" 2>&1
+grep -q ": OK$" "${accept_output}" || {
+  echo "W2.006: expected hew check to print ': OK' on the scope_spawn fixture" >&2
+  cat "${accept_output}" >&2
+  exit 1
+}
+
+"${HEW}" compile --dump-mir raw "${w2006_fixture}" >"${accept_output}" 2>&1
+grep -qF 'symbol: "hew_task_scope_new"' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain hew_task_scope_new" >&2
+  cat "${accept_output}" >&2
+  exit 1
+}
+grep -qF 'symbol: "hew_task_scope_spawn"' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain hew_task_scope_spawn" >&2
+  cat "${accept_output}" >&2
+  exit 1
+}
+grep -qF 'symbol: "hew_task_new"' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain hew_task_new (preceding hew_task_scope_spawn)" >&2
+  cat "${accept_output}" >&2
+  exit 1
+}
+grep -qF 'symbol: "hew_task_scope_destroy"' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain hew_task_scope_destroy" >&2
+  cat "${accept_output}" >&2
+  exit 1
+}
+# Legacy ABI must be fully removed.
+if grep -qE 'symbol: "hew_scope_(spawn|new|create|free|destroy|cancel|is_cancelled|wait_all)"' "${accept_output}"; then
+  echo "W2.006: legacy hew_scope_* symbol leaked into MIR dump — removal incomplete" >&2
+  cat "${accept_output}" >&2
+  exit 1
+fi

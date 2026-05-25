@@ -177,14 +177,6 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // arrives; returns the reply pointer (caller frees with libc::free)
     // or null on orphaned-ask. Does NOT consume the channel ref.
     "hew_reply_wait",
-    // --- scope{} structured-concurrency surface (Phase 2, rows 2/3/4) ---------
-    // `hew_scope_spawn(scope: *mut HewScope, actor: *mut c_void) -> i32`
-    // (`hew-runtime/src/scope.rs:169`). Adds an actor to the scope's actor
-    // list and returns 0 on success or -1 if the scope is full.
-    // Needed for lowering `scope {}` blocks (inventory row 2) and spawned
-    // calls (row 3). MIR producers must not wire a dest — the i32 return is
-    // a runtime-internal signal, not a user-visible value.
-    "hew_scope_spawn",
     // --- Select winner-picker -----------------------------------
     // `hew_select_first(channels, count, timeout_ms) -> i32`
     // (`hew-runtime/src/reply_channel.rs:484`). Polls multiple reply
@@ -437,8 +429,10 @@ mod tests {
     fn task_abi_symbols_present() {
         // Phase 2 substrate for scope{}/spawn/await (inventory rows 2/3/4).
         // Each of these must be recognised before the MIR producer arms can
-        // be wired in lower.rs.
-        assert!(is_known_runtime_symbol("hew_scope_spawn"));
+        // be wired in lower.rs. The canonical structured-concurrency surface
+        // is `hew_task_scope_*` (W2.006); legacy `hew_scope_*` has been
+        // removed.
+        assert!(is_known_runtime_symbol("hew_task_scope_spawn"));
         assert!(is_known_runtime_symbol("hew_task_new"));
         assert!(is_known_runtime_symbol("hew_task_spawn_thread"));
         assert!(is_known_runtime_symbol("hew_task_await_blocking"));

@@ -138,12 +138,31 @@ impl std::fmt::Display for CodegenError {
             Self::LlvmVerify(s) => write!(f, "llvm verify rejected module: {s}"),
             Self::Link(s) => write!(f, "link: {s}"),
             Self::Io(e) => write!(f, "io: {e}"),
-            Self::WasmUnsupportedSubstrate { symbol } => write!(
-                f,
-                "WASM target does not support the duplex concurrency substrate \
-                 (symbol: {symbol}; WASM-TODO(#1451)); omit the WASM target to \
-                 produce a native binary instead"
-            ),
+            Self::WasmUnsupportedSubstrate { symbol } => {
+                // Map the offending symbol prefix to a user-facing construct label
+                // and tracking-issue note. Defence in depth — typecheck rejects
+                // most cases earlier (see `hew-types/src/check/expressions.rs`),
+                // but this codegen-level diagnostic must still be specific.
+                let (construct, tracking) = if symbol.starts_with("hew_duplex_") {
+                    ("the `Duplex` channel substrate", "WASM-TODO(#1451)")
+                } else if symbol.starts_with("hew_supervisor_") {
+                    ("the supervisor restart machinery", "WASM-TODO(#1475)")
+                } else if symbol.starts_with("hew_task_scope_") {
+                    (
+                        "the `scope {}` structured-concurrency substrate",
+                        "WASM-TODO(#1451)",
+                    )
+                } else if symbol == "hew_tcp_stream_from_conn" {
+                    ("the TCP transport substrate", "WASM-TODO(#1451)")
+                } else {
+                    ("a native-only runtime substrate", "WASM-TODO(#1451)")
+                };
+                write!(
+                    f,
+                    "WASM target does not support {construct} (symbol: {symbol}; \
+                     {tracking}); omit the WASM target to produce a native binary instead"
+                )
+            }
         }
     }
 }
@@ -271,6 +290,19 @@ pub fn emit_module(
 ///   Note: calls from the Hew stdlib `extern "C"` block in `std/net/net.hew`
 ///   bypass this scan (they produce direct LLVM calls, not `CallRuntimeAbi`
 ///   instructions); the wasm32 runtime stub is the safety net for those.
+/// - `hew_task_scope_*` — the structured-concurrency `scope {}` substrate
+///   (`hew-runtime/src/task_scope.rs`) is gated `cfg(not(target_arch = "wasm32"))`
+///   at `hew-runtime/src/lib.rs:466`. The native impl depends on OS-thread-backed
+///   join semantics that wasm32 lacks. This codegen-level scan is defence in
+///   depth — the type checker rejects `Expr::Scope { .. }` on WASM targets at
+///   `hew-types/src/check/expressions.rs` via `WasmUnsupportedFeature::
+///   StructuredConcurrency`; this scan catches any path that bypasses the
+///   type-checker gate (e.g. direct MIR construction in tests). The
+///   alternative — letting the program reach `wasm-ld` — produces a confusing
+///   linker error. W2.006 (HewScope removal) lane added this gate; the
+///   task-scope-specific tracking sub-task lives under the WASM parity
+///   umbrella issue #1451.
+///   WASM-TODO(#1451): task-scope WASM parity sub-task.
 ///
 /// This scan detects them in the MIR before the `wasm-ld` step so the caller
 /// can return `CodegenError::WasmUnsupportedSubstrate` instead of a confusing
@@ -303,8 +335,19 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
                         //   wasm32; the runtime stub returns null but codegen surfaces
                         //   a structured diagnostic instead of a silent null.
                         //   WASM-TODO(#1451): TCP transport gap.
+                        // hew_task_scope_* — structured-concurrency substrate
+                        //   (`hew-runtime/src/task_scope.rs`) is native-only via
+                        //   `hew-runtime/src/lib.rs:466`. Defence in depth: the
+                        //   type checker rejects `scope {}` on WASM targets at
+                        //   `hew-types/src/check/expressions.rs` via
+                        //   `WasmUnsupportedFeature::StructuredConcurrency`. This
+                        //   scan catches any direct-MIR path that bypasses the
+                        //   type-checker gate. W2.006.
+                        //   WASM-TODO(#1451): task-scope sub-task under the
+                        //   WASM parity umbrella issue.
                         (sym.starts_with("hew_duplex_")
                             || sym.starts_with("hew_supervisor_")
+                            || sym.starts_with("hew_task_scope_")
                             || sym == "hew_tcp_stream_from_conn")
                             .then(|| sym.to_string())
                     }
@@ -759,13 +802,6 @@ fn intern_runtime_decl<'ctx>(
         | "hew_vec_slice_range_str" => {
             ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false)
         }
-        // ── scope{}/spawn/await task ABI (Phase 2, inventory rows 2/3/4) ──────
-        //
-        // hew_scope_spawn(scope: *mut HewScope, actor: *mut c_void) -> i32
-        // (`hew-runtime/src/scope.rs:169`). Adds an actor to the scope's
-        // actor list; returns 0 on success, -1 if full. i32 return is a
-        // runtime-internal signal — MIR producers discard it (dest: None).
-        "hew_scope_spawn" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         "hew_rc_new" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
         // hew_supervisor_new(strategy: c_int, max_restarts: c_int, window_secs: c_int)
         //                    -> *mut HewSupervisor
@@ -1904,17 +1940,15 @@ fn primitive_to_llvm<'ctx>(
             // LESSONS: exhaustive-traversal-and-lowering.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
-        ResolvedTy::Named { name, .. } if name == "HewScope" => {
-            // Phase 2 scope handle. A `HewScope` local holds a `*mut HewScope`
-            // opaque pointer — returned by `hew_scope_create` and consumed by
-            // `hew_scope_free`. The MIR producer for `scope {}` (inventory row
-            // 2) allocates a `ResolvedTy::Named { name: "HewScope", .. }` local
-            // and references it via `Place::DuplexHandle(N)`. Codegen emits an
-            // opaque `ptr` alloca, same as other runtime handle types.
-            // LESSONS: exhaustive-traversal-and-lowering.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
         ResolvedTy::Named { name, .. } if name == "HewTaskScope" => {
+            // Canonical scope handle (W2.006). A `HewTaskScope` local holds
+            // a `*mut HewTaskScope` opaque pointer — returned by
+            // `hew_task_scope_new` and consumed by `hew_task_scope_destroy`.
+            // The MIR producer for `scope {}` (`hew-mir/src/lower.rs:7577`)
+            // allocates a `ResolvedTy::Named { name: "HewTaskScope", .. }`
+            // local and references it via `Place::DuplexHandle(N)`. Codegen
+            // emits an opaque `ptr` alloca, same as other runtime handles.
+            // LESSONS: exhaustive-traversal-and-lowering.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
         ResolvedTy::Named { name, .. } if name == "RemotePid" => {
@@ -6016,43 +6050,6 @@ fn lower_call_runtime_abi(
                 .builder
                 .build_store(dest_ptr, result_val)
                 .map_err(|e| CodegenError::Llvm(format!("{symbol} store: {e:?}")))?;
-            let _ = (i32_ty, ptr_ty);
-        }
-        // ── scope{}/spawn/await task ABI (Phase 2, inventory rows 2/3/4) ──────
-        //
-        // hew_scope_spawn(scope: *mut HewScope, actor: *mut c_void) -> i32
-        // args[0]: scope ptr. args[1]: actor ptr (opaque c_void).
-        // Destination: None — the i32 return is a runtime-internal signal.
-        "hew_scope_spawn" => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_scope_spawn): expected 2 args \
-                     (scope, actor), got {}",
-                    args.len()
-                )));
-            }
-            let scope_ptr = load_duplex_handle(fn_ctx, args[0], "hew_scope_spawn arg0")?;
-            let actor_ptr = load_duplex_handle(fn_ctx, args[1], "hew_scope_spawn arg1")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
-            fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[scope_ptr.into(), actor_ptr.into()],
-                    "hew_scope_spawn_call",
-                )
-                .map_err(|e| CodegenError::Llvm(format!("hew_scope_spawn call: {e:?}")))?;
-            if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_scope_spawn i32 return is runtime-internal; \
-                     producer must not supply dest={d:?}"
-                )));
-            }
             let _ = (i32_ty, ptr_ty);
         }
         // hew_task_new() -> *mut HewTask

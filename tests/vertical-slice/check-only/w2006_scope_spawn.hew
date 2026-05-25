@@ -1,0 +1,38 @@
+// Check-only fixture: w2006_scope_spawn — positive `scope { fork ... }` MIR
+// invariant for W2.006 Stage 1.
+//
+// What this proves:
+//   * `hew check` accepts a `scope { fork { worker(); } }` body inside an
+//     actor handler (the source-syntax surface is preserved unchanged).
+//   * `hew compile --dump-mir raw` produces a RawMirFunction whose
+//     instruction stream contains the canonical `hew_task_new` and
+//     `hew_task_scope_spawn` runtime-ABI calls (and the
+//     `hew_task_scope_new`/`hew_task_scope_destroy` scope lifecycle pair).
+//   * The legacy `hew_scope_spawn`/`hew_scope_create`/`hew_scope_free`
+//     symbols MUST NOT appear in the MIR dump (W2.006 removal).
+//
+// The full back-end (`hew compile`) cannot yet link this fixture because
+// SpawnTaskDirect requires the callee to declare a leading
+// `HewExecutionContext*` parameter, which free `fn` items in surface Hew
+// do not currently emit. That gap is orthogonal to W2.006 (it predates the
+// HewScope/HewTaskScope split). See worker report for the deviation note.
+//
+// Harness verb: hew check; hew compile --dump-mir raw
+
+fn worker() {
+    // No-arg, unit-returning callee — the shape lower_spawned_fn_task accepts.
+}
+
+actor _Driver {
+    receive fn drive() {
+        scope {
+            fork { worker(); }
+        };
+    }
+}
+
+fn main() -> i64 {
+    let d = spawn _Driver;
+    d.drive();
+    0
+}

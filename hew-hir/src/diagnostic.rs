@@ -548,4 +548,30 @@ pub enum HirDiagnosticKind {
         /// Supervisor identifier as written at the spawn site.
         supervisor_name: String,
     },
+    /// `Vec<T>` scalar index (`xs[i]`) with an element type that the runtime
+    /// ABI does not (yet) implement a `hew_vec_get_T` for. Fail-closed per
+    /// slepp A222 / A228: surface the unsupported case at compile time
+    /// instead of letting MIR emit `NotYetImplemented` and codegen drop the
+    /// expression. Supported scalar element types are `i32`, `u32`, `i64`,
+    /// `u64`, `f64`, and any user-defined `Named` type (records, enums,
+    /// `Duplex`, `LambdaActorHandle`, etc., dispatched via
+    /// `hew_vec_get_ptr`). `Vec<String>` is intentionally excluded from
+    /// scalar indexing because there is no `hew_vec_get_str` strdup-aware
+    /// getter — the range-slice path covers the `String` case.
+    VecIndexElementTypeUnsupported {
+        /// User-facing rendering of the unsupported element type
+        /// (e.g. `"bool"`, `"char"`, `"String"`, `"f32"`).
+        element_ty: String,
+    },
+    /// `Vec<T>` range-slice (`xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`,
+    /// `xs[a..=b]`) with an element type that the runtime ABI does not
+    /// (yet) implement a `hew_vec_slice_range_T` for. Fail-closed per
+    /// slepp A222 / A228. Supported range-slice element types are `i32`,
+    /// `u32`, `i64`, `u64`, `f64`, `String`, and any user-defined `Named`
+    /// type (dispatched via `hew_vec_slice_range_ptr`).
+    VecSliceElementTypeUnsupported {
+        /// User-facing rendering of the unsupported element type
+        /// (e.g. `"bool"`, `"char"`, `"f32"`).
+        element_ty: String,
+    },
 }

@@ -3067,6 +3067,40 @@ impl LowerCtx {
                 type_params: Vec::new(),
             },
         );
+        // Duplex method-call rewrites: `check_duplex_method` records
+        // `RewriteToFunction { c_symbol: "hew_duplex_*" }` for the Duplex
+        // built-in methods.  The `RewriteToFunction` HIR path resolves the
+        // c_symbol against `fn_registry`; a missing entry produces a
+        // `ResolvedRef::Unresolved` callee which the HIR verifier rejects as
+        // `UnresolvedSymbol`.  These synthetic entries exist solely to satisfy
+        // the verifier — the actual call signature is constructed by the
+        // `RewriteToFunction` arm and the return type is read from
+        // `expr_types`.  IDs live just below `supervisor_stop`'s slot.
+        for (idx, name) in [
+            "hew_duplex_send",
+            "hew_duplex_try_send",
+            "hew_duplex_recv",
+            "hew_duplex_try_recv",
+            "hew_duplex_send_half",
+            "hew_duplex_recv_half",
+            "hew_duplex_close",
+            "hew_duplex_close_half",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let id_offset = u32::try_from(idx).expect("duplex symbol index is small");
+            self.fn_registry.insert(
+                (*name).to_string(),
+                FnEntry {
+                    id: ItemId(u32::MAX / 2 - 1 - id_offset),
+                    return_ty: ResolvedTy::Unit,
+                    param_tys: Vec::new(),
+                    linkage: None,
+                    type_params: Vec::new(),
+                },
+            );
+        }
     }
 
     fn register_fn_entry(&mut self, name: &str, func: &FnDecl) {
@@ -6080,6 +6114,36 @@ impl LowerCtx {
                             intent,
                             kind: HirExprKind::Unsupported(
                                 "`await actor.method(...)` out of position".to_string(),
+                            ),
+                            span,
+                        };
+                    }
+                    return self.lower_expr(inner, intent);
+                }
+                // `await actor.close()` — lambda-actor (Duplex) close is awaitable
+                // in statement position at any scope depth.  The checker records
+                // `hew_duplex_close` as the method rewrite; the `await` is stripped
+                // and the inner close call is lowered directly, matching the existing
+                // `ActorMethodKind::Ask` path above.
+                if matches!(
+                    self.method_call_rewrites.get(&SpanKey::from(&inner.1)),
+                    Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
+                        if c_symbol == "hew_duplex_close"
+                ) {
+                    if !in_stmt_position {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::AwaitOutOfPosition,
+                            span.clone(),
+                            "`await actor.close()` is only legal as a statement-expression in v0.5",
+                        ));
+                        return HirExpr {
+                            node: self.ids.node(),
+                            site: self.ids.site(),
+                            value_class: ValueClass::BitCopy,
+                            ty: ResolvedTy::Unit,
+                            intent,
+                            kind: HirExprKind::Unsupported(
+                                "`await actor.close()` out of position".to_string(),
                             ),
                             span,
                         };
@@ -11565,6 +11629,59 @@ mod tests {
             out.is_empty(),
             "emit inside a SpawnLambdaActor body must NOT bubble to the parent \
              transition; got: {out:?}"
+        );
+    }
+
+    /// Regression test: `await actor.close()` at the top level of a function
+    /// (`scope_depth` == 0) must NOT produce `AwaitOutOfPosition`.
+    ///
+    /// Before the fix, the HIR `Expr::Await` handler required `scope_depth > 0`
+    /// for all `await` expressions except `ActorMethodKind::Ask` dispatches.
+    /// Lambda-actor `close()` goes through `method_call_rewrites` (not
+    /// `actor_method_dispatch`), so it hit the `scope_depth` guard and emitted
+    /// `AwaitOutOfPosition` even when the `await` was a valid statement.
+    #[test]
+    fn await_actor_close_outside_scope_block_is_accepted() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            fn main() {
+                let a = actor |x: i64| { };
+                await a.close();
+            }
+            ",
+        );
+        let await_out_of_position: Vec<_> = lowered
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition))
+            .collect();
+        assert!(
+            await_out_of_position.is_empty(),
+            "`await actor.close()` at function level must not produce AwaitOutOfPosition; \
+             got: {await_out_of_position:#?}"
+        );
+    }
+
+    /// `await actor.close()` must still be rejected in non-statement position
+    /// (e.g., as a let-value).
+    #[test]
+    fn await_actor_close_as_let_value_is_rejected() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            fn main() {
+                let a = actor |x: i64| { };
+                let _result = await a.close();
+            }
+            ",
+        );
+        assert!(
+            lowered
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition)),
+            "`await actor.close()` as a let-value must produce AwaitOutOfPosition; \
+             diagnostics: {:#?}",
+            lowered.diagnostics
         );
     }
 }

@@ -6,16 +6,10 @@
 //!
 //! # Payload encoding
 //!
-//! `Vec<u8>` payload fields are serialised by ciborium as CBOR byte arrays
-//! (major type 4) using standard serde sequence serialisation. W2 will add
-//! `#[serde(with = "serde_bytes")]` or an equivalent approach to emit true
-//! CBOR byte strings (major type 2, `bstr` in CDDL) if schema conformance
-//! testing reveals a mismatch. For W1, the round-trip property is the gate.
-//!
-//! # Schema coordination
-//!
-//! Field numbers used in `#[serde(rename = "...")]` below match the integer
-//! keys in `schemas/envelope.cddl`. Keep them in sync.
+//! Runtime frames are encoded as definite-length CBOR maps with unsigned
+//! integer keys. Key `2` carries the explicit `frame_type` discriminator, and
+//! payload fields are encoded as CBOR byte strings (`bstr`), not arrays.
+//! `schemas/envelope.cddl` is the wire contract.
 //!
 //! # Legacy note
 //!
@@ -25,7 +19,11 @@
 //! but not ABI-compatible: `HewWireEnvelope` carries a raw `*mut u8` payload
 //! pointer; `EnvelopeFrame` owns the payload as a `Vec<u8>`.
 
-use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+use ciborium::value::{Integer, Value};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Current wire protocol version.
 ///
@@ -41,24 +39,21 @@ pub const FRAME_TYPE_ENVELOPE: u8 = 1;
 /// A control frame: node-level signalling with an opaque byte payload.
 ///
 /// CDDL: `control-frame` rule in `schemas/envelope.cddl`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlFrame {
     /// Wire protocol version. MUST equal [`WIRE_VERSION`].
     ///
     /// CDDL key 1.
-    #[serde(rename = "1")]
     pub version: u8,
 
     /// Protocol-defined control kind tag.
     ///
     /// CDDL key 3.
-    #[serde(rename = "3")]
     pub ctrl_kind: u64,
 
     /// Opaque payload. Empty for bare signals.
     ///
     /// CDDL key 4.
-    #[serde(rename = "4")]
     pub payload: Vec<u8>,
 }
 
@@ -68,24 +63,21 @@ pub struct ControlFrame {
 ///
 /// Field numbers mirror the legacy HBF field ordering (fields 1-6) so
 /// documentation can cross-reference the two representations.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvelopeFrame {
     /// Wire protocol version. MUST equal [`WIRE_VERSION`].
     ///
     /// CDDL key 1.
-    #[serde(rename = "1")]
     pub version: u8,
 
     /// Target actor identity. MUST be non-zero.
     ///
     /// CDDL key 3.
-    #[serde(rename = "3")]
     pub target_actor_id: u64,
 
     /// Source actor identity.
     ///
     /// CDDL key 4.
-    #[serde(rename = "4")]
     pub source_actor_id: u64,
 
     /// Message type tag.
@@ -93,7 +85,6 @@ pub struct EnvelopeFrame {
     /// Signed; valid range `0..=2^30-1` (matches HBF zigzag legacy range).
     ///
     /// CDDL key 5.
-    #[serde(rename = "5")]
     pub msg_type: i32,
 
     /// Serialised message body. May be empty for zero-payload messages.
@@ -102,7 +93,6 @@ pub struct EnvelopeFrame {
     /// pair into a single owned byte string. See `schemas/README.md`.
     ///
     /// CDDL key 6.
-    #[serde(rename = "6")]
     pub payload: Vec<u8>,
 
     /// Request ID for distributed ask/reply correlation.
@@ -111,7 +101,6 @@ pub struct EnvelopeFrame {
     /// is a reply to a prior ask with this ID).
     ///
     /// CDDL key 7.
-    #[serde(rename = "7")]
     pub request_id: u64,
 
     /// Source node ID for routing replies back to the requester.
@@ -120,8 +109,79 @@ pub struct EnvelopeFrame {
     /// fire-and-forget messages.
     ///
     /// CDDL key 8.
-    #[serde(rename = "8")]
     pub source_node_id: u16,
+}
+
+/// Top-level wire-frame dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WireFrame {
+    /// Node-level signalling frame.
+    Control(ControlFrame),
+    /// Actor-to-actor message frame.
+    Envelope(EnvelopeFrame),
+}
+
+struct PayloadBytes<'a>(&'a [u8]);
+
+impl Serialize for PayloadBytes<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bytes(self.0)
+    }
+}
+
+impl Serialize for ControlFrame {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(4))?;
+        map.serialize_entry(&1u64, &self.version)?;
+        map.serialize_entry(&2u64, &FRAME_TYPE_CONTROL)?;
+        map.serialize_entry(&3u64, &self.ctrl_kind)?;
+        map.serialize_entry(&4u64, &PayloadBytes(&self.payload))?;
+        map.end()
+    }
+}
+
+impl Serialize for EnvelopeFrame {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(8))?;
+        map.serialize_entry(&1u64, &self.version)?;
+        map.serialize_entry(&2u64, &FRAME_TYPE_ENVELOPE)?;
+        map.serialize_entry(&3u64, &self.target_actor_id)?;
+        map.serialize_entry(&4u64, &self.source_actor_id)?;
+        map.serialize_entry(&5u64, &self.msg_type)?;
+        map.serialize_entry(&6u64, &PayloadBytes(&self.payload))?;
+        map.serialize_entry(&7u64, &self.request_id)?;
+        map.serialize_entry(&8u64, &self.source_node_id)?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ControlFrame {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        control_frame_from_value(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+impl<'de> Deserialize<'de> for EnvelopeFrame {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        envelope_frame_from_value(&value).map_err(serde::de::Error::custom)
+    }
 }
 
 /// Errors returned by the fail-closed envelope encoder.
@@ -244,34 +304,33 @@ pub(crate) unsafe fn encode_envelope_frame_from_raw_parts(
     })
 }
 
-// ── Fail-closed decode surface ────────────────────────────────────────────
-//
-// The W1 module docstring and `WIRE_VERSION` doc-comment both assert that
-// "Frames carrying any other version value MUST be rejected". The types
-// themselves cannot enforce this — ciborium will happily deserialise a
-// frame whose `version` field is, say, `0` or `7`. Callers MUST decode
-// through [`decode_envelope_frame`] / [`decode_control_frame`] (or perform
-// an equivalent version check themselves) to honour the CDDL contract.
-//
-// # Frame-type discrimination
-//
-// The CDDL `wire-frame = control-frame / envelope-frame` choice carries a
-// `frame_type` key (CBOR map key `2`) that selects the branch. The Rust
-// representation here splits the choice at the *type* level — [`ControlFrame`]
-// and [`EnvelopeFrame`] are separate structs — rather than carrying a runtime
-// discriminant byte. Frame-type "mismatch" is therefore caught one layer up,
-// by the codec choosing which struct to decode into based on the wire
-// `frame_type` byte. A truly mis-typed payload (a control frame's bytes fed
-// to `decode_envelope_frame`) surfaces as a `Cbor` decode error from ciborium
-// because the required field set will not match — exercised by the
-// `mismatched_frame_type_is_rejected` test.
+// -- Fail-closed decode surface --------------------------------------------
 
 /// Errors returned by the fail-closed envelope decoders.
 #[derive(Debug)]
 pub enum DecodeError {
-    /// The underlying CBOR bytes were malformed, truncated, or did not match
-    /// the expected struct shape.
+    /// The underlying CBOR bytes were malformed or truncated.
     Cbor(ciborium::de::Error<std::io::Error>),
+    /// The top-level CBOR item is not a schema-conformant frame map.
+    MalformedFrame { reason: &'static str },
+    /// A top-level map key was not a non-negative CBOR integer representable as
+    /// `u64`.
+    MalformedKey,
+    /// A required integer key is absent.
+    MissingKey { key: u64 },
+    /// A key outside the variant's CDDL key set is present.
+    UnknownKey { key: u64 },
+    /// Any integer key appeared more than once.
+    DuplicateKey { key: u64 },
+    /// Key 2 (`frame_type`) is absent.
+    FrameTypeMissing,
+    /// Key 2 is present but is not an `i64`-representable CBOR integer.
+    FrameTypeMalformed,
+    /// Key 2 is an integer but not supported by the requested decode surface.
+    FrameTypeUnsupported { found: i64 },
+    /// A required field value had the wrong CBOR major type or did not fit the
+    /// Rust field type.
+    MalformedField { key: u64, expected: &'static str },
     /// The frame's `version` field did not equal [`WIRE_VERSION`]. The
     /// CDDL contract requires decoders to refuse rather than try to interpret
     /// unknown versions.
@@ -282,6 +341,23 @@ impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Cbor(e) => write!(f, "CBOR decode failed: {e}"),
+            Self::MalformedFrame { reason } => write!(f, "malformed CBOR frame: {reason}"),
+            Self::MalformedKey => {
+                write!(f, "CBOR frame map key is not a non-negative integer")
+            }
+            Self::MissingKey { key } => write!(f, "CBOR frame is missing required key {key}"),
+            Self::UnknownKey { key } => write!(f, "CBOR frame contains unsupported key {key}"),
+            Self::DuplicateKey { key } => write!(f, "CBOR frame contains duplicate key {key}"),
+            Self::FrameTypeMissing => write!(f, "CBOR frame is missing frame_type key 2"),
+            Self::FrameTypeMalformed => {
+                write!(f, "CBOR frame_type key 2 is not an i64 integer")
+            }
+            Self::FrameTypeUnsupported { found } => {
+                write!(f, "unsupported CBOR frame_type {found}")
+            }
+            Self::MalformedField { key, expected } => {
+                write!(f, "CBOR frame key {key} is not {expected}")
+            }
             Self::UnknownVersion { found, expected } => write!(
                 f,
                 "unknown wire version {found}, expected {expected}; \
@@ -295,7 +371,16 @@ impl std::error::Error for DecodeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Cbor(e) => Some(e),
-            Self::UnknownVersion { .. } => None,
+            Self::MalformedFrame { .. }
+            | Self::MalformedKey
+            | Self::MissingKey { .. }
+            | Self::UnknownKey { .. }
+            | Self::DuplicateKey { .. }
+            | Self::FrameTypeMissing
+            | Self::FrameTypeMalformed
+            | Self::FrameTypeUnsupported { .. }
+            | Self::MalformedField { .. }
+            | Self::UnknownVersion { .. } => None,
         }
     }
 }
@@ -306,29 +391,45 @@ impl From<ciborium::de::Error<std::io::Error>> for DecodeError {
     }
 }
 
-/// Decode a CBOR-encoded [`EnvelopeFrame`] from `bytes`, enforcing the
-/// wire-version invariant.
-///
-/// Returns [`DecodeError::Cbor`] for malformed or truncated input (ciborium
-/// surfaces short reads as decode errors) and [`DecodeError::UnknownVersion`]
-/// if the decoded frame's `version` field is not [`WIRE_VERSION`].
+/// Decode any CBOR-encoded wire frame from `bytes`.
 ///
 /// # Errors
 ///
-/// - [`DecodeError::Cbor`] if `bytes` are not a valid CBOR encoding of an
-///   [`EnvelopeFrame`] (malformed, truncated, missing required fields, or
-///   the bytes of a different frame type — see the module docs on
-///   frame-type discrimination).
+/// Returns explicit discriminator errors when key 2 is missing, malformed, or
+/// unsupported. Malformed CBOR bytes return [`DecodeError::Cbor`].
+pub fn decode_wire_frame(bytes: &[u8]) -> Result<WireFrame, DecodeError> {
+    let value: Value = ciborium::de::from_reader(bytes)?;
+    let map = collect_map(&value)?;
+    match frame_type_from_map(&map)? {
+        found if found == i64::from(FRAME_TYPE_CONTROL) => {
+            let frame = control_frame_from_map(&map)?;
+            ensure_wire_version(frame.version)?;
+            Ok(WireFrame::Control(frame))
+        }
+        found if found == i64::from(FRAME_TYPE_ENVELOPE) => {
+            let frame = envelope_frame_from_map(&map)?;
+            ensure_wire_version(frame.version)?;
+            Ok(WireFrame::Envelope(frame))
+        }
+        found => Err(DecodeError::FrameTypeUnsupported { found }),
+    }
+}
+
+/// Decode a CBOR-encoded [`EnvelopeFrame`] from `bytes`, enforcing the
+/// wire-version invariant.
+///
+/// # Errors
+///
+/// - [`DecodeError::Cbor`] if `bytes` are not valid CBOR.
+/// - [`DecodeError::FrameTypeMissing`], [`DecodeError::FrameTypeMalformed`],
+///   or [`DecodeError::FrameTypeUnsupported`] for discriminator failures.
+/// - [`DecodeError::DuplicateKey`] for duplicate integer keys.
 /// - [`DecodeError::UnknownVersion`] if decode succeeded but the frame's
 ///   `version` field does not equal [`WIRE_VERSION`].
 pub fn decode_envelope_frame(bytes: &[u8]) -> Result<EnvelopeFrame, DecodeError> {
-    let frame: EnvelopeFrame = ciborium::de::from_reader(bytes)?;
-    if frame.version != WIRE_VERSION {
-        return Err(DecodeError::UnknownVersion {
-            found: frame.version,
-            expected: WIRE_VERSION,
-        });
-    }
+    let value: Value = ciborium::de::from_reader(bytes)?;
+    let frame = envelope_frame_from_value(&value)?;
+    ensure_wire_version(frame.version)?;
     Ok(frame)
 }
 
@@ -338,16 +439,176 @@ pub fn decode_envelope_frame(bytes: &[u8]) -> Result<EnvelopeFrame, DecodeError>
 ///
 /// # Errors
 ///
-/// Mirrors [`decode_envelope_frame`]: [`DecodeError::Cbor`] for malformed
-/// or wrong-shape input; [`DecodeError::UnknownVersion`] if the decoded
-/// frame's `version` field is not [`WIRE_VERSION`].
+/// Mirrors [`decode_envelope_frame`].
 pub fn decode_control_frame(bytes: &[u8]) -> Result<ControlFrame, DecodeError> {
-    let frame: ControlFrame = ciborium::de::from_reader(bytes)?;
-    if frame.version != WIRE_VERSION {
-        return Err(DecodeError::UnknownVersion {
-            found: frame.version,
-            expected: WIRE_VERSION,
-        });
-    }
+    let value: Value = ciborium::de::from_reader(bytes)?;
+    let frame = control_frame_from_value(&value)?;
+    ensure_wire_version(frame.version)?;
     Ok(frame)
+}
+
+fn control_frame_from_value(value: &Value) -> Result<ControlFrame, DecodeError> {
+    let map = collect_map(value)?;
+    control_frame_from_map(&map)
+}
+
+fn envelope_frame_from_value(value: &Value) -> Result<EnvelopeFrame, DecodeError> {
+    let map = collect_map(value)?;
+    envelope_frame_from_map(&map)
+}
+
+fn control_frame_from_map(map: &BTreeMap<u64, &Value>) -> Result<ControlFrame, DecodeError> {
+    ensure_frame_type(map, FRAME_TYPE_CONTROL)?;
+    ensure_exact_keys(map, &[1, 2, 3, 4])?;
+    Ok(ControlFrame {
+        version: value_to_u8(required(map, 1)?, 1)?,
+        ctrl_kind: value_to_u64(required(map, 3)?, 3)?,
+        payload: value_to_bytes(required(map, 4)?, 4)?,
+    })
+}
+
+fn envelope_frame_from_map(map: &BTreeMap<u64, &Value>) -> Result<EnvelopeFrame, DecodeError> {
+    ensure_frame_type(map, FRAME_TYPE_ENVELOPE)?;
+    ensure_exact_keys(map, &[1, 2, 3, 4, 5, 6, 7, 8])?;
+    Ok(EnvelopeFrame {
+        version: value_to_u8(required(map, 1)?, 1)?,
+        target_actor_id: value_to_u64(required(map, 3)?, 3)?,
+        source_actor_id: value_to_u64(required(map, 4)?, 4)?,
+        msg_type: value_to_i32(required(map, 5)?, 5)?,
+        payload: value_to_bytes(required(map, 6)?, 6)?,
+        request_id: value_to_u64(required(map, 7)?, 7)?,
+        source_node_id: value_to_u16(required(map, 8)?, 8)?,
+    })
+}
+
+fn collect_map(value: &Value) -> Result<BTreeMap<u64, &Value>, DecodeError> {
+    let Value::Map(entries) = value else {
+        return Err(DecodeError::MalformedFrame {
+            reason: "top-level CBOR item is not a map",
+        });
+    };
+
+    let mut map = BTreeMap::new();
+    for (key, value) in entries {
+        let key = key_to_u64(key)?;
+        if map.insert(key, value).is_some() {
+            return Err(DecodeError::DuplicateKey { key });
+        }
+    }
+    Ok(map)
+}
+
+fn key_to_u64(value: &Value) -> Result<u64, DecodeError> {
+    let Value::Integer(integer) = value else {
+        return Err(DecodeError::MalformedKey);
+    };
+    let raw = integer_to_i128(*integer);
+    u64::try_from(raw).map_err(|_| DecodeError::MalformedKey)
+}
+
+fn ensure_exact_keys(
+    map: &BTreeMap<u64, &Value>,
+    expected_keys: &[u64],
+) -> Result<(), DecodeError> {
+    for key in expected_keys {
+        if !map.contains_key(key) {
+            return Err(DecodeError::MissingKey { key: *key });
+        }
+    }
+    for key in map.keys() {
+        if !expected_keys.contains(key) {
+            return Err(DecodeError::UnknownKey { key: *key });
+        }
+    }
+    Ok(())
+}
+
+fn ensure_frame_type(
+    map: &BTreeMap<u64, &Value>,
+    expected_frame_type: u8,
+) -> Result<(), DecodeError> {
+    let found = frame_type_from_map(map)?;
+    if found == i64::from(expected_frame_type) {
+        Ok(())
+    } else {
+        Err(DecodeError::FrameTypeUnsupported { found })
+    }
+}
+
+fn frame_type_from_map(map: &BTreeMap<u64, &Value>) -> Result<i64, DecodeError> {
+    let value = map.get(&2).copied().ok_or(DecodeError::FrameTypeMissing)?;
+    let Value::Integer(integer) = value else {
+        return Err(DecodeError::FrameTypeMalformed);
+    };
+    i64::try_from(integer_to_i128(*integer)).map_err(|_| DecodeError::FrameTypeMalformed)
+}
+
+fn required<'a>(map: &'a BTreeMap<u64, &Value>, key: u64) -> Result<&'a Value, DecodeError> {
+    map.get(&key)
+        .copied()
+        .ok_or(DecodeError::MissingKey { key })
+}
+
+fn value_to_u8(value: &Value, key: u64) -> Result<u8, DecodeError> {
+    let integer = value_to_integer(value, key, "a u8 integer")?;
+    u8::try_from(integer).map_err(|_| DecodeError::MalformedField {
+        key,
+        expected: "a u8 integer",
+    })
+}
+
+fn value_to_u16(value: &Value, key: u64) -> Result<u16, DecodeError> {
+    let integer = value_to_integer(value, key, "a u16 integer")?;
+    u16::try_from(integer).map_err(|_| DecodeError::MalformedField {
+        key,
+        expected: "a u16 integer",
+    })
+}
+
+fn value_to_u64(value: &Value, key: u64) -> Result<u64, DecodeError> {
+    let integer = value_to_integer(value, key, "a u64 integer")?;
+    u64::try_from(integer).map_err(|_| DecodeError::MalformedField {
+        key,
+        expected: "a u64 integer",
+    })
+}
+
+fn value_to_i32(value: &Value, key: u64) -> Result<i32, DecodeError> {
+    let integer = value_to_integer(value, key, "an i32 integer")?;
+    i32::try_from(integer).map_err(|_| DecodeError::MalformedField {
+        key,
+        expected: "an i32 integer",
+    })
+}
+
+fn value_to_integer(value: &Value, key: u64, expected: &'static str) -> Result<i128, DecodeError> {
+    match value {
+        Value::Integer(integer) => Ok(integer_to_i128(*integer)),
+        _ => Err(DecodeError::MalformedField { key, expected }),
+    }
+}
+
+fn value_to_bytes(value: &Value, key: u64) -> Result<Vec<u8>, DecodeError> {
+    match value {
+        Value::Bytes(bytes) => Ok(bytes.clone()),
+        _ => Err(DecodeError::MalformedField {
+            key,
+            expected: "a CBOR byte string",
+        }),
+    }
+}
+
+fn integer_to_i128(integer: Integer) -> i128 {
+    integer.into()
+}
+
+fn ensure_wire_version(version: u8) -> Result<(), DecodeError> {
+    if version == WIRE_VERSION {
+        Ok(())
+    } else {
+        Err(DecodeError::UnknownVersion {
+            found: version,
+            expected: WIRE_VERSION,
+        })
+    }
 }

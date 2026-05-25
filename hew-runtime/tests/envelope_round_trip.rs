@@ -1,29 +1,197 @@
-//! Round-trip tests for the CBOR wire envelope types.
+//! Round-trip and byte-shape tests for the CBOR wire envelope types.
 //!
-//! These tests exercise the serde-derived serialisation via ciborium directly
-//! (no codec module yet — that's W2). The gate is: construct an envelope,
-//! serialise to CBOR bytes, deserialise, assert equality.
-//!
-//! Tests also verify the version constant and type discriminants match the
-//! values named in `schemas/envelope.cddl`.
+//! The gate is the CDDL shape, not just same-type round trips: integer keys,
+//! explicit `frame_type`, and `bstr` payload fields.
 
+use ciborium::value::{Integer, Value};
 use hew_runtime::envelope::{
-    ControlFrame, EnvelopeFrame, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, WIRE_VERSION,
+    decode_control_frame, decode_envelope_frame, decode_wire_frame, encode_envelope_frame,
+    ControlFrame, DecodeError, EncodeError, EnvelopeFrame, WireFrame, FRAME_TYPE_CONTROL,
+    FRAME_TYPE_ENVELOPE, WIRE_VERSION,
 };
 
-/// Serialise `value` to a CBOR byte vec using ciborium.
 fn to_cbor<T: serde::Serialize>(value: &T) -> Vec<u8> {
     let mut buf = Vec::new();
     ciborium::ser::into_writer(value, &mut buf).expect("ciborium serialisation failed");
     buf
 }
 
-/// Deserialise a CBOR byte slice into `T` using ciborium.
 fn from_cbor<T: serde::de::DeserializeOwned>(buf: &[u8]) -> T {
     ciborium::de::from_reader(buf).expect("ciborium deserialisation failed")
 }
 
-// ── Schema constant tests ─────────────────────────────────────────────────
+fn decode_value(buf: &[u8]) -> Value {
+    ciborium::de::from_reader(buf).expect("ciborium value deserialisation failed")
+}
+
+fn value_to_cbor(value: &Value) -> Vec<u8> {
+    to_cbor(value)
+}
+
+fn int<T: Into<Integer>>(value: T) -> Value {
+    Value::Integer(value.into())
+}
+
+fn integer_to_i128(integer: Integer) -> i128 {
+    integer.into()
+}
+
+fn map_entries(value: &Value) -> &[(Value, Value)] {
+    match value {
+        Value::Map(entries) => entries,
+        other => panic!("expected top-level map, got {other:?}"),
+    }
+}
+
+fn find_field(entries: &[(Value, Value)], key: u64) -> &Value {
+    let mut found = None;
+    for (entry_key, entry_value) in entries {
+        if matches!(entry_key, Value::Integer(integer) if integer_to_i128(*integer) == i128::from(key))
+        {
+            assert!(found.is_none(), "duplicate key {key} in decoded value");
+            found = Some(entry_value);
+        }
+    }
+    found.unwrap_or_else(|| panic!("missing key {key} in decoded value"))
+}
+
+fn assert_integer_keys_and_order(entries: &[(Value, Value)], expected_keys: &[u64]) {
+    let actual_keys: Vec<u64> = entries
+        .iter()
+        .map(|(key, _)| match key {
+            Value::Integer(integer) => u64::try_from(integer_to_i128(*integer))
+                .expect("key should be non-negative and fit u64"),
+            other => panic!("expected integer map key, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(actual_keys, expected_keys);
+}
+
+fn assert_integer_value(value: &Value, expected: i128) {
+    match value {
+        Value::Integer(integer) => assert_eq!(integer_to_i128(*integer), expected),
+        other => panic!("expected integer value {expected}, got {other:?}"),
+    }
+}
+
+fn assert_bytes_value(value: &Value, expected: &[u8]) {
+    match value {
+        Value::Bytes(bytes) => assert_eq!(bytes, expected),
+        Value::Array(_) => panic!("payload encoded as CBOR array, expected bstr"),
+        other => panic!("expected CBOR bstr payload, got {other:?}"),
+    }
+}
+
+fn envelope_frame(
+    target_actor_id: u64,
+    source_actor_id: u64,
+    msg_type: i32,
+    payload: Vec<u8>,
+) -> EnvelopeFrame {
+    EnvelopeFrame {
+        version: WIRE_VERSION,
+        target_actor_id,
+        source_actor_id,
+        msg_type,
+        payload,
+        request_id: 0,
+        source_node_id: 0,
+    }
+}
+
+fn cddl_control_shape(frame: &ControlFrame) {
+    let bytes = to_cbor(frame);
+    let value = decode_value(&bytes);
+    let entries = map_entries(&value);
+    assert_eq!(entries.len(), 4);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4]);
+    assert_integer_value(find_field(entries, 1), i128::from(WIRE_VERSION));
+    assert_integer_value(find_field(entries, 2), i128::from(FRAME_TYPE_CONTROL));
+    assert_integer_value(find_field(entries, 3), i128::from(frame.ctrl_kind));
+    assert_bytes_value(find_field(entries, 4), &frame.payload);
+}
+
+fn cddl_envelope_shape(frame: &EnvelopeFrame) {
+    let bytes = encode_envelope_frame(frame).expect("envelope should encode");
+    let value = decode_value(&bytes);
+    let entries = map_entries(&value);
+    assert_eq!(entries.len(), 8);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_integer_value(find_field(entries, 1), i128::from(WIRE_VERSION));
+    assert_integer_value(find_field(entries, 2), i128::from(FRAME_TYPE_ENVELOPE));
+    assert_integer_value(find_field(entries, 3), i128::from(frame.target_actor_id));
+    assert_integer_value(find_field(entries, 4), i128::from(frame.source_actor_id));
+    assert_integer_value(find_field(entries, 5), i128::from(frame.msg_type));
+    assert_bytes_value(find_field(entries, 6), &frame.payload);
+    assert_integer_value(find_field(entries, 7), i128::from(frame.request_id));
+    assert_integer_value(find_field(entries, 8), i128::from(frame.source_node_id));
+}
+
+fn cddl_envelope_shape_raw_serialize(frame: &EnvelopeFrame) {
+    let bytes = to_cbor(frame);
+    let value = decode_value(&bytes);
+    let entries = map_entries(&value);
+    assert_eq!(entries.len(), 8);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_bytes_value(find_field(entries, 6), &frame.payload);
+}
+
+fn payload(size: usize) -> Vec<u8> {
+    (0u8..=255).cycle().take(size).collect()
+}
+
+fn minimal_control() -> ControlFrame {
+    ControlFrame {
+        version: WIRE_VERSION,
+        ctrl_kind: 0,
+        payload: vec![],
+    }
+}
+
+fn minimal_envelope() -> EnvelopeFrame {
+    envelope_frame(0, 0, 0, vec![])
+}
+
+fn well_formed_envelope_value_with_frame_type(frame_type: Value) -> Value {
+    Value::Map(vec![
+        (int(1u64), int(WIRE_VERSION)),
+        (int(2u64), frame_type),
+        (int(3u64), int(1u64)),
+        (int(4u64), int(2u64)),
+        (int(5u64), int(0i32)),
+        (int(6u64), Value::Bytes(vec![])),
+        (int(7u64), int(0u64)),
+        (int(8u64), int(0u16)),
+    ])
+}
+
+fn legacy_text_keyed_envelope_value() -> Value {
+    Value::Map(vec![
+        (Value::Text("1".to_owned()), int(WIRE_VERSION)),
+        (Value::Text("3".to_owned()), int(1u64)),
+        (Value::Text("4".to_owned()), int(2u64)),
+        (Value::Text("5".to_owned()), int(0i32)),
+        (
+            Value::Text("6".to_owned()),
+            Value::Array(vec![int(0xaau8), int(0xbbu8)]),
+        ),
+        (Value::Text("7".to_owned()), int(0u64)),
+        (Value::Text("8".to_owned()), int(0u16)),
+    ])
+}
+
+fn legacy_text_keyed_control_value() -> Value {
+    Value::Map(vec![
+        (Value::Text("1".to_owned()), int(WIRE_VERSION)),
+        (Value::Text("3".to_owned()), int(2u64)),
+        (
+            Value::Text("4".to_owned()),
+            Value::Array(vec![int(0xaau8), int(0xbbu8)]),
+        ),
+    ])
+}
+
+// -- Schema constant tests --------------------------------------------------
 
 #[test]
 fn wire_version_is_one() {
@@ -45,20 +213,13 @@ fn frame_type_discriminants_match_cddl() {
     );
 }
 
-// ── EnvelopeFrame round-trip tests ───────────────────────────────────────
+// -- EnvelopeFrame round-trip tests ----------------------------------------
 
 #[test]
 fn envelope_frame_fire_and_forget_round_trips() {
-    let original = EnvelopeFrame::fire_and_forget(
-        42,            // target_actor_id
-        7,             // source_actor_id
-        3,             // msg_type
-        vec![1, 2, 3], // payload
-    );
-
+    let original = EnvelopeFrame::fire_and_forget(42, 7, 3, vec![1, 2, 3]);
     let bytes = to_cbor(&original);
     let decoded: EnvelopeFrame = from_cbor(&bytes);
-
     assert_eq!(original, decoded);
 }
 
@@ -76,28 +237,22 @@ fn envelope_frame_with_request_id_round_trips() {
 
     let bytes = to_cbor(&original);
     let decoded: EnvelopeFrame = from_cbor(&bytes);
-
     assert_eq!(original, decoded);
 }
 
 #[test]
 fn envelope_frame_empty_payload_round_trips() {
     let original = EnvelopeFrame::fire_and_forget(1, 1, 0, vec![]);
-
     let bytes = to_cbor(&original);
     let decoded: EnvelopeFrame = from_cbor(&bytes);
-
     assert_eq!(original, decoded);
 }
 
 #[test]
 fn envelope_frame_large_payload_round_trips() {
-    let payload: Vec<u8> = (0u8..=255).cycle().take(4096).collect();
-    let original = EnvelopeFrame::fire_and_forget(1000, 2000, 7, payload);
-
+    let original = EnvelopeFrame::fire_and_forget(1000, 2000, 7, payload(4096));
     let bytes = to_cbor(&original);
     let decoded: EnvelopeFrame = from_cbor(&bytes);
-
     assert_eq!(original, decoded);
 }
 
@@ -115,23 +270,16 @@ fn envelope_frame_max_field_values_round_trips() {
 
     let bytes = to_cbor(&original);
     let decoded: EnvelopeFrame = from_cbor(&bytes);
-
     assert_eq!(original, decoded);
 }
 
-// ── ControlFrame round-trip tests ─────────────────────────────────────────
+// -- ControlFrame round-trip tests -----------------------------------------
 
 #[test]
 fn control_frame_bare_signal_round_trips() {
-    let original = ControlFrame {
-        version: WIRE_VERSION,
-        ctrl_kind: 0,
-        payload: vec![],
-    };
-
+    let original = minimal_control();
     let bytes = to_cbor(&original);
     let decoded: ControlFrame = from_cbor(&bytes);
-
     assert_eq!(original, decoded);
 }
 
@@ -145,11 +293,151 @@ fn control_frame_with_payload_round_trips() {
 
     let bytes = to_cbor(&original);
     let decoded: ControlFrame = from_cbor(&bytes);
-
     assert_eq!(original, decoded);
 }
 
-// ── Serialised output is non-empty and stable ─────────────────────────────
+// -- Byte-shape conformance -------------------------------------------------
+
+#[test]
+fn control_frame_serialises_to_cddl_shape() {
+    cddl_control_shape(&ControlFrame {
+        version: WIRE_VERSION,
+        ctrl_kind: 2,
+        payload: vec![0xaa, 0xbb],
+    });
+}
+
+#[test]
+fn envelope_frame_serialises_to_cddl_shape() {
+    cddl_envelope_shape(&EnvelopeFrame {
+        version: WIRE_VERSION,
+        target_actor_id: 10,
+        source_actor_id: 20,
+        msg_type: 7,
+        payload: vec![0xaa, 0xbb],
+        request_id: 30,
+        source_node_id: 40,
+    });
+}
+
+#[test]
+fn boundary_payload_sizes_encode_as_bstr_and_round_trip() {
+    for size in [0usize, 1, 23, 24, 255, 256, 65_535, 65_536] {
+        let envelope = envelope_frame(1, 2, 0, payload(size));
+        let envelope_bytes = encode_envelope_frame(&envelope).expect("envelope should encode");
+        assert_eq!(decode_envelope_frame(&envelope_bytes).unwrap(), envelope);
+        let envelope_value = decode_value(&envelope_bytes);
+        assert_bytes_value(
+            find_field(map_entries(&envelope_value), 6),
+            &envelope.payload,
+        );
+
+        let control = ControlFrame {
+            version: WIRE_VERSION,
+            ctrl_kind: 0,
+            payload: payload(size),
+        };
+        let control_bytes = to_cbor(&control);
+        assert_eq!(decode_control_frame(&control_bytes).unwrap(), control);
+        let control_value = decode_value(&control_bytes);
+        assert_bytes_value(find_field(map_entries(&control_value), 4), &control.payload);
+    }
+}
+
+#[test]
+fn public_encoder_preserves_integer_width_boundaries_and_msg_type_gate() {
+    for value in [0u64, 1, u64::MAX] {
+        let frame = EnvelopeFrame {
+            version: WIRE_VERSION,
+            target_actor_id: value,
+            source_actor_id: value,
+            msg_type: 0,
+            payload: vec![],
+            request_id: value,
+            source_node_id: 0,
+        };
+        cddl_envelope_shape(&frame);
+        assert_eq!(
+            decode_envelope_frame(&encode_envelope_frame(&frame).unwrap()).unwrap(),
+            frame
+        );
+    }
+
+    for source_node_id in [0u16, u16::MAX] {
+        let frame = EnvelopeFrame {
+            source_node_id,
+            ..minimal_envelope()
+        };
+        cddl_envelope_shape(&frame);
+    }
+
+    for ctrl_kind in [0u64, u64::MAX] {
+        let control = ControlFrame {
+            version: WIRE_VERSION,
+            ctrl_kind,
+            payload: vec![],
+        };
+        cddl_control_shape(&control);
+        assert_eq!(from_cbor::<ControlFrame>(&to_cbor(&control)), control);
+    }
+
+    for msg_type in [0, 1, 65_535] {
+        let frame = EnvelopeFrame {
+            msg_type,
+            ..minimal_envelope()
+        };
+        assert!(encode_envelope_frame(&frame).is_ok());
+    }
+
+    for msg_type in [-1, i32::MIN, i32::MAX, 65_536] {
+        let frame = EnvelopeFrame {
+            msg_type,
+            ..minimal_envelope()
+        };
+        assert!(
+            matches!(
+                encode_envelope_frame(&frame),
+                Err(EncodeError::InvalidMsgType { msg_type: found }) if found == msg_type
+            ),
+            "msg_type {msg_type} must be rejected by the public encoder"
+        );
+    }
+}
+
+#[test]
+fn raw_serialize_preserves_signed_msg_type_wire_shape() {
+    for msg_type in [-1, i32::MIN, i32::MAX] {
+        let frame = EnvelopeFrame {
+            msg_type,
+            ..minimal_envelope()
+        };
+        cddl_envelope_shape_raw_serialize(&frame);
+        let value = decode_value(&to_cbor(&frame));
+        assert_integer_value(find_field(map_entries(&value), 5), i128::from(msg_type));
+    }
+}
+
+#[test]
+fn encoded_frames_match_cddl_structural_rules() {
+    cddl_control_shape(&minimal_control());
+    cddl_control_shape(&ControlFrame {
+        version: WIRE_VERSION,
+        ctrl_kind: 255,
+        payload: payload(24),
+    });
+    cddl_envelope_shape(&minimal_envelope());
+    cddl_envelope_shape(&EnvelopeFrame {
+        version: WIRE_VERSION,
+        target_actor_id: u64::MAX,
+        source_actor_id: 1,
+        msg_type: 65_535,
+        payload: payload(256),
+        request_id: u64::MAX,
+        source_node_id: u16::MAX,
+    });
+}
+
+// -- Serialised output is non-empty and stable ------------------------------
 
 #[test]
 fn envelope_frame_serialises_to_nonempty_bytes() {
@@ -164,20 +452,30 @@ fn same_envelope_produces_same_bytes() {
     let bytes1 = to_cbor(&frame);
     let bytes2 = to_cbor(&frame);
     assert_eq!(bytes1, bytes2, "serialisation must be deterministic");
+
+    // a4 map(4), then k/v pairs: 1=>version, 2=>frame_type,
+    // 3=>ctrl_kind, 4=>empty bstr.
+    assert_eq!(
+        to_cbor(&minimal_control()),
+        vec![0xa4, 0x01, 0x01, 0x02, 0x00, 0x03, 0x00, 0x04, 0x40]
+    );
+
+    // a8 map(8), then k/v pairs: 1=>version, 2=>frame_type,
+    // 3=>target, 4=>source, 5=>msg_type, 6=>empty bstr,
+    // 7=>request_id, 8=>source_node_id.
+    assert_eq!(
+        encode_envelope_frame(&minimal_envelope()).unwrap(),
+        vec![
+            0xa8, 0x01, 0x01, 0x02, 0x01, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00, 0x06, 0x40, 0x07,
+            0x00, 0x08, 0x00
+        ]
+    );
 }
 
-// ── Fail-closed decode invariants ─────────────────────────────────────────
-//
-// These exercise the `decode_*` surface in `envelope.rs`. The module's
-// docstring on `WIRE_VERSION` asserts "Frames carrying any other version
-// value MUST be rejected" — these tests pin that invariant so a future
-// edit can't silently drop the version check.
-
-use hew_runtime::envelope::{decode_control_frame, decode_envelope_frame, DecodeError};
+// -- Fail-closed decode invariants -----------------------------------------
 
 #[test]
 fn wrong_version_frame_is_rejected() {
-    // Construct a syntactically valid frame but with a bogus version byte.
     let bogus = EnvelopeFrame {
         version: WIRE_VERSION + 1,
         target_actor_id: 1,
@@ -198,7 +496,6 @@ fn wrong_version_frame_is_rejected() {
         Err(other) => panic!("expected UnknownVersion, got {other:?}"),
     }
 
-    // Same invariant on the control frame decoder.
     let bogus_ctrl = ControlFrame {
         version: 0,
         ctrl_kind: 0,
@@ -220,60 +517,174 @@ fn truncated_cbor_returns_error() {
     let bytes = to_cbor(&frame);
     assert!(bytes.len() > 4, "need a non-trivial frame to truncate");
 
-    // Chop the encoding mid-map; ciborium should surface an Err. The
-    // important invariant is that the decoder NEVER returns Ok on partial
-    // input — that would let a peer feed half a frame and have us act on
-    // unset fields.
     for cut in 1..bytes.len() {
-        let truncated = &bytes[..cut];
-        match decode_envelope_frame(truncated) {
-            Err(DecodeError::Cbor(_) | DecodeError::UnknownVersion { .. }) => {
-                // Either is acceptable. The truncated prefix either fails to
-                // deserialise outright (Cbor) or happens to produce a struct
-                // whose `version` byte differs from WIRE_VERSION
-                // (UnknownVersion). Both honour the fail-closed contract.
-            }
-            Ok(decoded) => panic!(
-                "decoder returned Ok({decoded:?}) on a {cut}-byte truncation \
-                 of a {}-byte frame; fail-closed contract violated",
-                bytes.len()
-            ),
-        }
+        assert!(
+            decode_envelope_frame(&bytes[..cut]).is_err(),
+            "decoder returned Ok on a {cut}-byte truncation of a {}-byte frame",
+            bytes.len()
+        );
     }
 }
 
 #[test]
 fn mismatched_frame_type_is_rejected() {
-    // The Rust representation splits the CDDL `wire-frame` choice at the
-    // type level (separate `ControlFrame` / `EnvelopeFrame` structs) rather
-    // than carrying a runtime discriminant byte. "Mismatched frame type"
-    // therefore surfaces when bytes encoded as one variant are fed to the
-    // decoder for the other — ciborium reports the missing required fields
-    // as a decode error. This test pins that behaviour so a future change
-    // (e.g. adding `#[serde(default)]` to envelope fields) can't silently
-    // turn a control frame into a half-filled envelope.
-
     let ctrl = ControlFrame {
         version: WIRE_VERSION,
         ctrl_kind: 9,
         payload: b"keepalive".to_vec(),
     };
     let ctrl_bytes = to_cbor(&ctrl);
+    assert!(matches!(
+        decode_envelope_frame(&ctrl_bytes),
+        Err(DecodeError::FrameTypeUnsupported { found: 0 })
+    ));
 
-    match decode_envelope_frame(&ctrl_bytes) {
-        Err(DecodeError::Cbor(_)) => {}
-        Ok(decoded) => panic!(
-            "envelope decoder accepted a control-frame payload as an \
-             EnvelopeFrame: {decoded:?}"
-        ),
-        Err(other) => panic!("expected Cbor decode error, got {other:?}"),
-    }
-
-    // And vice versa: an envelope frame must not decode as a control frame.
     let env = EnvelopeFrame::fire_and_forget(1, 2, 0, vec![]);
     let env_bytes = to_cbor(&env);
-    assert!(
-        matches!(decode_control_frame(&env_bytes), Err(DecodeError::Cbor(_))),
-        "control-frame decoder accepted envelope-frame bytes",
+    assert!(matches!(
+        decode_control_frame(&env_bytes),
+        Err(DecodeError::FrameTypeUnsupported { found: 1 })
+    ));
+}
+
+#[test]
+fn decode_wire_frame_dispatches_by_frame_type() {
+    let control = ControlFrame {
+        version: WIRE_VERSION,
+        ctrl_kind: 5,
+        payload: vec![1, 2, 3],
+    };
+    assert_eq!(
+        decode_wire_frame(&to_cbor(&control)).unwrap(),
+        WireFrame::Control(control)
     );
+
+    let envelope = EnvelopeFrame::fire_and_forget(1, 2, 0, vec![4, 5, 6]);
+    assert_eq!(
+        decode_wire_frame(&encode_envelope_frame(&envelope).unwrap()).unwrap(),
+        WireFrame::Envelope(envelope)
+    );
+}
+
+#[test]
+fn decode_wire_frame_rejects_unsupported_frame_type_values() {
+    for (frame_type, expected) in [(int(99u64), 99), (int(256u64), 256), (int(-1i64), -1)] {
+        let bytes = value_to_cbor(&well_formed_envelope_value_with_frame_type(frame_type));
+        assert!(matches!(
+            decode_wire_frame(&bytes),
+            Err(DecodeError::FrameTypeUnsupported { found }) if found == expected
+        ));
+    }
+}
+
+#[test]
+fn decode_wire_frame_rejects_malformed_frame_type_values() {
+    for frame_type in [
+        int(u64::MAX),
+        Value::Text("control".to_owned()),
+        Value::Array(vec![int(0u8)]),
+        Value::Bytes(vec![0]),
+    ] {
+        let bytes = value_to_cbor(&well_formed_envelope_value_with_frame_type(frame_type));
+        assert!(matches!(
+            decode_wire_frame(&bytes),
+            Err(DecodeError::FrameTypeMalformed)
+        ));
+    }
+}
+
+#[test]
+fn decode_wire_frame_rejects_missing_and_duplicate_frame_type() {
+    let missing = Value::Map(vec![
+        (int(1u64), int(WIRE_VERSION)),
+        (int(3u64), int(1u64)),
+        (int(4u64), int(2u64)),
+        (int(5u64), int(0i32)),
+        (int(6u64), Value::Bytes(vec![])),
+        (int(7u64), int(0u64)),
+        (int(8u64), int(0u16)),
+    ]);
+    assert!(matches!(
+        decode_wire_frame(&value_to_cbor(&missing)),
+        Err(DecodeError::FrameTypeMissing)
+    ));
+
+    let duplicate = Value::Map(vec![
+        (int(1u64), int(WIRE_VERSION)),
+        (int(2u64), int(FRAME_TYPE_CONTROL)),
+        (int(2u64), int(FRAME_TYPE_ENVELOPE)),
+        (int(3u64), int(0u64)),
+        (int(4u64), Value::Bytes(vec![])),
+    ]);
+    assert!(matches!(
+        decode_wire_frame(&value_to_cbor(&duplicate)),
+        Err(DecodeError::DuplicateKey { key: 2 })
+    ));
+}
+
+#[test]
+fn variant_decoders_reject_duplicate_and_malformed_keys() {
+    let duplicate_payload_key = Value::Map(vec![
+        (int(1u64), int(WIRE_VERSION)),
+        (int(2u64), int(FRAME_TYPE_CONTROL)),
+        (int(3u64), int(0u64)),
+        (int(4u64), Value::Bytes(vec![])),
+        (int(4u64), Value::Bytes(vec![1])),
+    ]);
+    assert!(matches!(
+        decode_control_frame(&value_to_cbor(&duplicate_payload_key)),
+        Err(DecodeError::DuplicateKey { key: 4 })
+    ));
+
+    let text_key = Value::Map(vec![
+        (int(1u64), int(WIRE_VERSION)),
+        (Value::Text("2".to_owned()), int(FRAME_TYPE_CONTROL)),
+        (int(3u64), int(0u64)),
+        (int(4u64), Value::Bytes(vec![])),
+    ]);
+    assert!(matches!(
+        decode_control_frame(&value_to_cbor(&text_key)),
+        Err(DecodeError::MalformedKey)
+    ));
+}
+
+#[test]
+fn legacy_text_keyed_array_payload_encodings_are_rejected() {
+    let legacy_envelope = value_to_cbor(&legacy_text_keyed_envelope_value());
+    assert!(matches!(
+        decode_envelope_frame(&legacy_envelope),
+        Err(DecodeError::MalformedKey)
+    ));
+    assert!(matches!(
+        decode_wire_frame(&legacy_envelope),
+        Err(DecodeError::MalformedKey)
+    ));
+
+    let legacy_control = value_to_cbor(&legacy_text_keyed_control_value());
+    assert!(matches!(
+        decode_control_frame(&legacy_control),
+        Err(DecodeError::MalformedKey)
+    ));
+    assert!(matches!(
+        decode_wire_frame(&legacy_control),
+        Err(DecodeError::MalformedKey)
+    ));
+}
+
+#[test]
+fn array_payload_with_integer_keys_is_rejected() {
+    let array_payload = Value::Map(vec![
+        (int(1u64), int(WIRE_VERSION)),
+        (int(2u64), int(FRAME_TYPE_ENVELOPE)),
+        (int(3u64), int(1u64)),
+        (int(4u64), int(2u64)),
+        (int(5u64), int(0i32)),
+        (int(6u64), Value::Array(vec![int(0xaau8), int(0xbbu8)])),
+        (int(7u64), int(0u64)),
+        (int(8u64), int(0u16)),
+    ]);
+    assert!(matches!(
+        decode_envelope_frame(&value_to_cbor(&array_payload)),
+        Err(DecodeError::MalformedField { key: 6, .. })
+    ));
 }

@@ -114,6 +114,12 @@ run_accept_expect_status "exit_42" 42
 # Actor body: increment(10) + increment(32) = 42.
 run_accept_expect_status "actor_counter" 42
 
+# Actor-only wasm smoke: `actor_counter` has actor state, so wasm compilation
+# must keep resolving the actor state drop/clone setter pair.
+"${HEW}" compile --target wasm32-unknown-unknown \
+  "${ROOT}/tests/vertical-slice/accept/actor_counter.hew" >"${accept_output}" 2>&1
+test -s "${ROOT}/.tmp/compile-out/actor_counter.wasm"
+
 # Q87 slice 1 regression: same actor body as `actor_counter`, but the two
 # `receive fn`s appear in reversed source order. Pre-Q87 the source-order
 # `.enumerate()` msg_id derivation would have re-numbered the protocol and

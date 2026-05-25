@@ -18,6 +18,8 @@ pub use diagnostic::{HirDiagnostic, HirDiagnosticKind};
 pub use dump::dump_hir;
 pub use ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 pub use intent::IntentKind;
+#[cfg(any(test, feature = "internal-test-hooks"))]
+pub use lower::run_call_shape_gates_for_test;
 pub use lower::{
     lower_program, lower_program_host_target, lower_program_with_mono_cap, LowerOutput,
     ResolutionCtx, TargetArch,

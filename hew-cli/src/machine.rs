@@ -257,7 +257,7 @@ fn print_mermaid_hir(machine: &HirMachineDecl) {
             } else {
                 &tr.target_state
             };
-            let label = if tr.has_guard {
+            let label = if tr.guard.is_some() {
                 format!("{} [guard]", tr.event_name)
             } else {
                 tr.event_name.clone()
@@ -352,7 +352,7 @@ fn print_dot_hir(machine: &HirMachineDecl) {
             } else {
                 &tr.target_state
             };
-            let label = if tr.has_guard {
+            let label = if tr.guard.is_some() {
                 format!("{} [guard]", tr.event_name)
             } else {
                 tr.event_name.clone()

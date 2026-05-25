@@ -499,4 +499,41 @@ pub enum HirDiagnosticKind {
         /// Source-form operator (`"<<"` or `">>"`).
         op: String,
     },
+    /// Call expression resolves to an item that has no MIR body and no
+    /// runtime-ABI lowering. Lifted from MIR `hew-mir/src/lower.rs:4194`
+    /// per the FC-P1-B audit so the diagnostic surfaces during HIR lowering
+    /// instead of after the MIR producer has already begun emitting
+    /// instructions for the surrounding function.
+    ///
+    /// Fires when a `HirExprKind::Call` callee is
+    /// `BindingRef { resolved: ResolvedRef::Item(_), name }` and `name`
+    /// is not in the module's callable set
+    /// (stdlib catalog + monomorphic + generic user functions + extern fns +
+    /// monomorphisation mangled names + recognised runtime-ABI bridges
+    /// such as `supervisor_stop` and `hew_duplex_*`). In practice this is
+    /// defense-in-depth: the upstream fn-registry seeding usually keeps
+    /// `Item`-resolved callees inside that set. A surface program that
+    /// reaches this gate is one where the producer-bridge between checker
+    /// and MIR has drifted.
+    CallableUnsupportedInMir {
+        /// The unresolved callee name as it appeared at the call site.
+        name: String,
+    },
+    /// Call expression with an indirect / higher-order / unresolved callee
+    /// whose static type is callable (`ResolvedTy::Function` or
+    /// `ResolvedTy::Closure`) but for which no MIR dispatch path exists.
+    /// Lifted from MIR `hew-mir/src/lower.rs:4236` per the FC-P1-B audit.
+    ///
+    /// Predicate (intentionally narrow to avoid blocking valid programs
+    /// such as closure-binding invocations `let f = |x| x + 1; f(2)`):
+    /// callee is `BindingRef { resolved: ResolvedRef::Unresolved, .. }`
+    /// and `callee.ty` is `Function` / `Closure`. Valid closure-binding
+    /// calls reach `BindingRef { resolved: Binding(_), .. }` and are
+    /// lowered by MIR's `CallClosure` arm, so they do not trip this gate.
+    IndirectCallUnsupported {
+        /// User-visible callee description (e.g. `"unresolved binding `foo`"`).
+        callee: String,
+        /// Rendered callee type for the diagnostic message.
+        callee_ty: String,
+    },
 }

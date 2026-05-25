@@ -430,7 +430,18 @@ pub struct HirMachineTransition {
     pub event_name: String,
     pub source_state: String,
     pub target_state: String,
-    pub has_guard: bool,
+    /// Lowered transition guard expression (`on E: A -> B when <expr> { ... }`).
+    /// `None` when the transition has no guard. Lowered through the same
+    /// machine-body allowlist + implicit-binding scope as the transition body
+    /// (`lower_machine_expr_filtered`) so the guard sees `self`, the source-
+    /// state binding, and the event-field aliases.
+    ///
+    /// Carrying the guard expression in HIR (rather than the prior
+    /// `has_guard: bool`) is required for every machine-body walker —
+    /// call-shape gates, blocking-recv gates, effect-parity checks — to
+    /// actually visit guard sub-expressions instead of silently treating
+    /// guarded transitions as if the guard position were empty.
+    pub guard: Option<HirExpr>,
     /// True when `source_state == target_state` (self-transition). In a
     /// Moore machine, self-transitions do not re-run entry/exit.
     pub is_self_transition: bool,

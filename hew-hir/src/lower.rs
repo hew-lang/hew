@@ -201,6 +201,11 @@ impl LowerOutput {
     ///   `isize` (FC-P1-D).
     /// - [`HirDiagnosticKind::PlatformSizedShiftUnsupported`] — shift on
     ///   `isize`/`usize` (FC-P1-D).
+    /// - [`HirDiagnosticKind::CallableUnsupportedInMir`] — a call expression
+    ///   resolves to an item with no MIR body or runtime-ABI lowering.
+    /// - [`HirDiagnosticKind::IndirectCallUnsupported`] — a call expression
+    ///   has an unresolved callee with callable static type that the MIR
+    ///   producer cannot dispatch.
     ///
     /// Callers that want to continue despite non-fatal diagnostics should
     /// check `.diagnostics` directly.  This method is the recommended
@@ -237,6 +242,8 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::BinaryOperatorUnsupportedInMir { .. }
                     | crate::HirDiagnosticKind::PlatformSizedDivRemUnsupported { .. }
                     | crate::HirDiagnosticKind::PlatformSizedShiftUnsupported { .. }
+                    | crate::HirDiagnosticKind::CallableUnsupportedInMir { .. }
+                    | crate::HirDiagnosticKind::IndirectCallUnsupported { .. }
             )
         });
         if has_fatal {
@@ -1606,6 +1613,16 @@ pub fn lower_program_with_mono_cap(
         mono_cap,
         &mut ctx.diagnostics,
     );
+
+    // FC-P1-B: HIR pre-pass for call-shape gates. Lifts MIR's call-shape
+    // fail-closed diagnostics (`hew-mir/src/lower.rs:4194` / `:4236`) to the
+    // HIR boundary so unresolved-Item callees and indirect-callable
+    // unresolved callees surface during HIR lowering instead of after the
+    // MIR producer has begun emitting instructions for the surrounding
+    // function. Runs AFTER `ctx.diagnostics.clear()` at line ~921 and after
+    // `closure_under_substitution` so the callable set includes the final
+    // monomorphisation list. See `check_call_shape_gates` for the predicate.
+    check_call_shape_gates(&items, &monomorphisations, &mut ctx.diagnostics);
 
     LowerOutput {
         module: HirModule {
@@ -4241,6 +4258,18 @@ impl LowerCtx {
                 .map(|idx| (idx, hir_events[idx].fields.clone()));
             let body =
                 self.lower_machine_expr_filtered(&tr.body, &state_names, event_names.clone());
+            // Lower the guard expression (if any) through the same
+            // machine-body filter so the guard sees the same implicit
+            // bindings (`self`, source-state alias, event-field aliases) the
+            // body sees, and so machine-body walkers can recurse into it.
+            // Without this, FC-P1-B (call-shape gates), FC-P1-A2/D/A3/E
+            // (blocking-recv gates), and every future machine-body walker
+            // would silently treat guarded transitions as if the guard
+            // position contained no expressions at all.
+            let guard = tr
+                .guard
+                .as_ref()
+                .map(|g| self.lower_machine_expr_filtered(g, &state_names, event_names.clone()));
             self.current_machine_source_state = prev_source_state;
             self.current_machine_transition_event = prev_transition_event;
             // body_emits is derived from the lowered HIR body by walking
@@ -4252,7 +4281,7 @@ impl LowerCtx {
                 event_name: tr.event_name.clone(),
                 source_state: tr.source_state.clone(),
                 target_state: tr.target_state.clone(),
-                has_guard: tr.guard.is_some(),
+                guard,
                 is_self_transition,
                 reenter: tr.reenter,
                 body_writes,
@@ -12575,6 +12604,461 @@ fn operand_is_platform_sized_int(
         expr_types.get(&SpanKey::from(&operand.1)),
         Some(Ty::Isize | Ty::Usize)
     )
+}
+
+// ── FC-P1-B: Call-shape gates (HIR-level) ───────────────────────────────────
+//
+// Hoists MIR's two call-shape fail-closed diagnostics into HIR:
+//   - `CallableUnsupportedInMir` (lifted from `hew-mir/src/lower.rs:4194`):
+//     `BindingRef { Item(_) }` callees whose name is not in the module's
+//     callable set.
+//   - `IndirectCallUnsupported` (lifted from `hew-mir/src/lower.rs:4236`):
+//     `BindingRef { Unresolved }` callees with callable static type
+//     (`Function` / `Closure`) — narrowed deliberately so closure-binding
+//     calls (`let f = |x| x + 1; f(2)` → `Binding(_)`) and direct module-fn
+//     calls are not false-positively rejected.
+//
+// Walks the LOWERED HIR (not the parser AST) because the predicates depend
+// on `ResolvedRef` and `ResolvedTy`, which only exist post-lowering. The
+// walker shape mirrors `scan_*_for_blocking_recv`: per-item bucket, then a
+// per-`HirBlock` / `HirStmt` / `HirExpr` recursion exhaustive over the HIR
+// expression tree.
+//
+// Runtime ABI bridges (`is_known_runtime_symbol` and `user_name_to_c_symbol`)
+// live in `hew-mir`; `hew-hir` cannot depend on `hew-mir`. Instead the gate
+// recomputes the same callable set from sources that already exist in
+// `hew-hir`: `stdlib_catalog::entries()` for the runtime allowlist, plus the
+// hard-coded user-name → C-symbol bridges (`supervisor_stop`, `hew_duplex_*`)
+// that `LowerCtx::seed_stdlib_fn_registry` already mirrors when seeding the
+// fn registry.
+
+/// Test-only entrypoint that runs the FC-P1-B call-shape gates against a
+/// synthetic HIR module slice. Exposed so integration tests in
+/// `hew-hir/tests/call_shape_gates.rs` can exercise the negative-test cases
+/// directly without having to drive a real surface program through every
+/// path that produces a `BindingRef { Item(_) }` to a name absent from the
+/// callable set (which is hard to reach from current v0.5 surface syntax
+/// because `lower_identifier` only emits `Item(_)` after a successful
+/// `fn_registry` lookup).
+#[doc(hidden)]
+#[must_use]
+#[cfg(any(test, feature = "internal-test-hooks"))]
+pub fn run_call_shape_gates_for_test(
+    items: &[HirItem],
+    monomorphisations: &[crate::monomorph::MonomorphizedFn],
+) -> Vec<HirDiagnostic> {
+    let mut diagnostics = Vec::new();
+    check_call_shape_gates(items, monomorphisations, &mut diagnostics);
+    diagnostics
+}
+
+fn check_call_shape_gates(
+    items: &[HirItem],
+    monomorphisations: &[crate::monomorph::MonomorphizedFn],
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    let callable = build_callable_set(items, monomorphisations);
+    for item in items {
+        scan_item_for_call_shape(item, &callable, diagnostics);
+    }
+}
+
+/// Build the set of names the MIR `Expr::Call` dispatch chain accepts.
+///
+/// Mirrors MIR's `module_fn_names` (`hew-mir/src/lower.rs:759-783`) plus the
+/// runtime-symbol bridges consulted ahead of it in `runtime_symbol_for_call_expr`
+/// (`hew-mir/src/lower.rs:3574-3588`). Includes:
+///
+/// 1. Every `stdlib_catalog::entries()` name (intrinsic linkage included —
+///    intrinsics route through `runtime_symbol_for_call_expr` before the
+///    fail-closed arm).
+/// 2. Every user `HirItem::Function` name — monomorphic AND generic origin.
+///    The generic-origin name is admissible because MIR's
+///    `call_site_type_args` + mangled-name dispatch resolves the call at the
+///    site; if the mangled lookup fails MIR's defense-in-depth still catches
+///    it. Excluding generic origins here would false-positively reject every
+///    direct call to a generic user function.
+/// 3. Every `HirItem::ExternFn` name.
+/// 4. Every monomorphisation's mangled name.
+/// 5. The hard-coded runtime-ABI bridges `supervisor_stop` and the
+///    `hew_duplex_*` family that `seed_stdlib_fn_registry` adds to
+///    `fn_registry` for the same reason.
+fn build_callable_set(
+    items: &[HirItem],
+    monomorphisations: &[crate::monomorph::MonomorphizedFn],
+) -> std::collections::HashSet<String> {
+    let mut set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in stdlib_catalog::entries() {
+        set.insert(entry.name.to_string());
+    }
+    for item in items {
+        match item {
+            HirItem::Function(f) => {
+                set.insert(f.name.clone());
+            }
+            HirItem::ExternFn(ef) => {
+                set.insert(ef.name.clone());
+            }
+            _ => {}
+        }
+    }
+    for mono in monomorphisations {
+        set.insert(mono.mangled_name.clone());
+    }
+    // Runtime-ABI bridges seeded into `fn_registry` by
+    // `seed_stdlib_fn_registry` (lines ~3055-3104) — kept in sync here
+    // because MIR's `runtime_symbol_for_call_expr` accepts them via
+    // `user_name_to_c_symbol`.
+    set.insert("supervisor_stop".to_string());
+    for name in [
+        "hew_duplex_send",
+        "hew_duplex_try_send",
+        "hew_duplex_recv",
+        "hew_duplex_try_recv",
+        "hew_duplex_send_half",
+        "hew_duplex_recv_half",
+        "hew_duplex_close",
+        "hew_duplex_close_half",
+    ] {
+        set.insert(name.to_string());
+    }
+    set
+}
+
+fn scan_item_for_call_shape(
+    item: &HirItem,
+    callable: &std::collections::HashSet<String>,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    match item {
+        HirItem::Function(f) => scan_block_for_call_shape(&f.body, callable, diagnostics),
+        HirItem::Actor(actor) => {
+            if let Some(init) = &actor.init {
+                scan_block_for_call_shape(&init.body, callable, diagnostics);
+            }
+            for handler in &actor.receive_handlers {
+                scan_block_for_call_shape(&handler.body, callable, diagnostics);
+            }
+            for method in &actor.methods {
+                scan_block_for_call_shape(&method.body, callable, diagnostics);
+            }
+            for hook in &actor.lifecycle_hooks {
+                scan_block_for_call_shape(&hook.body, callable, diagnostics);
+            }
+        }
+        HirItem::Machine(machine) => {
+            for state in &machine.states {
+                if let Some(entry) = &state.entry {
+                    scan_block_for_call_shape(entry, callable, diagnostics);
+                }
+                if let Some(exit) = &state.exit {
+                    scan_block_for_call_shape(exit, callable, diagnostics);
+                }
+            }
+            for trans in &machine.transitions {
+                // FC-P1-B revision pass 1: walk the guard expression as
+                // well as the body. Prior to lowering `tr.guard` into HIR
+                // (resolved in this same pass), `HirMachineTransition`
+                // carried only `has_guard: bool`, so this walker — and
+                // every other machine-body walker — was a no-op for guard
+                // positions. With `guard: Option<HirExpr>` the gate now
+                // sees call shapes inside `when <expr>` predicates.
+                if let Some(g) = &trans.guard {
+                    scan_expr_for_call_shape(g, callable, diagnostics);
+                }
+                scan_expr_for_call_shape(&trans.body, callable, diagnostics);
+            }
+        }
+        // TypeDecl, Record, Supervisor, Impl, ExternFn carry no user
+        // expression bodies that contain `HirExprKind::Call` nodes at this
+        // stage (impl methods are also re-emitted as `HirItem::Function`
+        // entries, so their bodies are covered by that arm).
+        HirItem::TypeDecl(_)
+        | HirItem::Record(_)
+        | HirItem::Supervisor(_)
+        | HirItem::Impl(_)
+        | HirItem::ExternFn(_) => {}
+    }
+}
+
+fn scan_block_for_call_shape(
+    block: &HirBlock,
+    callable: &std::collections::HashSet<String>,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(_, Some(init)) => {
+                scan_expr_for_call_shape(init, callable, diagnostics);
+            }
+            HirStmtKind::Assign { target, value } => {
+                scan_expr_for_call_shape(target, callable, diagnostics);
+                scan_expr_for_call_shape(value, callable, diagnostics);
+            }
+            HirStmtKind::Expr(e) | HirStmtKind::Return(Some(e)) => {
+                scan_expr_for_call_shape(e, callable, diagnostics);
+            }
+            HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        scan_expr_for_call_shape(tail, callable, diagnostics);
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive HirExprKind match — every recursing variant is named \
+              so adding a new variant forces a conscious decision"
+)]
+#[allow(
+    clippy::match_same_arms,
+    reason = "structurally identical recursion bodies on distinct HirExprKind \
+              variants (e.g. ActorSend/ActorAsk, MachineEmit/StructInit-field \
+              walks) are kept separate so adding a new variant forces an \
+              explicit per-variant decision rather than silently joining a \
+              merged arm"
+)]
+fn scan_expr_for_call_shape(
+    expr: &HirExpr,
+    callable: &std::collections::HashSet<String>,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    match &expr.kind {
+        HirExprKind::Call { callee, args } => {
+            // Site 4194 + 4236 predicates fire on the callee's resolution.
+            // Recurse first so any nested invalid call inside `callee` or
+            // `args` still surfaces, then apply the gate to this site.
+            scan_expr_for_call_shape(callee, callable, diagnostics);
+            for arg in args {
+                scan_expr_for_call_shape(arg, callable, diagnostics);
+            }
+            if let HirExprKind::BindingRef { name, resolved } = &callee.kind {
+                match resolved {
+                    ResolvedRef::Item(_) => {
+                        if !callable.contains(name) {
+                            diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CallableUnsupportedInMir { name: name.clone() },
+                                callee.span.clone(),
+                                format!(
+                                    "call to `{name}` has no MIR body or runtime-ABI lowering; \
+                                     only module functions, extern fns, monomorphisation \
+                                     instantiations, and recognised runtime symbols are \
+                                     callable here"
+                                ),
+                            ));
+                        }
+                    }
+                    ResolvedRef::Unresolved => {
+                        // Narrow predicate: only fire when the unresolved
+                        // callee has a callable static type. A `Binding(_)`
+                        // resolved callee (closure binding, fn parameter,
+                        // let-bound function value) is admitted and lowered
+                        // by MIR's `CallClosure` arm; rejecting it here
+                        // would block valid programs such as
+                        // `let f = |x| x + 1; f(2)`.
+                        let callable_ty = matches!(
+                            callee.ty,
+                            ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+                        );
+                        if callable_ty {
+                            diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::IndirectCallUnsupported {
+                                    callee: format!("unresolved binding `{name}`"),
+                                    callee_ty: format!("{:?}", callee.ty),
+                                },
+                                callee.span.clone(),
+                                "indirect call through an unresolved callable binding has no \
+                                 MIR dispatch path; only direct calls to module-declared \
+                                 functions, extern fns, and recognised runtime symbols are \
+                                 supported"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                    ResolvedRef::Binding(_) => {
+                        // Closure / fn-value bindings: MIR's `CallClosure`
+                        // arm dispatches these. Intentionally NOT rejected.
+                    }
+                }
+            }
+        }
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+            scan_expr_for_call_shape(left, callable, diagnostics);
+            scan_expr_for_call_shape(right, callable, diagnostics);
+        }
+        HirExprKind::Spawn { args, .. } => {
+            for (_, v) in args {
+                scan_expr_for_call_shape(v, callable, diagnostics);
+            }
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. } => {
+            scan_expr_for_call_shape(receiver, callable, diagnostics);
+            for a in args {
+                scan_expr_for_call_shape(a, callable, diagnostics);
+            }
+        }
+        HirExprKind::Block(b) => scan_block_for_call_shape(b, callable, diagnostics),
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            scan_expr_for_call_shape(condition, callable, diagnostics);
+            scan_expr_for_call_shape(then_expr, callable, diagnostics);
+            if let Some(e) = else_expr {
+                scan_expr_for_call_shape(e, callable, diagnostics);
+            }
+        }
+        HirExprKind::StructInit { fields, base, .. } => {
+            for (_, v) in fields {
+                scan_expr_for_call_shape(v, callable, diagnostics);
+            }
+            if let Some(b) = base {
+                scan_expr_for_call_shape(b, callable, diagnostics);
+            }
+        }
+        HirExprKind::FieldAccess { object, .. } => {
+            scan_expr_for_call_shape(object, callable, diagnostics);
+        }
+        HirExprKind::Scope { body }
+        | HirExprKind::ForkBlock { body, .. }
+        | HirExprKind::GenBlock { body, .. } => {
+            scan_block_for_call_shape(body, callable, diagnostics);
+        }
+        HirExprKind::SpawnedCall { callee, args, .. } => {
+            scan_expr_for_call_shape(callee, callable, diagnostics);
+            for a in args {
+                scan_expr_for_call_shape(a, callable, diagnostics);
+            }
+        }
+        HirExprKind::ScopeDeadline { duration, body } => {
+            scan_expr_for_call_shape(duration, callable, diagnostics);
+            scan_block_for_call_shape(body, callable, diagnostics);
+        }
+        HirExprKind::Select(select) => {
+            for arm in &select.arms {
+                match &arm.kind {
+                    HirSelectArmKind::StreamNext { stream } => {
+                        scan_expr_for_call_shape(stream, callable, diagnostics);
+                    }
+                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                        scan_expr_for_call_shape(actor, callable, diagnostics);
+                        for a in args {
+                            scan_expr_for_call_shape(a, callable, diagnostics);
+                        }
+                    }
+                    HirSelectArmKind::TaskAwait { task } => {
+                        scan_expr_for_call_shape(task, callable, diagnostics);
+                    }
+                    HirSelectArmKind::AfterTimer { duration } => {
+                        scan_expr_for_call_shape(duration, callable, diagnostics);
+                    }
+                }
+                scan_expr_for_call_shape(&arm.body, callable, diagnostics);
+            }
+        }
+        HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
+            scan_expr_for_call_shape(body, callable, diagnostics);
+        }
+        HirExprKind::Yield { value: Some(v), .. } => {
+            scan_expr_for_call_shape(v, callable, diagnostics);
+        }
+        HirExprKind::TupleIndex { tuple, .. } => {
+            scan_expr_for_call_shape(tuple, callable, diagnostics);
+        }
+        HirExprKind::Index { container, index } => {
+            scan_expr_for_call_shape(container, callable, diagnostics);
+            scan_expr_for_call_shape(index, callable, diagnostics);
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            ..
+        } => {
+            scan_expr_for_call_shape(container, callable, diagnostics);
+            if let Some(s) = start {
+                scan_expr_for_call_shape(s, callable, diagnostics);
+            }
+            if let Some(e) = end {
+                scan_expr_for_call_shape(e, callable, diagnostics);
+            }
+        }
+        HirExprKind::CoerceToDynTrait { value, .. } => {
+            scan_expr_for_call_shape(value, callable, diagnostics);
+        }
+        HirExprKind::CallDynMethod { receiver, args, .. } => {
+            scan_expr_for_call_shape(receiver, callable, diagnostics);
+            for a in args {
+                scan_expr_for_call_shape(a, callable, diagnostics);
+            }
+        }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            scan_expr_for_call_shape(receiver, callable, diagnostics);
+            scan_expr_for_call_shape(arg, callable, diagnostics);
+        }
+        HirExprKind::MachineEmit { fields, .. } => {
+            for (_, v) in fields {
+                scan_expr_for_call_shape(v, callable, diagnostics);
+            }
+        }
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            scan_expr_for_call_shape(receiver, callable, diagnostics);
+            scan_expr_for_call_shape(event, callable, diagnostics);
+        }
+        HirExprKind::MachineStateName { receiver, .. } => {
+            scan_expr_for_call_shape(receiver, callable, diagnostics);
+        }
+        HirExprKind::MachineVariantCtor {
+            payload: Some(fields),
+            ..
+        } => {
+            for (_, v) in fields {
+                scan_expr_for_call_shape(v, callable, diagnostics);
+            }
+        }
+        HirExprKind::While { condition, body } => {
+            scan_expr_for_call_shape(condition, callable, diagnostics);
+            scan_block_for_call_shape(body, callable, diagnostics);
+        }
+        HirExprKind::ForRange {
+            start, end, body, ..
+        } => {
+            scan_expr_for_call_shape(start, callable, diagnostics);
+            scan_expr_for_call_shape(end, callable, diagnostics);
+            scan_block_for_call_shape(body, callable, diagnostics);
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            scan_expr_for_call_shape(scrutinee, callable, diagnostics);
+            for arm in arms {
+                scan_expr_for_call_shape(&arm.body, callable, diagnostics);
+            }
+        }
+        HirExprKind::WhileLet {
+            scrutinee, body, ..
+        } => {
+            scan_expr_for_call_shape(scrutinee, callable, diagnostics);
+            scan_block_for_call_shape(body, callable, diagnostics);
+        }
+        // Leaf / no-sub-expression variants: Literal, RegexLiteralRef,
+        // BindingRef, ContextReader, AwaitTask, Yield { value: None },
+        // MachineVariantCtor { payload: None }, MachineFieldAccess,
+        // MachineEventFieldAccess, Unsupported. Nothing to recurse into.
+        HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
+        | HirExprKind::BindingRef { .. }
+        | HirExprKind::ContextReader { .. }
+        | HirExprKind::AwaitTask { .. }
+        | HirExprKind::Yield { value: None, .. }
+        | HirExprKind::MachineVariantCtor { payload: None, .. }
+        | HirExprKind::MachineFieldAccess { .. }
+        | HirExprKind::MachineEventFieldAccess { .. }
+        | HirExprKind::Unsupported(_) => {}
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

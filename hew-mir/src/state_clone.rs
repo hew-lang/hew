@@ -314,7 +314,7 @@ pub fn classify_state_field(
         ResolvedTy::Bytes => Ok(StateFieldCloneKind::Bytes),
 
         // --- Container / handle / record arms ------------------------
-        ResolvedTy::Named { name, args } => classify_named(name, args, record_layouts, visited),
+        ResolvedTy::Named { name, args, .. } => classify_named(name, args, record_layouts, visited),
 
         // --- Closed-set rejection -------------------------------------
         // Pointer, Function, Closure, TraitObject, Tuple, Array, Slice,
@@ -544,7 +544,9 @@ mod tests {
             args: vec![ResolvedTy::Named {
                 name: "SomeActor".to_string(),
                 args: vec![],
+                builtin: None,
             }],
+            builtin: None,
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
@@ -558,6 +560,7 @@ mod tests {
         let ty = ResolvedTy::Named {
             name: "Connection".to_string(),
             args: vec![],
+            builtin: None,
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
@@ -573,6 +576,7 @@ mod tests {
         let ty = ResolvedTy::Named {
             name: "Vec".to_string(),
             args: vec![ResolvedTy::I32],
+            builtin: None,
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
@@ -588,6 +592,7 @@ mod tests {
         let ty = ResolvedTy::Named {
             name: "Vec".to_string(),
             args: vec![ResolvedTy::String],
+            builtin: None,
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
@@ -609,7 +614,9 @@ mod tests {
             args: vec![ResolvedTy::Named {
                 name: "Connection".to_string(),
                 args: vec![],
+                builtin: None,
             }],
+            builtin: None,
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
@@ -627,6 +634,7 @@ mod tests {
         let ty = ResolvedTy::Named {
             name: "HashMap".to_string(),
             args: vec![ResolvedTy::String, ResolvedTy::I64],
+            builtin: None,
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
@@ -652,7 +660,9 @@ mod tests {
                         args: vec![ResolvedTy::Named {
                             name: "Entry".to_string(),
                             args: vec![],
+                            builtin: None,
                         }],
+                        builtin: None,
                     },
                     ResolvedTy::String,
                 ],
@@ -664,6 +674,7 @@ mod tests {
                     ResolvedTy::Named {
                         name: "Vec".to_string(),
                         args: vec![ResolvedTy::I32],
+                        builtin: None,
                     },
                 ],
             },
@@ -671,6 +682,7 @@ mod tests {
         let ty = ResolvedTy::Named {
             name: "Workspace".to_string(),
             args: vec![],
+            builtin: None,
         };
         let mut v = HashSet::new();
         let result = classify_state_field(&ty, &records, &mut v).unwrap();
@@ -700,10 +712,12 @@ mod tests {
                     ResolvedTy::Named {
                         name: "Leaf".to_string(),
                         args: vec![],
+                        builtin: None,
                     },
                     ResolvedTy::Named {
                         name: "Leaf".to_string(),
                         args: vec![],
+                        builtin: None,
                     },
                 ],
             },
@@ -717,6 +731,7 @@ mod tests {
             &ResolvedTy::Named {
                 name: "Top".to_string(),
                 args: vec![],
+                builtin: None,
             },
             &records,
             &mut v,
@@ -745,6 +760,7 @@ mod tests {
                 ResolvedTy::Named {
                     name: "Node".to_string(),
                     args: vec![],
+                    builtin: None,
                 },
                 ResolvedTy::I32,
             ],
@@ -754,6 +770,7 @@ mod tests {
             &ResolvedTy::Named {
                 name: "Node".to_string(),
                 args: vec![],
+                builtin: None,
             },
             &records,
             &mut v,
@@ -774,6 +791,7 @@ mod tests {
             &ResolvedTy::Named {
                 name: "Phantom".to_string(),
                 args: vec![],
+                builtin: None,
             },
             &no_records(),
             &mut v,

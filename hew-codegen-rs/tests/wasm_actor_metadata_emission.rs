@@ -20,7 +20,9 @@ fn local_pid_of(actor: &str) -> ResolvedTy {
         args: vec![ResolvedTy::Named {
             name: actor.to_string(),
             args: vec![],
+            builtin: None,
         }],
+        builtin: None,
     }
 }
 

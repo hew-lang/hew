@@ -293,7 +293,9 @@ impl Verifier {
                 return_ty,
             } => {
                 match &expr.ty {
-                    ResolvedTy::Named { name, args } if name == "Generator" && args.len() == 2 => {
+                    ResolvedTy::Named { name, args, .. }
+                        if name == "Generator" && args.len() == 2 =>
+                    {
                         if args[0] != *yield_ty || args[1] != *return_ty {
                             self.diagnostics.push(HirDiagnostic::new(
                                 HirDiagnosticKind::CheckerBoundaryViolation {

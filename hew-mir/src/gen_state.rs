@@ -401,6 +401,7 @@ pub fn synthesise(
     let state_ty = ResolvedTy::Named {
         name: state_ty_name,
         args: Vec::new(),
+        builtin: None,
     };
 
     // 3. Allocate fresh locals at the END of the locals vector. Using

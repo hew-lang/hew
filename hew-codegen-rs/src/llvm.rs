@@ -1776,7 +1776,7 @@ fn machine_layout_for_local<'a, 'ctx>(
         ))
     })?;
     let (name, args) = match ty {
-        ResolvedTy::Named { name, args } => (name, args),
+        ResolvedTy::Named { name, args, .. } => (name, args),
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "Place::MachineTag/MachineVariant references local {local} whose type \
@@ -1852,7 +1852,7 @@ fn resolve_ty<'ctx>(
     ty: &ResolvedTy,
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<BasicTypeEnum<'ctx>> {
-    if let ResolvedTy::Named { name, args } = ty {
+    if let ResolvedTy::Named { name, args, .. } = ty {
         // Generic-enum instantiations are keyed by mangled name (e.g.
         // `"Option$$i64"`) in the record-layout map — the same key produced
         // by `register_enum_layouts`. When type args are present, mangle
@@ -8982,7 +8982,7 @@ fn emit_remote_pid_tell_call<'ctx>(
     // by the time we reach codegen.
     let pid_ty = place_resolved_ty(fn_ctx, *pid_arg)?;
     let actor_name = match pid_ty {
-        ResolvedTy::Named { name, args } if name == "RemotePid" => {
+        ResolvedTy::Named { name, args, .. } if name == "RemotePid" => {
             let inner = args.first().ok_or_else(|| {
                 CodegenError::FailClosed(
                     "hew_remote_pid_tell pid arg `RemotePid<T>` is missing its T type \
@@ -13223,6 +13223,7 @@ mod tests {
         ResolvedTy::Named {
             name: "Duplex".to_string(),
             args: Vec::new(),
+            builtin: None,
         }
     }
 
@@ -13839,6 +13840,7 @@ mod tests {
                 ResolvedTy::Named {
                     name: "Option".to_string(),
                     args: vec![ResolvedTy::I64],
+                    builtin: None,
                 },
                 // local_1: i64 — return value
                 ResolvedTy::I64,
@@ -14130,6 +14132,7 @@ mod tests {
                     field_tys: vec![ResolvedTy::Named {
                         name: "SendError".to_string(),
                         args: vec![],
+                        builtin: None,
                     }],
                 },
             ],
@@ -14171,6 +14174,7 @@ mod tests {
                     field_tys: vec![ResolvedTy::Named {
                         name: "LookupError".to_string(),
                         args: vec![],
+                        builtin: None,
                     }],
                 },
             ],
@@ -14328,6 +14332,7 @@ mod tests {
             ResolvedTy::Named {
                 name: "Result$$unit$$SendError".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         emit_result_ok(&fn_ctx, Place::Local(0), None)
@@ -14367,6 +14372,7 @@ mod tests {
             ResolvedTy::Named {
                 name: "Result$$i64$$LookupError".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
@@ -14434,6 +14440,7 @@ mod tests {
             ResolvedTy::Named {
                 name: "Result$$unit$$SendError".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         alloc_local(
@@ -14442,6 +14449,7 @@ mod tests {
             ResolvedTy::Named {
                 name: "SendError".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         emit_result_err(&fn_ctx, Place::Local(0), Place::Local(1))
@@ -14484,6 +14492,7 @@ mod tests {
             ResolvedTy::Named {
                 name: "Result$$unit$$SendError".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         // WRONG payload type: i64 where the variant expects SendError.
@@ -14515,6 +14524,7 @@ mod tests {
             ResolvedTy::Named {
                 name: "MonitorRef".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
@@ -14554,6 +14564,7 @@ mod tests {
             ResolvedTy::Named {
                 name: "Sample".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         emit_enum_variant_literal(&fn_ctx, Place::Local(0), 0, &[])
@@ -14585,6 +14596,7 @@ mod tests {
             ResolvedTy::Named {
                 name: "Sample".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
@@ -14633,6 +14645,7 @@ mod tests {
             ResolvedTy::Named {
                 name: "Sample".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
         alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);

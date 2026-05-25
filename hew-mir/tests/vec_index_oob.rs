@@ -174,6 +174,7 @@ fn vec_index_i64_mir() -> RawMirFunction {
             ResolvedTy::Named {
                 name: "Vec".to_string(),
                 args: vec![ResolvedTy::I64],
+                builtin: None,
             }, // Local(0)
             ResolvedTy::I64,  // Local(1) index
             ResolvedTy::I64,  // Local(2) len

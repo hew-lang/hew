@@ -154,7 +154,7 @@ fn mangle_resolved_ty(ty: &ResolvedTy) -> String {
         }
         ResolvedTy::Array(elem, n) => format!("array_{}_{}", mangle_resolved_ty(elem), n),
         ResolvedTy::Slice(elem) => format!("slice_{}", mangle_resolved_ty(elem)),
-        ResolvedTy::Named { name, args } => {
+        ResolvedTy::Named { name, args, .. } => {
             // Replace any `::` from module-qualified names with `_` to keep
             // the symbol LLVM-clean.
             let mut out = name.replace("::", "_");
@@ -404,6 +404,7 @@ pub fn substitute_type_params(
         ResolvedTy::Named {
             name,
             args: named_args,
+            builtin,
         } => {
             // Bare type-parameter reference (e.g. `T`) — substitute.
             if named_args.is_empty() {
@@ -418,6 +419,7 @@ pub fn substitute_type_params(
                     .iter()
                     .map(|a| substitute_type_params(a, params, args))
                     .collect(),
+                builtin: *builtin,
             }
         }
         ResolvedTy::Tuple(items) => ResolvedTy::Tuple(
@@ -613,7 +615,7 @@ pub(crate) fn contains_recursive_polymorphic_self(
     current_args: &[ResolvedTy],
 ) -> bool {
     match ty {
-        ResolvedTy::Named { name, args } => {
+        ResolvedTy::Named { name, args, .. } => {
             if name == origin_name && args.as_slice() != current_args {
                 return true;
             }
@@ -678,6 +680,7 @@ mod tests {
         let label = ResolvedTy::Named {
             name: "Label".into(),
             args: vec![],
+            builtin: None,
         };
         assert_eq!(mangle("describe", &[label]), "describe$$Label");
     }
@@ -687,6 +690,7 @@ mod tests {
         let ty = ResolvedTy::Named {
             name: "widgets::Label".into(),
             args: vec![],
+            builtin: None,
         };
         assert_eq!(mangle("describe", &[ty]), "describe$$widgets_Label");
     }
@@ -711,6 +715,7 @@ mod tests {
         let ty = ResolvedTy::Named {
             name: "T".into(),
             args: vec![],
+            builtin: None,
         };
         assert_eq!(substitute_type_params(&ty, &params, &args), ResolvedTy::I64);
     }
@@ -725,13 +730,16 @@ mod tests {
             args: vec![ResolvedTy::Named {
                 name: "T".into(),
                 args: vec![],
+                builtin: None,
             }],
+            builtin: Some(hew_types::BuiltinType::Vec),
         };
         assert_eq!(
             substitute_type_params(&ty, &params, &args),
             ResolvedTy::Named {
                 name: "Vec".into(),
-                args: vec![ResolvedTy::I64]
+                args: vec![ResolvedTy::I64],
+                builtin: Some(hew_types::BuiltinType::Vec),
             }
         );
     }
@@ -743,6 +751,7 @@ mod tests {
         let ty = ResolvedTy::Named {
             name: "Label".into(),
             args: vec![],
+            builtin: None,
         };
         assert_eq!(substitute_type_params(&ty, &params, &args), ty);
     }
@@ -783,13 +792,16 @@ mod tests {
         let current_args = vec![ResolvedTy::Named {
             name: "T".into(),
             args: vec![],
+            builtin: None,
         }];
         let field_ty = ResolvedTy::Named {
             name: "Box".into(),
             args: vec![ResolvedTy::Named {
                 name: "Node".into(),
                 args: vec![ResolvedTy::I64],
+                builtin: None,
             }],
+            builtin: None,
         };
         assert!(contains_recursive_polymorphic_self(
             &field_ty,
@@ -805,13 +817,16 @@ mod tests {
         let current_args = vec![ResolvedTy::Named {
             name: "T".into(),
             args: vec![],
+            builtin: None,
         }];
         let field_ty = ResolvedTy::Named {
             name: "Box".into(),
             args: vec![ResolvedTy::Named {
                 name: "T".into(),
                 args: vec![],
+                builtin: None,
             }],
+            builtin: None,
         };
         assert!(!contains_recursive_polymorphic_self(
             &field_ty,
@@ -831,6 +846,7 @@ mod tests {
                 type_args: vec![ResolvedTy::Named {
                     name: format!("T{i}"),
                     args: vec![],
+                    builtin: None,
                 }],
             };
             if reg.insert(key).is_err() {

@@ -36,6 +36,7 @@ fn pipeline_with_task_abi_call(
     let mut locals = vec![ResolvedTy::Named {
         name: "HewTask".to_string(),
         args: vec![],
+        builtin: None,
     }];
     locals.extend(extra_locals);
 
@@ -258,6 +259,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
     let env_ty = ResolvedTy::Named {
         name: "__hew_closure_env_main_0".to_string(),
         args: vec![],
+        builtin: None,
     };
     let env_ptr_ty = ResolvedTy::Pointer {
         is_mutable: false,
@@ -481,6 +483,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
     let locals = vec![ResolvedTy::Named {
         name: "HewTask".to_string(),
         args: vec![],
+        builtin: None,
     }];
     let pipeline = IrPipeline {
         thir: vec![],

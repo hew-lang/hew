@@ -295,6 +295,7 @@ fn generic_in_generic_box_vec_int_produces_one_entry_for_box_only() {
     let expected_arg = ResolvedTy::Named {
         name: "Vec".into(),
         args: vec![ResolvedTy::I64],
+        builtin: None,
     };
     assert_eq!(layouts[0].key.type_args, vec![expected_arg.clone()]);
 

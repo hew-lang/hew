@@ -64,6 +64,7 @@ fn struct_of_primitives_is_inferred_bitcopy() {
     let ty = ResolvedTy::Named {
         name: "Point".to_string(),
         args: Vec::new(),
+        builtin: None,
     };
     assert_eq!(
         ValueClass::of_ty(&ty, &output.module.type_classes),
@@ -106,6 +107,7 @@ fn struct_with_non_bitcopy_field_is_not_inferred_bitcopy() {
     let ty = ResolvedTy::Named {
         name: "Sparse".to_string(),
         args: Vec::new(),
+        builtin: None,
     };
     assert_ne!(
         ValueClass::of_ty(&ty, &output.module.type_classes),

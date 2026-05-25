@@ -262,6 +262,7 @@ mod tests {
         let ty = ResolvedTy::Named {
             name: "Duplex".to_string(),
             args: vec![ResolvedTy::I64, ResolvedTy::I64],
+            builtin: Some(hew_types::BuiltinType::Duplex),
         };
         assert_eq!(ValueClass::of_ty(&ty, &table), ValueClass::AffineResource);
     }
@@ -284,6 +285,7 @@ mod tests {
         let ty = ResolvedTy::Named {
             name: "CrashInfo".to_string(),
             args: vec![],
+            builtin: None,
         };
         assert_eq!(ValueClass::of_ty(&ty, &table), ValueClass::BitCopy);
     }

@@ -62,10 +62,12 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
     let machine_ty = ResolvedTy::Named {
         name: machine_name.clone(),
         args: Vec::new(),
+        builtin: None,
     };
     let event_ty = ResolvedTy::Named {
         name: event_name.clone(),
         args: Vec::new(),
+        builtin: None,
     };
 
     // Two unit states, two unit events.

@@ -166,11 +166,11 @@ fn signed_min_value(ty: &ResolvedTy) -> Option<i64> {
 
 fn actor_name_from_handle_ty(ty: &ResolvedTy) -> Option<&str> {
     match ty {
-        ResolvedTy::Named { name, args }
+        ResolvedTy::Named { name, args, .. }
             if matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor") && args.len() == 1 =>
         {
             match &args[0] {
-                ResolvedTy::Named { name, args } if args.is_empty() => Some(name.as_str()),
+                ResolvedTy::Named { name, args, .. } if args.is_empty() => Some(name.as_str()),
                 _ => None,
             }
         }
@@ -204,7 +204,7 @@ fn is_crash_info_payload_ty(
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
 ) -> bool {
-    let ResolvedTy::Named { name, args } = ty else {
+    let ResolvedTy::Named { name, args, .. } = ty else {
         return false;
     };
     if !args.is_empty() || named_type_marker(ty, type_classes) != Some(ResourceMarker::BitCopy) {
@@ -1845,10 +1845,12 @@ fn synthesize_machine_step_fn(
     let self_ty = ResolvedTy::Named {
         name: md.name.clone(),
         args: type_args.clone(),
+        builtin: None,
     };
     let event_ty = ResolvedTy::Named {
         name: format!("{}Event", md.name),
         args: type_args.clone(),
+        builtin: None,
     };
     let return_ty = self_ty.clone();
 
@@ -2240,15 +2242,22 @@ fn is_machine_state_passthrough(expr: &hew_hir::HirExpr) -> bool {
 
 fn default_machine_type_params_to_i64(ty: &ResolvedTy, md: &HirMachineDecl) -> ResolvedTy {
     match ty {
-        ResolvedTy::Named { name, args } if args.is_empty() && md.type_params.contains(name) => {
+        ResolvedTy::Named { name, args, .. }
+            if args.is_empty() && md.type_params.contains(name) =>
+        {
             ResolvedTy::I64
         }
-        ResolvedTy::Named { name, args } => ResolvedTy::Named {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+        } => ResolvedTy::Named {
             name: name.clone(),
             args: args
                 .iter()
                 .map(|arg| default_machine_type_params_to_i64(arg, md))
                 .collect(),
+            builtin: *builtin,
         },
         ResolvedTy::Tuple(elems) => ResolvedTy::Tuple(
             elems
@@ -2510,7 +2519,9 @@ fn local_pid_of(actor_name: &str) -> ResolvedTy {
         args: vec![ResolvedTy::Named {
             name: actor_name.to_string(),
             args: vec![],
+            builtin: None,
         }],
+        builtin: Some(hew_types::BuiltinType::LocalPid),
     }
 }
 
@@ -4370,9 +4381,9 @@ impl Builder {
                 // registered under the mangled name; for a monomorphic
                 // record `args` is empty and the bare name is the key.
                 let record_key = match &expr.ty {
-                    ResolvedTy::Named { name: tname, args } if !args.is_empty() => {
-                        hew_hir::mangle(tname, args)
-                    }
+                    ResolvedTy::Named {
+                        name: tname, args, ..
+                    } if !args.is_empty() => hew_hir::mangle(tname, args),
                     _ => name.clone(),
                 };
                 // Look up the declaration-order field list for this record.
@@ -4526,7 +4537,7 @@ impl Builder {
                             // We detect nesting on `expr.ty`, not `object.ty`
                             // (which is always `LocalPid<ParentSupervisor>`).
                             let is_nested = matches!(&expr.ty,
-                                ResolvedTy::Named { name, args }
+                                ResolvedTy::Named { name, args, .. }
                                 if name == "LocalPid"
                                     && args.len() == 1
                                     && matches!(&args[0],
@@ -4562,7 +4573,7 @@ impl Builder {
                 // `b.value`) the key is the mangled name `Box$$i64`; for a
                 // monomorphic record the key is the bare name.
                 let type_name = match &object.ty {
-                    ResolvedTy::Named { name, args } if !args.is_empty() => {
+                    ResolvedTy::Named { name, args, .. } if !args.is_empty() => {
                         hew_hir::mangle(name, args)
                     }
                     ResolvedTy::Named { name, .. } => name.clone(),
@@ -5063,6 +5074,10 @@ impl Builder {
                     args: match &receiver.ty {
                         ResolvedTy::Named { args, .. } => args.clone(),
                         _ => Vec::new(),
+                    },
+                    builtin: match &receiver.ty {
+                        ResolvedTy::Named { builtin, .. } => *builtin,
+                        _ => None,
                     },
                 };
                 let ret_local = self.alloc_local(ret_ty.clone());
@@ -7447,7 +7462,7 @@ impl Builder {
     ) -> Option<Place> {
         // Resolve element type from the result Vec<T> for runtime dispatch.
         let elem_ty = match result_ty {
-            ResolvedTy::Named { name, args } if name == "Vec" && !args.is_empty() => {
+            ResolvedTy::Named { name, args, .. } if name == "Vec" && !args.is_empty() => {
                 args[0].clone()
             }
             other => {
@@ -7658,6 +7673,7 @@ impl Builder {
         ResolvedTy::Named {
             name: "HewTaskScope".to_string(),
             args: vec![],
+            builtin: None,
         }
     }
 
@@ -8204,6 +8220,7 @@ impl Builder {
         let local0 = self.alloc_local(ResolvedTy::Named {
             name: "Duplex".to_string(),
             args: vec![],
+            builtin: Some(hew_types::BuiltinType::Duplex),
         });
         let Place::Local(n0) = local0 else {
             unreachable!("alloc_local returns Place::Local");
@@ -8213,6 +8230,7 @@ impl Builder {
         let local1 = self.alloc_local(ResolvedTy::Named {
             name: "Duplex".to_string(),
             args: vec![],
+            builtin: Some(hew_types::BuiltinType::Duplex),
         });
         let Place::Local(n1) = local1 else {
             unreachable!("alloc_local returns Place::Local");
@@ -8342,6 +8360,7 @@ impl Builder {
         let result_place = self.alloc_local(ResolvedTy::Named {
             name: CHILD_LOOKUP_RESULT_TY_NAME.to_string(),
             args: vec![],
+            builtin: None,
         });
 
         // Emit the runtime call. The dest carries the 16-byte struct return value.
@@ -8748,7 +8767,7 @@ impl Builder {
                     let stream_place = self.lower_value(stream)?;
                     let stream_ty = self.subst_ty(&stream.ty);
                     let item_ty = match stream_ty {
-                        ResolvedTy::Named { name, mut args }
+                        ResolvedTy::Named { name, mut args, .. }
                             if name == "Stream" && args.len() == 1 =>
                         {
                             args.remove(0)
@@ -9071,6 +9090,7 @@ impl Builder {
         let state_ty = ResolvedTy::Named {
             name: actor_name.to_string(),
             args: Vec::new(),
+            builtin: None,
         };
         let dest = self.alloc_local(state_ty.clone());
         let mut fields = Vec::new();
@@ -9239,6 +9259,7 @@ impl Builder {
         let env_ty = ResolvedTy::Named {
             name: env_name.clone(),
             args: vec![],
+            builtin: None,
         };
 
         self.closure_record_layouts
@@ -9922,7 +9943,7 @@ impl Builder {
             // WHEN-OBSOLETE: when S3b emits the state record type and S4
             // wires the constructor; the real drop kind will replace this.
             ResolvedTy::Named { name, .. } if name == "Generator" => true,
-            ResolvedTy::Named { name, args } if args.is_empty() => {
+            ResolvedTy::Named { name, args, .. } if args.is_empty() => {
                 self.actor_layouts.contains_key(name)
                     || machine_layout_name_matches(&self.machine_layout_names, name)
             }
@@ -11474,6 +11495,7 @@ mod slice3_invariants {
         ResolvedTy::Named {
             name: "Duplex".to_string(),
             args: vec![ResolvedTy::I64, ResolvedTy::I64],
+            builtin: None,
         }
     }
 
@@ -12413,6 +12435,7 @@ mod slice3_narrowing_proptests {
         ResolvedTy::Named {
             name: "Duplex".to_string(),
             args: vec![ResolvedTy::I64, ResolvedTy::I64],
+            builtin: None,
         }
     }
 
@@ -12647,6 +12670,7 @@ mod slice35_cross_block_proptests {
         ResolvedTy::Named {
             name: "Duplex".to_string(),
             args: vec![ResolvedTy::I64, ResolvedTy::I64],
+            builtin: None,
         }
     }
 
@@ -13182,6 +13206,7 @@ mod enum_layout_tests {
                     vec![ResolvedTy::Named {
                         name: "T".to_string(),
                         args: vec![],
+                        builtin: None,
                     }],
                 ),
                 unit_variant("None"),

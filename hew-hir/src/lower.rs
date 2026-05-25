@@ -930,6 +930,7 @@ pub fn lower_program_with_mono_cap(
                             .map(|p| ResolvedTy::Named {
                                 name: (*p).to_string(),
                                 args: Vec::new(),
+                                builtin: None,
                             })
                             .collect(),
                     )
@@ -1973,12 +1974,17 @@ pub fn substitute_ty<S: std::hash::BuildHasher>(
     subst: &HashMap<String, ResolvedTy, S>,
 ) -> ResolvedTy {
     match ty {
-        ResolvedTy::Named { name, args } if args.is_empty() && subst.contains_key(name) => {
+        ResolvedTy::Named { name, args, .. } if args.is_empty() && subst.contains_key(name) => {
             subst[name].clone()
         }
-        ResolvedTy::Named { name, args } => ResolvedTy::Named {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+        } => ResolvedTy::Named {
             name: name.clone(),
             args: args.iter().map(|a| substitute_ty(a, subst)).collect(),
+            builtin: *builtin,
         },
         ResolvedTy::Tuple(items) => {
             ResolvedTy::Tuple(items.iter().map(|t| substitute_ty(t, subst)).collect())
@@ -2031,7 +2037,7 @@ fn contains_abstract_symbol(
             .any(|(_, params)| params.iter().any(|p| p == name))
     };
     match ty {
-        ResolvedTy::Named { name, args } => {
+        ResolvedTy::Named { name, args, .. } => {
             if args.is_empty() && is_type_param(name) {
                 return true;
             }
@@ -2505,7 +2511,7 @@ impl LowerCtx {
     /// at the outer non-generic callsite where `type_args` is `[]`.
     fn contains_abstract_type_param(&self, ty: &ResolvedTy) -> bool {
         match ty {
-            ResolvedTy::Named { name, args } => {
+            ResolvedTy::Named { name, args, .. } => {
                 if self.is_type_param_symbol(name) {
                     return true;
                 }
@@ -3163,6 +3169,7 @@ impl LowerCtx {
                         .canonical_name()
                         .to_string(),
                     args: vec![ResolvedTy::Unit],
+                    builtin: Some(hew_types::BuiltinType::LocalPid),
                 }],
                 linkage: None,
                 type_params: Vec::new(),
@@ -5704,11 +5711,13 @@ impl LowerCtx {
                     ResolvedTy::from_ty(&ty).unwrap_or(ResolvedTy::Named {
                         name: "regex.Pattern".to_string(),
                         args: Vec::new(),
+                        builtin: None,
                     })
                 } else {
                     ResolvedTy::Named {
                         name: "regex.Pattern".to_string(),
                         args: Vec::new(),
+                        builtin: None,
                     }
                 };
                 // No named captures from a standalone literal — captures are
@@ -5738,6 +5747,7 @@ impl LowerCtx {
                     let machine_ty = ResolvedTy::Named {
                         name: machine_name.clone(),
                         args: Vec::new(),
+                        builtin: None,
                     };
                     (
                         HirExprKind::MachineVariantCtor {
@@ -6014,6 +6024,7 @@ impl LowerCtx {
                                 ResolvedTy::Named {
                                     name: type_name.clone(),
                                     args: Vec::new(),
+                                    builtin: None,
                                 }
                             }
                         }
@@ -6021,6 +6032,7 @@ impl LowerCtx {
                         ResolvedTy::Named {
                             name: type_name.clone(),
                             args: Vec::new(),
+                            builtin: None,
                         }
                     };
                     (
@@ -6059,6 +6071,7 @@ impl LowerCtx {
                     let machine_ty = ResolvedTy::Named {
                         name: machine_name.clone(),
                         args: Vec::new(),
+                        builtin: None,
                     };
                     // Break out of the match to let the outer wrapper build the HirExpr.
                     // We use a nested block that evaluates to `(kind, ty)`.
@@ -6109,6 +6122,7 @@ impl LowerCtx {
                         ResolvedTy::Named {
                             name: name.clone(),
                             args: resolved_type_args,
+                            builtin: None,
                         },
                     )
                 }
@@ -7028,6 +7042,7 @@ impl LowerCtx {
         ResolvedTy::Named {
             name: "Duplex".to_string(),
             args: vec![msg_ty, reply_ty],
+            builtin: Some(hew_types::BuiltinType::Duplex),
         }
     }
 
@@ -7076,6 +7091,7 @@ impl LowerCtx {
                     ResolvedTy::Named {
                         name: "Generator".to_string(),
                         args: vec![ResolvedTy::Unit, ResolvedTy::Unit],
+                        builtin: Some(hew_types::BuiltinType::Generator),
                     }
                 }
             }
@@ -7091,11 +7107,12 @@ impl LowerCtx {
             ResolvedTy::Named {
                 name: "Generator".to_string(),
                 args: vec![ResolvedTy::Unit, ResolvedTy::Unit],
+                builtin: Some(hew_types::BuiltinType::Generator),
             }
         };
 
         let (yield_ty, return_ty) = match &gen_ty {
-            ResolvedTy::Named { name, args } if name == "Generator" && args.len() == 2 => {
+            ResolvedTy::Named { name, args, .. } if name == "Generator" && args.len() == 2 => {
                 (args[0].clone(), args[1].clone())
             }
             other => {
@@ -7728,6 +7745,7 @@ impl LowerCtx {
                             ResolvedTy::Named {
                                 name: tagged_union_name.clone(),
                                 args: Vec::new(),
+                                builtin: None,
                             }
                         }
                     }
@@ -7738,6 +7756,7 @@ impl LowerCtx {
                     ResolvedTy::Named {
                         name: tagged_union_name.clone(),
                         args: Vec::new(),
+                        builtin: None,
                     }
                 };
                 return (
@@ -7839,6 +7858,7 @@ impl LowerCtx {
                     _ => ResolvedTy::Named {
                         name: name.clone(),
                         args,
+                        builtin: None,
                     },
                 }
             }
@@ -8463,7 +8483,10 @@ impl LowerCtx {
         // instantiations, including nested ones inside the type args.
         let mut worklist: Vec<ResolvedTy> = vec![resolved];
         while let Some(ty) = worklist.pop() {
-            let ResolvedTy::Named { ref name, ref args } = ty else {
+            let ResolvedTy::Named {
+                ref name, ref args, ..
+            } = ty
+            else {
                 continue;
             };
             // Only act if this enum has type params and this call provides args.
@@ -8587,6 +8610,7 @@ impl LowerCtx {
                     ResolvedTy::Named {
                         name: type_name_owned.clone(),
                         args: Vec::new(),
+                        builtin: None,
                     }
                 }
             }
@@ -8602,6 +8626,7 @@ impl LowerCtx {
             ResolvedTy::Named {
                 name: type_name_owned.clone(),
                 args: Vec::new(),
+                builtin: None,
             }
         };
         (
@@ -8829,10 +8854,12 @@ impl LowerCtx {
         let machine_ty = ResolvedTy::Named {
             name: machine_name.clone(),
             args: Vec::new(),
+            builtin: None,
         };
         let event_ty = ResolvedTy::Named {
             name: format!("{machine_name}Event"),
             args: Vec::new(),
+            builtin: None,
         };
         let _state = self.bind("state".to_string(), machine_ty, false, span.clone());
         let _event = self.bind("event".to_string(), event_ty, false, span);
@@ -14097,8 +14124,8 @@ fn render_elem_ty(ty: &ResolvedTy) -> String {
         ResolvedTy::F64 => "f64".to_string(),
         ResolvedTy::String => "String".to_string(),
         ResolvedTy::Unit => "()".to_string(),
-        ResolvedTy::Named { name, args } if args.is_empty() => name.clone(),
-        ResolvedTy::Named { name, args } => {
+        ResolvedTy::Named { name, args, .. } if args.is_empty() => name.clone(),
+        ResolvedTy::Named { name, args, .. } => {
             let arg_list = args
                 .iter()
                 .map(render_elem_ty)
@@ -14128,7 +14155,9 @@ fn check_vec_index_element_type(
         return;
     };
     let elem_ty = match &resolved {
-        ResolvedTy::Named { name, args } if name == "Vec" && !args.is_empty() => args[0].clone(),
+        ResolvedTy::Named { name, args, .. } if name == "Vec" && !args.is_empty() => {
+            args[0].clone()
+        }
         // Not a Vec<T>: this might be a user-defined type with an `at` method
         // (the HIR lower handles that path) or an array literal (separate
         // lowering). The gate only governs Vec<T> runtime ABI dispatch.
@@ -14893,6 +14922,7 @@ mod tests {
                     == vec![ResolvedTy::Named {
                         name: "Option".to_string(),
                         args: vec![ResolvedTy::I64],
+                        builtin: None,
                     }]
         });
 

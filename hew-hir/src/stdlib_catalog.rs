@@ -119,7 +119,9 @@ impl BuiltinTy {
                 args: vec![ResolvedTy::Named {
                     name: "T".to_string(),
                     args: vec![],
+                    builtin: None,
                 }],
+                builtin: Some(hew_types::BuiltinType::Vec),
             },
         }
     }

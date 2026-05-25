@@ -171,7 +171,7 @@ fn static_child_access_dest_is_actor_handle_typed_local_pid() {
         .expect("handle local index in bounds");
     assert!(
         matches!(ty,
-            hew_types::ResolvedTy::Named { name, args }
+            hew_types::ResolvedTy::Named { name, args, .. }
             if name == "LocalPid" && args.len() == 1
                && matches!(&args[0],
                    hew_types::ResolvedTy::Named { name: inner, .. }

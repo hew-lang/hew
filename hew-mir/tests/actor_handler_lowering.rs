@@ -74,7 +74,9 @@ fn local_pid_of(actor_name: &str) -> ResolvedTy {
         args: vec![ResolvedTy::Named {
             name: actor_name.to_string(),
             args: vec![],
+            builtin: None,
         }],
+        builtin: None,
     }
 }
 
@@ -85,6 +87,7 @@ fn self_field_expr(ids: &mut IdGen, actor_name: &str, field: &str) -> HirExpr {
         ty: ResolvedTy::Named {
             name: actor_name.to_string(),
             args: vec![],
+            builtin: None,
         },
         value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,

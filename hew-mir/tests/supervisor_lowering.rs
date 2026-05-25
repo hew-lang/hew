@@ -156,7 +156,9 @@ fn supervisor_three_children_with_wired_to_dep_emits_topo_ordered_spawn_sequence
             args: vec![hew_types::ResolvedTy::Named {
                 name: "App".to_string(),
                 args: vec![],
+                builtin: None,
             }],
+            builtin: None,
         },
         "bootstrap returns LocalPid<App> so spawn-site callers receive a typed handle"
     );
@@ -315,7 +317,9 @@ fn spawn_supervisor_routes_to_bootstrap_call_with_local_pid_return() {
             args: vec![ResolvedTy::Named {
                 name: "App".to_string(),
                 args: vec![],
+                builtin: None,
             }],
+            builtin: None,
         },
         "bootstrap call destination must have type LocalPid<App>"
     );

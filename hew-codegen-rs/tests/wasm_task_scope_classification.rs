@@ -29,6 +29,7 @@ fn task_scope_ty() -> ResolvedTy {
     ResolvedTy::Named {
         name: "HewTaskScope".to_string(),
         args: vec![],
+        builtin: None,
     }
 }
 
@@ -122,6 +123,7 @@ fn pipeline_with_task_scope_spawn_call() -> IrPipeline {
             locals: vec![ResolvedTy::Named {
                 name: "HewTask".to_string(),
                 args: vec![],
+                builtin: None,
             }],
             blocks: raw_blocks.clone(),
             decisions: vec![],

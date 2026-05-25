@@ -274,6 +274,7 @@ fn builtin_connection_without_record_layout_classifies_as_iohandle() {
         &ResolvedTy::Named {
             name: "Connection".to_string(),
             args: vec![],
+            builtin: None,
         },
         &[], // empty record_layouts → builtin path
         &mut visited,
@@ -303,6 +304,7 @@ fn user_type_named_vec_does_not_route_to_container_arm() {
         &ResolvedTy::Named {
             name: "Vec".to_string(),
             args: vec![], // no args — a user record-named "Vec"
+            builtin: None,
         },
         &records,
         &mut visited,
@@ -332,6 +334,7 @@ fn user_type_named_actor_ref_does_not_route_to_bitcopy_arm() {
         &ResolvedTy::Named {
             name: "ActorRef".to_string(),
             args: vec![],
+            builtin: None,
         },
         &records,
         &mut visited,
@@ -457,6 +460,7 @@ fn workspace_visited_set_terminates_classifier_directly() {
             ResolvedTy::Named {
                 name: "Cyclic".to_string(),
                 args: vec![],
+                builtin: None,
             },
             ResolvedTy::I64,
         ],
@@ -465,6 +469,7 @@ fn workspace_visited_set_terminates_classifier_directly() {
         &[ResolvedTy::Named {
             name: "Cyclic".to_string(),
             args: vec![],
+            builtin: None,
         }],
         &records,
     );
@@ -489,6 +494,7 @@ fn missing_record_layout_surfaces_diagnostic_not_silent_none() {
         &ResolvedTy::Named {
             name: "DoesNotExist".to_string(),
             args: vec![],
+            builtin: None,
         },
         &[],
         &mut visited,

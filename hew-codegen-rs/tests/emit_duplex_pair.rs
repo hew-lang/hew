@@ -29,6 +29,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
     let duplex_ty = ResolvedTy::Named {
         name: "Duplex".to_string(),
         args: vec![],
+        builtin: None,
     };
     let raw_blocks = vec![BasicBlock {
         id: 0,

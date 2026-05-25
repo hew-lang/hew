@@ -198,6 +198,7 @@ fn state_clone_chatroom_string_and_vec_clone_with_rollback() {
             ResolvedTy::Named {
                 name: "Vec".into(),
                 args: vec![ResolvedTy::I32],
+                builtin: None,
             },
         ],
         vec![
@@ -214,6 +215,7 @@ fn state_clone_chatroom_string_and_vec_clone_with_rollback() {
             ResolvedTy::Named {
                 name: "Vec".into(),
                 args: vec![ResolvedTy::I32],
+                builtin: None,
             },
         ],
     };
@@ -281,14 +283,17 @@ fn state_clone_router_three_vecs_full_rollback_chain() {
             ResolvedTy::Named {
                 name: "Vec".into(),
                 args: vec![ResolvedTy::I64],
+                builtin: None,
             },
             ResolvedTy::Named {
                 name: "Vec".into(),
                 args: vec![ResolvedTy::I64],
+                builtin: None,
             },
             ResolvedTy::Named {
                 name: "Vec".into(),
                 args: vec![ResolvedTy::I64],
+                builtin: None,
             },
         ],
         vec![
@@ -338,6 +343,7 @@ fn state_clone_workspace_nested_user_record_synthesizes_record_helper() {
             ResolvedTy::Named {
                 name: "Vec".into(),
                 args: vec![ResolvedTy::I32],
+                builtin: None,
             }, // payload
         ],
     };
@@ -347,6 +353,7 @@ fn state_clone_workspace_nested_user_record_synthesizes_record_helper() {
             ResolvedTy::Named {
                 name: "Entry".into(),
                 args: vec![],
+                builtin: None,
             }, // entry
             ResolvedTy::String, // name
         ],
@@ -358,6 +365,7 @@ fn state_clone_workspace_nested_user_record_synthesizes_record_helper() {
             ResolvedTy::Named {
                 name: "Entry".into(),
                 args: vec![],
+                builtin: None,
             },
             ResolvedTy::String,
         ],
@@ -416,6 +424,7 @@ fn state_clone_connection_actor_returns_null_up_front() {
     let storage_ty = ResolvedTy::Named {
         name: "LocalPid".into(),
         args: vec![],
+        builtin: None,
     };
     let conn_actor = classified_actor(
         "NetReader",
@@ -491,6 +500,7 @@ fn state_clone_alloc_fail_per_field_rollback_cardinality_and_order() {
             ResolvedTy::Named {
                 name: "Vec".into(),
                 args: vec![ResolvedTy::I32],
+                builtin: None,
             },
             ResolvedTy::String,
             ResolvedTy::String,
@@ -639,6 +649,7 @@ fn state_clone_hashmap_and_hashset_route_to_runtime_helpers() {
     let storage_ty = ResolvedTy::Named {
         name: "LocalPid".into(),
         args: vec![],
+        builtin: None,
     };
     let actor = classified_actor(
         "MapAndSet",

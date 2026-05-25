@@ -65,6 +65,7 @@ fn traffic_light_uses_i8_tagged_union_struct() {
     let machine_ty = ResolvedTy::Named {
         name: "TrafficLight".to_string(),
         args: Vec::new(),
+        builtin: None,
     };
     let mut pipeline = empty_pipeline(vec![traffic_light_layout()]);
     pipeline.raw_mir = vec![RawMirFunction {
@@ -94,6 +95,7 @@ fn repeated_machine_uses_share_one_named_struct_definition() {
     let machine_ty = ResolvedTy::Named {
         name: "TrafficLight".to_string(),
         args: Vec::new(),
+        builtin: None,
     };
     let mut pipeline = empty_pipeline(vec![traffic_light_layout()]);
     pipeline.raw_mir = vec![RawMirFunction {
@@ -124,6 +126,7 @@ fn two_hundred_fifty_seven_states_use_i16_tag() {
     let machine_ty = ResolvedTy::Named {
         name: "WideTags".to_string(),
         args: Vec::new(),
+        builtin: None,
     };
     let variants = (0..257)
         .map(|idx| unit_variant(&format!("S{idx}")))
@@ -160,6 +163,7 @@ fn constructor_pipeline() -> IrPipeline {
     let machine_ty = ResolvedTy::Named {
         name: "Fiction".to_string(),
         args: Vec::new(),
+        builtin: None,
     };
     let layout = MachineLayout {
         name: "Fiction".to_string(),

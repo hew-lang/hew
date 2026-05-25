@@ -16,6 +16,7 @@
 
 use std::fmt;
 
+use crate::builtin_type::BuiltinType;
 use crate::ty::{TraitObjectBound, Ty, TypeVar};
 
 /// A fully-resolved, concrete type that has crossed the checker output
@@ -83,6 +84,13 @@ pub enum ResolvedTy {
         name: String,
         /// Generic type arguments
         args: Vec<ResolvedTy>,
+        /// Compiler-known builtin discriminator. `Some(_)` means this `Named`
+        /// resolved to a canonical builtin from `builtin_type.rs::BUILTIN_TYPES`
+        /// during name resolution; `None` means it is a user-defined record/
+        /// enum/actor name or a type parameter. Consumers that need to
+        /// discriminate builtin vs user dispatch on this field, NOT on the
+        /// `name` string. Propagated round-trip-totally from `Ty::Named.builtin`.
+        builtin: Option<BuiltinType>,
     },
     /// Function type: `fn(T1, T2) -> R`.
     Function {
@@ -262,9 +270,14 @@ impl ResolvedTy {
             Ty::Tuple(elems) => Ok(ResolvedTy::Tuple(Self::convert_vec(elems)?)),
             Ty::Array(elem, size) => Ok(ResolvedTy::Array(Box::new(Self::from_ty(elem)?), *size)),
             Ty::Slice(elem) => Ok(ResolvedTy::Slice(Box::new(Self::from_ty(elem)?))),
-            Ty::Named { name, args, .. } => Ok(ResolvedTy::Named {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => Ok(ResolvedTy::Named {
                 name: name.clone(),
                 args: Self::convert_vec(args)?,
+                builtin: *builtin,
             }),
             Ty::Function { params, ret } => Ok(ResolvedTy::Function {
                 params: Self::convert_vec(params)?,
@@ -349,9 +362,13 @@ impl ResolvedTy {
             ResolvedTy::Tuple(elems) => Ty::Tuple(elems.iter().map(Self::to_ty).collect()),
             ResolvedTy::Array(elem, size) => Ty::Array(Box::new(elem.to_ty()), *size),
             ResolvedTy::Slice(elem) => Ty::Slice(Box::new(elem.to_ty())),
-            ResolvedTy::Named { name, args } => Ty::Named {
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin,
+            } => Ty::Named {
                 name: name.clone(),
-                builtin: crate::lookup_builtin_type(name),
+                builtin: *builtin,
                 args: args.iter().map(Self::to_ty).collect(),
             },
             ResolvedTy::Function { params, ret } => Ty::Function {
@@ -389,6 +406,36 @@ impl ResolvedTy {
                     .collect(),
             },
             ResolvedTy::Task(inner) => Ty::Task(Box::new(inner.to_ty())),
+        }
+    }
+
+    /// Construct a `Named` for a known builtin. Use this in production code
+    /// when the call site holds an actual [`BuiltinType`] — it prevents
+    /// "I'll just pass `None`" sites that would silently fall onto the
+    /// user-record branch of every downstream discriminator.
+    #[must_use]
+    pub fn named_builtin(
+        name: impl Into<String>,
+        kind: BuiltinType,
+        args: Vec<ResolvedTy>,
+    ) -> Self {
+        ResolvedTy::Named {
+            name: name.into(),
+            args,
+            builtin: Some(kind),
+        }
+    }
+
+    /// Construct a `Named` for a user-defined record/enum/actor name (or a
+    /// type parameter reference). Sets `builtin: None` explicitly so the
+    /// intent ("not a builtin") is named at the call site rather than being
+    /// inferred from an absent field.
+    #[must_use]
+    pub fn named_user(name: impl Into<String>, args: Vec<ResolvedTy>) -> Self {
+        ResolvedTy::Named {
+            name: name.into(),
+            args,
+            builtin: None,
         }
     }
 
@@ -514,6 +561,7 @@ mod tests {
             Ok(ResolvedTy::Named {
                 name: "Foo".into(),
                 args: vec![ResolvedTy::I32, ResolvedTy::String],
+                builtin: None,
             })
         );
     }
@@ -594,6 +642,66 @@ mod tests {
             ResolvedTy::from_ty(&ty),
             Err(BoundaryError::UnresolvedInference { var })
         );
+    }
+
+    #[test]
+    fn round_trip_preserves_builtin_for_user_shadowed_names() {
+        // Smoke test for the §5.5 fix: a user-declared type whose *name*
+        // collides with a builtin (here `Vec`) MUST round-trip with
+        // `builtin: None` preserved. Before the fix, `to_ty` re-derived
+        // via `lookup_builtin_type(name)` and silently re-tagged the user
+        // type as the builtin.
+        let user_vec = Ty::Named {
+            name: "Vec".into(),
+            args: vec![Ty::I32],
+            builtin: None,
+        };
+        let resolved = ResolvedTy::from_ty(&user_vec).expect("concrete Ty resolves");
+        // `from_ty` preserves the discriminator.
+        match &resolved {
+            ResolvedTy::Named { builtin, .. } => {
+                assert_eq!(*builtin, None, "from_ty must preserve user-side `None`");
+            }
+            other => panic!("expected ResolvedTy::Named, got {other:?}"),
+        }
+        // `to_ty` consumes the carried discriminator (does NOT re-derive
+        // by name). Round-trip equality holds.
+        assert_eq!(resolved.to_ty(), user_vec);
+
+        // Sibling case: a true builtin round-trips with `Some(_)` intact.
+        let builtin_vec = Ty::Named {
+            name: "Vec".into(),
+            args: vec![Ty::I32],
+            builtin: Some(crate::BuiltinType::Vec),
+        };
+        let resolved_b = ResolvedTy::from_ty(&builtin_vec).expect("concrete Ty resolves");
+        match &resolved_b {
+            ResolvedTy::Named { builtin, .. } => {
+                assert_eq!(*builtin, Some(crate::BuiltinType::Vec));
+            }
+            other => panic!("expected ResolvedTy::Named, got {other:?}"),
+        }
+        assert_eq!(resolved_b.to_ty(), builtin_vec);
+    }
+
+    #[test]
+    fn named_constructor_helpers_set_builtin_explicitly() {
+        let user = ResolvedTy::named_user("Connection", vec![]);
+        assert!(matches!(
+            user,
+            ResolvedTy::Named { ref name, builtin: None, .. } if name == "Connection"
+        ));
+
+        let builtin =
+            ResolvedTy::named_builtin("Vec", crate::BuiltinType::Vec, vec![ResolvedTy::I32]);
+        assert!(matches!(
+            builtin,
+            ResolvedTy::Named {
+                ref name,
+                builtin: Some(crate::BuiltinType::Vec),
+                ..
+            } if name == "Vec"
+        ));
     }
 
     #[test]
@@ -691,6 +799,7 @@ mod tests {
         let resolved = ResolvedTy::Task(Box::new(ResolvedTy::Named {
             name: "User".into(),
             args: Vec::new(),
+            builtin: None,
         }));
         assert_eq!(resolved.to_string(), "<task<User>>");
     }

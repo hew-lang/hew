@@ -102,7 +102,9 @@ fn local_pid_ty() -> ResolvedTy {
         args: vec![ResolvedTy::Named {
             name: "Probe".to_string(),
             args: vec![],
+            builtin: None,
         }],
+        builtin: None,
     }
 }
 

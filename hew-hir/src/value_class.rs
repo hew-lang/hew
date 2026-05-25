@@ -162,7 +162,7 @@ fn collect_named_type_names(ty: &ResolvedTy, names: &mut Vec<String>) {
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
             collect_named_type_names(elem, names);
         }
-        ResolvedTy::Named { name, args } => {
+        ResolvedTy::Named { name, args, .. } => {
             names.push(name.clone());
             for arg in args {
                 collect_named_type_names(arg, names);
@@ -250,6 +250,7 @@ mod tests {
                 args: vec![ResolvedTy::Named {
                     name: "Foo".to_string(),
                     args: Vec::new(),
+                    builtin: None,
                 }],
                 assoc_bindings: Vec::new(),
             }],
@@ -267,6 +268,7 @@ mod tests {
                     ResolvedTy::Named {
                         name: "Foo".to_string(),
                         args: Vec::new(),
+                        builtin: None,
                     },
                     ResolvedTy::TraitObject {
                         traits: vec![ResolvedTraitBound {
@@ -274,6 +276,7 @@ mod tests {
                             args: vec![ResolvedTy::Named {
                                 name: "Bar".to_string(),
                                 args: Vec::new(),
+                                builtin: None,
                             }],
                             assoc_bindings: Vec::new(),
                         }],

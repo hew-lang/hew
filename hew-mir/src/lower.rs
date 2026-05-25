@@ -506,6 +506,98 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                             .collect(),
                     });
                 }
+                // W2.002 Stage 1 — per-actor state-field clone
+                // classification. Run BEFORE constructing the
+                // `ActorLayout` so the classifier outcome decides
+                // whether to populate the `state_clone_fn_symbol` /
+                // `state_drop_fn_symbol` pair (paired Some/None per the
+                // model.rs field doc; substrate-first per dispatch-
+                // invariant #1).
+                //
+                // The classifier sees the cumulative `record_layouts`
+                // built so far; user records declared above the actor
+                // in source order are visible. Records declared *below*
+                // the actor are not — but the v0.5 corpus has no
+                // forward-reference users, and the HIR-side resolution
+                // already rejects forward references at type-resolve
+                // time. If a future amendment lifts the
+                // forward-reference restriction, this loop will need a
+                // two-pass pattern (collect records first, then build
+                // actor layouts) — for now this is the same
+                // declaration-order invariant the rest of the loop
+                // relies on.
+                let state_field_tys: Vec<ResolvedTy> = actor
+                    .state_fields
+                    .iter()
+                    .map(|field| field.ty.clone())
+                    .collect();
+                let classification = crate::state_clone::classify_actor_state_fields(
+                    &state_field_tys,
+                    &record_layouts,
+                );
+                let (clone_sym, drop_sym, clone_kinds) = match classification {
+                    Ok(kinds) => (
+                        Some(crate::state_clone::mangle_actor_state_clone_fn(&actor.name)),
+                        Some(crate::state_clone::mangle_actor_state_drop_fn(&actor.name)),
+                        Some(kinds),
+                    ),
+                    Err(err) => {
+                        // Locate the failing field index by re-running
+                        // the classifier per-field with a fresh visited
+                        // set. This is O(n) on the field count (always
+                        // small — actor state has at most a handful of
+                        // fields in the corpus) and produces a precise
+                        // diagnostic anchor rather than blaming the
+                        // whole actor. If every per-field run somehow
+                        // succeeds (impossible given the collected
+                        // error, but defensive), fall back to index 0
+                        // with a marker reason rather than `unreachable!`.
+                        let mut field_index = 0usize;
+                        let mut field_name = actor
+                            .state_fields
+                            .first()
+                            .map(|f| f.name.clone())
+                            .unwrap_or_default();
+                        let mut found = false;
+                        for (idx, field) in actor.state_fields.iter().enumerate() {
+                            let mut v = std::collections::HashSet::new();
+                            if crate::state_clone::classify_state_field(
+                                &field.ty,
+                                &record_layouts,
+                                &mut v,
+                            )
+                            .is_err()
+                            {
+                                field_index = idx;
+                                field_name.clone_from(&field.name);
+                                found = true;
+                                break;
+                            }
+                        }
+                        let reason = if found {
+                            format!("{err}")
+                        } else {
+                            format!(
+                                "{err} (per-field re-run could not localise; \
+                                 classifier saw an aggregate error)"
+                            )
+                        };
+                        diagnostics.push(crate::model::MirDiagnostic {
+                            kind:
+                                crate::model::MirDiagnosticKind::ActorStateCloneClassificationFailed {
+                                    actor: actor.name.clone(),
+                                    field_index,
+                                    field_name,
+                                    reason: reason.clone(),
+                                },
+                            note: format!(
+                                "actor `{}` state-field classifier failed: {}",
+                                actor.name, reason
+                            ),
+                        });
+                        (None, None, None)
+                    }
+                };
                 actor_layouts.push(crate::model::ActorLayout {
                     name: actor.name.clone(),
                     state_field_names: actor
@@ -552,6 +644,9 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     max_heap_bytes: actor.max_heap_bytes,
                     cycle_capable: actor.cycle_capable,
                     handlers: lower_actor_handler_layouts(actor),
+                    state_clone_fn_symbol: clone_sym,
+                    state_drop_fn_symbol: drop_sym,
+                    state_field_clone_kinds: clone_kinds,
                 });
             }
             HirItem::Supervisor(sup) => {

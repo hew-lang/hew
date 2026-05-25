@@ -310,6 +310,44 @@ pub struct ActorLayout {
     pub cycle_capable: bool,
     /// Receive handlers in message-type order.
     pub handlers: Vec<ActorHandlerLayout>,
+    /// Mangled symbol of the per-actor synthesized C-ABI clone fn that
+    /// codegen (Stage 2/3 of W2.002) emits and that the W2.001 runtime
+    /// registers via `hew_actor_set_state_clone`. `None` for layouts
+    /// produced before W2.002 Stage 2 lands or for actor declarations
+    /// whose state shape is not yet classifier-supported (per
+    /// `state_field_clone_kinds`). Stage 2 codegen fail-closes
+    /// (`CodegenError::FailClosed`) when this is `None` at a spawn or
+    /// supervisor-child site — it never silently elides the
+    /// registration.
+    ///
+    /// Substrate-first (dispatch-invariant #1): the field lives on
+    /// every `ActorLayout`, populated even for trivial-state actors
+    /// where the synthesized body is `malloc + memcpy`. Plan
+    /// `.tmp/orchestration/plans/waves/w2/w2.002-state-clone-codegen-
+    /// plan.md` §4.2 emission policy.
+    pub state_clone_fn_symbol: Option<String>,
+    /// Companion to `state_clone_fn_symbol`: mangled symbol of the
+    /// per-actor synthesized C-ABI drop fn that the runtime registers
+    /// via `hew_actor_set_state_drop`. Paired emission is load-bearing
+    /// — `state_clone_fn_symbol = Some` with `state_drop_fn_symbol =
+    /// None` would convert a memory leak into a use-after-free once
+    /// Q185(c) is lifted (plan §8.8). Stage 2 codegen consumes the
+    /// pair atomically.
+    pub state_drop_fn_symbol: Option<String>,
+    /// Per-state-field clone classification (W2.002 Stage 1). Index
+    /// `i` corresponds to `state_field_tys[i]` /
+    /// `state_field_names[i]`. The vector is empty iff
+    /// `state_field_tys` is empty (zero-state actors); otherwise it
+    /// has the same length as `state_field_tys`.
+    ///
+    /// `None` for layouts where Stage 1 classification failed
+    /// (`ClassificationError` surfaced as a `MirDiagnostic` and
+    /// `state_clone_fn_symbol` / `state_drop_fn_symbol` are also
+    /// `None` for the same actor — paired absence). Stage 2 codegen
+    /// must skip clone+drop registration for such actors and rely on
+    /// the W2.001 runtime's `state_clone_fn = NULL` fall-through
+    /// (which blocks supervisor restart per `actor.rs:766`).
+    pub state_field_clone_kinds: Option<Vec<crate::state_clone::StateFieldCloneKind>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2637,6 +2675,24 @@ pub enum MirDiagnosticKind {
         symbol: String,
         existing: String,
         duplicate: String,
+    },
+    /// W2.002 Stage 1: per-actor state-field clone classification could
+    /// not place one of the state fields into the closed
+    /// `StateFieldCloneKind` variant set. Carries the actor name, the
+    /// 0-based field index, the field name (for diagnostic locality),
+    /// and the underlying `ClassificationError`'s `Display` rendering.
+    ///
+    /// Surfaced from `classify_actor_state_fields` during
+    /// `lower_hir_module`. Stage 2 codegen MUST NOT emit clone/drop
+    /// registration for any actor whose `state_clone_fn_symbol` is
+    /// `None`; that field is set to `None` whenever this diagnostic
+    /// fires, so the two states track together (paired absence —
+    /// substrate-first per dispatch-invariant #1).
+    ActorStateCloneClassificationFailed {
+        actor: String,
+        field_index: usize,
+        field_name: String,
+        reason: String,
     },
 }
 

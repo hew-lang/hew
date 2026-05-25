@@ -92,6 +92,9 @@ fn spawn_pipeline() -> IrPipeline {
             return_ty: ResolvedTy::Unit,
             requires_state_guard: true,
         }],
+        state_clone_fn_symbol: None,
+        state_drop_fn_symbol: None,
+        state_field_clone_kinds: None,
     };
 
     IrPipeline {

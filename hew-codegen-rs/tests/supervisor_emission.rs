@@ -59,6 +59,9 @@ fn supervisor_pipeline() -> IrPipeline {
         max_heap_bytes: None,
         cycle_capable: false,
         handlers: vec![],
+        state_clone_fn_symbol: None,
+        state_drop_fn_symbol: None,
+        state_field_clone_kinds: None,
     };
 
     // Bootstrap function declaration. The body is a stub — codegen's
@@ -258,6 +261,9 @@ fn on_crash_pipeline() -> IrPipeline {
         max_heap_bytes: None,
         cycle_capable: false,
         handlers: vec![],
+        state_clone_fn_symbol: None,
+        state_drop_fn_symbol: None,
+        state_field_clone_kinds: None,
     };
 
     // Minimal on_crash function: ActorHandler ABI, Unit return, no params.

@@ -63,6 +63,9 @@ fn spawn_pipeline(
         max_heap_bytes,
         cycle_capable,
         handlers: vec![],
+        state_clone_fn_symbol: None,
+        state_drop_fn_symbol: None,
+        state_field_clone_kinds: None,
     };
 
     IrPipeline {

@@ -1,4 +1,8 @@
 //! Scope lifecycle integration tests.
+#![allow(
+    deprecated,
+    reason = "Tests for deprecated HewScope; deferred to v0.5.1"
+)]
 //!
 //! Tests structured concurrency scopes: creation, actor tracking,
 //! cancellation propagation, and cleanup behaviour. The scope module

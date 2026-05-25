@@ -65,6 +65,10 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
+#![allow(
+    deprecated,
+    reason = "TestScope wraps HewScope; both deferred to v0.5.1"
+)]
 // This crate's whole purpose is to give tests a safer surface over the runtime
 // FFI; the strict workspace clippy lints aimed at production library code
 // produce false positives here. Each allow names the reason once at module

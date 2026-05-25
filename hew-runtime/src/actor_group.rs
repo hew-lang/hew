@@ -6,6 +6,10 @@
 //! This is the intended migration target for new structured-concurrency
 //! runtime/codegen paths while [`HewScope`](super::scope::HewScope) remains
 //! as the stable stack-allocated ABI for already-generated code.
+//!
+//! **Note:** `HewActorGroup` is currently unintegrated and retained as a
+//! reference design for future heap-allocated actor groups. It is not
+//! currently emitted by codegen.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."

@@ -36,7 +36,12 @@ fn pipeline_with_tc(source: &str) -> IrPipeline {
     // HIR may emit diagnostics for constructs outside the E1 bridge subset
     // (e.g. NotYetImplemented for features not yet wired). Filter-assert
     // that only the expected kinds appear rather than asserting empty.
-    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     lower_hir_module(&output.module)
 }
 

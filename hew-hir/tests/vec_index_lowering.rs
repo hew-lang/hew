@@ -33,7 +33,12 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    lower_program(&parsed.program, &tc_output, &ResolutionCtx)
+    lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 // ---------------------------------------------------------------------------

@@ -27,7 +27,12 @@ fn typecheck_and_lower(source: &str) -> hew_hir::LowerOutput {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tco = checker.check_program(&parsed.program);
     assert!(tco.errors.is_empty(), "type errors: {:?}", tco.errors);
-    lower_program(&parsed.program, &tco, &ResolutionCtx)
+    lower_program(
+        &parsed.program,
+        &tco,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 /// Find the `HirExprKind::Closure` node inside the body of a top-level

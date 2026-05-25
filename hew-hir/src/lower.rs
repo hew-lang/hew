@@ -34,6 +34,40 @@ use crate::node::{
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
 
+/// Target architecture for compilation. Subset of the full `TargetSpec`
+/// from `hew-cli/src/target.rs`, exposed at the HIR boundary so target gates
+/// can reject unsupported constructs before codegen. Kept minimal to avoid
+/// introducing a `hew-hir → hew-cli` dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetArch {
+    Aarch64,
+    X86_64,
+    Wasm32,
+    /// Any other target (e.g. riscv64, powerpc64). Used for target gates
+    /// that reject coroutine-dependent constructs on non-x86_64/aarch64.
+    Other,
+}
+
+impl TargetArch {
+    /// Returns the target architecture of the host running the compiler.
+    /// Used for tests that don't need to test cross-compilation behavior.
+    #[must_use]
+    pub fn host() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        return TargetArch::X86_64;
+        #[cfg(target_arch = "aarch64")]
+        return TargetArch::Aarch64;
+        #[cfg(target_arch = "wasm32")]
+        return TargetArch::Wasm32;
+        #[cfg(not(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "wasm32"
+        )))]
+        return TargetArch::Other;
+    }
+}
+
 type ScopeBinding = (BindingId, ResolvedTy, std::ops::Range<usize>);
 type ScopeMap = HashMap<String, ScopeBinding>;
 type OuterClosureBinding = (String, ResolvedTy, std::ops::Range<usize>);
@@ -147,6 +181,11 @@ impl LowerOutput {
     ///   site was accepted by the checker but its type-arg entry was absent,
     ///   meaning the downstream `Named { args: [] }` shape would be wrong.
     ///
+    /// - [`HirDiagnosticKind::TargetCoroutineUnsupported`] — the program uses
+    ///   actors/tasks/coroutines on a target that does not support them.
+    /// - [`HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm`] — the
+    ///   program calls blocking channel recv on wasm32.
+    ///
     /// Callers that want to continue despite non-fatal diagnostics should
     /// check `.diagnostics` directly.  This method is the recommended
     /// entry-point for production pipelines because it makes the fail-closed
@@ -167,6 +206,8 @@ impl LowerOutput {
                 crate::HirDiagnosticKind::CheckerBoundaryViolation { .. }
                     | crate::HirDiagnosticKind::RecordLayoutMissing { .. }
                     | crate::HirDiagnosticKind::ImportedImplBodyMissingPrivateHelper { .. }
+                    | crate::HirDiagnosticKind::TargetCoroutineUnsupported { .. }
+                    | crate::HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm { .. }
             )
         });
         if has_fatal {
@@ -221,13 +262,26 @@ pub fn lower_program(
     program: &Program,
     type_check_output: &TypeCheckOutput,
     ctx: &ResolutionCtx,
+    target_arch: TargetArch,
 ) -> LowerOutput {
     lower_program_with_mono_cap(
         program,
         type_check_output,
         ctx,
         MONOMORPHISATION_REGISTRY_CAP,
+        target_arch,
     )
+}
+
+/// Convenience helper that defaults to the host's target architecture.
+/// Used primarily in tests that don't care about cross-compilation.
+#[must_use]
+pub fn lower_program_host_target(
+    program: &Program,
+    type_check_output: &TypeCheckOutput,
+    ctx: &ResolutionCtx,
+) -> LowerOutput {
+    lower_program(program, type_check_output, ctx, TargetArch::host())
 }
 
 /// Variant of [`lower_program`] with an explicit monomorphisation-registry
@@ -246,8 +300,9 @@ pub fn lower_program_with_mono_cap(
     type_check_output: &TypeCheckOutput,
     _ctx: &ResolutionCtx,
     mono_cap: usize,
+    target_arch: TargetArch,
 ) -> LowerOutput {
-    let mut ctx = LowerCtx::new(type_check_output, mono_cap);
+    let mut ctx = LowerCtx::new(type_check_output, mono_cap, target_arch);
     ctx.seed_stdlib_fn_registry();
 
     // First pass: collect all function signatures so that forward and mutual
@@ -486,6 +541,16 @@ pub fn lower_program_with_mono_cap(
             | Item::Supervisor(_) => {}
         }
     }
+    // Pre-pass: target architecture gates (P0.1-P0.4 fail-closed runtime-panic
+    // prevention). Check if the program uses coroutine-dependent constructs
+    // (actors/tasks) or wasm32-unsupported constructs (blocking channel recv)
+    // on incompatible targets. Emit fatal diagnostics before lowering begins.
+    //
+    // This pass runs early so rejection happens before any HIR nodes are
+    // materialized, keeping the fail-closed contract clear: if a program uses
+    // unsupported runtime features, the compile stops here.
+    check_target_gates(&mut ctx, program);
+
     // Pre-pass: register module-scope tagged-union constructors so
     // `lower_identifier` can lower variant references to `MachineVariantCtor`
     // regardless of declaration order relative to the function that uses them.
@@ -855,6 +920,14 @@ pub fn lower_program_with_mono_cap(
     // any real ones when it produces the canonical HirTypeDecl/HirRecordDecl.
     ctx.diagnostics.clear();
 
+    // P0.3 + P0.4: wasm32 blocking channel recv gate. Dispatched HERE (after
+    // the diagnostics.clear above) so the gate's BlockingChannelRecvUnsupportedOnWasm
+    // diagnostics survive into the final LowerOutput. See check_target_gates
+    // for why the coroutine gate is dispatched separately via inline arms.
+    if ctx.target_arch == TargetArch::Wasm32 {
+        check_wasm_blocking_recv_gate(&mut ctx, program);
+    }
+
     // Second pass: lower type declarations and populate the per-module
     // type-class registry. Stored here so the source-order pass can emit them
     // in program order without a second lowering call. Function bodies depend
@@ -1190,12 +1263,40 @@ pub fn lower_program_with_mono_cap(
                 }
             }
             Item::Actor(actor) => {
+                // P0.1: Fail-closed gate: actors require coroutine support
+                if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64) {
+                    ctx.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::TargetCoroutineUnsupported {
+                            target_arch: format!("{:?}", ctx.target_arch),
+                            construct: "actor decl".to_string(),
+                        },
+                        span.clone(),
+                        format!(
+                            "actor '{}' requires coroutine support (x86_64/aarch64 only)",
+                            actor.name
+                        ),
+                    ));
+                }
                 items.push(HirItem::Actor(ctx.lower_actor(actor, span.clone())));
             }
             Item::Record(decl) => {
                 items.push(HirItem::Record(ctx.lower_record_decl(decl, span.clone())));
             }
             Item::Supervisor(decl) => {
+                // P0.2: Fail-closed gate: supervisors require coroutine support
+                if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64) {
+                    ctx.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::TargetCoroutineUnsupported {
+                            target_arch: format!("{:?}", ctx.target_arch),
+                            construct: "supervisor decl".to_string(),
+                        },
+                        span.clone(),
+                        format!(
+                            "supervisor '{}' requires coroutine support (x86_64/aarch64 only)",
+                            decl.name
+                        ),
+                    ));
+                }
                 items.push(HirItem::Supervisor(
                     ctx.lower_supervisor(decl, span.clone()),
                 ));
@@ -2184,10 +2285,14 @@ struct LowerCtx {
     /// `"fmt"`. Without an entry the lowering pass refuses to fabricate
     /// the dispatch — surfacing a fail-closed diagnostic.
     lang_items: hew_types::LangItemRegistry,
+    /// Target architecture for compilation. Used by target gates to reject
+    /// constructs that would panic at runtime on unsupported targets
+    /// (P0.1-P0.4 fail-closed gates per slepp A222).
+    target_arch: TargetArch,
 }
 
 impl LowerCtx {
-    fn new(tc_output: &TypeCheckOutput, mono_cap: usize) -> Self {
+    fn new(tc_output: &TypeCheckOutput, mono_cap: usize, target_arch: TargetArch) -> Self {
         let mut type_classes = crate::value_class::TypeClassTable::default();
         // Seed compiler-known M2 substrate types before source-order TypeDecls.
         // This ensures `ValueClass::of_ty` resolves Duplex/Sink/Stream as
@@ -2244,6 +2349,7 @@ impl LowerCtx {
             enum_variants_by_name: HashMap::new(),
             pattern_resolutions: tc_output.pattern_resolutions.clone(),
             lang_items: tc_output.lang_items.clone(),
+            target_arch,
         }
     }
 
@@ -10237,6 +10343,406 @@ fn describe_select_source_shape(expr: &Expr) -> String {
     }
 }
 
+// ── Target architecture gates ────────────────────────────────────────────────
+
+/// Pre-pass that rejects coroutine-dependent constructs (actors, tasks) on
+/// unsupported targets and blocking channel recv on wasm32.
+///
+/// Fail-closed per slepp A222: emit fatal diagnostics at compile time instead
+/// of allowing runtime panics at `hew-runtime/src/coro.rs:391/:492` (P0.1/P0.2)
+/// or `hew-runtime/src/lib.rs:378/:391` (P0.3/P0.4).
+fn check_target_gates(ctx: &mut LowerCtx, program: &Program) {
+    // P0.1 + P0.2: Coroutine target gate
+    // If target is NOT in {x86_64, aarch64}, reject any actor/task/coroutine.
+    if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64) {
+        check_coroutine_gate(ctx, program);
+    }
+
+    // NB: P0.3 + P0.4 (wasm blocking channel recv) intentionally NOT dispatched
+    // here. They are dispatched separately AFTER the type pre-pass's
+    // diagnostics.clear() at line ~921 so the gate's diagnostics survive into
+    // LowerOutput. See check_wasm_blocking_recv_gate at the post-clear call
+    // site for the dispatch. The coroutine gate IS duplicated by inline
+    // Item::Actor / Item::Supervisor checks in the source-order pass below; the
+    // wasm gate has no such inline counterpart so the survival-ordering is
+    // essential.
+}
+
+/// Check for actor/task/coroutine usage on unsupported targets.
+fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
+    let target_name = match ctx.target_arch {
+        TargetArch::Wasm32 => "wasm32",
+        TargetArch::Other => "unsupported",
+        // x86_64/aarch64 shouldn't reach here (guarded by caller)
+        _ => "other",
+    };
+
+    for (item, span) in &program.items {
+        match item {
+            Item::Actor(actor_decl) => {
+                ctx.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::TargetCoroutineUnsupported {
+                        target_arch: target_name.to_string(),
+                        construct: "actor decl".to_string(),
+                    },
+                    span.clone(),
+                    format!(
+                        "actor `{}` cannot be compiled for target `{}`: \
+                         coroutine support (coro_switch/coro_init) is only \
+                         implemented for x86_64 and aarch64",
+                        actor_decl.name, target_name
+                    ),
+                ));
+            }
+            Item::Supervisor(supervisor_decl) => {
+                // Supervisors spawn actors, so they're also coroutine-dependent
+                ctx.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::TargetCoroutineUnsupported {
+                        target_arch: target_name.to_string(),
+                        construct: "supervisor decl".to_string(),
+                    },
+                    span.clone(),
+                    format!(
+                        "supervisor `{}` cannot be compiled for target `{}`: \
+                         supervisors spawn actors, which require coroutine support \
+                         (only available on x86_64 and aarch64)",
+                        supervisor_decl.name, target_name
+                    ),
+                ));
+            }
+            // TODO: When `scope{}` and `fork` are surface syntax, add checks here
+            _ => {}
+        }
+    }
+
+    // TODO: Add checks for:
+    // - `scope{}` blocks (when they exist in surface AST)
+    // - `fork` statements (when they exist in surface AST)
+    // - `await` expressions (when they appear outside of existing actor/scope)
+    // For now, actors and supervisors are the only coroutine entry points.
+}
+
+/// Check for blocking channel recv usage on wasm32 (P0.3 + P0.4).
+///
+/// `hew_channel_recv` and `hew_channel_recv_int` in `hew-runtime/src/lib.rs:378`
+/// and `:391` are `unreachable!()` stubs on wasm32 — the underlying coroutine
+/// suspension primitives aren't available. Detect `.recv()` method calls at
+/// HIR-lower time and emit `BlockingChannelRecvUnsupportedOnWasm` so the
+/// program fails to compile instead of trapping at runtime.
+///
+/// `.try_recv()` is allowed because it never suspends.
+fn check_wasm_blocking_recv_gate(ctx: &mut LowerCtx, program: &Program) {
+    for (item, _span) in &program.items {
+        match item {
+            Item::Function(fn_decl) => {
+                scan_block_for_blocking_recv(&fn_decl.body, &mut ctx.diagnostics);
+            }
+            Item::Actor(actor_decl) => {
+                if let Some(init) = &actor_decl.init {
+                    scan_block_for_blocking_recv(&init.body, &mut ctx.diagnostics);
+                }
+                for recv_fn in &actor_decl.receive_fns {
+                    scan_block_for_blocking_recv(&recv_fn.body, &mut ctx.diagnostics);
+                }
+                for method in &actor_decl.methods {
+                    scan_block_for_blocking_recv(&method.body, &mut ctx.diagnostics);
+                }
+            }
+            Item::Impl(impl_decl) => {
+                for method in &impl_decl.methods {
+                    scan_block_for_blocking_recv(&method.body, &mut ctx.diagnostics);
+                }
+            }
+            // Const, Trait, Supervisor, Machine, Struct, Enum, Use, Module, etc.
+            // do not carry user expression bodies that can call `.recv()`.
+            _ => {}
+        }
+    }
+}
+
+fn scan_block_for_blocking_recv(
+    block: &hew_parser::ast::Block,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    for (stmt, _) in &block.stmts {
+        scan_stmt_for_blocking_recv(stmt, diagnostics);
+    }
+    if let Some(trailing) = &block.trailing_expr {
+        scan_expr_for_blocking_recv(&trailing.0, diagnostics);
+    }
+}
+
+#[allow(
+    clippy::match_same_arms,
+    reason = "explicit per-Stmt-variant arms read more clearly than collapsed or-patterns for this walker"
+)]
+fn scan_stmt_for_blocking_recv(stmt: &hew_parser::ast::Stmt, diagnostics: &mut Vec<HirDiagnostic>) {
+    match stmt {
+        Stmt::Let { value: Some(v), .. } | Stmt::Var { value: Some(v), .. } => {
+            scan_expr_for_blocking_recv(&v.0, diagnostics);
+        }
+        Stmt::Assign { target, value, .. } => {
+            scan_expr_for_blocking_recv(&target.0, diagnostics);
+            scan_expr_for_blocking_recv(&value.0, diagnostics);
+        }
+        Stmt::Expression(e) => {
+            scan_expr_for_blocking_recv(&e.0, diagnostics);
+        }
+        Stmt::Return(Some(e)) => {
+            scan_expr_for_blocking_recv(&e.0, diagnostics);
+        }
+        Stmt::Defer(e) => {
+            scan_expr_for_blocking_recv(&e.0, diagnostics);
+        }
+        Stmt::Break { value: Some(v), .. } => {
+            scan_expr_for_blocking_recv(&v.0, diagnostics);
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            scan_expr_for_blocking_recv(&expr.0, diagnostics);
+            scan_block_for_blocking_recv(body, diagnostics);
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            scan_expr_for_blocking_recv(&condition.0, diagnostics);
+            scan_block_for_blocking_recv(then_block, diagnostics);
+            if let Some(eb) = else_block {
+                scan_else_block_for_blocking_recv(eb, diagnostics);
+            }
+        }
+        Stmt::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            scan_expr_for_blocking_recv(&expr.0, diagnostics);
+            scan_block_for_blocking_recv(body, diagnostics);
+            if let Some(eb) = else_body {
+                scan_block_for_blocking_recv(eb, diagnostics);
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            scan_expr_for_blocking_recv(&scrutinee.0, diagnostics);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_expr_for_blocking_recv(&g.0, diagnostics);
+                }
+                scan_expr_for_blocking_recv(&arm.body.0, diagnostics);
+            }
+        }
+        Stmt::Loop { body, .. } => scan_block_for_blocking_recv(body, diagnostics),
+        Stmt::For { iterable, body, .. } => {
+            scan_expr_for_blocking_recv(&iterable.0, diagnostics);
+            scan_block_for_blocking_recv(body, diagnostics);
+        }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            scan_expr_for_blocking_recv(&condition.0, diagnostics);
+            scan_block_for_blocking_recv(body, diagnostics);
+        }
+        // Stmt::Break, Stmt::Continue, Stmt::Return(None), and any other leaf
+        // statements carry no sub-expression to scan.
+        _ => {}
+    }
+}
+
+fn scan_else_block_for_blocking_recv(
+    eb: &hew_parser::ast::ElseBlock,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    if let Some(stmt) = &eb.if_stmt {
+        scan_stmt_for_blocking_recv(&stmt.0, diagnostics);
+    }
+    if let Some(b) = &eb.block {
+        scan_block_for_blocking_recv(b, diagnostics);
+    }
+}
+
+/// Recursively walk an expression tree looking for `.recv()` method calls.
+/// Mirrors the shape of `scan_expr_for_private_refs`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive Expr-variant walker mirrors scan_expr_for_private_refs above"
+)]
+fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>) {
+    match expr {
+        Expr::MethodCall {
+            receiver,
+            method,
+            args,
+        } => {
+            scan_expr_for_blocking_recv(&receiver.0, diagnostics);
+            for arg in args {
+                scan_expr_for_blocking_recv(&arg.expr().0, diagnostics);
+            }
+            // `.recv()` is the blocking form; `.try_recv()` is allowed because
+            // it does not suspend. Note: at HIR-lower time we don't yet know
+            // the receiver's resolved type, so syntactic-match on the method
+            // name is what we have. False positives would require a user
+            // method literally named `recv` on a non-channel type — flagged as
+            // a known limitation; resolved-type narrowing can be added in a
+            // followup if it materially matters.
+            if method == "recv" {
+                diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm {
+                        construct: ".recv()".to_string(),
+                    },
+                    0..0,
+                    "blocking channel `.recv()` is not supported on wasm32: \
+                     coroutine suspension primitives are unavailable on this \
+                     target. Use `.try_recv()` for the non-blocking variant."
+                        .to_string(),
+                ));
+            }
+        }
+        Expr::Call { function, args, .. } => {
+            scan_expr_for_blocking_recv(&function.0, diagnostics);
+            for arg in args {
+                scan_expr_for_blocking_recv(&arg.expr().0, diagnostics);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            scan_expr_for_blocking_recv(&left.0, diagnostics);
+            scan_expr_for_blocking_recv(&right.0, diagnostics);
+        }
+        Expr::Unary { operand, .. } => scan_expr_for_blocking_recv(&operand.0, diagnostics),
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+            for e in es {
+                scan_expr_for_blocking_recv(&e.0, diagnostics);
+            }
+        }
+        Expr::ArrayRepeat { value, count } => {
+            scan_expr_for_blocking_recv(&value.0, diagnostics);
+            scan_expr_for_blocking_recv(&count.0, diagnostics);
+        }
+        Expr::Block(b)
+        | Expr::Scope { body: b }
+        | Expr::ForkBlock { body: b }
+        | Expr::GenBlock { body: b } => {
+            scan_block_for_blocking_recv(b, diagnostics);
+        }
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+            ..
+        } => {
+            scan_expr_for_blocking_recv(&condition.0, diagnostics);
+            scan_expr_for_blocking_recv(&then_block.0, diagnostics);
+            if let Some(e) = else_block {
+                scan_expr_for_blocking_recv(&e.0, diagnostics);
+            }
+        }
+        Expr::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            scan_expr_for_blocking_recv(&expr.0, diagnostics);
+            scan_block_for_blocking_recv(body, diagnostics);
+            if let Some(b) = else_body {
+                scan_block_for_blocking_recv(b, diagnostics);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            scan_expr_for_blocking_recv(&scrutinee.0, diagnostics);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_expr_for_blocking_recv(&g.0, diagnostics);
+                }
+                scan_expr_for_blocking_recv(&arm.body.0, diagnostics);
+            }
+        }
+        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+            scan_expr_for_blocking_recv(&body.0, diagnostics);
+        }
+        Expr::Spawn { target, args } => {
+            scan_expr_for_blocking_recv(&target.0, diagnostics);
+            for (_, v) in args {
+                scan_expr_for_blocking_recv(&v.0, diagnostics);
+            }
+        }
+        Expr::ScopeDeadline { duration, body } => {
+            scan_expr_for_blocking_recv(&duration.0, diagnostics);
+            scan_block_for_blocking_recv(body, diagnostics);
+        }
+        Expr::ForkChild { expr, .. } | Expr::Cast { expr, .. } => {
+            scan_expr_for_blocking_recv(&expr.0, diagnostics);
+        }
+        Expr::StructInit { fields, base, .. } => {
+            for (_, v) in fields {
+                scan_expr_for_blocking_recv(&v.0, diagnostics);
+            }
+            if let Some(b) = base {
+                scan_expr_for_blocking_recv(&b.0, diagnostics);
+            }
+        }
+        Expr::MapLiteral { entries } => {
+            for (k, v) in entries {
+                scan_expr_for_blocking_recv(&k.0, diagnostics);
+                scan_expr_for_blocking_recv(&v.0, diagnostics);
+            }
+        }
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                if let hew_parser::ast::StringPart::Expr(e) = part {
+                    scan_expr_for_blocking_recv(&e.0, diagnostics);
+                }
+            }
+        }
+        Expr::Select { arms, timeout } => {
+            for arm in arms {
+                scan_expr_for_blocking_recv(&arm.source.0, diagnostics);
+                scan_expr_for_blocking_recv(&arm.body.0, diagnostics);
+            }
+            if let Some(t) = timeout {
+                scan_expr_for_blocking_recv(&t.duration.0, diagnostics);
+                scan_expr_for_blocking_recv(&t.body.0, diagnostics);
+            }
+        }
+        Expr::Timeout { expr, duration } => {
+            scan_expr_for_blocking_recv(&expr.0, diagnostics);
+            scan_expr_for_blocking_recv(&duration.0, diagnostics);
+        }
+        Expr::UnsafeBlock(b) => scan_block_for_blocking_recv(b, diagnostics),
+        Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
+            scan_expr_for_blocking_recv(&object.0, diagnostics);
+        }
+        Expr::Index { object, index } => {
+            scan_expr_for_blocking_recv(&object.0, diagnostics);
+            scan_expr_for_blocking_recv(&index.0, diagnostics);
+        }
+        Expr::Is { lhs, rhs } => {
+            scan_expr_for_blocking_recv(&lhs.0, diagnostics);
+            scan_expr_for_blocking_recv(&rhs.0, diagnostics);
+        }
+        Expr::Range { start, end, .. } => {
+            if let Some(s) = start {
+                scan_expr_for_blocking_recv(&s.0, diagnostics);
+            }
+            if let Some(e) = end {
+                scan_expr_for_blocking_recv(&e.0, diagnostics);
+            }
+        }
+        Expr::Yield(Some(e)) => scan_expr_for_blocking_recv(&e.0, diagnostics),
+        Expr::MachineEmit { fields, .. } => {
+            for (_, v) in fields {
+                scan_expr_for_blocking_recv(&v.0, diagnostics);
+            }
+        }
+        // Leaf nodes (Identifier, literals, etc.) and any other Expr variant
+        // without sub-expressions: nothing to scan.
+        _ => {}
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10257,7 +10763,7 @@ mod tests {
         let tco = checker.check_program(&parsed.program);
         assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
 
-        let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx);
+        let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
         (parsed.program, tco, lowered)
     }
 
@@ -10377,7 +10883,7 @@ mod tests {
         );
         tco.closure_capture_facts.clear();
 
-        let lowered = lower_program(&program, &tco, &ResolutionCtx);
+        let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
 
         assert!(
             lowered.diagnostics.iter().any(|diagnostic| matches!(
@@ -10410,7 +10916,7 @@ mod tests {
         );
         tco.closure_capture_facts.clear();
 
-        let lowered = lower_program(&program, &tco, &ResolutionCtx);
+        let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
         assert!(
             lowered.into_result().is_err(),
             "into_result() must return Err when closure capture facts are missing"
@@ -10473,7 +10979,8 @@ mod tests {
             parsed.errors
         );
 
-        let lowered = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+        let lowered =
+            lower_program_host_target(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
         assert!(
             lowered.diagnostics.iter().any(|diagnostic| matches!(
                 &diagnostic.kind,
@@ -10509,7 +11016,8 @@ mod tests {
             parsed.errors
         );
 
-        let lowered = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+        let lowered =
+            lower_program_host_target(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
         assert!(
             lowered.diagnostics.iter().any(|diagnostic| matches!(
                 &diagnostic.kind,
@@ -10546,7 +11054,8 @@ mod tests {
             parsed.errors
         );
 
-        let lowered = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+        let lowered =
+            lower_program_host_target(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
         assert!(
             lowered.diagnostics.iter().any(|diagnostic| matches!(
                 &diagnostic.kind,
@@ -10693,7 +11202,7 @@ mod tests {
         // Type errors are expected (reply is unresolved in arm 1 context);
         // we proceed to HIR lowering regardless.
         let tco = checker.check_program(&parsed.program);
-        let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx);
+        let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
 
         assert!(
             lowered.diagnostics.iter().any(|d| matches!(
@@ -10730,7 +11239,7 @@ mod tests {
 
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let tco = checker.check_program(&parsed.program);
-        let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx);
+        let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
 
         assert!(
             lowered.diagnostics.iter().any(|d| matches!(

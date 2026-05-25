@@ -31,7 +31,12 @@ fn lower_with_types(source: &str) -> (hew_types::TypeCheckOutput, hew_hir::Lower
         "type errors: {:#?}",
         tc_output.errors
     );
-    let lower_out = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let lower_out = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     (tc_output, lower_out)
 }
 

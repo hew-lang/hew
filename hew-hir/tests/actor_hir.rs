@@ -17,7 +17,12 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    lower_program(&parsed.program, &tc_output, &ResolutionCtx)
+    lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 fn find_actor<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a HirActorDecl {
@@ -80,7 +85,12 @@ fn main() {}
         "parse errors: {:?}",
         parsed.errors
     );
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         output.diagnostics.iter().any(|diagnostic| matches!(
             diagnostic.kind,

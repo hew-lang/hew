@@ -1,5 +1,3 @@
-//! Resolved HIR for the Hew v0.5 compiler pipeline.
-//!
 //! HIR is the first IR layer after parsing. It gives every binding and
 //! value-bearing expression a stable identity before later THIR/MIR ownership
 //! analysis attaches value-model decisions.
@@ -20,7 +18,10 @@ pub use diagnostic::{HirDiagnostic, HirDiagnosticKind};
 pub use dump::dump_hir;
 pub use ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 pub use intent::IntentKind;
-pub use lower::{lower_program, lower_program_with_mono_cap, LowerOutput, ResolutionCtx};
+pub use lower::{
+    lower_program, lower_program_host_target, lower_program_with_mono_cap, LowerOutput,
+    ResolutionCtx, TargetArch,
+};
 pub use monomorph::{
     mangle, substitute_type_params, EnumLayout, EnumMonoKey, EnumVariantLayout, MonoKey,
     MonomorphizedFn, RecordLayout, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,

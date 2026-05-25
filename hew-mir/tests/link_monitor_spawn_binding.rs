@@ -33,7 +33,12 @@ fn link_monitor_after_four_spawns_lowers_without_panic() {
     let tc = checker.check_program(&parsed.program);
     assert!(tc.errors.is_empty(), "type-check errors: {:#?}", tc.errors);
 
-    let hir = lower_program(&parsed.program, &tc, &ResolutionCtx);
+    let hir = lower_program(
+        &parsed.program,
+        &tc,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         hir.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",

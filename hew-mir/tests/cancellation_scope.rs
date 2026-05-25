@@ -25,7 +25,12 @@ fn scope_fork_after_lowers_to_executable_task_and_deadline_abi() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    let hir = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let hir = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         hir.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",

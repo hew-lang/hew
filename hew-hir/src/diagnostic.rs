@@ -345,4 +345,26 @@ pub enum HirDiagnosticKind {
         /// Name of the private function that the method body calls.
         helper_fn: String,
     },
+    /// Target architecture does not support coroutines (actors/tasks). The
+    /// program uses a coroutine-dependent construct (actor decl, task spawn,
+    /// fork, async block, await) but the target arch is not in the set
+    /// `{x86_64, aarch64}` where `coro_switch`/`coro_init` are implemented.
+    /// Fail-closed per slepp A222: compile-time diagnostic instead of
+    /// runtime panic at `hew-runtime/src/coro.rs:391` or `:492`.
+    TargetCoroutineUnsupported {
+        /// Target architecture name (e.g. `"riscv64"`).
+        target_arch: String,
+        /// User-visible construct name (e.g. `"actor decl"`, `"task spawn"`).
+        construct: String,
+    },
+    /// Blocking channel recv is not supported on wasm32. The program calls
+    /// `.recv()` on a channel (or the builtin `hew_channel_recv*`) with target
+    /// `wasm32`, which would reach `unreachable!` at
+    /// `hew-runtime/src/lib.rs:378` or `:391`. Fail-closed per slepp A222:
+    /// compile-time diagnostic instead of runtime panic. Non-blocking
+    /// `.try_recv()` is allowed on wasm32.
+    BlockingChannelRecvUnsupportedOnWasm {
+        /// User-visible construct name (e.g. `".recv()"`).
+        construct: String,
+    },
 }

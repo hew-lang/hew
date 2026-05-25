@@ -96,7 +96,12 @@ fn main() {
 #[test]
 fn cross_module_machine_ctor_resolves_to_machine_variant_ctor() {
     let program = build_cross_module_program();
-    let output = lower_program(&program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
 
     // No `UnresolvedSymbol` diagnostics for the imported ctor/event refs.
     let unresolved: Vec<_> = output

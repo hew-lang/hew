@@ -30,7 +30,12 @@ fn lower_module(source: &str) -> hew_mir::IrPipeline {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    let hir = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let hir = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         hir.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",
@@ -49,7 +54,12 @@ fn lower_module_expect_mir_diagnostics(source: &str) -> hew_mir::IrPipeline {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    let hir = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let hir = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         hir.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",

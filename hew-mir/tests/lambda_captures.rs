@@ -29,7 +29,12 @@ fn pipeline(source: &str) -> IrPipeline {
         "parse errors: {:?}",
         parsed.errors
     );
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     // Allow NotYetImplemented diagnostics — the actor-body call
     // surface is deferred work in the spine. Reject everything else.
     let non_nyi: Vec<_> = output

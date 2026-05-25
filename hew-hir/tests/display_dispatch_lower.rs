@@ -39,7 +39,12 @@ fn lower_checked(source: &str) -> hew_hir::LowerOutput {
         "type errors: {:?}",
         tc_output.errors
     );
-    lower_program(&parsed.program, &tc_output, &ResolutionCtx)
+    lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 /// Recursively walk every expression in `expr` and call `f`.
@@ -195,7 +200,12 @@ fn fstring_without_display_fmt_lang_item_is_fail_closed() {
         );
     }
 
-    let lower_output = lower_program(&parsed.program, &tc, &ResolutionCtx);
+    let lower_output = lower_program(
+        &parsed.program,
+        &tc,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
 
     let violations: Vec<_> = lower_output
         .diagnostics
@@ -276,7 +286,12 @@ fn fstring_named_type_without_impl_is_fail_closed() {
         },
     );
 
-    let lower_output = lower_program(&parsed.program, &tc, &ResolutionCtx);
+    let lower_output = lower_program(
+        &parsed.program,
+        &tc,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
 
     let violations: Vec<_> = lower_output
         .diagnostics
@@ -306,7 +321,12 @@ fn fstring_named_type_without_impl_is_fail_closed() {
     // Defensive: no empty-string literal was fabricated for the
     // interpolant.  The pre-fix behaviour pushed `String::new()` into the
     // concat chain; this asserts that fail-open is gone.
-    let lower_output2 = lower_program(&parsed.program, &tc, &ResolutionCtx);
+    let lower_output2 = lower_program(
+        &parsed.program,
+        &tc,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let has_empty_lit = any_expr(
         &lower_output2,
         |e| matches!(&e.kind, HirExprKind::Literal(HirLiteral::String(s)) if s.is_empty()),

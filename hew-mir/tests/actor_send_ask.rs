@@ -12,7 +12,12 @@ fn lower_checked(source: &str) -> hew_mir::IrPipeline {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
     assert!(tc_output.errors.is_empty(), "{:?}", tc_output.errors);
-    let hir = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let hir = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
     hew_mir::lower_hir_module(&hir.module)
 }

@@ -59,7 +59,12 @@ fn missing_record_init_type_args_emits_record_layout_missing() {
     // `record_concrete_record_init_type_args`).
     tc_output.record_init_type_args.clear();
 
-    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
 
     let missing_diags: Vec<_> = output
         .diagnostics

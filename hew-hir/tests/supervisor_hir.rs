@@ -15,7 +15,12 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
         "parse errors: {:?}",
         parsed.errors
     );
-    lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx)
+    lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 fn find_supervisor<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a HirSupervisorDecl {

@@ -74,7 +74,12 @@ fn check_and_lower(path: &str, source: &str) -> Vec<HirMachineDecl> {
         std::process::exit(1);
     }
 
-    let lowered = lower_program(&result.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let lowered = lower_program(
+        &result.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
 
     // Filter out NotYetImplemented diagnostics from non-machine items —
     // Lane A only lowers machines; functions are also lowered if present.

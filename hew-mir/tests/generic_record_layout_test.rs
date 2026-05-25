@@ -32,7 +32,12 @@ fn pipeline_with_tc(source: &str) -> (IrPipeline, Vec<hew_hir::HirDiagnostic>) {
         "typecheck errors: {:#?}",
         tc_output.errors
     );
-    let hir_out = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let hir_out = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let mir = lower_hir_module(&hir_out.module);
     (mir, hir_out.diagnostics)
 }

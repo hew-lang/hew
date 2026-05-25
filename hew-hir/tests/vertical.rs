@@ -11,7 +11,12 @@ use hew_types::TypeCheckOutput;
 fn lower(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx)
+    lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 #[test]
@@ -900,7 +905,12 @@ fn select_two_after_arms_rejected() {
         })),
     };
     let program = program_with_select(select_expr);
-    let output = lower_program(&program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         output
             .diagnostics

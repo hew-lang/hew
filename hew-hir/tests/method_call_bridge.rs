@@ -21,7 +21,12 @@ fn typecheck_and_lower(source: &str) -> (hew_hir::LowerOutput, TypeCheckOutput) 
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    let lower_output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let lower_output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     (lower_output, tc_output)
 }
 
@@ -188,7 +193,12 @@ fn method_call_without_rewrite_fails_closed() {
 
     // Use an empty TypeCheckOutput — no method_call_rewrites populated.
     let empty_tc = TypeCheckOutput::default();
-    let lower_output = lower_program(&parsed.program, &empty_tc, &ResolutionCtx);
+    let lower_output = lower_program(
+        &parsed.program,
+        &empty_tc,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
 
     let has_no_rewrite_diag = lower_output
         .diagnostics

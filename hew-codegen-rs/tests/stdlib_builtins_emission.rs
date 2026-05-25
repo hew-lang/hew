@@ -18,7 +18,12 @@ fn emit_ll(source: &str, module_name: &str) -> String {
         "type errors: {:#?}",
         tc_output.errors
     );
-    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         output.diagnostics.is_empty(),
         "HIR diagnostics must be empty before MIR: {:#?}",

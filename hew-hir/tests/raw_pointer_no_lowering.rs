@@ -36,7 +36,12 @@ fn run_pipeline(source: &str) -> (hew_types::TypeCheckOutput, hew_hir::LowerOutp
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    let lower_output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let lower_output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     (tc_output, lower_output)
 }
 

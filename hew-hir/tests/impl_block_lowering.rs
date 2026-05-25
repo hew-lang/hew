@@ -30,7 +30,12 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
     // checker fall-through paths. Per-test asserts cover the actually-relevant
     // diagnostics in each scenario.
     let _ = &tc_output;
-    lower_program(&parsed.program, &tc_output, &ResolutionCtx)
+    lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 fn assert_no_top_level_item_unsupported(output: &hew_hir::LowerOutput) {

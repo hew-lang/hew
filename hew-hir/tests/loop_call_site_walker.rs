@@ -30,7 +30,12 @@ fn typecheck_and_lower(source: &str) -> hew_hir::LowerOutput {
         "typecheck errors: {:#?}",
         tc_output.errors
     );
-    lower_program(&parsed.program, &tc_output, &ResolutionCtx)
+    lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 /// An inner generic call inside a `while` condition in a generic outer

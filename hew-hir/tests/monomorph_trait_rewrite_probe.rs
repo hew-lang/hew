@@ -102,7 +102,12 @@ fn probe_trait_method_inside_generic_free_fn_rewrite() {
     // trait_impls_set is not exposed on TypeCheckOutput (pub(super)); skip.
 
     // Now lower and report what HIR shape the inner call gets.
-    let out = lower_program(&parsed.program, &tco, &ResolutionCtx);
+    let out = lower_program(
+        &parsed.program,
+        &tco,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     eprintln!("\n=== HIR diagnostics ===");
     for d in &out.diagnostics {
         eprintln!("  {d:?}");

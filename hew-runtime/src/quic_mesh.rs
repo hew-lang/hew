@@ -1386,7 +1386,7 @@ unsafe extern "C" fn quic_mesh_destroy(impl_ptr: *mut c_void) {
         return;
     }
     // SAFETY: takes ownership of the Box allocated in hew_transport_quic_mesh_new.
-    let mut qmt = unsafe { Box::from_raw(impl_ptr.cast::<QuicMeshTransport>()) };
+    let mut qmt = unsafe { Box::from_raw(impl_ptr.cast::<QuicMeshTransport>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
     if let Some(mesh) = qmt.mesh.take() {
         mesh.close();
     }
@@ -1461,9 +1461,9 @@ pub unsafe extern "C" fn hew_transport_quic_mesh_new() -> *mut HewTransport {
     let qmt = Box::new(QuicMeshTransport::new(rt));
     let transport = Box::new(HewTransport {
         ops: &raw const QUIC_MESH_OPS,
-        r#impl: Box::into_raw(qmt).cast::<c_void>(),
+        r#impl: Box::into_raw(qmt).cast::<c_void>(), // ALLOCATOR-PAIRING: GlobalAlloc
     });
-    Box::into_raw(transport)
+    Box::into_raw(transport) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Free a native `quic_mesh` transport created by [`hew_transport_quic_mesh_new`].
@@ -1485,7 +1485,7 @@ pub unsafe extern "C" fn hew_transport_quic_mesh_free(transport: *mut HewTranspo
         unsafe { destroy_fn(t.r#impl) };
     }
     // SAFETY: reclaims the Box<HewTransport> allocated by the constructor.
-    let _ = unsafe { Box::from_raw(transport) };
+    let _ = unsafe { Box::from_raw(transport) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Inject a [`MeshTls`] configuration that the next `listen` call will

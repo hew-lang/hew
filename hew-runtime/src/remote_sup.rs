@@ -99,14 +99,14 @@ impl ClusterSubscription {
 }
 
 fn owned_callback_context_user_data(context: &Arc<ClusterCallbackContext>) -> *mut c_void {
-    Arc::into_raw(Arc::clone(context)).cast_mut().cast()
+    Arc::into_raw(Arc::clone(context)).cast_mut().cast() // ALLOCATOR-PAIRING: Arc
 }
 
 fn reclaim_owned_callback_context(user_data: *mut c_void) -> Arc<ClusterCallbackContext> {
     let context_ptr = user_data.cast::<ClusterCallbackContext>();
     // SAFETY: `user_data` was produced by `owned_callback_context_user_data()`
     // and is reclaimed exactly once when its callback generation retires.
-    unsafe { Arc::from_raw(context_ptr) }
+    unsafe { Arc::from_raw(context_ptr) } // ALLOCATOR-PAIRING: Arc
 }
 
 #[derive(Debug)]
@@ -200,7 +200,7 @@ fn retain_callback_context(user_data: *mut c_void) -> Arc<ClusterCallbackContext
     // cluster reports no in-flight membership callbacks for this generation.
     unsafe {
         Arc::increment_strong_count(context_ptr);
-        Arc::from_raw(context_ptr)
+        Arc::from_raw(context_ptr) // ALLOCATOR-PAIRING: Arc
     }
 }
 
@@ -972,7 +972,7 @@ pub unsafe extern "C" fn hew_remote_sup_new(
     });
     let sup_ptr = ptr::from_mut::<HewRemoteSupervisor>(&mut *sup);
     sup.membership_lease.bind_supervisor(sup_ptr);
-    Box::into_raw(sup)
+    Box::into_raw(sup) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Monitor a remote actor PID.
@@ -1166,7 +1166,7 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
             let reclaim_on_exit = unsafe { (*sup_ptr).heartbeat_thread.finish_exit() };
             if reclaim_on_exit {
                 // SAFETY: deferred free transfers ownership back to this thread.
-                let _ = unsafe { Box::from_raw(sup_ptr) };
+                let _ = unsafe { Box::from_raw(sup_ptr) }; // ALLOCATOR-PAIRING: GlobalAlloc
             }
         });
 
@@ -1238,7 +1238,7 @@ pub unsafe extern "C" fn hew_remote_sup_free(sup: *mut HewRemoteSupervisor) {
         return;
     }
     // SAFETY: ownership returns to this function for the final reclaim path.
-    let _ = unsafe { Box::from_raw(sup) };
+    let _ = unsafe { Box::from_raw(sup) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 #[cfg(test)]

@@ -281,7 +281,7 @@ struct ThreadEmitOwner {
 impl ThreadEmitOwner {
     fn new() -> Self {
         Self {
-            queue: Box::into_raw(Box::new(EmitQueue::new())),
+            queue: Box::into_raw(Box::new(EmitQueue::new())), // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 }
@@ -292,7 +292,7 @@ impl Drop for ThreadEmitOwner {
             // SAFETY: `queue` was allocated by `ThreadEmitOwner::new` and is
             // owned by this thread-local owner until thread teardown.
             unsafe {
-                drop(Box::from_raw(self.queue));
+                drop(Box::from_raw(self.queue)); // ALLOCATOR-PAIRING: GlobalAlloc
             }
             self.queue = std::ptr::null_mut();
         }

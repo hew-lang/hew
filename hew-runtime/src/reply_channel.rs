@@ -25,45 +25,19 @@ static FORCE_REPLY_ALLOC_FAILURE: AtomicBool = AtomicBool::new(false);
 
 // ── Debug allocator-pairing tracker ────────────────────────────────────────
 //
-// Reply payloads allocated here via `libc::malloc` are registered in this set.
-// Lambda-actor body reply buffers use Rust's `GlobalAlloc` (`Box::into_raw`) and
-// are freed via `lambda_actor::free_body_reply_buf` — each free site in that
-// module asserts the pointer is NOT in this set, catching any allocator crossing
-// before it reaches `Box::from_raw`.
+// Reply payloads allocated here via `libc::malloc` are registered in the
+// runtime-wide tracker (crate::alloc_tracker).  Lambda-actor body reply
+// buffers use Rust's `GlobalAlloc` (`Box::into_raw`) and are freed via
+// `lambda_actor::free_body_reply_buf` — each free site in that module asserts
+// the pointer is NOT in the set, catching any allocator crossing before it
+// reaches `Box::from_raw`.
 //
 // Active only in debug builds; zero overhead in release.
 
 #[cfg(debug_assertions)]
-static LIBC_ALLOC_SET: std::sync::Mutex<Option<std::collections::HashSet<usize>>> =
-    std::sync::Mutex::new(None);
-
-/// Register a pointer as libc-allocated (debug builds only).
-#[cfg(debug_assertions)]
-pub(crate) fn debug_track_libc_alloc(ptr: *mut u8) {
-    LIBC_ALLOC_SET
-        .lock()
-        .unwrap()
-        .get_or_insert_with(Default::default)
-        .insert(ptr as usize);
-}
-
-/// Deregister a pointer from the libc-alloc tracker (debug builds only).
-#[cfg(debug_assertions)]
-pub(crate) fn debug_untrack_libc_alloc(ptr: *mut u8) {
-    if let Some(s) = LIBC_ALLOC_SET.lock().unwrap().as_mut() {
-        s.remove(&(ptr as usize));
-    }
-}
-
-/// Returns `true` if the pointer is registered as libc-allocated (debug builds only).
-#[cfg(debug_assertions)]
-pub(crate) fn debug_is_libc_tracked(ptr: *const u8) -> bool {
-    LIBC_ALLOC_SET
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|s| s.contains(&(ptr as usize)))
-}
+use crate::alloc_tracker::{
+    debug_is_libc_tracked, debug_track_libc_alloc, debug_untrack_libc_alloc,
+};
 
 /// One-shot reply channel for the actor ask pattern.
 ///

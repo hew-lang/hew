@@ -339,7 +339,7 @@ pub unsafe extern "C" fn hew_scope_is_cancelled(scope: *mut HewScope) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn hew_scope_create() -> *mut HewScope {
     // SAFETY: malloc with correct size.
-    let ptr = unsafe { libc::malloc(std::mem::size_of::<HewScope>()) }.cast::<HewScope>();
+    let ptr = unsafe { libc::malloc(std::mem::size_of::<HewScope>()) }.cast::<HewScope>(); // ALLOCATOR-PAIRING: libc
     if ptr.is_null() {
         return std::ptr::null_mut();
     }
@@ -363,7 +363,7 @@ pub unsafe extern "C" fn hew_scope_free(scope: *mut HewScope) {
     // SAFETY: Caller guarantees scope was heap-allocated by hew_scope_create.
     unsafe {
         hew_scope_destroy(scope);
-        libc::free(scope.cast());
+        libc::free(scope.cast()); // ALLOCATOR-PAIRING: libc
     }
 }
 

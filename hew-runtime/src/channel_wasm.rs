@@ -172,10 +172,10 @@ pub extern "C" fn hew_channel_new(capacity: i64) -> *mut HewWasmChannelPair {
     };
 
     let (sender, receiver) = channel(cap);
-    let sender = Box::into_raw(Box::new(HewWasmChannelSender::new(sender)));
-    let receiver = Box::into_raw(Box::new(HewWasmChannelReceiver::new(receiver)));
+    let sender = Box::into_raw(Box::new(HewWasmChannelSender::new(sender))); // ALLOCATOR-PAIRING: GlobalAlloc
+    let receiver = Box::into_raw(Box::new(HewWasmChannelReceiver::new(receiver))); // ALLOCATOR-PAIRING: GlobalAlloc
 
-    Box::into_raw(Box::new(HewWasmChannelPair { sender, receiver }))
+    Box::into_raw(Box::new(HewWasmChannelPair { sender, receiver })) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Extract the sender from a channel pair.
@@ -417,7 +417,7 @@ pub unsafe extern "C" fn hew_channel_sender_clone(
     cabi_guard!(sender.is_null(), ptr::null_mut());
     // SAFETY: caller guarantees `sender` is a live ABI sender handle.
     let cloned = unsafe { (*sender).inner.clone() };
-    Box::into_raw(Box::new(HewWasmChannelSender::new(cloned)))
+    Box::into_raw(Box::new(HewWasmChannelSender::new(cloned))) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Close and free a sender handle.
@@ -432,7 +432,7 @@ pub unsafe extern "C" fn hew_channel_sender_close(sender: *mut HewWasmChannelSen
         return;
     }
     // SAFETY: caller guarantees exclusive ownership of the Box allocation.
-    unsafe { drop(Box::from_raw(sender)) };
+    unsafe { drop(Box::from_raw(sender)) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Close and free a receiver handle.
@@ -447,7 +447,7 @@ pub unsafe extern "C" fn hew_channel_receiver_close(receiver: *mut HewWasmChanne
         return;
     }
     // SAFETY: caller guarantees exclusive ownership of the Box allocation.
-    unsafe { drop(Box::from_raw(receiver)) };
+    unsafe { drop(Box::from_raw(receiver)) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 #[cfg(test)]
@@ -693,7 +693,7 @@ mod tests {
             let msg = hew_channel_try_recv(rx);
             assert!(!msg.is_null());
             assert_eq!(CStr::from_ptr(msg).to_str().unwrap(), "first");
-            libc::free(msg.cast());
+            libc::free(msg.cast()); // ALLOCATOR-PAIRING: libc
 
             let mut valid = -1;
             let value = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
@@ -789,7 +789,7 @@ mod tests {
                 "first",
                 "first message should be dequeued"
             );
-            libc::free(msg.cast());
+            libc::free(msg.cast()); // ALLOCATOR-PAIRING: libc
 
             // The second message must have been dropped (not enqueued).
             let nothing = hew_channel_try_recv(rx);

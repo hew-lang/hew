@@ -191,7 +191,7 @@ impl Drop for EncryptedTransport {
             }
             // SAFETY: inner was created by `Box::into_raw` in a
             // `hew_transport_*_new` function.
-            let _ = unsafe { Box::from_raw(self.inner) };
+            let _ = unsafe { Box::from_raw(self.inner) }; // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 }
@@ -609,7 +609,7 @@ unsafe extern "C" fn enc_close_conn(impl_ptr: *mut c_void, conn: c_int) {
 unsafe extern "C" fn enc_destroy(impl_ptr: *mut c_void) {
     cabi_guard!(impl_ptr.is_null());
     // SAFETY: impl_ptr was created by Box::into_raw in hew_transport_encrypted_new.
-    let _ = unsafe { Box::from_raw(impl_ptr.cast::<EncryptedTransport>()) };
+    let _ = unsafe { Box::from_raw(impl_ptr.cast::<EncryptedTransport>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 static ENC_OPS: HewTransportOps = HewTransportOps {
@@ -678,7 +678,7 @@ pub unsafe extern "C" fn hew_allowlist_new(mode: c_int) -> *mut HewPeerAllowlist
         return ptr::null_mut();
     };
     let list = HewPeerAllowlist::new(mode);
-    let ptr = Box::into_raw(Box::new(list.clone()));
+    let ptr = Box::into_raw(Box::new(list.clone())); // ALLOCATOR-PAIRING: GlobalAlloc
     #[cfg(not(test))]
     {
         let mut active = ACTIVE_ALLOWLIST.write_or_recover();
@@ -792,7 +792,7 @@ pub unsafe extern "C" fn hew_allowlist_free(list: *mut HewPeerAllowlist) {
         }
     }
     // SAFETY: ownership is transferred back to Rust and dropped exactly once.
-    let _ = unsafe { Box::from_raw(list) };
+    let _ = unsafe { Box::from_raw(list) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Create an encrypted transport wrapping an existing transport.
@@ -816,9 +816,9 @@ pub unsafe extern "C" fn hew_transport_encrypted_new(
     local_private_key.zeroize();
     let transport = Box::new(HewTransport {
         ops: &raw const ENC_OPS,
-        r#impl: Box::into_raw(enc).cast::<c_void>(),
+        r#impl: Box::into_raw(enc).cast::<c_void>(), // ALLOCATOR-PAIRING: GlobalAlloc
     });
-    Box::into_raw(transport)
+    Box::into_raw(transport) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Generate a new X25519 static keypair for Noise XX.
@@ -962,7 +962,7 @@ pub unsafe extern "C" fn hew_noise_keypair_generate() -> *mut u8 {
 
     // Allocate space for both public and private keys.
     // SAFETY: malloc with a valid size.
-    let buf = unsafe { libc::malloc(KEYPAIR_FILE_LEN) }.cast::<u8>();
+    let buf = unsafe { libc::malloc(KEYPAIR_FILE_LEN) }.cast::<u8>(); // ALLOCATOR-PAIRING: libc
     if buf.is_null() {
         keypair.private.zeroize();
         return ptr::null_mut();
@@ -1045,7 +1045,7 @@ mod tests {
             }
         }
         // SAFETY: t was created by Box::into_raw.
-        let _ = unsafe { Box::from_raw(t) };
+        let _ = unsafe { Box::from_raw(t) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
     /// Smuggle a raw pointer across threads via `usize`. Each test ensures
@@ -1187,7 +1187,7 @@ mod tests {
         assert_ne!(public, private, "public and private keys must differ");
 
         // SAFETY: buf was allocated by libc::malloc.
-        unsafe { libc::free(buf.cast::<c_void>()) };
+        unsafe { libc::free(buf.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
     }
 
     #[test]
@@ -1243,7 +1243,7 @@ mod tests {
         );
 
         // SAFETY: buf was allocated by libc::malloc.
-        unsafe { libc::free(buf.cast::<c_void>()) };
+        unsafe { libc::free(buf.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
     }
 
     #[test]
@@ -1269,8 +1269,8 @@ mod tests {
 
         // SAFETY: buffers were allocated by libc::malloc.
         unsafe {
-            libc::free(buf1.cast::<c_void>());
-            libc::free(buf2.cast::<c_void>());
+            libc::free(buf1.cast::<c_void>()); // ALLOCATOR-PAIRING: libc
+            libc::free(buf2.cast::<c_void>()); // ALLOCATOR-PAIRING: libc
         }
     }
 
@@ -1964,7 +1964,7 @@ mod tests {
                 }
             }
             // SAFETY: saved_inner was created by Box::into_raw.
-            let _ = unsafe { Box::from_raw(saved_inner) };
+            let _ = unsafe { Box::from_raw(saved_inner) }; // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 

@@ -65,7 +65,7 @@ pub extern "C" fn hew_stream_last_error() -> *mut std::ffi::c_char {
             });
             let len = c.as_bytes_with_nul().len();
             // SAFETY: allocating len bytes via malloc.
-            let ptr = unsafe { libc::malloc(len) }.cast::<std::ffi::c_char>();
+            let ptr = unsafe { libc::malloc(len) }.cast::<std::ffi::c_char>(); // ALLOCATOR-PAIRING: libc
             if ptr.is_null() {
                 set_last_error("hew_stream_last_error: allocation failed".to_string());
                 return std::ptr::null_mut();
@@ -192,6 +192,7 @@ pub fn into_sink_ptr<T: Send + 'static>(
     close: fn(&mut T),
 ) -> *mut HewSink {
     Box::into_raw(Box::new(HewSink {
+        // ALLOCATOR-PAIRING: GlobalAlloc
         inner: Some(Box::new(CallbackSink {
             backing,
             write_item,
@@ -227,6 +228,7 @@ fn close_via_write<W: Write>(backing: &mut W) {
 /// Create a heap-allocated [`HewSink`] from a [`Write`] implementation.
 pub fn into_write_sink_ptr(backing: impl Write + Send + 'static) -> *mut HewSink {
     Box::into_raw(Box::new(HewSink {
+        // ALLOCATOR-PAIRING: GlobalAlloc
         inner: Some(Box::new(CallbackSink {
             backing,
             write_item: write_via_write::<_>,
@@ -289,6 +291,7 @@ impl SinkOps for ChannelSinkBacking {
 #[must_use]
 pub fn into_channel_sink_ptr(tx: std::sync::mpsc::SyncSender<Vec<u8>>) -> *mut HewSink {
     Box::into_raw(Box::new(HewSink {
+        // ALLOCATOR-PAIRING: GlobalAlloc
         inner: Some(Box::new(ChannelSinkBacking { tx })),
     }))
 }
@@ -355,7 +358,7 @@ mod tests {
         unsafe {
             let recovered = CStr::from_ptr(ptr).to_str().unwrap();
             assert_eq!(recovered, "connection refused");
-            libc::free(ptr.cast());
+            libc::free(ptr.cast()); // ALLOCATOR-PAIRING: libc
         }
     }
 
@@ -365,8 +368,8 @@ mod tests {
         let ptr = hew_stream_last_error();
         assert!(!ptr.is_null());
         // SAFETY: ptr was malloc'd above.
-        unsafe { libc::free(ptr.cast()) };
-        // Second call should return null — error was consumed.
+        unsafe { libc::free(ptr.cast()) }; // ALLOCATOR-PAIRING: libc
+                                           // Second call should return null — error was consumed.
         let ptr2 = hew_stream_last_error();
         assert!(ptr2.is_null(), "error should be cleared after first read");
     }
@@ -380,7 +383,7 @@ mod tests {
         unsafe {
             let recovered = CStr::from_ptr(ptr).to_str().unwrap();
             assert_eq!(recovered, "échec de connexion 🔥");
-            libc::free(ptr.cast());
+            libc::free(ptr.cast()); // ALLOCATOR-PAIRING: libc
         }
     }
 
@@ -393,7 +396,7 @@ mod tests {
         unsafe {
             let recovered = CStr::from_ptr(ptr).to_str().unwrap();
             assert!(recovered.contains("contained interior NUL"));
-            libc::free(ptr.cast());
+            libc::free(ptr.cast()); // ALLOCATOR-PAIRING: libc
         }
     }
 
@@ -418,7 +421,7 @@ mod tests {
         unsafe {
             let recovered = CStr::from_ptr(ptr).to_str().unwrap();
             assert_eq!(recovered, "connection refused");
-            libc::free(ptr.cast());
+            libc::free(ptr.cast()); // ALLOCATOR-PAIRING: libc
         }
     }
 
@@ -438,7 +441,7 @@ mod tests {
         let ptr = hew_stream_last_error();
         if !ptr.is_null() {
             // SAFETY: malloc'd above.
-            unsafe { libc::free(ptr.cast()) };
+            unsafe { libc::free(ptr.cast()) }; // ALLOCATOR-PAIRING: libc
         }
     }
 
@@ -535,7 +538,7 @@ mod tests {
     fn hew_sink_write_flush_close() {
         let (mock, written, flush_count, close_count) = MockSink::new();
         // SAFETY: into_write_sink_ptr returns a Box::into_raw allocation owned by this test.
-        let mut sink = unsafe { Box::from_raw(into_write_sink_ptr(mock)) };
+        let mut sink = unsafe { Box::from_raw(into_write_sink_ptr(mock)) }; // ALLOCATOR-PAIRING: GlobalAlloc
         sink.write_item(b"hello");
         sink.write_item(b"world");
         sink.flush();
@@ -554,7 +557,7 @@ mod tests {
         let (mock, _written, _flush_count, close_count) = MockSink::new();
         {
             // SAFETY: into_write_sink_ptr returns a Box::into_raw allocation owned by this test.
-            let _sink = unsafe { Box::from_raw(into_write_sink_ptr(mock)) };
+            let _sink = unsafe { Box::from_raw(into_write_sink_ptr(mock)) }; // ALLOCATOR-PAIRING: GlobalAlloc
             assert_eq!(close_count.load(Ordering::SeqCst), 0);
             // _sink is dropped here.
         }
@@ -575,7 +578,7 @@ mod tests {
         unsafe {
             (*ptr).write_item(b"via pointer");
             // Reclaim and drop to free memory and trigger close.
-            let _ = Box::from_raw(ptr);
+            let _ = Box::from_raw(ptr); // ALLOCATOR-PAIRING: GlobalAlloc
         }
 
         let items = written.lock().unwrap();
@@ -595,7 +598,7 @@ mod tests {
         // SAFETY: ptr was just created by into_sink_ptr.
         unsafe {
             (*ptr).write_item(b"");
-            let _ = Box::from_raw(ptr);
+            let _ = Box::from_raw(ptr); // ALLOCATOR-PAIRING: GlobalAlloc
         }
         let items = written.lock().unwrap();
         assert_eq!(items.len(), 1);
@@ -622,7 +625,7 @@ mod tests {
         // SAFETY: ptr was created by into_sink_ptr above.
         unsafe {
             (*ptr).write_item(b"abc");
-            let _ = Box::from_raw(ptr);
+            let _ = Box::from_raw(ptr); // ALLOCATOR-PAIRING: GlobalAlloc
         }
 
         let items = written.lock().unwrap();

@@ -289,7 +289,7 @@ impl Drop for InternalPoolSpec {
     fn drop(&mut self) {
         if !self.name.is_null() {
             // SAFETY: name was allocated with libc::strdup.
-            unsafe { libc::free(self.name.cast::<c_void>()) };
+            unsafe { libc::free(self.name.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
             self.name = ptr::null_mut();
         }
     }
@@ -597,13 +597,13 @@ impl Drop for InternalChildSpec {
         if !self.init_state.is_null() {
             // SAFETY: init_state was allocated with libc::malloc in
             // hew_supervisor_add_child_spec.
-            unsafe { libc::free(self.init_state) };
+            unsafe { libc::free(self.init_state) }; // ALLOCATOR-PAIRING: libc
             self.init_state = ptr::null_mut();
         }
         if !self.name.is_null() {
             // SAFETY: name was allocated with libc::strdup in
             // hew_supervisor_add_child_spec.
-            unsafe { libc::free(self.name.cast::<c_void>()) };
+            unsafe { libc::free(self.name.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
             self.name = ptr::null_mut();
         }
     }
@@ -1123,7 +1123,7 @@ unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
     // SAFETY: teardown ownership was claimed once for this supervisor, the
     // self actor is no longer dispatching, and no other thread may consume the
     // raw pointer now.
-    let mut s = unsafe { Box::from_raw(sup) };
+    let mut s = unsafe { Box::from_raw(sup) }; // ALLOCATOR-PAIRING: GlobalAlloc
 
     // Recursively stop all child supervisors first.
     for child_sup in std::mem::take(&mut s.child_supervisors) {
@@ -1171,7 +1171,7 @@ unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
     for pool in std::mem::take(&mut s.pool_slots) {
         if !pool.is_null() {
             // SAFETY: pool was created by Box::into_raw in hew_supervisor_pool_add_slot.
-            unsafe { drop(Box::from_raw(pool)) };
+            unsafe { drop(Box::from_raw(pool)) }; // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 }
@@ -1754,7 +1754,7 @@ pub unsafe extern "C" fn hew_supervisor_new(
         pool_slots: Vec::new(),
         pool_specs: Vec::new(),
     });
-    Box::into_raw(sup)
+    Box::into_raw(sup) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Add a child via a child spec.
@@ -1787,7 +1787,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
     // Deep-copy init state.
     let state_copy = if sp.init_state_size > 0 && !sp.init_state.is_null() {
         // SAFETY: init_state is valid for init_state_size bytes.
-        let buf = unsafe { libc::malloc(sp.init_state_size) };
+        let buf = unsafe { libc::malloc(sp.init_state_size) }; // ALLOCATOR-PAIRING: libc
         if buf.is_null() {
             return -1;
         }
@@ -1872,7 +1872,7 @@ pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int 
     // SAFETY: self_actor is valid; free the deep copy.
     unsafe {
         if !(*self_actor).state.is_null() {
-            libc::free((*self_actor).state);
+            libc::free((*self_actor).state); // ALLOCATOR-PAIRING: libc
         }
         (*self_actor).state = sup.cast::<c_void>();
         (*self_actor).state_size = 0; // mark as non-owned
@@ -2524,7 +2524,7 @@ pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) {
     }
     // Drop the Box — child spec Drop impls free names + init_state.
     // SAFETY: sup was allocated with Box::into_raw and is valid per caller contract.
-    drop(unsafe { Box::from_raw(sup) });
+    drop(unsafe { Box::from_raw(sup) }); // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Handle a crashed child actor by applying the supervisor's restart strategy.
@@ -3078,7 +3078,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
     // Deep-copy init state.
     let state_copy = if sp.init_state_size > 0 && !sp.init_state.is_null() {
         // SAFETY: init_state is valid for init_state_size bytes.
-        let buf = unsafe { libc::malloc(sp.init_state_size) };
+        let buf = unsafe { libc::malloc(sp.init_state_size) }; // ALLOCATOR-PAIRING: libc
         if buf.is_null() {
             return -1;
         }
@@ -3192,12 +3192,12 @@ pub unsafe extern "C" fn hew_supervisor_remove_child(
     let spec = &mut s.child_specs[idx];
     if !spec.init_state.is_null() {
         // SAFETY: init_state was allocated with libc::malloc.
-        unsafe { libc::free(spec.init_state) };
+        unsafe { libc::free(spec.init_state) }; // ALLOCATOR-PAIRING: libc
         spec.init_state = ptr::null_mut();
     }
     if !spec.name.is_null() {
         // SAFETY: name was allocated with libc::strdup.
-        unsafe { libc::free(spec.name.cast::<c_void>()) };
+        unsafe { libc::free(spec.name.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
         spec.name = ptr::null_mut();
     }
 
@@ -3419,7 +3419,7 @@ pub unsafe extern "C" fn hew_supervisor_pool_add_slot(
         // Free the duplicated name on allocation failure.
         if !name_copy.is_null() {
             // SAFETY: name_copy was allocated with libc::strdup.
-            unsafe { libc::free(name_copy.cast::<c_void>()) };
+            unsafe { libc::free(name_copy.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
         }
         return -1;
     }

@@ -619,7 +619,7 @@ mod tests {
         // SAFETY: ptr is a valid NUL-terminated C string per caller.
         let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
         // SAFETY: ptr was allocated with libc::malloc.
-        unsafe { libc::free(ptr.cast()) };
+        unsafe { libc::free(ptr.cast()) }; // ALLOCATOR-PAIRING: libc
         s
     }
 
@@ -843,7 +843,7 @@ mod tests {
                         if !ptr.is_null() {
                             // SAFETY: ptr is a valid malloc'd NUL-terminated C string.
                             unsafe {
-                                libc::free(ptr.cast());
+                                libc::free(ptr.cast()); // ALLOCATOR-PAIRING: libc
                             }
                         }
                     }
@@ -887,7 +887,7 @@ mod tests {
             // SAFETY: orig_ptr is a valid malloc'd NUL-terminated C string.
             let s = unsafe { CStr::from_ptr(orig_ptr) }.to_owned();
             // SAFETY: orig_ptr was allocated with libc::malloc.
-            unsafe { libc::free(orig_ptr.cast()) };
+            unsafe { libc::free(orig_ptr.cast()) }; // ALLOCATOR-PAIRING: libc
             Some(s)
         };
 
@@ -922,7 +922,7 @@ mod tests {
                     let ptr = unsafe { hew_temp_dir() };
                     assert!(!ptr.is_null());
                     // SAFETY: ptr is a valid malloc'd NUL-terminated C string.
-                    unsafe { libc::free(ptr.cast()) };
+                    unsafe { libc::free(ptr.cast()) }; // ALLOCATOR-PAIRING: libc
                 }
             }));
         }

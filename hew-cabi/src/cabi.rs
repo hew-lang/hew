@@ -16,7 +16,7 @@ use std::os::raw::c_char;
 #[must_use]
 pub unsafe fn malloc_cstring(src: *const u8, len: usize) -> *mut c_char {
     // SAFETY: We request len+1 bytes from malloc; it returns a valid pointer or null.
-    let ptr = unsafe { libc::malloc(len + 1) }.cast::<u8>();
+    let ptr = unsafe { libc::malloc(len + 1) }.cast::<u8>(); // ALLOCATOR-PAIRING: libc
     if ptr.is_null() {
         return ptr.cast::<c_char>();
     }
@@ -52,7 +52,7 @@ pub fn malloc_bytes(src: &[u8]) -> *mut u8 {
     // is avoided and the sentinel pointer can always be freed by the caller.
     // SAFETY: We request len.max(1) bytes from malloc; it returns a valid
     // pointer or null.
-    let ptr = unsafe { libc::malloc(len.max(1)) }.cast::<u8>();
+    let ptr = unsafe { libc::malloc(len.max(1)) }.cast::<u8>(); // ALLOCATOR-PAIRING: libc
     if ptr.is_null() {
         return ptr;
     }
@@ -73,7 +73,7 @@ pub fn malloc_bytes(src: &[u8]) -> *mut u8 {
 #[must_use]
 pub fn malloc_empty() -> *mut u8 {
     // SAFETY: We request 1 byte from malloc; it returns a valid pointer or null.
-    unsafe { libc::malloc(1) }.cast::<u8>()
+    unsafe { libc::malloc(1) }.cast::<u8>() // ALLOCATOR-PAIRING: libc
 }
 
 /// Extract a NUL-terminated C string pointer into a `&str`, returning `None`
@@ -118,7 +118,7 @@ mod tests {
     /// Helper: free a malloc'd pointer (reduces boilerplate).
     unsafe fn free_ptr(ptr: *mut c_char) {
         // SAFETY: `ptr` was allocated by a C allocator (malloc via `malloc_cstring`) and is being freed with the matching `libc::free`.
-        unsafe { libc::free(ptr.cast::<c_void>()) };
+        unsafe { libc::free(ptr.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
     }
 
     // ── malloc_cstring ───────────────────────────────────────────────────
@@ -248,7 +248,7 @@ mod tests {
         let ptr = malloc_bytes(&[]);
         assert!(!ptr.is_null(), "empty slice must yield a non-null sentinel");
         // SAFETY: ptr was allocated by malloc_bytes via libc::malloc.
-        unsafe { libc::free(ptr.cast::<c_void>()) };
+        unsafe { libc::free(ptr.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
     }
 
     #[test]
@@ -262,7 +262,7 @@ mod tests {
             for (i, &expected) in src.iter().enumerate() {
                 assert_eq!(*ptr.add(i), expected, "byte mismatch at index {i}");
             }
-            libc::free(ptr.cast::<c_void>());
+            libc::free(ptr.cast::<c_void>()); // ALLOCATOR-PAIRING: libc
         }
     }
 
@@ -274,7 +274,7 @@ mod tests {
         // SAFETY: ptr points to 1 byte allocated by malloc_bytes.
         unsafe {
             assert_eq!(*ptr, 0x42);
-            libc::free(ptr.cast::<c_void>());
+            libc::free(ptr.cast::<c_void>()); // ALLOCATOR-PAIRING: libc
         }
     }
 
@@ -288,7 +288,7 @@ mod tests {
             "malloc_empty must return a non-null sentinel"
         );
         // SAFETY: ptr was allocated by malloc_empty via libc::malloc.
-        unsafe { libc::free(ptr.cast::<c_void>()) };
+        unsafe { libc::free(ptr.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
     }
 
     // ── cstr_to_str ──────────────────────────────────────────────────────

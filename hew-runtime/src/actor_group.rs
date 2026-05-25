@@ -88,7 +88,7 @@ pub unsafe extern "C" fn hew_actor_group_new() -> *mut HewActorGroup {
         lock: std::sync::Mutex::new(()),
         done_cond: Arc::new(std::sync::Condvar::new()),
     });
-    Box::into_raw(group)
+    Box::into_raw(group) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Destroy an actor group, freeing all internal resources.
@@ -105,7 +105,7 @@ pub unsafe extern "C" fn hew_actor_group_destroy(g: *mut HewActorGroup) {
         return;
     }
     // SAFETY: Caller guarantees `g` was Box-allocated.
-    let group = unsafe { Box::from_raw(g) };
+    let group = unsafe { Box::from_raw(g) }; // ALLOCATOR-PAIRING: GlobalAlloc
 
     // Unregister death notifiers for all tracked actors.
     for &actor_ptr in &group.actors {

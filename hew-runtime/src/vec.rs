@@ -144,7 +144,7 @@ pub unsafe extern "C" fn hew_vec_abort_pop_empty() -> ! {
 pub unsafe extern "C" fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewVec {
     // SAFETY: allocating a zeroed struct with libc::malloc is safe.
     unsafe {
-        let v: *mut HewVec = libc::malloc(core::mem::size_of::<HewVec>()).cast();
+        let v: *mut HewVec = libc::malloc(core::mem::size_of::<HewVec>()).cast(); // ALLOCATOR-PAIRING: libc
         if v.is_null() {
             libc::abort();
         }
@@ -739,7 +739,7 @@ pub unsafe extern "C" fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const
         let slot = (*v).data.cast::<*mut c_char>().add(index);
         let old = slot.read();
         if !old.is_null() {
-            libc::free(old.cast());
+            libc::free(old.cast()); // ALLOCATOR-PAIRING: libc
         }
         let duped = libc::strdup(val);
         if duped.is_null() {
@@ -884,7 +884,7 @@ unsafe fn free_string_elements(v: *mut HewVec) {
             let slot = vec.data.cast::<*mut c_char>().add(i);
             let ptr = slot.read();
             if !ptr.is_null() {
-                libc::free(ptr.cast());
+                libc::free(ptr.cast()); // ALLOCATOR-PAIRING: libc
             }
         }
     }
@@ -923,9 +923,9 @@ pub unsafe extern "C" fn hew_vec_free(v: *mut HewVec) {
                 if (*v).elem_kind == ElemKind::String {
                     free_string_elements(v);
                 }
-                libc::free((*v).data.cast());
+                libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc
             }
-            libc::free(v.cast());
+            libc::free(v.cast()); // ALLOCATOR-PAIRING: libc
         }
     }
 }
@@ -1411,7 +1411,7 @@ pub unsafe extern "C" fn hew_vec_truncate(v: *mut HewVec, new_len: i64) {
                 let slot = vec.data.cast::<*mut c_char>().add(i);
                 let ptr = slot.read();
                 if !ptr.is_null() {
-                    libc::free(ptr.cast());
+                    libc::free(ptr.cast()); // ALLOCATOR-PAIRING: libc
                 }
             }
         }
@@ -1738,7 +1738,7 @@ mod tests {
             assert!(!popped.is_null());
             assert_eq!(std::ffi::CStr::from_ptr(popped).to_string_lossy(), "world");
             assert_eq!(hew_vec_len(v), 1);
-            libc::free(popped.cast_mut().cast());
+            libc::free(popped.cast_mut().cast()); // ALLOCATOR-PAIRING: libc
             hew_vec_free(v);
         }
     }
@@ -2136,7 +2136,7 @@ mod tests {
 
             let r0 = hew_vec_get_str(v, 0);
             assert_eq!(std::ffi::CStr::from_ptr(r0).to_string_lossy(), "alpha");
-            libc::free(r0.cast_mut().cast());
+            libc::free(r0.cast_mut().cast()); // ALLOCATOR-PAIRING: libc
             hew_vec_free(v);
         }
     }

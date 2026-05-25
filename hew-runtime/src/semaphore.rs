@@ -27,6 +27,7 @@ pub struct HewSemaphore {
 #[no_mangle]
 pub extern "C" fn hew_semaphore_new(initial_count: i32) -> *mut HewSemaphore {
     Box::into_raw(Box::new(HewSemaphore {
+        // ALLOCATOR-PAIRING: GlobalAlloc
         count: Mutex::new(initial_count),
         condvar: Condvar::new(),
     }))
@@ -173,7 +174,7 @@ pub unsafe extern "C" fn hew_semaphore_free(sem: *mut HewSemaphore) {
     }
     // SAFETY: Caller guarantees `sem` was Box-allocated and is exclusively owned.
     unsafe {
-        drop(Box::from_raw(sem));
+        drop(Box::from_raw(sem)); // ALLOCATOR-PAIRING: GlobalAlloc
     }
 }
 

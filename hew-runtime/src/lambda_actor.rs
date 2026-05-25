@@ -196,7 +196,7 @@ unsafe fn unframe_ask_envelope(env: &[u8]) -> (*mut HewReplyChannel, &[u8]) {
 unsafe fn free_body_reply_buf(ptr: *mut u8, len: usize) {
     #[cfg(debug_assertions)]
     debug_assert!(
-        !crate::reply_channel::debug_is_libc_tracked(ptr),
+        !crate::alloc_tracker::debug_is_libc_tracked(ptr),
         "allocator-pairing contract violation: reply_out {ptr:p} is libc-tracked \
          (allocated via the reply channel); the body must allocate via Box. \
          See reply_channel::hew_reply_payload_free for the libc-allocated free path.",
@@ -2149,7 +2149,7 @@ mod tests {
         // libc-alloc tracker — simulating what alloc_reply_buffer does.
         let ptr = unsafe { libc::malloc(8) }.cast::<u8>();
         assert!(!ptr.is_null());
-        crate::reply_channel::debug_track_libc_alloc(ptr);
+        crate::alloc_tracker::debug_track_libc_alloc(ptr);
         // free_body_reply_buf asserts the pointer is NOT libc-tracked.
         // The debug_assert fires before Box::from_raw, so no UB occurs.
         // SAFETY: the assert panics; Box::from_raw is never reached.
@@ -2157,5 +2157,43 @@ mod tests {
         // Cleanup if somehow reached (e.g., release build running a
         // `#[cfg(debug_assertions)]` test block — shouldn't happen).
         unsafe { libc::free(ptr.cast()) };
+    }
+
+    /// A pointer tracked then untracked must report as not-tracked.
+    /// This validates the untrack half of the lifecycle.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn allocator_pairing_tracker_untrack_clears_tracking() {
+        let ptr = unsafe { libc::malloc(8) }.cast::<u8>();
+        assert!(!ptr.is_null());
+        crate::alloc_tracker::debug_track_libc_alloc(ptr);
+        assert!(
+            crate::alloc_tracker::debug_is_libc_tracked(ptr),
+            "pointer must be tracked after debug_track_libc_alloc"
+        );
+        crate::alloc_tracker::debug_untrack_libc_alloc(ptr);
+        assert!(
+            !crate::alloc_tracker::debug_is_libc_tracked(ptr),
+            "pointer must not be tracked after debug_untrack_libc_alloc"
+        );
+        // ALLOCATOR-PAIRING: libc — symmetric free.
+        unsafe { libc::free(ptr.cast()) };
+    }
+
+    /// A freshly Box-allocated pointer must never appear as libc-tracked.
+    /// Guards against false positives in the pairing tracker.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn allocator_pairing_globalalloc_ptr_not_libc_tracked() {
+        let b: Box<u8> = Box::new(0);
+        // ALLOCATOR-PAIRING: GlobalAlloc — into_raw for test only.
+        let ptr = Box::into_raw(b);
+        assert!(
+            !crate::alloc_tracker::debug_is_libc_tracked(ptr),
+            "Box-allocated pointer must not be libc-tracked"
+        );
+        // ALLOCATOR-PAIRING: GlobalAlloc — matching from_raw to avoid leak.
+        // SAFETY: ptr was produced by Box::into_raw above; ownership returned here.
+        unsafe { drop(Box::from_raw(ptr)) };
     }
 }

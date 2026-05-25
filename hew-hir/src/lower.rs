@@ -233,7 +233,8 @@ impl LowerOutput {
                 d.kind,
                 crate::HirDiagnosticKind::CheckerBoundaryViolation { .. }
                     | crate::HirDiagnosticKind::RecordLayoutMissing { .. }
-                    | crate::HirDiagnosticKind::ImportedImplBodyMissingPrivateHelper { .. }
+                    | crate::HirDiagnosticKind::ImportedBodyMissingPrivateHelper { .. }
+                    | crate::HirDiagnosticKind::ImportedFreeFnBodyUnresolvedBareCall { .. }
                     | crate::HirDiagnosticKind::TargetCoroutineUnsupported { .. }
                     | crate::HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm { .. }
                     | crate::HirDiagnosticKind::TaskSpawnSignatureUnsupported { .. }
@@ -1461,17 +1462,114 @@ pub fn lower_program_with_mono_cap(
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
+                let module_short = mod_id.path.last().map_or("", String::as_str);
+                // Per-module helper sets used by the imported-body scan in
+                // both the free-fn (Item::Function) and impl-method
+                // (Item::Impl) arms. Computed once per module so the two
+                // arms agree on which same-module callees count as
+                // private vs. pub and so iteration cost is linear in the
+                // module's item count rather than quadratic across arms.
+                let same_module_private_fns: HashSet<String> = module
+                    .items
+                    .iter()
+                    .filter_map(|(it, _)| {
+                        if let Item::Function(f) = it {
+                            if !f.visibility.is_pub() {
+                                return Some(f.name.clone());
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+                let same_module_pub_fns: HashSet<String> = module
+                    .items
+                    .iter()
+                    .filter_map(|(it, _)| {
+                        if let Item::Function(f) = it {
+                            if f.visibility.is_pub() {
+                                return Some(f.name.clone());
+                            }
+                        }
+                        None
+                    })
+                    .collect();
                 for (item, span) in &module.items {
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
-                            let module_short = mod_id.path.last().map_or("", String::as_str);
                             let qualified =
                                 crate::mangle_dotted_name(&format!("{module_short}.{}", func.name));
-                            items.push(HirItem::Function(ctx.lower_fn_with_name(
-                                func,
-                                &qualified,
-                                span.clone(),
-                            )));
+                            // Scan the body for two fail-closed cases that
+                            // would otherwise leak out as bare
+                            // `UnresolvedSymbol` diagnostics later in the
+                            // pipeline:
+                            //
+                            //  1. direct calls to same-module private
+                            //     helpers (which we don't lower in Stage 1),
+                            //  2. direct calls to same-module *pub*
+                            //     functions by bare (unqualified) name —
+                            //     the imported emission mangles those
+                            //     callees to `module.callee`, so the bare
+                            //     identifier won't resolve.
+                            //
+                            // Stage 1 does not repair either case; it only
+                            // restores diagnostic precision. Truly unknown
+                            // names (neither same-module private nor
+                            // same-module pub) still fall through to the
+                            // existing `UnresolvedSymbol` path.
+                            let blocked_private =
+                                collect_private_fn_refs(&func.body, &same_module_private_fns);
+                            // The free-fn's own bare-name self-recursion
+                            // would resolve through `lower_identifier` to
+                            // the qualified mangled name in lowered HIR
+                            // (no fail-closed needed); exclude it from the
+                            // bare-call scan so the diagnostic only fires
+                            // for *other* same-module pubs called bare.
+                            let mut other_pubs = same_module_pub_fns.clone();
+                            other_pubs.remove(&func.name);
+                            let blocked_bare_pub = collect_private_fn_refs(&func.body, &other_pubs);
+                            let mut any_blocked = false;
+                            for helper_fn in blocked_private {
+                                ctx.diagnostics.push(HirDiagnostic::new(
+                                    HirDiagnosticKind::ImportedBodyMissingPrivateHelper {
+                                        module: module_short.to_string(),
+                                        helper_fn,
+                                        item_kind: crate::diagnostic::ImportedItemKind::FreeFn,
+                                    },
+                                    span.clone(),
+                                    "imported pub free-function body calls a private helper \
+                                     function from the same module; private functions are not \
+                                     accessible across module boundaries — make the helper \
+                                     `pub`, inline its logic, or restructure the module",
+                                ));
+                                any_blocked = true;
+                            }
+                            for callee in blocked_bare_pub {
+                                let suggested_qualified =
+                                    crate::mangle_dotted_name(&format!("{module_short}.{callee}"));
+                                ctx.diagnostics.push(HirDiagnostic::new(
+                                    HirDiagnosticKind::ImportedFreeFnBodyUnresolvedBareCall {
+                                        module: module_short.to_string(),
+                                        callee,
+                                        suggested_qualified: suggested_qualified.clone(),
+                                    },
+                                    span.clone(),
+                                    format!(
+                                        "imported pub free-function body calls a same-module \
+                                         pub function by its bare name; the imported emission \
+                                         mangles that callee — rewrite the call as \
+                                         `{suggested_qualified}(..)` or wait for the imported \
+                                         body dependency closure to land"
+                                    ),
+                                ));
+                                any_blocked = true;
+                            }
+                            if !any_blocked {
+                                items.push(HirItem::Function(ctx.lower_fn_with_name(
+                                    func,
+                                    &qualified,
+                                    span.clone(),
+                                )));
+                            }
                         }
                         Item::TypeDecl(decl) if decl.visibility.is_pub() => {
                             // Consume the cached `HirTypeDecl` produced by the
@@ -1540,19 +1638,6 @@ pub fn lower_program_with_mono_cap(
                         // so the root cause is identified at the module boundary
                         // rather than silently producing an `UnresolvedSymbol`.
                         Item::Impl(impl_decl) => {
-                            let module_short = mod_id.path.last().map_or("", String::as_str);
-                            let private_fns: HashSet<String> = module
-                                .items
-                                .iter()
-                                .filter_map(|(it, _)| {
-                                    if let Item::Function(f) = it {
-                                        if !f.visibility.is_pub() {
-                                            return Some(f.name.clone());
-                                        }
-                                    }
-                                    None
-                                })
-                                .collect();
                             if let TypeExpr::Named { .. } = &impl_decl.target_type.0 {
                                 let mut any_blocked = false;
                                 for method in &impl_decl.methods {
@@ -1561,13 +1646,17 @@ pub fn lower_program_with_mono_cap(
                                     if !method.visibility.is_pub() {
                                         continue;
                                     }
-                                    let blocked =
-                                        collect_private_fn_refs(&method.body, &private_fns);
+                                    let blocked = collect_private_fn_refs(
+                                        &method.body,
+                                        &same_module_private_fns,
+                                    );
                                     for helper_fn in blocked {
                                         ctx.diagnostics.push(HirDiagnostic::new(
-                                            HirDiagnosticKind::ImportedImplBodyMissingPrivateHelper {
+                                            HirDiagnosticKind::ImportedBodyMissingPrivateHelper {
                                                 module: module_short.to_string(),
                                                 helper_fn,
+                                                item_kind:
+                                                    crate::diagnostic::ImportedItemKind::ImplMethod,
                                             },
                                             span.clone(),
                                             "imported impl method body calls a private helper \

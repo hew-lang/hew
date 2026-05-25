@@ -8,10 +8,11 @@
 //!
 //! 2. **Negative**: when a method body calls a private (non-pub) function from
 //!    the same module the lowering emits
-//!    `HirDiagnosticKind::ImportedImplBodyMissingPrivateHelper` instead of
-//!    silently failing or producing a bare `UnresolvedSymbol`.
+//!    `HirDiagnosticKind::ImportedBodyMissingPrivateHelper { item_kind:
+//!    ImplMethod, .. }` instead of silently failing or producing a bare
+//!    `UnresolvedSymbol`.
 
-use hew_hir::{HirDiagnosticKind, HirItem};
+use hew_hir::{HirDiagnosticKind, HirItem, ImportedItemKind};
 use hew_parser::ast::{Item, Program};
 use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
@@ -111,20 +112,20 @@ fn imported_impl_methods_registered_and_emitted() {
     let program = build_imported_impl_program(false);
     let output = support::checker_pipeline::lower_through_checker_from_program(&program);
 
-    // No private-helper diagnostic should be emitted.
+    // No imported-body private-helper diagnostic should be emitted.
     let blocked: Vec<_> = output
         .diagnostics
         .iter()
         .filter(|d| {
             matches!(
                 d.kind,
-                HirDiagnosticKind::ImportedImplBodyMissingPrivateHelper { .. }
+                HirDiagnosticKind::ImportedBodyMissingPrivateHelper { .. }
             )
         })
         .collect();
     assert!(
         blocked.is_empty(),
-        "expected no ImportedImplBodyMissingPrivateHelper diagnostics; got: {blocked:?}"
+        "expected no ImportedBodyMissingPrivateHelper diagnostics; got: {blocked:?}"
     );
 
     // `Foo::bar` must appear as an `HirItem::Function` in the lowered module.
@@ -155,37 +156,42 @@ fn imported_impl_body_calling_private_helper_emits_diagnostic() {
     let program = build_imported_impl_program(true);
     let output = support::checker_pipeline::lower_through_checker_from_program(&program);
 
-    // Must emit exactly one ImportedImplBodyMissingPrivateHelper for `helper`.
+    // Must emit exactly one ImportedBodyMissingPrivateHelper for `helper`
+    // with `item_kind: ImplMethod`.
     let blocked: Vec<_> = output
         .diagnostics
         .iter()
         .filter(|d| {
             matches!(
                 d.kind,
-                HirDiagnosticKind::ImportedImplBodyMissingPrivateHelper { .. }
+                HirDiagnosticKind::ImportedBodyMissingPrivateHelper {
+                    item_kind: ImportedItemKind::ImplMethod,
+                    ..
+                }
             )
         })
         .collect();
     assert!(
         !blocked.is_empty(),
-        "expected at least one ImportedImplBodyMissingPrivateHelper diagnostic; got none. \
-         All diagnostics: {:#?}",
+        "expected at least one ImportedBodyMissingPrivateHelper {{ item_kind: \
+         ImplMethod }} diagnostic; got none. All diagnostics: {:#?}",
         output.diagnostics
     );
 
     let has_helper = blocked.iter().any(|d| {
         matches!(
             &d.kind,
-            HirDiagnosticKind::ImportedImplBodyMissingPrivateHelper {
+            HirDiagnosticKind::ImportedBodyMissingPrivateHelper {
                 module,
                 helper_fn,
+                item_kind: ImportedItemKind::ImplMethod,
             } if module == "shapes" && helper_fn == "helper"
         )
     });
     assert!(
         has_helper,
-        "expected ImportedImplBodyMissingPrivateHelper {{ module: \"shapes\", \
-         helper_fn: \"helper\" }}; got: {blocked:?}"
+        "expected ImportedBodyMissingPrivateHelper {{ module: \"shapes\", \
+         helper_fn: \"helper\", item_kind: ImplMethod }}; got: {blocked:?}"
     );
 
     // The blocked method must NOT be emitted as HirItem::Function.
@@ -201,21 +207,24 @@ fn imported_impl_body_calling_private_helper_emits_diagnostic() {
     );
 
     // Fail-closed boundary contract: `into_result()` must return `Err` when
-    // `ImportedImplBodyMissingPrivateHelper` is present — downstream consumers
+    // `ImportedBodyMissingPrivateHelper` is present — downstream consumers
     // that call `into_result()` must not silently receive a broken module.
     let result = output.into_result();
     assert!(
         result.is_err(),
-        "into_result() must return Err when ImportedImplBodyMissingPrivateHelper \
+        "into_result() must return Err when ImportedBodyMissingPrivateHelper \
          is present; got Ok — fail-closed boundary is broken"
     );
     let err_diags = result.unwrap_err();
     assert!(
         err_diags.iter().any(|d| matches!(
             d.kind,
-            HirDiagnosticKind::ImportedImplBodyMissingPrivateHelper { .. }
+            HirDiagnosticKind::ImportedBodyMissingPrivateHelper {
+                item_kind: ImportedItemKind::ImplMethod,
+                ..
+            }
         )),
-        "Err diagnostics must contain ImportedImplBodyMissingPrivateHelper; \
-         got: {err_diags:#?}",
+        "Err diagnostics must contain ImportedBodyMissingPrivateHelper \
+         (ImplMethod); got: {err_diags:#?}",
     );
 }

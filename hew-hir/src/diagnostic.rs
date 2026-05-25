@@ -3,6 +3,19 @@ use hew_types::ResolvedTy;
 
 use crate::ids::{BindingId, HirNodeId, ResolvedRef, SiteId};
 
+/// Which kind of imported item carried a body that failed to lower because
+/// of a missing same-module dependency. Used by
+/// [`HirDiagnosticKind::ImportedBodyMissingPrivateHelper`] so consumers can
+/// distinguish imported impl-method bodies from imported free-function
+/// bodies without splitting the diagnostic variant.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ImportedItemKind {
+    /// The body came from an imported `impl` block's method.
+    ImplMethod,
+    /// The body came from an imported `pub fn` free function.
+    FreeFn,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HirDiagnostic {
     pub kind: HirDiagnosticKind,
@@ -330,20 +343,46 @@ pub enum HirDiagnosticKind {
         /// The intrinsic key that was not found in the catalog.
         intrinsic_key: String,
     },
-    /// An imported `impl` block's method body calls a private helper function
-    /// defined in the same module as the impl. Private functions are not
-    /// exported across module boundaries, so the body cannot be lowered.
-    /// The dependency chain must be resolved (e.g. by making the helper `pub`,
-    /// moving the logic inline, or restructuring the module) before cross-module
-    /// dispatch on this method will work.
+    /// An imported item body (either an `impl` block's method body or a
+    /// `pub fn` free-function body) calls a private helper function defined
+    /// in the same module as the item. Private functions are not exported
+    /// across module boundaries, so the body cannot be lowered. The
+    /// dependency chain must be resolved (e.g. by making the helper `pub`,
+    /// moving the logic inline, or restructuring the module) before
+    /// cross-module dispatch on this item will work.
     ///
     /// Emitted instead of a bare `UnresolvedSymbol` so the diagnostic
     /// identifies the root cause at the module boundary.
-    ImportedImplBodyMissingPrivateHelper {
-        /// Short name of the module that owns the impl block (e.g. `"shapes"`).
+    ImportedBodyMissingPrivateHelper {
+        /// Short name of the module that owns the item (e.g. `"shapes"`).
         module: String,
-        /// Name of the private function that the method body calls.
+        /// Name of the private function that the body calls.
         helper_fn: String,
+        /// Which kind of imported item carried the body that referenced the
+        /// missing helper. Lets diagnostic consumers tell impl-method gaps
+        /// apart from free-function gaps without restoring a separate kind.
+        item_kind: ImportedItemKind,
+    },
+    /// An imported `pub fn` free-function body calls another `pub fn` from
+    /// the same imported module by its bare (unqualified) identifier. The
+    /// bare name does not resolve in the importer scope — only the
+    /// `module.callee` mangled spelling does — so the body cannot be
+    /// lowered as-written. The author should rewrite the call as
+    /// `module.callee(..)` (the `suggested_qualified` form) or wait for the
+    /// full imported-body dependency closure (Stage 2 of W4.018) to land.
+    ///
+    /// Emitted instead of a bare `UnresolvedSymbol` so the diagnostic
+    /// identifies the root cause at the module boundary and points at the
+    /// repair form.
+    ImportedFreeFnBodyUnresolvedBareCall {
+        /// Short name of the module that owns the free-function body
+        /// (e.g. `"path"`).
+        module: String,
+        /// The bare callee identifier that failed to resolve (e.g. `"basename"`).
+        callee: String,
+        /// The mangled qualified spelling the author should rewrite to
+        /// (e.g. `"path.basename"`).
+        suggested_qualified: String,
     },
     /// Target architecture does not support coroutines (actors/tasks). The
     /// program uses a coroutine-dependent construct (actor decl, task spawn,

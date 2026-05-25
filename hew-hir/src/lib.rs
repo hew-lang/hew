@@ -14,7 +14,7 @@ pub mod stdlib_catalog;
 pub mod value_class;
 pub mod verify;
 
-pub use diagnostic::{HirDiagnostic, HirDiagnosticKind};
+pub use diagnostic::{HirDiagnostic, HirDiagnosticKind, ImportedItemKind};
 pub use dump::dump_hir;
 pub use ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 pub use intent::IntentKind;

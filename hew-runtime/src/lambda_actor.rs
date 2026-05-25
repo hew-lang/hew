@@ -118,7 +118,7 @@ pub type HewLambdaActorBody = unsafe extern "C-unwind" fn(
 ///
 /// SAFETY: `state` is the same pointer passed to `hew_lambda_actor_new`;
 /// called at most once.
-pub type HewLambdaActorStateDrop = unsafe extern "C" fn(state: *mut core::ffi::c_void);
+pub type HewLambdaActorStateDrop = unsafe extern "C-unwind" fn(state: *mut core::ffi::c_void);
 
 // ── Body-shape discriminant ────────────────────────────────────────────────
 
@@ -327,6 +327,12 @@ impl LambdaActorInner {
     }
 }
 
+/// Test-only: captures the message passed to `set_last_error` when
+/// `state_drop` panics. Written by [`LambdaActorInner::drop`] on the
+/// dispatch thread; read by `state_drop_panic_does_not_abort_process`.
+#[cfg(test)]
+static LAST_DROP_PANIC_MSG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 impl Drop for LambdaActorInner {
     fn drop(&mut self) {
         // `state_drop` is called here — after the Arc strong count reaches
@@ -339,8 +345,34 @@ impl Drop for LambdaActorInner {
         // SAFETY: `state_drop` is a valid function pointer (set at
         // construction, never mutated). `state` is the same pointer
         // passed to `hew_lambda_actor_new`; called exactly once here.
-        unsafe {
-            (self.state_drop)(self.state);
+        //
+        // Wrapped in `catch_unwind` so that a panic in `state_drop` while
+        // this drop runs during stack unwinding cannot trigger a double-panic
+        // → process abort.
+        let state_drop = self.state_drop;
+        let state = self.state;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: state_drop is a valid extern "C-unwind" fn pointer (set at
+            // construction, never mutated); state is the same pointer passed to
+            // hew_lambda_actor_new; called exactly once here.
+            unsafe { state_drop(state) };
+        }));
+        if let Err(panic_payload) = result {
+            let msg: String = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "non-string panic payload".to_string()
+            };
+            let error_msg = format!("LambdaActorInner::drop user state_drop panicked: {msg}");
+            crate::set_last_error(error_msg.clone());
+            #[cfg(test)]
+            {
+                *LAST_DROP_PANIC_MSG
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error_msg);
+            }
         }
     }
 }
@@ -536,7 +568,7 @@ fn dispatch_tell(inner: &LambdaActorInner, msg: &[u8]) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut reply_out: *mut u8 = ptr::null_mut();
         let mut reply_len_out: usize = 0;
-        // SAFETY: body_fn is a valid extern "C" fn pointer; msg_ptr valid for
+        // SAFETY: body_fn is a valid extern "C-unwind" fn pointer; msg_ptr valid for
         // msg.len() bytes; reply_out/reply_len_out are local stack variables.
         // SAFETY: body_fn valid; reply_out/reply_len_out are local stack
         // variables; raw ptrs avoid implicit-borrow lint.
@@ -777,12 +809,12 @@ impl HewLambdaActorWeakHandle {
 ///
 /// # Safety
 ///
-/// - `body_fn` must be a valid `extern "C" fn` pointer for the lifetime
+/// - `body_fn` must be a valid `extern "C-unwind" fn` pointer for the lifetime
 ///   of the returned handle.
 /// - `state` is passed to `body_fn` on every dispatch; must be valid for
 ///   the lifetime of the actor. `state_drop(state)` is called once after
 ///   the dispatch loop stops.
-/// - `state_drop` must be a valid `extern "C" fn` pointer.
+/// - `state_drop` must be a valid `extern "C-unwind" fn` pointer.
 /// - The returned pointer is owned by the runtime and must be released
 ///   with [`hew_lambda_actor_release`].
 #[no_mangle]
@@ -1315,7 +1347,7 @@ mod tests {
     // ── Shared test helpers ────────────────────────────────────────────────
 
     /// No-op state-drop callback for tests that don't need cleanup.
-    unsafe extern "C" fn noop_state_drop(_state: *mut core::ffi::c_void) {}
+    unsafe extern "C-unwind" fn noop_state_drop(_state: *mut core::ffi::c_void) {}
 
     /// Body for `tell_shape_dispatch_roundtrip`: appends received bytes to an
     /// `Arc<Mutex<Vec<Vec<u8>>>>` passed via state.
@@ -1348,7 +1380,7 @@ mod tests {
 
     /// State-drop for `tell_shape_dispatch_roundtrip`: frees the Box wrapping
     /// the `Arc<Mutex<...>>`.
-    unsafe extern "C" fn arc_mutex_state_drop(state: *mut core::ffi::c_void) {
+    unsafe extern "C-unwind" fn arc_mutex_state_drop(state: *mut core::ffi::c_void) {
         use std::sync::Mutex;
         // SAFETY: state is a Box<Arc<Mutex<Vec<Vec<u8>>>>> pointer from
         // Box::into_raw; freed exactly once here.
@@ -1379,7 +1411,7 @@ mod tests {
     }
 
     /// State-drop for `tell_body_receives_message_bytes`.
-    unsafe extern "C" fn collect_state_drop(state: *mut core::ffi::c_void) {
+    unsafe extern "C-unwind" fn collect_state_drop(state: *mut core::ffi::c_void) {
         use std::sync::Mutex;
         // SAFETY: same Box<Arc<Mutex<...>>> provenance as arc_mutex_state_drop.
         unsafe { drop(Box::from_raw(state.cast::<Arc<Mutex<Vec<Vec<u8>>>>>())) };
@@ -1444,7 +1476,7 @@ mod tests {
 
     /// State-drop callback that increments a shared counter. Cast
     /// `Arc<AtomicUsize>` pointer to `*mut c_void` via `Arc::into_raw`.
-    unsafe extern "C" fn counting_state_drop(state: *mut core::ffi::c_void) {
+    unsafe extern "C-unwind" fn counting_state_drop(state: *mut core::ffi::c_void) {
         // SAFETY: state is `*const AtomicUsize` from Arc::into_raw; we
         // reconstruct the Arc and drop it (decrement refcount).
         let arc = unsafe { Arc::from_raw(state as *const AtomicUsize) };
@@ -1592,7 +1624,7 @@ mod tests {
     /// Helper: construct a noop-tell actor via C-ABI.
     fn new_tell_cabi(capacity: usize) -> *mut HewLambdaActorHandle {
         // SAFETY: all args are valid; noop_tell_body / noop_state_drop are
-        // valid extern "C" function pointers.
+        // valid extern "C-unwind" function pointers.
         unsafe {
             hew_lambda_actor_new(
                 capacity,
@@ -2052,6 +2084,63 @@ mod tests {
     ///
     /// Active only in debug builds; the `debug_assert!` is elided in
     /// release mode.
+    /// Verify that a panic inside `state_drop` does NOT abort the process.
+    ///
+    /// Regression test for M3: `LambdaActorInner::drop` must wrap `state_drop`
+    /// in `catch_unwind` so that a user panic cannot cause a double-panic →
+    /// process abort during stack unwinding.
+    #[test]
+    fn state_drop_panic_does_not_abort_process() {
+        static CALLED: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C-unwind" fn panicking_state_drop(_state: *mut core::ffi::c_void) {
+            CALLED.fetch_add(1, Ord::Relaxed);
+            panic!("intentional state_drop panic for M3 regression test");
+        }
+
+        // Clear any stale capture from a previous run.
+        *super::LAST_DROP_PANIC_MSG
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+
+        let actor = HewLambdaActor::new(
+            1,
+            LambdaShape::Tell,
+            noop_tell_body,
+            ptr::null_mut(),
+            panicking_state_drop,
+        )
+        .expect("spawn");
+        drop(actor);
+        // Give the dispatch thread time to exit and invoke state_drop.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // state_drop ran (incremented counter).
+        assert_eq!(
+            CALLED.load(Ord::Relaxed),
+            1,
+            "state_drop should have been called once"
+        );
+        // CALLED is incremented before the panic, so by the time CALLED==1
+        // is confirmed above, set_last_error (and LAST_DROP_PANIC_MSG) have
+        // already been written on the dispatch thread. The Mutex provides
+        // the necessary memory-visibility barrier.
+        let captured = super::LAST_DROP_PANIC_MSG
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let err_msg = captured
+            .as_deref()
+            .expect("state_drop panic must have logged an error via set_last_error");
+        assert!(
+            err_msg.contains("LambdaActorInner::drop user state_drop panicked:"),
+            "error must name the runtime drop path; got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("intentional state_drop panic"),
+            "error must contain the original panic message; got: {err_msg}"
+        );
+        // Reaching here means catch_unwind prevented a process abort.
+    }
+
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "allocator-pairing")]

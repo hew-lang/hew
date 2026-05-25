@@ -1,22 +1,16 @@
 use hew_hir::{
-    dump_hir, lower_program, verify_hir, HirDiagnosticKind, HirExprKind, HirSelectArmKind,
-    HirStmtKind, ResolutionCtx,
+    dump_hir, verify_hir, HirDiagnosticKind, HirExprKind, HirSelectArmKind, HirStmtKind,
 };
 use hew_parser::ast::{
     Block, Expr, FnDecl, IntRadix, Item, Literal, Pattern, Program, SelectArm, Stmt, TimeoutClause,
     Visibility,
 };
-use hew_types::TypeCheckOutput;
+
+#[path = "support/mod.rs"]
+mod support;
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
-    let parsed = hew_parser::parse(source);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &ResolutionCtx,
-        hew_hir::TargetArch::host(),
-    )
+    support::checker_pipeline::lower_through_checker(source)
 }
 
 #[test]
@@ -93,14 +87,26 @@ fn call_return_type_resolved_from_registry() {
 }
 
 #[test]
-fn call_to_unresolved_function_emits_inference_var() {
-    // Calling an unknown function is an inference hole: the callee is
-    // Unresolved, so the call result type cannot be determined.
+fn call_to_unresolved_function_reports_checker_boundary() {
+    // Through the real Checker pipeline, an unknown callee arrives at HIR as
+    // an unresolved symbol plus an error-recovery placeholder boundary error.
     let output = lower("fn main() -> i64 { return mystery(); }");
-    assert!(output
-        .diagnostics
-        .iter()
-        .any(|d| matches!(d.kind, HirDiagnosticKind::UnresolvedInferenceVar)));
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::UnresolvedSymbol { .. })),
+        "expected unresolved symbol diagnostic, got: {:?}",
+        output.diagnostics
+    );
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::CheckerBoundaryViolation { .. })),
+        "expected checker boundary diagnostic, got: {:?}",
+        output.diagnostics
+    );
 }
 
 #[test]
@@ -905,12 +911,7 @@ fn select_two_after_arms_rejected() {
         })),
     };
     let program = program_with_select(select_expr);
-    let output = lower_program(
-        &program,
-        &TypeCheckOutput::default(),
-        &ResolutionCtx,
-        hew_hir::TargetArch::host(),
-    );
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
     assert!(
         output
             .diagnostics

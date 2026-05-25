@@ -11,40 +11,19 @@
 //! expression. These tests assert one positive case per position per
 //! walker (8 positives), plus one negative per walker (2 negatives).
 
-use hew_hir::{lower_program, HirDiagnosticKind, TargetArch};
-use hew_parser::parser;
-use hew_types::TypeCheckOutput;
+use hew_hir::{HirDiagnosticKind, TargetArch};
+
+#[path = "support/mod.rs"]
+mod support;
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
 fn lower_wasm(source: &str) -> hew_hir::LowerOutput {
-    let parsed = parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::Wasm32,
-    )
+    support::checker_pipeline::lower_through_checker_for_target(source, TargetArch::Wasm32)
 }
 
 fn lower_host(source: &str) -> hew_hir::LowerOutput {
-    let parsed = parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    )
+    support::checker_pipeline::lower_through_checker(source)
 }
 
 fn has_blocking_recv(out: &hew_hir::LowerOutput) -> bool {

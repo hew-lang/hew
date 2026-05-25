@@ -191,7 +191,8 @@ fn method_call_without_rewrite_fails_closed() {
         parsed.errors
     );
 
-    // Use an empty TypeCheckOutput — no method_call_rewrites populated.
+    // W4.015: behavior pin — empty method_call_rewrites must fail closed
+    // with MethodCallNoRewrite instead of silently lowering a method call.
     let empty_tc = TypeCheckOutput::default();
     let lower_output = lower_program(
         &parsed.program,

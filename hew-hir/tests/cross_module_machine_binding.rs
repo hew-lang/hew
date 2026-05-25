@@ -11,10 +11,12 @@
 //! asserts it at the substrate boundary so a regression is caught by a
 //! cargo test before the run fixture is even executed.
 
-use hew_hir::{lower_program, HirExprKind, HirItem, HirStmtKind, ResolutionCtx};
+use hew_hir::{HirExprKind, HirItem, HirStmtKind};
 use hew_parser::ast::{Item, Program};
 use hew_parser::module::{Module, ModuleGraph, ModuleId};
-use hew_types::TypeCheckOutput;
+
+#[path = "support/mod.rs"]
+mod support;
 
 /// Build a `Program` with a non-root module containing the imported
 /// `Toggle` machine and a root module whose `main` references it via the
@@ -96,12 +98,7 @@ fn main() {
 #[test]
 fn cross_module_machine_ctor_resolves_to_machine_variant_ctor() {
     let program = build_cross_module_program();
-    let output = lower_program(
-        &program,
-        &TypeCheckOutput::default(),
-        &ResolutionCtx,
-        hew_hir::TargetArch::host(),
-    );
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
 
     // No `UnresolvedSymbol` diagnostics for the imported ctor/event refs.
     let unresolved: Vec<_> = output

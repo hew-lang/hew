@@ -2,9 +2,14 @@
 //!
 //! P0.1/P0.2: Coroutine gates reject actors/supervisors on unsupported targets.
 
-use hew_hir::{lower_program, HirDiagnosticKind, TargetArch};
-use hew_parser::parser;
-use hew_types::TypeCheckOutput;
+use hew_hir::{HirDiagnosticKind, TargetArch};
+
+#[path = "support/mod.rs"]
+mod support;
+
+fn lower(source: &str, target: TargetArch) -> hew_hir::LowerOutput {
+    support::checker_pipeline::lower_through_checker_for_target(source, target)
+}
 
 #[test]
 fn target_coroutine_unsupported_rejects_actor_decl() {
@@ -14,18 +19,7 @@ fn target_coroutine_unsupported_rejects_actor_decl() {
             receive fn increment() { self.count += 1; }
         }
     ";
-    let parsed = parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::Other,
-    );
+    let output = lower(source, TargetArch::Other);
 
     assert!(
         !output.diagnostics.is_empty(),
@@ -60,13 +54,7 @@ fn target_coroutine_unsupported_rejects_supervisor_decl() {
             receive fn work() {}
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::Wasm32,
-    );
+    let output = lower(source, TargetArch::Wasm32);
 
     let coroutine_diagnostics: Vec<_> = output
         .diagnostics
@@ -96,13 +84,7 @@ fn target_coroutine_unsupported_accepts_pure_data_program() {
             dx * dx + dy * dy
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::Other,
-    );
+    let output = lower(source, TargetArch::Other);
 
     let has_coroutine_unsupported = output
         .diagnostics
@@ -140,13 +122,7 @@ fn native_target_accepts_actors() {
             receive fn increment() { self.count += 1; }
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::X86_64,
-    );
+    let output = lower(source, TargetArch::X86_64);
 
     let has_coroutine_unsupported = output
         .diagnostics
@@ -163,13 +139,7 @@ fn aarch64_target_accepts_actors() {
             receive fn increment() { self.count += 1; }
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::Aarch64,
-    );
+    let output = lower(source, TargetArch::Aarch64);
 
     let has_coroutine_unsupported = output
         .diagnostics
@@ -190,13 +160,7 @@ fn wasm_blocking_channel_recv_rejected() {
             let v = ch.recv();
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::Wasm32,
-    );
+    let output = lower(source, TargetArch::Wasm32);
 
     let has_blocking_recv = output.diagnostics.iter().any(|d| {
         matches!(
@@ -229,13 +193,7 @@ fn wasm_try_recv_accepted() {
             let v = ch.try_recv();
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::Wasm32,
-    );
+    let output = lower(source, TargetArch::Wasm32);
 
     let has_blocking_recv = output.diagnostics.iter().any(|d| {
         matches!(
@@ -260,13 +218,7 @@ fn native_blocking_channel_recv_accepted() {
             let v = ch.recv();
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::X86_64,
-    );
+    let output = lower(source, TargetArch::X86_64);
 
     let has_blocking_recv = output.diagnostics.iter().any(|d| {
         matches!(
@@ -294,13 +246,7 @@ fn wasm_blocking_recv_nested_in_block_rejected() {
             }
         }
     ";
-    let parsed = parser::parse(source);
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::Wasm32,
-    );
+    let output = lower(source, TargetArch::Wasm32);
 
     let has_blocking_recv = output.diagnostics.iter().any(|d| {
         matches!(

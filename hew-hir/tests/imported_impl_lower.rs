@@ -11,10 +11,12 @@
 //!    `HirDiagnosticKind::ImportedImplBodyMissingPrivateHelper` instead of
 //!    silently failing or producing a bare `UnresolvedSymbol`.
 
-use hew_hir::{lower_program, HirDiagnosticKind, HirItem, ResolutionCtx};
+use hew_hir::{HirDiagnosticKind, HirItem};
 use hew_parser::ast::{Item, Program};
 use hew_parser::module::{Module, ModuleGraph, ModuleId};
-use hew_types::TypeCheckOutput;
+
+#[path = "support/mod.rs"]
+mod support;
 
 /// Build a `Program` whose non-root `shapes` module contains:
 ///  - `pub type Foo { n: i64; }`
@@ -107,12 +109,7 @@ fn main() -> i64 {
 #[test]
 fn imported_impl_methods_registered_and_emitted() {
     let program = build_imported_impl_program(false);
-    let output = lower_program(
-        &program,
-        &TypeCheckOutput::default(),
-        &ResolutionCtx,
-        hew_hir::TargetArch::host(),
-    );
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
 
     // No private-helper diagnostic should be emitted.
     let blocked: Vec<_> = output
@@ -156,12 +153,7 @@ fn imported_impl_methods_registered_and_emitted() {
 #[test]
 fn imported_impl_body_calling_private_helper_emits_diagnostic() {
     let program = build_imported_impl_program(true);
-    let output = lower_program(
-        &program,
-        &TypeCheckOutput::default(),
-        &ResolutionCtx,
-        hew_hir::TargetArch::host(),
-    );
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
 
     // Must emit exactly one ImportedImplBodyMissingPrivateHelper for `helper`.
     let blocked: Vec<_> = output

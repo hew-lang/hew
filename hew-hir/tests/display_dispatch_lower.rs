@@ -189,6 +189,8 @@ fn fstring_without_display_fmt_lang_item_is_fail_closed() {
         panic!("expected f-string");
     };
 
+    // W4.015: behavior pin — empty lang-item registry must make display
+    // dispatch fail closed instead of fabricating a Display::fmt symbol.
     let mut tc = TypeCheckOutput::default();
     if let StringPart::Expr((_, sp)) = &parts[1] {
         tc.expr_types.insert(
@@ -266,6 +268,8 @@ fn fstring_named_type_without_impl_is_fail_closed() {
         })
         .expect("interp expr present");
 
+    // W4.015: behavior pin — poisoned fn_registry input must surface as a
+    // CheckerBoundaryViolation in display dispatch substitution.
     let mut tc = TypeCheckOutput::default();
     tc.lang_items.insert(
         hew_types::LANG_ITEM_DISPLAY_FMT,

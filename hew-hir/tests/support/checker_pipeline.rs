@@ -1,5 +1,10 @@
-use hew_hir::{lower_program_host_target, LowerOutput, ResolutionCtx};
-use hew_parser::ParseResult;
+#![allow(
+    dead_code,
+    reason = "shared integration-test helper module exposes variants used by different test crates"
+)]
+
+use hew_hir::{lower_program, lower_program_host_target, LowerOutput, ResolutionCtx, TargetArch};
+use hew_parser::{ast::Program, ParseResult};
 use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
 
 pub fn parse_source(source: &str) -> ParseResult {
@@ -22,6 +27,17 @@ pub fn typecheck_source(source: &str) -> (ParseResult, TypeCheckOutput) {
 pub fn lower_through_checker(source: &str) -> LowerOutput {
     let (parsed, tco) = typecheck_source(source);
     lower_program_host_target(&parsed.program, &tco, &ResolutionCtx)
+}
+
+pub fn lower_through_checker_from_program(program: &Program) -> LowerOutput {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tco = checker.check_program(program);
+    lower_program_host_target(program, &tco, &ResolutionCtx)
+}
+
+pub fn lower_through_checker_for_target(source: &str, target: TargetArch) -> LowerOutput {
+    let (parsed, tco) = typecheck_source(source);
+    lower_program(&parsed.program, &tco, &ResolutionCtx, target)
 }
 
 #[allow(

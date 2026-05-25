@@ -6,9 +6,20 @@
 //! catches any future surface that could reach MIR
 //! (`hew-mir/src/lower.rs:8852`) before the checker guard does.
 
-use hew_hir::{lower_program, HirDiagnosticKind, TargetArch};
-use hew_parser::parser;
-use hew_types::TypeCheckOutput;
+use hew_hir::HirDiagnosticKind;
+use hew_parser::ast::{Item, Program};
+use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+#[path = "support/mod.rs"]
+mod support;
+
+fn lower(source: &str) -> hew_hir::LowerOutput {
+    support::checker_pipeline::lower_through_checker(source)
+}
+
+fn lower_two_module(program: &Program) -> hew_hir::LowerOutput {
+    support::checker_pipeline::lower_through_checker_from_program(program)
+}
 
 /// `spawn Root` (no args) on a host target is accepted — no spawn-gate
 /// diagnostic is emitted. The coroutine gate is also inactive on the host's
@@ -27,18 +38,7 @@ fn supervisor_spawn_no_args_accepted() {
             let s = spawn Root;
         }
     ";
-    let parsed = parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let spawn_gate_hits: Vec<_> = output
         .diagnostics
@@ -72,18 +72,7 @@ fn supervisor_spawn_with_args_rejected() {
             let s = spawn Root(value: 1);
         }
     ";
-    let parsed = parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let spawn_gate_hits: Vec<_> = output
         .diagnostics
@@ -133,18 +122,7 @@ fn supervisor_spawn_with_args_in_machine_transition_body_rejected() {
         }
         fn main() {}
     ";
-    let parsed = parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let spawn_gate_hits: Vec<&str> = output
         .diagnostics
@@ -190,18 +168,7 @@ fn supervisor_spawn_with_args_in_machine_state_entry_rejected() {
         }
         fn main() {}
     ";
-    let parsed = parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let spawn_gate_hits: Vec<&str> = output
         .diagnostics
@@ -235,18 +202,7 @@ fn actor_spawn_with_args_accepted() {
             let w = spawn Worker(value: 1);
         }
     ";
-    let parsed = parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let output = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower(source);
 
     let spawn_gate_hits: Vec<_> = output
         .diagnostics
@@ -283,9 +239,6 @@ fn actor_spawn_with_args_accepted() {
 //      resolves to `other`'s actor (a legal actor-with-init-args
 //      spawn). The walker should NOT fire the supervisor gate here.
 //      Caught by `root_supervisor_name_does_not_false_positive_in_module`.
-
-use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
 /// Build a `Program` whose root has the given items and whose `module_graph`
 /// contains exactly one non-root module at `<module_short_name>` with the
@@ -370,12 +323,7 @@ fn module_local_supervisor_spawn_with_args_rejected() {
         }
     ";
     let program = build_two_module_program(root_src, "other", module_src);
-    let output = lower_program(
-        &program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower_two_module(&program);
 
     let spawn_gate_hits: Vec<&str> = output
         .diagnostics
@@ -428,12 +376,7 @@ fn root_supervisor_name_does_not_false_positive_in_module() {
         }
     ";
     let program = build_two_module_program(root_src, "other", module_src);
-    let output = lower_program(
-        &program,
-        &TypeCheckOutput::default(),
-        &hew_hir::ResolutionCtx,
-        TargetArch::host(),
-    );
+    let output = lower_two_module(&program);
 
     let spawn_gate_hits: Vec<_> = output
         .diagnostics

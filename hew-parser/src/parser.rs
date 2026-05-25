@@ -1427,6 +1427,22 @@ impl<'src> Parser<'src> {
         if doc_comment.is_none() {
             doc_comment = self.collect_doc_comments();
         }
+        // `#[extern_symbol("…")]` attaches to a `fn` declaration nested inside
+        // either an `extern "C" { … }` block or an `impl Ty { … }` / `impl Trait
+        // for Ty { … }` block (parsed via `parse_extern_block` and
+        // `parse_impl_decl`'s body loop respectively). At item level it is
+        // never valid — reject it here with a clear diagnostic rather than
+        // silently dropping it onto whatever item follows.
+        for attr in &attrs {
+            if attr.name == "extern_symbol" {
+                self.error_at(
+                    "`#[extern_symbol]` is only valid on `fn` declarations inside an \
+                     `extern \"C\"` block or an `impl` block"
+                        .to_string(),
+                    attr.span.clone(),
+                );
+            }
+        }
         let start = self.peek_span().start;
         // Pre-compute attribute span before attrs is moved into the item.
         let attr_start = attrs.first().map(|a| a.span.start);
@@ -2136,6 +2152,20 @@ impl<'src> Parser<'src> {
                     doc_comment = self.collect_doc_comments();
                 }
 
+                // `#[extern_symbol]` belongs on `extern "C"` fns and `impl`
+                // methods — not on methods declared inline in a type body.
+                for attr in &attributes {
+                    if attr.name == "extern_symbol" {
+                        self.error_at(
+                            "`#[extern_symbol]` is only valid on `fn` declarations inside an \
+                             `extern \"C\"` block or an `impl` block; declare the method in an \
+                             `impl` block instead"
+                                .to_string(),
+                            attr.span.clone(),
+                        );
+                    }
+                }
+
                 if self.peek() == Some(&Token::Fn) {
                     let fn_start = self.peek_span().start;
                     self.advance();
@@ -2265,6 +2295,23 @@ impl<'src> Parser<'src> {
     fn parse_trait_item(&mut self) -> Option<TraitItem> {
         let doc_comment = self.collect_doc_comments();
         let attrs = self.parse_attributes();
+
+        // `#[extern_symbol]` belongs on `extern "C"` fns and `impl`
+        // methods — not on trait-item declarations. Trait items describe
+        // an abstract surface; the C-ABI binding lives on the concrete
+        // `impl` method.
+        for attr in &attrs {
+            if attr.name == "extern_symbol" {
+                self.error_at(
+                    "`#[extern_symbol]` is only valid on `fn` declarations inside an \
+                     `extern \"C\"` block or an `impl` block; bind the symbol on the \
+                     concrete `impl` method instead"
+                        .to_string(),
+                    attr.span.clone(),
+                );
+            }
+        }
+
         let is_pure = self.eat(&Token::Pure);
         match self.peek() {
             Some(Token::Fn) => {
@@ -2371,6 +2418,7 @@ impl<'src> Parser<'src> {
         let mut type_aliases = Vec::new();
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             let doc_comment = self.collect_doc_comments();
+            let method_attrs = self.parse_attributes();
             let vis = if self.peek() == Some(&Token::Pub) {
                 self.parse_visibility()
             } else {
@@ -2379,6 +2427,13 @@ impl<'src> Parser<'src> {
             let is_pure = self.eat(&Token::Pure);
             match self.peek() {
                 Some(Token::Type) => {
+                    if !method_attrs.is_empty() {
+                        let span = method_attrs.first().map_or(0..0, |a| a.span.clone());
+                        self.error_at(
+                            "attributes are not supported on impl-block type aliases".to_string(),
+                            span,
+                        );
+                    }
                     if vis != Visibility::Private {
                         self.error(
                             "type aliases in impl bodies cannot have visibility modifiers"
@@ -2398,7 +2453,7 @@ impl<'src> Parser<'src> {
                     let prev_allow_implicit_self =
                         std::mem::replace(&mut self.allow_implicit_self_params, true);
                     let parsed_method =
-                        self.parse_function(fn_start, false, false, vis, is_pure, Vec::new());
+                        self.parse_function(fn_start, false, false, vis, is_pure, method_attrs);
                     self.allow_implicit_self_params = prev_allow_implicit_self;
                     if let Some(mut method) = parsed_method {
                         if let Some(doc) = doc_comment {
@@ -2408,9 +2463,18 @@ impl<'src> Parser<'src> {
                     }
                 }
                 other => {
-                    self.error(format!(
-                        "expected 'fn' or 'type' in impl body, found {other:?}"
-                    ));
+                    let other_msg =
+                        format!("expected 'fn' or 'type' in impl body, found {other:?}");
+                    if !method_attrs.is_empty() {
+                        let span = method_attrs.first().map_or(0..0, |a| a.span.clone());
+                        self.error_at(
+                            "attributes inside an impl block must be followed by a `fn` \
+                             declaration"
+                                .to_string(),
+                            span,
+                        );
+                    }
+                    self.error(other_msg);
                     self.advance(); // error recovery: skip the bad token
                 }
             }
@@ -2464,6 +2528,21 @@ impl<'src> Parser<'src> {
             let attrs = self.parse_attributes();
             if doc_comment.is_none() {
                 doc_comment = self.collect_doc_comments();
+            }
+
+            // `#[extern_symbol]` belongs on `extern "C"` fns and `impl`
+            // methods — not on actor body members (init, receive fn,
+            // receive gen fn, or inherent `pure fn` methods).
+            for attr in &attrs {
+                if attr.name == "extern_symbol" {
+                    self.error_at(
+                        "`#[extern_symbol]` is only valid on `fn` declarations inside an \
+                         `extern \"C\"` block or an `impl` block; actor members cannot \
+                         bind to a runtime C-ABI symbol"
+                            .to_string(),
+                        attr.span.clone(),
+                    );
+                }
             }
 
             if self.peek() == Some(&Token::Init) {
@@ -3229,8 +3308,14 @@ impl<'src> Parser<'src> {
 
         let mut functions = Vec::new();
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            // Collect any per-fn attributes (e.g. `#[extern_symbol("hew_x")]`).
+            // Doc comments are not supported inside extern blocks today; only
+            // attributes between the opening `{` and the next `fn` are parsed.
+            let attributes = self.parse_attributes();
             if self.peek() == Some(&Token::Fn) {
-                let item_start = self.peek_span().start;
+                let item_start = attributes
+                    .first()
+                    .map_or_else(|| self.peek_span().start, |a| a.span.start);
                 self.advance();
                 let name = self.expect_ident()?;
 
@@ -3252,6 +3337,7 @@ impl<'src> Parser<'src> {
                 let item_end = self.peek_span().start;
 
                 functions.push(ExternFnDecl {
+                    attributes,
                     name,
                     params,
                     return_type,
@@ -3259,6 +3345,15 @@ impl<'src> Parser<'src> {
                     span: item_start..item_end,
                 });
             } else {
+                if !attributes.is_empty() {
+                    let span = attributes.first().map_or(0..0, |a| a.span.clone());
+                    self.error_at(
+                        "attributes inside an extern block must be followed by a `fn` \
+                         declaration"
+                            .to_string(),
+                        span,
+                    );
+                }
                 self.error(format!(
                     "expected 'fn' in extern block, found {:?}",
                     self.peek()
@@ -9946,5 +10041,211 @@ wire type Msg {
         } else {
             panic!("expected Item::Function");
         }
+    }
+
+    // --- #[extern_symbol] attribute --------------------------------------
+
+    #[test]
+    fn extern_symbol_attribute_on_extern_c_fn_is_captured() {
+        // The attribute must parse via the existing Attribute infrastructure
+        // and ride on `ExternFnDecl.attributes`. The template string is
+        // captured verbatim — `{T}` is a literal character sequence inside
+        // a `StringLit` and is not yet parsed as a placeholder (Stage 2).
+        let src = r#"
+            extern "C" {
+                #[extern_symbol("hew_vec_push_{T}")]
+                fn hew_vec_push(v: ptr, x: ptr);
+            }
+        "#;
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "expected no parse errors, got: {:?}",
+            result.errors
+        );
+        let crate::ast::Item::ExternBlock(block) = &result.program.items[0].0 else {
+            panic!("expected ExternBlock");
+        };
+        assert_eq!(block.functions.len(), 1);
+        let extern_fn = &block.functions[0];
+        assert_eq!(extern_fn.name, "hew_vec_push");
+        assert_eq!(extern_fn.attributes.len(), 1, "must carry one attribute");
+        let attr = &extern_fn.attributes[0];
+        assert_eq!(attr.name, "extern_symbol");
+        assert_eq!(attr.args.len(), 1);
+        assert_eq!(attr.args[0].as_str(), "hew_vec_push_{T}");
+    }
+
+    #[test]
+    fn extern_symbol_attribute_on_impl_method_is_captured() {
+        // The attribute must also flow through `parse_impl_decl`'s body loop
+        // onto inherent impl methods.
+        let src = r#"
+            impl<T> Vec<T> {
+                #[extern_symbol("hew_vec_push_{T}")]
+                fn push(self, x: T) {}
+            }
+        "#;
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "expected no parse errors, got: {:?}",
+            result.errors
+        );
+        let crate::ast::Item::Impl(impl_decl) = &result.program.items[0].0 else {
+            panic!("expected Impl");
+        };
+        assert_eq!(impl_decl.methods.len(), 1);
+        let method = &impl_decl.methods[0];
+        assert_eq!(method.name, "push");
+        assert_eq!(method.attributes.len(), 1);
+        assert_eq!(method.attributes[0].name, "extern_symbol");
+        assert_eq!(method.attributes[0].args[0].as_str(), "hew_vec_push_{T}");
+    }
+
+    #[test]
+    fn extern_symbol_attribute_on_trait_impl_method_is_captured() {
+        let src = r#"
+            impl<T> SomeTrait for Vec<T> {
+                #[extern_symbol("hew_vec_join_str")]
+                fn join(self, sep: string) -> string {}
+            }
+        "#;
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "expected no parse errors, got: {:?}",
+            result.errors
+        );
+        let crate::ast::Item::Impl(impl_decl) = &result.program.items[0].0 else {
+            panic!("expected Impl");
+        };
+        assert!(impl_decl.trait_bound.is_some(), "must be a trait impl");
+        assert_eq!(impl_decl.methods.len(), 1);
+        let method = &impl_decl.methods[0];
+        assert_eq!(method.attributes.len(), 1);
+        assert_eq!(method.attributes[0].name, "extern_symbol");
+        assert_eq!(method.attributes[0].args[0].as_str(), "hew_vec_join_str");
+    }
+
+    #[test]
+    fn extern_symbol_attribute_on_free_fn_is_rejected() {
+        // Attachment rule: `#[extern_symbol]` is only valid on
+        // `fn` declarations inside `extern "C"` blocks or `impl` blocks.
+        // Placement on a free fn must surface as a parser diagnostic.
+        let src = r#"
+            #[extern_symbol("hew_foo")]
+            pub fn foo() {}
+        "#;
+        let result = parse(src);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("`#[extern_symbol]`")),
+            "expected an `#[extern_symbol]` placement diagnostic, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn extern_symbol_attribute_on_actor_is_rejected() {
+        let src = r#"
+            #[extern_symbol("hew_actor")]
+            actor MyActor {}
+        "#;
+        let result = parse(src);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("`#[extern_symbol]`")),
+            "expected an `#[extern_symbol]` placement diagnostic, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn extern_symbol_attribute_on_type_decl_method_is_rejected() {
+        // Methods declared inline in a type body are not `impl` methods —
+        // declare them in an `impl` block instead.
+        let src = r#"
+            type Foo {
+                x: i64,
+                #[extern_symbol("hew_foo_bar")]
+                fn bar(self) {}
+            }
+        "#;
+        let result = parse(src);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("`#[extern_symbol]`")),
+            "expected an `#[extern_symbol]` placement diagnostic, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn extern_symbol_attribute_on_actor_receive_fn_is_rejected() {
+        // Actor `receive fn` (and `receive gen fn`) declarations cannot bind
+        // to a runtime C-ABI symbol — extern_symbol is only valid in an
+        // `extern "C"` block or an `impl` block.
+        let src = r#"
+            actor MyActor {
+                #[extern_symbol("hew_actor_recv")]
+                receive fn ping() {}
+            }
+        "#;
+        let result = parse(src);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("`#[extern_symbol]`")),
+            "expected an `#[extern_symbol]` placement diagnostic, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn extern_symbol_attribute_on_trait_item_fn_is_rejected() {
+        // Trait items describe an abstract surface; the C-ABI binding belongs
+        // on the concrete `impl` method, not the trait declaration.
+        let src = r#"
+            trait Pushable<T> {
+                #[extern_symbol("hew_vec_push_{T}")]
+                fn push(self, value: T);
+            }
+        "#;
+        let result = parse(src);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("`#[extern_symbol]`")),
+            "expected an `#[extern_symbol]` placement diagnostic, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn extern_symbol_attribute_missing_string_arg_is_rejected() {
+        // `parse_attributes` enforces value-shape rules; a key-value form
+        // here surfaces an "invalid value" diagnostic. (Stage 2 owns
+        // semantic template-grammar validation; the parser only relies on the
+        // existing attribute syntax gate.)
+        let src = r#"
+            extern "C" {
+                #[extern_symbol(= 5)]
+                fn hew_x();
+            }
+        "#;
+        let result = parse(src);
+        assert!(
+            !result.errors.is_empty(),
+            "malformed `#[extern_symbol]` argument list must produce a parser error"
+        );
     }
 } // mod tests

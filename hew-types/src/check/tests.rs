@@ -12573,6 +12573,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
     let extern_i64 = ExternBlock {
         abi: "C".to_string(),
         functions: vec![ExternFnDecl {
+            attributes: Vec::new(),
             name: "hew_test_raw".to_string(),
             params: vec![],
             return_type: Some((i64_ty.clone(), 0..3)),
@@ -12620,6 +12621,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
     let extern_string = ExternBlock {
         abi: "C".to_string(),
         functions: vec![ExternFnDecl {
+            attributes: Vec::new(),
             name: "hew_test_raw".to_string(),
             params: vec![],
             return_type: Some((string_ty, 20..26)),
@@ -13949,6 +13951,7 @@ actor MyActor {
         Item::ExternBlock(ExternBlock {
             abi: "C".to_string(),
             functions: vec![ExternFnDecl {
+                attributes: Vec::new(),
                 name: fn_name.to_string(),
                 params: vec![Param {
                     name: "p".to_string(),
@@ -17906,6 +17909,7 @@ mod assoc_types_slice2 {
             functions: symbols
                 .iter()
                 .map(|name| ExternFnDecl {
+                    attributes: Vec::new(),
                     name: name.to_string(),
                     params: vec![],
                     return_type: None,
@@ -17989,6 +17993,7 @@ mod assoc_types_slice2 {
         let extern_item = Item::ExternBlock(ExternBlock {
             abi: "C".to_string(),
             functions: vec![ExternFnDecl {
+                attributes: Vec::new(),
                 name: "totally_made_up_ffi_symbol".to_string(),
                 params: vec![],
                 return_type: None,

@@ -1217,6 +1217,12 @@ pub struct ExternBlock {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExternFnDecl {
+    /// Outer attributes attached to this extern fn declaration, e.g.
+    /// `#[extern_symbol("hew_vec_push_{T}")]`. The parser captures the raw
+    /// attribute payload; semantic validation of the template grammar and
+    /// downstream `FnSig` / MIR ingest live in later compiler stages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<Attribute>,
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<Spanned<TypeExpr>>,

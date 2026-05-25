@@ -761,6 +761,17 @@ fn intern_runtime_decl<'ctx>(
         // Drop call site; the runtime's AtomicBool double-close guard
         // makes re-entry safe.
         "hew_duplex_close" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_duplex_close_half(half: *mut c_void, direction: i32) -> i32
+        // (`hew-runtime/src/duplex.rs:1496`). Closes one direction of a
+        // Duplex's dual queue selected by `direction`
+        // (HewDuplexDirection::Send=0, Recv=1; pinned i32 ABI per
+        // `hew-runtime/src/duplex.rs:765`). The runtime's AtomicBool
+        // double-close guard makes re-entry safe across all three Drop
+        // contexts (sync return / async cancel / actor shutdown).
+        // The MIR Place variant (`SendHalf` vs `RecvHalf`) carries the
+        // direction; codegen materialises the discriminant at the
+        // `lower_drop` call site (see direction special-case there).
+        "hew_duplex_close_half" => i32_ty.fn_type(&[ptr_ty.into(), i32_ty.into()], false),
         // hew_lambda_actor_release(actor: *mut HewLambdaActorHandle) -> i32
         // (`hew-runtime/src/lambda_actor.rs:411`). Same signature shape
         // as hew_duplex_close — one ptr arg, i32 result discarded.
@@ -6768,18 +6779,28 @@ fn resolve_drop_fn_to_symbol(drop_fn: &str) -> Result<&'static str, CodegenError
         // An explicit table entry is required; string-mangling would produce
         // the wrong symbol.
         "LambdaActorHandle::close" => Ok("hew_lambda_actor_release"),
+        // Half-handle drops (slice-3 DropKind::DuplexHalfClose(Direction)).
+        // Both Send and Recv resolve to the same `hew_duplex_close_half`
+        // C-ABI symbol; the direction discriminant is materialised at the
+        // call site in `lower_drop` from the Place variant (SendHalf vs
+        // RecvHalf), not encoded in the symbol name. This closes the
+        // 6-cell drop gap surfaced by the W2.004 Stage-0 audit (rows #6/#7
+        // SendHalf/RecvHalf × {sync-return, async-cancel, actor-shutdown}).
+        "SendHalf::close" | "RecvHalf::close" => Ok("hew_duplex_close_half"),
         // Literal C-ABI symbol pass-through (backward compat for hand-built
         // test MIR that pre-dates elaborated-drop-plan consumption).
         "hew_duplex_close" => Ok("hew_duplex_close"),
         "hew_lambda_actor_release" => Ok("hew_lambda_actor_release"),
+        "hew_duplex_close_half" => Ok("hew_duplex_close_half"),
         // Remaining elaborator-produced names have no MIR producer today —
-        // SendHalf/RecvHalf place_pointer is fail-closed, Sink/Stream have
-        // no constructor surface. Fail closed here so any future producer
-        // that outpaces codegen surfaces immediately rather than leaking.
+        // Sink/Stream have no constructor surface. Fail closed here so any
+        // future producer that outpaces codegen surfaces immediately rather
+        // than leaking.
         other => Err(CodegenError::FailClosed(format!(
             "drop_fn={other:?}: no C-ABI runtime symbol wired for this \
              drop_fn string. Recognised names today: Duplex::close, \
-             LambdaActorHandle::close (and their hew_* C-ABI literals). \
+             LambdaActorHandle::close, SendHalf::close, RecvHalf::close \
+             (and their hew_* C-ABI literals). \
              Refusing to silently no-op a resource drop \
              (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
         ))),
@@ -6807,11 +6828,39 @@ fn lower_drop(fn_ctx: &FnCtx<'_, '_>, place: Place, drop_fn: &str) -> CodegenRes
         &mut fn_ctx.runtime_decls.borrow_mut(),
         symbol,
     )?;
-    let llvm_args: [BasicMetadataValueEnum; 1] = [handle.into()];
-    fn_ctx
-        .builder
-        .build_call(fv, &llvm_args, &format!("{symbol}_call"))
-        .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+    // Direction-aware call args. `hew_duplex_close_half` takes a second
+    // i32 direction discriminant (pinned by HewDuplexDirection ABI in
+    // `hew-runtime/src/duplex.rs:765`: Send=0, Recv=1) the runtime
+    // dispatches against. We materialise the discriminant from the Place
+    // variant here — never trust the drop_fn string alone for it, because
+    // both SendHalf::close and RecvHalf::close map to the same symbol.
+    // Any other symbol takes only the handle pointer.
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let call_result = if symbol == "hew_duplex_close_half" {
+        let direction = match place {
+            Place::SendHalf(_) => 0i64,
+            Place::RecvHalf(_) => 1i64,
+            other => {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_duplex_close_half drop must address a SendHalf or RecvHalf \
+                     Place; got {other:?}. Direction discriminant cannot be \
+                     synthesised from the Place variant — refusing to silently \
+                     pick a direction (LESSONS: boundary-fail-closed)."
+                )));
+            }
+        };
+        let dir_val = i32_ty.const_int(direction as u64, false);
+        let llvm_args: [BasicMetadataValueEnum; 2] = [handle.into(), dir_val.into()];
+        fn_ctx
+            .builder
+            .build_call(fv, &llvm_args, &format!("{symbol}_call"))
+    } else {
+        let llvm_args: [BasicMetadataValueEnum; 1] = [handle.into()];
+        fn_ctx
+            .builder
+            .build_call(fv, &llvm_args, &format!("{symbol}_call"))
+    };
+    call_result.map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
     // Zero the alloca: structurally-reachable second drop must hit null
     // at the codegen layer. The runtime AtomicBool guard provides
     // defence-in-depth, but the codegen null-store is required per
@@ -7769,6 +7818,294 @@ fn emit_node_lookup_call<'ctx>(
         .build_unconditional_branch(next_bb)
         .map_err(|e| CodegenError::Llvm(format!("lookup ok br next: {e:?}")))?;
 
+    Ok(())
+}
+
+// ============================================================================
+// Composite-return spine — Lane W2.004 Stage 1
+// ----------------------------------------------------------------------------
+//
+// Four substrate helpers that synthesize user-visible composite return values
+// (`Result<T, E>`, struct literals, enum-variant literals) into a destination
+// `Place`. Each helper resolves the destination's registered layout
+// (`EnumLayout` via `machine_layouts`, `RecordLayout` via `record_layouts`)
+// and stores the tag + per-field payload through the existing
+// `Place::MachineTag` / `Place::MachineVariant` / record-field projection
+// substrate — no new GEP plumbing.
+//
+// Precedents these helpers unify (per W2.004 Stage-0 audit §C):
+//   - `emit_remote_pid_tell_call` Ok-arm `llvm.rs:~7533-7551` — `emit_result_ok`
+//   - `emit_remote_pid_tell_call` Err-arm `llvm.rs:~7553-7641` — `emit_result_err`
+//   - `emit_node_lookup_call`     Ok-arm `llvm.rs:~7783-7819` — `emit_result_ok`
+//   - `emit_node_lookup_call`     Err-arm `llvm.rs:~7747-7781` — `emit_result_err`
+//   - `Instr::RecordInit` `lower_record_init` — `emit_struct_literal`
+//     (no in-scope refactor; helper is the substrate for future Cluster-2
+//     consumers per audit §C.3)
+//   - `emit_enum_variant_literal` — no precedent; new substrate for Stage 3
+//     MIR producers (W2.005).
+//
+// Helper signatures (push-back per A259 #3(b) vs the plan):
+//   - `emit_struct_literal` uses `&[(FieldOffset, Place)]` (the MIR
+//     primitive used by `Instr::RecordInit`) rather than the plan's
+//     `&[(FieldName, Place)]`. `FieldName` is not a type in the MIR model;
+//     name → offset resolution happens at MIR-producer time per the
+//     `RecordInit` docstring (`hew-mir/src/model.rs:1747`).
+//   - `emit_struct_literal` does not take `struct_name`: the registered
+//     record name is recovered from `place_resolved_ty(dest)`'s
+//     `ResolvedTy::Named { name, .. }`, identically to `lower_record_init`.
+//
+// Constraints (CLAUDE.md customs):
+//   - **#2 Fail-closed Codegen**: any missing layout / mismatched type /
+//     out-of-range projection surfaces `CodegenError::FailClosed` with a
+//     concrete diagnostic naming the offending Place + layout. No silent
+//     zero-init.
+//   - **#3 Type Inference Boundary**: helpers use `place_resolved_ty`; any
+//     unresolved `Ty::Var` is rejected by that function before reaching
+//     here.
+//   - **#1 Drop Safety**: composites written by these helpers participate
+//     in the same LIFO drop machinery as ordinary records/enums
+//     (`build_lifo_drops` walks `owned_locals`); no new drop scheduling is
+//     needed at the helper layer. Tag-aware payload-drop for heap-owning
+//     Result variants (`Result<string, string>`) is inherited scope of
+//     W2.005 per plan §9.2.
+//
+// LESSONS: boundary-fail-closed (P0), dedup-semantic-boundary (P2),
+// no-silent-no-op-stubs (P0).
+// ============================================================================
+
+/// Resolve a destination `Place` to the backing local id whose alloca
+/// holds the composite outer struct. The composite helpers below all
+/// project through `Place::MachineTag(local)` / `Place::MachineVariant
+/// { local, .. }` against this id.
+///
+/// Only `Place::Local(_)` is accepted today — the same constraint the
+/// existing bespoke `emit_remote_pid_tell_call` / `emit_node_lookup_call`
+/// precedents enforce (`llvm.rs:~7395, ~7700`). `Place::ReturnSlot`
+/// composites are constructed via a temporary local + a final `Move`,
+/// not directly — keeping the projection arithmetic uniform.
+#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
+fn composite_dest_local(dest: Place, helper: &str) -> CodegenResult<u32> {
+    match dest {
+        Place::Local(id) => Ok(id),
+        other => Err(CodegenError::FailClosed(format!(
+            "{helper} dest must be Place::Local(_) (composites materialise into a \
+             named local's alloca, then move to the final slot); got {other:?}"
+        ))),
+    }
+}
+
+/// Store an integer discriminant at `Place::MachineTag(dest_local)`.
+/// The tag's LLVM integer type is recovered from the tagged-union layout
+/// via `place_pointer`. Fail-closed if the tag projection does not
+/// resolve to an integer type (a structural invariant of
+/// `build_tagged_union_layout`).
+#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
+fn store_composite_tag(
+    fn_ctx: &FnCtx<'_, '_>,
+    dest_local: u32,
+    tag_value: u64,
+    helper: &str,
+) -> CodegenResult<()> {
+    let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::MachineTag(dest_local))?;
+    let tag_int_ty = match tag_ty {
+        BasicTypeEnum::IntType(t) => t,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "{helper} dest local {dest_local} tag projection resolved to non-integer \
+                 type {other:?} — tagged-union outer struct field 0 must be iN per \
+                 build_tagged_union_layout"
+            )));
+        }
+    };
+    fn_ctx
+        .builder
+        .build_store(tag_ptr, tag_int_ty.const_int(tag_value, false))
+        .map_err(|e| CodegenError::Llvm(format!("{helper} store tag={tag_value}: {e:?}")))?;
+    Ok(())
+}
+
+/// Copy the full value at `src` into the variant-payload field at
+/// `Place::MachineVariant { local: dest_local, variant_idx, field_idx }`.
+/// Source and destination LLVM types must match exactly — composites are
+/// not implicitly coerced (matching `lower_record_init`'s shape check).
+#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
+fn copy_into_variant_field(
+    fn_ctx: &FnCtx<'_, '_>,
+    src: Place,
+    dest_local: u32,
+    variant_idx: u32,
+    field_idx: u32,
+    helper: &str,
+) -> CodegenResult<()> {
+    let (src_ptr, src_ty) = place_pointer(fn_ctx, src)?;
+    let (dst_ptr, dst_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx,
+            field_idx,
+        },
+    )?;
+    if src_ty != dst_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "{helper}: variant {variant_idx} field {field_idx} type mismatch: \
+             dest={dst_ty:?}, src={src_ty:?}. The MIR producer must allocate the \
+             source local with the same ResolvedTy as the variant-layout field."
+        )));
+    }
+    let src_val = fn_ctx
+        .builder
+        .build_load(
+            src_ty,
+            src_ptr,
+            &format!("{helper}_v{variant_idx}_f{field_idx}_src"),
+        )
+        .map_err(|e| {
+            CodegenError::Llvm(format!(
+                "{helper} variant {variant_idx} field {field_idx} load: {e:?}"
+            ))
+        })?;
+    fn_ctx.builder.build_store(dst_ptr, src_val).map_err(|e| {
+        CodegenError::Llvm(format!(
+            "{helper} variant {variant_idx} field {field_idx} store: {e:?}"
+        ))
+    })?;
+    Ok(())
+}
+
+/// Emit a `Result<T, E>::Ok(payload)` (or `Ok(())` when `payload = None`)
+/// into the tagged-union slot at `dest`.
+///
+/// `dest` must be a `Place::Local(N)` whose registered layout is the
+/// `Result` outer-struct (looked up by name through `machine_layouts`
+/// via the existing `MachineTag` / `MachineVariant` projections). The
+/// helper stores `tag = 0` (Ok arm) and copies `payload` (when present)
+/// into the Ok-variant's field 0 — matching both the Stage-0 audit
+/// precedents (`emit_remote_pid_tell_call` Ok-arm with `payload = None`,
+/// `emit_node_lookup_call` Ok-arm with `payload = Some(rc_local)`).
+///
+/// Multi-field Ok-variant payloads are not in current scope: the Result
+/// variant layout always has either zero fields (unit Ok) or a single
+/// field (the user-visible `T`, which may itself be a record/struct
+/// whose internal fields the caller has already populated before
+/// passing the source local here). This matches the audit's enumeration
+/// of every `Result<_, _>` shape registered at the base commit.
+#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
+fn emit_result_ok(
+    fn_ctx: &FnCtx<'_, '_>,
+    dest: Place,
+    payload: Option<Place>,
+) -> CodegenResult<()> {
+    let dest_local = composite_dest_local(dest, "emit_result_ok")?;
+    store_composite_tag(fn_ctx, dest_local, 0, "emit_result_ok")?;
+    if let Some(src) = payload {
+        copy_into_variant_field(fn_ctx, src, dest_local, 0, 0, "emit_result_ok")?;
+    }
+    Ok(())
+}
+
+/// Emit a `Result<T, E>::Err(error_payload)` into the tagged-union slot
+/// at `dest`.
+///
+/// `dest` must be a `Place::Local(N)` whose registered layout is the
+/// `Result` outer-struct. The helper stores `tag = 1` (Err arm) and
+/// copies `error_payload` into the Err-variant's field 0 — matching the
+/// `emit_node_lookup_call` Err-arm precedent (`LookupError::NotFound`
+/// pre-populated into a zero-initialised source local). For Err
+/// payloads whose discriminant must be patched (e.g. `SendError::
+/// NodeRoutingNotWired`), the caller constructs the source local with
+/// the discriminant already set; this helper does not synthesise
+/// variant tags for the payload type.
+#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
+fn emit_result_err(fn_ctx: &FnCtx<'_, '_>, dest: Place, error_payload: Place) -> CodegenResult<()> {
+    let dest_local = composite_dest_local(dest, "emit_result_err")?;
+    store_composite_tag(fn_ctx, dest_local, 1, "emit_result_err")?;
+    copy_into_variant_field(fn_ctx, error_payload, dest_local, 1, 0, "emit_result_err")?;
+    Ok(())
+}
+
+/// Emit a struct literal into a `Place::Local(N)` whose registered
+/// layout is a `RecordLayout`. Each `(offset, src)` pair copies the
+/// source field's loaded value into the destination's struct GEP at the
+/// matching field index.
+///
+/// This helper is the substrate face of the existing `lower_record_init`
+/// inlined codegen path (`llvm.rs:5052`); it intentionally mirrors that
+/// shape so Stage 2 (per the W2.004 plan) can refactor the inline path
+/// to call this helper. Until then, the helper's first consumer is the
+/// composite-return spine: Cluster-2 surfaces (`link()` / `monitor()`)
+/// build `MonitorRef { ref_id }` literals through this substrate.
+///
+/// `dest`'s resolved type must be `ResolvedTy::Named { name, .. }`
+/// keyed to a registered `RecordLayout`; the struct's field order is
+/// authoritative — `field_offset.0` indexes directly into the LLVM
+/// struct.
+#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
+fn emit_struct_literal(
+    fn_ctx: &FnCtx<'_, '_>,
+    dest: Place,
+    fields: &[(FieldOffset, Place)],
+) -> CodegenResult<()> {
+    let dest_ty = place_resolved_ty(fn_ctx, dest)?.clone();
+    // Delegate to the established record-init path. Reusing
+    // `lower_record_init` guarantees byte-identical IR shape for any
+    // RecordLayout the helper consumes (the Stage 2 refactor target).
+    // `lower_record_init` already enforces:
+    //   - dest slot type matches the registered struct (fail-closed if
+    //     producer/codegen disagree),
+    //   - source slot type matches the field type at each offset,
+    //   - field offsets are in-bounds.
+    // No additional validation needed here — substrate-by-delegation.
+    lower_record_init(fn_ctx, &dest_ty, fields, dest)
+}
+
+/// Emit an arbitrary-variant enum literal into a `Place::Local(N)`
+/// whose registered layout is the named enum's tagged-union outer
+/// struct.
+///
+/// Stores `tag = variant_idx` and copies each `payload[i]` into the
+/// destination's `MachineVariant { variant_idx, field_idx: i }`. This
+/// helper has no in-tree precedent (per W2.004 Stage-0 audit §C.4) —
+/// existing enum-variant construction is open-coded at MIR-producer
+/// call-sites. The substrate is anchored here for the M2-stage
+/// consumers (Cluster-2 link/monitor surfaces, future `MonitorRef`-style
+/// composites with non-unit variants).
+///
+/// `payload.len()` must equal the variant's `field_tys.len()` from the
+/// registered `EnumLayout`; mismatched arities are caught downstream by
+/// `place_pointer`'s `MachineVariant` field-index bounds check
+/// (`llvm.rs:~2092`).
+#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
+fn emit_enum_variant_literal(
+    fn_ctx: &FnCtx<'_, '_>,
+    dest: Place,
+    variant_idx: u32,
+    payload: &[Place],
+) -> CodegenResult<()> {
+    let dest_local = composite_dest_local(dest, "emit_enum_variant_literal")?;
+    store_composite_tag(
+        fn_ctx,
+        dest_local,
+        u64::from(variant_idx),
+        "emit_enum_variant_literal",
+    )?;
+    for (field_idx, src) in payload.iter().enumerate() {
+        let field_idx_u32 = u32::try_from(field_idx).map_err(|_| {
+            CodegenError::FailClosed(format!(
+                "emit_enum_variant_literal: payload length {} exceeds u32::MAX — \
+                 impossible variant arity",
+                payload.len()
+            ))
+        })?;
+        copy_into_variant_field(
+            fn_ctx,
+            *src,
+            dest_local,
+            variant_idx,
+            field_idx_u32,
+            "emit_enum_variant_literal",
+        )?;
+    }
     Ok(())
 }
 
@@ -12030,5 +12367,698 @@ mod tests {
             m.verify().is_ok(),
             "gen-body module with Yield must pass LLVM verify:\n{ir}"
         );
+    }
+
+    // ========================================================================
+    // W2.004 Stage 1 — composite-return helpers + DuplexHalfClose drop
+    // substrate
+    //
+    // The helpers are private to `llvm.rs` and have no in-tree consumers in
+    // Stage 1 (Stage 2 refactors `emit_remote_pid_tell_call` /
+    // `emit_node_lookup_call` to call them; Stage 3 wires MIR producers for
+    // SendHalf / RecvHalf place lowering). To exercise the helpers directly
+    // we synthesise a minimal LLVM `Context` + `Module` + `Builder` + an
+    // `FnCtx` with pre-registered `EnumLayout` / `RecordLayout` fixtures,
+    // then invoke each helper and assert on the printed LLVM IR.
+    //
+    // The drop-substrate tests are simpler — they exercise
+    // `resolve_drop_fn_to_symbol` (a pure string→symbol mapping) and
+    // `intern_runtime_decl` directly.
+    // ========================================================================
+
+    use hew_mir::{
+        EnumLayout as MirEnumLayout, MachineVariantLayout, RecordLayout as MirRecordLayout,
+    };
+
+    // ---- DuplexHalfClose drop substrate -------------------------------------
+
+    #[test]
+    fn drop_fn_send_half_close_resolves_to_hew_duplex_close_half() {
+        let sym = resolve_drop_fn_to_symbol("SendHalf::close")
+            .expect("SendHalf::close must resolve after W2.004 Stage 1");
+        assert_eq!(
+            sym, "hew_duplex_close_half",
+            "SendHalf::close must map to hew_duplex_close_half"
+        );
+    }
+
+    #[test]
+    fn drop_fn_recv_half_close_resolves_to_hew_duplex_close_half() {
+        let sym = resolve_drop_fn_to_symbol("RecvHalf::close")
+            .expect("RecvHalf::close must resolve after W2.004 Stage 1");
+        assert_eq!(
+            sym, "hew_duplex_close_half",
+            "RecvHalf::close must map to hew_duplex_close_half"
+        );
+    }
+
+    #[test]
+    fn drop_fn_literal_hew_duplex_close_half_pass_through() {
+        let sym = resolve_drop_fn_to_symbol("hew_duplex_close_half")
+            .expect("hew_duplex_close_half literal must pass through");
+        assert_eq!(sym, "hew_duplex_close_half");
+    }
+
+    #[test]
+    fn drop_fn_existing_duplex_close_still_resolves() {
+        // Regression: the existing Duplex::close mapping must not be
+        // disturbed by the half-close additions.
+        assert_eq!(
+            resolve_drop_fn_to_symbol("Duplex::close").unwrap(),
+            "hew_duplex_close"
+        );
+        assert_eq!(
+            resolve_drop_fn_to_symbol("LambdaActorHandle::close").unwrap(),
+            "hew_lambda_actor_release"
+        );
+    }
+
+    #[test]
+    fn drop_fn_unknown_string_still_fails_closed() {
+        let err = resolve_drop_fn_to_symbol("Mystery::close")
+            .expect_err("Unknown drop_fn strings must fail closed");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("Mystery::close"),
+                    "diagnostic must name the offending drop_fn string; got: {msg}"
+                );
+                // Diagnostic must mention the newly-recognised SendHalf/RecvHalf
+                // names so the next implementer knows the table grew.
+                assert!(
+                    msg.contains("SendHalf::close") && msg.contains("RecvHalf::close"),
+                    "diagnostic must list SendHalf::close + RecvHalf::close as \
+                     recognised names; got: {msg}"
+                );
+            }
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hew_duplex_close_half_runtime_decl_has_ptr_i32_signature() {
+        // The runtime symbol takes (ptr, i32) -> i32 — pinned by
+        // HewDuplexDirection ABI (`hew-runtime/src/duplex.rs:765`). If the
+        // signature drifts here, drop emission will misroute its second
+        // argument at LLVM verify time.
+        let ctx = Context::create();
+        let m = ctx.create_module("hew_duplex_close_half_decl_test");
+        let mut decls: RuntimeDeclMap = HashMap::new();
+        let fv = intern_runtime_decl(&ctx, &m, &mut decls, "hew_duplex_close_half")
+            .expect("intern_runtime_decl(hew_duplex_close_half) must succeed");
+        let fn_ty = fv.get_type();
+        assert_eq!(
+            fn_ty.count_param_types(),
+            2,
+            "hew_duplex_close_half ABI expects 2 args (handle, direction); got {}",
+            fn_ty.count_param_types()
+        );
+        let params = fn_ty.get_param_types();
+        assert!(
+            matches!(params[0], BasicMetadataTypeEnum::PointerType(_)),
+            "hew_duplex_close_half arg 0 must be ptr; got {:?}",
+            params[0]
+        );
+        match params[1] {
+            BasicMetadataTypeEnum::IntType(t) => assert_eq!(
+                t.get_bit_width(),
+                32,
+                "hew_duplex_close_half arg 1 must be i32; got i{}",
+                t.get_bit_width()
+            ),
+            other => panic!("hew_duplex_close_half arg 1 must be i32; got {other:?}"),
+        }
+        let ret = fn_ty
+            .get_return_type()
+            .expect("hew_duplex_close_half must return a value");
+        match ret {
+            BasicTypeEnum::IntType(t) => assert_eq!(
+                t.get_bit_width(),
+                32,
+                "hew_duplex_close_half return must be i32"
+            ),
+            other => panic!("hew_duplex_close_half return must be i32; got {other:?}"),
+        }
+    }
+
+    // ---- Composite-return helper test harness ------------------------------
+
+    /// Owned container holding everything the four composite-return helpers
+    /// need to run against a hand-built pipeline. Built on a per-test basis
+    /// because `FnCtx` borrows `record_layouts` / `machine_layouts` /
+    /// `fn_symbols` / `actor_layouts` — those have to outlive the helper
+    /// invocation.
+    struct CompositeHelperHarness<'ctx> {
+        record_layouts: RecordLayoutMap<'ctx>,
+        machine_layouts: MachineLayoutMap<'ctx>,
+        fn_symbols: FnSymbolMap<'ctx>,
+        actor_layouts: Vec<ActorLayout>,
+    }
+
+    /// Build a `Result<(), SendError>` `EnumLayout` matching the
+    /// `monomorphic_builtin_enums()` registration (Ok=unit, Err=SendError
+    /// 3-variant unit enum). The outer enum's tag distinguishes Ok=0/Err=1;
+    /// the SendError payload (a nested enum) is itself a 2-bit tag.
+    fn fixture_result_unit_send_error_layout() -> MirEnumLayout {
+        // We model the Err payload as a single-field variant whose field
+        // type is `ResolvedTy::Named { name: "SendError", .. }` — codegen
+        // resolves that name through `record_layouts` to the registered
+        // SendError outer struct.
+        MirEnumLayout {
+            name: "Result$$unit$$SendError".to_string(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Ok".to_string(),
+                    field_tys: vec![],
+                },
+                MachineVariantLayout {
+                    name: "Err".to_string(),
+                    field_tys: vec![ResolvedTy::Named {
+                        name: "SendError".to_string(),
+                        args: vec![],
+                    }],
+                },
+            ],
+        }
+    }
+
+    fn fixture_send_error_layout() -> MirEnumLayout {
+        MirEnumLayout {
+            name: "SendError".to_string(),
+            tag_width: 2,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Full".to_string(),
+                    field_tys: vec![],
+                },
+                MachineVariantLayout {
+                    name: "Closed".to_string(),
+                    field_tys: vec![],
+                },
+                MachineVariantLayout {
+                    name: "NodeRoutingNotWired".to_string(),
+                    field_tys: vec![],
+                },
+            ],
+        }
+    }
+
+    fn fixture_result_i64_lookuperror_layout() -> MirEnumLayout {
+        MirEnumLayout {
+            name: "Result$$i64$$LookupError".to_string(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Ok".to_string(),
+                    field_tys: vec![ResolvedTy::I64],
+                },
+                MachineVariantLayout {
+                    name: "Err".to_string(),
+                    field_tys: vec![ResolvedTy::Named {
+                        name: "LookupError".to_string(),
+                        args: vec![],
+                    }],
+                },
+            ],
+        }
+    }
+
+    fn fixture_lookup_error_layout() -> MirEnumLayout {
+        MirEnumLayout {
+            name: "LookupError".to_string(),
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "NotFound".to_string(),
+                field_tys: vec![],
+            }],
+        }
+    }
+
+    fn fixture_monitor_ref_layout() -> MirRecordLayout {
+        MirRecordLayout {
+            name: "MonitorRef".to_string(),
+            field_tys: vec![ResolvedTy::I64],
+        }
+    }
+
+    /// A tri-variant payload-carrying user enum for `emit_enum_variant_literal`:
+    ///   enum Sample { Empty, OneInt(i64), TwoInts(i64, i64) }
+    fn fixture_sample_enum_layout() -> MirEnumLayout {
+        MirEnumLayout {
+            name: "Sample".to_string(),
+            tag_width: 2,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Empty".to_string(),
+                    field_tys: vec![],
+                },
+                MachineVariantLayout {
+                    name: "OneInt".to_string(),
+                    field_tys: vec![ResolvedTy::I64],
+                },
+                MachineVariantLayout {
+                    name: "TwoInts".to_string(),
+                    field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+                },
+            ],
+        }
+    }
+
+    /// Register the given enum + record layout fixtures into the harness's
+    /// codegen maps, returning the populated harness.
+    fn build_harness<'ctx>(
+        ctx: &'ctx Context,
+        record_fixtures: &[MirRecordLayout],
+        enum_fixtures: &[MirEnumLayout],
+    ) -> CompositeHelperHarness<'ctx> {
+        let mut record_layouts: RecordLayoutMap<'ctx> =
+            register_record_layouts(ctx, record_fixtures)
+                .expect("record-layout registration must succeed");
+        let mut machine_layouts: MachineLayoutMap<'ctx> = HashMap::new();
+        register_enum_layouts(
+            ctx,
+            enum_fixtures,
+            &mut record_layouts,
+            &mut machine_layouts,
+            None,
+        )
+        .expect("enum-layout registration must succeed");
+        CompositeHelperHarness {
+            record_layouts,
+            machine_layouts,
+            fn_symbols: HashMap::new(),
+            actor_layouts: Vec::new(),
+        }
+    }
+
+    /// Build a minimal FnCtx for direct helper invocation. The caller is
+    /// responsible for inserting the dest + any source locals via
+    /// `alloc_local` BEFORE calling helpers (allocations are emitted at the
+    /// builder's current position — the test harness positions inside a
+    /// freshly-created LLVM fn body).
+    fn make_test_fn_ctx<'a, 'ctx>(
+        ctx: &'ctx Context,
+        llvm_mod: &'a LlvmModule<'ctx>,
+        harness: &'a CompositeHelperHarness<'ctx>,
+        fn_name: &str,
+    ) -> FnCtx<'a, 'ctx> {
+        let i32_ty = ctx.i32_type();
+        let fn_ty = i32_ty.fn_type(&[], false);
+        let llvm_fn = llvm_mod.add_function(fn_name, fn_ty, None);
+        let entry = ctx.append_basic_block(llvm_fn, "entry");
+        let builder = ctx.create_builder();
+        builder.position_at_end(entry);
+        // Trivial return slot — composites use named locals, not ReturnSlot.
+        let return_slot = builder
+            .build_alloca(i32_ty, "ret_slot")
+            .expect("ret slot alloca");
+        FnCtx {
+            ctx,
+            llvm_mod,
+            builder,
+            return_slot,
+            return_ty: i32_ty.into(),
+            return_resolved_ty: ResolvedTy::I32,
+            execution_context: None,
+            execution_context_is_actor_handler: false,
+            actor_state_ty: None,
+            locals: HashMap::new(),
+            local_tys: HashMap::new(),
+            blocks: HashMap::new(),
+            runtime_decls: RefCell::new(HashMap::new()),
+            record_layouts: &harness.record_layouts,
+            fn_symbols: &harness.fn_symbols,
+            actor_layouts: &harness.actor_layouts,
+            machine_layouts: &harness.machine_layouts,
+        }
+    }
+
+    /// Allocate a local of the given resolved type within the current
+    /// builder position. Inserts entries into `locals` and `local_tys`.
+    fn alloc_local(fn_ctx: &mut FnCtx<'_, '_>, id: u32, ty: ResolvedTy) {
+        let llvm_ty =
+            resolve_ty(fn_ctx.ctx, &ty, fn_ctx.record_layouts).expect("resolve_ty for fixture");
+        let slot = fn_ctx
+            .builder
+            .build_alloca(llvm_ty, &format!("local_{id}"))
+            .expect("alloca for fixture local");
+        fn_ctx.locals.insert(id, (slot, llvm_ty));
+        fn_ctx.local_tys.insert(id, ty);
+    }
+
+    /// Finish the synthetic test fn with a `ret i32 0` so LLVM verify is
+    /// happy.
+    fn finish_test_fn(fn_ctx: &FnCtx<'_, '_>) {
+        let zero = fn_ctx.ctx.i32_type().const_zero();
+        fn_ctx.builder.build_return(Some(&zero)).expect("ret 0");
+    }
+
+    // ---- emit_result_ok ----------------------------------------------------
+
+    #[test]
+    fn emit_result_ok_unit_payload_stores_tag_zero_only() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_result_ok_unit_test");
+        let harness = build_harness(
+            &ctx,
+            &[],
+            &[
+                fixture_send_error_layout(),
+                fixture_result_unit_send_error_layout(),
+            ],
+        );
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Result$$unit$$SendError".to_string(),
+                args: vec![],
+            },
+        );
+        emit_result_ok(&fn_ctx, Place::Local(0), None)
+            .expect("emit_result_ok(None) must succeed for Result<(), SendError>");
+        finish_test_fn(&fn_ctx);
+        assert!(
+            m.verify().is_ok(),
+            "module must verify after emit_result_ok:\n{}",
+            m.print_to_string().to_string()
+        );
+        let ir = m.print_to_string().to_string();
+        // Tag-store of 0 + GEP for machine_tag_ptr must be present.
+        // (Tag width is i8 — `tag_int_type_for_variant_count` always
+        // rounds up to a byte for ≤256-variant unions.)
+        assert!(
+            ir.contains("machine_tag_ptr") && ir.contains("store i8 0"),
+            "expected tag GEP + store i8 0 for Result Ok tag; got IR:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn emit_result_ok_scalar_payload_stores_tag_and_copies_value() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_result_ok_scalar_test");
+        let harness = build_harness(
+            &ctx,
+            &[],
+            &[
+                fixture_lookup_error_layout(),
+                fixture_result_i64_lookuperror_layout(),
+            ],
+        );
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Result$$i64$$LookupError".to_string(),
+                args: vec![],
+            },
+        );
+        alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
+        emit_result_ok(&fn_ctx, Place::Local(0), Some(Place::Local(1)))
+            .expect("emit_result_ok(Some(i64 local)) must succeed");
+        finish_test_fn(&fn_ctx);
+        assert!(
+            m.verify().is_ok(),
+            "module must verify:\n{}",
+            m.print_to_string().to_string()
+        );
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("emit_result_ok_v0_f0_src"),
+            "expected scalar payload load with helper-named label; got IR:\n{ir}"
+        );
+        assert!(
+            ir.contains("machine_payload_ptr"),
+            "expected machine_payload_ptr GEP for variant-0 field-0 store; got IR:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn emit_result_ok_rejects_non_local_dest() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_result_ok_reject_test");
+        let harness = build_harness(
+            &ctx,
+            &[],
+            &[
+                fixture_send_error_layout(),
+                fixture_result_unit_send_error_layout(),
+            ],
+        );
+        let fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        let err = emit_result_ok(&fn_ctx, Place::ReturnSlot, None)
+            .expect_err("dest must be Place::Local(_); ReturnSlot is rejected");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(msg.contains("emit_result_ok"));
+                assert!(msg.contains("ReturnSlot"));
+            }
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
+    }
+
+    // ---- emit_result_err ---------------------------------------------------
+
+    #[test]
+    fn emit_result_err_copies_err_payload_into_variant_one() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_result_err_test");
+        let harness = build_harness(
+            &ctx,
+            &[],
+            &[
+                fixture_send_error_layout(),
+                fixture_result_unit_send_error_layout(),
+            ],
+        );
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Result$$unit$$SendError".to_string(),
+                args: vec![],
+            },
+        );
+        alloc_local(
+            &mut fn_ctx,
+            1,
+            ResolvedTy::Named {
+                name: "SendError".to_string(),
+                args: vec![],
+            },
+        );
+        emit_result_err(&fn_ctx, Place::Local(0), Place::Local(1))
+            .expect("emit_result_err must succeed for Result<(), SendError>");
+        finish_test_fn(&fn_ctx);
+        assert!(
+            m.verify().is_ok(),
+            "module must verify:\n{}",
+            m.print_to_string().to_string()
+        );
+        let ir = m.print_to_string().to_string();
+        // Tag-store of 1 (Err) — tag width is i8 per
+        // `tag_int_type_for_variant_count`.
+        assert!(
+            ir.contains("store i8 1"),
+            "expected store i8 1 for Err tag on Result; got IR:\n{ir}"
+        );
+        assert!(
+            ir.contains("emit_result_err_v1_f0_src"),
+            "expected variant-1 field-0 source-load label; got IR:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn emit_result_err_rejects_type_mismatched_payload() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_result_err_mismatch_test");
+        let harness = build_harness(
+            &ctx,
+            &[],
+            &[
+                fixture_send_error_layout(),
+                fixture_result_unit_send_error_layout(),
+            ],
+        );
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Result$$unit$$SendError".to_string(),
+                args: vec![],
+            },
+        );
+        // WRONG payload type: i64 where the variant expects SendError.
+        alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
+        let err = emit_result_err(&fn_ctx, Place::Local(0), Place::Local(1))
+            .expect_err("mismatched payload type must fail closed, not silently mis-store");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("emit_result_err") && msg.contains("type mismatch"),
+                    "diagnostic must name the helper and the mismatch; got: {msg}"
+                );
+            }
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
+    }
+
+    // ---- emit_struct_literal -----------------------------------------------
+
+    #[test]
+    fn emit_struct_literal_monitor_ref_writes_ref_id_field() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_struct_literal_test");
+        let harness = build_harness(&ctx, &[fixture_monitor_ref_layout()], &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "MonitorRef".to_string(),
+                args: vec![],
+            },
+        );
+        alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
+        emit_struct_literal(
+            &fn_ctx,
+            Place::Local(0),
+            &[(FieldOffset(0), Place::Local(1))],
+        )
+        .expect("emit_struct_literal MonitorRef{ref_id:i64} must succeed");
+        finish_test_fn(&fn_ctx);
+        assert!(
+            m.verify().is_ok(),
+            "module must verify:\n{}",
+            m.print_to_string().to_string()
+        );
+        let ir = m.print_to_string().to_string();
+        // The delegated `lower_record_init` path uses field_{idx}_init_ptr /
+        // field_{idx}_init_src labels — assert the substrate-delegation is live.
+        assert!(
+            ir.contains("field_0_init_ptr") && ir.contains("field_0_init_src"),
+            "expected lower_record_init field-0 init labels (substrate delegation); \
+             got IR:\n{ir}"
+        );
+    }
+
+    // ---- emit_enum_variant_literal -----------------------------------------
+
+    #[test]
+    fn emit_enum_variant_literal_unit_variant_writes_tag_only() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_enum_unit_test");
+        let harness = build_harness(&ctx, &[], &[fixture_sample_enum_layout()]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Sample".to_string(),
+                args: vec![],
+            },
+        );
+        emit_enum_variant_literal(&fn_ctx, Place::Local(0), 0, &[])
+            .expect("Sample::Empty (unit variant, idx 0) must succeed");
+        finish_test_fn(&fn_ctx);
+        assert!(
+            m.verify().is_ok(),
+            "module must verify:\n{}",
+            m.print_to_string().to_string()
+        );
+        let ir = m.print_to_string().to_string();
+        // Sample has 3 variants → i8 tag (per tag_int_type_for_variant_count).
+        // Tag value 0 must be stored.
+        assert!(
+            ir.contains("machine_tag_ptr") && ir.contains("store i8 0"),
+            "expected i8 tag store of 0 for Sample::Empty; got IR:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn emit_enum_variant_literal_two_field_variant_copies_all_fields() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_enum_two_field_test");
+        let harness = build_harness(&ctx, &[], &[fixture_sample_enum_layout()]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Sample".to_string(),
+                args: vec![],
+            },
+        );
+        alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
+        alloc_local(&mut fn_ctx, 2, ResolvedTy::I64);
+        emit_enum_variant_literal(
+            &fn_ctx,
+            Place::Local(0),
+            2,
+            &[Place::Local(1), Place::Local(2)],
+        )
+        .expect("Sample::TwoInts(i64, i64) must succeed");
+        finish_test_fn(&fn_ctx);
+        assert!(
+            m.verify().is_ok(),
+            "module must verify:\n{}",
+            m.print_to_string().to_string()
+        );
+        let ir = m.print_to_string().to_string();
+        // Tag store: variant_idx 2 in a 2-bit field = -2 (signed) — LLVM
+        // prints constants in the smallest representation. We're robust to
+        // signed/unsigned: just assert the field GEPs for both payload
+        // fields fire.
+        assert!(
+            ir.contains("emit_enum_variant_literal_v2_f0_src")
+                && ir.contains("emit_enum_variant_literal_v2_f1_src"),
+            "expected per-field source-load labels for both TwoInts fields; \
+             got IR:\n{ir}"
+        );
+        assert!(
+            ir.contains("machine_payload_ptr"),
+            "expected machine_payload_ptr GEP for variant 2 payload; got IR:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn emit_enum_variant_literal_rejects_field_count_mismatch() {
+        // OneInt (variant 1) expects exactly 1 payload field. Passing 2
+        // must fail closed at `place_pointer`'s field-index bounds check.
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_enum_arity_test");
+        let harness = build_harness(&ctx, &[], &[fixture_sample_enum_layout()]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Sample".to_string(),
+                args: vec![],
+            },
+        );
+        alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
+        alloc_local(&mut fn_ctx, 2, ResolvedTy::I64);
+        let err = emit_enum_variant_literal(
+            &fn_ctx,
+            Place::Local(0),
+            1, // OneInt — only 1 field
+            &[Place::Local(1), Place::Local(2)],
+        )
+        .expect_err("passing 2 payload places to a 1-field variant must fail closed");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("field_idx") || msg.contains("out of range"),
+                    "diagnostic must indicate out-of-range field index; got: {msg}"
+                );
+            }
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
     }
 }

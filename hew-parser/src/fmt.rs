@@ -2440,7 +2440,14 @@ impl<'a> Formatter<'a> {
                 args,
                 ..
             } => {
+                let needs_callee_parens = matches!(function.0, Expr::Lambda { .. });
+                if needs_callee_parens {
+                    self.write("(");
+                }
                 self.format_expr(&function.0);
+                if needs_callee_parens {
+                    self.write(")");
+                }
                 if let Some(type_args) = type_args {
                     self.write("<");
                     self.comma_sep(type_args, |f, ta| f.format_type_expr(&ta.0));

@@ -1491,6 +1491,13 @@ fn fmt_move_lambda_roundtrip() {
 }
 
 #[test]
+fn fmt_move_lambda_call_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    scope {\n        (move || {\n            let _ = r;\n        })();\n    };\n}\n",
+    );
+}
+
+#[test]
 fn fmt_move_lambda_actor_roundtrip() {
     exact_roundtrip(
         "fn main() {\n    let worker = actor move |x: int| {\n        x + 1\n    };\n}\n",

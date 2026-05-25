@@ -468,4 +468,35 @@ pub enum HirDiagnosticKind {
         /// Handler return type, rendered for the diagnostic note.
         return_ty: String,
     },
+    /// A binary operator was used in value position but the MIR backend has
+    /// no lowering for it. Currently covers `..` and `..=` range operators
+    /// outside of `for` loops or slice indexing. Closed at HIR pre-pass per
+    /// FC-P1-D (audit site `hew-mir/src/lower.rs:5336`) so users see a
+    /// compile-time diagnostic instead of MIR's `NotYetImplemented`
+    /// late-stage surprise. LESSONS `boundary-fail-closed`.
+    BinaryOperatorUnsupportedInMir {
+        /// Source-form operator (e.g. `".."`, `"..="`).
+        op: String,
+    },
+    /// Division (`/`) or modulo (`%`) on a platform-sized signed integer
+    /// (`isize`). The `signed-MIN / -1` trap guard requires emitting the
+    /// MIN constant for the target's pointer width, which the current MIR
+    /// pipeline cannot produce because it does not yet carry a
+    /// `TargetSpec`. Closed at HIR pre-pass per FC-P1-D (audit site
+    /// `hew-mir/src/lower.rs:5564`). When MIR gains target threading the
+    /// gate can be lifted. LESSONS `boundary-fail-closed`.
+    PlatformSizedDivRemUnsupported {
+        /// Source-form operator (`"/"` or `"%"`).
+        op: String,
+    },
+    /// Shift (`<<` / `>>`) on a platform-sized integer (`isize` / `usize`).
+    /// The out-of-range trap requires emitting the bit-width constant for
+    /// the target's pointer width, which the current MIR pipeline cannot
+    /// produce (no `TargetSpec`). Closed at HIR pre-pass per FC-P1-D
+    /// (audit site `hew-mir/src/lower.rs:5696`). LESSONS
+    /// `boundary-fail-closed`.
+    PlatformSizedShiftUnsupported {
+        /// Source-form operator (`"<<"` or `">>"`).
+        op: String,
+    },
 }

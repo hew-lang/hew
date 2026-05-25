@@ -195,6 +195,12 @@ impl LowerOutput {
     /// - [`HirDiagnosticKind::ActorSendRequiresUnitHandler`] — the program
     ///   calls bare `.send(msg)` on an actor handle whose receive handler
     ///   returns a non-unit type (must use `.ask()` + `await` instead).
+    /// - [`HirDiagnosticKind::BinaryOperatorUnsupportedInMir`] — value-position
+    ///   range operator (FC-P1-D).
+    /// - [`HirDiagnosticKind::PlatformSizedDivRemUnsupported`] — div/mod on
+    ///   `isize` (FC-P1-D).
+    /// - [`HirDiagnosticKind::PlatformSizedShiftUnsupported`] — shift on
+    ///   `isize`/`usize` (FC-P1-D).
     ///
     /// Callers that want to continue despite non-fatal diagnostics should
     /// check `.diagnostics` directly.  This method is the recommended
@@ -228,6 +234,9 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported { .. }
                     | crate::HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
                     | crate::HirDiagnosticKind::ActorSendRequiresUnitHandler { .. }
+                    | crate::HirDiagnosticKind::BinaryOperatorUnsupportedInMir { .. }
+                    | crate::HirDiagnosticKind::PlatformSizedDivRemUnsupported { .. }
+                    | crate::HirDiagnosticKind::PlatformSizedShiftUnsupported { .. }
             )
         });
         if has_fatal {
@@ -968,6 +977,13 @@ pub fn lower_program_with_mono_cap(
     // diagnostics.clear above so ActorSendRequiresUnitHandler survives into
     // LowerOutput. Mirrors the FC-P0 survival-ordering invariant.
     check_actor_send_gates(&mut ctx, program);
+
+    // FC-P1-D: HIR pre-pass binary-operator gates. Dispatched HERE (after
+    // diagnostics.clear above) so the gate's diagnostics survive into the
+    // final LowerOutput. Unconditional across all targets — these gates
+    // close MIR sites that are unsupported regardless of target until MIR
+    // gains TargetSpec threading (see audit `:5336`, `:5564`, `:5696`).
+    check_binary_operator_gates(&mut ctx, program);
 
     // Second pass: lower type declarations and populate the per-module
     // type-class registry. Stored here so the source-order pass can emit them
@@ -12070,6 +12086,495 @@ fn check_actor_send_method_call(
             actor_name, handler.name, handler.return_ty,
         ),
     ));
+}
+
+// ── FC-P1-D: binary-operator HIR pre-pass gates ──────────────────────────────
+
+/// Context carried by the binary-operator gate walker. Bundles the
+/// diagnostic sink with the checker's `expr_types` side-table so the
+/// `isize`/`usize` predicates can resolve operand types.
+struct BinopGateCtx<'a> {
+    diagnostics: &'a mut Vec<HirDiagnostic>,
+    expr_types: &'a HashMap<SpanKey, Ty>,
+}
+
+/// FC-P1-D entry point. Scans every user expression body in `program` for
+/// binary operators that the MIR backend cannot lower today and emits the
+/// corresponding fatal HIR diagnostic. Three closed gates:
+///
+/// 1. `..` / `..=` in value position (MIR site `:5336`).
+/// 2. `/` / `%` on `isize` (MIR site `:5564`).
+/// 3. `<<` / `>>` on `isize`/`usize` (MIR site `:5696`).
+///
+/// Walker shape mirrors `check_wasm_blocking_recv_gate` / `scan_*_for_
+/// blocking_recv`. Range gate is exempted when the binary expression is the
+/// direct iterable of a `for` loop (the `ForRange` lowering owns those).
+fn check_binary_operator_gates(ctx: &mut LowerCtx, program: &Program) {
+    let mut gate_ctx = BinopGateCtx {
+        diagnostics: &mut ctx.diagnostics,
+        expr_types: &ctx.expr_types,
+    };
+    for (item, _span) in &program.items {
+        match item {
+            Item::Function(fn_decl) => {
+                scan_block_for_binop_gates(&fn_decl.body, &mut gate_ctx);
+            }
+            Item::Actor(actor_decl) => {
+                if let Some(init) = &actor_decl.init {
+                    scan_block_for_binop_gates(&init.body, &mut gate_ctx);
+                }
+                for recv_fn in &actor_decl.receive_fns {
+                    scan_block_for_binop_gates(&recv_fn.body, &mut gate_ctx);
+                }
+                for method in &actor_decl.methods {
+                    scan_block_for_binop_gates(&method.body, &mut gate_ctx);
+                }
+            }
+            Item::Impl(impl_decl) => {
+                for method in &impl_decl.methods {
+                    scan_block_for_binop_gates(&method.body, &mut gate_ctx);
+                }
+            }
+            Item::Machine(machine_decl) => {
+                // State entry/exit blocks and transition guards/bodies are
+                // lowered to HIR (see `lower_machine` at lower.rs:4057+ —
+                // `lower_machine_block_filtered` walks entry/exit, and
+                // `lower_machine_expr_filtered` walks the transition body
+                // around lower.rs:4201). A gated binop in any of these
+                // positions would otherwise escape FC-P1-D and surface at
+                // the MIR producer. Reference: hew-parser/src/ast.rs
+                // MachineDecl / MachineState (entry, exit) / MachineTransition
+                // (guard, body).
+                for state in &machine_decl.states {
+                    if let Some(entry) = &state.entry {
+                        scan_block_for_binop_gates(entry, &mut gate_ctx);
+                    }
+                    if let Some(exit) = &state.exit {
+                        scan_block_for_binop_gates(exit, &mut gate_ctx);
+                    }
+                }
+                for tr in &machine_decl.transitions {
+                    if let Some(guard) = &tr.guard {
+                        scan_expr_for_binop_gates(&guard.0, &guard.1, false, &mut gate_ctx);
+                    }
+                    scan_expr_for_binop_gates(&tr.body.0, &tr.body.1, false, &mut gate_ctx);
+                }
+            }
+            // Variants below carry no user expression bodies that reach MIR
+            // in v0.5; each is explicit (no `_` catch-all) so a future
+            // `Item` variant trips compilation and forces an audit instead of
+            // silently slipping past the gate (cf. A228 walker-scope rule).
+            //
+            // - Const: value expr is parsed but `Item::Const` is currently
+            //   emitted as `unsupported top-level-item slice-2` in `lower.rs`
+            //   (~line 1338); no MIR reachable, so no binop site to gate.
+            // - Trait: default-method bodies live on `TraitMethod` but are
+            //   not lowered in V0b (`lower.rs` ~line 3666: "out of scope for
+            //   V0b"). Impl methods are scanned via the `Item::Impl` arm.
+            // - Supervisor: `ChildSpec.args` are not lowered by
+            //   `lower_supervisor` (`lower.rs` ~line 3936), so any binop in a
+            //   child-arg position never reaches MIR.
+            // - TypeDecl: struct/enum field types carry no expressions;
+            //   `TypeBodyItem::Method` is "not lowered into HIR in v0.5"
+            //   (`lower.rs` ~line 3822).
+            // - TypeAlias / Wire / Record / ExternBlock / Import: no
+            //   value-position user expressions.
+            Item::Const(_)
+            | Item::TypeDecl(_)
+            | Item::TypeAlias(_)
+            | Item::Trait(_)
+            | Item::Wire(_)
+            | Item::ExternBlock(_)
+            | Item::Supervisor(_)
+            | Item::Record(_)
+            | Item::Import(_) => {}
+        }
+    }
+}
+
+fn scan_block_for_binop_gates(block: &hew_parser::ast::Block, ctx: &mut BinopGateCtx) {
+    for (stmt, _) in &block.stmts {
+        scan_stmt_for_binop_gates(stmt, ctx);
+    }
+    if let Some(trailing) = &block.trailing_expr {
+        scan_expr_for_binop_gates(&trailing.0, &trailing.1, false, ctx);
+    }
+}
+
+#[allow(
+    clippy::match_same_arms,
+    reason = "explicit per-Stmt-variant arms read more clearly than collapsed or-patterns for this walker"
+)]
+fn scan_stmt_for_binop_gates(stmt: &hew_parser::ast::Stmt, ctx: &mut BinopGateCtx) {
+    match stmt {
+        Stmt::Let { value: Some(v), .. } | Stmt::Var { value: Some(v), .. } => {
+            scan_expr_for_binop_gates(&v.0, &v.1, false, ctx);
+        }
+        Stmt::Assign { target, value, .. } => {
+            scan_expr_for_binop_gates(&target.0, &target.1, false, ctx);
+            scan_expr_for_binop_gates(&value.0, &value.1, false, ctx);
+        }
+        Stmt::Expression(e) => {
+            scan_expr_for_binop_gates(&e.0, &e.1, false, ctx);
+        }
+        Stmt::Return(Some(e)) => {
+            scan_expr_for_binop_gates(&e.0, &e.1, false, ctx);
+        }
+        Stmt::Defer(e) => {
+            scan_expr_for_binop_gates(&e.0, &e.1, false, ctx);
+        }
+        Stmt::Break { value: Some(v), .. } => {
+            scan_expr_for_binop_gates(&v.0, &v.1, false, ctx);
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+            scan_block_for_binop_gates(body, ctx);
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            scan_expr_for_binop_gates(&condition.0, &condition.1, false, ctx);
+            scan_block_for_binop_gates(then_block, ctx);
+            if let Some(eb) = else_block {
+                scan_else_block_for_binop_gates(eb, ctx);
+            }
+        }
+        Stmt::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+            scan_block_for_binop_gates(body, ctx);
+            if let Some(eb) = else_body {
+                scan_block_for_binop_gates(eb, ctx);
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            scan_expr_for_binop_gates(&scrutinee.0, &scrutinee.1, false, ctx);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_expr_for_binop_gates(&g.0, &g.1, false, ctx);
+                }
+                scan_expr_for_binop_gates(&arm.body.0, &arm.body.1, false, ctx);
+            }
+        }
+        Stmt::Loop { body, .. } => scan_block_for_binop_gates(body, ctx),
+        Stmt::For { iterable, body, .. } => {
+            // Range/RangeInclusive directly in the iterable position is
+            // lowered via `ForRange`, so exempt the OUTER binop only.
+            // Operand sub-expressions are still scanned without the
+            // exemption (a nested range in `for i in (1..foo(2..3))` is
+            // still value-position).
+            scan_expr_for_binop_gates(&iterable.0, &iterable.1, true, ctx);
+            scan_block_for_binop_gates(body, ctx);
+        }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            scan_expr_for_binop_gates(&condition.0, &condition.1, false, ctx);
+            scan_block_for_binop_gates(body, ctx);
+        }
+        // Stmt::Break (no value), Stmt::Continue, Stmt::Return(None), etc.
+        // carry no sub-expression to scan.
+        _ => {}
+    }
+}
+
+fn scan_else_block_for_binop_gates(eb: &hew_parser::ast::ElseBlock, ctx: &mut BinopGateCtx) {
+    if let Some(stmt) = &eb.if_stmt {
+        scan_stmt_for_binop_gates(&stmt.0, ctx);
+    }
+    if let Some(b) = &eb.block {
+        scan_block_for_binop_gates(b, ctx);
+    }
+}
+
+/// Recursively walk an expression looking for binop-gate violations.
+///
+/// `in_for_iterable` is set when this expression is the direct iterable
+/// child of `Stmt::For`. A top-level `Range`/`RangeInclusive` in that
+/// position is exempted (the for-loop lowering handles it). The flag does
+/// NOT propagate into sub-expressions.
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive Expr-variant walker mirrors scan_expr_for_blocking_recv"
+)]
+fn scan_expr_for_binop_gates(
+    expr: &Expr,
+    span: &Span,
+    in_for_iterable: bool,
+    ctx: &mut BinopGateCtx,
+) {
+    if let Expr::Binary { left, op, right } = expr {
+        // Apply gates to THIS binop. Sub-expressions are recursed below
+        // (always with in_for_iterable=false; the exemption is one-deep).
+        apply_binop_gates(*op, left, right, span, in_for_iterable, ctx);
+        scan_expr_for_binop_gates(&left.0, &left.1, false, ctx);
+        scan_expr_for_binop_gates(&right.0, &right.1, false, ctx);
+        return;
+    }
+
+    match expr {
+        Expr::Binary { .. } => unreachable!("handled above"),
+        Expr::Unary { operand, .. } => {
+            scan_expr_for_binop_gates(&operand.0, &operand.1, false, ctx);
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            scan_expr_for_binop_gates(&receiver.0, &receiver.1, false, ctx);
+            for arg in args {
+                let a = arg.expr();
+                scan_expr_for_binop_gates(&a.0, &a.1, false, ctx);
+            }
+        }
+        Expr::Call { function, args, .. } => {
+            scan_expr_for_binop_gates(&function.0, &function.1, false, ctx);
+            for arg in args {
+                let a = arg.expr();
+                scan_expr_for_binop_gates(&a.0, &a.1, false, ctx);
+            }
+        }
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+            for e in es {
+                scan_expr_for_binop_gates(&e.0, &e.1, false, ctx);
+            }
+        }
+        Expr::ArrayRepeat { value, count } => {
+            scan_expr_for_binop_gates(&value.0, &value.1, false, ctx);
+            scan_expr_for_binop_gates(&count.0, &count.1, false, ctx);
+        }
+        Expr::Block(b)
+        | Expr::Scope { body: b }
+        | Expr::ForkBlock { body: b }
+        | Expr::GenBlock { body: b } => {
+            scan_block_for_binop_gates(b, ctx);
+        }
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+            ..
+        } => {
+            scan_expr_for_binop_gates(&condition.0, &condition.1, false, ctx);
+            scan_expr_for_binop_gates(&then_block.0, &then_block.1, false, ctx);
+            if let Some(e) = else_block {
+                scan_expr_for_binop_gates(&e.0, &e.1, false, ctx);
+            }
+        }
+        Expr::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+            scan_block_for_binop_gates(body, ctx);
+            if let Some(b) = else_body {
+                scan_block_for_binop_gates(b, ctx);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            scan_expr_for_binop_gates(&scrutinee.0, &scrutinee.1, false, ctx);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_expr_for_binop_gates(&g.0, &g.1, false, ctx);
+                }
+                scan_expr_for_binop_gates(&arm.body.0, &arm.body.1, false, ctx);
+            }
+        }
+        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+            scan_expr_for_binop_gates(&body.0, &body.1, false, ctx);
+        }
+        Expr::Spawn { target, args } => {
+            scan_expr_for_binop_gates(&target.0, &target.1, false, ctx);
+            for (_, v) in args {
+                scan_expr_for_binop_gates(&v.0, &v.1, false, ctx);
+            }
+        }
+        Expr::ScopeDeadline { duration, body } => {
+            scan_expr_for_binop_gates(&duration.0, &duration.1, false, ctx);
+            scan_block_for_binop_gates(body, ctx);
+        }
+        Expr::ForkChild { expr, .. } | Expr::Cast { expr, .. } => {
+            scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+        }
+        Expr::StructInit { fields, base, .. } => {
+            for (_, v) in fields {
+                scan_expr_for_binop_gates(&v.0, &v.1, false, ctx);
+            }
+            if let Some(b) = base {
+                scan_expr_for_binop_gates(&b.0, &b.1, false, ctx);
+            }
+        }
+        Expr::MapLiteral { entries } => {
+            for (k, v) in entries {
+                scan_expr_for_binop_gates(&k.0, &k.1, false, ctx);
+                scan_expr_for_binop_gates(&v.0, &v.1, false, ctx);
+            }
+        }
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                if let hew_parser::ast::StringPart::Expr(e) = part {
+                    scan_expr_for_binop_gates(&e.0, &e.1, false, ctx);
+                }
+            }
+        }
+        Expr::Select { arms, timeout } => {
+            for arm in arms {
+                scan_expr_for_binop_gates(&arm.source.0, &arm.source.1, false, ctx);
+                scan_expr_for_binop_gates(&arm.body.0, &arm.body.1, false, ctx);
+            }
+            if let Some(t) = timeout {
+                scan_expr_for_binop_gates(&t.duration.0, &t.duration.1, false, ctx);
+                scan_expr_for_binop_gates(&t.body.0, &t.body.1, false, ctx);
+            }
+        }
+        Expr::Timeout { expr, duration } => {
+            scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+            scan_expr_for_binop_gates(&duration.0, &duration.1, false, ctx);
+        }
+        Expr::UnsafeBlock(b) => scan_block_for_binop_gates(b, ctx),
+        Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
+            scan_expr_for_binop_gates(&object.0, &object.1, false, ctx);
+        }
+        Expr::Index { object, index } => {
+            scan_expr_for_binop_gates(&object.0, &object.1, false, ctx);
+            scan_expr_for_binop_gates(&index.0, &index.1, false, ctx);
+        }
+        Expr::Is { lhs, rhs } => {
+            scan_expr_for_binop_gates(&lhs.0, &lhs.1, false, ctx);
+            scan_expr_for_binop_gates(&rhs.0, &rhs.1, false, ctx);
+        }
+        Expr::Range { start, end, .. } => {
+            // `Expr::Range` is the AST node for slice-index ranges
+            // (`xs[a..b]`); separate from `Expr::Binary { op: Range }`.
+            // No gate, but recurse into operands.
+            if let Some(s) = start {
+                scan_expr_for_binop_gates(&s.0, &s.1, false, ctx);
+            }
+            if let Some(e) = end {
+                scan_expr_for_binop_gates(&e.0, &e.1, false, ctx);
+            }
+        }
+        Expr::Yield(Some(e)) => scan_expr_for_binop_gates(&e.0, &e.1, false, ctx),
+        Expr::MachineEmit { fields, .. } => {
+            for (_, v) in fields {
+                scan_expr_for_binop_gates(&v.0, &v.1, false, ctx);
+            }
+        }
+        // Leaf nodes (Identifier, literals, Yield(None), etc.).
+        _ => {}
+    }
+}
+
+/// Apply the three FC-P1-D gates to a single `Expr::Binary` node.
+///
+/// Exhaustive over `BinaryOp` so future operator additions surface as
+/// compile errors here. WHEN-ADDING-BINOP: extend this match to gate or
+/// explicitly admit the new operator.
+fn apply_binop_gates(
+    op: BinaryOp,
+    left: &Spanned<Expr>,
+    _right: &Spanned<Expr>,
+    binop_span: &Span,
+    in_for_iterable: bool,
+    ctx: &mut BinopGateCtx,
+) {
+    match op {
+        // Gate 1: Range / RangeInclusive in value position.
+        BinaryOp::Range | BinaryOp::RangeInclusive => {
+            if !in_for_iterable {
+                ctx.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::BinaryOperatorUnsupportedInMir {
+                        op: format!("{op}"),
+                    },
+                    binop_span.clone(),
+                    format!(
+                        "binary operator `{op}` is not lowered to MIR in value \
+                         position. Range operators are accepted only as the \
+                         iterable of a `for` loop. LESSONS `boundary-fail-closed`."
+                    ),
+                ));
+            }
+        }
+        // Gate 2: div/mod on isize.
+        BinaryOp::Divide | BinaryOp::Modulo => {
+            if operand_is_isize(left, ctx.expr_types) {
+                ctx.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::PlatformSizedDivRemUnsupported {
+                        op: format!("{op}"),
+                    },
+                    binop_span.clone(),
+                    format!(
+                        "binary operator `{op}` on `isize` requires the target's \
+                         pointer-width MIN constant, which the MIR pipeline does \
+                         not yet thread. Use `i32` or `i64` for explicit-width \
+                         division. LESSONS `boundary-fail-closed`."
+                    ),
+                ));
+            }
+        }
+        // Gate 3: shift on isize/usize.
+        BinaryOp::Shl | BinaryOp::Shr => {
+            if operand_is_platform_sized_int(left, ctx.expr_types) {
+                ctx.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::PlatformSizedShiftUnsupported {
+                        op: format!("{op}"),
+                    },
+                    binop_span.clone(),
+                    format!(
+                        "binary operator `{op}` on `isize`/`usize` requires the \
+                         target's pointer-width bit-count constant, which the MIR \
+                         pipeline does not yet thread. Use `i32`/`i64`/`u32`/`u64` \
+                         for explicit-width shifts. LESSONS `boundary-fail-closed`."
+                    ),
+                ));
+            }
+        }
+        // MIR-supported operators (admitted). Listed explicitly so adding a
+        // new BinaryOp variant elsewhere triggers a non-exhaustive-match
+        // compile error here.
+        BinaryOp::Add
+        | BinaryOp::Subtract
+        | BinaryOp::Multiply
+        | BinaryOp::Equal
+        | BinaryOp::NotEqual
+        | BinaryOp::Less
+        | BinaryOp::LessEqual
+        | BinaryOp::Greater
+        | BinaryOp::GreaterEqual
+        | BinaryOp::And
+        | BinaryOp::Or
+        | BinaryOp::BitAnd
+        | BinaryOp::BitOr
+        | BinaryOp::BitXor
+        | BinaryOp::WrappingAdd
+        | BinaryOp::WrappingSub
+        | BinaryOp::WrappingMul => {}
+    }
+}
+
+/// True iff the operand's checker-resolved type is `Ty::Isize`. Returns
+/// false when the type is missing from `expr_types` (defense-in-depth:
+/// MIR's own gate at `:5564` remains as a backstop, so under-rejection
+/// here does not lose safety).
+fn operand_is_isize(operand: &Spanned<Expr>, expr_types: &HashMap<SpanKey, Ty>) -> bool {
+    matches!(expr_types.get(&SpanKey::from(&operand.1)), Some(Ty::Isize))
+}
+
+/// True iff the operand's checker-resolved type is `Ty::Isize` or
+/// `Ty::Usize`. Same defense-in-depth note as `operand_is_isize`.
+fn operand_is_platform_sized_int(
+    operand: &Spanned<Expr>,
+    expr_types: &HashMap<SpanKey, Ty>,
+) -> bool {
+    matches!(
+        expr_types.get(&SpanKey::from(&operand.1)),
+        Some(Ty::Isize | Ty::Usize)
+    )
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

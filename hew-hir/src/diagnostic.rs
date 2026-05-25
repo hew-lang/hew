@@ -536,4 +536,16 @@ pub enum HirDiagnosticKind {
         /// Rendered callee type for the diagnostic message.
         callee_ty: String,
     },
+    /// Supervisor spawn with init args is not supported. `spawn AppSupervisor(...)`
+    /// reaches MIR lowering (`hew-mir/src/lower.rs:8852`) as a `NotYetImplemented`
+    /// runtime-style diagnostic; raise it to a HIR fatal gate per slepp A222 so
+    /// the failure surfaces at compile time with a clear cause. The checker
+    /// already rejects supervisor declarations that take init params; this gate
+    /// is defense-in-depth catching any future surface that could reach MIR
+    /// before the checker guard does. Supervisors take their child specs
+    /// declaratively — spawn-time init args have no defined semantics.
+    SupervisorSpawnArgsUnsupported {
+        /// Supervisor identifier as written at the spawn site.
+        supervisor_name: String,
+    },
 }

@@ -206,6 +206,8 @@ impl LowerOutput {
     /// - [`HirDiagnosticKind::IndirectCallUnsupported`] — a call expression
     ///   has an unresolved callee with callable static type that the MIR
     ///   producer cannot dispatch.
+    /// - [`HirDiagnosticKind::SupervisorSpawnArgsUnsupported`] — the program
+    ///   calls `spawn AppSupervisor(...)` with init args.
     ///
     /// Callers that want to continue despite non-fatal diagnostics should
     /// check `.diagnostics` directly.  This method is the recommended
@@ -244,6 +246,7 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::PlatformSizedShiftUnsupported { .. }
                     | crate::HirDiagnosticKind::CallableUnsupportedInMir { .. }
                     | crate::HirDiagnosticKind::IndirectCallUnsupported { .. }
+                    | crate::HirDiagnosticKind::SupervisorSpawnArgsUnsupported { .. }
             )
         });
         if has_fatal {
@@ -991,6 +994,16 @@ pub fn lower_program_with_mono_cap(
     // close MIR sites that are unsupported regardless of target until MIR
     // gains TargetSpec threading (see audit `:5336`, `:5564`, `:5696`).
     check_binary_operator_gates(&mut ctx, program);
+
+    // FC-P1-A3: Supervisor spawn args gate. Same survival-ordering rationale
+    // as the wasm gate above — dispatched AFTER `ctx.diagnostics.clear()` so
+    // the SupervisorSpawnArgsUnsupported diagnostics survive into the final
+    // LowerOutput. The checker already rejects supervisor declarations with
+    // init params; this HIR gate is defense-in-depth that catches any future
+    // surface which reaches MIR (`hew-mir/src/lower.rs:8852`) before the
+    // checker guard does. Per slepp A222: compile-time fail-closed instead of
+    // a `NotYetImplemented` runtime-style diagnostic at MIR-lowering time.
+    check_supervisor_spawn_gate(&mut ctx, program);
 
     // Second pass: lower type declarations and populate the per-module
     // type-class registry. Stored here so the source-order pass can emit them
@@ -11155,6 +11168,130 @@ fn check_task_gates(ctx: &mut LowerCtx, program: &Program) {
     }
 }
 
+// ── FC-P1-A3: Supervisor spawn args gate ─────────────────────────────────────
+
+/// Pre-pass that rejects `spawn AppSupervisor(...)` with non-empty init args.
+///
+/// Supervisors take their child specs declaratively (in the `supervisor`
+/// declaration body); spawn-time init args have no defined semantics. The
+/// checker already rejects supervisor *declarations* that take init params,
+/// but this HIR gate is defense-in-depth: it catches any future surface that
+/// could reach MIR (`hew-mir/src/lower.rs:8852`) before the checker guard does.
+///
+/// Per slepp A222 (fail-closed): surface a HIR fatal diagnostic at compile
+/// time instead of a `NotYetImplemented` runtime-style diagnostic at MIR-
+/// lowering time.
+/// Structured supervisor registry consumed by the spawn-args gate.
+///
+/// Replaces the FC-P1-A3 v1 single-`HashSet<String>` approach (which lost
+/// module context and produced both false negatives — `spawn other.Sup(args)`
+/// on an imported supervisor slipped through — and false positives —
+/// `spawn other.Root(args)` was rejected when the local `Root` was a
+/// supervisor but `other.Root` was an actor). The structured form preserves
+/// the spawn site's module qualifier so the lookup is module-scoped, matching
+/// the checker's own resolution discipline.
+///
+/// Discharges the A237 string-fragility pattern (see LESSONS
+/// `string-identifier-fragility-vs-structured-resolution`).
+struct SupervisorRegistry {
+    /// Supervisor names declared at the root program level. Consulted for
+    /// bare-identifier spawn targets (`spawn Sup(args)`).
+    root: std::collections::HashSet<String>,
+    /// Supervisor names declared in each imported module, keyed by the
+    /// module's short name (last path segment). Consulted for module-qualified
+    /// spawn targets (`spawn module.Sup(args)`).
+    by_module: std::collections::HashMap<String, std::collections::HashSet<String>>,
+}
+
+impl SupervisorRegistry {
+    /// True iff the program declares no supervisors anywhere (root or any
+    /// module). When true, the gate walk can short-circuit.
+    fn is_empty(&self) -> bool {
+        self.root.is_empty()
+            && self
+                .by_module
+                .values()
+                .all(std::collections::HashSet::is_empty)
+    }
+}
+
+/// Collect supervisor declarations from the root program AND every module in
+/// the program's `module_graph` (when present). Module-graph coverage is
+/// required to reject `spawn other.MyServiceSup(args)` for supervisors
+/// declared in imported modules.
+fn collect_supervisor_registry(program: &Program) -> SupervisorRegistry {
+    let mut root: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (item, _) in &program.items {
+        if let Item::Supervisor(decl) = item {
+            root.insert(decl.name.clone());
+        }
+    }
+    let mut by_module: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    if let Some(mg) = &program.module_graph {
+        for (mod_id, module) in &mg.modules {
+            if *mod_id == mg.root {
+                continue;
+            }
+            let module_short = mod_id.path.last().map_or("", String::as_str);
+            if module_short.is_empty() {
+                continue;
+            }
+            let entry = by_module.entry(module_short.to_string()).or_default();
+            for (item, _) in &module.items {
+                if let Item::Supervisor(decl) = item {
+                    entry.insert(decl.name.clone());
+                }
+            }
+        }
+    }
+    SupervisorRegistry { root, by_module }
+}
+
+fn check_supervisor_spawn_gate(ctx: &mut LowerCtx, program: &Program) {
+    let registry = collect_supervisor_registry(program);
+    if registry.is_empty() {
+        // No supervisors declared anywhere → no spawn site can target one;
+        // skip the walk entirely.
+        return;
+    }
+
+    // Walk root items. `current_module = None` selects the root supervisor
+    // set for bare-name spawn targets.
+    for (item, _span) in &program.items {
+        scan_item_for_supervisor_spawn(item, None, &registry, &mut ctx.diagnostics);
+    }
+    // Walk every non-root module in the program's module graph. A supervisor
+    // spawn with args inside a function/actor/impl/machine body in an imported
+    // module must trigger the gate the same way the root does (A242: pre-pass
+    // walkers must visit every body-bearing position in every module they're
+    // logically scoped to, not just the root program).
+    //
+    // `current_module = Some(short_name)` scopes the bare-identifier lookup
+    // to that module's own supervisor set. Bare identifiers in module bodies
+    // resolve under the module's local scope (cf. checker's resolution
+    // rules — root names are NOT auto-imported into modules; a module wanting
+    // to spawn a root supervisor must reach it via a module-qualified path,
+    // which dispatches through `Expr::FieldAccess` below). Without this
+    // scoping we'd both (a) miss `spawn LocalSup(args)` inside an imported
+    // module whose `LocalSup` isn't declared at root (false-negative) and
+    // (b) reject `spawn Foo(args)` inside an imported module that happens
+    // to share a name with a root-declared supervisor even though the
+    // module's `Foo` is something else entirely (false-positive). Both
+    // failure modes are documented in the rev2 cross-eco finding.
+    if let Some(mg) = &program.module_graph {
+        for (mod_id, module) in &mg.modules {
+            if *mod_id == mg.root {
+                continue;
+            }
+            let module_short = mod_id.path.last().map(String::as_str);
+            for (item, _) in &module.items {
+                scan_item_for_supervisor_spawn(item, module_short, &registry, &mut ctx.diagnostics);
+            }
+        }
+    }
+}
+
 fn scan_block_for_task_gates(
     block: &hew_parser::ast::Block,
     ctx: &mut LowerCtx,
@@ -12806,6 +12943,101 @@ fn scan_block_for_call_shape(
     }
 }
 
+/// Dispatch one `Item` to its body-bearing positions. Centralised so the
+/// root-items loop and the module-graph loop emit identical coverage, and so
+/// `Item::Machine`'s four positions (per A242) are handled in one place.
+fn scan_item_for_supervisor_spawn(
+    item: &Item,
+    current_module: Option<&str>,
+    registry: &SupervisorRegistry,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    match item {
+        Item::Function(fn_decl) => {
+            scan_block_for_supervisor_spawn(&fn_decl.body, current_module, registry, diagnostics);
+        }
+        Item::Actor(actor_decl) => {
+            if let Some(init) = &actor_decl.init {
+                scan_block_for_supervisor_spawn(&init.body, current_module, registry, diagnostics);
+            }
+            for recv_fn in &actor_decl.receive_fns {
+                scan_block_for_supervisor_spawn(
+                    &recv_fn.body,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+            }
+            for method in &actor_decl.methods {
+                scan_block_for_supervisor_spawn(
+                    &method.body,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+            }
+        }
+        Item::Impl(impl_decl) => {
+            for method in &impl_decl.methods {
+                scan_block_for_supervisor_spawn(
+                    &method.body,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+            }
+        }
+        // A242 invariant: HIR pre-pass walkers that visit user expression
+        // bodies in Item::Function/Item::Actor/Item::Impl MUST also visit ALL
+        // FOUR Item::Machine positions:
+        //   1. each state's `entry` block
+        //   2. each state's `exit` block
+        //   3. each transition's `guard` expression (if any)
+        //   4. each transition's `body` expression (action)
+        // Partial coverage (e.g. transitions but not states) is a BLOCK in
+        // cross-eco review (6th instance documented this session).
+        Item::Machine(machine) => {
+            for state in &machine.states {
+                if let Some(entry) = &state.entry {
+                    scan_block_for_supervisor_spawn(entry, current_module, registry, diagnostics);
+                }
+                if let Some(exit) = &state.exit {
+                    scan_block_for_supervisor_spawn(exit, current_module, registry, diagnostics);
+                }
+            }
+            for transition in &machine.transitions {
+                if let Some(guard) = &transition.guard {
+                    scan_expr_for_supervisor_spawn(&guard.0, current_module, registry, diagnostics);
+                }
+                scan_expr_for_supervisor_spawn(
+                    &transition.body.0,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+            }
+        }
+        // Const, Trait, Supervisor, Record, TypeDecl, TypeAlias, Wire,
+        // Import, ExternBlock: no user expression bodies that can call
+        // `spawn`.
+        _ => {}
+    }
+}
+
+fn scan_block_for_supervisor_spawn(
+    block: &hew_parser::ast::Block,
+    current_module: Option<&str>,
+    registry: &SupervisorRegistry,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    for (stmt, _) in &block.stmts {
+        scan_stmt_for_supervisor_spawn(stmt, current_module, registry, diagnostics);
+    }
+    if let Some(trailing) = &block.trailing_expr {
+        scan_expr_for_supervisor_spawn(&trailing.0, current_module, registry, diagnostics);
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "exhaustive HirExprKind match — every recursing variant is named \
@@ -13058,6 +13290,363 @@ fn scan_expr_for_call_shape(
         | HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Unsupported(_) => {}
+    }
+}
+
+#[allow(
+    clippy::match_same_arms,
+    reason = "explicit per-Stmt-variant arms read more clearly than collapsed or-patterns for this walker"
+)]
+fn scan_stmt_for_supervisor_spawn(
+    stmt: &hew_parser::ast::Stmt,
+    current_module: Option<&str>,
+    registry: &SupervisorRegistry,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    match stmt {
+        Stmt::Let { value: Some(v), .. } | Stmt::Var { value: Some(v), .. } => {
+            scan_expr_for_supervisor_spawn(&v.0, current_module, registry, diagnostics);
+        }
+        Stmt::Assign { target, value, .. } => {
+            scan_expr_for_supervisor_spawn(&target.0, current_module, registry, diagnostics);
+            scan_expr_for_supervisor_spawn(&value.0, current_module, registry, diagnostics);
+        }
+        Stmt::Expression(e) => {
+            scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+        }
+        Stmt::Return(Some(e)) => {
+            scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+        }
+        Stmt::Defer(e) => {
+            scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+        }
+        Stmt::Break { value: Some(v), .. } => {
+            scan_expr_for_supervisor_spawn(&v.0, current_module, registry, diagnostics);
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            scan_expr_for_supervisor_spawn(&condition.0, current_module, registry, diagnostics);
+            scan_block_for_supervisor_spawn(then_block, current_module, registry, diagnostics);
+            if let Some(eb) = else_block {
+                scan_else_block_for_supervisor_spawn(eb, current_module, registry, diagnostics);
+            }
+        }
+        Stmt::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
+            if let Some(eb) = else_body {
+                scan_block_for_supervisor_spawn(eb, current_module, registry, diagnostics);
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            scan_expr_for_supervisor_spawn(&scrutinee.0, current_module, registry, diagnostics);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_expr_for_supervisor_spawn(&g.0, current_module, registry, diagnostics);
+                }
+                scan_expr_for_supervisor_spawn(&arm.body.0, current_module, registry, diagnostics);
+            }
+        }
+        Stmt::Loop { body, .. } => {
+            scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
+        }
+        Stmt::For { iterable, body, .. } => {
+            scan_expr_for_supervisor_spawn(&iterable.0, current_module, registry, diagnostics);
+            scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
+        }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            scan_expr_for_supervisor_spawn(&condition.0, current_module, registry, diagnostics);
+            scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
+        }
+        // Stmt::Break, Stmt::Continue, Stmt::Return(None), and other leaf
+        // statements carry no sub-expression to scan.
+        _ => {}
+    }
+}
+
+fn scan_else_block_for_supervisor_spawn(
+    eb: &hew_parser::ast::ElseBlock,
+    current_module: Option<&str>,
+    registry: &SupervisorRegistry,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    if let Some(stmt) = &eb.if_stmt {
+        scan_stmt_for_supervisor_spawn(&stmt.0, current_module, registry, diagnostics);
+    }
+    if let Some(b) = &eb.block {
+        scan_block_for_supervisor_spawn(b, current_module, registry, diagnostics);
+    }
+}
+
+/// Recursively walk an expression tree looking for `Expr::Spawn` whose target
+/// names a known supervisor and whose args list is non-empty.
+///
+/// `current_module` scopes bare-identifier resolution: `None` for root-program
+/// bodies, `Some(short_name)` for non-root module bodies. The supervisor set
+/// consulted for a bare `spawn Name(args)` is the set the checker would use
+/// when resolving that bare identifier — root's set at root, the module's own
+/// set in a module body. Module-qualified `spawn mod.Name(args)` always
+/// consults `mod`'s set regardless of `current_module`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive Expr-variant walker mirrors scan_expr_for_blocking_recv above"
+)]
+fn scan_expr_for_supervisor_spawn(
+    expr: &Expr,
+    current_module: Option<&str>,
+    registry: &SupervisorRegistry,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    match expr {
+        Expr::Spawn { target, args } => {
+            // Module-scoped supervisor lookup.
+            //
+            // Two recognised spawn-target surface forms carry different
+            // module qualifiers; the gate must consult the *correct*
+            // module's supervisor set — not a flat union — to avoid both
+            // false negatives (a module-local supervisor slipping through
+            // because the root has no same-named supervisor) and false
+            // positives (a root supervisor name rejecting an unrelated
+            // module-local actor that happens to share the name).
+            //
+            //   bare `spawn Sup(args)` at root            → root supervisors
+            //   bare `spawn Sup(args)` in module `M`      → M's supervisors
+            //   `spawn mod.Sup(args)` (anywhere)          → mod's supervisors
+            //
+            // Bare identifiers in module bodies resolve against the module's
+            // own scope; root names are not auto-imported, so falling back
+            // to root's set would generate false positives. A module that
+            // intends to spawn a root supervisor must reach it via a
+            // module-qualified path, which dispatches through the
+            // `Expr::FieldAccess` arm below. Discharges A237 / LESSONS
+            // `string-identifier-fragility-vs-structured-resolution` and
+            // the rev2 cross-eco finding on module-context threading.
+            let resolved: Option<&str> = match &target.0 {
+                Expr::Identifier(name) => {
+                    let set = match current_module {
+                        Some(m) => registry.by_module.get(m),
+                        None => Some(&registry.root),
+                    };
+                    set.and_then(|s| s.get(name).map(String::as_str))
+                }
+                Expr::FieldAccess { object, field } => {
+                    if let Expr::Identifier(module) = &object.0 {
+                        registry
+                            .by_module
+                            .get(module)
+                            .and_then(|set| set.get(field).map(String::as_str))
+                    } else {
+                        // Non-`Identifier` object (e.g. `foo().Sup`) is not a
+                        // module-qualified spawn; the checker would already
+                        // reject this shape upstream, so the gate stays
+                        // silent here.
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if let Some(name) = resolved {
+                if !args.is_empty() {
+                    diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::SupervisorSpawnArgsUnsupported {
+                            supervisor_name: name.to_string(),
+                        },
+                        target.1.clone(),
+                        format!(
+                            "supervisor `{name}` cannot be spawned with init args: \
+                             supervisors take their child specs declaratively in the \
+                             `supervisor` body; spawn-time init args have no defined \
+                             semantics. Use `spawn {name}` with no arguments."
+                        ),
+                    ));
+                }
+            }
+            // Recurse into target + args so a nested supervisor spawn inside
+            // an arg expression is also caught.
+            scan_expr_for_supervisor_spawn(&target.0, current_module, registry, diagnostics);
+            for (_, v) in args {
+                scan_expr_for_supervisor_spawn(&v.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            scan_expr_for_supervisor_spawn(&receiver.0, current_module, registry, diagnostics);
+            for arg in args {
+                scan_expr_for_supervisor_spawn(
+                    &arg.expr().0,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+            }
+        }
+        Expr::Call { function, args, .. } => {
+            scan_expr_for_supervisor_spawn(&function.0, current_module, registry, diagnostics);
+            for arg in args {
+                scan_expr_for_supervisor_spawn(
+                    &arg.expr().0,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            scan_expr_for_supervisor_spawn(&left.0, current_module, registry, diagnostics);
+            scan_expr_for_supervisor_spawn(&right.0, current_module, registry, diagnostics);
+        }
+        Expr::Unary { operand, .. } => {
+            scan_expr_for_supervisor_spawn(&operand.0, current_module, registry, diagnostics);
+        }
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+            for e in es {
+                scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::ArrayRepeat { value, count } => {
+            scan_expr_for_supervisor_spawn(&value.0, current_module, registry, diagnostics);
+            scan_expr_for_supervisor_spawn(&count.0, current_module, registry, diagnostics);
+        }
+        Expr::Block(b)
+        | Expr::Scope { body: b }
+        | Expr::ForkBlock { body: b }
+        | Expr::GenBlock { body: b } => {
+            scan_block_for_supervisor_spawn(b, current_module, registry, diagnostics);
+        }
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+            ..
+        } => {
+            scan_expr_for_supervisor_spawn(&condition.0, current_module, registry, diagnostics);
+            scan_expr_for_supervisor_spawn(&then_block.0, current_module, registry, diagnostics);
+            if let Some(e) = else_block {
+                scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
+            if let Some(b) = else_body {
+                scan_block_for_supervisor_spawn(b, current_module, registry, diagnostics);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            scan_expr_for_supervisor_spawn(&scrutinee.0, current_module, registry, diagnostics);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_expr_for_supervisor_spawn(&g.0, current_module, registry, diagnostics);
+                }
+                scan_expr_for_supervisor_spawn(&arm.body.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+            scan_expr_for_supervisor_spawn(&body.0, current_module, registry, diagnostics);
+        }
+        Expr::ScopeDeadline { duration, body } => {
+            scan_expr_for_supervisor_spawn(&duration.0, current_module, registry, diagnostics);
+            scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
+        }
+        Expr::ForkChild { expr, .. } | Expr::Cast { expr, .. } => {
+            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+        }
+        Expr::StructInit { fields, base, .. } => {
+            for (_, v) in fields {
+                scan_expr_for_supervisor_spawn(&v.0, current_module, registry, diagnostics);
+            }
+            if let Some(b) = base {
+                scan_expr_for_supervisor_spawn(&b.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::MapLiteral { entries } => {
+            for (k, v) in entries {
+                scan_expr_for_supervisor_spawn(&k.0, current_module, registry, diagnostics);
+                scan_expr_for_supervisor_spawn(&v.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                if let hew_parser::ast::StringPart::Expr(e) = part {
+                    scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+                }
+            }
+        }
+        Expr::Select { arms, timeout } => {
+            for arm in arms {
+                scan_expr_for_supervisor_spawn(
+                    &arm.source.0,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+                scan_expr_for_supervisor_spawn(&arm.body.0, current_module, registry, diagnostics);
+            }
+            if let Some(t) = timeout {
+                scan_expr_for_supervisor_spawn(
+                    &t.duration.0,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+                scan_expr_for_supervisor_spawn(&t.body.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::Timeout { expr, duration } => {
+            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            scan_expr_for_supervisor_spawn(&duration.0, current_module, registry, diagnostics);
+        }
+        Expr::UnsafeBlock(b) => {
+            scan_block_for_supervisor_spawn(b, current_module, registry, diagnostics);
+        }
+        Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
+            scan_expr_for_supervisor_spawn(&object.0, current_module, registry, diagnostics);
+        }
+        Expr::Index { object, index } => {
+            scan_expr_for_supervisor_spawn(&object.0, current_module, registry, diagnostics);
+            scan_expr_for_supervisor_spawn(&index.0, current_module, registry, diagnostics);
+        }
+        Expr::Is { lhs, rhs } => {
+            scan_expr_for_supervisor_spawn(&lhs.0, current_module, registry, diagnostics);
+            scan_expr_for_supervisor_spawn(&rhs.0, current_module, registry, diagnostics);
+        }
+        Expr::Range { start, end, .. } => {
+            if let Some(s) = start {
+                scan_expr_for_supervisor_spawn(&s.0, current_module, registry, diagnostics);
+            }
+            if let Some(e) = end {
+                scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::Yield(Some(e)) => {
+            scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+        }
+        Expr::MachineEmit { fields, .. } => {
+            for (_, v) in fields {
+                scan_expr_for_supervisor_spawn(&v.0, current_module, registry, diagnostics);
+            }
+        }
+        // Leaf nodes (Identifier, literals, etc.) and any other Expr variant
+        // without sub-expressions: nothing to scan.
+        _ => {}
     }
 }
 

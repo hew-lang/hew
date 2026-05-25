@@ -19055,3 +19055,339 @@ fn generic_machine_step_bare_event_propagates_receiver_args() {
         output.errors
     );
 }
+
+// ── C1 UAF guard: E_SUPERVISOR_PERMANENT_OWNED_HEAP ──────────────────────────
+// Negative tests — the diagnostic MUST fire.
+
+#[test]
+fn supervisor_permanent_owned_heap_rejects_vec_field() {
+    let output = check_source(
+        r"
+        actor Counter {
+            let count: Vec<i64>;
+            receive fn inc() {}
+        }
+
+        supervisor App {
+            child worker: Counter permanent;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
+                && e.message.contains("worker")
+                && e.message.contains("Counter")
+                && e.message.contains("count")
+        }),
+        "permanent child with Vec field must be rejected; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_permanent_owned_heap_rejects_string_field() {
+    let output = check_source(
+        r"
+        actor Labelled {
+            let label: string;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child item: Labelled permanent;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
+                && e.message.contains("label")
+        }),
+        "permanent child with string field must be rejected; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_permanent_owned_heap_rejects_hashmap_field() {
+    let output = check_source(
+        r"
+        actor Registry {
+            let entries: HashMap<string, i64>;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child reg: Registry permanent;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
+                && e.message.contains("entries")
+        }),
+        "permanent child with HashMap field must be rejected; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_permanent_owned_heap_rejects_hashset_field() {
+    let output = check_source(
+        r"
+        actor Deduplicator {
+            let seen: HashSet<i64>;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child dedup: Deduplicator permanent;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
+                && e.message.contains("seen")
+        }),
+        "permanent child with HashSet field must be rejected; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_permanent_owned_heap_rejects_bytes_field() {
+    let output = check_source(
+        r"
+        actor Blob {
+            let data: bytes;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child store: Blob permanent;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
+                && e.message.contains("data")
+        }),
+        "permanent child with bytes field must be rejected; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_implicit_permanent_owned_heap_rejects() {
+    // No restart keyword — defaults to permanent per llvm.rs:3013.
+    let output = check_source(
+        r"
+        actor Worker {
+            let items: Vec<i64>;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child w: Worker;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
+                && e.message.contains("items")
+        }),
+        "implicit-permanent child (no restart keyword) with Vec field must be rejected; \
+         errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_permanent_owned_heap_rejects_nested_vec() {
+    // Vec<Vec<i64>> — outer Vec matches ty_is_known_owned_heap.
+    let output = check_source(
+        r"
+        actor Nested {
+            let matrix: Vec<Vec<i64>>;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child n: Nested permanent;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
+                && e.message.contains("matrix")
+        }),
+        "permanent child with Vec<Vec<i64>> field must be rejected (outer Vec matched); \
+         errors: {:#?}",
+        output.errors
+    );
+}
+
+// Positive tests — the diagnostic must NOT fire.
+
+#[test]
+fn supervisor_transient_owned_heap_ok() {
+    let output = check_source(
+        r"
+        actor Worker {
+            let items: Vec<i64>;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child w: Worker transient;
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")),
+        "transient child must not trigger owned-heap reject; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_temporary_owned_heap_ok() {
+    let output = check_source(
+        r"
+        actor Worker {
+            let items: Vec<i64>;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child w: Worker temporary;
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")),
+        "temporary child must not trigger owned-heap reject; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_permanent_copy_only_fields_ok() {
+    let output = check_source(
+        r"
+        actor Counter {
+            let count: i64;
+            let flag: bool;
+            let ratio: f64;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child c: Counter permanent;
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")),
+        "permanent child with only copy-type fields must not trigger owned-heap reject; \
+         errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_pool_child_permanent_vec_ok() {
+    // Pool children are exempt: they are dynamically spawned, not restarted
+    // from a fixed init_state spec.
+    let output = check_source(
+        r"
+        actor Worker {
+            let items: Vec<i64>;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            strategy: simple_one_for_one,
+            pool workers: Worker
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")),
+        "pool child must not trigger owned-heap reject; errors: {:#?}",
+        output.errors
+    );
+}
+
+// KNOWN-RESIDUAL: a user-defined record that *wraps* an owned-heap type is not
+// detected by ty_is_known_owned_heap because the check only inspects the
+// top-level Ty variant of each actor state field.  The full fix
+// (init_state_clone_fn, v0.5.0.1 P0) will close this gap.  This test locks
+// the boundary so future implementers see it explicitly.
+#[test]
+fn supervisor_permanent_record_containing_vec_known_residual_gap() {
+    // The actor field type is a named record (not directly Vec/string/etc.),
+    // so the check does NOT fire.  This is the documented residual gap.
+    let output = check_source(
+        r"
+        record Wrapper { inner: Vec<i64> }
+
+        actor Holder {
+            let data: Wrapper;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child h: Holder permanent;
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")),
+        "KNOWN-RESIDUAL: record-wrapping-Vec not yet detected by owned-heap check \
+         (full fix: init_state_clone_fn v0.5.0.1 P0); if this assertion now fails the \
+         residual gap has been closed — update this test accordingly; \
+         errors: {:#?}",
+        output.errors
+    );
+}

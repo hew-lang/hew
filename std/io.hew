@@ -48,6 +48,49 @@ pub fn read_all() -> string {
     }
 }
 
+// ── Declarative bytes receiver FFI ───────────────────────────────────
+//
+// The current native bytes ABI is Vec<i32>-backed: string.to_bytes(),
+// transport reads, and hew_bytes_to_string all exchange HewVec byte buffers.
+// Bind the checked-in runtime symbols verbatim rather than inventing
+// hew_bytes_len/get/pop/set names that do not exist.
+impl bytes {
+    #[extern_symbol(hew_vec_push_i32)]
+    fn push(buf: bytes, byte: i32) {}
+    #[extern_symbol(hew_vec_pop_i32)]
+    fn pop(buf: bytes) -> i32 {
+        0
+    }
+    #[extern_symbol(hew_vec_len)]
+    fn len(buf: bytes) -> i64 {
+        0
+    }
+    #[extern_symbol(hew_vec_get_i32)]
+    fn get(buf: bytes, index: i64) -> i32 {
+        0
+    }
+    #[extern_symbol(hew_vec_set_i32)]
+    fn set(buf: bytes, index: i64, byte: i32) {}
+    #[extern_symbol(hew_vec_is_empty)]
+    fn is_empty(buf: bytes) -> bool {
+        false
+    }
+    #[extern_symbol(hew_vec_clear)]
+    fn clear(buf: bytes) {}
+    #[extern_symbol(hew_vec_contains_i32)]
+    fn contains(buf: bytes, byte: i32) -> bool {
+        false
+    }
+    #[extern_symbol(hew_bytes_to_string)]
+    fn to_string(buf: bytes) -> string {
+        ""
+    }
+    #[extern_symbol(hew_vec_append)]
+    fn append(buf: bytes, other: bytes) {}
+    #[extern_symbol(hew_vec_append)]
+    fn extend(buf: bytes, other: bytes) {}
+}
+
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
     fn hew_io_read_line() -> string;

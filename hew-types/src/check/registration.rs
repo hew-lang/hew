@@ -710,15 +710,10 @@ impl Checker {
             ]),
         );
 
-        // Register the eleven `impl Display for <primitive>` blanket impls
-        // declared in `std/builtins.hew`.  Without this, method-form
-        // primitive Display dispatch (`x.fmt()` for `x: i64` etc.) cannot
-        // find an entry in `primitive_trait_impls` because the file is not
-        // routed through any `import` that would invoke
-        // `register_stdlib_hew_items` for the root module.  The Display
-        // *marker* (`MarkerTrait::Display`) already satisfies `T: Display`
-        // bounds for `print` / `println`, but receiver-keyed method dispatch
-        // (Stage A2 / A3) reads the impl table directly.  See #1669.
+        // Register the compiled-in primitive/builtin receiver impls that must
+        // be visible without an explicit stdlib import: Display blanket impls
+        // from `std/builtins.hew`, plus declarative string/bytes FFI receiver
+        // methods from `std/string.hew` and `std/io.hew`.
         self.register_builtins_hew_impls();
         if !self.module_registry.has_search_paths() {
             self.register_builtin_closable_surface();
@@ -728,12 +723,13 @@ impl Checker {
         }
     }
 
-    /// Parse the compiled-in `std/builtins.hew` source and feed only its
-    /// `Item::Impl` blocks through the existing stdlib registration path.
+    /// Parse compiled-in stdlib receiver impl sources and feed only the
+    /// selected `Item::Impl` blocks through the existing stdlib registration
+    /// path.
     ///
     /// `register_stdlib_hew_items` runs Pass 1 (types/traits/functions) and
-    /// Pass 2 (impl methods) on its input.  We deliberately filter to just
-    /// the impl items so:
+    /// Pass 2 (impl methods) on its input.  For `std/builtins.hew` we
+    /// deliberately filter to just the impl items so:
     ///
     /// - The `pub trait Display { fn fmt(...) }` declaration is not
     ///   inserted into `trait_defs`, leaving the existing user-redeclare
@@ -833,6 +829,50 @@ impl Checker {
         // (none of which fire for primitive targets that lack a
         // `type_defs` entry).
         self.register_stdlib_hew_items("builtins", &impl_items);
+        self.register_compiled_stdlib_receiver_impls(
+            "string",
+            include_str!("../../../std/string.hew"),
+            &["string"],
+        );
+        self.register_compiled_stdlib_receiver_impls(
+            "io",
+            include_str!("../../../std/io.hew"),
+            &["bytes"],
+        );
+    }
+
+    fn register_compiled_stdlib_receiver_impls(
+        &mut self,
+        module_short: &str,
+        source: &str,
+        receiver_names: &[&str],
+    ) {
+        let parsed = hew_parser::parse(source);
+        debug_assert!(
+            parsed.errors.is_empty(),
+            "std/{module_short}.hew failed to parse: {:?}",
+            parsed.errors
+        );
+        if !parsed.errors.is_empty() {
+            return;
+        }
+        let impl_items: Vec<Spanned<Item>> = parsed
+            .program
+            .items
+            .into_iter()
+            .filter(|(item, _)| {
+                let Item::Impl(id) = item else {
+                    return false;
+                };
+                let TypeExpr::Named { name, .. } = &id.target_type.0 else {
+                    return false;
+                };
+                receiver_names.iter().any(|receiver| name == receiver)
+            })
+            .collect();
+        if !impl_items.is_empty() {
+            self.register_stdlib_hew_items(module_short, &impl_items);
+        }
     }
 
     fn register_builtin_closable_surface(&mut self) {

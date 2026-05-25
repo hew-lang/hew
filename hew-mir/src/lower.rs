@@ -866,6 +866,9 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             stdlib_catalog::BuiltinLinkage::CompilerIntrinsic { .. }
         ) {
             module_fn_names.insert(entry.name.to_string());
+            if let Some(symbol) = entry.linkage.runtime_symbol() {
+                module_fn_names.insert(symbol.to_string());
+            }
         }
     }
     for item in &module.items {

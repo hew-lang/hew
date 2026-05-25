@@ -4598,10 +4598,10 @@ fn primitive_impl_dispatch_resolves_i32_receiver() {
 
 #[test]
 fn primitive_impl_dispatch_resolves_string_receiver_via_method_using_trait_method() {
-    // string routes through `check_string_method`'s not-found arm, not the
-    // wildcard.  This sentinel guarantees that path consults the side table
-    // for a method name that does NOT collide with a builtin string method
-    // (so the not-found branch is the one that runs).  We use a Display
+    // string routes through the declarative receiver dispatch fallback, not
+    // the wildcard.  This sentinel guarantees that path consults the side
+    // table for a method name that does NOT collide with a builtin string
+    // method (so the not-found branch is the one that runs).  We use a Display
     // method named `to_display_string` to avoid the impl-on-string body
     // type-check issue tracked separately (see issue #1565 follow-ups).
     assert_primitive_trait_dispatch_records_metadata(

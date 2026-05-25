@@ -102,8 +102,9 @@ fn method_call_with_rewrite_produces_hir_call() {
 }
 
 /// `s.len()` on a `string` binding is rewritten to `HirExprKind::Call` with
-/// callee `len_str` and the receiver prepended as the first argument.  The
-/// expression node must carry `ty == ResolvedTy::I64` — not `ResolvedTy::Unit`.
+/// callee `hew_string_length` and the receiver prepended as the first
+/// argument. The expression node must carry `ty == ResolvedTy::I64` — not
+/// `ResolvedTy::Unit`.
 ///
 /// This is a regression test for the bug where the `RewriteToFunction` arm in
 /// HIR lowering hardcoded `ResolvedTy::Unit` as the return type, silently
@@ -149,7 +150,7 @@ fn rewrite_to_function_preserves_return_type() {
         if let HirStmtKind::Let(_binding, Some(expr)) = &stmt.kind {
             if let HirExprKind::Call { callee, .. } = &expr.kind {
                 if let HirExprKind::BindingRef { name, .. } = &callee.kind {
-                    if name == "len_str" {
+                    if name == "hew_string_length" {
                         return Some(expr.ty.clone());
                     }
                 }
@@ -159,7 +160,7 @@ fn rewrite_to_function_preserves_return_type() {
     });
 
     let ty = len_call_ty.expect(
-        "s.len() must lower to HirExprKind::Call { callee: len_str, .. }; \
+        "s.len() must lower to HirExprKind::Call { callee: hew_string_length, .. }; \
          body statements: {:#?}",
     );
     assert_eq!(

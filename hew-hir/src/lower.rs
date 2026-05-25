@@ -266,7 +266,7 @@ impl LowerOutput {
 }
 
 /// Pre-collected signature of a top-level function item.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FnEntry {
     id: ItemId,
     return_ty: ResolvedTy,
@@ -3261,16 +3261,19 @@ impl LowerCtx {
             let index = u32::try_from(index).expect("stdlib catalog fits in u32");
             let id = ItemId(u32::MAX - index);
             let param_tys = builtin.params.iter().map(|ty| ty.to_resolved()).collect();
-            self.fn_registry.insert(
-                builtin.name.to_string(),
-                FnEntry {
-                    id,
-                    return_ty: builtin.return_ty.to_resolved(),
-                    param_tys,
-                    linkage: Some(builtin.linkage),
-                    type_params: Vec::new(),
-                },
-            );
+            let return_ty = builtin.return_ty.to_resolved();
+            let entry = FnEntry {
+                id,
+                return_ty,
+                param_tys,
+                linkage: Some(builtin.linkage),
+                type_params: Vec::new(),
+            };
+            self.fn_registry
+                .insert(builtin.name.to_string(), entry.clone());
+            if let Some(symbol) = builtin.linkage.runtime_symbol() {
+                self.fn_registry.insert(symbol.to_string(), entry);
+            }
         }
         // Checker-registered runtime-builtin functions that have no stdlib_catalog
         // entry and no AST `fn` item.  The HIR verifier rejects `Unresolved`
@@ -13103,6 +13106,9 @@ fn build_callable_set(
     let mut set: std::collections::HashSet<String> = std::collections::HashSet::new();
     for entry in stdlib_catalog::entries() {
         set.insert(entry.name.to_string());
+        if let Some(symbol) = entry.linkage.runtime_symbol() {
+            set.insert(symbol.to_string());
+        }
     }
     for item in items {
         match item {

@@ -1166,6 +1166,7 @@ fn predeclare_stdlib_catalog<'ctx>(
                 let symbol_entry =
                     declare_catalog_ffi(ctx, llvm_mod, entry, symbol, record_layouts)?;
                 fn_symbols.insert(entry.name.to_string(), symbol_entry);
+                fn_symbols.insert(symbol.to_string(), symbol_entry);
             }
             BuiltinLinkage::PrintIntercept {
                 runtime_symbol,

@@ -55,9 +55,9 @@ use hew_hir::{mangle, HirRestartPolicy, HirSupervisorStrategy};
 use hew_mir::{
     validate_context_markers, ActorLayout, CheckedMirFunction, CmpPred, CooperateKind,
     CooperateSite, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth,
-    FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, MachineLayout,
-    MachineVariantLayout, Place, RawMirFunction, RecordLayout, RegexLiteral, SupervisorChildLayout,
-    SupervisorLayout, Terminator, TrapKind,
+    FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline, MachineLayout,
+    MachineVariantLayout, Place, RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind,
+    SupervisorChildLayout, SupervisorLayout, Terminator, TrapKind,
 };
 use hew_types::{NumericWidth, ResolvedTy};
 
@@ -829,6 +829,31 @@ fn intern_runtime_decl<'ctx>(
         // Returns 0 on success or -1 on null/OOM; the bootstrap currently
         // discards the result — restart/diagnostic wiring lands in a follow-on.
         "hew_supervisor_add_child_spec" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_supervisor_set_child_state_clone(sup: *mut HewSupervisor,
+        //                                      child_index: c_int,
+        //                                      state_clone_fn: HewStateCloneFn) -> void
+        // (`hew-runtime/src/supervisor.rs:3807-3829`). Registers the
+        // codegen-synthesised `__hew_state_clone_<Actor>` against a child
+        // slot so the supervisor restart consumer can deep-clone the
+        // pristine `init_state` template before each restart spawn.
+        // W2.002 Stage 2 emits this immediately after the matching
+        // `hew_supervisor_add_child_spec` call.
+        "hew_supervisor_set_child_state_clone" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
+        // hew_supervisor_set_child_state_drop(sup: *mut HewSupervisor,
+        //                                     child_index: c_int,
+        //                                     state_drop_fn: unsafe extern "C" fn(*mut c_void))
+        //                                     -> void
+        // (`hew-runtime/src/supervisor.rs:3722-3760`). Paired sibling of
+        // `hew_supervisor_set_child_state_clone`; emitted alongside it.
+        // Without the drop registration, the runtime's `libc::free`
+        // fallback for `state_drop_fn=None` would bytewise-free
+        // owned-heap wrappers — leaking deep contents (and aliasing
+        // them into a use-after-free once the clone path is wired).
+        "hew_supervisor_set_child_state_drop" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
         // hew_supervisor_start(sup: *mut HewSupervisor) -> c_int
         // (`hew-runtime/src/supervisor.rs:1726`). Marks the supervisor running
         // and spawns its self-actor. Returns 0 on success. The bootstrap
@@ -951,6 +976,33 @@ fn intern_runtime_decl<'ctx>(
         // terminate trampoline on the actor so the runtime calls it at normal
         // actor teardown. Called once at spawn time, after hew_actor_spawn.
         "hew_actor_set_terminate" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_actor_set_state_clone(actor: *mut HewActor,
+        //                           state_clone_fn: HewStateCloneFn) -> void
+        // (`hew-runtime/src/actor.rs:3131-3141`). Registers the
+        // codegen-synthesised `__hew_state_clone_<Actor>` C-ABI fn on a
+        // freshly spawned actor handle. The slot is consumed by the
+        // supervisor restart path (`hew-runtime/src/supervisor.rs:1199-
+        // 1294` `hew_actor_spawn_opts_adopt`) to deep-clone the pristine
+        // `init_state` before each restart spawn. W2.002 Stage 2 emits
+        // this at the post-merge of `emit_spawn_actor`. The runtime
+        // null-tolerates via `cabi_guard!(actor.is_null())` so an OOM
+        // spawn returning null is harmless even without an extra codegen
+        // null guard at the call site.
+        "hew_actor_set_state_clone" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_actor_set_state_drop(actor: *mut HewActor,
+        //                          state_drop_fn: unsafe extern "C" fn(*mut c_void)) -> void
+        // (`hew-runtime/src/actor.rs:3097-3108`). Paired sibling of
+        // `hew_actor_set_state_clone`; emitted alongside it so the
+        // runtime invokes the codegen-synthesised `__hew_state_drop_
+        // <Actor>` body at actor shutdown instead of bytewise
+        // `libc::free` of the wrapper (which would leak any owned-
+        // heap state fields). Paired-emission is load-bearing: clone
+        // without drop leaks; drop without clone aliases into UAF.
+        "hew_actor_set_state_drop" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         // ── Regex literal substrate (codegen-emitted, not user-callable) ──────
@@ -2561,6 +2613,139 @@ fn emit_wasm_actor_metadata_registration<'ctx>(
     Ok(())
 }
 
+// ─── W2.002 Stage 2: state_clone / state_drop registration helpers ──────────
+//
+// Stage 2 emits CALLS to per-actor `__hew_state_clone_<Actor>` /
+// `__hew_state_drop_<Actor>` C-ABI fns. Stage 3 of this lane (deferred)
+// synthesises the function BODIES. To keep Stage 2 link-correct on its
+// own, the helpers below `get_function`-or-declare-extern the per-actor
+// symbol; if Stage 3 does not land the linker fails with a clear
+// "undefined symbol __hew_state_{clone,drop}_<Actor>" error. NOT a
+// silent no-op (dispatch invariant #3; A249).
+//
+// The synthesised fn signatures (matching `HewStateCloneFn` /
+// `state_drop_fn` slots on `HewActor` — see `hew-runtime/src/actor.rs:690`
+// for `HewStateCloneFn` and `:760-781` for the actor field doc; the
+// drop slot is `unsafe extern "C" fn(*mut c_void)`):
+//   clone:  unsafe extern "C-unwind" fn(*const c_void) -> *mut c_void
+//   drop:   unsafe extern "C" fn(*mut c_void)
+// At the LLVM IR level both pointer values reduce to opaque `ptr` once
+// emitted; the fn-pointer arg of the setter is `ptr` in opaque-pointer
+// mode regardless. We declare the extern with the concrete signature so
+// the linker checks shape parity against the Stage 3 definition.
+fn lookup_or_declare_state_clone_fn<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    symbol: &str,
+) -> PointerValue<'ctx> {
+    let f = llvm_mod.get_function(symbol).unwrap_or_else(|| {
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let fn_ty = ptr_ty.fn_type(&[ptr_ty.into()], false);
+        llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External))
+    });
+    f.as_global_value().as_pointer_value()
+}
+
+fn lookup_or_declare_state_drop_fn<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    symbol: &str,
+) -> PointerValue<'ctx> {
+    let f = llvm_mod.get_function(symbol).unwrap_or_else(|| {
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let fn_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
+        llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External))
+    });
+    f.as_global_value().as_pointer_value()
+}
+
+/// Resolve the paired `(state_clone, state_drop)` symbols off an
+/// `ActorLayout`, fail-closing on the half-populated case (which would
+/// be a Stage 1 invariant violation — `state_clone_fn_symbol` and
+/// `state_drop_fn_symbol` are populated together or not at all per
+/// `hew-mir/src/model.rs:328-350`).
+///
+/// Returns `Ok(None)` when both symbols are absent (Stage 1 declined
+/// to classify the actor — e.g. trivial-state actors before Stage 3
+/// lands, or actors with classification errors). Returns
+/// `Ok(Some((clone_sym, drop_sym)))` when both are present.
+fn resolve_state_clone_drop_symbols<'a>(
+    actor_name: &str,
+    actor_layout: &'a ActorLayout,
+) -> CodegenResult<Option<(&'a str, &'a str)>> {
+    match (
+        actor_layout.state_clone_fn_symbol.as_deref(),
+        actor_layout.state_drop_fn_symbol.as_deref(),
+    ) {
+        (None, None) => Ok(None),
+        (Some(clone_sym), Some(drop_sym)) => Ok(Some((clone_sym, drop_sym))),
+        (clone, drop) => Err(CodegenError::FailClosed(format!(
+            "actor `{actor_name}` has half-populated state clone/drop symbols \
+             (clone={clone:?}, drop={drop:?}) — Stage 1 invariant requires \
+             paired Some/None (see `hew-mir/src/model.rs:328-350`)"
+        ))),
+    }
+}
+
+/// Direct-spawn emission for `hew_actor_set_state_drop` +
+/// `hew_actor_set_state_clone` (W2.002 Stage 2).
+///
+/// Emitted at the post-merge of `emit_spawn_actor`'s opts/plain spawn
+/// branches, AFTER `spawned` is bound and BEFORE
+/// `emit_actor_spawn_lifecycle`. Drop is registered before clone so the
+/// smaller risk window (clone-failure mid-setup) leaves the actor with
+/// a working drop already wired.
+///
+/// No-op when the actor's `ActorLayout` did not get state-clone
+/// classification (paired None on the symbol fields). The runtime's
+/// `state_clone_fn = NULL` path blocks supervisor restart per
+/// `hew-runtime/src/actor.rs:766` as a safe default.
+fn emit_actor_state_clone_drop_registration<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    actor_name: &str,
+    spawned: PointerValue<'ctx>,
+    actor_layout: &ActorLayout,
+) -> CodegenResult<()> {
+    let Some((clone_sym, drop_sym)) = resolve_state_clone_drop_symbols(actor_name, actor_layout)?
+    else {
+        return Ok(());
+    };
+    let clone_fn_ptr = lookup_or_declare_state_clone_fn(fn_ctx.ctx, fn_ctx.llvm_mod, clone_sym);
+    let drop_fn_ptr = lookup_or_declare_state_drop_fn(fn_ctx.ctx, fn_ctx.llvm_mod, drop_sym);
+
+    let set_drop = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_set_state_drop",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            set_drop,
+            &[spawned.into(), drop_fn_ptr.into()],
+            "hew_actor_set_state_drop_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_actor_set_state_drop call: {e:?}")))?;
+
+    let set_clone = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_set_state_clone",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            set_clone,
+            &[spawned.into(), clone_fn_ptr.into()],
+            "hew_actor_set_state_clone_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_actor_set_state_clone call: {e:?}")))?;
+
+    Ok(())
+}
+
 fn emit_spawn_actor(
     fn_ctx: &FnCtx<'_, '_>,
     actor_name: &str,
@@ -2718,6 +2903,24 @@ fn emit_spawn_actor(
             .into_pointer_value()
     };
 
+    // W2.002 Stage 2: register state_clone + state_drop on the freshly
+    // spawned actor before lifecycle hooks (init / on_start / terminate)
+    // run. The setters consume `spawned` as a pointer arg; the runtime
+    // null-tolerates a null `spawned` from OOM via `cabi_guard!` so no
+    // extra null check is needed at the call site. See
+    // `emit_actor_state_clone_drop_registration` for the no-op fallback
+    // path (paired-absent symbols on the ActorLayout).
+    let actor_layout = fn_ctx
+        .actor_layouts
+        .iter()
+        .find(|l| l.name == actor_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "spawn `{actor_name}` has no ActorLayout for state clone/drop registration"
+            ))
+        })?;
+    emit_actor_state_clone_drop_registration(fn_ctx, actor_name, spawned, actor_layout)?;
+
     emit_actor_spawn_lifecycle(fn_ctx, actor_name, spawned, init_args)?;
     let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
     if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
@@ -2828,6 +3031,7 @@ fn emit_supervisor_bootstrap_body<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     layout: &SupervisorLayout,
     fn_symbols: &FnSymbolMap<'ctx>,
+    actor_layouts: &[ActorLayout],
 ) -> CodegenResult<()> {
     let symbol = *fn_symbols.get(&layout.bootstrap_symbol).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -2921,6 +3125,20 @@ fn emit_supervisor_bootstrap_body<'ctx>(
         &mut runtime_decls,
         "hew_supervisor_add_child_spec",
     )?;
+    // W2.002 Stage 2: per-child state_clone + state_drop setters. Interned
+    // once outside the loop so all children share the same FunctionValue.
+    let set_child_state_drop = intern_runtime_decl(
+        ctx,
+        llvm_mod,
+        &mut runtime_decls,
+        "hew_supervisor_set_child_state_drop",
+    )?;
+    let set_child_state_clone = intern_runtime_decl(
+        ctx,
+        llvm_mod,
+        &mut runtime_decls,
+        "hew_supervisor_set_child_state_clone",
+    )?;
     for (idx, child) in layout.children.iter().enumerate() {
         emit_supervisor_child_spec_and_register(
             ctx,
@@ -2929,9 +3147,12 @@ fn emit_supervisor_bootstrap_body<'ctx>(
             &child_spec_ty,
             sup,
             add_child_spec,
+            set_child_state_drop,
+            set_child_state_clone,
             idx,
             child,
             &layout.name,
+            actor_layouts,
         )?;
     }
 
@@ -3004,9 +3225,12 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     child_spec_ty: &StructType<'ctx>,
     sup: PointerValue<'ctx>,
     add_child_spec: FunctionValue<'ctx>,
+    set_child_state_drop: FunctionValue<'ctx>,
+    set_child_state_clone: FunctionValue<'ctx>,
     idx: usize,
     child: &SupervisorChildLayout,
     sup_name: &str,
+    actor_layouts: &[ActorLayout],
 ) -> CodegenResult<()> {
     let i32_ty = ctx.i32_type();
     let i64_ty = ctx.i64_type();
@@ -3095,7 +3319,1360 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
             &format!("hew_supervisor_add_child_spec_call_{idx}"),
         )
         .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_add_child_spec call: {e:?}")))?;
+
+    // ── W2.002 Stage 2: register state_drop + state_clone fn pointers
+    // against this child slot. Mirrors `__hew_actor_dispatch_<actor>`
+    // resolution above: `child.actor_name` → per-actor synthesised symbol
+    // (Stage 3 of this lane defines bodies; Stage 2 declares externs so
+    // a missing Stage 3 fails clearly at link time, not silently).
+    //
+    // The matching `ActorLayout` carries the symbol pair on
+    // `state_clone_fn_symbol` / `state_drop_fn_symbol` (paired by Stage 1
+    // — see `hew-mir/src/model.rs:328-350`). Absent symbols on the layout
+    // mean Stage 1 declined classification for that actor; in that case
+    // the runtime fall-through (`state_clone_fn=NULL` blocks restart per
+    // `hew-runtime/src/actor.rs:766`) is the safe default and no setter
+    // calls are emitted.
+    let child_actor_layout = actor_layouts
+        .iter()
+        .find(|l| l.name == child.actor_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "supervisor `{sup_name}` child `{}` references actor `{}` which has no \
+                 ActorLayout for state clone/drop registration",
+                child.name, child.actor_name
+            ))
+        })?;
+    if let Some((clone_sym, drop_sym)) =
+        resolve_state_clone_drop_symbols(&child.actor_name, child_actor_layout)?
+    {
+        let clone_fn_ptr = lookup_or_declare_state_clone_fn(ctx, llvm_mod, clone_sym);
+        let drop_fn_ptr = lookup_or_declare_state_drop_fn(ctx, llvm_mod, drop_sym);
+        let child_idx_const = i32_ty.const_int(idx as u64, true);
+        builder
+            .build_call(
+                set_child_state_drop,
+                &[sup.into(), child_idx_const.into(), drop_fn_ptr.into()],
+                &format!("hew_supervisor_set_child_state_drop_call_{idx}"),
+            )
+            .map_err(|e| {
+                CodegenError::Llvm(format!("hew_supervisor_set_child_state_drop call: {e:?}"))
+            })?;
+        builder
+            .build_call(
+                set_child_state_clone,
+                &[sup.into(), child_idx_const.into(), clone_fn_ptr.into()],
+                &format!("hew_supervisor_set_child_state_clone_call_{idx}"),
+            )
+            .map_err(|e| {
+                CodegenError::Llvm(format!("hew_supervisor_set_child_state_clone call: {e:?}"))
+            })?;
+    }
     Ok(())
+}
+
+// ─── W2.002 Stage 3: per-actor state_clone / state_drop BODY synthesis ──────
+//
+// Stage 2 emits CALLS to `__hew_state_clone_<Actor>` /
+// `__hew_state_drop_<Actor>` and registers them with the runtime via
+// `hew_actor_set_state_{clone,drop}` (direct spawn) and
+// `hew_supervisor_set_child_state_{clone,drop}` (supervisor child).
+// Stage 3 (this section) synthesises the LLVM function BODIES.
+//
+// Signatures (mandated by W2.001 ABI in `hew-runtime/src/actor.rs:690,758-781`):
+//
+//   __hew_state_clone_<Actor>(*const c_void) -> *mut c_void
+//       declared `extern "C-unwind"` in Rust; LLVM IR is opaque-pointer
+//       and the unwind table is irrelevant at the IR level (clone fns
+//       have no `.unwind` operand here — they call into runtime helpers
+//       that are themselves abort-on-OOM via `cabi_guard!` / `libc::abort`).
+//
+//   __hew_state_drop_<Actor>(*mut c_void)
+//       declared `extern "C"` in Rust; void return.
+//
+// Companion record helpers (CODEGEN-INTERNAL — not user-reachable, not in
+// W4.003's `scripts/jit-symbol-classification.toml`):
+//
+//   __hew_record_clone_inplace_<Record>(*const c_void, *mut c_void) -> i32
+//       0 on success; non-zero on partial-clone failure (with own rollback).
+//       Operates in place on caller-allocated `dst`. Caller must have
+//       memcpy'd `dst <- src` first so BitCopy fields are correct and
+//       owned-heap fields hold byte-aliased pointers (which this helper
+//       overwrites with deep clones; on failure, only successfully-cloned
+//       fields at `dst` are dropped — the byte-aliased starting pointers
+//       are NEVER dropped because they alias `src` which the caller owns).
+//
+//   __hew_record_drop_inplace_<Record>(*mut c_void)
+//       Drops owned-heap fields in reverse declaration order. Does NOT
+//       free the wrapper (records are embedded in their parent struct).
+//
+// Drop safety (CLAUDE.md custom #1, plan §6 Stage 3 table):
+//
+// - **Sync return**: reverse-order LIFO rollback on per-field clone
+//   failure. `src` is NEVER touched (it's the caller's wrapper; we only
+//   read from it). Only `dst` fields that were successfully cloned are
+//   dropped; byte-aliased pointers at higher field indices were never
+//   stored to, so the rollback drop list contains only the proven-owned
+//   `dst.<f_j>` set. Wrapper freed via `free(dst)` at the end of rollback.
+//
+// - **Async cancel**: N/A by construction. Both synthesised fns are
+//   synchronous C-ABI; no `.await`, no futures, no yield points. The
+//   supervisor restart consumer at `hew-runtime/src/supervisor.rs:1199-1294`
+//   calls clone synchronously while holding the children lock.
+//
+// - **Actor shutdown**: the wrapper that the actor holds (from direct-spawn
+//   byte-copy or from `hew_actor_spawn_opts_adopt` of a clone result) is
+//   owned by the actor. On shutdown the runtime invokes the registered
+//   `state_drop_fn` — this lane synthesises that body. Single-fire
+//   protection via the runtime's `terminate_called` guard at
+//   `hew-runtime/src/actor.rs:786-791`; `state_drop_fn` is idempotent
+//   against null and is structurally callable from any of the three
+//   contexts (the runtime path uses sync-return only today).
+//
+// Fail-closed posture (CLAUDE.md custom #2, A249):
+// - Connection-bearing state actors: clone fn returns null immediately
+//   (defence-in-depth — Stage 2's supervisor-site codegen-gate is the
+//   primary surface, see plan §4.5 B). Drop is a no-op for the Connection
+//   field itself (the underlying fd is closed by actor teardown, not by
+//   `state_drop_fn`).
+// - Half-populated symbol pairs (clone Some / drop None or vice versa)
+//   are rejected up front as a Stage 1 invariant violation by
+//   `resolve_state_clone_drop_symbols` (defined in Stage 2's section).
+// - Unsupported field kind: not reachable here (Stage 1 fails-closed at
+//   classification time before any actor reaches Stage 3).
+
+/// Runtime helper function declarations used by the synthesised clone/drop
+/// bodies. Kept in a single place so any future helper-signature drift
+/// surfaces in one diff.
+fn get_or_declare_libc_malloc<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+) -> FunctionValue<'ctx> {
+    if let Some(fv) = llvm_mod.get_function("malloc") {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    llvm_mod.add_function(
+        "malloc",
+        ptr_ty.fn_type(&[i64_ty.into()], false),
+        Some(Linkage::External),
+    )
+}
+
+fn get_or_declare_libc_free<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+) -> FunctionValue<'ctx> {
+    if let Some(fv) = llvm_mod.get_function("free") {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        "free",
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::External),
+    )
+}
+
+/// (sym, ret_ty, arg_ty) for the runtime per-field clone helpers. `ret_ty`
+/// is `Some(ptr)` for helpers that return a new heap pointer (caller
+/// stores into `dst.<f>` and rolls back on null), `None` for refcount-bump
+/// helpers like `hew_bytes_clone_ref` that mutate in place and return void.
+enum CloneHelper {
+    /// Allocating helper: `fn(*const) -> *mut`. Caller stores result over
+    /// the byte-aliased pointer at `dst.<f>` (the wholesale wrapper
+    /// memcpy in `__hew_state_clone_<Actor>` step 3 seeded it with
+    /// `src.<f>`; overwrite on success). Null return → rollback path.
+    Allocating { name: &'static str },
+    /// Refcount-bump helper: `fn(*mut) -> ()`. Operates on the pointer
+    /// already present at `dst.<f>` (byte-aliased to `src.<f>` from the
+    /// wholesale memcpy). The drop helper decrements; together they
+    /// implement a clone-by-refcount discipline. No store, no rollback
+    /// possible at this field index (the bump is infallible — `Bytes`
+    /// uses a relaxed atomic increment; OOM cannot occur).
+    RefcountBump { name: &'static str },
+}
+
+/// (sym) for the per-field drop helpers; always `fn(*mut) -> ()`.
+struct DropHelper {
+    name: &'static str,
+}
+
+fn get_or_declare_clone_helper<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    helper: &CloneHelper,
+) -> FunctionValue<'ctx> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    match helper {
+        CloneHelper::Allocating { name } => {
+            if let Some(fv) = llvm_mod.get_function(name) {
+                return fv;
+            }
+            llvm_mod.add_function(
+                name,
+                ptr_ty.fn_type(&[ptr_ty.into()], false),
+                Some(Linkage::External),
+            )
+        }
+        CloneHelper::RefcountBump { name } => {
+            if let Some(fv) = llvm_mod.get_function(name) {
+                return fv;
+            }
+            llvm_mod.add_function(
+                name,
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                Some(Linkage::External),
+            )
+        }
+    }
+}
+
+fn get_or_declare_drop_helper<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    helper: &DropHelper,
+) -> FunctionValue<'ctx> {
+    if let Some(fv) = llvm_mod.get_function(helper.name) {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        helper.name,
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::External),
+    )
+}
+
+/// Map a `StateFieldCloneKind` to the runtime CLONE-side helper.
+///
+/// Returns:
+/// - `Ok(Some(helper))` — a per-field helper to call after the wholesale
+///   memcpy.
+/// - `Ok(None)` — BitCopy; the wholesale memcpy is sufficient and there
+///   is no per-field work.
+/// - `Err(_)` — Connection (fail-closed at the actor-clone level — the
+///   actor body returns null immediately rather than entering the
+///   per-field loop) OR an unsupported composite (HashMap/HashSet of
+///   owned-heap elements where the runtime helper does not deep-clone
+///   the element bytes itself).
+///
+/// Caller (`emit_field_clone_step`) handles UserRecord separately
+/// because it calls a per-record synthesised helper rather than a runtime
+/// extern.
+fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<CloneHelper>> {
+    match kind {
+        StateFieldCloneKind::BitCopy { .. } => Ok(None),
+        StateFieldCloneKind::String => Ok(Some(CloneHelper::Allocating {
+            name: "hew_string_clone",
+        })),
+        StateFieldCloneKind::Bytes => Ok(Some(CloneHelper::RefcountBump {
+            name: "hew_bytes_clone_ref",
+        })),
+        StateFieldCloneKind::Vec { .. } => Ok(Some(CloneHelper::Allocating {
+            name: "hew_vec_clone",
+        })),
+        StateFieldCloneKind::HashMap { .. } => Ok(Some(CloneHelper::Allocating {
+            name: "hew_hashmap_clone_impl",
+        })),
+        StateFieldCloneKind::HashSet { .. } => Ok(Some(CloneHelper::Allocating {
+            name: "hew_hashset_clone",
+        })),
+        StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Connection,
+        } => Err(CodegenError::FailClosed(
+            "Connection field reached per-field clone helper; the actor-level \
+             body must intercept this arm and return null up front per plan §4.5 B"
+                .into(),
+        )),
+        StateFieldCloneKind::UserRecord { .. } => Err(CodegenError::FailClosed(
+            "UserRecord arm requires per-record synthesised helper, not a \
+             runtime extern — caller must dispatch separately"
+                .into(),
+        )),
+    }
+}
+
+/// Drop-side companion to `clone_helper_for_kind`. Same arm semantics.
+fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<DropHelper>> {
+    match kind {
+        StateFieldCloneKind::BitCopy { .. } => Ok(None),
+        StateFieldCloneKind::String => Ok(Some(DropHelper {
+            name: "hew_string_drop",
+        })),
+        StateFieldCloneKind::Bytes => Ok(Some(DropHelper {
+            name: "hew_bytes_drop",
+        })),
+        StateFieldCloneKind::Vec { .. } => Ok(Some(DropHelper {
+            name: "hew_vec_free",
+        })),
+        StateFieldCloneKind::HashMap { .. } => Ok(Some(DropHelper {
+            name: "hew_hashmap_free_impl",
+        })),
+        StateFieldCloneKind::HashSet { .. } => Ok(Some(DropHelper {
+            name: "hew_hashset_free",
+        })),
+        StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Connection,
+        } => {
+            // Connection drop is a no-op at the state level — the underlying
+            // fd is closed by the runtime's actor-teardown path (after
+            // `terminate_fn` runs), not by `state_drop_fn`. See plan §4.5 B
+            // + `hew-runtime/src/actor.rs:766` C1 fix block.
+            Ok(None)
+        }
+        StateFieldCloneKind::UserRecord { .. } => Err(CodegenError::FailClosed(
+            "UserRecord arm requires per-record synthesised drop helper, not a \
+             runtime extern — caller must dispatch separately"
+                .into(),
+        )),
+    }
+}
+
+/// Lookup-or-declare the synthesised per-record in-place clone helper. The
+/// per-record helper signature is `fn(*const, *mut) -> i32` (0 = success,
+/// non-zero = partial-clone rollback complete). Declaring here lets a
+/// classified actor body call into a nested record helper that is
+/// synthesised later in the same module pass.
+fn get_or_declare_record_clone_inplace<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    record_name: &str,
+) -> FunctionValue<'ctx> {
+    let sym = format!("__hew_record_clone_inplace_{record_name}");
+    if let Some(fv) = llvm_mod.get_function(&sym) {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    llvm_mod.add_function(
+        &sym,
+        i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        Some(Linkage::Internal),
+    )
+}
+
+/// Lookup-or-declare the synthesised per-record in-place drop helper.
+/// Signature: `fn(*mut) -> ()`. Does NOT free the wrapper — records are
+/// embedded in their parent struct.
+fn get_or_declare_record_drop_inplace<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    record_name: &str,
+) -> FunctionValue<'ctx> {
+    let sym = format!("__hew_record_drop_inplace_{record_name}");
+    if let Some(fv) = llvm_mod.get_function(&sym) {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        &sym,
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::Internal),
+    )
+}
+
+/// Compute the transitive set of user records reachable through any
+/// classified actor's `UserRecord` arms. Each entry is paired with its
+/// per-field classification (re-derived from `pipeline_records` so the
+/// synthesis loop has the same kind data the actor classifier saw).
+///
+/// Returns the records in topological-ish order (leaves before
+/// references) so per-record helpers declare before being referenced.
+/// The actual call graph here is a DAG because the type checker rejects
+/// self-referential records (per `hew-mir/src/state_clone.rs` doc on
+/// `ClassificationError::RecordCycle`); the visited-set in
+/// `classify_actor_state_fields` keeps a defensive guard against
+/// classifier bugs.
+fn collect_reachable_record_classifications(
+    actor_layouts: &[ActorLayout],
+    pipeline_records: &[RecordLayout],
+) -> CodegenResult<Vec<(String, Vec<StateFieldCloneKind>)>> {
+    let mut queue: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Seed from every actor's classification.
+    for actor in actor_layouts {
+        if let Some(kinds) = actor.state_field_clone_kinds.as_ref() {
+            push_user_record_names(kinds, &mut queue, &mut seen);
+        }
+    }
+
+    let mut result: Vec<(String, Vec<StateFieldCloneKind>)> = Vec::new();
+    let mut head = 0usize;
+    while head < queue.len() {
+        let name = queue[head].clone();
+        head += 1;
+        let record = pipeline_records
+            .iter()
+            .find(|r| r.name == name)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "state_clone synthesis: record `{name}` referenced via UserRecord arm \
+                 has no entry in pipeline.record_layouts — Stage 1 classifier should \
+                 have rejected this with MissingRecordLayout"
+                ))
+            })?;
+        let kinds = hew_mir::classify_actor_state_fields(&record.field_tys, pipeline_records)
+            .map_err(|e| {
+                CodegenError::FailClosed(format!(
+                    "state_clone synthesis: re-classification of record `{name}` failed: {e}; \
+                 the Stage 1 classifier should have caught this before reaching codegen"
+                ))
+            })?;
+        push_user_record_names(&kinds, &mut queue, &mut seen);
+        result.push((name, kinds));
+    }
+    Ok(result)
+}
+
+fn push_user_record_names(
+    kinds: &[StateFieldCloneKind],
+    queue: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    for k in kinds {
+        collect_record_names_in_kind(k, queue, seen);
+    }
+}
+
+fn collect_record_names_in_kind(
+    kind: &StateFieldCloneKind,
+    queue: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    match kind {
+        StateFieldCloneKind::UserRecord { name } => {
+            if seen.insert(name.clone()) {
+                queue.push(name.clone());
+            }
+        }
+        StateFieldCloneKind::Vec { elem } | StateFieldCloneKind::HashSet { elem } => {
+            collect_record_names_in_kind(elem, queue, seen);
+        }
+        StateFieldCloneKind::HashMap { key, val } => {
+            collect_record_names_in_kind(key, queue, seen);
+            collect_record_names_in_kind(val, queue, seen);
+        }
+        StateFieldCloneKind::BitCopy { .. }
+        | StateFieldCloneKind::String
+        | StateFieldCloneKind::Bytes
+        | StateFieldCloneKind::IoHandle { .. } => {}
+    }
+}
+
+/// Compute the ABI byte size of an actor's or record's LLVM struct type.
+/// Falls back to the host data layout when no target machine is bound —
+/// matches `build_tagged_union_layout`'s policy.
+fn struct_abi_size(ty: StructType<'_>, target_data: Option<&TargetData>) -> u64 {
+    let host_td;
+    let td = if let Some(td) = target_data {
+        td
+    } else {
+        host_td = host_target_data();
+        &host_td
+    };
+    td.get_abi_size(&ty)
+}
+
+/// Synthesise per-actor `__hew_state_clone_<Actor>` / `__hew_state_drop_<Actor>`
+/// AND per-record `__hew_record_{clone_inplace,drop_inplace}_<Record>`
+/// bodies for every classified actor in `actor_layouts`. Called from
+/// `build_module_for_target` BEFORE supervisor bootstrap emission so the
+/// `get_function`-or-declare-extern lookup at Stage 2's spawn/supervisor
+/// sites resolves to a real `define` rather than the linker-failure
+/// extern stub.
+///
+/// No-op for actors whose `state_clone_fn_symbol` is `None` — Stage 1
+/// declined classification (failure surfaced as a `MirDiagnostic`).
+/// Stage 2 codegen skips the runtime registration calls for those actors;
+/// the runtime falls back to `state_clone_fn=NULL`-blocks-restart per
+/// `hew-runtime/src/actor.rs:766`.
+fn emit_state_clone_drop_synthesis<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    actor_layouts: &[ActorLayout],
+    pipeline_records: &[RecordLayout],
+    record_struct_map: &RecordLayoutMap<'ctx>,
+    target_data: Option<&TargetData>,
+) -> CodegenResult<()> {
+    // Per-record helpers must exist before the per-actor body that calls
+    // them is emitted. Collect-then-emit two passes.
+    let record_classifications =
+        collect_reachable_record_classifications(actor_layouts, pipeline_records)?;
+    for (record_name, kinds) in &record_classifications {
+        let record_struct = record_struct_map.get(record_name).copied().ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "state_clone synthesis: record `{record_name}` has no LLVM StructType in \
+                 record_struct_map — register_record_layouts must run before synthesis"
+            ))
+        })?;
+        emit_record_clone_inplace_body(ctx, llvm_mod, record_name, record_struct, kinds)?;
+        emit_record_drop_inplace_body(ctx, llvm_mod, record_name, record_struct, kinds)?;
+    }
+    for actor in actor_layouts {
+        let (clone_sym, drop_sym, kinds) = match (
+            actor.state_clone_fn_symbol.as_deref(),
+            actor.state_drop_fn_symbol.as_deref(),
+            actor.state_field_clone_kinds.as_ref(),
+        ) {
+            (Some(c), Some(d), Some(k)) => (c, d, k),
+            (None, None, None) => continue,
+            (clone, drop, kinds) => {
+                return Err(CodegenError::FailClosed(format!(
+                    "actor `{}` has partial state-clone classification \
+                     (clone={clone:?}, drop={drop:?}, kinds_present={}); Stage 1 \
+                     invariant requires the three to be Some/Some/Some or all None",
+                    actor.name,
+                    kinds.is_some()
+                )));
+            }
+        };
+        // The state struct may be absent from record_struct_map when the
+        // actor has zero state fields — `lower_hir_module` only pushes a
+        // `RecordLayout` for the actor name when `state_fields` is non-
+        // empty. Zero-state actors still need clone/drop bodies (Stage 2
+        // emits the setters unconditionally; the body is a trivial
+        // malloc/free pair).
+        let state_struct = record_struct_map.get(&actor.name).copied();
+        emit_actor_state_clone_body(
+            ctx,
+            llvm_mod,
+            &actor.name,
+            clone_sym,
+            state_struct,
+            kinds,
+            target_data,
+        )?;
+        emit_actor_state_drop_body(
+            ctx,
+            llvm_mod,
+            &actor.name,
+            drop_sym,
+            state_struct,
+            kinds,
+            target_data,
+        )?;
+    }
+    Ok(())
+}
+
+/// Emit `__hew_state_clone_<Actor>` body. See module-level comment block
+/// above for signature + drop-safety contract.
+///
+/// IR shape (illustrative, for a 2-field actor `{ i64; *mut HewString }`):
+///
+/// ```text
+/// define ptr @__hew_state_clone_Counter(ptr %src) {
+/// entry:
+///   %src_null = icmp eq ptr %src, null
+///   br i1 %src_null, label %ret_null, label %alloc
+/// alloc:
+///   %dst = call ptr @malloc(i64 SIZE)
+///   %dst_null = icmp eq ptr %dst, null
+///   br i1 %dst_null, label %ret_null, label %memcpy_wholesale
+/// memcpy_wholesale:
+///   call void @llvm.memcpy.p0.p0.i64(ptr %dst, ptr %src, i64 SIZE, i1 false)
+///   br label %field_1_clone     ; first NON-BitCopy field (skip BitCopy: field 0)
+/// field_1_clone:
+///   %src_f1_ptr = getelementptr S, ptr %src, i32 0, i32 1
+///   %src_f1 = load ptr, ptr %src_f1_ptr
+///   %f1_clone = call ptr @hew_string_clone(ptr %src_f1)
+///   %f1_null = icmp eq ptr %f1_clone, null
+///   br i1 %f1_null, label %rollback_before_f1, label %field_1_store
+/// field_1_store:
+///   %dst_f1_ptr = getelementptr S, ptr %dst, i32 0, i32 1
+///   store ptr %f1_clone, ptr %dst_f1_ptr
+///   br label %success
+/// success:
+///   ret ptr %dst
+/// rollback_before_f1:
+///   ; no successfully-cloned fields yet — just free the wrapper
+///   call void @free(ptr %dst)
+///   br label %ret_null
+/// ret_null:
+///   ret ptr null
+/// }
+/// ```
+///
+/// For Connection-bearing actors (any field is `IoHandle{Connection}`),
+/// the body is short-circuited to `ret ptr null` — see plan §4.5 B.
+fn emit_actor_state_clone_body<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    actor_name: &str,
+    clone_sym: &str,
+    state_struct: Option<StructType<'ctx>>,
+    kinds: &[StateFieldCloneKind],
+    target_data: Option<&TargetData>,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+
+    // The Stage 2 lookup may have already declared this symbol as an
+    // extern; we must reuse the existing FunctionValue and add a body
+    // to it (LLVM forbids two declarations of the same symbol).
+    let f = llvm_mod.get_function(clone_sym).unwrap_or_else(|| {
+        llvm_mod.add_function(
+            clone_sym,
+            ptr_ty.fn_type(&[ptr_ty.into()], false),
+            Some(Linkage::External),
+        )
+    });
+    if f.count_basic_blocks() > 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "state_clone synthesis: `{clone_sym}` already has a body — duplicate \
+             synthesis for actor `{actor_name}` is a substrate invariant violation"
+        )));
+    }
+
+    let builder = ctx.create_builder();
+    let entry_bb = ctx.append_basic_block(f, "entry");
+    let ret_null_bb = ctx.append_basic_block(f, "ret_null");
+    builder.position_at_end(entry_bb);
+    let src = f
+        .get_nth_param(0)
+        .expect("clone has 1 param")
+        .into_pointer_value();
+
+    // ── Connection fail-closed short-circuit (plan §4.5 B) ────────────
+    if has_connection_field(kinds) {
+        // Defence-in-depth: Stage 2's supervisor codegen-time gate is
+        // the primary fail-closed surface. The synthesised body here is
+        // only reachable from the direct-spawn path (where Connection
+        // byte-copy is move-semantic and the runtime never invokes the
+        // clone fn) or as a runtime fallback if a future caller bypasses
+        // the codegen gate. Returning null up front blocks the restart
+        // per `hew-runtime/src/actor.rs:766` C1 fix block.
+        builder
+            .build_return(Some(&ptr_ty.const_null()))
+            .map_err(|e| CodegenError::Llvm(format!("connection clone null ret: {e:?}")))?;
+        // Drop the unused ret_null_bb to keep the function well-formed.
+        unsafe { ret_null_bb.delete().expect("delete empty bb") };
+        return Ok(());
+    }
+
+    // Position ret_null block once — multiple incoming edges converge here.
+    let alloc_bb = ctx.append_basic_block(f, "alloc");
+    let src_null = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            builder
+                .build_ptr_to_int(src, i64_ty, "src_as_int")
+                .map_err(|e| CodegenError::Llvm(format!("clone src ptr_to_int: {e:?}")))?,
+            i64_ty.const_zero(),
+            "src_is_null",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("clone src null cmp: {e:?}")))?;
+    builder
+        .build_conditional_branch(src_null, ret_null_bb, alloc_bb)
+        .map_err(|e| CodegenError::Llvm(format!("clone src null branch: {e:?}")))?;
+
+    builder.position_at_end(alloc_bb);
+    let size_bytes = state_struct
+        .map(|st| struct_abi_size(st, target_data))
+        .unwrap_or(0);
+    let malloc_fn = get_or_declare_libc_malloc(ctx, llvm_mod);
+    let dst = builder
+        .build_call(
+            malloc_fn,
+            &[i64_ty.const_int(size_bytes, false).into()],
+            "state_wrapper",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("clone malloc: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("malloc returned void".into()))?
+        .into_pointer_value();
+    let dst_null = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            builder
+                .build_ptr_to_int(dst, i64_ty, "dst_as_int")
+                .map_err(|e| CodegenError::Llvm(format!("clone dst ptr_to_int: {e:?}")))?,
+            i64_ty.const_zero(),
+            "dst_is_null",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("clone dst null cmp: {e:?}")))?;
+    let memcpy_bb = ctx.append_basic_block(f, "memcpy_wholesale");
+    builder
+        .build_conditional_branch(dst_null, ret_null_bb, memcpy_bb)
+        .map_err(|e| CodegenError::Llvm(format!("clone dst null branch: {e:?}")))?;
+
+    builder.position_at_end(memcpy_bb);
+    // Wholesale memcpy: seeds BitCopy fields with correct values and
+    // owned-heap fields with byte-aliased pointers that the per-field
+    // loop overwrites. For zero-sized state, size_bytes=0 makes this a
+    // no-op (LLVM lowers it away).
+    if size_bytes > 0 {
+        builder
+            .build_memcpy(dst, 1, src, 1, i64_ty.const_int(size_bytes, false))
+            .map_err(|e| CodegenError::Llvm(format!("clone wholesale memcpy: {e:?}")))?;
+    }
+
+    // ── Per-field clone with reverse-order rollback chain ─────────────
+    //
+    // Layout: emit each non-BitCopy field in declaration order. Each
+    // field-store BB falls through to the next field's clone BB; on
+    // success (last field stored), branch to %success. On null return
+    // from any clone helper, branch to the rollback BB matching that
+    // field index. Each rollback BB drops successfully-cloned fields
+    // 0..k-1 in REVERSE order, then frees the wrapper and branches to
+    // ret_null. This LIFO discipline matches the per-field-alloc-fail
+    // expectation in plan §6 Stage 3 + reviewer P0 #3.
+    let st_ty = state_struct; // captured for GEPs below
+    let success_bb = ctx.append_basic_block(f, "success");
+
+    // Collect per-field metadata: (idx, kind, owns) for non-trivial fields.
+    // BitCopy fields are skipped — the wholesale memcpy is sufficient.
+    let mut field_steps: Vec<(u32, &StateFieldCloneKind)> = Vec::new();
+    for (idx, kind) in kinds.iter().enumerate() {
+        if !matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
+            field_steps.push((idx as u32, kind));
+        }
+    }
+
+    if field_steps.is_empty() {
+        // Trivial actor: wholesale memcpy IS the clone. Branch to
+        // success directly.
+        builder
+            .build_unconditional_branch(success_bb)
+            .map_err(|e| CodegenError::Llvm(format!("clone trivial branch: {e:?}")))?;
+    } else {
+        // Pre-create one rollback BB per field step (index k => drop
+        // fields 0..k-1 in reverse). The k=0 BB just frees the wrapper.
+        let rollback_bbs: Vec<_> = (0..field_steps.len())
+            .map(|k| ctx.append_basic_block(f, &format!("rollback_before_step_{k}")))
+            .collect();
+        let store_bbs: Vec<_> = (0..field_steps.len())
+            .map(|k| ctx.append_basic_block(f, &format!("field_step_{k}_store")))
+            .collect();
+        let clone_bbs: Vec<_> = (0..field_steps.len())
+            .map(|k| ctx.append_basic_block(f, &format!("field_step_{k}_clone")))
+            .collect();
+        // Branch from memcpy into the first clone BB.
+        builder
+            .build_unconditional_branch(clone_bbs[0])
+            .map_err(|e| CodegenError::Llvm(format!("clone first-step branch: {e:?}")))?;
+
+        for (step_idx, &(field_idx, kind)) in field_steps.iter().enumerate() {
+            builder.position_at_end(clone_bbs[step_idx]);
+            let next_bb = if step_idx + 1 < field_steps.len() {
+                clone_bbs[step_idx + 1]
+            } else {
+                success_bb
+            };
+            emit_field_clone_step(
+                ctx,
+                llvm_mod,
+                &builder,
+                st_ty,
+                src,
+                dst,
+                field_idx,
+                kind,
+                store_bbs[step_idx],
+                rollback_bbs[step_idx],
+                next_bb,
+            )?;
+        }
+
+        // Rollback BBs: drop already-cloned fields in reverse, free wrapper.
+        for (step_idx, rollback_bb) in rollback_bbs.iter().enumerate() {
+            builder.position_at_end(*rollback_bb);
+            // Drop fields field_steps[0..step_idx] in REVERSE.
+            for back_idx in (0..step_idx).rev() {
+                let (drop_field_idx, drop_kind) = field_steps[back_idx];
+                emit_field_drop_step(
+                    ctx,
+                    llvm_mod,
+                    &builder,
+                    st_ty,
+                    dst,
+                    drop_field_idx,
+                    drop_kind,
+                )?;
+            }
+            let free_fn = get_or_declare_libc_free(ctx, llvm_mod);
+            builder
+                .build_call(free_fn, &[dst.into()], "rollback_free_wrapper")
+                .map_err(|e| CodegenError::Llvm(format!("clone rollback free: {e:?}")))?;
+            builder
+                .build_unconditional_branch(ret_null_bb)
+                .map_err(|e| CodegenError::Llvm(format!("clone rollback branch: {e:?}")))?;
+        }
+    }
+
+    builder.position_at_end(success_bb);
+    builder
+        .build_return(Some(&dst))
+        .map_err(|e| CodegenError::Llvm(format!("clone success ret: {e:?}")))?;
+
+    builder.position_at_end(ret_null_bb);
+    builder
+        .build_return(Some(&ptr_ty.const_null()))
+        .map_err(|e| CodegenError::Llvm(format!("clone null ret: {e:?}")))?;
+
+    Ok(())
+}
+
+/// Emit one field's clone step. Reads `src.<field_idx>`, calls the helper,
+/// branches to `store_bb` on success (stores into `dst.<field_idx>` then
+/// falls through to `next_bb`) or to `rollback_bb` on helper-returned null.
+/// For UserRecord arms, calls the in-place record helper which writes
+/// directly into `dst.<field_idx>` and returns i32 (0 = success).
+/// For Bytes (refcount-bump), there is no failure path — the call is
+/// unconditional and falls through to `store_bb` (which is a fall-through
+/// label here, no actual store, then to `next_bb`).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "per-field clone-step lowering needs all five LLVM inputs (ctx, mod, \
+              builder, src ptr, dst ptr) plus three target BBs (store, rollback, \
+              next) plus the kind classification — splitting into a struct adds \
+              indirection without simplifying any caller, all of which already \
+              hold these values locally"
+)]
+fn emit_field_clone_step<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    st_ty: Option<StructType<'ctx>>,
+    src: PointerValue<'ctx>,
+    dst: PointerValue<'ctx>,
+    field_idx: u32,
+    kind: &StateFieldCloneKind,
+    store_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    rollback_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    next_bb: inkwell::basic_block::BasicBlock<'ctx>,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let st_ty = st_ty.ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "field_clone_step at field {field_idx}: state struct type missing — \
+             zero-state actors should have no field steps"
+        ))
+    })?;
+
+    match kind {
+        StateFieldCloneKind::UserRecord { name } => {
+            // In-place clone: helper writes into dst.<field_idx> directly.
+            // Result is i32; non-zero -> rollback (helper has already
+            // rolled back its own partial state per plan §6 Stage 3).
+            let helper = get_or_declare_record_clone_inplace(ctx, llvm_mod, name);
+            let src_field = builder
+                .build_struct_gep(st_ty, src, field_idx, &format!("src_f{field_idx}_ptr"))
+                .map_err(|e| CodegenError::Llvm(format!("clone src gep f{field_idx}: {e:?}")))?;
+            let dst_field = builder
+                .build_struct_gep(st_ty, dst, field_idx, &format!("dst_f{field_idx}_ptr"))
+                .map_err(|e| CodegenError::Llvm(format!("clone dst gep f{field_idx}: {e:?}")))?;
+            let call_site = builder
+                .build_call(
+                    helper,
+                    &[src_field.into(), dst_field.into()],
+                    &format!("record_clone_inplace_f{field_idx}"),
+                )
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("clone record helper call f{field_idx}: {e:?}"))
+                })?;
+            let rc = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "record clone helper returned void at f{field_idx}"
+                    ))
+                })?
+                .into_int_value();
+            let failed = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    rc,
+                    i32_ty.const_zero(),
+                    &format!("record_clone_failed_f{field_idx}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("record clone cmp f{field_idx}: {e:?}")))?;
+            // No separate store_bb work for UserRecord — the helper
+            // already wrote into dst. The "store_bb" here is just the
+            // path to next_bb. Wire it as the success edge.
+            builder
+                .build_conditional_branch(failed, rollback_bb, store_bb)
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("record clone branch f{field_idx}: {e:?}"))
+                })?;
+            builder.position_at_end(store_bb);
+            builder.build_unconditional_branch(next_bb).map_err(|e| {
+                CodegenError::Llvm(format!("record clone next branch f{field_idx}: {e:?}"))
+            })?;
+            return Ok(());
+        }
+        StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Connection,
+        } => {
+            // Should have been intercepted by has_connection_field at the
+            // actor-body level. Defensive fail-closed.
+            return Err(CodegenError::FailClosed(format!(
+                "field_clone_step reached Connection arm at f{field_idx}; actor \
+                 body must short-circuit to null up front per plan §4.5 B"
+            )));
+        }
+        _ => {}
+    }
+
+    let helper = clone_helper_for_kind(kind)?.ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "field_clone_step at f{field_idx}: BitCopy field should not have a \
+             clone step entry — caller should filter BitCopy out before reaching here"
+        ))
+    })?;
+
+    let src_field_ptr = builder
+        .build_struct_gep(st_ty, src, field_idx, &format!("src_f{field_idx}_ptr"))
+        .map_err(|e| CodegenError::Llvm(format!("clone src gep f{field_idx}: {e:?}")))?;
+    let src_field_val = builder
+        .build_load(ptr_ty, src_field_ptr, &format!("src_f{field_idx}"))
+        .map_err(|e| CodegenError::Llvm(format!("clone src load f{field_idx}: {e:?}")))?
+        .into_pointer_value();
+
+    let helper_fn = get_or_declare_clone_helper(ctx, llvm_mod, &helper);
+    match helper {
+        CloneHelper::RefcountBump { name: _ } => {
+            // Bytes refcount-bump on dst.<f> — the value at dst.<f> is
+            // byte-aliased to src.<f> after the wholesale memcpy; bumping
+            // through dst.<f> is equivalent to bumping through src.<f>.
+            // Pass the already-loaded src value (same pointer either way).
+            builder
+                .build_call(
+                    helper_fn,
+                    &[src_field_val.into()],
+                    &format!("bytes_clone_ref_f{field_idx}"),
+                )
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("bytes refcount bump f{field_idx}: {e:?}"))
+                })?;
+            // No failure path — refcount bump is infallible.
+            builder.build_unconditional_branch(store_bb).map_err(|e| {
+                CodegenError::Llvm(format!("bytes clone fallthrough f{field_idx}: {e:?}"))
+            })?;
+            builder.position_at_end(store_bb);
+            builder.build_unconditional_branch(next_bb).map_err(|e| {
+                CodegenError::Llvm(format!("bytes clone next branch f{field_idx}: {e:?}"))
+            })?;
+        }
+        CloneHelper::Allocating { name: _ } => {
+            let call_site = builder
+                .build_call(
+                    helper_fn,
+                    &[src_field_val.into()],
+                    &format!("clone_helper_f{field_idx}"),
+                )
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("clone helper call f{field_idx}: {e:?}"))
+                })?;
+            let cloned = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "allocating clone helper returned void at f{field_idx}"
+                    ))
+                })?
+                .into_pointer_value();
+            let i64_ty = ctx.i64_type();
+            let cloned_null = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    builder
+                        .build_ptr_to_int(cloned, i64_ty, &format!("cloned_f{field_idx}_int"))
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("clone ptr_to_int f{field_idx}: {e:?}"))
+                        })?,
+                    i64_ty.const_zero(),
+                    &format!("cloned_f{field_idx}_null"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("clone null cmp f{field_idx}: {e:?}")))?;
+            builder
+                .build_conditional_branch(cloned_null, rollback_bb, store_bb)
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("clone null branch f{field_idx}: {e:?}"))
+                })?;
+            builder.position_at_end(store_bb);
+            let dst_field_ptr = builder
+                .build_struct_gep(st_ty, dst, field_idx, &format!("dst_f{field_idx}_ptr"))
+                .map_err(|e| CodegenError::Llvm(format!("clone dst gep f{field_idx}: {e:?}")))?;
+            builder
+                .build_store(dst_field_ptr, cloned)
+                .map_err(|e| CodegenError::Llvm(format!("clone dst store f{field_idx}: {e:?}")))?;
+            builder.build_unconditional_branch(next_bb).map_err(|e| {
+                CodegenError::Llvm(format!("clone next branch f{field_idx}: {e:?}"))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Emit one field's drop step (used by both per-actor and per-record drop
+/// bodies, AND by per-actor clone's rollback chain). Reads
+/// `state.<field_idx>` and invokes the matching runtime drop helper or
+/// the synthesised in-place record-drop helper. BitCopy / Connection
+/// fields are no-ops (caller filters them out, but this helper is
+/// defensive).
+fn emit_field_drop_step<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    st_ty: Option<StructType<'ctx>>,
+    state: PointerValue<'ctx>,
+    field_idx: u32,
+    kind: &StateFieldCloneKind,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let st_ty = st_ty.ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "field_drop_step at field {field_idx}: state struct type missing"
+        ))
+    })?;
+    match kind {
+        StateFieldCloneKind::BitCopy { .. } => Ok(()),
+        StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Connection,
+        } => Ok(()),
+        StateFieldCloneKind::UserRecord { name } => {
+            let helper = get_or_declare_record_drop_inplace(ctx, llvm_mod, name);
+            let field_ptr = builder
+                .build_struct_gep(st_ty, state, field_idx, &format!("drop_f{field_idx}_ptr"))
+                .map_err(|e| CodegenError::Llvm(format!("drop record gep f{field_idx}: {e:?}")))?;
+            builder
+                .build_call(
+                    helper,
+                    &[field_ptr.into()],
+                    &format!("drop_record_f{field_idx}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("drop record call f{field_idx}: {e:?}")))?;
+            Ok(())
+        }
+        _ => {
+            let helper = drop_helper_for_kind(kind)?.ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "field_drop_step at f{field_idx}: kind missing drop helper"
+                ))
+            })?;
+            let helper_fn = get_or_declare_drop_helper(ctx, llvm_mod, &helper);
+            let field_ptr = builder
+                .build_struct_gep(st_ty, state, field_idx, &format!("drop_f{field_idx}_ptr"))
+                .map_err(|e| CodegenError::Llvm(format!("drop gep f{field_idx}: {e:?}")))?;
+            let val = builder
+                .build_load(ptr_ty, field_ptr, &format!("drop_f{field_idx}"))
+                .map_err(|e| CodegenError::Llvm(format!("drop load f{field_idx}: {e:?}")))?
+                .into_pointer_value();
+            builder
+                .build_call(
+                    helper_fn,
+                    &[val.into()],
+                    &format!("drop_helper_f{field_idx}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("drop helper call f{field_idx}: {e:?}")))?;
+            Ok(())
+        }
+    }
+}
+
+/// Emit `__hew_state_drop_<Actor>` body. Reverse-order drops every non-
+/// BitCopy field, then `free(state)`. Null-tolerant entry guard.
+/// Idempotent against double-call (the wrapper free races are guarded
+/// by the runtime's `terminate_called` single-fire bit at
+/// `hew-runtime/src/actor.rs:786-791`).
+fn emit_actor_state_drop_body<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    actor_name: &str,
+    drop_sym: &str,
+    state_struct: Option<StructType<'ctx>>,
+    kinds: &[StateFieldCloneKind],
+    _target_data: Option<&TargetData>,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+
+    let f = llvm_mod.get_function(drop_sym).unwrap_or_else(|| {
+        llvm_mod.add_function(
+            drop_sym,
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            Some(Linkage::External),
+        )
+    });
+    if f.count_basic_blocks() > 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "state_drop synthesis: `{drop_sym}` already has a body — duplicate \
+             synthesis for actor `{actor_name}` is a substrate invariant violation"
+        )));
+    }
+    let builder = ctx.create_builder();
+    let entry_bb = ctx.append_basic_block(f, "entry");
+    let do_drop_bb = ctx.append_basic_block(f, "do_drop");
+    let done_bb = ctx.append_basic_block(f, "done");
+
+    builder.position_at_end(entry_bb);
+    let state = f
+        .get_nth_param(0)
+        .expect("drop has 1 param")
+        .into_pointer_value();
+    let is_null = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            builder
+                .build_ptr_to_int(state, i64_ty, "state_int")
+                .map_err(|e| CodegenError::Llvm(format!("drop ptr_to_int: {e:?}")))?,
+            i64_ty.const_zero(),
+            "state_is_null",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("drop null cmp: {e:?}")))?;
+    builder
+        .build_conditional_branch(is_null, done_bb, do_drop_bb)
+        .map_err(|e| CodegenError::Llvm(format!("drop null branch: {e:?}")))?;
+
+    builder.position_at_end(do_drop_bb);
+    // Reverse-order LIFO drop of non-BitCopy fields.
+    for (idx, kind) in kinds.iter().enumerate().rev() {
+        if matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
+            continue;
+        }
+        // Connection arm is no-op at drop (see plan §4.5 B + actor.rs:766).
+        if matches!(
+            kind,
+            StateFieldCloneKind::IoHandle {
+                kind: IoHandleKind::Connection
+            }
+        ) {
+            continue;
+        }
+        emit_field_drop_step(
+            ctx,
+            llvm_mod,
+            &builder,
+            state_struct,
+            state,
+            idx as u32,
+            kind,
+        )?;
+    }
+    let free_fn = get_or_declare_libc_free(ctx, llvm_mod);
+    builder
+        .build_call(free_fn, &[state.into()], "free_wrapper")
+        .map_err(|e| CodegenError::Llvm(format!("drop free wrapper: {e:?}")))?;
+    builder
+        .build_unconditional_branch(done_bb)
+        .map_err(|e| CodegenError::Llvm(format!("drop done branch: {e:?}")))?;
+
+    builder.position_at_end(done_bb);
+    builder
+        .build_return(None)
+        .map_err(|e| CodegenError::Llvm(format!("drop ret: {e:?}")))?;
+    Ok(())
+}
+
+/// Emit `__hew_record_clone_inplace_<Record>(*const, *mut) -> i32` body.
+/// Same per-field rollback semantics as the actor clone body, but:
+/// - No wrapper allocation; caller passes already-allocated `dst`.
+/// - Caller must have memcpy'd `dst <- src` first (the actor-clone body
+///   does this as part of its wholesale memcpy at step 3; if a future
+///   caller invokes this helper without the memcpy precondition, BitCopy
+///   fields will be wrong but no UB occurs).
+/// - Returns 0 on success, 1 on partial-clone rollback.
+fn emit_record_clone_inplace_body<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    record_name: &str,
+    record_struct: StructType<'ctx>,
+    kinds: &[StateFieldCloneKind],
+) -> CodegenResult<()> {
+    let f = get_or_declare_record_clone_inplace(ctx, llvm_mod, record_name);
+    if f.count_basic_blocks() > 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "record clone synthesis: `__hew_record_clone_inplace_{record_name}` \
+             already has a body — duplicate synthesis is a substrate invariant violation"
+        )));
+    }
+    let i32_ty = ctx.i32_type();
+    let builder = ctx.create_builder();
+    let entry_bb = ctx.append_basic_block(f, "entry");
+    let success_bb = ctx.append_basic_block(f, "success");
+    let fail_bb = ctx.append_basic_block(f, "fail");
+
+    builder.position_at_end(entry_bb);
+    let src = f
+        .get_nth_param(0)
+        .expect("record clone src")
+        .into_pointer_value();
+    let dst = f
+        .get_nth_param(1)
+        .expect("record clone dst")
+        .into_pointer_value();
+
+    // Same per-field step pattern as the actor body.
+    let mut field_steps: Vec<(u32, &StateFieldCloneKind)> = Vec::new();
+    for (idx, kind) in kinds.iter().enumerate() {
+        if !matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
+            field_steps.push((idx as u32, kind));
+        }
+    }
+    if field_steps.is_empty() {
+        builder
+            .build_unconditional_branch(success_bb)
+            .map_err(|e| CodegenError::Llvm(format!("record clone trivial: {e:?}")))?;
+    } else {
+        let rollback_bbs: Vec<_> = (0..field_steps.len())
+            .map(|k| ctx.append_basic_block(f, &format!("rb_step_{k}")))
+            .collect();
+        let store_bbs: Vec<_> = (0..field_steps.len())
+            .map(|k| ctx.append_basic_block(f, &format!("step_{k}_store")))
+            .collect();
+        let clone_bbs: Vec<_> = (0..field_steps.len())
+            .map(|k| ctx.append_basic_block(f, &format!("step_{k}_clone")))
+            .collect();
+        builder
+            .build_unconditional_branch(clone_bbs[0])
+            .map_err(|e| CodegenError::Llvm(format!("record clone first branch: {e:?}")))?;
+        for (step_idx, &(field_idx, kind)) in field_steps.iter().enumerate() {
+            builder.position_at_end(clone_bbs[step_idx]);
+            let next_bb = if step_idx + 1 < field_steps.len() {
+                clone_bbs[step_idx + 1]
+            } else {
+                success_bb
+            };
+            emit_field_clone_step(
+                ctx,
+                llvm_mod,
+                &builder,
+                Some(record_struct),
+                src,
+                dst,
+                field_idx,
+                kind,
+                store_bbs[step_idx],
+                rollback_bbs[step_idx],
+                next_bb,
+            )?;
+        }
+        for (step_idx, rollback_bb) in rollback_bbs.iter().enumerate() {
+            builder.position_at_end(*rollback_bb);
+            for back_idx in (0..step_idx).rev() {
+                let (drop_field_idx, drop_kind) = field_steps[back_idx];
+                emit_field_drop_step(
+                    ctx,
+                    llvm_mod,
+                    &builder,
+                    Some(record_struct),
+                    dst,
+                    drop_field_idx,
+                    drop_kind,
+                )?;
+            }
+            // No wrapper free here — record is embedded.
+            builder
+                .build_unconditional_branch(fail_bb)
+                .map_err(|e| CodegenError::Llvm(format!("record clone rb branch: {e:?}")))?;
+        }
+    }
+    builder.position_at_end(success_bb);
+    builder
+        .build_return(Some(&i32_ty.const_zero()))
+        .map_err(|e| CodegenError::Llvm(format!("record clone success ret: {e:?}")))?;
+    builder.position_at_end(fail_bb);
+    builder
+        .build_return(Some(&i32_ty.const_int(1, false)))
+        .map_err(|e| CodegenError::Llvm(format!("record clone fail ret: {e:?}")))?;
+    Ok(())
+}
+
+/// Emit `__hew_record_drop_inplace_<Record>(*mut)` body. Reverse-order
+/// drops non-BitCopy fields. Does NOT free the wrapper (records are
+/// embedded in their parent struct).
+fn emit_record_drop_inplace_body<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    record_name: &str,
+    record_struct: StructType<'ctx>,
+    kinds: &[StateFieldCloneKind],
+) -> CodegenResult<()> {
+    let f = get_or_declare_record_drop_inplace(ctx, llvm_mod, record_name);
+    if f.count_basic_blocks() > 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "record drop synthesis: `__hew_record_drop_inplace_{record_name}` \
+             already has a body — duplicate synthesis is a substrate invariant violation"
+        )));
+    }
+    let i64_ty = ctx.i64_type();
+    let builder = ctx.create_builder();
+    let entry_bb = ctx.append_basic_block(f, "entry");
+    let do_drop_bb = ctx.append_basic_block(f, "do_drop");
+    let done_bb = ctx.append_basic_block(f, "done");
+
+    builder.position_at_end(entry_bb);
+    let state = f
+        .get_nth_param(0)
+        .expect("record drop param")
+        .into_pointer_value();
+    let is_null = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            builder
+                .build_ptr_to_int(state, i64_ty, "rec_int")
+                .map_err(|e| CodegenError::Llvm(format!("record drop ptr_to_int: {e:?}")))?,
+            i64_ty.const_zero(),
+            "rec_is_null",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("record drop null cmp: {e:?}")))?;
+    builder
+        .build_conditional_branch(is_null, done_bb, do_drop_bb)
+        .map_err(|e| CodegenError::Llvm(format!("record drop null branch: {e:?}")))?;
+
+    builder.position_at_end(do_drop_bb);
+    for (idx, kind) in kinds.iter().enumerate().rev() {
+        if matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
+            continue;
+        }
+        if matches!(
+            kind,
+            StateFieldCloneKind::IoHandle {
+                kind: IoHandleKind::Connection
+            }
+        ) {
+            continue;
+        }
+        emit_field_drop_step(
+            ctx,
+            llvm_mod,
+            &builder,
+            Some(record_struct),
+            state,
+            idx as u32,
+            kind,
+        )?;
+    }
+    builder
+        .build_unconditional_branch(done_bb)
+        .map_err(|e| CodegenError::Llvm(format!("record drop done branch: {e:?}")))?;
+
+    builder.position_at_end(done_bb);
+    builder
+        .build_return(None)
+        .map_err(|e| CodegenError::Llvm(format!("record drop ret: {e:?}")))?;
+    Ok(())
+}
+
+/// True if any field in `kinds` is `IoHandle { Connection }`. Drives the
+/// actor-clone short-circuit (return null up front).
+fn has_connection_field(kinds: &[StateFieldCloneKind]) -> bool {
+    kinds.iter().any(|k| {
+        matches!(
+            k,
+            StateFieldCloneKind::IoHandle {
+                kind: IoHandleKind::Connection
+            }
+        )
+    })
 }
 
 fn emit_actor_spawn_lifecycle<'ctx>(
@@ -10748,6 +12325,22 @@ fn build_module_for_target<'ctx>(
             emit_actor_terminate_trampoline(ctx, &llvm_mod, actor, &fn_symbols)?;
         }
     }
+    // W2.002 Stage 3: synthesise `__hew_state_clone_<Actor>` /
+    // `__hew_state_drop_<Actor>` + companion `__hew_record_*_inplace_<R>`
+    // BODIES for every classified actor in `pipeline.actor_layouts`.
+    // Must run BEFORE supervisor bootstrap emission so the
+    // `get_function`-or-declare lookup at Stage 2's supervisor-child
+    // registration sites (and at every direct-spawn emission site)
+    // resolves to the synthesised `define`, not a Stage 2 extern-stub
+    // that would only surface at link time.
+    emit_state_clone_drop_synthesis(
+        ctx,
+        &llvm_mod,
+        &pipeline.actor_layouts,
+        &pipeline.record_layouts,
+        &record_layouts,
+        target_data.as_ref(),
+    )?;
     // Supervisor bootstraps replace the MIR-side synthesised body wholesale
     // with the canonical `hew_supervisor_new` → `add_child_spec` × N →
     // `start` call sequence (S-D.3). The set of bootstrap symbols is
@@ -10759,7 +12352,7 @@ fn build_module_for_target<'ctx>(
         .map(|s| s.bootstrap_symbol.clone())
         .collect();
     for sup in &pipeline.supervisor_layouts {
-        emit_supervisor_bootstrap_body(ctx, &llvm_mod, sup, &fn_symbols)?;
+        emit_supervisor_bootstrap_body(ctx, &llvm_mod, sup, &fn_symbols, &pipeline.actor_layouts)?;
     }
     for func in &pipeline.raw_mir {
         if supervisor_bootstrap_symbols.contains(&func.name) {

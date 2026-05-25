@@ -149,6 +149,7 @@ fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
         coalesce_key_fn: None,
         terminate_fn: None,
         state_drop_fn: None,
+        state_clone_fn: None,
         terminate_called: AtomicBool::new(false),
         terminate_finished: AtomicBool::new(false),
         error_code: AtomicI32::new(0),

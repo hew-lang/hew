@@ -91,6 +91,7 @@ pub struct HewActor {
     pub coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
     pub terminate_fn: Option<unsafe extern "C" fn(*mut c_void)>,
     pub state_drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub state_clone_fn: Option<crate::actor::HewStateCloneFn>,
     pub terminate_called: AtomicBool,
     pub terminate_finished: AtomicBool,
     pub error_code: AtomicI32,
@@ -145,6 +146,7 @@ const _: () = {
     assert!(offset_of!(W, coalesce_key_fn) == offset_of!(N, coalesce_key_fn));
     assert!(offset_of!(W, terminate_fn) == offset_of!(N, terminate_fn));
     assert!(offset_of!(W, state_drop_fn) == offset_of!(N, state_drop_fn));
+    assert!(offset_of!(W, state_clone_fn) == offset_of!(N, state_clone_fn));
     assert!(offset_of!(W, terminate_called) == offset_of!(N, terminate_called));
     assert!(offset_of!(W, terminate_finished) == offset_of!(N, terminate_finished));
     assert!(offset_of!(W, error_code) == offset_of!(N, error_code));
@@ -1565,6 +1567,7 @@ mod tests {
             coalesce_key_fn: None,
             terminate_fn: None,
             state_drop_fn: None,
+            state_clone_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
@@ -4017,6 +4020,7 @@ mod tests {
             coalesce_key_fn: None,
             terminate_fn: None,
             state_drop_fn: None,
+            state_clone_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
             error_code: AtomicI32::new(0),

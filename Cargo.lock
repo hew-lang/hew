@@ -1650,6 +1650,7 @@ version = "0.5.0-pre"
 dependencies = [
  "dashmap 6.1.0",
  "hew-analysis",
+ "hew-hir",
  "hew-lexer",
  "hew-parser",
  "hew-types",

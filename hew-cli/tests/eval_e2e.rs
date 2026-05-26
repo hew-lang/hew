@@ -2087,6 +2087,12 @@ fn eval_repl_jit_worker_flag_accepted_by_clap() {
 /// `Stmt::Match` lowering arm so statement-position `match` reaches the
 /// match builder. We run the program end-to-end (not just inspect IR) and
 /// assert the byte-level stdout so codegen runs the right branch per match.
+///
+/// NOTE: This test originally used `Result<i64, string>` to exercise both
+/// Ok/Err arms. After the composite-return fail-closed boundary landed
+/// (W3.028), `Result<i64, string>` is rejected because `string` is
+/// heap-owning. The test now uses `Result<i64, i64>` and exercises the same
+/// ctor + match dispatch logic without hitting the boundary.
 #[test]
 fn run_result_ok_err_ctors_and_match_arms_dispatch_per_variant() {
     require_codegen();
@@ -2095,11 +2101,11 @@ fn run_result_ok_err_ctors_and_match_arms_dispatch_per_variant() {
     let hew_src = dir.path().join("result_match.hew");
     std::fs::write(
         &hew_src,
-        "fn parse_positive(n: i64) -> Result<i64, string> {\n\
+        "fn parse_positive(n: i64) -> Result<i64, i64> {\n\
          \x20   if n == 42 {\n\
          \x20       Ok(42)\n\
          \x20   } else {\n\
-         \x20       Err(\"not the answer\")\n\
+         \x20       Err(0)\n\
          \x20   }\n\
          }\n\
          \n\
@@ -2108,11 +2114,11 @@ fn run_result_ok_err_ctors_and_match_arms_dispatch_per_variant() {
          \x20   let r2 = parse_positive(7);\n\
          \x20   match r1 {\n\
          \x20       Ok(n) => println(n),\n\
-         \x20       Err(_) => println(0),\n\
+         \x20       Err(e) => println(e),\n\
          \x20   }\n\
          \x20   match r2 {\n\
          \x20       Ok(n) => println(n),\n\
-         \x20       Err(msg) => println(msg),\n\
+         \x20       Err(e) => println(e),\n\
          \x20   }\n\
          }\n",
     )
@@ -2131,10 +2137,7 @@ fn run_result_ok_err_ctors_and_match_arms_dispatch_per_variant() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "42\nnot the answer\n",
-    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n0\n",);
 }
 
 /// Negative probe: matching an `Option<T>` pattern (`Some` / `None`) against

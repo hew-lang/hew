@@ -1,0 +1,29 @@
+// Accept: user functions returning Result<i64, i64> Ok and Err variants.
+// Exercises two-type-parameter generic enum composite return.
+// Exit 106 = Ok(7) + Err(99) proves both arms dispatch correctly.
+enum Result<T, E> {
+    Ok(T);
+    Err(E);
+}
+
+fn success() -> Result<i64, i64> {
+    Result::Ok(7)
+}
+
+fn failure() -> Result<i64, i64> {
+    Result::Err(99)
+}
+
+fn main() -> i64 {
+    let a = success();
+    let b = failure();
+    let x = match a {
+        Result::Ok(v) => v,
+        Result::Err(e) => e,
+    };
+    let y = match b {
+        Result::Ok(v) => v,
+        Result::Err(e) => e,
+    };
+    x + y
+}

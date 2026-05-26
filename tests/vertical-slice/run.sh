@@ -607,6 +607,41 @@ run_accept_expect_status "generic_enum_result_ok" 7
 run_accept_expect_status "generic_enum_nested_option" 5
 
 # ---------------------------------------------------------------------------
+# W3.028 Stage 1 — Composite-return spine: user functions returning enums
+# ---------------------------------------------------------------------------
+
+# Accept: fn maybe() -> Option<i64> { Some(42) } — aggregate return via ReturnSlot.
+# Exit 42 proves the caller received the composite and destructured the Some payload.
+run_accept_expect_status "composite_return_option_some" 42
+
+# Accept: fn nothing() -> Option<i64> { None } — unit variant composite return.
+# Exit 99 proves the None arm matched in the caller.
+run_accept_expect_status "composite_return_option_none" 99
+
+# Accept: Result<i64, i64> Ok(7) + Err(99) — two-type-parameter composite return.
+# Exit 106 proves both Ok and Err variants return and destructure correctly.
+run_accept_expect_status "composite_return_result" 106
+
+# Reject: Option<string> composite return — heap-owning payload rejected at codegen.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/composite_return_heap_owning.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected composite_return_heap_owning fixture to fail" >&2
+  exit 1
+fi
+grep -q 'composite return of heap-owning payload' "${reject_output}"
+
+# WASM: composite return for Option<i64> compiles to wasm32.
+"${HEW}" compile --target wasm32-unknown-unknown \
+    "${ROOT}/tests/vertical-slice/accept/composite_return_option_some.hew" \
+    >"${accept_output}" 2>&1
+
+# WASM: composite return for Result<i64, i64> compiles to wasm32.
+"${HEW}" compile --target wasm32-unknown-unknown \
+    "${ROOT}/tests/vertical-slice/accept/composite_return_result.hew" \
+    >"${accept_output}" 2>&1
+
+# ---------------------------------------------------------------------------
 # RemotePid<T>::tell — in-place Result<(), SendError> construction gate
 # ---------------------------------------------------------------------------
 

@@ -543,6 +543,9 @@ struct FnCtx<'a, 'ctx> {
     /// resolve a machine-typed local's slot to its outer LLVM struct,
     /// per-variant inner structs, and tag integer width.
     machine_layouts: &'a MachineLayoutMap<'ctx>,
+    /// Module-wide enum layout descriptors. Used by the heap-owning
+    /// composite return boundary check to inspect variant field types.
+    enum_layouts: &'a [EnumLayout],
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
@@ -1828,6 +1831,79 @@ fn machine_layout_for_local<'a, 'ctx>(
 
 fn short_name(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(_, short)| short)
+}
+
+/// Returns `true` if the given `ResolvedTy` (or any type reachable through
+/// its generic arguments or enum variant field types) contains a heap-owning
+/// type such as `string` or `Bytes`.
+///
+/// Used by the composite-return fail-closed boundary: returning an aggregate
+/// value whose payload owns heap memory requires tag-aware drop to prevent
+/// double-free or leak. Until that infrastructure lands, codegen rejects
+/// such returns at compile time.
+///
+/// ## Coverage
+///
+/// Two independent paths may trigger a heap-owning result:
+///
+/// 1. **Type arguments** — `Option<string>`, `Result<i64, string>`. Caught by
+///    the `args` walk first; returns early.
+/// 2. **Non-param variant fields** — a generic enum whose type args are all
+///    bitcopy but a separate variant carries a concrete `string` field, e.g.
+///    `Envelope<i64>` where `enum Envelope<T> { Data(T), Message(string) }`.
+///    Caught by inspecting the monomorphised `EnumLayout` regardless of
+///    whether `args` is empty.
+///
+/// Layout lookup uses the same mangling scheme as `register_enum_layouts`:
+/// - Non-generic (args empty): bare name or `short_name` fallback.
+/// - Generic (args non-empty): `mangle(short_name, args)` → e.g. `Envelope$$i64`.
+fn ty_contains_heap_owning(ty: &ResolvedTy, enum_layouts: &[EnumLayout]) -> bool {
+    match ty {
+        ResolvedTy::String | ResolvedTy::Bytes => true,
+        ResolvedTy::Named { name, args, .. } => {
+            // 1. Check type arguments first (fast path: Option<string>, etc.)
+            if args
+                .iter()
+                .any(|arg| ty_contains_heap_owning(arg, enum_layouts))
+            {
+                return true;
+            }
+            // 2. Inspect the enum layout's variant field types directly.
+            //    This covers non-param heap-owning fields in generic enums
+            //    (e.g. `Envelope<i64>` where `Message(string)` is unrelated
+            //    to the type parameter `T`).
+            //    Layout names follow the monomorphisation scheme registered
+            //    by `register_enum_layouts`:
+            //    - args empty:     bare name or short_name match
+            //    - args non-empty: mangle(short_name, args) → "Envelope$$i64"
+            let short = short_name(name);
+            let found = if args.is_empty() {
+                enum_layouts
+                    .iter()
+                    .find(|el| el.name == *name || short_name(&el.name) == short)
+            } else {
+                let mangled = mangle(short, args);
+                enum_layouts
+                    .iter()
+                    .find(|el| el.name == mangled || el.name == *name)
+            };
+            if let Some(layout) = found {
+                return layout.variants.iter().any(|v| {
+                    v.field_tys
+                        .iter()
+                        .any(|ft| ty_contains_heap_owning(ft, enum_layouts))
+                });
+            }
+            false
+        }
+        ResolvedTy::Tuple(elems) => elems
+            .iter()
+            .any(|e| ty_contains_heap_owning(e, enum_layouts)),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            ty_contains_heap_owning(inner, enum_layouts)
+        }
+        _ => false,
+    }
 }
 
 /// Resolve any `ResolvedTy` to its LLVM `BasicTypeEnum`, consulting the
@@ -11946,6 +12022,7 @@ fn lower_function<'ctx>(
     record_layouts: &RecordLayoutMap<'ctx>,
     actor_layouts: &[ActorLayout],
     machine_layouts: &MachineLayoutMap<'ctx>,
+    enum_layouts: &[EnumLayout],
 ) -> CodegenResult<()> {
     let symbol = *fn_symbols.get(&func.name).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -12073,7 +12150,23 @@ fn lower_function<'ctx>(
         fn_symbols,
         actor_layouts,
         machine_layouts,
+        enum_layouts,
     };
+
+    // Fail-closed boundary: reject composite returns containing heap-owning
+    // payloads. Without tag-aware drop, returning e.g. Option<string> could
+    // leak or double-free the owned allocation. Bitcopy-only payloads (i64,
+    // f64, bool, etc.) are safe because they carry no ownership semantics.
+    if matches!(return_ty_llvm, BasicTypeEnum::StructType(_))
+        && ty_contains_heap_owning(&func.return_ty, fn_ctx.enum_layouts)
+    {
+        return Err(CodegenError::FailClosed(format!(
+            "composite return of heap-owning payload `{}` requires tag-aware \
+             drop (not yet implemented); use bitcopy-only payloads (i64, f64, \
+             bool, ()) or restructure to avoid returning owned values directly",
+            func.return_ty,
+        )));
+    }
 
     // Extract drop_plans from the matched elaborated function, or use an
     // empty slice when no elaborated function is available (hand-built test
@@ -12593,6 +12686,7 @@ fn build_module_for_target<'ctx>(
             &record_layouts,
             &pipeline.actor_layouts,
             &machine_layouts,
+            &pipeline.enum_layouts,
         )?;
     }
     // Emit regex module-init infrastructure if the module uses any regex literals.
@@ -14488,6 +14582,7 @@ mod tests {
             fn_symbols: &harness.fn_symbols,
             actor_layouts: &harness.actor_layouts,
             machine_layouts: &harness.machine_layouts,
+            enum_layouts: &[],
         }
     }
 

@@ -178,7 +178,8 @@ impl Verifier {
             }
             HirExprKind::ActorSend { receiver, args, .. }
             | HirExprKind::ActorAsk { receiver, args, .. }
-            | HirExprKind::CallDynMethod { receiver, args, .. } => {
+            | HirExprKind::CallDynMethod { receiver, args, .. }
+            | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
                 self.expr(receiver);
                 for arg in args {
                     self.expr(arg);

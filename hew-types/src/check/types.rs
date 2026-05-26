@@ -875,6 +875,25 @@ pub enum MethodCallRewrite {
         elem_ty: Option<crate::resolved_ty::ResolvedTy>,
     },
     DeferToLowering,
+    /// Static trait dispatch: the method was resolved from the bounds on a
+    /// generic type parameter. HIR emits `CallTraitMethodStatic`; MIR
+    /// resolves the concrete callee at monomorphization time.
+    StaticTraitDispatch {
+        /// The type-parameter name on the enclosing function that carries the bound
+        /// (e.g. "T" in `fn foo<T: Show>(x: T)`). Used by MIR to look up the
+        /// concrete type from the monomorphization substitution map.
+        receiver_type_param: String,
+        /// The bound on the type parameter through which the method was reached
+        /// (e.g. "B" in `T: B` where `trait B: A`). Used for error messages and
+        /// for impl lookup when bound != declaring.
+        bound_trait: String,
+        /// The trait that directly declares the method in its `trait_defs` entry.
+        /// If method is inherited, `declaring_trait` != `bound_trait`.
+        /// Used as the canonical identity for impl resolution.
+        declaring_trait: String,
+        /// Method identity within the trait.
+        method_name: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

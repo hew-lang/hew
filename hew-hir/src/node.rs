@@ -1027,6 +1027,28 @@ pub enum HirExprKind {
         args: Vec<HirExpr>,
         ret_ty: ResolvedTy,
     },
+    /// Static trait dispatch: the method was resolved at type-check time from
+    /// trait bounds on a generic type parameter. Unlike `CallDynMethod` (vtable
+    /// dispatch), this resolves to a direct call after monomorphization — the
+    /// concrete impl function is determined from the substituted receiver type.
+    ///
+    /// Produced from `MethodCallRewrite::StaticTraitDispatch`. MIR lowering
+    /// substitutes `receiver_type_param` via the monomorphization map, looks up
+    /// the impl method via `(concrete_receiver_ty, declaring_trait, method_name)`,
+    /// and emits an ordinary `Terminator::Call`.
+    CallTraitMethodStatic {
+        receiver: Box<HirExpr>,
+        /// Type-parameter name that carries the bound (e.g. "T").
+        receiver_type_param: String,
+        /// The bound trait through which the method was reached.
+        bound_trait: String,
+        /// The trait that directly declares the method (canonical identity for impl lookup).
+        declaring_trait: String,
+        /// Method name within the declaring trait.
+        method_name: String,
+        args: Vec<HirExpr>,
+        ret_ty: ResolvedTy,
+    },
     /// Checker-authoritative integer opt-out method call:
     /// `.wrapping_*`, `.checked_*`, or `.saturating_*` for add/sub/mul.
     ///

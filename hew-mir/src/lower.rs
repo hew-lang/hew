@@ -3013,7 +3013,8 @@ fn collect_unknown_self_fields_in_expr(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
-        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+        | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
             for arg in args {
                 collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
@@ -3876,6 +3877,20 @@ impl Builder {
         }
         hew_hir::lower::substitute_ty(ty, &self.subst)
     }
+
+    /// For a concrete receiver type, extract the type args from generic params.
+    ///
+    /// Example: `Wrapper<i64>::show` where `impl<U> Show for Wrapper<U>` →
+    /// returns `vec![ResolvedTy::I64]`.
+    ///
+    /// Returns empty vec if the receiver is not a generic named type.
+    fn impl_method_type_args_for(concrete_ty: &ResolvedTy) -> Vec<ResolvedTy> {
+        match concrete_ty {
+            ResolvedTy::Named { args, .. } if !args.is_empty() => args.clone(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Allocate one `Place::Local` per function parameter and register each
     /// in `binding_locals` so that `BindingRef` expressions in the function
     /// body resolve to a real slot.
@@ -4974,6 +4989,118 @@ impl Builder {
                     args: lowered_args,
                 });
                 dest
+            }
+            HirExprKind::CallTraitMethodStatic {
+                receiver,
+                receiver_type_param,
+                declaring_trait,
+                method_name,
+                args,
+                ret_ty,
+                ..
+            } => {
+                // Static trait dispatch: resolve the concrete callee from the
+                // monomorphization substitution map. The receiver_type_param
+                // is substituted to determine the concrete receiver type, then
+                // the impl method symbol is looked up as `<ConcreteType>::<method>`.
+                //
+                // If substitution hasn't resolved the type param (e.g. this
+                // function body is being lowered as the unspecialised origin),
+                // fail-closed with a diagnostic.
+                let concrete_receiver_name = self.subst.get(receiver_type_param).cloned();
+                let resolved_ret_ty = self.subst_ty(ret_ty);
+                if let Some(concrete_ty) = concrete_receiver_name {
+                    // Derive the type name for impl lookup.
+                    let type_name = match &concrete_ty {
+                        ResolvedTy::Named { name, .. } => name.clone(),
+                        ResolvedTy::I64 => "i64".to_string(),
+                        ResolvedTy::F64 => "f64".to_string(),
+                        ResolvedTy::Bool => "bool".to_string(),
+                        ResolvedTy::String => "string".to_string(),
+                        ResolvedTy::Bytes => "bytes".to_string(),
+                        other => {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "static trait dispatch on receiver type `{other:?}` \
+                                         for `{declaring_trait}::{method_name}`"
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: "receiver type not yet supported for static dispatch"
+                                    .to_string(),
+                            });
+                            return None;
+                        }
+                    };
+                    // Build the impl method symbol: `<TypeName>::<method>`.
+                    let callee_symbol =
+                        hew_hir::node::HirImplBlock::method_symbol(&type_name, method_name);
+                    // Check if this symbol needs monomorphization (generic impl methods).
+                    // If the impl method is itself generic (has type_params from impl-level),
+                    // we need to dispatch to the mangled per-instantiation symbol.
+                    let type_args = Self::impl_method_type_args_for(&concrete_ty);
+                    let final_symbol = if type_args.is_empty() {
+                        callee_symbol
+                    } else {
+                        let mangled = hew_hir::monomorph::mangle(&callee_symbol, &type_args);
+                        if self.module_fn_names.contains(&mangled) {
+                            mangled
+                        } else {
+                            callee_symbol
+                        }
+                    };
+                    if !self.module_fn_names.contains(&final_symbol) {
+                        // Impl method not found in module — fail-closed.
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: format!(
+                                    "no impl method `{final_symbol}` found for \
+                                     static dispatch of `{declaring_trait}::{method_name}` \
+                                     on `{type_name}`"
+                                ),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "type `{type_name}` may not implement trait \
+                                 `{declaring_trait}` in this module"
+                            ),
+                        });
+                        return None;
+                    }
+                    // Lower receiver as first arg + the explicit args.
+                    let receiver_place = self.lower_value(receiver)?;
+                    let mut arg_places = vec![receiver_place];
+                    for arg in args {
+                        arg_places.push(self.lower_value(arg)?);
+                    }
+                    let dest = if matches!(resolved_ret_ty, ResolvedTy::Unit) {
+                        None
+                    } else {
+                        Some(self.alloc_local(resolved_ret_ty))
+                    };
+                    let next = self.alloc_block();
+                    self.finish_current_block(Terminator::Call {
+                        callee: final_symbol,
+                        args: arg_places,
+                        dest,
+                        next,
+                    });
+                    self.start_block(next);
+                    dest
+                } else {
+                    // Type param not substituted — we're lowering the
+                    // unspecialised origin body (non-monomorphised path).
+                    // This is expected when the generic fn body is lowered
+                    // as-is (for the origin slot). Skip silently — the
+                    // monomorphised copies will have the substitution.
+                    // Lower sub-expressions for coverage.
+                    self.lower_value(receiver);
+                    for arg in args {
+                        self.lower_value(arg);
+                    }
+                    None
+                }
             }
             HirExprKind::MachineEmit { event_idx, fields } => {
                 // Lower each payload field expression to a Place. Collect

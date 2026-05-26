@@ -691,6 +691,27 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, arg, indent + 4);
             }
         }
+        HirExprKind::CallTraitMethodStatic {
+            receiver,
+            receiver_type_param,
+            declaring_trait,
+            method_name,
+            args,
+            ret_ty,
+            ..
+        } => {
+            writeln!(
+                out,
+                "{pad}  call-static-trait {declaring_trait}::{method_name} \
+                 [receiver_param={receiver_type_param}] -> {}",
+                ret_ty.user_facing()
+            )
+            .expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+            for arg in args {
+                dump_expr(out, arg, indent + 4);
+            }
+        }
         HirExprKind::NumericMethod {
             receiver,
             arg,

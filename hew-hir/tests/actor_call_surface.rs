@@ -166,7 +166,8 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
         | HirExprKind::RegexLiteralRef { .. }
-        | HirExprKind::Unsupported(_) => {}
+        | HirExprKind::Unsupported(_)
+        | HirExprKind::CallTraitMethodStatic { .. } => {}
     }
 }
 

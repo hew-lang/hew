@@ -1939,7 +1939,8 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
-        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+        | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             collect_call_sites_in_expr(receiver, out);
             for arg in args {
                 collect_call_sites_in_expr(arg, out);
@@ -8685,6 +8686,39 @@ impl LowerCtx {
                     ResolvedTy::Unit,
                 )
             }
+            Some(MethodCallRewrite::StaticTraitDispatch {
+                receiver_type_param,
+                bound_trait,
+                declaring_trait,
+                method_name,
+            }) => {
+                // Static trait dispatch: emit `CallTraitMethodStatic` carrying
+                // the structured metadata. MIR resolves the concrete callee from
+                // the monomorphization substitution map.
+                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                let lowered_args: Vec<HirExpr> = args
+                    .iter()
+                    .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                    .collect();
+                let ret_ty = self
+                    .expr_types
+                    .get(&key)
+                    .cloned()
+                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
+                    .unwrap_or(ResolvedTy::Unit);
+                (
+                    HirExprKind::CallTraitMethodStatic {
+                        receiver: Box::new(lowered_receiver),
+                        receiver_type_param,
+                        bound_trait,
+                        declaring_trait,
+                        method_name,
+                        args: lowered_args,
+                        ret_ty: ret_ty.clone(),
+                    },
+                    ret_ty,
+                )
+            }
             None => {
                 if let Expr::Identifier(module_name) = &receiver.0 {
                     if let Some(module) = self.missing_stdlib_module_import(module_name) {
@@ -9976,7 +10010,8 @@ fn collect_captures_walk(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
-        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+        | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
             for arg in args {
                 collect_captures_walk(arg, param_ids, seen, captures, self_id);
@@ -10208,7 +10243,8 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
-        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+        | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
             for arg in args {
                 collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
@@ -10821,7 +10857,8 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         // Additional expression forms whose sub-expressions can contain emits.
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
-        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+        | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             collect_hir_emitted_events_walk(receiver, event_names, out);
             for a in args {
                 collect_hir_emitted_events_walk(a, event_names, out);
@@ -13697,7 +13734,8 @@ fn scan_expr_for_call_shape(
         HirExprKind::CoerceToDynTrait { value, .. } => {
             scan_expr_for_call_shape(value, callable, diagnostics);
         }
-        HirExprKind::CallDynMethod { receiver, args, .. } => {
+        HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);
             for a in args {
                 scan_expr_for_call_shape(a, callable, diagnostics);

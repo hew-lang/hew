@@ -3631,6 +3631,12 @@ impl Checker {
                 // When the receiver is a generic type parameter (e.g. `T` in
                 // `fn report<T: Measurable>(item: T)`), look up the method
                 // from the traits that bound that parameter.
+                //
+                // Algorithm (origin-aware supertrait expansion):
+                // 1. For each bound, call lookup_trait_method_with_origin → (declaring_trait, sig)
+                // 2. Collect all hits, deduplicate by declaring_trait
+                // 3. 0 hits → UndefinedMethod, >1 distinct declaring traits → AmbiguousTraitMethod,
+                //    1 → record StaticTraitDispatch rewrite
                 let bounds_for_type_param = self.current_function.as_ref().and_then(|fn_name| {
                     self.fn_sigs.get(fn_name).and_then(|sig| {
                         if sig.type_params.contains(name) {
@@ -3641,42 +3647,88 @@ impl Checker {
                     })
                 });
                 if let Some(bounds) = bounds_for_type_param {
+                    // Expand all bounds into (bound_trait, declaring_trait, sig) tuples.
+                    let mut hits: Vec<(String, String, FnSig)> = Vec::new();
                     for bound_trait in &bounds {
-                        if let Some(mut trait_sig) = self.lookup_trait_method(bound_trait, method) {
-                            // Replace `Self` references with the type parameter type.
-                            let self_ty = resolved.clone();
-                            for param_ty in &mut trait_sig.params {
-                                *param_ty = param_ty.substitute_named_param("Self", &self_ty);
-                            }
-                            trait_sig.return_type = trait_sig
-                                .return_type
-                                .substitute_named_param("Self", &self_ty);
-                            let applied_sig = self.apply_instantiated_call_signature(
-                                &trait_sig,
-                                None,
-                                args,
-                                span,
-                                SignatureArgApplication::PositionalOnly {
-                                    arity_context: format!("method '{method}'"),
-                                },
-                                true,
-                            );
-                            self.record_method_call_receiver_kind(
-                                span,
-                                MethodCallReceiverKind::NamedTypeInstance {
-                                    type_name: name.clone(),
-                                },
-                            );
-                            let qualified = format!("{bound_trait}::{method}");
-                            self.apply_consume_receiver_if_flagged(
-                                &qualified,
-                                receiver,
-                                &receiver_ty,
-                                span,
-                            );
-                            return applied_sig.return_type;
+                        if let Some((declaring_trait, sig)) =
+                            self.lookup_trait_method_with_origin(bound_trait, method)
+                        {
+                            hits.push((bound_trait.clone(), declaring_trait, sig));
                         }
                     }
+                    // Deduplicate by declaring_trait — same origin via multiple bounds is NOT ambiguous.
+                    hits.dedup_by_key(|h| h.1.clone());
+                    // Also collapse hits with same declaring_trait that survived dedup
+                    // (dedup only removes *consecutive* duplicates, so sort first).
+                    hits.sort_by(|a, b| a.1.cmp(&b.1));
+                    hits.dedup_by_key(|h| h.1.clone());
+
+                    if hits.len() == 1 {
+                        let (bound_trait, declaring_trait, mut trait_sig) =
+                            hits.into_iter().next().unwrap();
+                        // Replace `Self` references with the type parameter type.
+                        let self_ty = resolved.clone();
+                        for param_ty in &mut trait_sig.params {
+                            *param_ty = param_ty.substitute_named_param("Self", &self_ty);
+                        }
+                        trait_sig.return_type = trait_sig
+                            .return_type
+                            .substitute_named_param("Self", &self_ty);
+                        let applied_sig = self.apply_instantiated_call_signature(
+                            &trait_sig,
+                            None,
+                            args,
+                            span,
+                            SignatureArgApplication::PositionalOnly {
+                                arity_context: format!("method '{method}'"),
+                            },
+                            true,
+                        );
+                        self.record_method_call_receiver_kind(
+                            span,
+                            MethodCallReceiverKind::NamedTypeInstance {
+                                type_name: name.clone(),
+                            },
+                        );
+                        let qualified = format!("{declaring_trait}::{method}");
+                        self.apply_consume_receiver_if_flagged(
+                            &qualified,
+                            receiver,
+                            &receiver_ty,
+                            span,
+                        );
+                        // Record the StaticTraitDispatch rewrite for HIR consumption.
+                        self.record_method_call_rewrite(
+                            span,
+                            MethodCallRewrite::StaticTraitDispatch {
+                                receiver_type_param: name.clone(),
+                                bound_trait,
+                                declaring_trait,
+                                method_name: method.to_string(),
+                            },
+                        );
+                        return applied_sig.return_type;
+                    } else if hits.len() > 1 {
+                        // Multiple distinct declaring traits → ambiguous.
+                        for arg in args {
+                            let (expr, sp) = arg.expr();
+                            self.synthesize(expr, sp);
+                        }
+                        let declaring_traits: Vec<&str> =
+                            hits.iter().map(|h| h.1.as_str()).collect();
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!(
+                                "ambiguous trait method `{method}` on `{}`: method is declared by \
+                                 multiple traits ({}); qualify the call to disambiguate",
+                                resolved.user_facing(),
+                                declaring_traits.join(", ")
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                    // hits.is_empty() → fall through to UndefinedMethod below.
                 }
                 // Synthesize args even if method unknown (for error recovery)
                 for arg in args {

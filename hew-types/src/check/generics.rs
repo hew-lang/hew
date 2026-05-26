@@ -913,6 +913,48 @@ impl Checker {
         self.lookup_trait_method_with_origin_inner(trait_name, method, true)
     }
 
+    /// Walk `trait_name` and ALL of its (transitive) supertraits, collecting
+    /// every trait that DIRECTLY declares a method named `method` in its
+    /// `trait_defs` entry. The returned `Vec` is sorted + deduplicated so
+    /// repeated bound paths collapse to a stable set.
+    ///
+    /// This is the supertrait-aware companion to
+    /// `lookup_trait_method_with_origin`, which returns only the first
+    /// declaring trait it encounters. Used by the static-dispatch path to
+    /// detect supertrait-redeclaration ambiguity (plan §4 V14): if the same
+    /// method name is directly declared by both a trait and one of its
+    /// supertraits, a bound `T: SubTrait` reaches the method via two
+    /// distinct declaring traits and the call site is ambiguous.
+    pub(super) fn collect_all_declaring_traits_for_method(
+        &self,
+        trait_name: &str,
+        method: &str,
+    ) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut stack: Vec<String> = vec![trait_name.to_string()];
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            let declares_directly = self
+                .trait_defs
+                .get(&current)
+                .is_some_and(|info| info.methods.iter().any(|m| m.name == method));
+            if declares_directly {
+                out.push(current.clone());
+            }
+            if let Some(supers) = self.trait_super.get(&current) {
+                for s in supers {
+                    stack.push(s.clone());
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     fn lookup_trait_method_with_origin_inner(
         &mut self,
         trait_name: &str,

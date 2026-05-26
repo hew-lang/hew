@@ -3648,18 +3648,25 @@ impl Checker {
                 });
                 if let Some(bounds) = bounds_for_type_param {
                     // Expand all bounds into (bound_trait, declaring_trait, sig) tuples.
+                    // For each bound, also walk its supertrait DAG to collect every
+                    // trait that DIRECTLY declares the method — this catches the
+                    // supertrait-redeclaration case (plan §4 V14) where a bound
+                    // `T: B` with `trait B: A` and both A and B declaring the same
+                    // method reaches two distinct declaring traits.
                     let mut hits: Vec<(String, String, FnSig)> = Vec::new();
                     for bound_trait in &bounds {
-                        if let Some((declaring_trait, sig)) =
-                            self.lookup_trait_method_with_origin(bound_trait, method)
-                        {
-                            hits.push((bound_trait.clone(), declaring_trait, sig));
+                        let declaring =
+                            self.collect_all_declaring_traits_for_method(bound_trait, method);
+                        for declaring_trait in declaring {
+                            // Resolve the sig from the declaring trait directly.
+                            if let Some((_, sig)) =
+                                self.lookup_trait_method_with_origin(&declaring_trait, method)
+                            {
+                                hits.push((bound_trait.clone(), declaring_trait, sig));
+                            }
                         }
                     }
                     // Deduplicate by declaring_trait — same origin via multiple bounds is NOT ambiguous.
-                    hits.dedup_by_key(|h| h.1.clone());
-                    // Also collapse hits with same declaring_trait that survived dedup
-                    // (dedup only removes *consecutive* duplicates, so sort first).
                     hits.sort_by(|a, b| a.1.cmp(&b.1));
                     hits.dedup_by_key(|h| h.1.clone());
 

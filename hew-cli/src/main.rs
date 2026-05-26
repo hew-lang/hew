@@ -97,7 +97,9 @@ fn diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
         | hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { .. }
         | hew_mir::MirDiagnosticKind::SelectArmNotImplemented { .. }
-        | hew_mir::MirDiagnosticKind::UnresolvedStaticDispatchSubstitution { .. } => "E_MIR",
+        | hew_mir::MirDiagnosticKind::UnresolvedStaticDispatchSubstitution { .. }
+        | hew_mir::MirDiagnosticKind::StaticDispatchImplNotFound { .. }
+        | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { .. } => "E_MIR",
     }
 }
 

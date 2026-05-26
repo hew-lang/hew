@@ -84,3 +84,62 @@ fn main() -> string {
         "expected Msg::show call in monomorphised display, got targets: {targets:?}\nall fns: {all_fns:?}"
     );
 }
+
+// ─── V12: Generic impl — `impl<U> Trait for Wrapper<U>` resolves to mangled ─
+
+#[test]
+fn v12_generic_impl_static_dispatch_resolves_to_mangled_callee() {
+    let src = r#"
+trait Show {
+    fn show(val: Self) -> string;
+}
+type Wrapper<U> { inner: U; }
+impl<U> Show for Wrapper<U> {
+    fn show(w: Wrapper<U>) -> string { "wrapped" }
+}
+fn display<T: Show>(item: T) -> string {
+    item.show()
+}
+fn main() -> string {
+    display(Wrapper<i64> { inner: 7 })
+}
+"#;
+    let p = pipeline(src);
+    let all_fns: Vec<&str> = p.raw_mir.iter().map(|f| f.name.as_str()).collect();
+    // There must be a monomorphised `Wrapper::show<i64>` function in the MIR.
+    assert!(
+        all_fns.iter().any(|name| name.contains("Wrapper::show")),
+        "expected a monomorphised `Wrapper::show<…>` function in raw_mir, got: {all_fns:?}"
+    );
+    // The monomorphised display function must call the mangled Wrapper::show symbol.
+    let mono_display = all_fns
+        .iter()
+        .find(|name| name.contains("display") && **name != "display")
+        .unwrap_or(&"display");
+    let targets = call_targets(&p, mono_display);
+    assert!(
+        targets.iter().any(|t| t.contains("Wrapper::show")),
+        "expected `Wrapper::show<…>` call in monomorphised display, got targets: {targets:?}\nall fns: {all_fns:?}"
+    );
+    // Stronger: the call MUST land on the per-instantiation mangled
+    // symbol — not the bare `Wrapper::show` origin — so we know
+    // structured dispatch found the monomorphisation.
+    let bare_targets: Vec<&String> = targets
+        .iter()
+        .filter(|t| t.as_str() == "Wrapper::show")
+        .collect();
+    assert!(
+        bare_targets.is_empty(),
+        "monomorphised display must not call the bare unmangled `Wrapper::show`; \
+         got targets: {targets:?}"
+    );
+    // And the actual call target must be a mangled form (contains both
+    // the canonical method symbol and the i64 type-arg signature).
+    let mangled_target = targets
+        .iter()
+        .find(|t| t.starts_with("Wrapper::show") && t.as_str() != "Wrapper::show");
+    assert!(
+        mangled_target.is_some(),
+        "expected mangled `Wrapper::show<…>` target (not bare); got: {targets:?}"
+    );
+}

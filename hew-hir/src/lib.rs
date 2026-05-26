@@ -4,6 +4,7 @@
 
 pub mod builtin_type_classes;
 pub mod diagnostic;
+pub mod dispatch;
 pub mod dump;
 pub mod ids;
 pub mod intent;

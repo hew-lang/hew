@@ -1783,6 +1783,23 @@ pub fn lower_program_with_mono_cap(
 /// hit. Skips inner calls whose substituted args still contain any
 /// abstract type-parameter symbol (no monomorphisation is possible
 /// without a concrete instantiation).
+/// A `CallTraitMethodStatic` site discovered inside a function body.
+/// Carries enough info to derive the impl-method monomorphisation once the
+/// surrounding function's type params have been substituted.
+struct TraitMethodStaticSite {
+    /// Type-parameter name of the receiver (e.g. "T" in `fn display<T: Show>`).
+    receiver_type_param: String,
+    /// Trait that directly declares the method (e.g. "Show") — used as the
+    /// structured registry key so we don't reverse-parse the impl symbol.
+    declaring_trait: String,
+    /// Method name on the declaring trait (e.g. "show").
+    method_name: String,
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "two-phase worklist: direct calls + trait method sites"
+)]
 fn closure_under_substitution(
     items: &[HirItem],
     call_site_type_args: &HashMap<SiteId, Vec<ResolvedTy>>,
@@ -1802,6 +1819,11 @@ fn closure_under_substitution(
             fn_info.insert(f.name.clone(), (f.id, f.type_params.clone()));
         }
     }
+    // Structured `(declaring_trait, self_type_name, method_name)` index
+    // built from `HirItem::Impl` metadata. Static-dispatch monomorphisation
+    // resolves trait method calls through this rather than reconstructing
+    // the impl symbol from a receiver display name.
+    let impl_index = crate::dispatch::build_trait_impl_method_index(items);
 
     let mut seen: HashSet<MonoKey> = monomorphisations.iter().map(|m| m.key.clone()).collect();
     let mut worklist: Vec<MonoKey> = monomorphisations.iter().map(|m| m.key.clone()).collect();
@@ -1820,7 +1842,10 @@ fn closure_under_substitution(
             .collect();
         // Walk the body to discover Call sites.
         let mut inner_sites: Vec<(String, SiteId)> = Vec::new();
-        collect_call_sites_in_block(&origin.body, &mut inner_sites);
+        let mut trait_method_sites: Vec<TraitMethodStaticSite> = Vec::new();
+        collect_call_sites_in_block(&origin.body, &mut inner_sites, &mut trait_method_sites);
+
+        // ── Direct Call sites (existing logic) ───────────────────────────
         for (callee_name, site) in inner_sites {
             let Some((origin_id, type_params)) = fn_info.get(&callee_name).cloned() else {
                 continue;
@@ -1870,15 +1895,99 @@ fn closure_under_substitution(
             });
             worklist.push(new_key);
         }
+
+        // ── CallTraitMethodStatic sites (impl-method monomorphisation) ───
+        // When a generic function body contains `item.show()` via a trait
+        // bound, and this mono's substitution resolves the receiver type
+        // param to a concrete type, look up the matching impl method via
+        // the structured registry — `(declaring_trait, self_type_name,
+        // method_name)` — and register the impl method's monomorphisation.
+        for tms in trait_method_sites {
+            let Some(concrete_ty) = subst.get(&tms.receiver_type_param) else {
+                continue;
+            };
+            // Canonical (self_type_name, type_args) for impl lookup.
+            let Some((self_type_name, type_args)) =
+                crate::dispatch::receiver_self_type_for_impl_lookup(concrete_ty)
+            else {
+                continue;
+            };
+            // Structured registry lookup. The key is built from HIR-side
+            // structured fields only — no symbol-name parsing.
+            let key = (
+                tms.declaring_trait.clone(),
+                self_type_name.clone(),
+                tms.method_name.clone(),
+            );
+            let Some(entry) = impl_index.get(&key) else {
+                continue;
+            };
+            // Non-generic impl methods need no per-instantiation
+            // registration; their bare symbol is already a module fn.
+            if entry.impl_type_params.is_empty() {
+                continue;
+            }
+            // Find the origin fn that owns this impl method symbol so
+            // we can build a `MonoKey` whose `origin` points at the
+            // pre-substitution body.
+            let Some((origin_id, origin_type_params)) = fn_info.get(&entry.method_symbol).cloned()
+            else {
+                continue;
+            };
+            if origin_type_params.is_empty() {
+                // Impl-block carried type params but the per-method
+                // origin did not — invariant violation upstream;
+                // skip to avoid wrong monomorphisation.
+                continue;
+            }
+            // Skip if type_args still contain abstract symbols.
+            if type_args
+                .iter()
+                .any(|t| contains_abstract_symbol(t, &fn_info))
+            {
+                continue;
+            }
+            let new_key = MonoKey {
+                origin: origin_id,
+                origin_name: entry.method_symbol.clone(),
+                type_args: type_args.clone(),
+            };
+            if !seen.insert(new_key.clone()) {
+                continue;
+            }
+            if monomorphisations.len() >= cap {
+                if !cap_diag_emitted {
+                    cap_diag_emitted = true;
+                    diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::MonomorphisationCapExceeded { cap },
+                        0..0,
+                        "too many distinct generic-function instantiations discovered \
+                         during inner-call closure; the compiler refuses to \
+                         monomorphise beyond the configured cap",
+                    ));
+                }
+                continue;
+            }
+            let mangled = mangle(&entry.method_symbol, &type_args);
+            monomorphisations.push(MonomorphizedFn {
+                key: new_key.clone(),
+                mangled_name: mangled,
+            });
+            worklist.push(new_key);
+        }
     }
 }
 
-fn collect_call_sites_in_block(block: &HirBlock, out: &mut Vec<(String, SiteId)>) {
+fn collect_call_sites_in_block(
+    block: &HirBlock,
+    out: &mut Vec<(String, SiteId)>,
+    trait_out: &mut Vec<TraitMethodStaticSite>,
+) {
     for stmt in &block.statements {
-        collect_call_sites_in_stmt(stmt, out);
+        collect_call_sites_in_stmt(stmt, out, trait_out);
     }
     if let Some(tail) = &block.tail {
-        collect_call_sites_in_expr(tail, out);
+        collect_call_sites_in_expr(tail, out, trait_out);
     }
 }
 
@@ -1902,14 +2011,18 @@ fn record_source_modules_for_items(
     }
 }
 
-fn collect_call_sites_in_stmt(stmt: &HirStmt, out: &mut Vec<(String, SiteId)>) {
+fn collect_call_sites_in_stmt(
+    stmt: &HirStmt,
+    out: &mut Vec<(String, SiteId)>,
+    trait_out: &mut Vec<TraitMethodStaticSite>,
+) {
     match &stmt.kind {
         HirStmtKind::Let(_, Some(e)) | HirStmtKind::Expr(e) | HirStmtKind::Return(Some(e)) => {
-            collect_call_sites_in_expr(e, out);
+            collect_call_sites_in_expr(e, out, trait_out);
         }
         HirStmtKind::Assign { target, value } => {
-            collect_call_sites_in_expr(target, out);
-            collect_call_sites_in_expr(value, out);
+            collect_call_sites_in_expr(target, out, trait_out);
+            collect_call_sites_in_expr(value, out, trait_out);
         }
         // Let-without-value and bare return have no sub-expression to collect.
         HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
@@ -1920,73 +2033,99 @@ fn collect_call_sites_in_stmt(stmt: &HirStmt, out: &mut Vec<(String, SiteId)>) {
     clippy::too_many_lines,
     reason = "single recursive walker spanning all HirExprKind variants"
 )]
-fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
+fn collect_call_sites_in_expr(
+    expr: &HirExpr,
+    out: &mut Vec<(String, SiteId)>,
+    trait_out: &mut Vec<TraitMethodStaticSite>,
+) {
     match &expr.kind {
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             // Record the site if callee is a direct BindingRef name.
             if let HirExprKind::BindingRef { name, .. } = &callee.kind {
                 out.push((name.clone(), expr.site));
             }
-            collect_call_sites_in_expr(callee, out);
+            collect_call_sites_in_expr(callee, out, trait_out);
             for a in args {
-                collect_call_sites_in_expr(a, out);
+                collect_call_sites_in_expr(a, out, trait_out);
             }
         }
         HirExprKind::Spawn { args, .. } => {
             for (_, arg) in args {
-                collect_call_sites_in_expr(arg, out);
+                collect_call_sites_in_expr(arg, out, trait_out);
             }
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
-        | HirExprKind::CallDynMethod { receiver, args, .. }
-        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
-            collect_call_sites_in_expr(receiver, out);
+        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+            collect_call_sites_in_expr(receiver, out, trait_out);
             for arg in args {
-                collect_call_sites_in_expr(arg, out);
+                collect_call_sites_in_expr(arg, out, trait_out);
+            }
+        }
+        HirExprKind::CallTraitMethodStatic {
+            receiver,
+            receiver_type_param,
+            declaring_trait,
+            method_name,
+            args,
+            ..
+        } => {
+            // Record this as a trait-method static dispatch site for the
+            // monomorphisation closure to resolve once the enclosing
+            // function's type params are substituted.
+            trait_out.push(TraitMethodStaticSite {
+                receiver_type_param: receiver_type_param.clone(),
+                declaring_trait: declaring_trait.clone(),
+                method_name: method_name.clone(),
+            });
+            collect_call_sites_in_expr(receiver, out, trait_out);
+            for arg in args {
+                collect_call_sites_in_expr(arg, out, trait_out);
             }
         }
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
-            collect_call_sites_in_expr(left, out);
-            collect_call_sites_in_expr(right, out);
+            collect_call_sites_in_expr(left, out, trait_out);
+            collect_call_sites_in_expr(right, out, trait_out);
         }
-        HirExprKind::Unary { operand, .. } => collect_call_sites_in_expr(operand, out),
-        HirExprKind::Block(b) => collect_call_sites_in_block(b, out),
-        HirExprKind::GenBlock { body, .. } => collect_call_sites_in_block(body, out),
+        HirExprKind::Unary { operand, .. } => collect_call_sites_in_expr(operand, out, trait_out),
+        HirExprKind::Block(b) => collect_call_sites_in_block(b, out, trait_out),
+        HirExprKind::GenBlock { body, .. } => collect_call_sites_in_block(body, out, trait_out),
         HirExprKind::Yield {
             value: Some(value), ..
-        } => collect_call_sites_in_expr(value, out),
+        } => collect_call_sites_in_expr(value, out, trait_out),
         HirExprKind::If {
             condition,
             then_expr,
             else_expr,
         } => {
-            collect_call_sites_in_expr(condition, out);
-            collect_call_sites_in_expr(then_expr, out);
+            collect_call_sites_in_expr(condition, out, trait_out);
+            collect_call_sites_in_expr(then_expr, out, trait_out);
             if let Some(e) = else_expr {
-                collect_call_sites_in_expr(e, out);
+                collect_call_sites_in_expr(e, out, trait_out);
             }
         }
         HirExprKind::StructInit { fields, base, .. } => {
             for (_, e) in fields {
-                collect_call_sites_in_expr(e, out);
+                collect_call_sites_in_expr(e, out, trait_out);
             }
             if let Some(b) = base {
-                collect_call_sites_in_expr(b, out);
+                collect_call_sites_in_expr(b, out, trait_out);
             }
         }
-        HirExprKind::FieldAccess { object, .. } => collect_call_sites_in_expr(object, out),
+        HirExprKind::FieldAccess { object, .. } => {
+            collect_call_sites_in_expr(object, out, trait_out);
+        }
         HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => {
-            collect_call_sites_in_block(body, out);
+            collect_call_sites_in_block(body, out, trait_out);
         }
         HirExprKind::ScopeDeadline { duration, body } => {
-            collect_call_sites_in_expr(duration, out);
-            collect_call_sites_in_block(body, out);
+            collect_call_sites_in_expr(duration, out, trait_out);
+            collect_call_sites_in_block(body, out, trait_out);
         }
-        HirExprKind::TupleIndex { tuple, .. } => collect_call_sites_in_expr(tuple, out),
+        HirExprKind::TupleIndex { tuple, .. } => collect_call_sites_in_expr(tuple, out, trait_out),
         HirExprKind::Index { container, index } => {
-            collect_call_sites_in_expr(container, out);
-            collect_call_sites_in_expr(index, out);
+            collect_call_sites_in_expr(container, out, trait_out);
+            collect_call_sites_in_expr(index, out, trait_out);
         }
         HirExprKind::Slice {
             container,
@@ -1994,66 +2133,66 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
             end,
             ..
         } => {
-            collect_call_sites_in_expr(container, out);
+            collect_call_sites_in_expr(container, out, trait_out);
             if let Some(s) = start {
-                collect_call_sites_in_expr(s, out);
+                collect_call_sites_in_expr(s, out, trait_out);
             }
             if let Some(e) = end {
-                collect_call_sites_in_expr(e, out);
+                collect_call_sites_in_expr(e, out, trait_out);
             }
         }
         HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
-            collect_call_sites_in_expr(body, out);
+            collect_call_sites_in_expr(body, out, trait_out);
         }
         HirExprKind::While { condition, body } => {
-            collect_call_sites_in_expr(condition, out);
-            collect_call_sites_in_block(body, out);
+            collect_call_sites_in_expr(condition, out, trait_out);
+            collect_call_sites_in_block(body, out, trait_out);
         }
         HirExprKind::ForRange {
             start, end, body, ..
         } => {
-            collect_call_sites_in_expr(start, out);
-            collect_call_sites_in_expr(end, out);
-            collect_call_sites_in_block(body, out);
+            collect_call_sites_in_expr(start, out, trait_out);
+            collect_call_sites_in_expr(end, out, trait_out);
+            collect_call_sites_in_block(body, out, trait_out);
         }
         HirExprKind::Match { scrutinee, arms } => {
-            collect_call_sites_in_expr(scrutinee, out);
+            collect_call_sites_in_expr(scrutinee, out, trait_out);
             for arm in arms {
-                collect_call_sites_in_expr(&arm.body, out);
+                collect_call_sites_in_expr(&arm.body, out, trait_out);
             }
         }
         HirExprKind::WhileLet {
             scrutinee, body, ..
         } => {
-            collect_call_sites_in_expr(scrutinee, out);
-            collect_call_sites_in_block(body, out);
+            collect_call_sites_in_expr(scrutinee, out, trait_out);
+            collect_call_sites_in_block(body, out, trait_out);
         }
         // Variants that carry sub-expressions not yet covered above.
         HirExprKind::NumericMethod { receiver, arg, .. } => {
-            collect_call_sites_in_expr(receiver, out);
-            collect_call_sites_in_expr(arg, out);
+            collect_call_sites_in_expr(receiver, out, trait_out);
+            collect_call_sites_in_expr(arg, out, trait_out);
         }
         HirExprKind::CoerceToDynTrait { value, .. } => {
-            collect_call_sites_in_expr(value, out);
+            collect_call_sites_in_expr(value, out, trait_out);
         }
         HirExprKind::MachineEmit { fields, .. } => {
             for (_, e) in fields {
-                collect_call_sites_in_expr(e, out);
+                collect_call_sites_in_expr(e, out, trait_out);
             }
         }
         HirExprKind::MachineStep {
             receiver, event, ..
         } => {
-            collect_call_sites_in_expr(receiver, out);
-            collect_call_sites_in_expr(event, out);
+            collect_call_sites_in_expr(receiver, out, trait_out);
+            collect_call_sites_in_expr(event, out, trait_out);
         }
         HirExprKind::MachineStateName { receiver, .. } => {
-            collect_call_sites_in_expr(receiver, out);
+            collect_call_sites_in_expr(receiver, out, trait_out);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
             if let Some(fields) = payload {
                 for (_, e) in fields {
-                    collect_call_sites_in_expr(e, out);
+                    collect_call_sites_in_expr(e, out, trait_out);
                 }
             }
         }
@@ -2061,22 +2200,22 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
             for arm in &sel.arms {
                 match &arm.kind {
                     HirSelectArmKind::StreamNext { stream } => {
-                        collect_call_sites_in_expr(stream, out);
+                        collect_call_sites_in_expr(stream, out, trait_out);
                     }
                     HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                        collect_call_sites_in_expr(actor, out);
+                        collect_call_sites_in_expr(actor, out, trait_out);
                         for a in args {
-                            collect_call_sites_in_expr(a, out);
+                            collect_call_sites_in_expr(a, out, trait_out);
                         }
                     }
                     HirSelectArmKind::TaskAwait { task } => {
-                        collect_call_sites_in_expr(task, out);
+                        collect_call_sites_in_expr(task, out, trait_out);
                     }
                     HirSelectArmKind::AfterTimer { duration } => {
-                        collect_call_sites_in_expr(duration, out);
+                        collect_call_sites_in_expr(duration, out, trait_out);
                     }
                 }
-                collect_call_sites_in_expr(&arm.body, out);
+                collect_call_sites_in_expr(&arm.body, out, trait_out);
             }
         }
         // Leaf variants: no sub-expressions, so no call sites to collect.
@@ -3907,6 +4046,7 @@ impl LowerCtx {
         // methods are lowered; private methods are not accessible to importers
         // and must not leak into the emitted HirItem list.
         let mut method_symbols: Vec<String> = Vec::with_capacity(decl.methods.len());
+        let mut method_names: Vec<String> = Vec::with_capacity(decl.methods.len());
         for method in &decl.methods {
             if pub_only && !method.visibility.is_pub() {
                 continue;
@@ -3922,6 +4062,7 @@ impl LowerCtx {
                 &type_params,
             )));
             method_symbols.push(symbol);
+            method_names.push(method.name.clone());
         }
 
         // Lower associated-type bindings to `ResolvedTy`s. Recorded as
@@ -3941,6 +4082,7 @@ impl LowerCtx {
             type_params,
             type_aliases,
             method_symbols,
+            method_names,
             span,
         }));
     }
@@ -15430,7 +15572,8 @@ mod tests {
         });
 
         let mut sites: Vec<(String, SiteId)> = Vec::new();
-        collect_call_sites_in_expr(&emit_expr, &mut sites);
+        let mut trait_sites: Vec<TraitMethodStaticSite> = Vec::new();
+        collect_call_sites_in_expr(&emit_expr, &mut sites, &mut trait_sites);
 
         assert!(
             sites.iter().any(|(name, _)| name == "call_some_fn"),

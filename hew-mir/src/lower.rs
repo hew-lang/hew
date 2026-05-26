@@ -904,6 +904,9 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             _ => None,
         })
         .collect();
+    // Structured static-trait-dispatch registry. Built once from
+    // `HirItem::Impl` metadata and threaded into every user-fn builder.
+    let trait_impl_index = hew_hir::dispatch::build_trait_impl_method_index(&module.items);
     let mut emitted_actor_handler_symbols: HashMap<String, String> = module_fn_names
         .iter()
         .map(|name| (name.clone(), format!("function `{name}`")))
@@ -940,6 +943,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     None,
                     &module_fn_names,
                     &module_generic_fn_names,
+                    &trait_impl_index,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     crate::model::FunctionCallConv::Default,
@@ -1158,6 +1162,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             None,
             &module_fn_names,
             &module_generic_fn_names,
+            &trait_impl_index,
             &module.call_site_type_args,
             &module.supervisor_child_slots,
             crate::model::FunctionCallConv::Default,
@@ -1332,6 +1337,7 @@ fn lower_actor_receive_handlers(
             Some(&actor.name),
             module_fn_names,
             module_generic_fn_names,
+            &HashMap::new(),
             call_site_type_args,
             supervisor_child_slots,
             crate::model::FunctionCallConv::ActorHandler,
@@ -1468,6 +1474,7 @@ fn lower_actor_init_handler(
         Some(&actor.name),
         module_fn_names,
         module_generic_fn_names,
+        &HashMap::new(),
         call_site_type_args,
         supervisor_child_slots,
         crate::model::FunctionCallConv::ActorHandler,
@@ -1540,6 +1547,7 @@ fn lower_actor_lifecycle_handlers(
                     Some(&actor.name),
                     module_fn_names,
                     module_generic_fn_names,
+                    &HashMap::new(),
                     call_site_type_args,
                     supervisor_child_slots,
                     crate::model::FunctionCallConv::ActorHandler,
@@ -1579,6 +1587,7 @@ fn lower_actor_lifecycle_handlers(
                     Some(&actor.name),
                     module_fn_names,
                     module_generic_fn_names,
+                    &HashMap::new(),
                     call_site_type_args,
                     supervisor_child_slots,
                     crate::model::FunctionCallConv::ActorHandler,
@@ -1757,6 +1766,7 @@ fn lower_actor_lifecycle_handlers(
                     Some(&actor.name),
                     module_fn_names,
                     module_generic_fn_names,
+                    &HashMap::new(),
                     call_site_type_args,
                     supervisor_child_slots,
                     crate::model::FunctionCallConv::ActorHandler,
@@ -2866,6 +2876,7 @@ fn lower_supervisor_bootstrap(
         None,
         module_fn_names,
         module_generic_fn_names,
+        &HashMap::new(),
         call_site_type_args,
         supervisor_child_slots,
         // `FunctionCallConv::Default`: codegen replaces the bootstrap body
@@ -3288,6 +3299,10 @@ fn lower_function(
     current_actor_name: Option<&str>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    trait_impl_index: &HashMap<
+        hew_hir::dispatch::TraitImplKey,
+        hew_hir::dispatch::TraitImplMethodEntry,
+    >,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     call_conv: crate::model::FunctionCallConv,
@@ -3324,6 +3339,7 @@ fn lower_function(
             .unwrap_or_default(),
         module_fn_names: module_fn_names.clone(),
         module_generic_fn_names: module_generic_fn_names.clone(),
+        trait_impl_index: trait_impl_index.clone(),
         subst,
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
@@ -3482,9 +3498,11 @@ fn collect_unknown_type_diagnostics(
     let mut reported = HashSet::new();
 
     for param in &func.params {
-        push_unknown_type_diagnostics(&param.ty, builder, &mut reported, diagnostics);
+        let substituted = builder.subst_ty(&param.ty);
+        push_unknown_type_diagnostics(&substituted, builder, &mut reported, diagnostics);
     }
-    push_unknown_type_diagnostics(&func.return_ty, builder, &mut reported, diagnostics);
+    let substituted_ret = builder.subst_ty(&func.return_ty);
+    push_unknown_type_diagnostics(&substituted_ret, builder, &mut reported, diagnostics);
 
     for decision in &builder.decisions {
         push_unknown_type_diagnostics(&decision.ty, builder, &mut reported, diagnostics);
@@ -3613,6 +3631,13 @@ fn is_codegen_ready_user_name(
         || record_field_orders
             .keys()
             .any(|known| short_name(known) == short_name(name))
+        // Generic record instantiations are keyed by mangled name
+        // (e.g. "Wrapper$$i64"); match the bare name prefix so that
+        // `UnknownType` is not emitted for types that DO have a concrete
+        // layout entry under a monomorphised symbol.
+        || record_field_orders
+            .keys()
+            .any(|known| known.starts_with(name) && known[name.len()..].starts_with("$$"))
         || actor_layouts.contains_key(name)
         || supervisor_layout_map.contains_key(name)
         || machine_layout_name_matches(machine_layout_names, name)
@@ -3771,6 +3796,21 @@ struct Builder {
     /// handled correctly.
     module_fn_names: HashSet<String>,
     module_generic_fn_names: HashSet<String>,
+    /// Structured static-dispatch registry — `(declaring_trait,
+    /// self_type_name, method_name) → impl method symbol + impl type
+    /// params`. Built once from `HirItem::Impl` metadata in
+    /// `lower_program_with_*` and cloned into every builder so the
+    /// `CallTraitMethodStatic` arm can resolve through structured HIR
+    /// facts rather than reconstructing the impl symbol from a display
+    /// name. Empty for builders constructed via `Builder::default()`
+    /// (machine step shells, actor handler shims) — those bodies do
+    /// not host generic-bounded trait method calls.
+    #[allow(
+        dead_code,
+        reason = "prepared for structured dispatch; MIR uses type-name derivation in this slice"
+    )]
+    trait_impl_index:
+        HashMap<hew_hir::dispatch::TraitImplKey, hew_hir::dispatch::TraitImplMethodEntry>,
     /// Substitution map from origin-fn type-parameter symbols to
     /// concrete `ResolvedTy`s, populated only when this Builder is
     /// lowering a generic function under a specific monomorphisation.
@@ -3876,19 +3916,6 @@ impl Builder {
             return ty.clone();
         }
         hew_hir::lower::substitute_ty(ty, &self.subst)
-    }
-
-    /// For a concrete receiver type, extract the type args from generic params.
-    ///
-    /// Example: `Wrapper<i64>::show` where `impl<U> Show for Wrapper<U>` →
-    /// returns `vec![ResolvedTy::I64]`.
-    ///
-    /// Returns empty vec if the receiver is not a generic named type.
-    fn impl_method_type_args_for(concrete_ty: &ResolvedTy) -> Vec<ResolvedTy> {
-        match concrete_ty {
-            ResolvedTy::Named { args, .. } if !args.is_empty() => args.clone(),
-            _ => Vec::new(),
-        }
     }
 
     /// Allocate one `Place::Local` per function parameter and register each
@@ -4999,103 +5026,40 @@ impl Builder {
                 ret_ty,
                 ..
             } => {
-                // Static trait dispatch: resolve the concrete callee from the
-                // monomorphization substitution map. The receiver_type_param
-                // is substituted to determine the concrete receiver type, then
-                // the impl method symbol is looked up as `<ConcreteType>::<method>`.
+                // Static trait dispatch via structured impl registry.
                 //
-                // If substitution hasn't resolved the type param (e.g. this
-                // function body is being lowered as the unspecialised origin),
-                // fail-closed with a diagnostic.
-                let concrete_receiver_name = self.subst.get(receiver_type_param).cloned();
+                // Resolution path:
+                //   1. Substitute `receiver_type_param` through the
+                //      monomorphisation `subst` map to obtain a concrete
+                //      receiver `ResolvedTy`. If no substitution exists
+                //      the call survived into a concrete function body —
+                //      this is a checker/HIR invariant violation;
+                //      fail-closed with `UnresolvedStaticDispatchSubstitution`.
+                //   2. Project the concrete `ResolvedTy` to its canonical
+                //      `(self_type_name, type_args)` via
+                //      `hew_hir::dispatch::receiver_self_type_for_impl_lookup`.
+                //      The name matches `HirImplBlock::self_type_name`;
+                //      we DO NOT reconstruct an impl symbol from it.
+                //   3. Look up `(declaring_trait, self_type_name,
+                //      method_name)` in `self.trait_impl_index` — the
+                //      structured registry built once from
+                //      `HirItem::Impl` metadata. The hit carries the
+                //      canonical `method_symbol` produced by
+                //      `HirImplBlock::method_symbol` at impl-block
+                //      lowering, plus impl-level type parameter names.
+                //   4. If the impl is generic, mangle `(method_symbol,
+                //      type_args)` to reach the per-instantiation
+                //      symbol HIR's `closure_under_substitution`
+                //      registered.
+                //
+                // Each step uses structured HIR facts (`declaring_trait`
+                // and `method_name` from the call site, `self_type_name`
+                // and `method_symbol` from `HirImplBlock`). No call-site
+                // display-name parsing, no `<Type>::<method>` string
+                // construction.
                 let resolved_ret_ty = self.subst_ty(ret_ty);
-                if let Some(concrete_ty) = concrete_receiver_name {
-                    // Derive the type name for impl lookup.
-                    let type_name = match &concrete_ty {
-                        ResolvedTy::Named { name, .. } => name.clone(),
-                        ResolvedTy::I64 => "i64".to_string(),
-                        ResolvedTy::F64 => "f64".to_string(),
-                        ResolvedTy::Bool => "bool".to_string(),
-                        ResolvedTy::String => "string".to_string(),
-                        ResolvedTy::Bytes => "bytes".to_string(),
-                        other => {
-                            self.diagnostics.push(MirDiagnostic {
-                                kind: MirDiagnosticKind::NotYetImplemented {
-                                    construct: format!(
-                                        "static trait dispatch on receiver type `{other:?}` \
-                                         for `{declaring_trait}::{method_name}`"
-                                    ),
-                                    site: expr.site,
-                                },
-                                note: "receiver type not yet supported for static dispatch"
-                                    .to_string(),
-                            });
-                            return None;
-                        }
-                    };
-                    // Build the impl method symbol: `<TypeName>::<method>`.
-                    let callee_symbol =
-                        hew_hir::node::HirImplBlock::method_symbol(&type_name, method_name);
-                    // Check if this symbol needs monomorphization (generic impl methods).
-                    // If the impl method is itself generic (has type_params from impl-level),
-                    // we need to dispatch to the mangled per-instantiation symbol.
-                    let type_args = Self::impl_method_type_args_for(&concrete_ty);
-                    let final_symbol = if type_args.is_empty() {
-                        callee_symbol
-                    } else {
-                        let mangled = hew_hir::monomorph::mangle(&callee_symbol, &type_args);
-                        if self.module_fn_names.contains(&mangled) {
-                            mangled
-                        } else {
-                            callee_symbol
-                        }
-                    };
-                    if !self.module_fn_names.contains(&final_symbol) {
-                        // Impl method not found in module — fail-closed.
-                        self.diagnostics.push(MirDiagnostic {
-                            kind: MirDiagnosticKind::NotYetImplemented {
-                                construct: format!(
-                                    "no impl method `{final_symbol}` found for \
-                                     static dispatch of `{declaring_trait}::{method_name}` \
-                                     on `{type_name}`"
-                                ),
-                                site: expr.site,
-                            },
-                            note: format!(
-                                "type `{type_name}` may not implement trait \
-                                 `{declaring_trait}` in this module"
-                            ),
-                        });
-                        return None;
-                    }
-                    // Lower receiver as first arg + the explicit args.
-                    let receiver_place = self.lower_value(receiver)?;
-                    let mut arg_places = vec![receiver_place];
-                    for arg in args {
-                        arg_places.push(self.lower_value(arg)?);
-                    }
-                    let dest = if matches!(resolved_ret_ty, ResolvedTy::Unit) {
-                        None
-                    } else {
-                        Some(self.alloc_local(resolved_ret_ty))
-                    };
-                    let next = self.alloc_block();
-                    self.finish_current_block(Terminator::Call {
-                        callee: final_symbol,
-                        args: arg_places,
-                        dest,
-                        next,
-                    });
-                    self.start_block(next);
-                    dest
-                } else {
-                    // Type param not substituted. After Stage 3 (impl-level
-                    // type params flow into `HirFn::type_params`), generic
-                    // origins are skipped at module emission — so any
-                    // emitted function body reaching this arm is a
-                    // checker/HIR invariant violation. Fail-closed.
-                    // We still lower sub-expressions to maximise diagnostic
-                    // coverage; the call itself yields no Place.
+                let Some(concrete_ty) = self.subst.get(receiver_type_param).cloned() else {
+                    // (1) failure path — no substitution.
                     self.lower_value(receiver);
                     for arg in args {
                         self.lower_value(arg);
@@ -5115,8 +5079,107 @@ impl Builder {
                              not be emitted)"
                         ),
                     });
-                    None
+                    return None;
+                };
+                // (2) canonical (self_type_name, type_args).
+                let Some((self_type_name, type_args)) =
+                    hew_hir::dispatch::receiver_self_type_for_impl_lookup(&concrete_ty)
+                else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!(
+                                "static trait dispatch on receiver shape `{concrete_ty:?}` \
+                                 for `{declaring_trait}::{method_name}`"
+                            ),
+                            site: expr.site,
+                        },
+                        note: "receiver type has no canonical impl-self name; \
+                               static dispatch supports nominal and primitive receivers only"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                // (3) structured registry lookup.
+                let key = (
+                    declaring_trait.clone(),
+                    self_type_name.clone(),
+                    method_name.clone(),
+                );
+                let Some(entry) = self.trait_impl_index.get(&key).cloned() else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::StaticDispatchImplNotFound {
+                            declaring_trait: declaring_trait.clone(),
+                            self_type_name: self_type_name.clone(),
+                            method_name: method_name.clone(),
+                            site: expr.site,
+                        },
+                        note: format!(
+                            "no impl of trait `{declaring_trait}` for `{self_type_name}` \
+                             registered in the static-dispatch index; the checker should \
+                             have rejected this call"
+                        ),
+                    });
+                    return None;
+                };
+                // (4) generic-impl monomorphisation mangling.
+                let callee_symbol = if entry.impl_type_params.is_empty() {
+                    if !self.module_fn_names.contains(&entry.method_symbol) {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::StaticDispatchImplNotFound {
+                                declaring_trait: declaring_trait.clone(),
+                                self_type_name: self_type_name.clone(),
+                                method_name: method_name.clone(),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "impl method `{}` is registered in the static-dispatch \
+                                 index but not in module_fn_names",
+                                entry.method_symbol
+                            ),
+                        });
+                        return None;
+                    }
+                    entry.method_symbol.clone()
+                } else {
+                    let mangled = hew_hir::monomorph::mangle(&entry.method_symbol, &type_args);
+                    if !self.module_fn_names.contains(&mangled) {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::StaticDispatchMonomorphisationMissing {
+                                method_symbol: entry.method_symbol.clone(),
+                                mangled: mangled.clone(),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "static dispatch resolved to generic impl method `{}` \
+                                 but no monomorphisation `{}` was registered by HIR's \
+                                 closure_under_substitution",
+                                entry.method_symbol, mangled
+                            ),
+                        });
+                        return None;
+                    }
+                    mangled
+                };
+                // Lower receiver as first arg + the explicit args.
+                let receiver_place = self.lower_value(receiver)?;
+                let mut arg_places = vec![receiver_place];
+                for arg in args {
+                    arg_places.push(self.lower_value(arg)?);
                 }
+                let dest = if matches!(resolved_ret_ty, ResolvedTy::Unit) {
+                    None
+                } else {
+                    Some(self.alloc_local(resolved_ret_ty))
+                };
+                let next = self.alloc_block();
+                self.finish_current_block(Terminator::Call {
+                    callee: callee_symbol,
+                    args: arg_places,
+                    dest,
+                    next,
+                });
+                self.start_block(next);
+                dest
             }
             HirExprKind::MachineEmit { event_idx, fields } => {
                 // Lower each payload field expression to a Place. Collect
@@ -10448,11 +10511,18 @@ impl Builder {
         {
             return;
         }
+        // Substitute the expression type through the monomorphisation
+        // map BEFORE classifying — generic origins lowered under a
+        // substitution carry `expr.ty` as the raw `T` / `Wrapper<U>`
+        // and would otherwise resolve to `ValueClass::Unknown` →
+        // `Strategy::UnknownBlocked`, failing the
+        // `DecisionMapTotal` invariant for well-typed mono'd bodies.
+        let resolved_ty = self.subst_ty(&expr.ty);
         let value_class = if expr.value_class == ValueClass::Unknown {
-            let inferred = ValueClass::of_ty(&expr.ty, &self.type_classes);
+            let inferred = ValueClass::of_ty(&resolved_ty, &self.type_classes);
             if inferred != ValueClass::Unknown {
                 inferred
-            } else if self.is_known_actor_runtime_ty(&expr.ty) {
+            } else if self.is_known_actor_runtime_ty(&resolved_ty) {
                 ValueClass::BitCopy
             } else {
                 ValueClass::Unknown
@@ -10491,7 +10561,7 @@ impl Builder {
         };
         self.decisions.push(DecisionFact {
             site: expr.site,
-            ty: self.subst_ty(&expr.ty),
+            ty: resolved_ty,
             value_class,
             intent: expr.intent,
             strategy,
@@ -12049,6 +12119,7 @@ mod slice3_invariants {
                 None,
                 &HashSet::new(),
                 &HashSet::new(),
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 crate::model::FunctionCallConv::ActorHandler,

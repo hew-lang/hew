@@ -225,10 +225,53 @@ fn go<T: Engine + Athlete>(item: T) -> i64 {
 }
 ";
     let tco = typecheck(src);
+    let amb = tco
+        .errors
+        .iter()
+        .find(|e| e.kind == hew_types::error::TypeErrorKind::AmbiguousTraitMethod)
+        .unwrap_or_else(|| panic!("expected AmbiguousTraitMethod kind, got: {:?}", tco.errors));
+    // Diagnostic must name BOTH declaring traits.
+    assert!(amb.message.contains("Engine"), "expected Engine: {amb:?}");
+    assert!(amb.message.contains("Athlete"), "expected Athlete: {amb:?}");
+}
+
+// ─── V6b: Redeclared-supertrait ambiguity ───────────────────────────────────
+
+#[test]
+fn v6b_supertrait_redeclaration_is_ambiguous() {
+    // `trait B: A` where both A and B directly declare `describe` — and a
+    // bound `T: B` finds the method via two distinct declaring traits
+    // (A through supertrait walk, B directly). Plan §4 V14: must reject.
+    //
+    // NOTE: if Hew evolves to forbid trait method redeclaration in a
+    // supertrait at definition time, this test becomes a trait-definition
+    // error instead — the rejection site moves, but the program is
+    // still rejected. Either form is acceptable for this fail-closed
+    // contract; the test currently exercises the V0.5 behaviour.
+    let src = r#"
+trait A {
+    fn describe(val: Self) -> string;
+}
+trait B: A {
+    fn describe(val: Self) -> string;
+}
+type Thing { x: i64; }
+impl A for Thing {
+    fn describe(t: Thing) -> string { "A" }
+}
+impl B for Thing {
+    fn describe(t: Thing) -> string { "B" }
+}
+fn report<T: B>(item: T) -> string {
+    item.describe()
+}
+"#;
+    let tco = typecheck(src);
+    // Either the call is rejected as ambiguous OR the trait definition
+    // itself is rejected. The program MUST NOT typecheck cleanly.
     assert!(
-        tco.errors.iter().any(|e| e.message.contains("ambiguous")),
-        "expected ambiguous error, got: {:?}",
-        tco.errors
+        !tco.errors.is_empty(),
+        "expected at least one error (ambiguous call or duplicate trait method), got none"
     );
 }
 
@@ -379,5 +422,110 @@ fn main() -> string {
     assert!(
         dump.contains("call-static-trait Printable::print_str"),
         "expected Printable::print_str in: {dump}"
+    );
+}
+
+// ─── V7b: Generic-over-generic impl — `impl<U> Trait for Wrapper<U>` ────────
+
+#[test]
+fn v7b_generic_impl_preserves_impl_level_type_params() {
+    // The impl-level type param `U` must survive into the lowered HirFn
+    // `Wrapper::show.type_params` so that monomorphization can specialize
+    // per concrete instantiation. Prior to the W3.022 fix this dropped
+    // `U` and emitted an unsubstituted bare symbol.
+    let src = r#"
+trait Show {
+    fn show(val: Self) -> string;
+}
+type Wrapper<U> { inner: U; }
+impl<U> Show for Wrapper<U> {
+    fn show(w: Wrapper<U>) -> string { "wrapped" }
+}
+fn display<T: Show>(item: T) -> string {
+    item.show()
+}
+fn main() -> string {
+    display(Wrapper<i64> { inner: 7 })
+}
+"#;
+    let output = lower(src);
+    // Locate the lowered HirFn for `Wrapper::show` and assert it carries
+    // the impl-level type param.
+    let mut found = false;
+    for item in &output.module.items {
+        if let hew_hir::node::HirItem::Function(func) = item {
+            if func.name == "Wrapper::show" {
+                assert!(
+                    func.type_params.contains(&"U".to_string()),
+                    "expected impl-level type param `U` in Wrapper::show.type_params, \
+                     got {:?}",
+                    func.type_params
+                );
+                found = true;
+            }
+        }
+    }
+    assert!(
+        found,
+        "expected a lowered HirFn named `Wrapper::show` in the module"
+    );
+}
+
+// ─── V15: Generic impl monomorphization closure registers impl method ────────
+
+#[test]
+fn v15_generic_impl_monomorphization_closure_registers_impl_method() {
+    // When `display<T: Show>` is called with `Wrapper<i64>`, the
+    // monomorphization closure must discover the `CallTraitMethodStatic`
+    // inside `display`'s body and register `Wrapper::show` monomorphised
+    // with type_args `[i64]` — producing the mangled symbol
+    // `Wrapper::show<i64>` in the registry.
+    let src = r#"
+trait Show {
+    fn show(val: Self) -> string;
+}
+type Wrapper<U> { inner: U; }
+impl<U> Show for Wrapper<U> {
+    fn show(w: Wrapper<U>) -> string { "wrapped" }
+}
+fn display<T: Show>(item: T) -> string {
+    item.show()
+}
+fn main() -> string {
+    display(Wrapper<i64> { inner: 7 })
+}
+"#;
+    let output = lower(src);
+    // The monomorphisation registry should contain an entry for
+    // `Wrapper::show` with type_args containing i64.
+    let has_wrapper_show_mono = output.module.monomorphisations.iter().any(|mono| {
+        mono.key.origin_name == "Wrapper::show"
+            && mono
+                .key
+                .type_args
+                .iter()
+                .any(|t| matches!(t, hew_types::ResolvedTy::I64))
+    });
+    assert!(
+        has_wrapper_show_mono,
+        "expected monomorphisation registry to contain `Wrapper::show<i64>`, \
+         got entries: {:?}",
+        output
+            .module
+            .monomorphisations
+            .iter()
+            .map(|m| &m.mangled_name)
+            .collect::<Vec<_>>()
+    );
+    // The mangled name should follow the mangle convention.
+    let mangled = output
+        .module
+        .monomorphisations
+        .iter()
+        .find(|m| m.key.origin_name == "Wrapper::show")
+        .map(|m| m.mangled_name.as_str());
+    assert!(
+        mangled.is_some(),
+        "Wrapper::show monomorphisation should have a mangled name"
     );
 }

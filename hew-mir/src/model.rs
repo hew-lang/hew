@@ -2736,6 +2736,31 @@ pub enum MirDiagnosticKind {
         method_name: String,
         site: SiteId,
     },
+    /// W3.022: structured static-dispatch lookup failed. The substitution
+    /// resolved the receiver to a concrete type, but the `(declaring_trait,
+    /// self_type_name, method_name)` triple is absent from the
+    /// `hew_hir::dispatch::build_trait_impl_method_index` registry built
+    /// from `HirItem::Impl` metadata. Indicates either a checker bug
+    /// (admitted a static dispatch with no matching impl) or HIR-lowering
+    /// drift between impl-block lowering and the registry builder.
+    /// Fail-closed; never reconstruct the impl symbol from a display name.
+    StaticDispatchImplNotFound {
+        declaring_trait: String,
+        self_type_name: String,
+        method_name: String,
+        site: SiteId,
+    },
+    /// W3.022: structured static-dispatch lookup resolved to a generic
+    /// impl method (`impl_type_params` non-empty), but the corresponding
+    /// monomorphisation (mangled symbol) was not registered in
+    /// `module_fn_names`. Indicates that HIR's `closure_under_substitution`
+    /// failed to enqueue the impl-method `MonoKey` for this concrete
+    /// instantiation. Fail-closed.
+    StaticDispatchMonomorphisationMissing {
+        method_symbol: String,
+        mangled: String,
+        site: SiteId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

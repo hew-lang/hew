@@ -190,6 +190,11 @@ pub struct HirImplBlock {
     /// `HirItem::Function` entries (`<self_type_name>::<method>`). Order
     /// matches `impl_decl.methods`.
     pub method_symbols: Vec<String>,
+    /// Surface method names (e.g. `"show"`), parallel to `method_symbols`
+    /// in length and order. Carried as structured metadata so static-dispatch
+    /// resolution can look up `(declaring_trait, self_type_name, method_name)
+    /// → method_symbol` without reverse-parsing the flattened symbol.
+    pub method_names: Vec<String>,
     pub span: hew_parser::ast::Span,
 }
 

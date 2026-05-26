@@ -3912,10 +3912,14 @@ impl LowerCtx {
                 continue;
             }
             let symbol = crate::node::HirImplBlock::method_symbol(self_type_name, &method.name);
-            items.push(HirItem::Function(self.lower_fn_with_name(
+            // Pass impl-level type params so that methods of e.g. `impl<U> Trait for Wrapper<U>`
+            // carry `U` as a `HirFn::type_params` entry — required for monomorphization
+            // of generic-over-generic impl methods (W3.022 Stage 3).
+            items.push(HirItem::Function(self.lower_fn_with_name_and_impl_params(
                 method,
                 &symbol,
                 span.clone(),
+                &type_params,
             )));
             method_symbols.push(symbol);
         }
@@ -3947,6 +3951,24 @@ impl LowerCtx {
         name: &str,
         span: std::ops::Range<usize>,
     ) -> HirFn {
+        self.lower_fn_with_name_and_impl_params(func, name, span, &[])
+    }
+
+    /// Variant of `lower_fn_with_name` that prepends impl-block-level type
+    /// parameters into the lowered `HirFn::type_params`. Used by
+    /// `lower_impl_block` so that methods of `impl<U> Trait for Wrapper<U>`
+    /// carry `U` and can be monomorphized per concrete instantiation.
+    ///
+    /// The combined `type_params` is `impl_type_params ++ method.type_params`,
+    /// matching how `Wrapper<U>::show` is logically `fn show<U>(w: Wrapper<U>) -> ...`
+    /// once the impl-level binder is flattened into the method.
+    fn lower_fn_with_name_and_impl_params(
+        &mut self,
+        func: &FnDecl,
+        name: &str,
+        span: std::ops::Range<usize>,
+        impl_type_params: &[String],
+    ) -> HirFn {
         // Use the stable ItemId pre-allocated during the first pass.
         let id = self
             .fn_registry
@@ -3968,15 +3990,23 @@ impl LowerCtx {
         let body = self.lower_block(&func.body, &return_ty);
         self.pop_scope();
 
+        let method_type_params: Vec<String> = func
+            .type_params
+            .as_ref()
+            .map(|params| params.iter().map(|param| param.name.clone()).collect())
+            .unwrap_or_default();
+        let mut type_params: Vec<String> =
+            Vec::with_capacity(impl_type_params.len() + method_type_params.len());
+        type_params.extend(impl_type_params.iter().cloned());
+        // A method MAY shadow an impl-level type param name; that is a
+        // checker-level concern. Here we just concatenate.
+        type_params.extend(method_type_params);
+
         HirFn {
             id,
             node: self.ids.node(),
             name: name.to_string(),
-            type_params: func
-                .type_params
-                .as_ref()
-                .map(|params| params.iter().map(|param| param.name.clone()).collect())
-                .unwrap_or_default(),
+            type_params,
             params,
             return_ty,
             body,

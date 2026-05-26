@@ -5089,16 +5089,32 @@ impl Builder {
                     self.start_block(next);
                     dest
                 } else {
-                    // Type param not substituted — we're lowering the
-                    // unspecialised origin body (non-monomorphised path).
-                    // This is expected when the generic fn body is lowered
-                    // as-is (for the origin slot). Skip silently — the
-                    // monomorphised copies will have the substitution.
-                    // Lower sub-expressions for coverage.
+                    // Type param not substituted. After Stage 3 (impl-level
+                    // type params flow into `HirFn::type_params`), generic
+                    // origins are skipped at module emission — so any
+                    // emitted function body reaching this arm is a
+                    // checker/HIR invariant violation. Fail-closed.
+                    // We still lower sub-expressions to maximise diagnostic
+                    // coverage; the call itself yields no Place.
                     self.lower_value(receiver);
                     for arg in args {
                         self.lower_value(arg);
                     }
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnresolvedStaticDispatchSubstitution {
+                            receiver_type_param: receiver_type_param.clone(),
+                            declaring_trait: declaring_trait.clone(),
+                            method_name: method_name.clone(),
+                            site: expr.site,
+                        },
+                        note: format!(
+                            "static trait dispatch `{declaring_trait}::{method_name}` reached \
+                             MIR in a concrete function body without a substitution for \
+                             receiver type parameter `{receiver_type_param}`; this indicates \
+                             a missing monomorphization binding (the generic origin should \
+                             not be emitted)"
+                        ),
+                    });
                     None
                 }
             }

@@ -354,6 +354,12 @@ pub enum TypeErrorKind {
     UndefinedField,
     /// Method not found on type
     UndefinedMethod,
+    /// A trait-bounded method call resolves to multiple distinct declaring
+    /// traits after supertrait expansion and dedup, so static dispatch
+    /// cannot pick one without qualification. Distinct from
+    /// `UndefinedMethod`: the method is found in multiple traits, not
+    /// missing. See W3.022 §4 V6 / V14.
+    AmbiguousTraitMethod,
     /// Value cannot be sent to another actor
     InvalidSend,
     /// Operation not supported for this type
@@ -682,6 +688,7 @@ impl TypeErrorKind {
             Self::UndefinedFunction => "UndefinedFunction",
             Self::UndefinedField => "UndefinedField",
             Self::UndefinedMethod => "UndefinedMethod",
+            Self::AmbiguousTraitMethod => "AmbiguousTraitMethod",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
             Self::ContextReaderOutsideHandler => "ContextReaderOutsideHandler",

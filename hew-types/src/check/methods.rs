@@ -3717,7 +3717,7 @@ impl Checker {
                         let declaring_traits: Vec<&str> =
                             hits.iter().map(|h| h.1.as_str()).collect();
                         self.report_error(
-                            TypeErrorKind::UndefinedMethod,
+                            TypeErrorKind::AmbiguousTraitMethod,
                             span,
                             format!(
                                 "ambiguous trait method `{method}` on `{}`: method is declared by \

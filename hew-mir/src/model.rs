@@ -2721,6 +2721,21 @@ pub enum MirDiagnosticKind {
         field_name: String,
         reason: String,
     },
+    /// W3.022 V10: A `CallTraitMethodStatic` reached MIR with no concrete
+    /// substitution for its `receiver_type_param`. After Stage 3 (impl-level
+    /// type params flow into `HirFn::type_params`), unspecialised generic
+    /// origins are skipped at the module-emission level (`lower_hir_module`
+    /// continues past any `HirFn` with non-empty `type_params`), so any
+    /// emitted MIR function reaching this path indicates a checker/HIR
+    /// invariant violation: the call survived into a *concrete* function
+    /// body without the substitution map carrying the type-param binding.
+    /// Fail-closed per `boundary-fail-closed` / `td-debt-not-runtime-surprise`.
+    UnresolvedStaticDispatchSubstitution {
+        receiver_type_param: String,
+        declaring_trait: String,
+        method_name: String,
+        site: SiteId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

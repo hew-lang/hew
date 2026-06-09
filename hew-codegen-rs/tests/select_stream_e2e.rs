@@ -197,8 +197,18 @@ fn jit_run_main_with_stream(ll_path: &std::path::Path, stream_ptr: *mut stream::
     unsafe { jit_main.call(stream_ptr) }
 }
 
+// The select stream-next arm (`item from stream.recv()` in a `select {}` block)
+// is checker-rejected for user source in edition 2026: the fixture
+// `tests/vertical-slice/reject/select_arm_stream_recv_dropped.hew` confirms that
+// `StreamNext` arms in `SelectArmKind` are currently unreachable from Hew source.
+// This test exercises the codegen path directly via hand-constructed MIR and drives
+// it through the JIT execution engine; the runtime segfaults under JIT because the
+// stream-poll binding ABI is not fully wired for non-string element types.
+// JIT execution is deferred post-v0.5 (see memory `feedback_jit_deferred_native_primary`).
+// Tracked for the select-stream arm's return once JIT exec is promoted.
 #[test]
-#[ignore = "P0 fix wired; runtime panic needs investigation in follow-up"]
+#[ignore = "checker-unreachable codegen seam; JIT-exec validation deferred post-v0.5; \
+            tracked for the select-stream arm return once JIT exec is promoted"]
 fn select_stream_next_i64_binding_receives_item_value() {
     let pipeline = select_stream_i64_pipeline();
     let ll = compile_to_ll(&pipeline, "select_stream_i64_value");

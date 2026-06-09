@@ -1,6 +1,6 @@
 # HEW-WIRE-FORMAT-DOCTRINE
 
-> **Status:** v0.5 doc-of-truth for wire-format choices across the project.
+> **Status:** Canonical wire-format choices across the project.
 > **Audience:** language designers, runtime implementers, stdlib maintainers,
 > codegen/ABI reviewers, docs reviewers, integration authors.
 > **Stance:** different layers of the system have different wire-format
@@ -82,19 +82,16 @@ CDDL integer keys are mirrored as field-doc comments on each struct field.
 
 ### Substrate provenance
 
-The CBOR envelope substrate landed in three commits on `v05-integration`:
+The CBOR envelope substrate is built from three layers:
 
-- **`63a486d6`** — `feat(runtime): CBOR envelope type + CDDL schema for
-  wire layer`. Introduced the `EnvelopeFrame` / `ControlFrame` Rust types
-  and the canonical CDDL schema.
-- **`bb8826e7`** — `fix(runtime): enforce CBOR envelope version +
-  truncation rejection`. Hardened the decoder to fail closed on unknown
-  versions and truncated input. This is what makes CBOR usable as a
-  trust boundary, not just a serialisation format.
-- **`04bfb422`** — `feat(runtime): swap HBF call sites to CBOR envelope`.
-  Cut over the runtime's actor-messaging call sites from the legacy HBF
-  envelope to the CBOR substrate. After this commit, HBF is no longer on
-  the inter-process hot path.
+- **Envelope types + CDDL schema** — `EnvelopeFrame` / `ControlFrame` Rust
+  types in `hew-runtime/src/envelope.rs` and the canonical schema in
+  `hew-runtime/schemas/envelope.cddl`.
+- **Fail-closed decoder** — unknown versions and truncated input are rejected
+  (`UnknownVersion`); this is what makes CBOR usable as a trust boundary,
+  not just a serialisation format.
+- **Runtime cutover** — the runtime's actor-messaging call sites use the CBOR
+  envelope; HBF is not on the inter-process hot path.
 
 The round-trip and version-rejection tests live in
 [`hew-runtime/tests/envelope_round_trip.rs`][envelope-test].
@@ -168,9 +165,8 @@ Each module's README states its own scope. The doctrine here is about
 
 `std::encoding::wire` exposes low-level helpers (`encode_header` and
 friends) that reflect the **legacy HBF** byte layout, not the current
-CBOR envelope. They are kept available for code that was written
-against the pre-v0.5 substrate and have **not** been deleted yet. New
-code must not reach for them. See §5 for the migration commitment.
+CBOR envelope. These helpers are a migration stub pending deletion (see §5
+S1 for the obsolescence trigger). New code must not reach for them.
 
 ---
 

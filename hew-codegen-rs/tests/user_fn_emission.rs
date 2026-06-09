@@ -48,6 +48,7 @@ fn emit_ll(source: &str, module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts =
         emit_module(&pipeline, &options).expect("user-fn pipeline must emit successfully");

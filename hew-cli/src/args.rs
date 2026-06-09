@@ -33,6 +33,8 @@ pub enum Command {
     Debug(DebugArgs),
     /// Parse and typecheck only.
     Check(CheckArgs),
+    /// Compile a .hew file to a native binary on disk (like `go build`).
+    Build(BuildArgs),
     /// Generate documentation.
     Doc(DocArgs),
     /// Interactive REPL or evaluate expression.
@@ -282,6 +284,50 @@ pub struct CheckArgs {
 }
 
 impl CheckArgs {
+    pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
+        crate::compile::CompileOptions {
+            target: self.target.clone(),
+            ..self.common.base_compile_options()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Build
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Args)]
+pub struct BuildArgs {
+    /// Input .hew file.
+    pub input: PathBuf,
+    /// Output binary path. Default: `./<stem>` (no extension on Unix targets,
+    /// `.exe` on Windows targets). Ignored with `--emit-obj`.
+    #[arg(long, short = 'o', value_name = "PATH")]
+    pub output: Option<PathBuf>,
+    /// Target triple. Omit for host native; e.g. `arm64-apple-darwin`,
+    /// `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-gnu`,
+    /// `wasm32-unknown-unknown`.
+    #[arg(long, value_name = "TRIPLE")]
+    pub target: Option<String>,
+    /// Emit a relocatable object file instead of a linked binary, written to
+    /// `<cwd>/<stem><.o|.obj>`. Required for foreign-OS targets that cannot be
+    /// linked on this host.
+    #[arg(long = "emit-obj")]
+    pub emit_obj: bool,
+    /// Build with debug info (no optimization, no stripping).
+    #[arg(long, short = 'g')]
+    pub debug: bool,
+    /// Pass an extra library or linker argument to the native link step.
+    #[arg(long = "link-lib", value_name = "PATH")]
+    pub link_libs: Vec<String>,
+    #[command(flatten)]
+    pub common: CommonBuildArgs,
+    /// Diagnostic output format: `text` (default) or `json`.
+    #[arg(long, value_enum, default_value_t = DiagnosticFormat::Text, value_name = "FORMAT")]
+    pub format: DiagnosticFormat,
+}
+
+impl BuildArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             target: self.target.clone(),

@@ -174,6 +174,63 @@ pub enum StateFieldCloneKind {
     /// classifiable, then defers symbol selection to the layout-driven
     /// codegen authority.
     Enum { name: String },
+
+    /// `#[opaque]` runtime handle declared in a stdlib or user module (e.g.
+    /// `json.Value`, `yaml.Value`, `cron.Expr`). The clone direction has no
+    /// dup helper — supervisor-restart clone fails closed (`FailClosed`).
+    ///
+    /// **Drop**: the actor-state drop path is a **no-op / leak** for opaque
+    /// handles. `drop_helper_for_kind(OpaqueHandle) => Ok(None)` and
+    /// `emit_field_drop_step(OpaqueHandle) => Ok(())` both no-op in codegen.
+    /// The handle is intentionally not freed by the actor state drop path:
+    /// the user is responsible for calling `.free()` on the handle before the
+    /// actor exits. A user that does not call `.free()` leaks the handle.
+    /// This is the documented ownership contract for `#[opaque]` types
+    /// (std/encoding/json/json.hew: "dropping without `free()` is a resource
+    /// leak"). A future `#[resource]`/`#[linear]` upgrade would enforce the
+    /// call discipline at type-check time.
+    ///
+    /// **Ownership semantics**: the handle is pointer-width. A byte-copy at
+    /// enum construction moves (not aliases) the handle — exactly one owner
+    /// holds it. No refcount; no dup.
+    OpaqueHandle { name: String },
+}
+
+impl StateFieldCloneKind {
+    /// True when this kind is, or transitively contains, an [`OpaqueHandle`].
+    ///
+    /// The `ResolvedTy`-level authority [`crate::ty_contains_unclonable_opaque`]
+    /// already makes the MIR classifier fail closed before a
+    /// `Vec`/`HashMap`/`HashSet` carrying an opaque handle is ever produced, so a
+    /// container kind nesting an `OpaqueHandle` is unreachable in practice. This
+    /// kind-level mirror is the codegen BACKSTOP: `collection_layout_witness`
+    /// consults it so that if any future path synthesised such a kind and reached
+    /// codegen, the managed-collection clone/free symbol is refused rather than
+    /// silently shallow-copying the opaque pointer (double-free / UAF on restart).
+    ///
+    /// [`OpaqueHandle`]: StateFieldCloneKind::OpaqueHandle
+    #[must_use]
+    pub fn contains_opaque_handle(&self) -> bool {
+        match self {
+            StateFieldCloneKind::OpaqueHandle { .. } => true,
+            StateFieldCloneKind::Vec { elem } | StateFieldCloneKind::HashSet { elem } => {
+                elem.contains_opaque_handle()
+            }
+            StateFieldCloneKind::HashMap { key, val } => {
+                key.contains_opaque_handle() || val.contains_opaque_handle()
+            }
+            // `UserRecord` / `Enum` carry only a registry key here; codegen
+            // re-classifies their fields/payloads (which fail closed at the
+            // `ResolvedTy` authority), so there is nothing to recurse into at the
+            // kind level. Leaf bitcopy/heap kinds carry no opaque.
+            StateFieldCloneKind::BitCopy { .. }
+            | StateFieldCloneKind::String
+            | StateFieldCloneKind::Bytes
+            | StateFieldCloneKind::IoHandle { .. }
+            | StateFieldCloneKind::UserRecord { .. }
+            | StateFieldCloneKind::Enum { .. } => false,
+        }
+    }
 }
 
 /// IO-handle subkind. Today the only inhabitant is `Connection`; the
@@ -245,6 +302,17 @@ pub enum ClassificationError {
     /// was rejected (an actor with `Function`-typed state, a closure
     /// capture, a `dyn Trait`, etc.).
     Unsupported { rendered: String },
+    /// A container/composite (`Vec<T>`, `Option<T>`, `Result<T, E>`,
+    /// `HashMap<K, V>`, `HashSet<T>`, a record field, an enum payload, or any
+    /// nesting thereof) transitively carries a `#[opaque]` runtime handle with
+    /// no clone-dup helper. A bare opaque field already routes to
+    /// `StateFieldCloneKind::OpaqueHandle` (clone fails closed per-kind); this
+    /// variant fails the WHOLE composite closed at classification time because
+    /// the container's managed clone / plain element layout would shallow-copy
+    /// the opaque pointer and double-free / UAF on supervisor restart. The
+    /// authoritative check is `model::ty_contains_unclonable_opaque`. `outer`
+    /// names the container/composite shape; `opaque` names the handle.
+    OpaqueInContainer { outer: String, opaque: String },
 }
 
 impl std::fmt::Display for ClassificationError {
@@ -266,6 +334,15 @@ impl std::fmt::Display for ClassificationError {
                 "actor-state classifier does not yet support field type `{rendered}` \
                  (Stage 0 audit enumerated the supported shapes; extending requires a \
                  new `StateFieldCloneKind` variant AND a runtime helper)",
+            ),
+            ClassificationError::OpaqueInContainer { outer, opaque } => write!(
+                f,
+                "actor-state field `{outer}` transitively carries opaque handle \
+                 `{opaque}`, which has no clone-dup runtime helper; cloning the \
+                 container at supervisor restart would shallow-copy the handle and \
+                 double-free / use-after-free. Remove the opaque handle from the \
+                 container, or hold it directly (a direct opaque field is rejected with \
+                 a dedicated diagnostic) and re-acquire it on restart.",
             ),
         }
     }
@@ -338,10 +415,44 @@ pub fn classify_actor_state_fields_with_enum_layouts(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
 ) -> Result<Vec<StateFieldCloneKind>, ClassificationError> {
+    classify_actor_state_fields_with_opaque_handles(
+        state_field_tys,
+        record_layouts,
+        enum_layouts,
+        &[],
+    )
+}
+
+/// Opaque-handle-aware companion to [`classify_actor_state_fields_with_enum_layouts`].
+///
+/// Identical to [`classify_actor_state_fields_with_enum_layouts`] but also
+/// consults `opaque_handle_names` so a `#[opaque]`-typed field (e.g.
+/// `json.Value`, `yaml.Value`) classifies as
+/// [`StateFieldCloneKind::OpaqueHandle`] instead of failing as
+/// `MissingRecordLayout`. `opaque_handle_names` is `IrPipeline::opaque_handle_names`
+/// populated by `lower_hir_module` from `HirItem::TypeDecl { is_opaque: true }`.
+///
+/// # Errors
+///
+/// Same conditions as [`classify_actor_state_fields_with_enum_layouts`].
+pub fn classify_actor_state_fields_with_opaque_handles(
+    state_field_tys: &[ResolvedTy],
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+) -> Result<Vec<StateFieldCloneKind>, ClassificationError> {
     let mut visited: HashSet<String> = HashSet::new();
     state_field_tys
         .iter()
-        .map(|ty| classify_state_field_impl(ty, record_layouts, enum_layouts, &mut visited))
+        .map(|ty| {
+            classify_state_field_full(
+                ty,
+                record_layouts,
+                enum_layouts,
+                opaque_handle_names,
+                &mut visited,
+            )
+        })
         .collect()
 }
 
@@ -374,7 +485,8 @@ pub fn classify_owned_string_record_fields(
             | StateFieldCloneKind::HashSet { .. }
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
-            | StateFieldCloneKind::Enum { .. } => return Ok(None),
+            | StateFieldCloneKind::Enum { .. }
+            | StateFieldCloneKind::OpaqueHandle { .. } => return Ok(None),
         }
     }
     Ok(has_string.then_some(kinds))
@@ -421,10 +533,48 @@ pub fn classify_state_field_with_enum_layouts(
     classify_state_field_impl(ty, record_layouts, enum_layouts, visited)
 }
 
+/// Full classifier: enum-aware and opaque-handle-aware.
+///
+/// Opaque-handle-aware companion to [`classify_state_field_with_enum_layouts`].
+/// `opaque_handle_names` is `IrPipeline::opaque_handle_names`.
+///
+/// # Errors
+///
+/// Same conditions as [`classify_state_field`].
+#[allow(
+    clippy::implicit_hasher,
+    reason = "the substrate is internally-consumed; callers don't pick the hasher"
+)]
+pub fn classify_state_field_full(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+    visited: &mut HashSet<String>,
+) -> Result<StateFieldCloneKind, ClassificationError> {
+    classify_state_field_full_impl(
+        ty,
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        visited,
+    )
+}
+
 fn classify_state_field_impl(
     ty: &ResolvedTy,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    visited: &mut HashSet<String>,
+) -> Result<StateFieldCloneKind, ClassificationError> {
+    classify_state_field_full_impl(ty, record_layouts, enum_layouts, &[], visited)
+}
+
+fn classify_state_field_full_impl(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     match ty {
@@ -455,9 +605,20 @@ fn classify_state_field_impl(
         ResolvedTy::String => Ok(StateFieldCloneKind::String),
         ResolvedTy::Bytes => Ok(StateFieldCloneKind::Bytes),
         // --- Container / handle / record / enum arms -----------------
-        ResolvedTy::Named { name, args, .. } => {
-            classify_named(name, args, record_layouts, enum_layouts, visited)
-        }
+        ResolvedTy::Named {
+            name,
+            args,
+            is_opaque,
+            ..
+        } => classify_named(
+            name,
+            args,
+            *is_opaque,
+            record_layouts,
+            enum_layouts,
+            opaque_handle_names,
+            visited,
+        ),
 
         // --- Closed-set rejection -------------------------------------
         // Pointer, Function, Closure, TraitObject, Tuple, Array, Slice,
@@ -495,20 +656,77 @@ fn classify_state_field_impl(
     }
 }
 
+/// Fail-closed guard for a container element/key/value: if `elem` transitively
+/// carries a `#[opaque]` runtime handle (no clone-dup helper), reject the WHOLE
+/// container so a managed/plain clone can never shallow-copy the opaque pointer
+/// and double-free / UAF on supervisor restart. Delegates the transitive walk to
+/// the single `model::ty_contains_unclonable_opaque` authority so `Vec` /
+/// `Option` / `Result` / `HashMap` / nested containers / record-with-opaque-field
+/// / enum-payload all fail closed through one decision, not per-shape patches.
+fn reject_unclonable_opaque_container(
+    outer: &str,
+    elem: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> Result<(), ClassificationError> {
+    if crate::model::ty_contains_unclonable_opaque(elem, record_layouts, enum_layouts) {
+        return Err(ClassificationError::OpaqueInContainer {
+            outer: outer.to_string(),
+            opaque: format!("{}", elem.user_facing()),
+        });
+    }
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "dispatch function: each arm is a distinct named type; splitting would obscure the exhaustion pattern"
+)]
 fn classify_named(
     name: &str,
     args: &[ResolvedTy],
+    is_opaque: bool,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
+    // ── opaque-handle discriminator (authoritative, checked FIRST) ──────
+    //
+    // `is_opaque` is the type-identity discriminator stamped on
+    // `ResolvedTy::Named` by `hew-hir::lower::lower_type` from the program's
+    // `#[opaque]` type-decl set. When it is `true` this `Named` resolved to a
+    // real opaque runtime handle (e.g. `json.Value`, `cron.Expr`) — a
+    // pointer-width handle with no clone-dup helper, whose clone direction
+    // MUST fail closed (a shallow `memcpy` would duplicate ownership of the
+    // underlying allocation and double-free / UAF on supervisor restart).
+    //
+    // This check runs BEFORE the record-layouts and enum-layouts lookups
+    // because the discriminator is authoritative: a real opaque handle whose
+    // short name collides with a user `type Value` / `enum Value` arrives here
+    // as `Named { name: "Value", is_opaque: true }`, while the user type
+    // arrives as `Named { name: "Value", is_opaque: false }`. Routing on the
+    // name string alone cannot tell them apart (both are `"Value"`), so the
+    // earlier name-based ordering let a real opaque handle be captured by the
+    // user record/enum layout and emit an unsafe shallow clone. Dispatching on
+    // identity instead of name closes that false-negative for good.
+    //
+    // `indirect enum` types are also threaded through `opaque_handle_names`
+    // (so codegen emits ptr-typed slots) but are NOT `#[opaque]` — they have
+    // `is_opaque: false` here and an `EnumLayout`, so they fall through to the
+    // enum-layouts arm and classify as `Enum`, not `OpaqueHandle`.
+    if is_opaque {
+        return Ok(StateFieldCloneKind::OpaqueHandle {
+            name: name.to_string(),
+        });
+    }
+
     // ── record-layouts-first lookup (cross-eco review fix) ──────────
     //
-    // `ResolvedTy::Named { name, args }` has already dropped the
-    // checker's builtin discriminator (see `hew-types/src/resolved_ty.rs`
-    // around the `from_ty` boundary): a user-declared `type Connection
-    // { ... }` and the runtime builtin `net.Connection` both reach this
-    // function as `Named { name: "Connection", args: [] }`. Routing on
+    // `ResolvedTy::Named { name, args }` does not carry the checker's
+    // builtin discriminator across this boundary: a user-declared `type
+    // Connection { ... }` and the runtime builtin `net.Connection` both reach
+    // this function as `Named { name: "Connection", args: [] }`. Routing on
     // name alone would silently misclassify a user record named after
     // a builtin (Connection / Vec / HashMap / HashSet / ActorRef /
     // string / bytes) — bypassing the recursive-record arm and the
@@ -523,10 +741,57 @@ fn classify_named(
     // fragility`); the structural fix — propagating a typed builtin
     // discriminator past the checker boundary — is tracked as W4.011
     // ("HIR resolution gap: ResolvedTy::Named drops builtin
-    // discriminator"). Until W4.011 lands, every `Named { name }` arm
-    // in this module MUST honour record_layouts-first.
+    // discriminator"). Until W4.011 lands, every non-opaque `Named { name }`
+    // arm in this module MUST honour record_layouts-first.
     if record_layouts.iter().any(|r| r.name == name) {
-        return classify_user_record(name, record_layouts, enum_layouts, visited);
+        return classify_user_record(
+            name,
+            record_layouts,
+            enum_layouts,
+            opaque_handle_names,
+            visited,
+        );
+    }
+
+    // ── enum-layouts check ──────────────────────────────────────────
+    //
+    // `indirect enum` types are added to `opaque_handle_names` by
+    // `lower_hir_module` so that codegen emits a bare `ptr` slot for
+    // every variable of the type (heap-allocated tagged union). However,
+    // an indirect enum IS a classified enum — it must route through
+    // `classify_enum`, not be misidentified as a raw `OpaqueHandle`.
+    //
+    // The `is_opaque` discriminator already excluded real `#[opaque]`
+    // handles above (they returned `OpaqueHandle`), so any `Named` reaching
+    // here with an `EnumLayout` is a genuine enum (monomorphic, generic, or
+    // indirect) and classifies as `Enum`.
+    if let Some(layout) = lookup_enum_layout(name, args, enum_layouts) {
+        return classify_enum(
+            layout,
+            record_layouts,
+            enum_layouts,
+            opaque_handle_names,
+            visited,
+        );
+    }
+
+    // ── opaque-handle name fallback (defence-in-depth) ──────────────────
+    //
+    // The `is_opaque` discriminator above is the authoritative opaque check.
+    // This name-set fallback remains ONLY as defence-in-depth for any path
+    // that produces a `Named` for a `#[opaque]` decl without the discriminator
+    // stamped (e.g. a `ResolvedTy` synthesised outside `lower_type`). It is
+    // reached only after record-layouts-first and enum-layouts, so a user
+    // record/enum that shadows the name still routes correctly. It never
+    // captures a user type that has its own layout. `opaque_handle_names`
+    // carries the unqualified decl name (`"Value"`); use sites may carry the
+    // qualified form (`"json.Value"`), so match both the full name and the
+    // short suffix.
+    let short = name.rsplit_once('.').map_or(name, |(_, s)| s);
+    if opaque_handle_names.iter().any(|n| n == name || n == short) {
+        return Ok(StateFieldCloneKind::OpaqueHandle {
+            name: name.to_string(),
+        });
     }
 
     // ── Builtin name arms (only reached when not user-shadowed) ─────
@@ -603,7 +868,19 @@ fn classify_named(
                 .ok_or_else(|| ClassificationError::Unsupported {
                     rendered: format!("Named {{ name: \"Vec\", args: {args:?} }}"),
                 })?;
-            let elem_kind = classify_state_field_impl(elem, record_layouts, enum_layouts, visited)?;
+            // Fail closed: a Vec whose element transitively carries an opaque
+            // handle would clone as a managed vec with a plain element witness,
+            // shallow-copying the opaque pointer (double-free / UAF on restart).
+            // The single transitive authority covers Vec<json.Value>,
+            // Vec<Option<json.Value>>, Vec<RecordWithOpaqueField>, etc.
+            reject_unclonable_opaque_container("Vec", elem, record_layouts, enum_layouts)?;
+            let elem_kind = classify_state_field_full_impl(
+                elem,
+                record_layouts,
+                enum_layouts,
+                opaque_handle_names,
+                visited,
+            )?;
             Ok(StateFieldCloneKind::Vec {
                 elem: Box::new(elem_kind),
             })
@@ -619,8 +896,23 @@ fn classify_named(
                 .ok_or_else(|| ClassificationError::Unsupported {
                     rendered: format!("Named {{ name: \"HashMap\", args: {args:?} }}"),
                 })?;
-            let key_kind = classify_state_field_impl(key, record_layouts, enum_layouts, visited)?;
-            let val_kind = classify_state_field_impl(val, record_layouts, enum_layouts, visited)?;
+            // Fail closed on either an opaque key or an opaque value.
+            reject_unclonable_opaque_container("HashMap", key, record_layouts, enum_layouts)?;
+            reject_unclonable_opaque_container("HashMap", val, record_layouts, enum_layouts)?;
+            let key_kind = classify_state_field_full_impl(
+                key,
+                record_layouts,
+                enum_layouts,
+                opaque_handle_names,
+                visited,
+            )?;
+            let val_kind = classify_state_field_full_impl(
+                val,
+                record_layouts,
+                enum_layouts,
+                opaque_handle_names,
+                visited,
+            )?;
             Ok(StateFieldCloneKind::HashMap {
                 key: Box::new(key_kind),
                 val: Box::new(val_kind),
@@ -632,7 +924,14 @@ fn classify_named(
                 .ok_or_else(|| ClassificationError::Unsupported {
                     rendered: format!("Named {{ name: \"HashSet\", args: {args:?} }}"),
                 })?;
-            let elem_kind = classify_state_field_impl(elem, record_layouts, enum_layouts, visited)?;
+            reject_unclonable_opaque_container("HashSet", elem, record_layouts, enum_layouts)?;
+            let elem_kind = classify_state_field_full_impl(
+                elem,
+                record_layouts,
+                enum_layouts,
+                opaque_handle_names,
+                visited,
+            )?;
             Ok(StateFieldCloneKind::HashSet {
                 elem: Box::new(elem_kind),
             })
@@ -649,9 +948,21 @@ fn classify_named(
         // name — mirroring `user_record_layout_key` in `lower.rs`.
         _ => {
             if let Some(layout) = lookup_enum_layout(name, args, enum_layouts) {
-                return classify_enum(layout, record_layouts, enum_layouts, visited);
+                return classify_enum(
+                    layout,
+                    record_layouts,
+                    enum_layouts,
+                    opaque_handle_names,
+                    visited,
+                );
             }
-            classify_user_record(name, record_layouts, enum_layouts, visited)
+            classify_user_record(
+                name,
+                record_layouts,
+                enum_layouts,
+                opaque_handle_names,
+                visited,
+            )
         }
     }
 }
@@ -666,12 +977,23 @@ fn lookup_enum_layout<'a>(
     args: &[ResolvedTy],
     enum_layouts: &'a [EnumLayout],
 ) -> Option<&'a EnumLayout> {
-    let key = if args.is_empty() {
-        name.to_string()
+    // The `name` at use sites after HIR resolution may carry a module-qualified
+    // prefix (e.g. `"json.ParseError"`), while `enum_layouts` always registers
+    // the unqualified decl name (`"ParseError"`). Try the full name first so an
+    // exact match wins; fall back to the short name (suffix after the last `.`)
+    // so imported enums resolve correctly. For generic enums, mangle both forms.
+    let short = name.rsplit_once('.').map_or(name, |(_, s)| s);
+    if args.is_empty() {
+        enum_layouts
+            .iter()
+            .find(|el| el.name == name || el.name == short)
     } else {
-        hew_hir::mangle(name, args)
-    };
-    enum_layouts.iter().find(|el| el.name == key)
+        let full_mangled = hew_hir::mangle(name, args);
+        let short_mangled = hew_hir::mangle(short, args);
+        enum_layouts
+            .iter()
+            .find(|el| el.name == full_mangled || el.name == short_mangled)
+    }
 }
 
 /// Classify a tagged-union (`enum`) field. Mirrors `classify_user_record`:
@@ -686,9 +1008,20 @@ fn classify_enum(
     layout: &EnumLayout,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     if !visited.insert(layout.name.clone()) {
+        // A name already in `visited` normally signals a value-type cycle
+        // (infinite recursion without heap indirection). For `indirect` enums,
+        // re-encountering the name is valid: the self-referential variant payload
+        // is a heap-allocated pointer to the enum, not an inline embed. Return
+        // `Enum` (ptr-shaped) instead of propagating `RecordCycle`.
+        if layout.is_indirect {
+            return Ok(StateFieldCloneKind::Enum {
+                name: layout.name.clone(),
+            });
+        }
         return Err(ClassificationError::RecordCycle {
             name: layout.name.clone(),
         });
@@ -699,7 +1032,13 @@ fn classify_enum(
     // where the error surfaces (with the recursion stack preserved).
     for variant in &layout.variants {
         for field_ty in &variant.field_tys {
-            let _ = classify_state_field_impl(field_ty, record_layouts, enum_layouts, visited)?;
+            let _ = classify_state_field_full_impl(
+                field_ty,
+                record_layouts,
+                enum_layouts,
+                opaque_handle_names,
+                visited,
+            )?;
         }
     }
     visited.remove(&layout.name);
@@ -712,6 +1051,7 @@ fn classify_user_record(
     name: &str,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     if !visited.insert(name.to_string()) {
@@ -734,7 +1074,13 @@ fn classify_user_record(
     // record fields are threaded the enum registry so a record holding an
     // enum classifies, rather than failing closed.
     for field_ty in &layout.field_tys {
-        let _ = classify_state_field_impl(field_ty, record_layouts, enum_layouts, visited)?;
+        let _ = classify_state_field_full_impl(
+            field_ty,
+            record_layouts,
+            enum_layouts,
+            opaque_handle_names,
+            visited,
+        )?;
     }
     visited.remove(name);
     Ok(StateFieldCloneKind::UserRecord {
@@ -749,6 +1095,19 @@ mod tests {
 
     fn no_records() -> Vec<RecordLayout> {
         Vec::new()
+    }
+
+    /// Build a non-opaque `Named` type for test fixtures (user record/enum or
+    /// builtin-by-name). Mirrors a `lower_type`-produced reference with
+    /// `is_opaque: false`.
+    fn named(name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
+        ResolvedTy::named_user(name, args)
+    }
+
+    /// Build a `Named` type carrying the `#[opaque]` discriminator, as
+    /// `lower_type` stamps for an opaque-handle reference (e.g. `json.Value`).
+    fn named_opaque(name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
+        ResolvedTy::named_opaque(name, args)
     }
 
     #[test]
@@ -803,8 +1162,10 @@ mod tests {
                 name: "SomeActor".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             }],
             builtin: None,
+            is_opaque: false,
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
@@ -819,6 +1180,7 @@ mod tests {
             name: "Connection".to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
@@ -835,6 +1197,7 @@ mod tests {
             name: "Vec".to_string(),
             args: vec![ResolvedTy::I32],
             builtin: None,
+            is_opaque: false,
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
@@ -851,6 +1214,7 @@ mod tests {
             name: "Vec".to_string(),
             args: vec![ResolvedTy::String],
             builtin: None,
+            is_opaque: false,
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
@@ -873,8 +1237,10 @@ mod tests {
                 name: "Connection".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             }],
             builtin: None,
+            is_opaque: false,
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
@@ -893,6 +1259,7 @@ mod tests {
             name: "HashMap".to_string(),
             args: vec![ResolvedTy::String, ResolvedTy::I64],
             builtin: None,
+            is_opaque: false,
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
@@ -919,8 +1286,10 @@ mod tests {
                             name: "Entry".to_string(),
                             args: vec![],
                             builtin: None,
+                            is_opaque: false,
                         }],
                         builtin: None,
+                        is_opaque: false,
                     },
                     ResolvedTy::String,
                 ],
@@ -933,6 +1302,7 @@ mod tests {
                         name: "Vec".to_string(),
                         args: vec![ResolvedTy::I32],
                         builtin: None,
+                        is_opaque: false,
                     },
                 ],
             },
@@ -941,6 +1311,7 @@ mod tests {
             name: "Workspace".to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         };
         let mut v = HashSet::new();
         let result = classify_state_field(&ty, &records, &mut v).unwrap();
@@ -971,11 +1342,13 @@ mod tests {
                         name: "Leaf".to_string(),
                         args: vec![],
                         builtin: None,
+                        is_opaque: false,
                     },
                     ResolvedTy::Named {
                         name: "Leaf".to_string(),
                         args: vec![],
                         builtin: None,
+                        is_opaque: false,
                     },
                 ],
             },
@@ -990,6 +1363,7 @@ mod tests {
                 name: "Top".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             },
             &records,
             &mut v,
@@ -1019,6 +1393,7 @@ mod tests {
                     name: "Node".to_string(),
                     args: vec![],
                     builtin: None,
+                    is_opaque: false,
                 },
                 ResolvedTy::I32,
             ],
@@ -1029,6 +1404,7 @@ mod tests {
                 name: "Node".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             },
             &records,
             &mut v,
@@ -1050,6 +1426,7 @@ mod tests {
                 name: "Phantom".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             },
             &no_records(),
             &mut v,
@@ -1131,6 +1508,7 @@ mod tests {
             name: "Option".to_string(),
             args: vec![ResolvedTy::String],
             builtin: None,
+            is_opaque: false,
         };
         let mut v = HashSet::new();
         let result =
@@ -1170,6 +1548,7 @@ mod tests {
             name: "Result".to_string(),
             args: vec![ResolvedTy::I64, ResolvedTy::String],
             builtin: None,
+            is_opaque: false,
         };
         let mut v = HashSet::new();
         let result =
@@ -1203,6 +1582,7 @@ mod tests {
             name: "Envelope".to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         };
         let mut v = HashSet::new();
         let result =
@@ -1238,6 +1618,7 @@ mod tests {
             name: "Bad".to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         };
         let mut v = HashSet::new();
         let result = classify_state_field_with_enum_layouts(&ty, &no_records(), &layouts, &mut v);
@@ -1259,6 +1640,7 @@ mod tests {
             name: "Option".to_string(),
             args: vec![ResolvedTy::String],
             builtin: None,
+            is_opaque: false,
         };
         let mut v = HashSet::new();
         let result = classify_state_field(&ty, &no_records(), &mut v);
@@ -1279,6 +1661,7 @@ mod tests {
                 name: "Envelope".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             }],
         }];
         let enums = vec![EnumLayout {
@@ -1294,6 +1677,7 @@ mod tests {
             name: "Holder".to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         };
         let mut v = HashSet::new();
         let result = classify_state_field_with_enum_layouts(&ty, &records, &enums, &mut v).unwrap();
@@ -1304,5 +1688,425 @@ mod tests {
             },
         );
         assert!(v.is_empty());
+    }
+
+    // ── Collision-safety: record-layouts-first beats opaque set ──────────────
+
+    /// A user-declared `type Value { x: i64 }` imported as `laneBmod.Value`
+    /// arrives at the classifier as `Named { name: "Value", args: [] }` after
+    /// `lower_type` strips the module prefix (W4.011 gap).  The same short name
+    /// `"Value"` is also in `opaque_handle_names` because `json.Value` is an
+    /// `#[opaque]` stdlib type.
+    ///
+    /// The record-layouts-first guard must win: `"Value"` is in `record_layouts`,
+    /// so it classifies as `UserRecord`, NOT `OpaqueHandle`.  A false-positive
+    /// `OpaqueHandle` here would later cause codegen to emit a bare `ptr` slot
+    /// for the struct, triggering a `RecordFieldLoad non-struct slot type` error.
+    #[test]
+    fn user_record_named_value_beats_opaque_handle_in_name_set() {
+        let records = vec![RecordLayout {
+            name: "Value".to_string(),
+            field_tys: vec![ResolvedTy::I64],
+        }];
+        // Simulates `json.Value` opaque handle — its bare decl name is `"Value"`.
+        let opaque_names = vec!["Value".to_string()];
+        let ty = ResolvedTy::Named {
+            name: "Value".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        };
+        let mut v = HashSet::new();
+        let result = classify_state_field_full(&ty, &records, &[], &opaque_names, &mut v).unwrap();
+        assert_eq!(
+            result,
+            StateFieldCloneKind::UserRecord {
+                name: "Value".to_string(),
+            },
+            "record-layouts-first: user record `Value` must NOT be \
+             misclassified as OpaqueHandle when json.Value shares the short name",
+        );
+        assert!(v.is_empty());
+    }
+
+    // ── Collision-safety: enum-layouts-first beats opaque set ───────────────
+
+    /// An `indirect enum Expr { Lit(i64); Neg(Expr) }` has its name `"Expr"`
+    /// added to `opaque_handle_names` by `lower_hir_module` so that codegen
+    /// emits a bare `ptr` slot for every variable of the type.  However, an
+    /// indirect enum IS a classified enum and must route through `classify_enum`,
+    /// not be misidentified as a raw `OpaqueHandle`.
+    ///
+    /// The enum-layouts-first guard (inserted before the opaque-handle arm) must
+    /// win: `"Expr"` is in `enum_layouts`, so it classifies as `Enum`, NOT
+    /// `OpaqueHandle`.  Without the guard, the opaque-handle arm fires first and
+    /// the enum-clone synthesis emits a trap body instead of real tag-switch code.
+    #[test]
+    fn indirect_enum_beats_opaque_handle_in_name_set() {
+        let enums = vec![EnumLayout {
+            name: "Expr".to_string(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Lit".to_string(),
+                    field_tys: vec![ResolvedTy::I64],
+                },
+                MachineVariantLayout {
+                    // Self-referential variant — the `Neg(Expr)` payload is the
+                    // reason the enum is `indirect` in the first place.
+                    name: "Neg".to_string(),
+                    field_tys: vec![ResolvedTy::Named {
+                        name: "Expr".to_string(),
+                        args: vec![],
+                        builtin: None,
+                        is_opaque: false,
+                    }],
+                },
+            ],
+            is_indirect: true,
+        }];
+        // Simulates the `IrPipeline::opaque_handle_names` entry that
+        // `lower_hir_module` adds for every `indirect` type decl.
+        let opaque_names = vec!["Expr".to_string()];
+        let ty = ResolvedTy::Named {
+            name: "Expr".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        };
+        let mut v = HashSet::new();
+        let result =
+            classify_state_field_full(&ty, &no_records(), &enums, &opaque_names, &mut v).unwrap();
+        assert_eq!(
+            result,
+            StateFieldCloneKind::Enum {
+                name: "Expr".to_string(),
+            },
+            "enum-layouts-first: indirect enum `Expr` must NOT be \
+             misclassified as OpaqueHandle when its name appears in opaque_handle_names",
+        );
+        assert!(v.is_empty());
+    }
+
+    /// Corollary: when `"Value"` is NOT in `record_layouts` but IS in
+    /// `opaque_handle_names`, it must classify as `OpaqueHandle`.  This is the
+    /// stdlib `json.Value` case — no user record shadows it.
+    #[test]
+    fn opaque_handle_classifies_when_no_shadowing_record_present() {
+        let opaque_names = vec!["Value".to_string()];
+        let ty = ResolvedTy::Named {
+            name: "Value".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        };
+        let mut v = HashSet::new();
+        let result = classify_state_field_full(&ty, &[], &[], &opaque_names, &mut v).unwrap();
+        assert_eq!(
+            result,
+            StateFieldCloneKind::OpaqueHandle {
+                name: "Value".to_string(),
+            },
+            "opaque handle must classify as OpaqueHandle when no user record shadows it",
+        );
+        assert!(v.is_empty());
+    }
+
+    // ── Discriminator-driven collision safety (round-3 memory-safety fix) ────
+    //
+    // The `is_opaque` type-identity discriminator (stamped by `lower_type`) is
+    // authoritative and beats a colliding user record/enum LAYOUT. These pin
+    // the false-negative fix: a real `#[opaque]` handle whose short name
+    // collides with a user `type Value` / `enum Value` MUST classify as
+    // `OpaqueHandle` (fail-closed clone), never as the user record/enum (which
+    // would emit an unsafe shallow `memcpy` → double-free/UAF on supervisor
+    // restart). The discriminator — not the name string — is what tells them
+    // apart, since both arrive as `Named { name: "Value", .. }`.
+
+    /// An opaque `json.Value` field (`is_opaque: true`) whose short name `Value`
+    /// collides with a user `type Value { x: i64 }` present in `record_layouts`
+    /// MUST classify as `OpaqueHandle`, NOT `UserRecord`. This is the round-2
+    /// false-negative (item 2b struct): name-based resolution misrouted it to
+    /// the user record and emitted a shallow clone.
+    #[test]
+    fn opaque_discriminator_beats_colliding_user_record() {
+        // User record `Value { x: i64 }` is registered.
+        let records = vec![RecordLayout {
+            name: "Value".to_string(),
+            field_tys: vec![ResolvedTy::I64],
+        }];
+        // The opaque handle field carries the identity discriminator.
+        let ty = named_opaque("Value", vec![]);
+        let mut v = HashSet::new();
+        let result = classify_state_field_full(&ty, &records, &[], &[], &mut v).unwrap();
+        assert_eq!(
+            result,
+            StateFieldCloneKind::OpaqueHandle {
+                name: "Value".to_string(),
+            },
+            "opaque-discriminator field must classify as OpaqueHandle even when a \
+             user record `Value` shares the short name (item 2b struct false-negative)",
+        );
+        assert!(v.is_empty());
+    }
+
+    /// An opaque `json.Value` field (`is_opaque: true`) whose short name `Value`
+    /// collides with a user `enum Value { Foo; Bar }` present in `enum_layouts`
+    /// MUST classify as `OpaqueHandle`, NOT `Enum`. This is the round-2
+    /// false-negative (item 2b enum): name-based resolution misrouted it to the
+    /// user enum and emitted a shallow clone + enum-clone-inplace call.
+    #[test]
+    fn opaque_discriminator_beats_colliding_user_enum() {
+        let enums = vec![EnumLayout {
+            name: "Value".to_string(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Foo".to_string(),
+                    field_tys: vec![],
+                },
+                MachineVariantLayout {
+                    name: "Bar".to_string(),
+                    field_tys: vec![],
+                },
+            ],
+            is_indirect: false,
+        }];
+        let ty = named_opaque("Value", vec![]);
+        let mut v = HashSet::new();
+        let result = classify_state_field_full(&ty, &no_records(), &enums, &[], &mut v).unwrap();
+        assert_eq!(
+            result,
+            StateFieldCloneKind::OpaqueHandle {
+                name: "Value".to_string(),
+            },
+            "opaque-discriminator field must classify as OpaqueHandle even when a \
+             user enum `Value` shares the short name (item 2b enum false-negative)",
+        );
+        assert!(v.is_empty());
+    }
+
+    /// A user record `Value` referenced WITHOUT the opaque discriminator
+    /// (`is_opaque: false`) must still classify as `UserRecord` even when the
+    /// opaque-name fallback set carries `"Value"`. This pins that the
+    /// discriminator does NOT over-fire: a user type sharing the name with an
+    /// imported opaque handle is never captured as opaque (item 1 shadow case).
+    #[test]
+    fn non_opaque_user_record_with_colliding_opaque_name_stays_user_record() {
+        let records = vec![RecordLayout {
+            name: "Value".to_string(),
+            field_tys: vec![ResolvedTy::I64],
+        }];
+        let opaque_names = vec!["Value".to_string()];
+        let ty = named("Value", vec![]); // is_opaque: false
+        let mut v = HashSet::new();
+        let result = classify_state_field_full(&ty, &records, &[], &opaque_names, &mut v).unwrap();
+        assert_eq!(
+            result,
+            StateFieldCloneKind::UserRecord {
+                name: "Value".to_string(),
+            },
+            "a non-opaque user record must stay UserRecord even when its short \
+             name is in the opaque-name fallback set (no over-fire)",
+        );
+        assert!(v.is_empty());
+    }
+
+    /// An opaque handle nested inside a user enum variant payload
+    /// (`enum Wrap { V(json.Value) }`) must classify the payload as
+    /// `OpaqueHandle` via the discriminator, so the enum-clone synthesis emits
+    /// the fail-closed trap rather than a shallow clone (item 2c nested case).
+    #[test]
+    fn opaque_discriminator_propagates_into_enum_variant_payload() {
+        let enums = vec![EnumLayout {
+            name: "Wrap".to_string(),
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "V".to_string(),
+                field_tys: vec![named_opaque("Value", vec![])],
+            }],
+            is_indirect: false,
+        }];
+        let ty = named("Wrap", vec![]); // the enum itself is a normal user enum
+        let mut v = HashSet::new();
+        let result = classify_state_field_full(&ty, &no_records(), &enums, &[], &mut v).unwrap();
+        assert_eq!(
+            result,
+            StateFieldCloneKind::Enum {
+                name: "Wrap".to_string(),
+            },
+            "the wrapper enum classifies as Enum; its opaque payload is detected \
+             on recursion so codegen emits the fail-closed clone trap",
+        );
+        assert!(v.is_empty());
+    }
+
+    // ── Transitive opaque-in-container fail-close (round-4) ─────────────────
+    // A `#[opaque]` handle inside a generic container has no per-element
+    // clone-dup helper. The container's managed clone + plain element witness
+    // would shallow-copy the opaque pointer and double-free / UAF on supervisor
+    // restart, so the WHOLE container must fail closed at classification
+    // (BLOCKER 1, round-3 hole-hunt probe 3f2). The single transitive authority
+    // `model::ty_contains_unclonable_opaque` backs every arm below.
+
+    fn assert_opaque_in_container(result: Result<StateFieldCloneKind, ClassificationError>) {
+        match result {
+            Err(ClassificationError::OpaqueInContainer { .. }) => {}
+            other => panic!(
+                "expected OpaqueInContainer fail-close, got {other:?} — a container \
+                 carrying an unclonable opaque handle must fail closed, not classify"
+            ),
+        }
+    }
+
+    #[test]
+    fn vec_of_opaque_handle_fails_closed() {
+        // `Vec<json.Value>` in actor state (round-3 probe 3f2). Before the fix
+        // this classified as `Vec { OpaqueHandle }` and codegen cloned the vec
+        // handle with a plain element witness — the UAF.
+        let mut v = HashSet::new();
+        let ty = ResolvedTy::named_user("Vec", vec![named_opaque("Value", vec![])]);
+        assert_opaque_in_container(classify_state_field_full(
+            &ty,
+            &no_records(),
+            &[],
+            &[],
+            &mut v,
+        ));
+        assert!(v.is_empty(), "visited set must unwind on fail-close");
+    }
+
+    #[test]
+    fn hashset_of_opaque_handle_fails_closed() {
+        let mut v = HashSet::new();
+        let ty = ResolvedTy::named_user("HashSet", vec![named_opaque("Value", vec![])]);
+        assert_opaque_in_container(classify_state_field_full(
+            &ty,
+            &no_records(),
+            &[],
+            &[],
+            &mut v,
+        ));
+    }
+
+    #[test]
+    fn hashmap_with_opaque_value_fails_closed() {
+        let mut v = HashSet::new();
+        let ty = ResolvedTy::named_user(
+            "HashMap",
+            vec![ResolvedTy::String, named_opaque("Value", vec![])],
+        );
+        assert_opaque_in_container(classify_state_field_full(
+            &ty,
+            &no_records(),
+            &[],
+            &[],
+            &mut v,
+        ));
+    }
+
+    #[test]
+    fn hashmap_with_opaque_key_fails_closed() {
+        let mut v = HashSet::new();
+        let ty = ResolvedTy::named_user(
+            "HashMap",
+            vec![named_opaque("Value", vec![]), ResolvedTy::I64],
+        );
+        assert_opaque_in_container(classify_state_field_full(
+            &ty,
+            &no_records(),
+            &[],
+            &[],
+            &mut v,
+        ));
+    }
+
+    #[test]
+    fn nested_vec_of_option_of_opaque_fails_closed() {
+        // `Vec<Option<json.Value>>` — the opaque is two containers deep. The
+        // transitive authority recurses through the `Option<T>` type-arg, so the
+        // outer Vec fails closed even though its immediate element is an enum.
+        let mut v = HashSet::new();
+        let inner_opt = ResolvedTy::named_user("Option", vec![named_opaque("Value", vec![])]);
+        let ty = ResolvedTy::named_user("Vec", vec![inner_opt]);
+        assert_opaque_in_container(classify_state_field_full(
+            &ty,
+            &no_records(),
+            &[],
+            &[],
+            &mut v,
+        ));
+    }
+
+    #[test]
+    fn vec_of_record_with_opaque_field_fails_closed() {
+        // `Vec<Holder>` where `Holder { v: json.Value }`. The opaque is behind a
+        // user record field; the authority looks up the record layout and
+        // recurses into its fields, so the Vec fails closed.
+        let records = vec![RecordLayout {
+            name: "Holder".to_string(),
+            field_tys: vec![named_opaque("Value", vec![])],
+        }];
+        let mut v = HashSet::new();
+        let ty = ResolvedTy::named_user("Vec", vec![ResolvedTy::named_user("Holder", vec![])]);
+        assert_opaque_in_container(classify_state_field_full(&ty, &records, &[], &[], &mut v));
+    }
+
+    #[test]
+    fn vec_of_non_opaque_user_value_stays_clean() {
+        // Negative control: `Vec<Value>` where `Value` is a plain user record
+        // (`is_opaque: false`) MUST classify normally even when a same-short-name
+        // opaque handle exists in the opaque-name fallback set. The authority
+        // keys on the per-reference `is_opaque` discriminator, never the name, so
+        // the fail-close does not over-fire on a colliding user type.
+        let records = vec![RecordLayout {
+            name: "Value".to_string(),
+            field_tys: vec![ResolvedTy::I64],
+        }];
+        let opaque_names = vec!["Value".to_string()];
+        let mut v = HashSet::new();
+        let ty = ResolvedTy::named_user("Vec", vec![named("Value", vec![])]); // is_opaque: false
+        let result = classify_state_field_full(&ty, &records, &[], &opaque_names, &mut v).unwrap();
+        assert_eq!(
+            result,
+            StateFieldCloneKind::Vec {
+                elem: Box::new(StateFieldCloneKind::UserRecord {
+                    name: "Value".to_string(),
+                }),
+            },
+            "a Vec of a non-opaque user record must classify normally (no over-fire)",
+        );
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn contains_opaque_handle_kind_backstop() {
+        // The codegen backstop `collection_layout_witness` consults this kind-
+        // level mirror. A bare opaque is opaque; a container nesting one is too;
+        // a HashMap is opaque via either key or value; a clean container is not.
+        let opaque = StateFieldCloneKind::OpaqueHandle {
+            name: "Value".to_string(),
+        };
+        assert!(opaque.contains_opaque_handle());
+        assert!(StateFieldCloneKind::Vec {
+            elem: Box::new(opaque.clone()),
+        }
+        .contains_opaque_handle());
+        assert!(StateFieldCloneKind::HashMap {
+            key: Box::new(StateFieldCloneKind::String),
+            val: Box::new(opaque.clone()),
+        }
+        .contains_opaque_handle());
+        assert!(StateFieldCloneKind::HashSet {
+            elem: Box::new(StateFieldCloneKind::Vec {
+                elem: Box::new(opaque),
+            }),
+        }
+        .contains_opaque_handle());
+        // Negative: a clean Vec<string> carries no opaque.
+        assert!(!StateFieldCloneKind::Vec {
+            elem: Box::new(StateFieldCloneKind::String),
+        }
+        .contains_opaque_handle());
     }
 }

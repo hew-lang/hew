@@ -184,8 +184,14 @@ impl Drop for RunningChild {
     }
 }
 
-// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
-#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
+// The `hew build` subcommand this test depends on now exists and the host
+// build/link path is exercised by `build_host_e2e`. This example stays ignored
+// for a *different*, pre-existing reason: the QUIC stream/connection stdlib
+// surface (`recv_string`/`send_string`/`finish`/`disconnect`/`kind`) is not
+// resolved by HIR, so both server.hew and client.hew fail `hew check` on trunk
+// (E_HIR UnresolvedSymbol) independent of `hew build`. Un-ignore once the QUIC
+// stdlib HIR resolution gap is closed.
+#[ignore = "QUIC stream/connection stdlib methods are unresolved by HIR (pre-existing, not a hew build gap)"]
 #[test]
 fn quic_service_example_round_trip_succeeds() {
     require_codegen();

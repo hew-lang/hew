@@ -1113,6 +1113,139 @@ fn ty_contains_heap_owning_inner(
     }
 }
 
+/// Returns `true` if `ty` is, or transitively contains, a `#[opaque]` runtime
+/// handle with no clone-dup helper (e.g. `json.Value`, `cron.Expr`).
+///
+/// This is the SINGLE transitive authority for "does this composite carry an
+/// unclonable opaque handle anywhere inside it?" Every actor-state clone-emission
+/// and layout-witness decision consults it so ANY type that transitively contains
+/// an opaque handle FAILS CLOSED uniformly — there is no per-shape patch surface
+/// (`Vec<json.Value>`, `Option<json.Value>`, `HashMap<K, json.Value>`, a record
+/// whose field is opaque, an enum whose variant payload is opaque, and arbitrary
+/// nestings all answer `true` through the same recursion).
+///
+/// The classifier (`state_clone::classify_named`) already routes a bare opaque
+/// field to `StateFieldCloneKind::OpaqueHandle`, whose clone fails closed in
+/// `clone_helper_for_kind`. The gap this authority closes is the GENERIC /
+/// COMPOSITE context: `collection_layout_witness` selects a managed clone for any
+/// `Vec`/`HashMap`/`HashSet` REGARDLESS of element kind, and `layout_descriptor_ptr`
+/// emits a `plain` (bitcopy) element witness regardless of element identity. A
+/// `Vec<json.Value>` therefore reached state-clone as a managed vec with a plain
+/// element and shallow-copied the opaque pointer — a double-free / UAF on
+/// supervisor restart. Consulting this authority at those decision points makes
+/// the composite fail closed at MIR classification time instead.
+///
+/// ## Coverage (recursion shape mirrors [`ty_contains_heap_owning`])
+///
+/// * `Named { is_opaque: true, .. }` — the unclonable leaf; returns `true`
+///   immediately (a `Vec<json.Value>` flags via its element type-arg).
+/// * `Named { args, .. }` — recurses into every type argument (the generic
+///   container case: `Vec<T>`, `Option<T>`, `Result<T, E>`, `HashMap<K, V>`).
+/// * `Named { .. }` matching a `RecordLayout` — recurses into the record's
+///   field types (record-with-opaque-field).
+/// * `Named { .. }` matching an `EnumLayout` — recurses into every variant's
+///   payload field types (enum-payload-opaque, incl. generic instantiations).
+/// * `Tuple` / `Array` / `Slice` — recurses into element types.
+///
+/// Layout lookup keys mirror `ty_contains_heap_owning` / `register_enum_layouts`:
+/// bare name (or `short_name`) for non-generic, `mangle(short, args)` for generic.
+/// Cycle-safe via a visited set keyed on record/enum layout names.
+#[must_use]
+pub fn ty_contains_unclonable_opaque(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> bool {
+    ty_contains_unclonable_opaque_inner(ty, record_layouts, enum_layouts, &mut HashSet::new())
+}
+
+fn ty_contains_unclonable_opaque_inner(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    visited: &mut HashSet<String>,
+) -> bool {
+    match ty {
+        ResolvedTy::Named {
+            name,
+            args,
+            is_opaque,
+            ..
+        } => {
+            // 1. The unclonable opaque leaf — identity discriminator wins first.
+            if *is_opaque {
+                return true;
+            }
+            // 2. Type arguments (generic containers: Vec<T>, Option<T>,
+            //    Result<T, E>, HashMap<K, V>, user generic record/enum).
+            if args.iter().any(|arg| {
+                ty_contains_unclonable_opaque_inner(arg, record_layouts, enum_layouts, visited)
+            }) {
+                return true;
+            }
+            let short = short_name(name);
+            // 3. A user record under this name — recurse into its fields.
+            if let Some(record) = record_layouts
+                .iter()
+                .find(|r| r.name == *name || short_name(&r.name) == short)
+            {
+                if visited.insert(record.name.clone()) {
+                    let found = record.field_tys.iter().any(|ft| {
+                        ty_contains_unclonable_opaque_inner(
+                            ft,
+                            record_layouts,
+                            enum_layouts,
+                            visited,
+                        )
+                    });
+                    visited.remove(&record.name);
+                    if found {
+                        return true;
+                    }
+                }
+            }
+            // 4. An enum layout under this name — recurse into variant payloads.
+            //    Keying mirrors `ty_contains_heap_owning` / `register_enum_layouts`.
+            let enum_found = if args.is_empty() {
+                enum_layouts
+                    .iter()
+                    .find(|el| el.name == *name || short_name(&el.name) == short)
+            } else {
+                let mangled = mangle(short, args);
+                enum_layouts
+                    .iter()
+                    .find(|el| el.name == mangled || el.name == *name)
+            };
+            if let Some(layout) = enum_found {
+                if visited.insert(layout.name.clone()) {
+                    let found = layout.variants.iter().any(|v| {
+                        v.field_tys.iter().any(|ft| {
+                            ty_contains_unclonable_opaque_inner(
+                                ft,
+                                record_layouts,
+                                enum_layouts,
+                                visited,
+                            )
+                        })
+                    });
+                    visited.remove(&layout.name);
+                    if found {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        ResolvedTy::Tuple(elems) => elems
+            .iter()
+            .any(|e| ty_contains_unclonable_opaque_inner(e, record_layouts, enum_layouts, visited)),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            ty_contains_unclonable_opaque_inner(inner, record_layouts, enum_layouts, visited)
+        }
+        _ => false,
+    }
+}
+
 /// True when `ty` may own — transitively — an affine HANDLE leaf the owned-handle
 /// aggregate double-free gate (`detect_unproven_aggregate_handle_double_free`)
 /// guards: a `Generator`/`AsyncGenerator` context, a `CancellationToken`, or a
@@ -4106,19 +4239,19 @@ mod heap_owning_tests {
     fn generator_ty() -> ResolvedTy {
         // `Generator<i64, ()>` — bit-copy generic args, but the handle itself
         // owns a runtime context + OS thread.
-        ResolvedTy::Named {
-            name: "Generator".to_string(),
-            args: vec![ResolvedTy::I64, ResolvedTy::Unit],
-            builtin: Some(BuiltinType::Generator),
-        }
+        ResolvedTy::named_builtin(
+            "Generator",
+            BuiltinType::Generator,
+            vec![ResolvedTy::I64, ResolvedTy::Unit],
+        )
     }
 
     fn async_generator_ty() -> ResolvedTy {
-        ResolvedTy::Named {
-            name: "AsyncGenerator".to_string(),
-            args: vec![ResolvedTy::I64],
-            builtin: Some(BuiltinType::AsyncGenerator),
-        }
+        ResolvedTy::named_builtin(
+            "AsyncGenerator",
+            BuiltinType::AsyncGenerator,
+            vec![ResolvedTy::I64],
+        )
     }
 
     #[test]
@@ -4154,5 +4287,82 @@ mod heap_owning_tests {
         // still be non-heap-owning.
         let tuple = ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]);
         assert!(!ty_contains_heap_owning(&tuple, &[]));
+    }
+
+    // ── ty_contains_unclonable_opaque (round-4 transitive authority) ────────
+
+    #[test]
+    fn bare_opaque_handle_is_unclonable() {
+        let ty = ResolvedTy::named_opaque("Value", vec![]);
+        assert!(ty_contains_unclonable_opaque(&ty, &[], &[]));
+    }
+
+    #[test]
+    fn vec_of_opaque_is_unclonable_via_type_arg() {
+        let ty = ResolvedTy::named_user("Vec", vec![ResolvedTy::named_opaque("Value", vec![])]);
+        assert!(ty_contains_unclonable_opaque(&ty, &[], &[]));
+    }
+
+    #[test]
+    fn deeply_nested_option_vec_opaque_is_unclonable() {
+        // `Option<Vec<json.Value>>` — the opaque is reached through two layers
+        // of generic type-args.
+        let vec_op = ResolvedTy::named_user("Vec", vec![ResolvedTy::named_opaque("Value", vec![])]);
+        let ty = ResolvedTy::named_user("Option", vec![vec_op]);
+        assert!(ty_contains_unclonable_opaque(&ty, &[], &[]));
+    }
+
+    #[test]
+    fn tuple_with_opaque_member_is_unclonable() {
+        let tuple = ResolvedTy::Tuple(vec![
+            ResolvedTy::I64,
+            ResolvedTy::named_opaque("Value", vec![]),
+        ]);
+        assert!(ty_contains_unclonable_opaque(&tuple, &[], &[]));
+    }
+
+    #[test]
+    fn record_with_opaque_field_is_unclonable() {
+        // `Holder { v: json.Value }` referenced by name; the authority looks up
+        // the record layout and recurses into its fields.
+        let records = vec![RecordLayout {
+            name: "Holder".to_string(),
+            field_tys: vec![ResolvedTy::named_opaque("Value", vec![])],
+        }];
+        let ty = ResolvedTy::named_user("Holder", vec![]);
+        assert!(ty_contains_unclonable_opaque(&ty, &records, &[]));
+    }
+
+    #[test]
+    fn enum_with_opaque_payload_is_unclonable() {
+        let enums = vec![EnumLayout {
+            name: "Wrap".to_string(),
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "V".to_string(),
+                field_tys: vec![ResolvedTy::named_opaque("Value", vec![])],
+            }],
+            is_indirect: false,
+        }];
+        let ty = ResolvedTy::named_user("Wrap", vec![]);
+        assert!(ty_contains_unclonable_opaque(&ty, &[], &enums));
+    }
+
+    #[test]
+    fn non_opaque_composites_are_clonable() {
+        // Negative controls: nothing opaque anywhere → false. Pins that the
+        // authority does not over-fire on plain heap-owning or bitcopy shapes.
+        let vec_str = ResolvedTy::named_user("Vec", vec![ResolvedTy::String]);
+        assert!(!ty_contains_unclonable_opaque(&vec_str, &[], &[]));
+        let tuple = ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]);
+        assert!(!ty_contains_unclonable_opaque(&tuple, &[], &[]));
+        // A user record `Value` (is_opaque: false) that merely shares the short
+        // name with an opaque handle is clonable — keyed on identity, not name.
+        let records = vec![RecordLayout {
+            name: "Value".to_string(),
+            field_tys: vec![ResolvedTy::I64],
+        }];
+        let user_value = ResolvedTy::named_user("Value", vec![]);
+        assert!(!ty_contains_unclonable_opaque(&user_value, &records, &[]));
     }
 }

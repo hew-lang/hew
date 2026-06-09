@@ -343,6 +343,7 @@ fn walk_for_structural_coercion(expr: &hew_hir::HirExpr, found: &mut bool) {
                 name: "Widget".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             }
         );
         assert_eq!(
@@ -1193,6 +1194,7 @@ fn mangle_helpers_sanitize_non_identifier_characters() {
         name: "Vec<i64>".into(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     let sym = hew_mir::mangle_dyn_vtable_symbol(0, "Trait1+Trait2", &composite);
     assert!(

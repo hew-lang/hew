@@ -47,7 +47,7 @@ use self::workspace::has_test_attribute;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use dashmap::DashMap;
 #[cfg(test)]
@@ -319,12 +319,26 @@ fn build_run_test_invocation(test_name: &str, workspace_root: &Path) -> (PathBuf
 
 // ── Server ───────────────────────────────────────────────────────────
 
+/// Per-document debounce state: the generation counter incremented on each
+/// keystroke.  A spawned analysis task compares against this before doing
+/// work — if the value has changed since the task was created the edit has
+/// been superseded and the task exits without publishing stale diagnostics.
+type AnalysisVersions = Arc<DashMap<Url, u64>>;
+
+/// Debounce window: how long an analysis task waits before checking whether
+/// it is still the most recent edit.  100 ms is short enough to feel live on
+/// typical files while coalescing rapid-fire keystrokes into a single run.
+const DEBOUNCE_MS: u64 = 100;
+
 /// Hew language server providing IDE features via LSP.
 #[derive(Debug)]
 pub struct HewLanguageServer {
     client: Client,
-    documents: DashMap<Url, DocumentState>,
+    /// Document states shared with spawned analysis tasks via `Arc`.
+    documents: Arc<DashMap<Url, DocumentState>>,
     workspace_roots: RwLock<Vec<PathBuf>>,
+    /// Per-URI generation counters used by the debounced analysis path.
+    analysis_versions: AnalysisVersions,
 }
 
 impl HewLanguageServer {
@@ -333,8 +347,9 @@ impl HewLanguageServer {
     pub fn new(client: Client) -> Self {
         Self {
             client,
-            documents: DashMap::new(),
+            documents: Arc::new(DashMap::new()),
             workspace_roots: RwLock::new(Vec::new()),
+            analysis_versions: Arc::new(DashMap::new()),
         }
     }
 
@@ -355,14 +370,47 @@ impl HewLanguageServer {
 
     /// Re-lex, re-parse, and re-typecheck the document and any open importers,
     /// then publish diagnostics.
-    async fn reanalyze(&self, uri: &Url, source: &str) {
-        for (updated_uri, diagnostics) in
-            refresh_document_and_dependents(uri, source, &self.documents)
-        {
-            self.client
-                .publish_diagnostics(updated_uri, diagnostics, None)
-                .await;
-        }
+    ///
+    /// Rapid successive edits are coalesced: a short debounce window lets the
+    /// caller issue multiple `reanalyze` calls before the first analysis task
+    /// runs.  Each call increments a per-URI generation counter; the spawned
+    /// task checks that counter after sleeping and exits without doing work if a
+    /// newer edit has arrived in the meantime.
+    ///
+    /// The function itself is synchronous — analysis runs in a `tokio::spawn`
+    /// task so the handler path returns immediately.
+    fn reanalyze(&self, uri: &Url, source: &str) {
+        // Increment the generation counter for this URI and capture the new value.
+        let version = {
+            let mut entry = self.analysis_versions.entry(uri.clone()).or_insert(0);
+            *entry += 1;
+            *entry
+        };
+
+        // Clone the shared state the spawned task needs.
+        let client = self.client.clone();
+        let documents = Arc::clone(&self.documents);
+        let versions = Arc::clone(&self.analysis_versions);
+        let uri = uri.clone();
+        let source = source.to_owned();
+
+        tokio::spawn(async move {
+            // Debounce: wait for the window to expire before running the pipeline.
+            tokio::time::sleep(tokio::time::Duration::from_millis(DEBOUNCE_MS)).await;
+
+            // Bail if a newer edit has already superseded this one.
+            if versions.get(&uri).map(|v| *v) != Some(version) {
+                return;
+            }
+
+            for (updated_uri, diagnostics) in
+                refresh_document_and_dependents(&uri, &source, &documents)
+            {
+                client
+                    .publish_diagnostics(updated_uri, diagnostics, None)
+                    .await;
+            }
+        });
     }
 
     async fn run_test_command(&self, test_name: &str) -> Result<Option<Value>> {
@@ -596,7 +644,7 @@ mod tests {
     use hew_analysis::CompletionKind;
     use std::io;
     use std::io::Write;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TestDir {
@@ -1104,6 +1152,68 @@ mod tests {
                 .is_some_and(|detail| detail.contains("string")),
             "expected Stream<string> detail for recv(), got: {:?}",
             recv_item.detail
+        );
+    }
+
+    #[test]
+    fn dot_completions_for_actor_handle_surface_send_primitives_and_handlers() {
+        // After `spawn`, completing on the handle (`c.`) must surface:
+        //   - `tell` and `to_remote_via` (LocalPid's own impl methods from std/builtins.hew)
+        //   - `increment` (the actor's declared receive handler)
+        //
+        // Regression: before the fix, `named_receiver_parts` unwrapped `LocalPid<Counter>`
+        // to `Counter`, so `collect_method_sigs_for_receiver` only saw Counter's methods
+        // and silently dropped LocalPid's own send primitives.
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![repo_root]);
+        let source = concat!(
+            "actor Counter {\n",
+            "    count: i64;\n",
+            "    receive fn increment(n: i64) { count = count + n; }\n",
+            "}\n",
+            "fn main() {\n",
+            "    let c = spawn Counter(count: 0);\n",
+            "    c.increment(1);\n",
+            "}",
+        );
+        let parse_result = hew_parser::parse(source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parse_result.errors
+        );
+        let mut checker = Checker::new(registry);
+        let type_output = checker.check_program(&parse_result.program);
+        let doc = DocumentState {
+            source: source.to_string(),
+            line_offsets: compute_line_offsets(source),
+            parse_result,
+            type_output: Some(type_output),
+            diagnostics_by_uri: HashMap::new(),
+        };
+        // Cursor right after `c.` in `c.increment(1)`.
+        let dot_pos = source.rfind("c.increment").unwrap() + 2;
+        let items = hew_analysis::completions::complete(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            dot_pos,
+        );
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"tell"),
+            "expected `tell` in actor-handle completions, got: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"increment"),
+            "expected `increment` (receive handler) in actor-handle completions, got: {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"count"),
+            "internal actor field `count` must not appear in actor-handle completions, got: {labels:?}"
         );
     }
 
@@ -2535,6 +2645,7 @@ machine Traffic {
                 label: "test".to_string(),
                 kind: analysis_kind,
                 detail: None,
+                documentation: None,
                 insert_text: None,
                 insert_text_is_snippet: false,
                 sort_text: None,
@@ -2551,6 +2662,7 @@ machine Traffic {
             label: "if".to_string(),
             kind: CompletionKind::Snippet,
             detail: Some("if statement".to_string()),
+            documentation: None,
             insert_text: Some("if ${1:condition} {\n\t$0\n}".to_string()),
             insert_text_is_snippet: true,
             sort_text: Some("0001".to_string()),
@@ -7306,5 +7418,134 @@ machine Traffic {
         let source = include_str!("../../tests/fixtures/v05_result_option_ctors.hew");
         // rfind("None") = Option::None; unit variant — no payload, still navigable
         assert_v05_goto_definition("v05_result_option_ctors", source, "None");
+    }
+
+    // ── Debounce version-counter logic ──────────────────────────────
+
+    #[test]
+    fn debounce_version_counter_increments_on_each_edit() {
+        // The debounce mechanism uses a per-URI generation counter to decide
+        // whether a spawned task is still the most recent edit.  Each call to
+        // `reanalyze` must increment the counter so that the previous task
+        // sees a stale value and exits without publishing diagnostics.
+        //
+        // This test exercises the counter directly (no async runtime needed)
+        // since the correctness invariant is: "a task started for version N
+        // bails if the counter has already advanced past N".
+        let versions: DashMap<Url, u64> = DashMap::new();
+        let uri = Url::parse("file:///test.hew").unwrap();
+
+        // First edit: counter goes from absent → 1.
+        let v1 = {
+            let mut entry = versions.entry(uri.clone()).or_insert(0);
+            *entry += 1;
+            *entry
+        };
+        assert_eq!(v1, 1, "first edit should produce version 1");
+        assert_eq!(versions.get(&uri).map(|v| *v), Some(1));
+
+        // Second edit: counter advances to 2; first task's version (1) is now stale.
+        let v2 = {
+            let mut entry = versions.entry(uri.clone()).or_insert(0);
+            *entry += 1;
+            *entry
+        };
+        assert_eq!(v2, 2, "second edit should produce version 2");
+        // The first task checks: versions.get(&uri) != Some(1) → true → it bails.
+        assert_ne!(
+            versions.get(&uri).map(|v| *v),
+            Some(v1),
+            "version counter must have advanced past the first task's snapshot"
+        );
+        // The second task checks: versions.get(&uri) == Some(2) → it proceeds.
+        assert_eq!(
+            versions.get(&uri).map(|v| *v),
+            Some(v2),
+            "second task's version must still be current"
+        );
+    }
+
+    // ── Documentation field wiring (LSP layer) ──────────────────────
+
+    #[test]
+    fn to_lsp_completion_propagates_doc_comment_as_markdown() {
+        // `to_lsp_completion` must map `CompletionItem.documentation` to
+        // `lsp_types::Documentation::MarkupContent` with `MarkupKind::Markdown`.
+        let item = hew_analysis::CompletionItem {
+            label: "greet".to_string(),
+            kind: CompletionKind::Function,
+            detail: Some("fn greet(name: string)".to_string()),
+            documentation: Some("Greets the named entity.".to_string()),
+            insert_text: None,
+            insert_text_is_snippet: false,
+            sort_text: None,
+        };
+        let lsp_item = to_lsp_completion(item);
+        let doc = lsp_item
+            .documentation
+            .expect("documentation field must be populated");
+        match doc {
+            tower_lsp::lsp_types::Documentation::MarkupContent(markup) => {
+                assert_eq!(
+                    markup.kind,
+                    tower_lsp::lsp_types::MarkupKind::Markdown,
+                    "documentation kind must be Markdown"
+                );
+                assert_eq!(markup.value, "Greets the named entity.");
+            }
+            tower_lsp::lsp_types::Documentation::String(s) => {
+                panic!("expected MarkupContent, got plain String({s:?})")
+            }
+        }
+    }
+
+    #[test]
+    fn to_lsp_completion_none_doc_comment_yields_none_documentation() {
+        // A completion item with no documentation must yield `None` on the LSP
+        // response — not an empty MarkupContent.
+        let item = hew_analysis::CompletionItem {
+            label: "bare".to_string(),
+            kind: CompletionKind::Function,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            insert_text_is_snippet: false,
+            sort_text: None,
+        };
+        let lsp_item = to_lsp_completion(item);
+        assert!(
+            lsp_item.documentation.is_none(),
+            "completion item with no documentation must yield None"
+        );
+    }
+
+    #[test]
+    fn lsp_signature_help_propagates_doc_comment_as_markdown() {
+        // `lsp_signature_help_from_analysis` must map `SignatureInfo.documentation`
+        // to `SignatureInformation.documentation` as Markdown.
+        let result = hew_analysis::SignatureHelpResult {
+            signatures: vec![hew_analysis::SignatureInfo {
+                label: "fn add(a: i64, b: i64) -> i64".to_string(),
+                documentation: Some("Returns the sum of a and b.".to_string()),
+                parameters: vec![],
+            }],
+            active_signature: Some(0),
+            active_parameter: Some(0),
+        };
+        let sig_help = lsp_signature_help_from_analysis(result);
+        let sig = &sig_help.signatures[0];
+        let doc = sig
+            .documentation
+            .as_ref()
+            .expect("documentation must be propagated");
+        match doc {
+            tower_lsp::lsp_types::Documentation::MarkupContent(markup) => {
+                assert_eq!(markup.kind, tower_lsp::lsp_types::MarkupKind::Markdown);
+                assert_eq!(markup.value, "Returns the sum of a and b.");
+            }
+            tower_lsp::lsp_types::Documentation::String(s) => {
+                panic!("expected MarkupContent, got plain String({s:?})")
+            }
+        }
     }
 }

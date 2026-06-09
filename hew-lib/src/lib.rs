@@ -9,6 +9,7 @@ extern crate hew_std_crypto_crypto;
 extern crate hew_std_crypto_encrypt;
 extern crate hew_std_crypto_jwt;
 extern crate hew_std_crypto_password;
+extern crate hew_std_crypto_sign;
 extern crate hew_std_encoding_base64;
 extern crate hew_std_encoding_compress;
 extern crate hew_std_encoding_csv;

@@ -28,6 +28,7 @@ fn duplex_ty() -> ResolvedTy {
         name: "Duplex".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     }
 }
 
@@ -133,6 +134,7 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         out_dir: &dir,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts =
         emit_module(pipeline, &options).expect("elab drop plan pipeline must emit successfully");
@@ -184,6 +186,7 @@ fn elab_drop_plan_duplex_close_blocks_wasm_emission() {
         out_dir: &dir,
         native: false,
         wasm: true,
+        target_triple: None,
     };
     let result = emit_module(&pipeline, &options);
     match result {
@@ -283,6 +286,7 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
         out_dir: &dir,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let result = emit_module(&pipeline, &options);
     match result {

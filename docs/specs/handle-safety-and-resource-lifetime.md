@@ -1,10 +1,10 @@
 # Handle safety and resource lifetime
 
 **Status:** Accepted design spec. Records the durable language invariant for
-owned, FFI-backed resource handles and the staged work that earns it. No code
-in this change; implementation is staged across v0.4.x stop-the-bleeding,
-v0.5.x calibration and per-handle migration, and v0.5.x runtime-scope
-cleanup, tracked by issues #1228, #1251, #1252, #1295, #1399.
+owned, FFI-backed resource handles and the staged work that earns it.
+Implementation is in progress, staged across stop-the-bleeding,
+calibration and per-handle migration, and runtime-scope cleanup, tracked
+by issues #1228, #1251, #1252, #1295, #1399.
 **Audience:** Hew language designers, stdlib maintainers, codegen and runtime
 implementers, and reviewers of the migration PRs that follow.
 **Scope:** the language-surface contract for owned, FFI-backed resource handles
@@ -44,27 +44,25 @@ no cleanup line is written at all.
 
 ---
 
-## 2. v0.4.0 is the transition state, not the destination
+## 2. The manual-`free()` model is transitional
 
-The v0.4.0 migration guide records that `impl Drop` for `http.Server`,
-`http.Request`, `regex.Pattern`, and `json.Value` was *removed* because the
-existing drop paths called the same C free function as the explicit
-`close()`/`free()` methods, producing a double-free whenever a caller invoked
-the explicit method and then exited scope (`docs/migrations/v0.4.0.md` §§
-#1314, #1500). Removing `impl Drop` made `close()` / `free()` the single,
-unambiguous release path. That decision was correct under the constraints that
-existed when it shipped: Hew had no move checker, no null-after-move
-infrastructure for arbitrary handle types, no field-alias analysis, and no
-receiver mutability primitive (issue #1295).
+The migration guide (`docs/migrations/v0.4.0.md` §§ #1314, #1500) records that
+`impl Drop` for `http.Server`, `http.Request`, `regex.Pattern`, and `json.Value`
+was removed because the existing drop paths called the same C free function as
+the explicit `close()`/`free()` methods, producing a double-free whenever a
+caller invoked the explicit method and then exited scope. Removing `impl Drop`
+made `close()` / `free()` the single, unambiguous release path. That decision
+was correct under the constraints at the time: Hew had no move checker, no
+null-after-move infrastructure for arbitrary handle types, no field-alias
+analysis, and no receiver mutability primitive (issue #1295).
 
-This spec does **not** rewind that decision. v0.4.0's manual-`free()` model
-remains the supported user contract for v0.4.x. The destination — automatic
-single-release at scope exit — is reached only after the substrate work in
-§§ 7–8 lands and is calibrated on a single pilot handle (the calibration
-milestone — see §7).
+This spec does **not** rewind that decision. The manual-`free()` model is
+the current supported user contract. The destination — automatic single-release
+at scope exit — is reached only after the substrate work in §§ 7–8 lands and
+is calibrated on a single pilot handle (the calibration milestone — see §7).
 
-The migration guide is updated in this same change to mark the manual-`free()`
-state as transitional and forward-link to this spec.
+The migration guide marks the manual-`free()` state as transitional and
+forward-links to this spec.
 
 ---
 
@@ -210,9 +208,9 @@ The checker is the authority. Codegen consumes pre-validated facts.
   YieldedAcrossSuspend / Temporary). These are the categories LESSONS row
   `exhaustive-traversal-and-lowering` requires; the spec mandates their
   exhaustive presence with no wildcard fallthrough.
-- The v0.5 HIR/MIR pipeline carries these facts into `hew-codegen-rs` as
-  validated MIR metadata. The `TypedProgram`/MessagePack/C++ backend seam
-  has been retired.
+- The HIR/MIR pipeline carries these facts into `hew-codegen-rs` as
+  validated MIR metadata. No `TypedProgram`/MessagePack/C++ backend seam
+  exists; the HIR/MIR pipeline is the sole path.
 - Codegen's role is fail-closed consumption only: missing classification at
   lowering is an invariant diagnostic (LESSONS `assignment-target-authority`,
   `checker-codegen-pattern-contract`), never a fall-back inference, and never

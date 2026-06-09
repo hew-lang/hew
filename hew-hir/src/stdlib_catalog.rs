@@ -206,40 +206,24 @@ impl BuiltinTy {
             BuiltinTy::Bytes => ResolvedTy::Bytes,
             BuiltinTy::Unit => ResolvedTy::Unit,
             BuiltinTy::Never => ResolvedTy::Never,
-            BuiltinTy::VecAny => ResolvedTy::Named {
-                name: "Vec".to_string(),
-                args: vec![ResolvedTy::Named {
-                    name: "T".to_string(),
-                    args: vec![],
-                    builtin: None,
-                }],
-                builtin: Some(hew_types::BuiltinType::Vec),
-            },
-            BuiltinTy::HashMapAny => ResolvedTy::Named {
-                name: "HashMap".to_string(),
-                args: vec![
-                    ResolvedTy::Named {
-                        name: "K".to_string(),
-                        args: vec![],
-                        builtin: None,
-                    },
-                    ResolvedTy::Named {
-                        name: "V".to_string(),
-                        args: vec![],
-                        builtin: None,
-                    },
+            BuiltinTy::VecAny => ResolvedTy::named_builtin(
+                "Vec",
+                hew_types::BuiltinType::Vec,
+                vec![ResolvedTy::named_user("T", vec![])],
+            ),
+            BuiltinTy::HashMapAny => ResolvedTy::named_builtin(
+                "HashMap",
+                hew_types::BuiltinType::HashMap,
+                vec![
+                    ResolvedTy::named_user("K", vec![]),
+                    ResolvedTy::named_user("V", vec![]),
                 ],
-                builtin: Some(hew_types::BuiltinType::HashMap),
-            },
-            BuiltinTy::HashSetAny => ResolvedTy::Named {
-                name: "HashSet".to_string(),
-                args: vec![ResolvedTy::Named {
-                    name: "T".to_string(),
-                    args: vec![],
-                    builtin: None,
-                }],
-                builtin: Some(hew_types::BuiltinType::HashSet),
-            },
+            ),
+            BuiltinTy::HashSetAny => ResolvedTy::named_builtin(
+                "HashSet",
+                hew_types::BuiltinType::HashSet,
+                vec![ResolvedTy::named_user("T", vec![])],
+            ),
             BuiltinTy::Pointer => ResolvedTy::Pointer {
                 is_mutable: true,
                 pointee: Box::new(ResolvedTy::U8),
@@ -953,6 +937,26 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::VecAny,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_string_chars",
+        },
+    ),
+    // UTF-8 codepoint helpers — bound by `std::string`'s `impl string` block
+    // and used by `std::text::unicode` for rune_count / runes / codepoint_at.
+    overload(
+        "char_count_utf8_str",
+        "char_count_utf8",
+        STRING,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_char_count",
+        },
+    ),
+    overload(
+        "codepoint_at_utf8_str",
+        "codepoint_at_utf8",
+        STRING_I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_char_at_utf8",
         },
     ),
     // Class A: declarative bytes receiver bridge. Keep every symbol named by

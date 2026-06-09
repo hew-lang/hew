@@ -38,6 +38,7 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> Result<String, CodegenEr
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(pipeline, &options)?;
     let ll_path = artefacts
@@ -73,6 +74,7 @@ fn traffic_light_uses_i8_tagged_union_struct() {
         name: "TrafficLight".to_string(),
         args: Vec::new(),
         builtin: None,
+        is_opaque: false,
     };
     let mut pipeline = empty_pipeline(vec![traffic_light_layout()]);
     pipeline.raw_mir = vec![RawMirFunction {
@@ -104,6 +106,7 @@ fn repeated_machine_uses_share_one_named_struct_definition() {
         name: "TrafficLight".to_string(),
         args: Vec::new(),
         builtin: None,
+        is_opaque: false,
     };
     let mut pipeline = empty_pipeline(vec![traffic_light_layout()]);
     pipeline.raw_mir = vec![RawMirFunction {
@@ -136,6 +139,7 @@ fn two_hundred_fifty_seven_states_use_i16_tag() {
         name: "WideTags".to_string(),
         args: Vec::new(),
         builtin: None,
+        is_opaque: false,
     };
     let variants = (0..257)
         .map(|idx| unit_variant(&format!("S{idx}")))
@@ -174,6 +178,7 @@ fn constructor_pipeline() -> IrPipeline {
         name: "Fiction".to_string(),
         args: Vec::new(),
         builtin: None,
+        is_opaque: false,
     };
     let layout = MachineLayout {
         name: "Fiction".to_string(),

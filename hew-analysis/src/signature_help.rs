@@ -45,6 +45,7 @@ pub fn build_signature_help(
     Some(SignatureHelpResult {
         signatures: vec![SignatureInfo {
             label,
+            documentation: sig.doc_comment.clone(),
             parameters: params,
         }],
         active_signature: Some(0),
@@ -183,20 +184,7 @@ mod tests {
     use hew_types::Ty;
     use std::collections::{HashMap, HashSet};
 
-    fn make_tc_with_fn(
-        name: &str,
-        param_names: Vec<&str>,
-        params: Vec<Ty>,
-        ret: Ty,
-    ) -> TypeCheckOutput {
-        let sig = FnSig {
-            param_names: param_names.into_iter().map(String::from).collect(),
-            params,
-            return_type: ret,
-            ..FnSig::default()
-        };
-        let mut fn_sigs = HashMap::new();
-        fn_sigs.insert(name.to_string(), sig);
+    fn make_tc_with_fn_sigs(fn_sigs: HashMap<String, FnSig>) -> TypeCheckOutput {
         TypeCheckOutput {
             expr_types: HashMap::new(),
             resolved_expr_types: HashMap::new(),
@@ -238,6 +226,23 @@ mod tests {
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
         }
+    }
+
+    fn make_tc_with_fn(
+        name: &str,
+        param_names: Vec<&str>,
+        params: Vec<Ty>,
+        ret: Ty,
+    ) -> TypeCheckOutput {
+        let sig = FnSig {
+            param_names: param_names.into_iter().map(String::from).collect(),
+            params,
+            return_type: ret,
+            ..FnSig::default()
+        };
+        let mut fn_sigs = HashMap::new();
+        fn_sigs.insert(name.to_string(), sig);
+        make_tc_with_fn_sigs(fn_sigs)
     }
 
     #[test]
@@ -516,6 +521,46 @@ mod tests {
         assert!(
             result.is_none(),
             "method-call syntax without receiver typing must not fall back to unrelated top-level `foo`"
+        );
+    }
+
+    #[test]
+    fn sig_help_carries_doc_comment() {
+        // A function with a doc comment must surface that comment on the
+        // signature's `documentation` field.
+        let sig = FnSig {
+            param_names: vec!["x".to_string()],
+            params: vec![Ty::I32],
+            return_type: Ty::I32,
+            doc_comment: Some("Returns the square of x.".to_string()),
+            ..FnSig::default()
+        };
+        let mut fn_sigs = HashMap::new();
+        fn_sigs.insert("square".to_string(), sig);
+        let tc = make_tc_with_fn_sigs(fn_sigs);
+        let source = "square(";
+        let result = build_signature_help(source, &tc, source.len());
+        assert!(result.is_some(), "expected signature help");
+        let sh = result.unwrap();
+        assert_eq!(
+            sh.signatures[0].documentation.as_deref(),
+            Some("Returns the square of x."),
+            "signature info should carry the doc comment; got: {:?}",
+            sh.signatures[0].documentation
+        );
+    }
+
+    #[test]
+    fn sig_help_without_doc_comment_has_none_documentation() {
+        // A function without a doc comment must yield `None` — not an empty string.
+        let source = "add(";
+        let tc = make_tc_with_fn("add", vec!["a", "b"], vec![Ty::I32, Ty::I32], Ty::I32);
+        let result = build_signature_help(source, &tc, source.len());
+        assert!(result.is_some());
+        let sh = result.unwrap();
+        assert_eq!(
+            sh.signatures[0].documentation, None,
+            "function without doc comment must have None documentation in sig help"
         );
     }
 }

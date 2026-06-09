@@ -21,8 +21,10 @@ fn local_pid_of(actor: &str) -> ResolvedTy {
             name: actor.to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         }],
         builtin: None,
+        is_opaque: false,
     }
 }
 
@@ -134,6 +136,7 @@ fn emit_ll(pipeline: &IrPipeline, slug: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(pipeline, &options).expect("metadata pipeline must emit");
     let ll_path: &Path = artefacts.ll_path.as_deref().expect("ll path");

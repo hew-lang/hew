@@ -4075,6 +4075,57 @@ impl Checker {
                 }
             }
         }
+
+        // Pre-dispatch: module-qualified constant reference, e.g. `module.CONST_NAME`.
+        // Must run BEFORE `synthesize(object)` for the same reason as the variant
+        // arm above — the module short-name is not in env as a value binding.
+        //
+        // Gated on:
+        //   - object is a bare `Expr::Identifier`
+        //   - field does NOT contain `::` (plain const name, not a variant)
+        //   - receiver is not a value binding or known type
+        //   - `"{name}.{field}"` IS registered in env (i.e. exported from the module)
+        // The env lookup is the authoritative guard: `register_user_module` inserts
+        // `module_short.CONST_NAME` into env for every `pub const` in the imported
+        // module, so any key found there is a valid exported constant.
+        if let Expr::Identifier(name) = &object.0 {
+            if !field.contains("::") {
+                let receiver_is_binding = self.env.lookup_ref(name).is_some();
+                let receiver_is_known_type = self.type_defs.contains_key(name);
+                if !receiver_is_binding && !receiver_is_known_type {
+                    let qualified_key = format!("{name}.{field}");
+                    if let Some(binding) = self.env.lookup_ref(&qualified_key) {
+                        let ty = binding.ty.clone();
+                        if self.modules.contains(name) {
+                            self.used_modules
+                                .borrow_mut()
+                                .insert(ImportKey::new(self.current_module.clone(), name.clone()));
+                        }
+                        return ty;
+                    }
+                    // If the receiver looks like a module (known to self.modules) but
+                    // the const is not exported, emit a targeted diagnostic rather than
+                    // falling through to the generic "undefined variable `module`" error.
+                    if self.modules.contains(name) {
+                        let similar = crate::error::find_similar(
+                            field,
+                            self.env
+                                .all_names()
+                                .filter_map(|k| k.strip_prefix(&format!("{name}.")))
+                                .filter(|k| !k.contains('.')),
+                        );
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedField,
+                            span,
+                            format!("module `{name}` has no exported constant `{field}`"),
+                            similar,
+                        );
+                        return Ty::Error;
+                    }
+                }
+            }
+        }
+
         let obj_ty = self.synthesize(&object.0, &object.1);
         let resolved = self.subst.resolve(&obj_ty);
         match &resolved {

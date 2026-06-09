@@ -111,8 +111,10 @@ fn local_pid_ty() -> ResolvedTy {
             name: "Probe".to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         }],
         builtin: None,
+        is_opaque: false,
     }
 }
 
@@ -130,6 +132,7 @@ fn call_runtime_abi_fails_closed_with_symbol_in_message() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let result = emit_module(&pipeline, &options);
     match result {
@@ -172,6 +175,7 @@ fn call_runtime_abi_fails_closed_for_lambda_actor_release() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let result = emit_module(&pipeline, &options);
     match result {
@@ -203,6 +207,7 @@ fn actor_link_and_monitor_runtime_calls_are_codegen_reachable_without_dest() {
             out_dir: &tmp,
             native: false,
             wasm: false,
+            target_triple: None,
         };
         let result = emit_module(&pipeline, &options);
         assert!(
@@ -226,6 +231,7 @@ fn actor_monitor_runtime_call_with_dest_still_fails_closed() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let result = emit_module(&pipeline, &options);
     match result {

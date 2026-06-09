@@ -47,6 +47,7 @@ fn vec_index_i64_pipeline() -> IrPipeline {
         name: "Vec".to_string(),
         args: vec![ResolvedTy::I64],
         builtin: None,
+        is_opaque: false,
     };
 
     let vec_place = Place::Local(0);
@@ -198,6 +199,7 @@ fn vec_index_bool_pipeline() -> IrPipeline {
         name: "Vec".to_string(),
         args: vec![ResolvedTy::Bool],
         builtin: None,
+        is_opaque: false,
     };
 
     let vec_place = Place::Local(0);
@@ -345,6 +347,7 @@ fn vec_index_char_pipeline() -> IrPipeline {
         name: "Vec".to_string(),
         args: vec![ResolvedTy::Char],
         builtin: None,
+        is_opaque: false,
     };
 
     let vec_place = Place::Local(0);
@@ -496,6 +499,7 @@ fn emit_ll(module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts =
         emit_module(&pipeline, &options).expect("C-2 Vec-index pipeline must emit successfully");
@@ -514,6 +518,7 @@ fn emit_bool_ll(module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(&pipeline, &options)
         .expect("C-2 Vec<bool>-index pipeline must emit successfully");
@@ -532,6 +537,7 @@ fn emit_char_ll(module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(&pipeline, &options)
         .expect("C-2 Vec<char>-index pipeline must emit successfully");

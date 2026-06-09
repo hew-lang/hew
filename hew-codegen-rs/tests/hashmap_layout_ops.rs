@@ -140,6 +140,7 @@ fn consistency_check_rejects_pending_fact_at_pipeline_finalize() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     match emit_module(&pipeline, &options) {
         Err(CodegenError::FailClosed(msg)) => {
@@ -172,6 +173,7 @@ fn consistency_check_rejects_pending_hashset_fact_at_pipeline_finalize() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     match emit_module(&pipeline, &options) {
         Err(CodegenError::FailClosed(msg)) => {
@@ -269,6 +271,7 @@ fn point_ty() -> ResolvedTy {
         name: "Point".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     }
 }
 
@@ -277,6 +280,7 @@ fn hashmap_ty(key: ResolvedTy, val: ResolvedTy) -> ResolvedTy {
         name: "HashMap".to_string(),
         args: vec![key, val],
         builtin: None,
+        is_opaque: false,
     }
 }
 
@@ -285,6 +289,7 @@ fn hashset_ty(elem: ResolvedTy) -> ResolvedTy {
         name: "HashSet".to_string(),
         args: vec![elem],
         builtin: None,
+        is_opaque: false,
     }
 }
 
@@ -296,6 +301,7 @@ fn emit_ll(pipeline: IrPipeline, module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(&pipeline, &options)
         .unwrap_or_else(|e| panic!("hashmap op pipeline for {module_name} must emit: {e:?}"));
@@ -531,6 +537,7 @@ fn pending_fact_without_matching_call_still_fails_closed() {
             out_dir: &tmp,
             native: false,
             wasm: false,
+            target_triple: None,
         },
     ) {
         Err(CodegenError::FailClosed(msg)) => {

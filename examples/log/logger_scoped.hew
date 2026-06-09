@@ -1,0 +1,40 @@
+//! Integration probe: Logger value with its own level and format.
+//!
+//! Run with: hew run examples/log/logger_scoped.hew
+//!
+//! Expected stderr:
+//!   {"ts":...,"level":"INFO","msg":"auth ready","svc":"auth","region":"us-east"}
+//!   {"ts":...,"level":"DEBUG","msg":"token validated","uid":"99"}
+//!   (no output for the filtered INFO — strict logger has ERROR threshold)
+//!   HH:MM:SS.mmm ERROR service down  code=503
+//!   HH:MM:SS.mmm INFO  health ok  healthy=true
+
+import std::misc::log;
+
+fn main() {
+    // JSON logger at DEBUG level — independent of global settings
+    let json_lg = log.new_logger(log.DEBUG, log.JSON);
+    let f1: Vec<string> = Vec::new();
+    f1.push(log.field("svc", "auth"));
+    f1.push(log.field("region", "us-east"));
+    log.logger_info(json_lg, "auth ready", f1);
+    let f2: Vec<string> = Vec::new();
+    f2.push(log.field_int("uid", 99));
+    log.logger_debug(json_lg, "token validated", f2);
+
+    // Strict logger: ERROR threshold, TEXT format
+    let strict = log.new_logger(log.ERROR, log.TEXT);
+    let f3: Vec<string> = Vec::new();
+    f3.push(log.field("path", "/health"));
+    // INFO (2) > ERROR (0) threshold: filtered, no output
+    log.logger_info(strict, "this is filtered", f3);
+    let f4: Vec<string> = Vec::new();
+    f4.push(log.field_int("code", 503));
+    log.logger_error(strict, "service down", f4);
+
+    // TEXT logger at INFO level — global settings unchanged
+    let text_lg = log.new_logger(log.INFO, log.TEXT);
+    let f5: Vec<string> = Vec::new();
+    f5.push(log.field_bool("healthy", true));
+    log.logger_info(text_lg, "health ok", f5);
+}

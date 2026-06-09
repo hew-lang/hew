@@ -5,12 +5,12 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
     CompletionParams, CompletionResponse, Diagnostic, DocumentFormattingParams, DocumentLink,
-    DocumentLinkParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange,
-    FoldingRangeKind, FoldingRangeParams, Hover, HoverContents, HoverParams, InlayHint,
-    InlayHintKind, InlayHintLabel, InlayHintParams, InlayHintTooltip, MarkupContent, MarkupKind,
-    ParameterInformation, ParameterLabel, Position, SemanticTokens, SemanticTokensParams,
-    SemanticTokensResult, SignatureHelp, SignatureHelpParams, SignatureInformation, TextEdit, Url,
-    WorkspaceEdit,
+    DocumentLinkParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
+    Documentation, FoldingRange, FoldingRangeKind, FoldingRangeParams, Hover, HoverContents,
+    HoverParams, InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams, InlayHintTooltip,
+    MarkupContent, MarkupKind, ParameterInformation, ParameterLabel, Position, SemanticTokens,
+    SemanticTokensParams, SemanticTokensResult, SignatureHelp, SignatureHelpParams,
+    SignatureInformation, TextEdit, Url, WorkspaceEdit,
 };
 use tracing::warn;
 
@@ -80,9 +80,15 @@ pub(crate) fn lsp_signature_help_from_analysis(
                     documentation: None,
                 })
                 .collect();
+            let documentation = sig.documentation.map(|doc| {
+                Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: doc,
+                })
+            });
             SignatureInformation {
                 label: sig.label,
-                documentation: None,
+                documentation,
                 parameters: Some(params),
                 active_parameter,
             }

@@ -35,8 +35,10 @@ fn local_pid_of(actor: &str) -> ResolvedTy {
             name: actor.to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         }],
         builtin: None,
+        is_opaque: false,
     }
 }
 
@@ -178,6 +180,7 @@ fn emit_to_string(pipeline: &IrPipeline, slug: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     emit_module(pipeline, &options).expect("supervisor emission should succeed");
     let ll = tmp.join("probe.ll");
@@ -463,6 +466,7 @@ fn supervisor_bootstrap_fails_closed_on_missing_on_crash_symbol() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let err = emit_module(&pipeline, &options)
         .expect_err("missing on_crash symbol should fail closed at codegen");
@@ -486,6 +490,7 @@ fn supervisor_bootstrap_accepts_duration_window() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     emit_module(&pipeline, &options)
         .expect("a `60s` duration window must be accepted and converted to seconds");
@@ -503,6 +508,7 @@ fn supervisor_bootstrap_rejects_invalid_window() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let err = emit_module(&pipeline, &options)
         .expect_err("a non-duration, non-integer window must fail closed at codegen");

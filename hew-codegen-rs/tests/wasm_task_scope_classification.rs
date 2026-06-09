@@ -30,6 +30,7 @@ fn task_scope_ty() -> ResolvedTy {
         name: "HewTaskScope".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     }
 }
 
@@ -132,6 +133,7 @@ fn pipeline_with_task_scope_spawn_call() -> IrPipeline {
                 name: "HewTask".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             }],
             blocks: raw_blocks.clone(),
             decisions: vec![],
@@ -196,6 +198,7 @@ fn task_scope_new_call_blocks_wasm_emission() {
         out_dir: &dir,
         native: false,
         wasm: true,
+        target_triple: None,
     };
     let result = emit_module(&pipeline, &options);
     match result {
@@ -226,6 +229,7 @@ fn task_scope_spawn_call_blocks_wasm_emission() {
         out_dir: &dir,
         native: false,
         wasm: true,
+        target_triple: None,
     };
     let result = emit_module(&pipeline, &options);
     match result {
@@ -258,6 +262,7 @@ fn task_scope_wasm_diagnostic_message_names_scope_construct() {
         out_dir: &dir,
         native: false,
         wasm: true,
+        target_triple: None,
     };
     let err =
         emit_module(&pipeline, &options).expect_err("expected WasmUnsupportedSubstrate; got Ok(_)");
@@ -289,6 +294,7 @@ fn task_scope_native_emission_unaffected() {
         out_dir: &dir,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     emit_module(&pipeline, &options)
         .expect("native (no-wasm) emission of hew_task_scope_new must succeed");

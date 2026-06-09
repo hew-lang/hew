@@ -30,6 +30,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
         name: "Duplex".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     let raw_blocks = vec![BasicBlock {
         id: 0,
@@ -161,6 +162,7 @@ fn emit_textual_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts =
         emit_module(pipeline, &options).expect("E4 exemplar pipeline must emit successfully");
@@ -263,6 +265,7 @@ fn duplex_exemplar_module_verifies() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     emit_module(&pipeline, &options).expect("the duplex exemplar must pass `Module::verify()`");
 }

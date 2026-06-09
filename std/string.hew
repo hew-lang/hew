@@ -751,6 +751,20 @@ impl string {
     fn chars(s: string) -> Vec<char> {
         Vec::new()
     }
+    /// Return the number of Unicode codepoints (runes) in this string.
+    ///
+    /// For ASCII strings this equals `len()`. For strings with multi-byte
+    /// UTF-8 sequences the rune count is strictly less than the byte length.
+    #[extern_symbol(hew_string_char_count)]
+    fn char_count_utf8(s: string) -> i64 {
+        0
+    }
+    /// Return the Unicode codepoint at codepoint-index `i`, or -1 if out of
+    /// bounds. The index is a rune (codepoint) offset, not a byte offset.
+    #[extern_symbol(hew_string_char_at_utf8)]
+    fn codepoint_at_utf8(s: string, i: i64) -> i64 {
+        -1
+    }
 }
 
 // ── Trait: ToString ──────────────────────────────────────────────────

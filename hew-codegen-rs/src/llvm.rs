@@ -294,6 +294,17 @@ pub struct EmitOptions<'a> {
     pub native: bool,
     /// Whether to emit a wasm object.
     pub wasm: bool,
+    /// Target triple for native object emission.
+    ///
+    /// `None` (the default) preserves the legacy host-only behaviour: the
+    /// native object is emitted with [`native_emission_triple`], the host
+    /// default triple (with the macOS deployment-target fix-up). `Some(triple)`
+    /// emits the native object for an explicit target, enabling cross-arch
+    /// object/binary emission via `hew build --target`. The caller is
+    /// responsible for passing a clang-compatible triple — on Darwin that is
+    /// the deployment-target form (`<arch>-apple-macosx<version>`) so the
+    /// object's minimum-OS tag matches the link step.
+    pub target_triple: Option<&'a str>,
 }
 
 /// Result of an emit: the paths of every produced artefact, for the CLI to
@@ -373,7 +384,14 @@ fn emit_module_with_options(
 
     if options.native {
         let obj_path = options.out_dir.join(format!("{}.o", options.module_name));
-        let triple_str = native_emission_triple();
+        // Use the explicit target triple when the caller requests one
+        // (cross-arch `hew build`); otherwise fall back to the host-only
+        // `native_emission_triple()` so existing callers are byte-for-byte
+        // unchanged.
+        let triple_str = match options.target_triple {
+            Some(triple) => triple.to_string(),
+            None => native_emission_triple(),
+        };
         emit_object_in_process(pipeline, options.module_name, &triple_str, &obj_path)?;
         artefacts.native_obj_path = Some(obj_path);
     }
@@ -1723,6 +1741,9 @@ fn runtime_ffi_return_abi_bits(symbol: &str) -> Option<u32> {
         // but the i64-declared call still reads undefined high bits. Declaring
         // the true i32 and sign-extending is the ABI-correct path.
         "hew_string_length" | "hew_string_char_at" => Some(32),
+        // UTF-8 helpers also return i32 (with -1 sentinel on OOB/invalid): must
+        // round-trip to the Hew-facing i64 as signed.
+        "hew_string_char_count" | "hew_string_char_at_utf8" => Some(32),
         _ => None,
     }
 }
@@ -1742,6 +1763,8 @@ fn runtime_ffi_param_abi_bits(symbol: &str, param_idx: usize) -> Option<u32> {
     match (symbol, param_idx) {
         // `hew_string_char_at(s: ptr, idx: i32) -> i32`.
         ("hew_string_char_at", 1) => Some(32),
+        // `hew_string_char_at_utf8(s: ptr, index: i32) -> i32`.
+        ("hew_string_char_at_utf8", 1) => Some(32),
         _ => None,
     }
 }
@@ -3000,10 +3023,12 @@ fn shorten_named_args(ty: ResolvedTy) -> ResolvedTy {
             name,
             args,
             builtin,
+            is_opaque,
         } => ResolvedTy::Named {
             name: short_name(&name).to_string(),
             args: args.into_iter().map(shorten_named_args).collect(),
             builtin,
+            is_opaque,
         },
         other => other,
     }
@@ -3159,6 +3184,7 @@ fn is_heap_owning_record_composite_return(
         name,
         args,
         builtin: None,
+        ..
     } = ty
     else {
         return false;
@@ -3166,21 +3192,31 @@ fn is_heap_owning_record_composite_return(
     if !args.is_empty() {
         return false;
     }
-    // Exclude opaque pointer-backed handles (Stream/Sink/Connection/etc.):
-    // they carry no record struct layout, so they have no per-field
-    // `RecordInPlace` drop. A bare opaque handle return is handled elsewhere.
-    let short = short_name(name);
-    if record_layouts.opaque.contains(name.as_str()) || record_layouts.opaque.contains(short) {
-        return false;
-    }
     // Must resolve to a registered user record layout (not an enum). The
     // `record_inplace_drop_name` consumer keys on the bare monomorphic name, so
     // confirm that key exists in the codegen record map.
+    //
+    // Record-layout-first (collision-safety): check the struct map BEFORE the
+    // opaque set. A user type that shares a short name with a stdlib opaque
+    // handle (e.g. user `Value` vs `json.Value`) has a registered struct entry;
+    // it must not be rejected as an opaque handle. Only names absent from the
+    // struct map fall through to the opaque exclusion. Mirrors the
+    // `record_layouts`-first invariant in `resolve_ty` and the MIR classifier.
+    let short = short_name(name);
     let is_record = record_layouts.contains_key(name.as_str())
         || record_layouts.contains_key(short)
         || record_layouts
             .keys()
             .any(|k| short_name(k) == short || k == name);
+    if !is_record {
+        // Exclude opaque pointer-backed handles (Stream/Sink/Connection/etc.):
+        // they carry no record struct layout, so they have no per-field
+        // `RecordInPlace` drop. A bare opaque handle return is handled elsewhere.
+        if record_layouts.opaque.contains(name.as_str()) || record_layouts.opaque.contains(short) {
+            return false;
+        }
+        return false; // unknown type — not a heap-owning record
+    }
     is_record && ty_contains_heap_owning(ty, enum_layouts)
 }
 
@@ -3284,50 +3320,37 @@ fn resolve_ty<'ctx>(
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<BasicTypeEnum<'ctx>> {
     if let ResolvedTy::Named { name, args, .. } = ty {
-        // `#[opaque]` runtime handles (W3.020) carry no struct layout — they
-        // lower to a bare `ptr` (pointer-width, ABI-compatible with the
-        // runtime's `*mut T`). Resolved structurally via the opaque-name set,
-        // never by matching the type's name (no name-magic).
+        // ── Struct-layout-first (collision-safety invariant) ─────────────
         //
-        // The opaque-name set is keyed by the **bare** decl name (`Value`),
-        // because MIR collects it from the imported `HirItem::TypeDecl` whose
-        // `name` is unqualified. A use site that came through an
-        // `import std::encoding::json` boundary carries the **qualified** type
-        // name (`json.Value`) — the form `register_qualified_type_alias`
-        // produces in the checker. Match the short name too so the qualified
-        // import-side name still resolves to `ptr`. Every opaque handle lowers
-        // to the same bare `ptr` regardless of module, so short-name matching
-        // cannot conflate distinct ABIs (there is only one ABI: pointer-width).
-        if record_layouts.opaque.contains(name) || record_layouts.opaque.contains(short_name(name))
-        {
-            return Ok(ctx.ptr_type(AddressSpace::default()).into());
-        }
+        // A user-declared `type Value { x: i64 }` imported as `laneBmod.Value`
+        // and a stdlib `#[opaque] type Value` imported as `json.Value` both
+        // reach this function as `Named { name: "Value", args: [] }` after
+        // `lower_type` strips the module prefix (W4.011 gap). If the opaque
+        // check ran first, the user record would be misclassified as a bare
+        // `ptr`, causing `RecordFieldLoad` to see a non-struct slot type.
+        //
+        // Fix: resolve against the struct layout map BEFORE the opaque set.
+        // A name in both maps means the user declared a record with the same
+        // short name as a stdlib opaque handle — the struct layout wins.
+        // Only names absent from the struct map fall through to the opaque
+        // check. This mirrors the `record_layouts`-first invariant in the MIR
+        // classifier (`hew-mir/src/state_clone.rs` `classify_named`).
+        //
+        // WHEN-OBSOLETE: once W4.011 lands and `ResolvedTy::Named` carries a
+        // typed builtin/user discriminator, the name-based opaque set is
+        // replaced by that discriminator and this ordering ceases to matter.
+        //
         // Generic-enum instantiations are keyed by mangled name (e.g.
         // `"Option$$i64"`) in the record-layout map — the same key produced
         // by `register_enum_layouts`. When type args are present, mangle
         // before lookup so the map entry is found.
-        //
-        // WHY: bare-name lookup finds nothing for `Named { name: "Option",
-        //   args: [I64] }` because the map entry was inserted as `"Option$$i64"`.
-        //   Without mangling, `resolve_ty` falls through to `primitive_to_llvm`,
-        //   which emits a D10 fail-closed error for unknown Named types.
-        //
-        // Fall-through when the key is absent is intentional: known
-        // pointer-backed handles (Vec, Duplex, HewTask, etc.) carry type
-        // args but are handled by `primitive_to_llvm`'s explicit arm for
-        // their bare name. `primitive_to_llvm` already emits the D10 error
-        // for any Named type that reaches it without a registered layout.
-        //
-        // WHEN-OBSOLETE: same as `machine_layout_for_local` note above.
         //
         // Module-qualification normalisation: at import-use boundaries the
         // MIR carries qualified names (e.g. `Named { name: "fs.IoError" }`)
         // while the layout-registration side uses bare names (`"IoError"`).
         // Always resolve via the normalised (short) args so every use of
         // `Result<Listener, fs.IoError>` maps to the same LLVM struct as
-        // `Result<Listener, IoError>`.  Without this, two distinct LLVM
-        // named structs are created for structurally-identical types, and
-        // cross-boundary moves fail with a type-identity mismatch.
+        // `Result<Listener, IoError>`.
         let effective_args: std::borrow::Cow<[ResolvedTy]> = if args.iter().any(needs_normalization)
         {
             std::borrow::Cow::Owned(args.iter().cloned().map(shorten_named_args).collect())
@@ -3360,6 +3383,25 @@ fn resolve_ty<'ctx>(
             if let Some(st) = record_layouts.get(short_name(name)) {
                 return Ok((*st).into());
             }
+        }
+        // ── Opaque-handle check (after struct-layout lookup) ─────────────
+        //
+        // `#[opaque]` runtime handles (W3.020) carry no struct layout — they
+        // lower to a bare `ptr` (pointer-width, ABI-compatible with the
+        // runtime's `*mut T`). Only reached when the name has no registered
+        // struct layout (see struct-layout-first comment above).
+        //
+        // The opaque-name set is keyed by the **bare** decl name (`Value`),
+        // because MIR collects it from the imported `HirItem::TypeDecl` whose
+        // `name` is unqualified. A use site that came through an
+        // `import std::encoding::json` boundary carries the **qualified** type
+        // name (`json.Value`). Match the short name too so the qualified
+        // import-side name still resolves to `ptr`. Every opaque handle lowers
+        // to the same bare `ptr` regardless of module, so short-name matching
+        // cannot conflate distinct ABIs (there is only one ABI: pointer-width).
+        if record_layouts.opaque.contains(name) || record_layouts.opaque.contains(short_name(name))
+        {
+            return Ok(ctx.ptr_type(AddressSpace::default()).into());
         }
     }
     if let ResolvedTy::Tuple(elems) = ty {
@@ -5822,8 +5864,32 @@ struct CollectionLayoutWitness {
     drop_sym: &'static str,
 }
 
-fn collection_layout_witness(kind: &StateFieldCloneKind) -> Option<CollectionLayoutWitness> {
-    match kind {
+fn collection_layout_witness(
+    kind: &StateFieldCloneKind,
+) -> CodegenResult<Option<CollectionLayoutWitness>> {
+    // Defence-in-depth backstop (round-4): a collection whose element/key/value
+    // transitively carries an `OpaqueHandle` must NOT select the managed
+    // clone/free pair — the managed clone shallow-copies the opaque pointer and
+    // double-frees / UAFs on supervisor restart. The MIR classifier already fails
+    // closed before such a kind can be produced (`ty_contains_unclonable_opaque`),
+    // so this is unreachable in practice; it stays as a codegen-side fail-close so
+    // no future producer can route an opaque-bearing container through the managed
+    // collection symbols.
+    if matches!(
+        kind,
+        StateFieldCloneKind::Vec { .. }
+            | StateFieldCloneKind::HashMap { .. }
+            | StateFieldCloneKind::HashSet { .. }
+    ) && kind.contains_opaque_handle()
+    {
+        return Err(CodegenError::FailClosed(format!(
+            "collection state field {kind:?} transitively carries an opaque handle \
+             with no clone-dup helper; the managed clone/free pair would shallow-copy \
+             the handle and double-free / use-after-free on supervisor restart. The \
+             MIR classifier should have rejected this with OpaqueInContainer."
+        )));
+    }
+    Ok(match kind {
         StateFieldCloneKind::Vec { .. } => Some(CollectionLayoutWitness {
             // Constructor lowering stamps every layout-backed Vec<T> handle with
             // its `HewTypeLayout` descriptor; the managed pair reads it from the
@@ -5858,8 +5924,12 @@ fn collection_layout_witness(kind: &StateFieldCloneKind) -> Option<CollectionLay
         // `*_layout` symbol pair. It returns `None` here so the caller
         // routes to the dedicated enum dispatch arm rather than the
         // collection witness.
-        | StateFieldCloneKind::Enum { .. } => None,
-    }
+        | StateFieldCloneKind::Enum { .. }
+        // OpaqueHandle is a pointer-width BitCopy-class handle (e.g. json.Value,
+        // cron.Expr). No layout-managed runtime collection; falls through to the
+        // per-kind helpers where clone fails closed and drop is a no-op.
+        | StateFieldCloneKind::OpaqueHandle { .. } => None,
+    })
 }
 
 fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<CloneHelper>> {
@@ -5921,6 +5991,14 @@ fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Clo
              Slice 3), not a runtime extern — caller must dispatch separately"
                 .into(),
         )),
+        // OpaqueHandle (e.g. json.Value, cron.Expr) has no dup runtime helper;
+        // cloning at supervisor-restart time is unsupported. Clone fails closed
+        // so a restart does not silently alias a foreign heap pointer.
+        StateFieldCloneKind::OpaqueHandle { name } => Err(CodegenError::FailClosed(format!(
+            "OpaqueHandle `{name}` has no dup runtime helper; \
+                 supervisor-restart clone is unsupported for opaque handles. \
+                 Remove the opaque field from actor state or handle restart manually."
+        ))),
     }
 }
 
@@ -6013,6 +6091,12 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
              Slice 4), not a runtime extern — caller must dispatch separately"
                 .into(),
         )),
+        // OpaqueHandle (e.g. json.Value, cron.Expr) is declared `#[opaque]`
+        // without `@resource` — the type system treats it as BitCopy. The
+        // user is responsible for calling `.free()` explicitly; actor state
+        // drop does not auto-free opaque handles (consistent with BitCopy
+        // ownership semantics). No-op here matches the Connection posture.
+        StateFieldCloneKind::OpaqueHandle { .. } => Ok(None),
     }
 }
 
@@ -6144,6 +6228,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
     pipeline_records: &[RecordLayout],
     record_struct_map: &RecordLayoutMap<'ctx>,
     enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
     machine_layout_map: &MachineLayoutMap<'ctx>,
     target_data: Option<&TargetData>,
     enum_inplace_drop_seeds: &[String],
@@ -6161,6 +6246,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
         actor_layouts,
         pipeline_records,
         enum_layouts,
+        opaque_handle_names,
         enum_inplace_drop_seeds,
         vec_owned_record_seeds,
     )?;
@@ -6643,7 +6729,7 @@ fn emit_field_clone_step<'ctx>(
     // authority. Non-collection kinds fall through to their dedicated
     // `clone_helper_for_kind` arm. BitCopy yields `None` there and is a
     // caller-filter error.
-    let helper = match collection_layout_witness(kind) {
+    let helper = match collection_layout_witness(kind)? {
         Some(witness) => CloneHelper::Allocating {
             name: witness.clone_sym,
         },
@@ -6758,6 +6844,10 @@ fn emit_field_drop_step<'ctx>(
         StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Connection,
         } => Ok(()),
+        // OpaqueHandle (e.g. json.Value, cron.Expr) is BitCopy-class: the user
+        // owns the call to `.free()`. Actor state drop does not auto-free opaque
+        // handles — consistent with `drop_helper_for_kind` returning `Ok(None)`.
+        StateFieldCloneKind::OpaqueHandle { .. } => Ok(()),
         StateFieldCloneKind::UserRecord { name } => {
             let helper = get_or_declare_record_drop_inplace(ctx, llvm_mod, name);
             let field_ptr = builder
@@ -6795,7 +6885,7 @@ fn emit_field_drop_step<'ctx>(
             // selection authority, paired with the clone symbol so the two can
             // never drift (W4.045 UAF class). Non-collection kinds fall through
             // to their dedicated `drop_helper_for_kind` arm.
-            let helper = match collection_layout_witness(kind) {
+            let helper = match collection_layout_witness(kind)? {
                 Some(witness) => DropHelper {
                     name: witness.drop_sym,
                 },
@@ -7257,6 +7347,7 @@ fn collect_record_inplace_drop_seeds(
                     name,
                     args,
                     builtin: None,
+                    ..
                 } = &drop.ty
                 else {
                     continue;
@@ -7426,6 +7517,7 @@ fn collect_reachable_clone_targets(
     actor_layouts: &[ActorLayout],
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
     extra_enum_seeds: &[String],
     extra_record_seeds: &[String],
 ) -> CodegenResult<(
@@ -7509,10 +7601,11 @@ fn collect_reachable_clone_targets(
                      have rejected this with MissingRecordLayout"
                     ))
                 })?;
-            let kinds = hew_mir::classify_actor_state_fields_with_enum_layouts(
+            let kinds = hew_mir::classify_actor_state_fields_with_opaque_handles(
                 &record.field_tys,
                 pipeline_records,
                 enum_layouts,
+                opaque_handle_names,
             )
             .map_err(|e| {
                 CodegenError::FailClosed(format!(
@@ -7550,10 +7643,11 @@ fn collect_reachable_clone_targets(
                 for field_ty in &variant.field_tys {
                     let mut visited: std::collections::HashSet<String> =
                         std::collections::HashSet::new();
-                    let kind = hew_mir::classify_state_field_with_enum_layouts(
+                    let kind = hew_mir::classify_state_field_full(
                         field_ty,
                         pipeline_records,
                         enum_layouts,
+                        opaque_handle_names,
                         &mut visited,
                     )
                     .map_err(|e| {
@@ -7626,7 +7720,10 @@ fn collect_clone_target_names(
         StateFieldCloneKind::BitCopy { .. }
         | StateFieldCloneKind::String
         | StateFieldCloneKind::Bytes
-        | StateFieldCloneKind::IoHandle { .. } => {}
+        | StateFieldCloneKind::IoHandle { .. }
+        // OpaqueHandle has no synthesised clone/drop helper — it is a
+        // pointer-width BitCopy-class handle. Nothing to enqueue.
+        | StateFieldCloneKind::OpaqueHandle { .. } => {}
     }
 }
 
@@ -7662,6 +7759,38 @@ fn emit_enum_clone_inplace_body<'ctx>(
             variant_kinds.len(),
             layout.variant_struct_tys.len()
         )));
+    }
+    // Fail closed: if any variant carries an OpaqueHandle field, emit a
+    // trap body rather than a shallow-copy clone. Silently treating an
+    // OpaqueHandle as BitCopy (pointer bit-copy via the outer memcpy) would
+    // produce two owners of the same resource — a double-free on drop.
+    //
+    // The enum DROP path is safe: dropping an opaque handle is a no-op/leak
+    // (user must call `.free()` explicitly), so only the clone direction is
+    // unsafe.
+    //
+    // A trap body is emitted rather than a compile-time CodegenError because
+    // the enum clone helper is synthesised for ALL enums reachable from
+    // actor state or from enum-drop seeds; an opaque-containing enum may be
+    // seeded only for its DROP helper (function-local `Result<json.Value, _>`)
+    // and the clone body would never be called in that path. Emitting a trap
+    // body keeps the symbol defined (linker satisfied) while ensuring that
+    // IF the path ever becomes reachable (upstream gates relaxed), it traps
+    // rather than silently aliasing the handle pointer. Consistent with the
+    // direct-opaque-in-actor-state guard (codegen-front `OpaqueHandle has no
+    // dup runtime helper` FailClosed diagnostic at actor spawn).
+    let has_nested_opaque = variant_kinds.iter().any(|fks| {
+        fks.iter()
+            .any(|k| matches!(k, StateFieldCloneKind::OpaqueHandle { .. }))
+    });
+    if has_nested_opaque {
+        // Emit a single trap-on-entry body so the symbol is defined but any
+        // call site (which should never be reached) fails explicitly.
+        let builder = ctx.create_builder();
+        let entry_bb = ctx.append_basic_block(f, "entry");
+        builder.position_at_end(entry_bb);
+        emit_trap_with_code_raw(ctx, llvm_mod, &builder, 209, "enum_clone_opaque_trap")?;
+        return Ok(());
     }
     let i32_ty = ctx.i32_type();
     let builder = ctx.create_builder();
@@ -7707,11 +7836,19 @@ fn emit_enum_clone_inplace_body<'ctx>(
     for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
         builder.position_at_end(variant_bbs[idx]);
         // Owned (non-BitCopy) payload fields need a deep clone; BitCopy fields
-        // were already copied by the wholesale memcpy.
+        // and OpaqueHandle fields were already copied by the wholesale memcpy.
+        // OpaqueHandle is excluded here because it has no dup runtime helper;
+        // the clone direction is a no-op (pointer bit-copy via memcpy), consistent
+        // with the actor-level clone short-circuit for opaque-holding actors.
         let owned: Vec<(u32, &StateFieldCloneKind)> = variant_kinds[idx]
             .iter()
             .enumerate()
-            .filter(|(_, k)| !matches!(k, StateFieldCloneKind::BitCopy { .. }))
+            .filter(|(_, k)| {
+                !matches!(
+                    k,
+                    StateFieldCloneKind::BitCopy { .. } | StateFieldCloneKind::OpaqueHandle { .. }
+                )
+            })
             .map(|(j, k)| (j as u32, k))
             .collect();
         if owned.is_empty() {
@@ -18025,7 +18162,15 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<&str> {
             name,
             args,
             builtin: None,
-        } if args.is_empty() => Ok(name.as_str()),
+            ..
+        } if args.is_empty() => {
+            // The type checker qualifies imported record names with their module
+            // prefix (e.g. `"process.CommandOutput"`). The synthesized helper is
+            // keyed by the bare type name (`"CommandOutput"`), so strip the prefix.
+            Ok(name
+                .rsplit_once('.')
+                .map_or(name.as_str(), |(_, bare)| bare))
+        }
         other => Err(CodegenError::FailClosed(format!(
             "RecordInPlace drop requires a monomorphic user record type; got {other:?}"
         ))),
@@ -24432,6 +24577,7 @@ fn build_module_for_target<'ctx>(
         &pipeline.record_layouts,
         &record_layouts,
         &pipeline.enum_layouts,
+        &pipeline.opaque_handle_names,
         &machine_layouts,
         Some(&target_data),
         &enum_inplace_drop_seeds,
@@ -25716,11 +25862,131 @@ mod tests {
         }
     }
 
+    /// Decode the architecture tag from a relocatable object's header without
+    /// pulling in the `object` crate. Returns a stable `(format, arch)` label
+    /// pair. Covers the Mach-O and ELF headers the cross-arch tests exercise.
+    fn object_format_and_arch(bytes: &[u8]) -> (&'static str, &'static str) {
+        // Mach-O 64-bit little-endian magic `0xfeedfacf`; `cputype` is the
+        // next 4 bytes (LE). CPU_TYPE_X86_64 = 0x01000007,
+        // CPU_TYPE_ARM64 = 0x0100000c.
+        if bytes.len() >= 8 && bytes[0..4] == [0xcf, 0xfa, 0xed, 0xfe] {
+            let cputype = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+            let arch = match cputype {
+                0x0100_0007 => "x86_64",
+                0x0100_000c => "aarch64",
+                other => panic!("unexpected Mach-O cputype {other:#010x}"),
+            };
+            return ("macho", arch);
+        }
+        // ELF magic `0x7f 'E' 'L' 'F'`; `e_machine` is a u16 at offset 18 (LE
+        // for the ELFCLASS we emit). EM_X86_64 = 62, EM_AARCH64 = 183.
+        if bytes.len() >= 20 && bytes[0..4] == [0x7f, b'E', b'L', b'F'] {
+            let e_machine = u16::from_le_bytes([bytes[18], bytes[19]]);
+            let arch = match e_machine {
+                62 => "x86_64",
+                183 => "aarch64",
+                other => panic!("unexpected ELF e_machine {other}"),
+            };
+            return ("elf", arch);
+        }
+        panic!(
+            "unrecognised object header: {:02x?}",
+            &bytes[..bytes.len().min(8)]
+        );
+    }
+
+    /// `EmitOptions::target_triple = Some(cross-triple)` must drive native
+    /// object emission to the requested architecture, not the host arch.
+    ///
+    /// This pins the codegen target thread-through that `hew build --target`
+    /// relies on: the same pipeline, emitted for an explicit cross-arch triple,
+    /// must produce an object whose header architecture matches the request and
+    /// differs from the host emit. The opposite-arch triple is chosen so the
+    /// assertion has real signal on either supported 64-bit host.
+    #[test]
+    fn explicit_target_triple_drives_native_object_architecture() {
+        let pipeline = empty_pipeline_with_const_42();
+        let tmp = tempfile::Builder::new()
+            .prefix("hew-cross-triple-")
+            .tempdir()
+            .expect("create out_dir");
+
+        // Host emit (target_triple = None) for the baseline arch.
+        let host_opts = EmitOptions {
+            module_name: "host_emit",
+            out_dir: tmp.path(),
+            native: true,
+            wasm: false,
+            target_triple: None,
+        };
+        let host_artefacts = emit_module(&pipeline, &host_opts).expect("host emit");
+        let host_obj = std::fs::read(
+            host_artefacts
+                .native_obj_path
+                .expect("host native object path"),
+        )
+        .expect("read host object");
+        let (host_format, host_arch) = object_format_and_arch(&host_obj);
+
+        // Cross emit: pick the opposite arch on the same OS so the host link
+        // gate is not involved — we only assert the emitted object's arch.
+        let (cross_triple, expected_arch) = if cfg!(target_arch = "aarch64") {
+            (
+                if cfg!(target_os = "macos") {
+                    "x86_64-apple-macosx13.0"
+                } else {
+                    "x86_64-unknown-linux-gnu"
+                },
+                "x86_64",
+            )
+        } else {
+            (
+                if cfg!(target_os = "macos") {
+                    "aarch64-apple-macosx13.0"
+                } else {
+                    "aarch64-unknown-linux-gnu"
+                },
+                "aarch64",
+            )
+        };
+
+        let cross_opts = EmitOptions {
+            module_name: "cross_emit",
+            out_dir: tmp.path(),
+            native: true,
+            wasm: false,
+            target_triple: Some(cross_triple),
+        };
+        let cross_artefacts = emit_module(&pipeline, &cross_opts).expect("cross emit");
+        let cross_obj = std::fs::read(
+            cross_artefacts
+                .native_obj_path
+                .expect("cross native object path"),
+        )
+        .expect("read cross object");
+        let (cross_format, cross_arch) = object_format_and_arch(&cross_obj);
+
+        assert_eq!(
+            cross_format, host_format,
+            "same-OS cross emit must keep the host object format"
+        );
+        assert_eq!(
+            cross_arch, expected_arch,
+            "explicit target_triple {cross_triple} must produce a {expected_arch} object"
+        );
+        assert_ne!(
+            cross_arch, host_arch,
+            "cross emit arch must differ from the host emit arch"
+        );
+        drop(tmp);
+    }
+
     fn named_record_ty(name: &str) -> ResolvedTy {
         ResolvedTy::Named {
             name: name.to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         }
     }
 
@@ -26780,6 +27046,7 @@ mod tests {
             name: "Duplex".to_string(),
             args: Vec::new(),
             builtin: None,
+            is_opaque: false,
         }
     }
 
@@ -27398,6 +27665,7 @@ mod tests {
                     name: "Option".to_string(),
                     args: vec![ResolvedTy::I64],
                     builtin: None,
+                    is_opaque: false,
                 },
                 // local_1: i64 — return value
                 ResolvedTy::I64,
@@ -27584,6 +27852,7 @@ mod tests {
             name: "Generator".to_string(),
             args: vec![ResolvedTy::I64, ResolvedTy::Unit],
             builtin: Some(hew_types::BuiltinType::Generator),
+            is_opaque: false,
         };
         // The gen-body function the construction site references (mirrors what
         // `lower_gen_block` mints). Its signature is the runtime body_fn
@@ -27757,6 +28026,7 @@ mod tests {
             name: state_ty_name.clone(),
             args: Vec::new(),
             builtin: None,
+            is_opaque: false,
         };
         // Body locals: [Local(0) = i64 source, Local(1) = state-record].
         // Move Local(0) → GenState { local: 1, field: 2 } (first live local).
@@ -28424,6 +28694,7 @@ mod tests {
                         name: "SendError".to_string(),
                         args: vec![],
                         builtin: None,
+                        is_opaque: false,
                     }],
                 },
             ],
@@ -28468,6 +28739,7 @@ mod tests {
                         name: "LookupError".to_string(),
                         args: vec![],
                         builtin: None,
+                        is_opaque: false,
                     }],
                 },
             ],
@@ -28716,6 +28988,7 @@ mod tests {
             // `builtin: None` must NOT — see `cow_heap_release_symbol`). The
             // congruence guard in `emit_one_elab_drop` now enforces this.
             builtin: Some(hew_types::BuiltinType::Vec),
+            is_opaque: false,
         };
         alloc_local(&mut fn_ctx, 0, vec_ty.clone());
         let drop = ElabDrop {
@@ -28980,6 +29253,7 @@ mod tests {
             name: "Vec".to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         };
         assert_eq!(
             cow_heap_release_symbol(&fn_ctx, &user_vec),
@@ -28992,6 +29266,7 @@ mod tests {
             name: "Vec".to_string(),
             args: vec![ResolvedTy::String],
             builtin: Some(hew_types::BuiltinType::Vec),
+            is_opaque: false,
         };
         assert_eq!(
             cow_heap_release_symbol(&fn_ctx, &builtin_vec),
@@ -29005,6 +29280,7 @@ mod tests {
                 ResolvedTy::String,
             ])],
             builtin: Some(hew_types::BuiltinType::Vec),
+            is_opaque: false,
         };
         assert_eq!(
             cow_heap_release_symbol(&fn_ctx, &owned_vec),
@@ -29029,20 +29305,24 @@ mod tests {
                     name: "Point".to_string(),
                     args: vec![],
                     builtin: None,
+                    is_opaque: false,
                 },
                 ResolvedTy::I64,
             ],
             builtin: None,
+            is_opaque: false,
         };
         let point_ty = ResolvedTy::Named {
             name: "Point".to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         };
         let option_i64_ty = ResolvedTy::Named {
             name: "Option".to_string(),
             args: vec![ResolvedTy::I64],
             builtin: None,
+            is_opaque: false,
         };
         alloc_local(&mut fn_ctx, 0, map_ty);
         alloc_local(&mut fn_ctx, 1, point_ty);
@@ -29107,6 +29387,7 @@ mod tests {
                 name: "Result$$unit$$SendError".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             },
         );
         emit_result_ok(&fn_ctx, Place::Local(0), None)
@@ -29147,6 +29428,7 @@ mod tests {
                 name: "Result$$i64$$LookupError".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             },
         );
         alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
@@ -29215,6 +29497,7 @@ mod tests {
                 name: "Result$$unit$$SendError".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             },
         );
         alloc_local(
@@ -29224,6 +29507,7 @@ mod tests {
                 name: "SendError".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             },
         );
         emit_result_err(&fn_ctx, Place::Local(0), Place::Local(1))
@@ -29267,6 +29551,7 @@ mod tests {
                 name: "Result$$unit$$SendError".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             },
         );
         // WRONG payload type: i64 where the variant expects SendError.
@@ -29299,6 +29584,7 @@ mod tests {
                 name: "MonitorRef".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             },
         );
         alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
@@ -29339,6 +29625,7 @@ mod tests {
                 name: "Sample".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             },
         );
         emit_enum_variant_literal(&fn_ctx, Place::Local(0), 0, &[])
@@ -29371,6 +29658,7 @@ mod tests {
                 name: "Sample".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             },
         );
         alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
@@ -29420,6 +29708,7 @@ mod tests {
                 name: "Sample".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             },
         );
         alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
@@ -29463,6 +29752,7 @@ mod tests {
                 name: "CrashKind".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             }],
         }];
         let enum_fixtures = vec![MirEnumLayout {
@@ -29513,6 +29803,7 @@ mod tests {
                 name: "Worker".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             }],
         }];
         let machine_fixtures = vec![hew_mir::MachineLayout {
@@ -29555,6 +29846,7 @@ mod tests {
                 name: "NeverDeclared".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             }],
         }];
         let map = predeclare_named_layouts(&ctx, &record_fixtures, &[], &[], &[])
@@ -29830,6 +30122,7 @@ mod tests {
             out_dir: tmp.path(),
             native: false,
             wasm: false,
+            target_triple: None,
         };
         let artefacts = emit_module(&pipeline, &options)
             .expect("CoerceToDynTrait must lower cleanly with the registry populated");
@@ -29965,6 +30258,7 @@ mod tests {
             out_dir: tmp.path(),
             native: false,
             wasm: false,
+            target_triple: None,
         };
         let err = emit_module(&pipeline, &options).expect_err(
             "CoerceToDynTrait must fail closed when the registry has no matching entry",
@@ -30334,6 +30628,7 @@ mod tests {
             out_dir: tmp.path(),
             native: false,
             wasm: false,
+            target_triple: None,
         };
         let err = emit_module(&pipeline, &options)
             .expect_err("FrameOwned trait-object drop with drop_fn=Some must fail closed");

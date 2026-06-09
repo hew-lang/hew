@@ -42,11 +42,9 @@ documented in `hew-runtime/src/phi_accrual.rs`. The module is exposed as
 
 ### Why phi-accrual over a fixed timeout?
 
-The previous trigger was a flat `ping_timeout_ms = 500` cutoff. That
-choice forces a single trade-off across all networks: too short and a
-sleepy WAN link sees spurious SUSPECTs on healthy peers; too long and a
-snappy LAN waits seconds longer than necessary to react to a real
-failure.
+A fixed timeout forces a single trade-off across all networks: too short
+and a sleepy WAN link sees spurious SUSPECTs on healthy peers; too long
+and a snappy LAN waits longer than necessary to react to a real failure.
 
 Phi-accrual lets the trigger **adapt to actual conditions per peer**.
 A peer whose heartbeats land like clockwork accrues phi quickly when it
@@ -76,20 +74,19 @@ all future detections of real failures.
 
 ### SUSPECT → DEAD
 
-Unchanged. A peer that has been SUSPECT for longer than
-`suspect_timeout_ms` is declared DEAD; the per-peer detector is then
-pruned. This escalation remains a fixed timeout because the SUSPECT
-window already exists specifically to allow indirect-ping confirmation,
-and applying phi twice would not help confirmation latency.
+A peer that has been SUSPECT for longer than `suspect_timeout_ms` is
+declared DEAD; the per-peer detector is then pruned. This escalation
+uses a fixed timeout because the SUSPECT window already exists
+specifically to allow indirect-ping confirmation, and applying phi twice
+would not improve confirmation latency.
 
 ### ABI
 
-Phi-accrual changes **when** the substrate emits
-`HEW_MEMBERSHIP_EVENT_NODE_SUSPECT`, never **what** the consumer sees.
-The membership-event ABI surface is preserved; no new wire messages and
-no new event variants are introduced. The threshold and window size
-live as module-level constants in `cluster.rs` and are deliberately not
-exposed through the `#[repr(C)] ClusterConfig` struct.
+Phi-accrual governs **when** the substrate emits
+`HEW_MEMBERSHIP_EVENT_NODE_SUSPECT`; the membership-event ABI surface is
+fixed — no new wire messages and no new event variants. The threshold and
+window size live as module-level constants in `cluster.rs` and are
+deliberately not exposed through the `#[repr(C)] ClusterConfig` struct.
 
 ## References
 

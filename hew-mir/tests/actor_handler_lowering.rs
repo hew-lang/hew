@@ -86,6 +86,7 @@ fn self_field_expr(ids: &mut IdGen, actor_name: &str, field: &str) -> HirExpr {
             name: actor_name.to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         },
         value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,

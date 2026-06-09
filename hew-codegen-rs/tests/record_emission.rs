@@ -63,6 +63,7 @@ fn emit_ll_with_checker(source: &str, module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts =
         emit_module(&pipeline, &options).expect("record pipeline must emit successfully");
@@ -98,6 +99,7 @@ fn try_emit_ll(source: &str, module_name: &str) -> Result<String, String> {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(&pipeline, &options).map_err(|e| format!("{e:?}"))?;
     let ll_path = artefacts

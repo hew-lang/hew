@@ -275,6 +275,7 @@ fn builtin_connection_without_record_layout_classifies_as_iohandle() {
             name: "Connection".to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         },
         &[], // empty record_layouts → builtin path
         &mut visited,
@@ -305,6 +306,7 @@ fn user_type_named_vec_does_not_route_to_container_arm() {
             name: "Vec".to_string(),
             args: vec![], // no args — a user record-named "Vec"
             builtin: None,
+            is_opaque: false,
         },
         &records,
         &mut visited,
@@ -335,6 +337,7 @@ fn user_type_named_actor_ref_does_not_route_to_bitcopy_arm() {
             name: "ActorRef".to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         },
         &records,
         &mut visited,
@@ -461,6 +464,7 @@ fn workspace_visited_set_terminates_classifier_directly() {
                 name: "Cyclic".to_string(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             },
             ResolvedTy::I64,
         ],
@@ -470,6 +474,7 @@ fn workspace_visited_set_terminates_classifier_directly() {
             name: "Cyclic".to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         }],
         &records,
     );
@@ -495,6 +500,7 @@ fn missing_record_layout_surfaces_diagnostic_not_silent_none() {
             name: "DoesNotExist".to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         },
         &[],
         &mut visited,
@@ -547,4 +553,105 @@ fn coverage_report_against_audit_representatives() {
             actor.name,
         );
     }
+}
+
+// ─── Opaque-in-container fail-close (round-4, end-to-end) ─────────────
+
+/// `Vec<Widget>` actor state where `Widget` is `#[opaque]` MUST fail closed
+/// end-to-end (parser → checker → HIR → MIR): the clone/drop symbols are
+/// `None` and an `ActorStateCloneClassificationFailed` diagnostic surfaces.
+/// Before the round-4 fix this classified as `Vec { OpaqueHandle }` and
+/// codegen cloned the vec handle with a plain element witness, shallow-copying
+/// the opaque pointer (double-free / UAF on supervisor restart). Uses a local
+/// `#[opaque]` decl so the test is self-contained (no stdlib dependency).
+#[test]
+fn vec_of_opaque_handle_actor_state_fails_closed_end_to_end() {
+    let src = r"
+        #[opaque]
+        type Widget {}
+
+        actor Holder {
+            let v: Vec<Widget>;
+            receive fn ping() {}
+        }
+    ";
+    let pipeline = lower_source(src);
+    let holder = find_actor(&pipeline, "Holder");
+    assert!(
+        holder.state_clone_fn_symbol.is_none() && holder.state_drop_fn_symbol.is_none(),
+        "Vec<#[opaque]> actor state must leave clone/drop symbols None (paired); got \
+         clone={:?} drop={:?}",
+        holder.state_clone_fn_symbol,
+        holder.state_drop_fn_symbol,
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { actor, field_name, .. }
+                if actor == "Holder" && field_name == "v"
+        )),
+        "expected ActorStateCloneClassificationFailed on Holder.v; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// `HashMap<string, Widget>` (opaque value) MUST also fail closed end-to-end,
+/// confirming the transitive authority covers the map-value position, not just
+/// Vec elements.
+#[test]
+fn hashmap_with_opaque_value_actor_state_fails_closed_end_to_end() {
+    let src = r"
+        #[opaque]
+        type Widget {}
+
+        actor Store {
+            let m: HashMap<string, Widget>;
+            receive fn ping() {}
+        }
+    ";
+    let pipeline = lower_source(src);
+    let store = find_actor(&pipeline, "Store");
+    assert!(
+        store.state_clone_fn_symbol.is_none(),
+        "HashMap<_, #[opaque]> actor state must fail closed; got clone={:?}",
+        store.state_clone_fn_symbol,
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { actor, .. }
+                if actor == "Store"
+        )),
+        "expected classification-failed diagnostic on Store; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// Negative control: a `Vec<Point>` of a plain user record (non-opaque) MUST
+/// classify clean end-to-end — the fail-close keys on the opaque discriminator,
+/// never on container shape, so legitimate owned-element vecs are unaffected.
+#[test]
+fn vec_of_non_opaque_record_actor_state_classifies_clean() {
+    let src = r"
+        type Point {
+            x: i64;
+            y: i64;
+        }
+
+        actor Path {
+            let points: Vec<Point>;
+            receive fn ping() {}
+        }
+    ";
+    let pipeline = lower_source(src);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "Vec<non-opaque record> must classify clean; got: {:#?}",
+        pipeline.diagnostics
+    );
+    let path = find_actor(&pipeline, "Path");
+    assert!(
+        path.state_clone_fn_symbol.is_some(),
+        "Vec<Point> actor state must classify (no over-fire)",
+    );
 }

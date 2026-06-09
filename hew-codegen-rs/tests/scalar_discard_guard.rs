@@ -136,6 +136,7 @@ fn emit_options(module_name: &str) -> (EmitOptions<'static>, std::path::PathBuf)
             out_dir,
             native: false,
             wasm: false,
+            target_triple: None,
         },
         tmp,
     )

@@ -93,6 +93,21 @@ pub enum ResolvedTy {
         /// discriminate builtin vs user dispatch on this field, NOT on the
         /// `name` string. Propagated round-trip-totally from `Ty::Named.builtin`.
         builtin: Option<BuiltinType>,
+        /// `#[opaque]`-handle discriminator. `true` means this `Named` resolved
+        /// to a type declared `#[opaque]` (a pointer-width runtime handle such
+        /// as `json.Value` / `cron.Expr`) during HIR name resolution; `false`
+        /// means it is an ordinary user record/enum/actor or builtin.
+        ///
+        /// This is the type-identity carrier that lets the actor-state
+        /// clone/drop classifier (`hew-mir::state_clone`) distinguish a real
+        /// opaque handle from a user record/enum that merely shares its short
+        /// name. Name-based resolution is fundamentally ambiguous on such a
+        /// collision (`json.Value` and a user `type Value` both arrive at the
+        /// classifier as `Named { name: "Value" }`); consumers that must
+        /// fail-closed on opaque handles dispatch on THIS field, never on the
+        /// `name` string. Stamped by `hew-hir::lower::lower_type` from the
+        /// pre-collected opaque-type-decl set.
+        is_opaque: bool,
     },
     /// Function type: `fn(T1, T2) -> R`.
     Function {
@@ -435,6 +450,12 @@ impl ResolvedTy {
                 name: name.clone(),
                 args: Self::convert_vec(args, type_params)?,
                 builtin: *builtin,
+                // The checker's `Ty::Named` carries no opacity discriminator;
+                // opacity is stamped downstream by `hew-hir::lower::lower_type`
+                // from the opaque-type-decl set. A `ResolvedTy` produced from a
+                // checker `Ty` is never the actor-state-field carrier, so
+                // `false` here is correct and behaviour-preserving.
+                is_opaque: false,
             }),
             Ty::Function { params, ret } => Ok(ResolvedTy::Function {
                 params: Self::convert_vec(params, type_params)?,
@@ -538,6 +559,10 @@ impl ResolvedTy {
                 name,
                 args,
                 builtin,
+                // `Ty::Named` carries no opacity discriminator; opacity is a
+                // HIR-resolution fact that does not round-trip back into the
+                // checker type. Dropped here intentionally.
+                is_opaque: _,
             } => Ty::Named {
                 name: name.clone(),
                 builtin: *builtin,
@@ -608,6 +633,7 @@ impl ResolvedTy {
             name: name.into(),
             args,
             builtin: Some(kind),
+            is_opaque: false,
         }
     }
 
@@ -621,6 +647,23 @@ impl ResolvedTy {
             name: name.into(),
             args,
             builtin: None,
+            is_opaque: false,
+        }
+    }
+
+    /// Construct a `Named` for a `#[opaque]` runtime-handle type (e.g.
+    /// `json.Value`, `cron.Expr`). Sets `is_opaque: true` so the actor-state
+    /// clone/drop classifier recognises the handle by type identity rather
+    /// than by a short-name heuristic that collides with user types of the
+    /// same name. `builtin: None` — an opaque handle is a user-module decl,
+    /// not a compiler builtin.
+    #[must_use]
+    pub fn named_opaque(name: impl Into<String>, args: Vec<ResolvedTy>) -> Self {
+        ResolvedTy::Named {
+            name: name.into(),
+            args,
+            builtin: None,
+            is_opaque: true,
         }
     }
 
@@ -747,6 +790,7 @@ mod tests {
                 name: "Foo".into(),
                 args: vec![ResolvedTy::I32, ResolvedTy::String],
                 builtin: None,
+                is_opaque: false,
             })
         );
     }
@@ -985,6 +1029,7 @@ mod tests {
             name: "User".into(),
             args: Vec::new(),
             builtin: None,
+            is_opaque: false,
         }));
         assert_eq!(resolved.to_string(), "<task<User>>");
     }
@@ -1010,6 +1055,7 @@ mod tests {
                 name: "T".into(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             })
         );
     }
@@ -1044,6 +1090,7 @@ mod tests {
                 name: "Color".into(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             })
         );
     }
@@ -1078,6 +1125,7 @@ mod tests {
             name: "Vec".into(),
             args: vec![ResolvedTy::TypeParam { name: "T".into() }],
             builtin: None,
+            is_opaque: false,
         };
         let restored = ResolvedTy::from_ty_with_type_params(&resolved.to_ty(), &scope)
             .expect("nested type-param resolves within scope");

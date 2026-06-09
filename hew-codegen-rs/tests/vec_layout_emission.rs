@@ -20,6 +20,7 @@ fn point_ty() -> ResolvedTy {
         name: "Point".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     }
 }
 
@@ -112,6 +113,7 @@ fn emit_ll(pipeline: IrPipeline, module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts =
         emit_module(&pipeline, &options).expect("layout Vec pipeline must emit successfully");
@@ -127,6 +129,7 @@ fn vec_layout_new_constructs_with_descriptor() {
         name: "Vec".to_string(),
         args: vec![point_ty()],
         builtin: None,
+        is_opaque: false,
     };
     let block = BasicBlock {
         id: 0,
@@ -154,6 +157,7 @@ fn vec_bitcopy_tuple_new_constructs_with_plain_descriptor() {
         name: "Vec".to_string(),
         args: vec![tuple_ty],
         builtin: None,
+        is_opaque: false,
     };
     let block = BasicBlock {
         id: 0,
@@ -186,6 +190,7 @@ fn vec_non_bitcopy_tuple_new_constructor_routes_to_owned_abi() {
         name: "Vec".to_string(),
         args: vec![tuple_ty],
         builtin: None,
+        is_opaque: false,
     };
     let block = BasicBlock {
         id: 0,
@@ -234,11 +239,13 @@ fn vec_payload_free_enum_new_routes_bitcopy_not_owned() {
         name: "Color".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![enum_ty.clone()],
         builtin: None,
+        is_opaque: false,
     };
     let block = BasicBlock {
         id: 0,
@@ -298,11 +305,13 @@ fn vec_scalar_payload_enum_new_routes_bitcopy_not_owned() {
         name: "Tag".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![enum_ty.clone()],
         builtin: None,
+        is_opaque: false,
     };
     let block = BasicBlock {
         id: 0,
@@ -351,6 +360,7 @@ fn vec_layout_push_synthesizes_descriptor_and_data_pointer() {
         name: "Vec".to_string(),
         args: vec![point_ty()],
         builtin: None,
+        is_opaque: false,
     };
     let block = BasicBlock {
         id: 0,
@@ -379,6 +389,7 @@ fn vec_layout_get_loads_returned_element_pointer_into_dest() {
         name: "Vec".to_string(),
         args: vec![point_ty()],
         builtin: None,
+        is_opaque: false,
     };
     let block = BasicBlock {
         id: 0,
@@ -415,6 +426,7 @@ fn vec_layout_set_synthesizes_descriptor_index_and_data_pointer() {
         name: "Vec".to_string(),
         args: vec![point_ty()],
         builtin: None,
+        is_opaque: false,
     };
     let block = BasicBlock {
         id: 0,
@@ -450,6 +462,7 @@ fn vec_layout_pop_traps_when_runtime_reports_empty() {
         name: "Vec".to_string(),
         args: vec![point_ty()],
         builtin: None,
+        is_opaque: false,
     };
     let block = BasicBlock {
         id: 0,
@@ -484,6 +497,7 @@ fn vec_layout_contains_thunk_emits_per_type_equality_function() {
         name: "Vec".to_string(),
         args: vec![point_ty()],
         builtin: None,
+        is_opaque: false,
     };
     let block = BasicBlock {
         id: 0,
@@ -542,6 +556,7 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
         name: "Vec".to_string(),
         args: vec![point_ty()],
         builtin: None,
+        is_opaque: false,
     };
     let return_block = BasicBlock {
         id: 2,
@@ -671,11 +686,13 @@ fn vec_layout_contains_thunk_enum_tag_dispatches_not_byte_compares() {
         name: "Maybe".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![enum_ty.clone()],
         builtin: None,
+        is_opaque: false,
     };
     let block = BasicBlock {
         id: 0,
@@ -754,6 +771,7 @@ fn vec_layout_contains_thunk_emits_for_wasm_target() {
         name: "Vec".to_string(),
         args: vec![point_ty()],
         builtin: None,
+        is_opaque: false,
     };
     let block = BasicBlock {
         id: 0,
@@ -778,6 +796,7 @@ fn vec_layout_contains_thunk_emits_for_wasm_target() {
         out_dir: &tmp,
         native: false,
         wasm: true,
+        target_triple: None,
     };
     let result = emit_module(&pipeline, &options);
     // Accept either a clean emit (wasm32 indirect call worked) or a
@@ -810,6 +829,7 @@ fn vec_layout_clone_synthesizes_descriptor_and_returns_new_vec() {
         name: "Vec".to_string(),
         args: vec![point_ty()],
         builtin: None,
+        is_opaque: false,
     };
     let cloned_vec_ty = vec_ty.clone();
     let block = BasicBlock {
@@ -863,6 +883,7 @@ fn vec_layout_remove_synthesizes_descriptor_and_index() {
         name: "Vec".to_string(),
         args: vec![point_ty()],
         builtin: None,
+        is_opaque: false,
     };
     let block = BasicBlock {
         id: 0,

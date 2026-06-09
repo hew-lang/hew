@@ -60,6 +60,7 @@ fn emit_ll(source: &str, module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts =
         emit_module(&pipeline, &options).expect("trap-kind pipeline must emit successfully");
@@ -136,6 +137,7 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(&pipeline, &options).expect("trap-kind MIR fixture must emit");
     let ll_path: &Path = artefacts

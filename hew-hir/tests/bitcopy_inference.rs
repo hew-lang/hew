@@ -78,11 +78,7 @@ fn struct_of_primitives_is_inferred_bitcopy() {
         "Point's fields are all BitCopy primitives; auto-inference must promote it"
     );
 
-    let ty = ResolvedTy::Named {
-        name: "Point".to_string(),
-        args: Vec::new(),
-        builtin: None,
-    };
+    let ty = ResolvedTy::named_user("Point", Vec::new());
     assert_eq!(
         ValueClass::of_ty(&ty, &output.module.type_classes),
         ValueClass::BitCopy,
@@ -121,11 +117,7 @@ fn struct_with_non_bitcopy_field_is_not_inferred_bitcopy() {
         entry.0,
     );
 
-    let ty = ResolvedTy::Named {
-        name: "Sparse".to_string(),
-        args: Vec::new(),
-        builtin: None,
-    };
+    let ty = ResolvedTy::named_user("Sparse", Vec::new());
     assert_ne!(
         ValueClass::of_ty(&ty, &output.module.type_classes),
         ValueClass::BitCopy,
@@ -173,11 +165,7 @@ fn concrete_generic_type_instantiation_is_inferred_bitcopy() {
         Some(ResourceMarker::BitCopy),
         "concrete Wrapper<i64> layout should be BitCopy under its mangled key"
     );
-    let ty = ResolvedTy::Named {
-        name: "Wrapper".to_string(),
-        args: vec![ResolvedTy::I64],
-        builtin: None,
-    };
+    let ty = ResolvedTy::named_user("Wrapper", vec![ResolvedTy::I64]);
     assert_eq!(
         ValueClass::of_ty(&ty, &output.module.type_classes),
         ValueClass::BitCopy
@@ -266,22 +254,18 @@ fn user_shadowed_builtin_name_does_not_take_builtin_value_class() {
         "no diagnostics expected; got: {:#?}",
         output.diagnostics
     );
-    let user_ty = ResolvedTy::Named {
-        name: "Duplex".to_string(),
-        args: Vec::new(),
-        builtin: None,
-    };
+    let user_ty = ResolvedTy::named_user("Duplex", Vec::new());
     assert_eq!(
         ValueClass::of_ty(&user_ty, &output.module.type_classes),
         ValueClass::Unknown,
         "user-defined Duplex with builtin: None must not inherit builtin Resource classification"
     );
 
-    let builtin_ty = ResolvedTy::Named {
-        name: "Duplex".to_string(),
-        args: vec![ResolvedTy::I64, ResolvedTy::I64],
-        builtin: Some(BuiltinType::Duplex),
-    };
+    let builtin_ty = ResolvedTy::named_builtin(
+        "Duplex",
+        BuiltinType::Duplex,
+        vec![ResolvedTy::I64, ResolvedTy::I64],
+    );
     assert_eq!(
         ValueClass::of_ty(&builtin_ty, &output.module.type_classes),
         ValueClass::AffineResource,

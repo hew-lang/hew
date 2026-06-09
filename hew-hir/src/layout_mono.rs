@@ -246,16 +246,8 @@ pub fn run_layout_mono_pass(
     // `u32::MAX - 1`).  The `id` appears only in the dedup `seen_enums`
     // key; duplicate entries are harmless (both `predeclare_named_layouts`
     // and `register_enum_layouts` are idempotent for same-name entries).
-    let ty_t = ResolvedTy::Named {
-        name: "T".to_string(),
-        args: vec![],
-        builtin: None,
-    };
-    let ty_e = ResolvedTy::Named {
-        name: "E".to_string(),
-        args: vec![],
-        builtin: None,
-    };
+    let ty_t = ResolvedTy::named_user("T", vec![]);
+    let ty_e = ResolvedTy::named_user("E", vec![]);
     for (type_name, type_params, variants) in [
         (
             "Option",

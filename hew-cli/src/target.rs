@@ -126,7 +126,10 @@ impl TargetSpec {
         }
     }
 
-    #[cfg(test)]
+    /// File extension for a relocatable object file on this target.
+    ///
+    /// COFF targets use `.obj`; ELF/Mach-O/Wasm targets use `.o`. Drives the
+    /// `hew build --emit-obj` output name.
     pub fn object_suffix(&self) -> &'static str {
         match self.object_format {
             ObjectFormat::Coff => ".obj",
@@ -303,7 +306,9 @@ impl TargetSpec {
     pub fn cross_target_run_error(&self, verb: &str) -> String {
         format!(
             "Error: cannot {verb} target {} on this host. Cross-target executable {verb} is not \
-             supported yet; object-only cross-target emission is not available on the v0.5 compile surface.",
+             supported. To produce a cross-target object on this host, use \
+             `hew build --target {} --emit-obj`.",
+            self.normalized_triple(),
             self.normalized_triple(),
         )
     }
@@ -311,8 +316,9 @@ impl TargetSpec {
     pub fn unsupported_native_link_error(&self) -> String {
         format!(
             "Error: target {} can emit objects, but native executable linking is only supported \
-             for the host target right now. Object-only cross-target emission is not available \
-             on the v0.5 compile surface.",
+             for the host target right now. To produce a cross-target object on this host, use \
+             `hew build --target {} --emit-obj`.",
+            self.normalized_triple(),
             self.normalized_triple(),
         )
     }

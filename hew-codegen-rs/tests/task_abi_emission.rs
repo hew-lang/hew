@@ -37,6 +37,7 @@ fn pipeline_with_task_abi_call(
         name: "HewTask".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     }];
     locals.extend(extra_locals);
 
@@ -286,6 +287,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         name: "__hew_closure_env_main_0".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     let env_ptr_ty = ResolvedTy::Pointer {
         is_mutable: false,
@@ -400,6 +402,7 @@ fn task_abi_emission_task_new_declare() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     emit_module(&pipeline, &options).expect("hew_task_new emission should succeed");
     let ir = read_ll(&tmp);
@@ -427,6 +430,7 @@ fn task_abi_emission_task_await_blocking_declare() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     emit_module(&pipeline, &options).expect("hew_task_await_blocking emission should succeed");
     let ir = read_ll(&tmp);
@@ -452,6 +456,7 @@ fn task_abi_emission_task_get_result_declare() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     emit_module(&pipeline, &options).expect("hew_task_get_result emission should succeed");
     let ir = read_ll(&tmp);
@@ -473,6 +478,7 @@ fn task_abi_emission_task_free_declare() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     emit_module(&pipeline, &options).expect("hew_task_free emission should succeed");
     let ir = read_ll(&tmp);
@@ -518,6 +524,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
         name: "HewTask".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     }];
     let pipeline = IrPipeline {
         thir: vec![],
@@ -578,6 +585,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     emit_module(&pipeline, &options)
         .expect("hew_task_new + hew_task_scope_spawn emission should succeed");
@@ -627,6 +635,7 @@ fn task_abi_emission_spawn_task_direct_synthesizes_wrapper() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     emit_module(&pipeline, &options).expect("SpawnTaskDirect emission should succeed");
     let ir = read_ll(&tmp);
@@ -655,6 +664,7 @@ fn task_abi_emission_spawn_task_direct_rejects_contextless_target() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     match emit_module(&pipeline, &options) {
         Err(CodegenError::FailClosed(msg)) => {
@@ -679,6 +689,7 @@ fn task_abi_emission_spawn_task_closure_threads_execution_context() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     emit_module(&pipeline, &options).expect("SpawnTaskClosure emission should succeed");
     let ir = read_ll(&tmp);
@@ -710,6 +721,7 @@ fn task_abi_emission_task_spawn_thread_fail_closed() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     match emit_module(&pipeline, &options) {
         Err(CodegenError::FailClosed(msg)) => {

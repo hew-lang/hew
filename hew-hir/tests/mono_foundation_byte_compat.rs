@@ -23,30 +23,16 @@ use hew_hir::monomorph::mangle as legacy_mangle;
 use hew_types::ResolvedTy;
 
 fn sample_resolved_tys() -> Vec<Vec<ResolvedTy>> {
-    let int_named = ResolvedTy::Named {
-        name: "Int".to_string(),
-        args: vec![],
-        builtin: None,
-    };
-    let vec_int = ResolvedTy::Named {
-        name: "Vec".to_string(),
-        args: vec![ResolvedTy::I32],
-        builtin: None,
-    };
-    let nested = ResolvedTy::Named {
-        name: "Vec".to_string(),
-        args: vec![ResolvedTy::Named {
-            name: "Vec".to_string(),
-            args: vec![ResolvedTy::Bool],
-            builtin: None,
-        }],
-        builtin: None,
-    };
-    let module_qualified = ResolvedTy::Named {
-        name: "std::collections::HashMap".to_string(),
-        args: vec![ResolvedTy::String, ResolvedTy::I64],
-        builtin: None,
-    };
+    let int_named = ResolvedTy::named_user("Int", vec![]);
+    let vec_int = ResolvedTy::named_user("Vec", vec![ResolvedTy::I32]);
+    let nested = ResolvedTy::named_user(
+        "Vec",
+        vec![ResolvedTy::named_user("Vec", vec![ResolvedTy::Bool])],
+    );
+    let module_qualified = ResolvedTy::named_user(
+        "std::collections::HashMap",
+        vec![ResolvedTy::String, ResolvedTy::I64],
+    );
     vec![
         vec![],
         vec![ResolvedTy::I64],
@@ -319,11 +305,7 @@ fn machine_mono_key_mangle_uses_machine_class() {
     let key = MachineMonoKey::new(
         ItemId(11),
         "Lifecycle".to_string(),
-        vec![ResolvedTy::Named {
-            name: "File".to_string(),
-            args: vec![],
-            builtin: None,
-        }],
+        vec![ResolvedTy::named_user("File", vec![])],
     );
     let mangled = key.mangle();
     assert_eq!(mangled, "mc$$Lifecycle$$File");

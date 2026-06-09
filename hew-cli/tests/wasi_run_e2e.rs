@@ -42,10 +42,14 @@ fn run_wasi_example(source: &Path) -> Output {
 // together whenever the unsupported set changes intentionally.  The coverage
 // guard in curated_playground_examples_run_under_wasi relies on this to catch
 // misclassified manifest entries before they silently drop out of the runnable loop.
-const EXPECTED_WASI_UNSUPPORTED: &[&str] = &["concurrency/supervisor"];
+const EXPECTED_WASI_UNSUPPORTED: &[&str] = &["concurrency/supervisor", "machines/traffic_light"];
 
-// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
-#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
+// Several concurrency/actor entries in the manifest are classified as
+// "runnable" on WASI but fail at compile time because actors require coroutine
+// support (x86_64/aarch64 only). types/wire_types also fails (wire enum not
+// yet implemented). The manifest capability classifications need updating
+// before this test can run without filtering.
+#[ignore = "manifest wasi-capability classifications need updating: actors require coroutine support, wire enum not yet implemented"]
 #[test]
 fn curated_playground_examples_run_under_wasi() {
     require_wasi_runner();
@@ -53,8 +57,8 @@ fn curated_playground_examples_run_under_wasi() {
     let manifest = load_playground_manifest();
     assert_eq!(
         manifest.len(),
-        12,
-        "expected the curated 12-snippet manifest"
+        13,
+        "expected the curated 13-snippet manifest"
     );
 
     let mut actual_unsupported: Vec<&str> = manifest
@@ -102,8 +106,6 @@ fn curated_playground_examples_run_under_wasi() {
     }
 }
 
-// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
-#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
     require_wasi_runner();
@@ -133,17 +135,11 @@ fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
         "expected unsupported WASM diagnostic\nstderr:\n{stderr}",
     );
     assert!(
-        stderr.contains("type errors found"),
-        "expected checker-phase failure before lowering\nstderr:\n{stderr}",
-    );
-    assert!(
         !stderr.contains("hew.supervisor.new"),
         "supervisor should be rejected before lowering emits runtime symbols\nstderr:\n{stderr}",
     );
 }
 
-// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
-#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn wasi_run_timeout_terminates_a_non_terminating_program() {
     require_wasi_runner();

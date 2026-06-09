@@ -64,6 +64,7 @@ pub fn lookup_type_marker_for_ty(
         name,
         args,
         builtin,
+        ..
     } = ty
     else {
         return None;
@@ -242,6 +243,7 @@ fn collect_named_type_components(ty: &ResolvedTy, components: &mut Vec<NamedType
             name,
             args,
             builtin,
+            ..
         } => {
             components.push(NamedTypeComponent {
                 name: name.clone(),
@@ -338,11 +340,7 @@ mod tests {
         let ty = ResolvedTy::TraitObject {
             traits: vec![ResolvedTraitBound {
                 trait_name: "Iterator".to_string(),
-                args: vec![ResolvedTy::Named {
-                    name: "Foo".to_string(),
-                    args: Vec::new(),
-                    builtin: None,
-                }],
+                args: vec![ResolvedTy::named_user("Foo", Vec::new())],
                 assoc_bindings: Vec::new(),
             }],
         };
@@ -356,19 +354,11 @@ mod tests {
             traits: vec![ResolvedTraitBound {
                 trait_name: "OuterTrait".to_string(),
                 args: vec![ResolvedTy::Tuple(vec![
-                    ResolvedTy::Named {
-                        name: "Foo".to_string(),
-                        args: Vec::new(),
-                        builtin: None,
-                    },
+                    ResolvedTy::named_user("Foo", Vec::new()),
                     ResolvedTy::TraitObject {
                         traits: vec![ResolvedTraitBound {
                             trait_name: "InnerTrait".to_string(),
-                            args: vec![ResolvedTy::Named {
-                                name: "Bar".to_string(),
-                                args: Vec::new(),
-                                builtin: None,
-                            }],
+                            args: vec![ResolvedTy::named_user("Bar", Vec::new())],
                             assoc_bindings: Vec::new(),
                         }],
                     },
@@ -385,15 +375,11 @@ mod tests {
 
     #[test]
     fn named_type_components_preserve_builtin_discriminator_and_arg_shape() {
-        let ty = ResolvedTy::Named {
-            name: "Vec".to_string(),
-            args: vec![ResolvedTy::Named {
-                name: "Foo".to_string(),
-                args: Vec::new(),
-                builtin: None,
-            }],
-            builtin: Some(BuiltinType::Vec),
-        };
+        let ty = ResolvedTy::named_builtin(
+            "Vec",
+            BuiltinType::Vec,
+            vec![ResolvedTy::named_user("Foo", Vec::new())],
+        );
 
         let components = named_type_components(&ty);
         assert_eq!(components.len(), 2);

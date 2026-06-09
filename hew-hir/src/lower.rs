@@ -689,6 +689,80 @@ fn collect_trait_default_methods(items: &[(Item, Span)]) -> HashMap<String, Vec<
     out
 }
 
+/// Harvest opaque-type identity from the whole program (root items + every
+/// imported module) for the `ResolvedTy::Named.is_opaque` discriminator
+/// stamped by [`LowerCtx::lower_type`]:
+///
+/// * `opaque` — opaque type names in BOTH forms: the bare short name
+///   (`"Value"` for a `#[opaque] type Value` in `std::encoding::json`) AND
+///   the module-qualified form (`"json.Value"`). A bare reference matches the
+///   short form; a qualified reference (`json.Value`) matches the qualified
+///   form EXACTLY, so it cannot be confused with a same-short-name user type
+///   in a different module (`m.Value`).
+/// * `non_opaque` — short names of every non-opaque user type declaration
+///   (`type`/`record`/`enum`/`actor`/`machine`). Used to resolve a BARE
+///   reference whose short name is opaque-in-one-module: if a local user type
+///   shadows the short name, the bare reference is the user type, not the
+///   opaque handle.
+///
+/// Keeping qualified opaque keys is what makes the discriminator a precise
+/// identity fact rather than a short-name heuristic: `m.Value` (user record
+/// from module `m`) and `json.Value` (opaque handle) both have short name
+/// `"Value"`, but only `json.Value` is in `opaque` under its qualified key.
+fn collect_opaque_type_short_names(
+    program: &Program,
+    opaque: &mut HashSet<String>,
+    non_opaque: &mut HashSet<String>,
+) {
+    fn visit_items(
+        items: &[(Item, Span)],
+        module_short: Option<&str>,
+        opaque: &mut HashSet<String>,
+        non_opaque: &mut HashSet<String>,
+    ) {
+        for (item, _) in items {
+            match item {
+                Item::TypeDecl(decl) => {
+                    if decl.is_opaque {
+                        opaque.insert(decl.name.clone());
+                        if let Some(m) = module_short {
+                            opaque.insert(format!("{m}.{}", decl.name));
+                        }
+                    } else {
+                        non_opaque.insert(decl.name.clone());
+                    }
+                }
+                // `record`/`enum`/`actor`/`machine` are never `#[opaque]`
+                // (opacity is only expressible on `type` decls), so they only
+                // ever contribute to the non-opaque complement.
+                Item::Record(decl) => {
+                    non_opaque.insert(decl.name.clone());
+                }
+                Item::Actor(decl) => {
+                    non_opaque.insert(decl.name.clone());
+                }
+                Item::Machine(decl) => {
+                    non_opaque.insert(decl.name.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    visit_items(&program.items, None, opaque, non_opaque);
+    if let Some(ref mg) = program.module_graph {
+        for mod_id in &mg.topo_order {
+            if *mod_id == mg.root {
+                continue;
+            }
+            if let Some(module) = mg.modules.get(mod_id) {
+                let module_short = mod_id.path.last().map(String::as_str);
+                visit_items(&module.items, module_short, opaque, non_opaque);
+            }
+        }
+    }
+}
+
 /// Synthesize a `FnDecl` from a `TraitMethod` for HIR lowering purposes.
 /// The resulting `FnDecl` carries the default body and the same signature
 /// as the trait declaration. `current_impl_self_ty` in the lowering context
@@ -931,6 +1005,19 @@ pub fn lower_program_with_mono_cap(
     // lowering can emit them for impls that do not override them.
     ctx.trait_default_methods = collect_trait_default_methods(&program.items);
 
+    // Pre-pre-pass: harvest `#[opaque]` type-decl short names (and the
+    // complement of non-opaque user type short names) from the whole program
+    // — root items and every imported module. `lower_type` reads these to
+    // stamp the `ResolvedTy::Named.is_opaque` discriminator BEFORE any actor
+    // state-field type is resolved, so the actor-state clone/drop classifier
+    // can tell a real opaque handle apart from a colliding user type by
+    // identity rather than by name. See the field docs on `LowerCtx`.
+    collect_opaque_type_short_names(
+        program,
+        &mut ctx.opaque_type_short_names,
+        &mut ctx.non_opaque_type_short_names,
+    );
+
     let mut builtin_receiver_impl_method_symbols: HashSet<String> = HashSet::new();
 
     // First pass: collect all function signatures so that forward and mutual
@@ -1138,9 +1225,22 @@ pub fn lower_program_with_mono_cap(
                                 }
                             }
                         }
+                        // Register all consts from imported modules under their
+                        // qualified key `"module_short.CONST_NAME"`.  Pub
+                        // consts are needed for cross-module `module.CONST`
+                        // field-access resolution; private consts must also be
+                        // registered here so that imported function bodies that
+                        // reference the module's own private consts by bare
+                        // name get a stable `ItemId` that matches the
+                        // `HirItem::Const` emitted in the later pass.
+                        Item::Const(const_decl) => {
+                            let id = ctx.ids.item();
+                            let ty = ctx.lower_type(&const_decl.ty);
+                            let qualified = format!("{module_short}.{}", const_decl.name);
+                            ctx.const_registry.insert(qualified, ConstEntry { id, ty });
+                        }
                         // Non-pub Function/TypeDecl/Record fall here (not exported to importers).
                         Item::Import(_)
-                        | Item::Const(_)
                         | Item::Function(_)
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
@@ -1572,6 +1672,7 @@ pub fn lower_program_with_mono_cap(
                                 name: (*p).to_string(),
                                 args: Vec::new(),
                                 builtin: None,
+                                is_opaque: false,
                             })
                             .collect(),
                     )
@@ -2235,6 +2336,30 @@ pub fn lower_program_with_mono_cap(
                         )
                     })
                     .collect();
+                // Populate bare-name const scope for this module's own consts.
+                // Functions inside the module reference module-level consts by
+                // bare name (e.g. `STATUS_OK`), but the global `const_registry`
+                // holds them under qualified keys `"module_short.STATUS_OK"`.
+                // Both pub AND private consts are registered in the pre-pass
+                // under their qualified keys; this map shadows them by bare
+                // name so identifier resolution inside imported bodies finds
+                // them without requiring the caller to qualify the access.
+                let module_consts_scope: HashMap<String, ConstEntry> = module
+                    .items
+                    .iter()
+                    .filter_map(|(it, _)| {
+                        if let Item::Const(cd) = it {
+                            let qualified = format!("{module_short}.{}", cd.name);
+                            ctx.const_registry
+                                .get(&qualified)
+                                .map(|entry| (cd.name.clone(), entry.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let prev_module_consts = ctx.imported_module_consts.replace(module_consts_scope);
+
                 for (item, span) in &module.items {
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
@@ -2450,6 +2575,30 @@ pub fn lower_program_with_mono_cap(
                                 );
                             }
                         }
+                        // Emit HirItem::Const for ALL consts from imported modules
+                        // (both pub and private).  Pub consts are externally
+                        // accessible via `module.CONST`; private consts are
+                        // visible only inside the module's own function bodies.
+                        // Both shapes produce `BindingRef::Const(id)` references
+                        // and both require a `HirItem::Const` descriptor so that
+                        // MIR's `build_const_descriptors` emits the global and
+                        // `Instr::ConstGlobalLoad` resolves correctly at codegen.
+                        //
+                        // The pre-pass registered every const under its qualified key
+                        // `"module_short.CONST_NAME"`.  `lower_const` looks up
+                        // `const_registry[decl.name]` for the pre-allocated ItemId,
+                        // so we temporarily alias the qualified entry under the bare
+                        // name, lower, then remove the alias to avoid polluting the
+                        // global registry.
+                        Item::Const(const_decl) => {
+                            let qualified = format!("{module_short}.{}", const_decl.name);
+                            if let Some(entry) = ctx.const_registry.get(&qualified).cloned() {
+                                ctx.const_registry.insert(const_decl.name.clone(), entry);
+                                let lowered = ctx.lower_const(const_decl, span.clone());
+                                ctx.const_registry.remove(&const_decl.name);
+                                items.push(HirItem::Const(lowered));
+                            }
+                        }
                         // Item::Record, Item::Actor, Item::Supervisor from
                         // imported modules are intentionally not emitted in
                         // this slice; their cross-module lowering semantics
@@ -2459,7 +2608,6 @@ pub fn lower_program_with_mono_cap(
                         // visible to importers). If a new Item variant is
                         // added, the compiler will force a conscious decision.
                         Item::Import(_)
-                        | Item::Const(_)
                         | Item::Function(_)
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
@@ -2471,6 +2619,8 @@ pub fn lower_program_with_mono_cap(
                         | Item::Supervisor(_) => {}
                     }
                 }
+                // Restore the const scope after lowering this module's bodies.
+                ctx.imported_module_consts = prev_module_consts;
                 ctx.tag_diagnostics_since(diag_start, &source_module);
                 record_source_modules_for_items(
                     &items[item_start..],
@@ -3254,10 +3404,12 @@ pub fn substitute_ty<S: std::hash::BuildHasher>(
             name,
             args,
             builtin,
+            is_opaque,
         } => ResolvedTy::Named {
             name: name.clone(),
             args: args.iter().map(|a| substitute_ty(a, subst)).collect(),
             builtin: *builtin,
+            is_opaque: *is_opaque,
         },
         ResolvedTy::Tuple(items) => {
             ResolvedTy::Tuple(items.iter().map(|t| substitute_ty(t, subst)).collect())
@@ -3382,6 +3534,13 @@ struct LowerCtx {
     /// the qualified, native-symbol-safe `fn_registry` keys emitted for that
     /// imported module.
     imported_fn_rewrites: Option<HashMap<String, String>>,
+    /// Bare-name → `ConstEntry` map active while lowering an imported module's
+    /// function bodies.  A module may reference its own module-level consts
+    /// by bare name (e.g. `STATUS_OK` inside `tls.hew`), but only the
+    /// qualified key `"tls.STATUS_OK"` is in the global `const_registry`.
+    /// This scoped map bridges the gap: it is populated before lowering each
+    /// module's bodies and cleared after, mirroring `imported_fn_rewrites`.
+    imported_module_consts: Option<HashMap<String, ConstEntry>>,
     /// Per-named-type marker + close-method registry. Pre-populated from
     /// every `Item::TypeDecl` before function bodies lower so that
     /// `ValueClass::of_ty` can resolve `Named` types as the body is walked.
@@ -3787,6 +3946,26 @@ struct LowerCtx {
     /// so that `lower_impl_block` can lower default methods that are not
     /// overridden in the concrete impl.
     trait_default_methods: HashMap<String, Vec<TraitMethod>>,
+    /// Short names of every `#[opaque]` type declaration in the program
+    /// (root + imported modules), e.g. `"Value"` for `json.Value`.
+    ///
+    /// Consulted by [`LowerCtx::lower_type`] to stamp the
+    /// `ResolvedTy::Named.is_opaque` discriminator so the actor-state
+    /// clone/drop classifier (`hew-mir::state_clone`) can distinguish a real
+    /// opaque handle from a user record/enum that merely shares its short
+    /// name. Populated by the type-decl pre-passes (root + imported) before
+    /// any actor body lowers, so the discriminator is available when actor
+    /// state-field types are resolved.
+    ///
+    /// `non_opaque_type_short_names` carries the complement: short names that
+    /// are user records/enums/actors. A bare (unqualified) annotation whose
+    /// short name is in BOTH sets refers to the user type (the local
+    /// declaration shadows the imported opaque handle); only a qualified
+    /// reference (`json.Value`) or a bare name that is exclusively opaque
+    /// resolves to the opaque handle. This keeps the discriminator a type
+    /// identity fact rather than a short-name heuristic.
+    opaque_type_short_names: HashSet<String>,
+    non_opaque_type_short_names: HashSet<String>,
 }
 
 impl LowerCtx {
@@ -3801,6 +3980,7 @@ impl LowerCtx {
             scopes: Vec::new(),
             fn_registry: HashMap::new(),
             imported_fn_rewrites: None,
+            imported_module_consts: None,
             type_classes,
             impl_close_methods: HashMap::new(),
             diagnostics: Vec::new(),
@@ -3859,6 +4039,8 @@ impl LowerCtx {
             target_arch,
             current_impl_self_ty: None,
             trait_default_methods: HashMap::new(),
+            opaque_type_short_names: HashSet::new(),
+            non_opaque_type_short_names: HashSet::new(),
         }
     }
 
@@ -5012,6 +5194,7 @@ impl LowerCtx {
                         .to_string(),
                     args: vec![ResolvedTy::Unit],
                     builtin: Some(hew_types::BuiltinType::LocalPid),
+                    is_opaque: false,
                 }],
                 linkage: None,
                 type_params: Vec::new(),
@@ -5045,6 +5228,7 @@ impl LowerCtx {
                             .to_string(),
                         args: vec![ResolvedTy::Unit],
                         builtin: Some(hew_types::BuiltinType::LocalPid),
+                        is_opaque: false,
                     }],
                     linkage: None,
                     type_params: Vec::new(),
@@ -6616,6 +6800,7 @@ impl LowerCtx {
             name: "Generator".to_string(),
             args: vec![yield_ty.clone(), gen_return_ty.clone()],
             builtin: Some(hew_types::BuiltinType::Generator),
+            is_opaque: false,
         };
         let gen_block_expr = HirExpr {
             node: self.ids.node(),
@@ -9055,12 +9240,14 @@ impl LowerCtx {
                         name: "regex.Pattern".to_string(),
                         args: Vec::new(),
                         builtin: None,
+                        is_opaque: false,
                     })
                 } else {
                     ResolvedTy::Named {
                         name: "regex.Pattern".to_string(),
                         args: Vec::new(),
                         builtin: None,
+                        is_opaque: false,
                     }
                 };
                 // W4.047 P1.2: prove the typed handoff agrees with the live
@@ -9094,6 +9281,7 @@ impl LowerCtx {
                         name: machine_name.clone(),
                         args: Vec::new(),
                         builtin: None,
+                        is_opaque: false,
                     };
                     (
                         HirExprKind::MachineVariantCtor {
@@ -9372,6 +9560,7 @@ impl LowerCtx {
                                     name: type_name.clone(),
                                     args: Vec::new(),
                                     builtin: None,
+                                    is_opaque: false,
                                 }
                             }
                         }
@@ -9380,6 +9569,7 @@ impl LowerCtx {
                             name: type_name.clone(),
                             args: Vec::new(),
                             builtin: None,
+                            is_opaque: false,
                         }
                     };
                     (
@@ -9419,6 +9609,7 @@ impl LowerCtx {
                         name: machine_name.clone(),
                         args: Vec::new(),
                         builtin: None,
+                        is_opaque: false,
                     };
                     // Break out of the match to let the outer wrapper build the HirExpr.
                     // We use a nested block that evaluates to `(kind, ty)`.
@@ -9470,6 +9661,7 @@ impl LowerCtx {
                             name: name.clone(),
                             args: resolved_type_args,
                             builtin: None,
+                            is_opaque: false,
                         },
                     )
                 }
@@ -9584,12 +9776,14 @@ impl LowerCtx {
                         name: "AskError".to_string(),
                         args: Vec::new(),
                         builtin: Some(BuiltinType::AskError),
+                        is_opaque: false,
                     };
                     let result_ty = match ResolvedTy::from_ty(&reply_ty) {
                         Ok(r) => ResolvedTy::Named {
                             name: "Result".to_string(),
                             args: vec![r, ask_error_ty],
                             builtin: Some(BuiltinType::Result),
+                            is_opaque: false,
                         },
                         Err(_) => {
                             // Fallback: return raw expr if reply_ty doesn't resolve;
@@ -10003,6 +10197,39 @@ impl LowerCtx {
                         return hir_expr;
                     }
                 }
+                // Pre-dispatch: module-qualified constant reference, e.g.
+                // `module_short.CONST_NAME`.  The type checker accepted this as
+                // a qualified const access and registered the result type in
+                // `expr_types`; the HIR must produce a `BindingRef { Const(id) }`
+                // rather than falling through to the generic struct-field path
+                // (which would `lower_expr(object)` on a bare module name and
+                // fail with `UnresolvedSymbol`).
+                //
+                // Guard: object is a bare `Expr::Identifier` and the qualified
+                // key `"{module_short}.{field}"` is in `const_registry`.  The
+                // `const_registry` pre-pass inserts pub consts from every
+                // imported module under qualified keys, so any hit here is
+                // authoritative.
+                if let Expr::Identifier(module_name) = &object.0 {
+                    let qualified_key = format!("{module_name}.{field}");
+                    if let Some(entry) = self.const_registry.get(&qualified_key).cloned() {
+                        let ty = entry.ty.clone();
+                        let id = entry.id;
+                        return HirExpr {
+                            node: self.ids.node(),
+                            site,
+                            value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                            ty,
+                            intent,
+                            kind: HirExprKind::BindingRef {
+                                name: qualified_key,
+                                resolved: ResolvedRef::Const(id),
+                            },
+                            span,
+                        };
+                    }
+                }
+
                 let missing_import = if let Expr::Identifier(module_name) = &object.0 {
                     self.missing_stdlib_module_import(module_name)
                         .map(|module| (module_name, module))
@@ -10564,6 +10791,7 @@ impl LowerCtx {
             name: "Duplex".to_string(),
             args: vec![msg_ty, reply_ty],
             builtin: Some(hew_types::BuiltinType::Duplex),
+            is_opaque: false,
         }
     }
 
@@ -10613,6 +10841,7 @@ impl LowerCtx {
                         name: "Generator".to_string(),
                         args: vec![ResolvedTy::Unit, ResolvedTy::Unit],
                         builtin: Some(hew_types::BuiltinType::Generator),
+                        is_opaque: false,
                     }
                 }
             }
@@ -10629,6 +10858,7 @@ impl LowerCtx {
                 name: "Generator".to_string(),
                 args: vec![ResolvedTy::Unit, ResolvedTy::Unit],
                 builtin: Some(hew_types::BuiltinType::Generator),
+                is_opaque: false,
             }
         };
 
@@ -11435,6 +11665,7 @@ impl LowerCtx {
                 name,
                 args,
                 builtin,
+                ..
             } if name == "Vec" && builtin == Some(BuiltinType::Vec) && args.len() == 1 => {
                 Some((Self::resolved_vec_ty(args[0].clone()), args[0].clone()))
             }
@@ -11735,6 +11966,7 @@ impl LowerCtx {
                                 name: tagged_union_name.clone(),
                                 args: Vec::new(),
                                 builtin: None,
+                                is_opaque: false,
                             }
                         }
                     }
@@ -11746,6 +11978,7 @@ impl LowerCtx {
                         name: tagged_union_name.clone(),
                         args: Vec::new(),
                         builtin: None,
+                        is_opaque: false,
                     }
                 };
                 // W4.047 P1.2: prove the typed handoff agrees at this fail-open
@@ -11789,6 +12022,29 @@ impl LowerCtx {
                 span.clone(),
                 "imported free-function body rewrite target was not registered",
             ));
+        }
+        // Bare-name same-module const reference inside an imported module's
+        // function body (e.g. `STATUS_OK` inside `tls.hew`).  The global
+        // `const_registry` only carries the qualified key
+        // `"tls.STATUS_OK"`; `imported_module_consts` holds the bare-name
+        // entries that are in scope while this module's bodies are lowered.
+        // Checked before `const_registry` so same-module bare names take
+        // precedence over any qualified alias that happens to collide.
+        if let Some(entry) = self
+            .imported_module_consts
+            .as_ref()
+            .and_then(|m| m.get(name))
+            .cloned()
+        {
+            let ty = entry.ty.clone();
+            let id = entry.id;
+            return (
+                HirExprKind::BindingRef {
+                    name: name.to_string(),
+                    resolved: ResolvedRef::Const(id),
+                },
+                ty,
+            );
         }
         if let Some(entry) = self.const_registry.get(name) {
             // Module-level `const` reference. Resolves to a `Const` ref carrying
@@ -11895,6 +12151,67 @@ impl LowerCtx {
         clippy::too_many_lines,
         reason = "single match over every TypeExpr variant; splitting would scatter the type-lowering authority"
     )]
+    /// Resolve a non-keyword `TypeExpr::Named` reference to a `ResolvedTy`,
+    /// classifying it as builtin / opaque-handle / user type. `name` is the
+    /// annotation as written (possibly module-qualified); `args` are the
+    /// already-lowered generic arguments. Split out of `lower_type` to keep
+    /// that dispatcher under the line budget.
+    fn resolve_named_type_ref(&self, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
+        let type_name = name
+            .rsplit_once('.')
+            .map_or(name, |(_, unqualified)| unqualified);
+        if let Some(registration) = crate::builtin_type_classes::builtin_type_registration(name)
+            .or_else(|| crate::builtin_type_classes::builtin_type_registration(type_name))
+        {
+            ResolvedTy::named_builtin(registration.name(), registration.builtin, args)
+        } else if let Some(builtin) = hew_types::lookup_builtin_type(name) {
+            ResolvedTy::named_builtin(name.to_string(), builtin, args)
+        } else if let Some(builtin) = hew_types::lookup_builtin_type(type_name) {
+            ResolvedTy::named_builtin(type_name.to_string(), builtin, args)
+        } else if self.resolves_to_opaque_handle(name, type_name) {
+            // `#[opaque]` runtime handle (e.g. `json.Value`). Stamp the
+            // type-identity discriminator so the actor-state clone/drop
+            // classifier fails closed on the handle even when its short name
+            // collides with a user record/enum of the same name. See
+            // `LowerCtx::resolves_to_opaque_handle`.
+            ResolvedTy::named_opaque(type_name.to_string(), args)
+        } else {
+            ResolvedTy::named_user(type_name.to_string(), args)
+        }
+    }
+
+    /// Decide whether a `Named` type reference resolves to a `#[opaque]`
+    /// runtime handle, used to stamp `ResolvedTy::Named.is_opaque`.
+    ///
+    /// `full_name` is the annotation as written (qualified `json.Value` /
+    /// `m.Value`, or bare `Value`); `short_name` is its module-prefix-stripped
+    /// form. The decision is made from declared identity (the opaque sets
+    /// harvested by `collect_opaque_type_short_names`), never from a
+    /// name-collision heuristic:
+    ///
+    /// * A qualified reference (`json.Value`, `m.Value`) is opaque IFF its
+    ///   EXACT qualified name is a registered opaque key. `json.Value` is
+    ///   (it names the opaque handle); `m.Value` is NOT (it names a user
+    ///   record in module `m` that merely shares the short name). A user type
+    ///   cannot be declared `#[opaque]`, so the qualified key is unambiguous.
+    /// * A bare reference (`Value`) is opaque ONLY when its short name is
+    ///   opaque AND no non-opaque user type shares that short name. When both
+    ///   exist, the local user declaration shadows the imported opaque handle
+    ///   for an unqualified reference (matching name resolution), so the bare
+    ///   reference resolves to the user type (`is_opaque: false`).
+    fn resolves_to_opaque_handle(&self, full_name: &str, short_name: &str) -> bool {
+        let is_qualified = full_name.contains('.');
+        if is_qualified {
+            // Exact qualified-key match only: distinguishes `json.Value`
+            // (opaque) from `m.Value` (user record sharing the short name).
+            return self.opaque_type_short_names.contains(full_name);
+        }
+        // Bare reference: opaque only if the short name is opaque and no user
+        // type shadows it.
+        self.opaque_type_short_names.contains(short_name)
+            && !self.non_opaque_type_short_names.contains(short_name)
+    }
+
     fn lower_type(&mut self, ty: &Spanned<TypeExpr>) -> ResolvedTy {
         match &ty.0 {
             TypeExpr::Named { name, type_args } => {
@@ -11953,32 +12270,7 @@ impl LowerCtx {
                         ));
                         ResolvedTy::Unit
                     }
-                    _ => {
-                        let type_name = name
-                            .rsplit_once('.')
-                            .map_or(name.as_str(), |(_, unqualified)| unqualified);
-                        if let Some(registration) =
-                            crate::builtin_type_classes::builtin_type_registration(name).or_else(
-                                || {
-                                    crate::builtin_type_classes::builtin_type_registration(
-                                        type_name,
-                                    )
-                                },
-                            )
-                        {
-                            ResolvedTy::named_builtin(
-                                registration.name(),
-                                registration.builtin,
-                                args,
-                            )
-                        } else if let Some(builtin) = hew_types::lookup_builtin_type(name) {
-                            ResolvedTy::named_builtin(name.clone(), builtin, args)
-                        } else if let Some(builtin) = hew_types::lookup_builtin_type(type_name) {
-                            ResolvedTy::named_builtin(type_name.to_string(), builtin, args)
-                        } else {
-                            ResolvedTy::named_user(type_name.to_string(), args)
-                        }
-                    }
+                    _ => self.resolve_named_type_ref(name, args),
                 }
             }
             TypeExpr::Infer => {
@@ -12149,6 +12441,7 @@ impl LowerCtx {
             name: "Vec".to_string(),
             args: vec![elem_ty],
             builtin: Some(BuiltinType::Vec),
+            is_opaque: false,
         }
     }
 
@@ -12157,6 +12450,7 @@ impl LowerCtx {
             name: "VecIter".to_string(),
             args: vec![elem_ty],
             builtin: None,
+            is_opaque: false,
         }
     }
 
@@ -12165,6 +12459,7 @@ impl LowerCtx {
             name: "Option".to_string(),
             args: vec![elem_ty],
             builtin: None,
+            is_opaque: false,
         }
     }
 
@@ -12198,6 +12493,7 @@ impl LowerCtx {
                 name,
                 args,
                 builtin: None,
+                ..
             } if name == "VecIter" && args.len() == 1
         )
     }
@@ -12274,6 +12570,7 @@ impl LowerCtx {
             name,
             args,
             builtin: Some(BuiltinType::Option),
+            ..
         } = ty
         else {
             return None;
@@ -12337,6 +12634,7 @@ impl LowerCtx {
             name,
             args,
             builtin: None,
+            ..
         } = iter_ty
         else {
             return None;
@@ -12374,6 +12672,7 @@ impl LowerCtx {
             name,
             args,
             builtin: None,
+            ..
         } = iter_ty
         {
             if name == "VecIter" && args.len() == 1 {
@@ -12435,6 +12734,7 @@ impl LowerCtx {
             name,
             args,
             builtin: None,
+            ..
         } = &iterable.ty
         else {
             return None;
@@ -12773,6 +13073,7 @@ impl LowerCtx {
                 name,
                 args,
                 builtin: Some(BuiltinType::Vec),
+                ..
             } if name == "Vec" && args.len() == 1 => {
                 let elem_ty = args[0].clone();
                 (
@@ -12786,6 +13087,7 @@ impl LowerCtx {
                 name,
                 args,
                 builtin: None,
+                ..
             } if name == "VecIter" && args.len() == 1 => (
                 lowered_iterable,
                 Self::resolved_vec_iter_ty(args[0].clone()),
@@ -14040,6 +14342,7 @@ impl LowerCtx {
                 name,
                 args,
                 builtin,
+                ..
             } if args.len() == 1
                 && (name == "Option" || *builtin == Some(hew_types::BuiltinType::Option)) =>
             {
@@ -14055,6 +14358,7 @@ impl LowerCtx {
                 name,
                 args,
                 builtin,
+                ..
             } if args.len() == 2
                 && (name == "Result" || *builtin == Some(hew_types::BuiltinType::Result)) =>
             {
@@ -14564,6 +14868,7 @@ impl LowerCtx {
                         name: type_name_owned.clone(),
                         args: Vec::new(),
                         builtin: None,
+                        is_opaque: false,
                     }
                 }
             }
@@ -14580,6 +14885,7 @@ impl LowerCtx {
                 name: type_name_owned.clone(),
                 args: Vec::new(),
                 builtin: None,
+                is_opaque: false,
             }
         };
         (
@@ -14808,11 +15114,13 @@ impl LowerCtx {
             name: machine_name.clone(),
             args: Vec::new(),
             builtin: None,
+            is_opaque: false,
         };
         let event_ty = ResolvedTy::Named {
             name: format!("{machine_name}Event"),
             args: Vec::new(),
             builtin: None,
+            is_opaque: false,
         };
         let _state = self.bind("state".to_string(), machine_ty, false, span.clone());
         let _event = self.bind("event".to_string(), event_ty, false, span);
@@ -21685,12 +21993,7 @@ mod tests {
             .any(|l| l.key.origin_name == "Option" && l.key.type_args == vec![ResolvedTy::I64]);
         let has_option_option_i64 = layouts.iter().any(|l| {
             l.key.origin_name == "Option"
-                && l.key.type_args
-                    == vec![ResolvedTy::Named {
-                        name: "Option".to_string(),
-                        args: vec![ResolvedTy::I64],
-                        builtin: None,
-                    }]
+                && l.key.type_args == vec![ResolvedTy::named_user("Option", vec![ResolvedTy::I64])]
         });
 
         assert!(

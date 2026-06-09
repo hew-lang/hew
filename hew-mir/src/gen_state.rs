@@ -415,6 +415,7 @@ pub fn synthesise(
         name: state_ty_name,
         args: Vec::new(),
         builtin: None,
+        is_opaque: false,
     };
 
     // 3. Allocate fresh locals at the END of the locals vector. Using

@@ -412,6 +412,7 @@ pub fn substitute_type_params(
             name,
             args: named_args,
             builtin,
+            is_opaque,
         } => {
             // Bare type-parameter reference (e.g. `T`) — substitute.
             if named_args.is_empty() {
@@ -427,6 +428,7 @@ pub fn substitute_type_params(
                     .map(|a| substitute_type_params(a, params, args))
                     .collect(),
                 builtin: *builtin,
+                is_opaque: *is_opaque,
             }
         }
         ResolvedTy::Tuple(items) => ResolvedTy::Tuple(
@@ -687,21 +689,13 @@ mod tests {
 
     #[test]
     fn mangle_nested_named() {
-        let label = ResolvedTy::Named {
-            name: "Label".into(),
-            args: vec![],
-            builtin: None,
-        };
+        let label = ResolvedTy::named_user("Label", vec![]);
         assert_eq!(mangle("describe", &[label]), "describe$$Label");
     }
 
     #[test]
     fn mangle_module_qualified_strips_colons() {
-        let ty = ResolvedTy::Named {
-            name: "widgets::Label".into(),
-            args: vec![],
-            builtin: None,
-        };
+        let ty = ResolvedTy::named_user("widgets::Label", vec![]);
         assert_eq!(mangle("describe", &[ty]), "describe$$widgets_Label");
     }
 
@@ -722,11 +716,7 @@ mod tests {
     fn substitute_replaces_bare_type_param() {
         let params = vec!["T".to_string()];
         let args = vec![ResolvedTy::I64];
-        let ty = ResolvedTy::Named {
-            name: "T".into(),
-            args: vec![],
-            builtin: None,
-        };
+        let ty = ResolvedTy::named_user("T", vec![]);
         assert_eq!(substitute_type_params(&ty, &params, &args), ResolvedTy::I64);
     }
 
@@ -735,22 +725,14 @@ mod tests {
         // Vec<T> with T=i64 -> Vec<i64>
         let params = vec!["T".to_string()];
         let args = vec![ResolvedTy::I64];
-        let ty = ResolvedTy::Named {
-            name: "Vec".into(),
-            args: vec![ResolvedTy::Named {
-                name: "T".into(),
-                args: vec![],
-                builtin: None,
-            }],
-            builtin: Some(hew_types::BuiltinType::Vec),
-        };
+        let ty = ResolvedTy::named_builtin(
+            "Vec",
+            hew_types::BuiltinType::Vec,
+            vec![ResolvedTy::named_user("T", vec![])],
+        );
         assert_eq!(
             substitute_type_params(&ty, &params, &args),
-            ResolvedTy::Named {
-                name: "Vec".into(),
-                args: vec![ResolvedTy::I64],
-                builtin: Some(hew_types::BuiltinType::Vec),
-            }
+            ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![ResolvedTy::I64])
         );
     }
 
@@ -758,11 +740,7 @@ mod tests {
     fn substitute_leaves_unrelated_named_alone() {
         let params = vec!["T".to_string()];
         let args = vec![ResolvedTy::I64];
-        let ty = ResolvedTy::Named {
-            name: "Label".into(),
-            args: vec![],
-            builtin: None,
-        };
+        let ty = ResolvedTy::named_user("Label", vec![]);
         assert_eq!(substitute_type_params(&ty, &params, &args), ty);
     }
 
@@ -799,20 +777,11 @@ mod tests {
     fn recursive_polymorphic_self_detects_different_args() {
         // Node<T> with field `next: Box<Node<int>>` — the field
         // mentions Node with a different arg set than T.
-        let current_args = vec![ResolvedTy::Named {
-            name: "T".into(),
-            args: vec![],
-            builtin: None,
-        }];
-        let field_ty = ResolvedTy::Named {
-            name: "Box".into(),
-            args: vec![ResolvedTy::Named {
-                name: "Node".into(),
-                args: vec![ResolvedTy::I64],
-                builtin: None,
-            }],
-            builtin: None,
-        };
+        let current_args = vec![ResolvedTy::named_user("T", vec![])];
+        let field_ty = ResolvedTy::named_user(
+            "Box",
+            vec![ResolvedTy::named_user("Node", vec![ResolvedTy::I64])],
+        );
         assert!(contains_recursive_polymorphic_self(
             &field_ty,
             "Node",
@@ -824,20 +793,8 @@ mod tests {
     fn recursive_polymorphic_self_ignores_matching_args() {
         // Box<T> with field `next: Box<T>` — same args, not a
         // polymorphic-recursion hazard (the layout converges).
-        let current_args = vec![ResolvedTy::Named {
-            name: "T".into(),
-            args: vec![],
-            builtin: None,
-        }];
-        let field_ty = ResolvedTy::Named {
-            name: "Box".into(),
-            args: vec![ResolvedTy::Named {
-                name: "T".into(),
-                args: vec![],
-                builtin: None,
-            }],
-            builtin: None,
-        };
+        let current_args = vec![ResolvedTy::named_user("T", vec![])];
+        let field_ty = ResolvedTy::named_user("Box", vec![ResolvedTy::named_user("T", vec![])]);
         assert!(!contains_recursive_polymorphic_self(
             &field_ty,
             "Box",
@@ -853,11 +810,7 @@ mod tests {
             let key = MonoKey {
                 origin: ItemId(0),
                 origin_name: "id".into(),
-                type_args: vec![ResolvedTy::Named {
-                    name: format!("T{i}"),
-                    args: vec![],
-                    builtin: None,
-                }],
+                type_args: vec![ResolvedTy::named_user(format!("T{i}"), vec![])],
             };
             if reg.insert(key).is_err() {
                 overflowed = true;

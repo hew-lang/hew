@@ -10,6 +10,7 @@ pub(crate) trait CommandDispatcher {
     fn run(&mut self, args: &args::RunArgs);
     fn debug(&mut self, args: &args::DebugArgs);
     fn check(&mut self, args: &args::CheckArgs);
+    fn build(&mut self, args: &args::BuildArgs);
     fn doc(&mut self, args: &args::DocArgs);
     fn eval(&mut self, args: &args::EvalArgs);
     fn test(&mut self, args: &args::TestArgs);
@@ -43,6 +44,10 @@ impl CommandDispatcher for MainCommandDispatcher {
 
     fn check(&mut self, args: &args::CheckArgs) {
         crate::cmd_check(args);
+    }
+
+    fn build(&mut self, args: &args::BuildArgs) {
+        crate::cmd_build(args);
     }
 
     fn doc(&mut self, args: &args::DocArgs) {
@@ -116,6 +121,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         Some(Command::Run(args)) => dispatcher.run(args),
         Some(Command::Debug(args)) => dispatcher.debug(args),
         Some(Command::Check(args)) => dispatcher.check(args),
+        Some(Command::Build(args)) => dispatcher.build(args),
         Some(Command::Doc(args)) => dispatcher.doc(args),
         Some(Command::Eval(args)) => dispatcher.eval(args),
         Some(Command::Test(args)) => dispatcher.test(args),
@@ -257,6 +263,25 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_command_routes_build_to_dispatcher() {
+        let command = crate::args::Command::Build(crate::args::BuildArgs {
+            input: PathBuf::from("sample.hew"),
+            output: None,
+            target: None,
+            emit_obj: false,
+            debug: false,
+            link_libs: Vec::new(),
+            common: crate::args::CommonBuildArgs::default(),
+            format: crate::args::DiagnosticFormat::Text,
+        });
+        let mut dispatcher = RecordingDispatcher::default();
+
+        dispatch_command(Some(&command), &mut dispatcher);
+
+        assert_eq!(dispatcher.calls, vec!["build:sample.hew"]);
+    }
+
+    #[test]
     fn dispatch_command_routes_nested_subcommands_to_dispatcher() {
         let wire = WireCommand {
             command: WireSubcommand::Check(WireCheckArgs {
@@ -333,6 +358,10 @@ mod tests {
 
         fn check(&mut self, _args: &crate::args::CheckArgs) {
             self.calls.push("check".to_string());
+        }
+
+        fn build(&mut self, args: &crate::args::BuildArgs) {
+            self.calls.push(format!("build:{}", args.input.display()));
         }
 
         fn doc(&mut self, _args: &crate::args::DocArgs) {

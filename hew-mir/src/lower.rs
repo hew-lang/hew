@@ -1056,6 +1056,20 @@ pub fn lower_hir_module_with_facts(
     // substrate records needed by synthetic MIR construction.
     register_builtin_record_layouts(&mut record_layouts, &mut record_field_orders);
 
+    // Pre-compute the opaque handle names before the state-field classification
+    // pass so the opaque-aware classifier can recognise `#[opaque]` types (e.g.
+    // `json.Value`, `cron.Expr`) that appear in actor state (directly or inside
+    // `Result`/`Option`). Mirrors the IrPipeline construction below; both draws
+    // are from the same `module.items` so they are guaranteed to agree.
+    let opaque_handle_names: Vec<String> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::TypeDecl(decl) if decl.is_opaque => Some(decl.name.clone()),
+            _ => None,
+        })
+        .collect();
+
     // Second pass — per-actor state-field clone/drop classification.
     // Deferred from the item loop so the classifier sees the fully-merged
     // `record_layouts`/`enum_layouts`: monomorphic user records/enums (item
@@ -1079,10 +1093,11 @@ pub fn lower_hir_module_with_facts(
             .iter()
             .map(|field| field.ty.clone())
             .collect();
-        let classification = crate::state_clone::classify_actor_state_fields_with_enum_layouts(
+        let classification = crate::state_clone::classify_actor_state_fields_with_opaque_handles(
             &state_field_tys,
             &record_layouts,
             &enum_layouts,
+            &opaque_handle_names,
         );
         let (clone_sym, drop_sym, clone_kinds) = match classification {
             Ok(kinds) => (
@@ -1108,10 +1123,11 @@ pub fn lower_hir_module_with_facts(
                 let mut found = false;
                 for (idx, field) in actor.state_fields.iter().enumerate() {
                     let mut v = std::collections::HashSet::new();
-                    if crate::state_clone::classify_state_field_with_enum_layouts(
+                    if crate::state_clone::classify_state_field_full(
                         &field.ty,
                         &record_layouts,
                         &enum_layouts,
+                        &opaque_handle_names,
                         &mut v,
                     )
                     .is_err()
@@ -1582,6 +1598,7 @@ pub fn lower_hir_module_with_facts(
                         &supervisor_layout_map,
                         &machine_layout_names,
                         &enum_layouts,
+                        &opaque_handle_names,
                         None,
                         &module_fn_names,
                         &module_generic_fn_names,
@@ -1628,6 +1645,7 @@ pub fn lower_hir_module_with_facts(
                     &supervisor_layout_map,
                     &machine_layout_names,
                     &enum_layouts,
+                    &opaque_handle_names,
                     None,
                     &module_fn_names,
                     &module_generic_fn_names,
@@ -1668,6 +1686,7 @@ pub fn lower_hir_module_with_facts(
                     &actor_layout_map,
                     &machine_layout_names,
                     &enum_layouts,
+                    &opaque_handle_names,
                     &module_fn_names,
                     &module_generic_fn_names,
                     &module.call_site_type_args,
@@ -1710,6 +1729,7 @@ pub fn lower_hir_module_with_facts(
                     &actor_layout_map,
                     &machine_layout_names,
                     &enum_layouts,
+                    &opaque_handle_names,
                     &module_fn_names,
                     &module_generic_fn_names,
                     &module.call_site_type_args,
@@ -1880,6 +1900,7 @@ pub fn lower_hir_module_with_facts(
             &supervisor_layout_map,
             &machine_layout_names,
             &enum_layouts,
+            &opaque_handle_names,
             None,
             &module_fn_names,
             &module_generic_fn_names,
@@ -2028,6 +2049,7 @@ fn lower_actor_receive_handlers(
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
     enum_layouts: &[crate::model::EnumLayout],
+    opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -2115,6 +2137,7 @@ fn lower_actor_receive_handlers(
             &HashMap::new(),
             machine_layout_names,
             enum_layouts,
+            opaque_handle_names,
             Some(&actor.name),
             module_fn_names,
             module_generic_fn_names,
@@ -2141,6 +2164,7 @@ fn lower_actor_body_handlers(
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
     enum_layouts: &[crate::model::EnumLayout],
+    opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -2160,6 +2184,7 @@ fn lower_actor_body_handlers(
             actor_layouts,
             machine_layout_names,
             enum_layouts,
+            opaque_handle_names,
             module_fn_names,
             module_generic_fn_names,
             call_site_type_args,
@@ -2179,6 +2204,7 @@ fn lower_actor_body_handlers(
         actor_layouts,
         machine_layout_names,
         enum_layouts,
+        opaque_handle_names,
         module_fn_names,
         module_generic_fn_names,
         call_site_type_args,
@@ -2195,6 +2221,7 @@ fn lower_actor_body_handlers(
         actor_layouts,
         machine_layout_names,
         enum_layouts,
+        opaque_handle_names,
         module_fn_names,
         module_generic_fn_names,
         call_site_type_args,
@@ -2219,6 +2246,7 @@ fn lower_actor_init_handler(
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
     enum_layouts: &[crate::model::EnumLayout],
+    opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -2266,6 +2294,7 @@ fn lower_actor_init_handler(
         &HashMap::new(),
         machine_layout_names,
         enum_layouts,
+        opaque_handle_names,
         Some(&actor.name),
         module_fn_names,
         module_generic_fn_names,
@@ -2293,6 +2322,7 @@ fn lower_actor_lifecycle_handlers(
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
     enum_layouts: &[crate::model::EnumLayout],
+    opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -2345,6 +2375,7 @@ fn lower_actor_lifecycle_handlers(
                     &HashMap::new(),
                     machine_layout_names,
                     enum_layouts,
+                    opaque_handle_names,
                     Some(&actor.name),
                     module_fn_names,
                     module_generic_fn_names,
@@ -2389,6 +2420,7 @@ fn lower_actor_lifecycle_handlers(
                     &HashMap::new(),
                     machine_layout_names,
                     enum_layouts,
+                    opaque_handle_names,
                     Some(&actor.name),
                     module_fn_names,
                     module_generic_fn_names,
@@ -2572,6 +2604,7 @@ fn lower_actor_lifecycle_handlers(
                     &HashMap::new(),
                     machine_layout_names,
                     enum_layouts,
+                    opaque_handle_names,
                     Some(&actor.name),
                     module_fn_names,
                     module_generic_fn_names,
@@ -2741,11 +2774,13 @@ fn synthesize_machine_step_fn(
         name: md.name.clone(),
         args: type_args.clone(),
         builtin: None,
+        is_opaque: false,
     };
     let event_ty = ResolvedTy::Named {
         name: format!("{}Event", md.name),
         args: type_args.clone(),
         builtin: None,
+        is_opaque: false,
     };
     let return_ty = self_ty.clone();
 
@@ -3169,6 +3204,7 @@ fn default_machine_type_params_to_i64(ty: &ResolvedTy, md: &HirMachineDecl) -> R
             name,
             args,
             builtin,
+            is_opaque,
         } => ResolvedTy::Named {
             name: name.clone(),
             args: args
@@ -3176,6 +3212,7 @@ fn default_machine_type_params_to_i64(ty: &ResolvedTy, md: &HirMachineDecl) -> R
                 .map(|arg| default_machine_type_params_to_i64(arg, md))
                 .collect(),
             builtin: *builtin,
+            is_opaque: *is_opaque,
         },
         ResolvedTy::Tuple(elems) => ResolvedTy::Tuple(
             elems
@@ -3447,8 +3484,10 @@ fn local_pid_of(actor_name: &str) -> ResolvedTy {
             name: actor_name.to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         }],
         builtin: Some(hew_types::BuiltinType::LocalPid),
+        is_opaque: false,
     }
 }
 
@@ -3496,6 +3535,7 @@ fn lower_supervisor_bootstrap(
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
     enum_layouts: &[crate::model::EnumLayout],
+    opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -3736,6 +3776,7 @@ fn lower_supervisor_bootstrap(
         supervisor_layouts,
         machine_layout_names,
         enum_layouts,
+        opaque_handle_names,
         // Supervisors have no actor state. `lower_actor_init_handler`
         // passes `Some(&actor.name)` for the same role; here we pass
         // `None` because there's no state-field table to lift into the
@@ -4203,6 +4244,7 @@ fn lower_function(
     supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
     machine_layout_names: &HashSet<String>,
     enum_layouts: &[crate::model::EnumLayout],
+    opaque_handle_names: &[String],
     current_actor_name: Option<&str>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
@@ -4222,6 +4264,7 @@ fn lower_function(
         actor_layouts: actor_layouts.clone(),
         machine_layout_names: machine_layout_names.clone(),
         enum_layouts: enum_layouts.to_vec(),
+        opaque_handle_names: opaque_handle_names.to_vec(),
         supervisor_layout_map: supervisor_layout_map.clone(),
         current_actor_state_fields: current_actor_name
             .and_then(|name| actor_layouts.get(name))
@@ -4562,11 +4605,13 @@ fn user_record_layout_key(ty: &ResolvedTy) -> Option<String> {
             name,
             args,
             builtin: None,
+            ..
         } if args.is_empty() => Some(name.clone()),
         ResolvedTy::Named {
             name,
             args,
             builtin: None,
+            ..
         } => Some(hew_hir::mangle(name, args)),
         _ => None,
     }
@@ -4578,6 +4623,7 @@ fn monomorphic_user_record_key(ty: &ResolvedTy) -> Option<String> {
             name,
             args,
             builtin: None,
+            ..
         } if args.is_empty() => Some(name.clone()),
         _ => None,
     }
@@ -4593,8 +4639,7 @@ fn is_unsupported_user_record_value_class_ty(ty: &ResolvedTy, builder: &Builder)
         return false;
     };
     builder
-        .record_field_orders
-        .get(&key)
+        .lookup_record_field_order(&key)
         .is_some_and(|fields| !fields.is_empty())
 }
 
@@ -4856,6 +4901,14 @@ struct Builder {
     /// test pipelines) — such bodies simply never elaborate the enum-in-place
     /// drop, matching the pre-W5.020 leak-not-double-free posture.
     enum_layouts: Vec<crate::model::EnumLayout>,
+    /// Names of every `#[opaque]` type declared in the module. Threaded into
+    /// `classify_state_field_full` so opaque handles (e.g. `json.Value`,
+    /// `cron.Expr`) appearing in owned-aggregate records classify as
+    /// `StateFieldCloneKind::OpaqueHandle` rather than `MissingRecordLayout`.
+    /// Populated from `module.items` in `lower_hir_module` and passed through
+    /// every Builder construction site that may reach
+    /// `owned_aggregate_record_field_kinds_for_key`.
+    opaque_handle_names: Vec<String>,
     current_actor_state_fields: HashMap<String, (FieldOffset, ResolvedTy)>,
     /// Names of every user-defined function declared in the module. Used by
     /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
@@ -5099,7 +5152,7 @@ impl Builder {
         &self,
         key: &str,
     ) -> Option<Vec<crate::state_clone::StateFieldCloneKind>> {
-        let fields = self.record_field_orders.get(key)?;
+        let fields = self.lookup_record_field_order(key)?;
         let field_tys: Vec<ResolvedTy> = fields.iter().map(|(_, ty)| ty.clone()).collect();
         let record_layouts = self.record_layouts_for_classification();
         crate::state_clone::classify_owned_string_record_fields(&field_tys, &record_layouts, &[])
@@ -5135,16 +5188,17 @@ impl Builder {
         &self,
         key: &str,
     ) -> Option<Vec<crate::state_clone::StateFieldCloneKind>> {
-        let fields = self.record_field_orders.get(key)?;
+        let fields = self.lookup_record_field_order(key)?;
         if fields.is_empty() {
             return None;
         }
         let field_tys: Vec<ResolvedTy> = fields.iter().map(|(_, ty)| ty.clone()).collect();
         let record_layouts = self.record_layouts_for_classification();
-        let kinds = crate::state_clone::classify_actor_state_fields_with_enum_layouts(
+        let kinds = crate::state_clone::classify_actor_state_fields_with_opaque_handles(
             &field_tys,
             &record_layouts,
             &self.enum_layouts,
+            &self.opaque_handle_names,
         )
         .ok()?;
         let has_owned_field = kinds
@@ -5195,6 +5249,29 @@ impl Builder {
         }
         self.owned_string_record_field_kinds_for_key(&binding_key)
             .map(|_| binding_key)
+    }
+
+    /// Look up the field-order entry for a record type by key.
+    ///
+    /// The type checker qualifies imported record names with their module
+    /// prefix (e.g. `"process.CommandOutput"`), but the MIR layout loop
+    /// registers them under the bare type name (`"CommandOutput"`) taken
+    /// from `HirTypeDecl.name`.  Try the full key first; if that misses,
+    /// strip the last `.`-separated prefix and try the bare name.  This
+    /// covers every single-level module-qualified record (`module.Type`)
+    /// without touching the mangled generic case (`Type$$arg`) which
+    /// never contains a dot at the type-name position.
+    fn lookup_record_field_order(&self, type_name: &str) -> Option<&Vec<(String, ResolvedTy)>> {
+        if let Some(order) = self.record_field_orders.get(type_name) {
+            return Some(order);
+        }
+        // Fallback: strip the module prefix and try the bare type name.
+        if let Some(bare) = type_name.rsplit_once('.').map(|(_, bare)| bare) {
+            if let Some(order) = self.record_field_orders.get(bare) {
+                return Some(order);
+            }
+        }
+        None
     }
 
     fn mark_owned_string_record_field_site(&mut self, object: &HirExpr) {
@@ -5605,8 +5682,8 @@ impl Builder {
             .enum_layouts
             .iter()
             .any(|el| el.name == key || short_name(&el.name) == short_name(elem_name));
-        let is_record = self.record_field_orders.contains_key(&key)
-            || self.record_field_orders.contains_key(elem_name.as_str());
+        let is_record = self.lookup_record_field_order(&key).is_some()
+            || self.lookup_record_field_order(elem_name.as_str()).is_some();
         if !is_enum && !is_record {
             return;
         }
@@ -5622,7 +5699,7 @@ impl Builder {
         }
         // Use the record-layout-key form for records (matches
         // `user_record_layout_key` consulted by the W3.029 escape hatch).
-        let record_key = if self.record_field_orders.contains_key(&key) {
+        let record_key = if self.lookup_record_field_order(&key).is_some() {
             key.clone()
         } else {
             elem_name.clone()
@@ -5668,9 +5745,8 @@ impl Builder {
                 // Record fields.
                 let mut owns = false;
                 if let Some(fields) = self
-                    .record_field_orders
-                    .get(&key)
-                    .or_else(|| self.record_field_orders.get(name))
+                    .lookup_record_field_order(&key)
+                    .or_else(|| self.lookup_record_field_order(name))
                 {
                     owns = fields
                         .iter()
@@ -6330,7 +6406,7 @@ impl Builder {
                         return;
                     }
                 };
-                let Some(field_order) = self.record_field_orders.get(type_name.as_str()) else {
+                let Some(field_order) = self.lookup_record_field_order(type_name.as_str()) else {
                     self.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::UnsupportedNode {
                             reason: format!(
@@ -7134,14 +7210,15 @@ impl Builder {
                     }
                 };
                 let field_order =
-                    if let Some(order) = self.record_field_orders.get(type_name.as_str()) {
+                    if let Some(order) = self.lookup_record_field_order(type_name.as_str()) {
                         order.clone()
                     } else {
                         let _ = self.lower_value(object);
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
                                 construct: format!(
-                                    "field access on unregistered record type `{type_name}`"
+                                    "MIR lowering for field access on unregistered record type \
+                                     `{type_name}` is not implemented yet"
                                 ),
                                 site: expr.site,
                             },
@@ -8039,6 +8116,9 @@ impl Builder {
                         ResolvedTy::Named { builtin, .. } => *builtin,
                         _ => None,
                     },
+                    // A machine step's result type mirrors the machine value
+                    // type, which is never `#[opaque]`.
+                    is_opaque: false,
                 };
                 let ret_local = self.alloc_local(ret_ty.clone());
                 let next = self.alloc_block();
@@ -9268,7 +9348,7 @@ impl Builder {
         match ty {
             ResolvedTy::Tuple(_) => true,
             _ => user_record_layout_key(&self.subst_ty(ty))
-                .is_some_and(|key| self.record_field_orders.contains_key(&key)),
+                .is_some_and(|key| self.lookup_record_field_order(&key).is_some()),
         }
     }
 
@@ -9279,6 +9359,7 @@ impl Builder {
                 name,
                 args,
                 builtin: None,
+                ..
             } if name == "Option" && matches!(args.as_slice(), [ResolvedTy::String])
         ) && hir_expr_contains_synthetic_vec_string_index(scrutinee)
     }
@@ -12688,6 +12769,7 @@ impl Builder {
             name: "HewTaskScope".to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         }
     }
 
@@ -13826,6 +13908,7 @@ impl Builder {
                 .to_string(),
             args: vec![ResolvedTy::Unit],
             builtin: Some(hew_types::BuiltinType::LocalPid),
+            is_opaque: false,
         });
         self.push_runtime_call("hew_actor_self", vec![], Some(self_handle));
 
@@ -13896,6 +13979,7 @@ impl Builder {
             name: "Duplex".to_string(),
             args: vec![],
             builtin: Some(hew_types::BuiltinType::Duplex),
+            is_opaque: false,
         });
         let Place::Local(n0) = local0 else {
             unreachable!("alloc_local returns Place::Local");
@@ -13906,6 +13990,7 @@ impl Builder {
             name: "Duplex".to_string(),
             args: vec![],
             builtin: Some(hew_types::BuiltinType::Duplex),
+            is_opaque: false,
         });
         let Place::Local(n1) = local1 else {
             unreachable!("alloc_local returns Place::Local");
@@ -14036,6 +14121,7 @@ impl Builder {
             name: CHILD_LOOKUP_RESULT_TY_NAME.to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         });
 
         // Emit the runtime call. The dest carries the 16-byte struct return value.
@@ -14633,6 +14719,7 @@ impl Builder {
             name: "AskError".to_string(),
             args: Vec::new(),
             builtin: Some(BuiltinType::AskError),
+            is_opaque: false,
         });
         let next = self.alloc_block();
         self.finish_current_block(Terminator::Ask {
@@ -14712,6 +14799,7 @@ impl Builder {
             name: "AskError".to_string(),
             args: Vec::new(),
             builtin: Some(BuiltinType::AskError),
+            is_opaque: false,
         });
         let next = self.alloc_block();
         self.finish_current_block(Terminator::RemoteAsk {
@@ -14884,6 +14972,7 @@ impl Builder {
             name: actor_name.to_string(),
             args: Vec::new(),
             builtin: None,
+            is_opaque: false,
         };
         let dest = self.alloc_local(state_ty.clone());
         let mut fields = Vec::new();
@@ -15104,6 +15193,7 @@ impl Builder {
             name: env_name.clone(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         };
 
         self.closure_record_layouts
@@ -15896,7 +15986,7 @@ impl Builder {
             } else if (self.owned_string_record_value_sites.contains(&expr.site)
                 && monomorphic_user_record_key(&resolved_ty).is_some())
                 || vec_iter_record_layout_key(&resolved_ty)
-                    .is_some_and(|key| self.record_field_orders.contains_key(&key))
+                    .is_some_and(|key| self.lookup_record_field_order(&key).is_some())
                 || user_record_layout_key(&resolved_ty)
                     .is_some_and(|key| self.vec_owned_element_keys.contains(&key))
                 || self.is_owned_aggregate_record_ty(&resolved_ty)
@@ -15975,13 +16065,13 @@ impl Builder {
         let Some(key) = user_record_layout_key(ty) else {
             return;
         };
-        let Some(fields) = self.record_field_orders.get(&key) else {
-            return;
+        let fields = match self.lookup_record_field_order(&key) {
+            Some(f) if !f.is_empty() => f.clone(),
+            _ => return,
         };
-        if fields.is_empty()
-            || !self
-                .unsupported_user_record_value_classes
-                .insert(key.clone())
+        if !self
+            .unsupported_user_record_value_classes
+            .insert(key.clone())
         {
             return;
         }
@@ -21148,6 +21238,7 @@ mod slice3_invariants {
                 &HashMap::new(),
                 &HashSet::new(),
                 &[],
+                &[],
                 None,
                 &HashSet::new(),
                 &HashSet::new(),
@@ -21184,11 +21275,7 @@ mod slice3_invariants {
     /// for synthetic `ElabDrop` entries. The body of these tests
     /// cares about `Place` + `DropKind`, not the inner type detail.
     fn duplex_int_int_ty() -> ResolvedTy {
-        ResolvedTy::Named {
-            name: "Duplex".to_string(),
-            args: vec![ResolvedTy::I64, ResolvedTy::I64],
-            builtin: None,
-        }
+        ResolvedTy::named_user("Duplex", vec![ResolvedTy::I64, ResolvedTy::I64])
     }
 
     fn make_elab(
@@ -22134,11 +22221,7 @@ mod slice3_narrowing_proptests {
     /// A `Duplex<i64, i64>` `ResolvedTy` payload — the inner type
     /// detail is irrelevant for narrowing.
     fn duplex_ty() -> ResolvedTy {
-        ResolvedTy::Named {
-            name: "Duplex".to_string(),
-            args: vec![ResolvedTy::I64, ResolvedTy::I64],
-            builtin: None,
-        }
+        ResolvedTy::named_user("Duplex", vec![ResolvedTy::I64, ResolvedTy::I64])
     }
 
     /// Build a single-block `BasicBlock` with a `Return` terminator.
@@ -22369,11 +22452,7 @@ mod slice35_cross_block_proptests {
     use proptest::prelude::*;
 
     fn duplex_ty() -> ResolvedTy {
-        ResolvedTy::Named {
-            name: "Duplex".to_string(),
-            args: vec![ResolvedTy::I64, ResolvedTy::I64],
-            builtin: None,
-        }
+        ResolvedTy::named_user("Duplex", vec![ResolvedTy::I64, ResolvedTy::I64])
     }
 
     /// Build a single-block CFG that splits `DuplexHandle(parent)` into
@@ -22911,14 +22990,7 @@ mod enum_layout_tests {
             type_params: vec!["T".to_string()],
             fields: vec![],
             variants: vec![
-                tuple_variant(
-                    "Some",
-                    vec![ResolvedTy::Named {
-                        name: "T".to_string(),
-                        args: vec![],
-                        builtin: None,
-                    }],
-                ),
+                tuple_variant("Some", vec![ResolvedTy::named_user("T", vec![])]),
                 unit_variant("None"),
             ],
             span: 0..0,
@@ -23149,11 +23221,7 @@ mod owned_record_drop_derivation {
 
     /// An owned record named "Rec"; everything else is not a record candidate.
     fn rec_ty() -> ResolvedTy {
-        ResolvedTy::Named {
-            name: "Rec".to_string(),
-            args: vec![],
-            builtin: None,
-        }
+        ResolvedTy::named_user("Rec", vec![])
     }
 
     fn is_rec(ty: &ResolvedTy) -> bool {
@@ -23524,11 +23592,11 @@ mod w3053_aggregate_handle_double_free_gate {
     use super::*;
 
     fn generator_ty() -> ResolvedTy {
-        ResolvedTy::Named {
-            name: "Generator".to_string(),
-            args: vec![ResolvedTy::I64, ResolvedTy::Unit],
-            builtin: Some(BuiltinType::Generator),
-        }
+        ResolvedTy::named_builtin(
+            "Generator",
+            BuiltinType::Generator,
+            vec![ResolvedTy::I64, ResolvedTy::Unit],
+        )
     }
 
     fn block(instructions: Vec<Instr>) -> BasicBlock {
@@ -23761,11 +23829,7 @@ mod w3053_aggregate_handle_double_free_gate {
     }
 
     fn localpid_ty() -> ResolvedTy {
-        ResolvedTy::Named {
-            name: "LocalPid".to_string(),
-            args: vec![ResolvedTy::I64],
-            builtin: Some(BuiltinType::LocalPid),
-        }
+        ResolvedTy::named_builtin("LocalPid", BuiltinType::LocalPid, vec![ResolvedTy::I64])
     }
 
     /// A block whose terminator is a `Terminator::Call` passing `args` by value

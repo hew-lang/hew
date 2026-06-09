@@ -1,0 +1,336 @@
+//! Line-by-line and word-by-word scanner (bufio.Scanner-style).
+//!
+//! `Scanner` iterates through tokens from a string source. The default
+//! split function is `SplitLines` — each call to `scan()` advances past
+//! one newline-terminated line. Use `with_split` to switch to
+//! `SplitWords` (whitespace-separated tokens).
+//!
+//! # Basic iteration
+//!
+//! ```
+//! import std::io::scanner;
+//!
+//! fn main() {
+//!     var sc = scanner.from_string("one\ntwo\nthree");
+//!     sc = scanner.scan(sc);
+//!     while scanner.has_next(sc) {
+//!         println(scanner.text(sc));
+//!         sc = scanner.scan(sc);
+//!     }
+//! }
+//! ```
+//!
+//! # Batch helpers
+//!
+//! `lines()` and `words()` return a `Vec<string>` directly:
+//!
+//! ```
+//! import std::io::scanner;
+//!
+//! fn main() {
+//!     let ls = scanner.lines("foo\nbar\nbaz");
+//!     for i in 0 .. ls.len() {
+//!         println(ls.get(i));
+//!     }
+//! }
+//! ```
+//!
+//! # Using with files and stdin
+//!
+//! Read the full source with `fs.read(path)` or `io.read_all()` and
+//! pass the resulting string to `from_string`:
+//!
+//! ```
+//! import std::io;
+//! import std::io::scanner;
+//!
+//! fn main() {
+//!     var sc = scanner.from_string(io.read_all());
+//!     sc = scanner.scan(sc);
+//!     while scanner.has_next(sc) {
+//!         println(scanner.text(sc));
+//!         sc = scanner.scan(sc);
+//!     }
+//! }
+//! ```
+//!
+//! # Split modes
+//!
+//! | Mode         | Description                                        |
+//! |---           |---                                                 |
+//! | `SplitLines` | Lines split on `\n`; `\r\n` stripped (default).   |
+//! | `SplitWords` | Fields split on any run of ASCII whitespace.       |
+
+// ── Split mode ────────────────────────────────────────────────────────
+/// How the scanner tokenises its source.
+pub enum SplitMode {
+    /// Lines split on `\n`; a leading `\r` before `\n` is stripped.
+    SplitLines;
+    /// Tokens split on any run of ASCII whitespace (space, tab, `\r`, `\n`).
+    SplitWords;
+}
+
+// ── Scanner state ─────────────────────────────────────────────────────
+/// Scanner state value.
+///
+/// Hold a `var sc: Scanner` and drive it with `scan()`; see module docs
+/// for full usage.
+pub type Scanner {
+    source: string;
+    /// Byte position of the next unconsumed character.
+    pos: i64;
+    /// Text of the current token.  Valid after `scan()` when `has_next()`
+    /// is true; empty string before the first `scan()` or after exhaustion.
+    current: string;
+    /// True when all tokens have been emitted.
+    done: bool;
+    /// Token split mode; fixed at construction or changed via `with_split`.
+    mode: SplitMode;
+}
+
+// ── Constructors ──────────────────────────────────────────────────────
+/// Create a scanner over `s` using the default `SplitLines` mode.
+///
+/// Call `scan()` to advance to the first token.
+///
+/// # Examples
+///
+/// ```
+/// import std::io::scanner;
+///
+/// fn main() {
+///     var sc = scanner.from_string("alpha\nbeta\ngamma");
+///     sc = scanner.scan(sc);
+///     while scanner.has_next(sc) {
+///         println(scanner.text(sc));
+///         sc = scanner.scan(sc);
+///     }
+/// }
+/// ```
+pub fn from_string(s: string) -> Scanner {
+    Scanner { source: s, pos: 0, current: "", done: false, mode: SplitLines }
+}
+
+/// Override the split mode on an existing scanner, resetting to position 0.
+///
+/// Resets the cursor to the start of the source.  Call `scan()` after
+/// `with_split` to advance to the first token.
+///
+/// # Examples
+///
+/// ```
+/// import std::io::scanner;
+///
+/// fn main() {
+///     var sc = scanner.from_string("one two  three");
+///     sc = scanner.with_split(sc, scanner.SplitWords);
+///     sc = scanner.scan(sc);
+///     while scanner.has_next(sc) {
+///         println(scanner.text(sc));
+///         sc = scanner.scan(sc);
+///     }
+/// }
+/// ```
+pub fn with_split(sc: Scanner, mode: SplitMode) -> Scanner {
+    Scanner { source: sc.source, pos: 0, current: "", done: false, mode: mode }
+}
+
+// ── Advance ───────────────────────────────────────────────────────────
+/// Advance to the next token and return the updated scanner.
+///
+/// Check `has_next()` on the returned value; if true, `text()` gives
+/// the current token.  Returns the scanner unchanged once exhausted.
+///
+/// # Examples
+///
+/// ```
+/// import std::io::scanner;
+///
+/// fn main() {
+///     var sc = scanner.from_string("a\nb\nc");
+///     sc = scanner.scan(sc);
+///     while scanner.has_next(sc) {
+///         println(scanner.text(sc));
+///         sc = scanner.scan(sc);
+///     }
+/// }
+/// ```
+pub fn scan(sc: Scanner) -> Scanner {
+    match sc.mode {
+        SplitLines => scan_line(sc),
+        SplitWords => scan_word(sc),
+    }
+}
+
+// ── Observations ─────────────────────────────────────────────────────
+/// Return true if the last `scan()` produced a token.
+///
+/// Returns false on a freshly constructed scanner (before the first
+/// `scan()`) and after exhaustion.
+pub fn has_next(sc: Scanner) -> bool {
+    !sc.done && sc.pos > 0
+}
+
+/// Return the current token text.
+///
+/// Valid when `has_next()` is true; returns an empty string otherwise.
+pub fn text(sc: Scanner) -> string {
+    sc.current
+}
+
+// ── Convenience batch API ─────────────────────────────────────────────
+/// Return all lines from `s` as a `Vec<string>`.
+///
+/// Strips `\r\n` and `\n` endings.  A trailing newline does not produce
+/// a trailing empty element — only content lines are emitted (Go
+/// `bufio.Scanner` semantics).  An empty input returns an empty vector.
+///
+/// For trailing-empty-element behaviour, use `std::string.lines()`.
+///
+/// # Examples
+///
+/// ```
+/// import std::io::scanner;
+///
+/// fn main() {
+///     let ls = scanner.lines("foo\nbar\n");
+///     // ls == ["foo", "bar"]
+///     println(ls.len());
+/// }
+/// ```
+pub fn lines(s: string) -> Vec<string> {
+    let result: Vec<string> = Vec::new();
+    if s.len() == 0 {
+        return result;
+    }
+    var sc = from_string(s);
+    sc = scan(sc);
+    while has_next(sc) {
+        result.push(sc.current);
+        sc = scan(sc);
+    }
+    result
+}
+
+/// Return all whitespace-delimited words from `s` as a `Vec<string>`.
+///
+/// Any run of ASCII whitespace (space, tab, CR, LF) acts as a
+/// separator.  Leading and trailing whitespace is ignored.
+///
+/// # Examples
+///
+/// ```
+/// import std::io::scanner;
+///
+/// fn main() {
+///     let ws = scanner.words("  hello   world  ");
+///     // ws == ["hello", "world"]
+///     println(ws.len());
+/// }
+/// ```
+pub fn words(s: string) -> Vec<string> {
+    let result: Vec<string> = Vec::new();
+    if s.len() == 0 {
+        return result;
+    }
+    var sc = from_string(s);
+    sc = with_split(sc, SplitWords);
+    sc = scan(sc);
+    while has_next(sc) {
+        result.push(sc.current);
+        sc = scan(sc);
+    }
+    result
+}
+
+/// Collect all remaining tokens from `sc` into a `Vec<string>`.
+///
+/// If `has_next(sc)` is already true (i.e. `scan()` was called before
+/// `collect`), the current token is included as the first element.
+/// Advances the scanner to exhaustion.
+///
+/// # Examples
+///
+/// ```
+/// import std::io::scanner;
+///
+/// fn main() {
+///     var sc = scanner.from_string("a\nb\nc\nd");
+///     sc = scanner.scan(sc);  // "a"
+///     sc = scanner.scan(sc);  // "b"
+///     let rest = scanner.collect(sc);
+///     // rest == ["b", "c", "d"] (current token + remaining)
+/// }
+/// ```
+pub fn collect(sc: Scanner) -> Vec<string> {
+    let result: Vec<string> = Vec::new();
+    if has_next(sc) {
+        result.push(sc.current);
+    }
+    var cur = sc;
+    cur = scan(cur);
+    while has_next(cur) {
+        result.push(cur.current);
+        cur = scan(cur);
+    }
+    result
+}
+
+// ── Internal split implementations ───────────────────────────────────
+fn scan_line(sc: Scanner) -> Scanner {
+    if sc.done {
+        return sc;
+    }
+    let slen = sc.source.len();
+    let pos = sc.pos;
+    // pos > slen: the final segment (possibly empty on a trailing newline)
+    // has already been emitted; mark done without a new empty token.
+    if pos > slen {
+        return Scanner { source: sc.source, pos: pos, current: "", done: true, mode: sc.mode };
+    }
+    let rest = sc.source.slice(pos, slen);
+    let idx = rest.find("\n");
+    if idx < 0 {
+        // No newline: remainder is the final token.
+        // Set pos to slen + 1 so the next scan() hits pos > slen and
+        // marks done rather than emitting an empty trailing token.
+        let line = sc.source.slice(pos, slen);
+        Scanner { source: sc.source, pos: slen + 1, current: line, done: false, mode: sc.mode }
+    } else {
+        let nl_pos = pos + idx;
+        // Strip \r before \n for \r\n line endings.
+        let line_end = if nl_pos > pos && sc.source.slice(nl_pos - 1, nl_pos) == "\r" {
+            nl_pos - 1
+        } else {
+            nl_pos
+        };
+        let line = sc.source.slice(pos, line_end);
+        Scanner { source: sc.source, pos: nl_pos + 1, current: line, done: false, mode: sc.mode }
+    }
+}
+
+fn is_ascii_whitespace(ch: string) -> bool {
+    ch == " " || ch == "\t" || ch == "\r" || ch == "\n"
+}
+
+fn scan_word(sc: Scanner) -> Scanner {
+    if sc.done {
+        return sc;
+    }
+    let slen = sc.source.len();
+    var pos = sc.pos;
+    // Skip leading whitespace.
+    while pos < slen && is_ascii_whitespace(sc.source.slice(pos, pos + 1)) {
+        pos = pos + 1;
+    }
+    if pos >= slen {
+        return Scanner { source: sc.source, pos: pos, current: "", done: true, mode: sc.mode };
+    }
+    // Collect non-whitespace characters.
+    var end = pos;
+    while end < slen && !is_ascii_whitespace(sc.source.slice(end, end + 1)) {
+        end = end + 1;
+    }
+    let word = sc.source.slice(pos, end);
+    Scanner { source: sc.source, pos: end, current: word, done: false, mode: sc.mode }
+}

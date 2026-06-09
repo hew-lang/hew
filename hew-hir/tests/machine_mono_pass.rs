@@ -183,16 +183,8 @@ fn machine_mono_fails_closed_when_unresolved_type_var_survives() {
     // a use site. By itself this fn is generic, so the discovery
     // pass does NOT walk it directly; it is walked once per
     // `MonomorphizedFn` referencing it in `monomorphisations`.
-    let abstract_t = ResolvedTy::Named {
-        name: "T".to_string(),
-        args: vec![],
-        builtin: None,
-    };
-    let holder_t = ResolvedTy::Named {
-        name: "Holder".to_string(),
-        args: vec![abstract_t.clone()],
-        builtin: None,
-    };
+    let abstract_t = ResolvedTy::named_user("T", vec![]);
+    let holder_t = ResolvedTy::named_user("Holder", vec![abstract_t.clone()]);
     let binding = HirBinding {
         id: BindingId(0),
         name: "h".to_string(),
@@ -433,15 +425,7 @@ fn machine_mono_emits_cap_diagnostic_when_distinct_instantiations_exceed_cap() {
         span: 0..0,
     });
 
-    let m_of_t = ResolvedTy::Named {
-        name: "M".to_string(),
-        args: vec![ResolvedTy::Named {
-            name: "T".to_string(),
-            args: vec![],
-            builtin: None,
-        }],
-        builtin: None,
-    };
+    let m_of_t = ResolvedTy::named_user("M", vec![ResolvedTy::named_user("T", vec![])]);
     let binding = HirBinding {
         id: BindingId(0),
         name: "_x".to_string(),

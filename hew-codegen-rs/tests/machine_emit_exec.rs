@@ -63,11 +63,13 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         name: machine_name.clone(),
         args: Vec::new(),
         builtin: None,
+        is_opaque: false,
     };
     let event_ty = ResolvedTy::Named {
         name: event_name.clone(),
         args: Vec::new(),
         builtin: None,
+        is_opaque: false,
     };
 
     // Two unit states, two unit events.
@@ -203,6 +205,7 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(pipeline, &options).expect("emit_module must succeed");
     let ll_path = artefacts
@@ -301,6 +304,7 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(&pipeline, &options).expect("emit_module must succeed");
     let ll_path = artefacts

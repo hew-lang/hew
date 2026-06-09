@@ -1676,6 +1676,7 @@ dependencies = [
  "hew-std-crypto-encrypt",
  "hew-std-crypto-jwt",
  "hew-std-crypto-password",
+ "hew-std-crypto-sign",
  "hew-std-encoding-base64",
  "hew-std-encoding-compress",
  "hew-std-encoding-csv",
@@ -1704,6 +1705,7 @@ dependencies = [
  "hew-std-sort",
  "hew-std-text-regex",
  "hew-std-text-semver",
+ "hew-std-text-unicode",
  "hew-std-time-cron",
  "hew-std-time-datetime",
 ]
@@ -1861,7 +1863,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-std-crypto-sign"
+version = "0.5.0-pre"
+dependencies = [
+ "hew-cabi",
+ "hew-runtime",
+ "libc",
+ "ring",
+]
+
+[[package]]
 name = "hew-std-encoding-base64"
+version = "0.5.0-pre"
+
+[[package]]
+name = "hew-std-encoding-binary"
 version = "0.5.0-pre"
 
 [[package]]
@@ -2088,6 +2104,14 @@ dependencies = [
 
 [[package]]
 name = "hew-std-text-semver"
+version = "0.5.0-pre"
+
+[[package]]
+name = "hew-std-text-template"
+version = "0.5.0-pre"
+
+[[package]]
+name = "hew-std-text-unicode"
 version = "0.5.0-pre"
 
 [[package]]

@@ -130,6 +130,7 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(pipeline, &options).expect("emit_module must succeed");
     let ll_path: &Path = artefacts.ll_path.as_deref().expect("emit_module ll_path");
@@ -314,6 +315,7 @@ fn user_record_ty(name: &str) -> ResolvedTy {
         name: name.to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     }
 }
 

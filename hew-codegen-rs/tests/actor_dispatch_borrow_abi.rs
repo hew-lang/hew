@@ -57,6 +57,7 @@ fn emit_ll_text(pipeline: &hew_mir::IrPipeline, module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(pipeline, &options).expect("emit_module must succeed");
     let ll_path: &Path = artefacts
@@ -613,6 +614,7 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
         name: "Boxed".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     let enum_layout = EnumLayout {
         name: "Boxed".to_string(),
@@ -750,6 +752,7 @@ fn relay_resend_recv_pipeline() -> IrPipeline {
         name: "Actor".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     // Receive handler `Relay.forward(s: string)`:
     //   local 0: string  // borrowed receive param (taint root)

@@ -60,6 +60,7 @@ fn emit_ll_text(pipeline: &hew_mir::IrPipeline, module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(pipeline, &options).expect("emit_module must succeed");
     let ll_path: &Path = artefacts

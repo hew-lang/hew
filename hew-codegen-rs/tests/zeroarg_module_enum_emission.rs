@@ -319,6 +319,7 @@ fn unknown_named_type_still_fails_closed_with_d10() {
         name: "NeverDeclared".into(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
 
     let raw_blocks = vec![BasicBlock {
@@ -388,6 +389,7 @@ fn unknown_named_type_still_fails_closed_with_d10() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
 
     let result = emit_module(&pipeline, &options);

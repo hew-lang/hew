@@ -81,6 +81,7 @@ fn emit_child_access_ir(slug: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(&pipeline, &options).expect("emit_module must succeed");
     let ll_path: &Path = artefacts
@@ -163,6 +164,7 @@ fn supervisor_child_get_classified_as_wasm_excluded() {
         out_dir: &tmp,
         native: false,
         wasm: true,
+        target_triple: None,
     };
     let err = emit_module(&pipeline, &options)
         .expect_err("WASM emission with hew_supervisor_child_get must fail closed");

@@ -285,6 +285,10 @@ fn field_hover_result(name: &str, ty_text: &str, span: OffsetSpan) -> HoverResul
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "explicit item traversal keeps hover binding scope checks readable"
+)]
 fn hover_binding_in_item(
     item: &Item,
     type_output: &TypeCheckOutput,
@@ -354,6 +358,46 @@ fn hover_binding_in_item(
                     }
                 }
             }
+            None
+        }
+        Item::Machine(machine) => {
+            // Walk state entry/exit blocks, then each transition body.
+            for state in &machine.states {
+                if let Some(entry) = &state.entry {
+                    if let Some(result) =
+                        hover_binding_in_block(entry, type_output, word, word_span, offset)
+                    {
+                        return Some(result);
+                    }
+                }
+                if let Some(exit) = &state.exit {
+                    if let Some(result) =
+                        hover_binding_in_block(exit, type_output, word, word_span, offset)
+                    {
+                        return Some(result);
+                    }
+                }
+            }
+            for transition in &machine.transitions {
+                if let Some(result) =
+                    hover_binding_in_expr(&transition.body.0, type_output, word, word_span, offset)
+                {
+                    return Some(result);
+                }
+                // Also cover guard expressions, which may reference bound names.
+                if let Some((Expr::Block(block), _)) = &transition.guard {
+                    if let Some(result) =
+                        hover_binding_in_block(block, type_output, word, word_span, offset)
+                    {
+                        return Some(result);
+                    }
+                }
+            }
+            None
+        }
+        Item::Supervisor(_) => {
+            // Supervisors hold only declarative child specs; no executable
+            // bodies contain pattern bindings to hover.
             None
         }
         _ => None,
@@ -1046,6 +1090,12 @@ fn hover_param_in_item(
                     }
                 }
             }
+            None
+        }
+        Item::Machine(_) | Item::Supervisor(_) => {
+            // Machine transitions bind event fields as plain names (not Param
+            // objects with type annotations), and supervisors carry no callable
+            // bodies. Neither has a Param list for hover_param_in_decl.
             None
         }
         _ => None,
@@ -2069,5 +2119,103 @@ mod tests {
             "expected function signature to mention the function name; got {}",
             via_db.contents
         );
+    }
+
+    // ── machine / supervisor hover tests ────────────────────────────────
+
+    #[test]
+    fn hover_machine_declaration_name_shows_type_def() {
+        // Hovering over the machine name at its declaration site should surface
+        // the machine's type-def hover (via the lookup_type_def fallback path).
+        // This was already reachable before this lane; the test pins the contract.
+        let source = concat!(
+            "machine Counter {\n",
+            "    events {\n",
+            "        Start;\n",
+            "    }\n",
+            "    state Idle;\n",
+            "    state Running;\n",
+            "    on Start: Idle => Running { Idle }\n",
+            "}\n",
+        );
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("Counter").unwrap();
+
+        let result = hover(source, &pr, Some(&tc), offset);
+        assert!(
+            result.is_some(),
+            "hover over machine name must produce a result; parse errors: {:?}",
+            pr.errors
+        );
+        let hr = result.unwrap();
+        assert!(
+            hr.contents.contains("machine Counter"),
+            "hover should include machine keyword and name; got: {}",
+            hr.contents
+        );
+    }
+
+    #[test]
+    fn hover_shows_let_binding_inside_machine_transition_body() {
+        // The Item::Machine arm in hover_binding_in_item must descend into
+        // transition bodies so that let-binding hover works inside them.
+        let source = concat!(
+            "fn compute() -> i64 { 42 }\n",
+            "machine Counter {\n",
+            "    events {\n",
+            "        Tick;\n",
+            "    }\n",
+            "    state Idle;\n",
+            "    on Tick: Idle => Idle {\n",
+            "        let result = compute();\n",
+            "        result\n",
+            "    }\n",
+            "}\n",
+        );
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        // Hover over `result` at its let-binding site inside the transition.
+        let offset = source.find("let result").unwrap() + 4; // offset of 'r' in 'result'
+
+        let result = hover(source, &pr, Some(&tc), offset);
+        assert!(
+            result.is_some(),
+            "hover inside machine transition body must find the let binding; \
+             parse errors: {:?}",
+            pr.errors
+        );
+        let hr = result.unwrap();
+        assert!(
+            hr.contents.contains("result"),
+            "hover must name the binding; got: {}",
+            hr.contents
+        );
+        assert!(
+            hr.contents.contains("i64"),
+            "hover must show the binding type i64; got: {}",
+            hr.contents
+        );
+    }
+
+    #[test]
+    fn hover_supervisor_name_does_not_panic() {
+        // Hovering over a supervisor name must not panic and must return either
+        // a valid hover result or None gracefully.  Supervisors hold no type_def
+        // in the checker (no TypeDefKind::Supervisor), so None is acceptable.
+        let source = concat!(
+            "actor Worker {\n",
+            "    receive fn start() {}\n",
+            "}\n",
+            "supervisor Pool {\n",
+            "    child w: Worker();\n",
+            "}\n",
+        );
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("Pool").unwrap();
+
+        // The call must complete without panicking; no assertion on the content.
+        let _ = hover(source, &pr, Some(&tc), offset);
     }
 }

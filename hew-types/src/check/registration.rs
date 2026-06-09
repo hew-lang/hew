@@ -5783,6 +5783,21 @@ impl Checker {
                     }
                     self.register_actor_base(ad);
                 }
+                // Register pub consts from C-backed stdlib modules that also
+                // ship Hew source (e.g. `std::misc::log` with `pub const JSON`).
+                // `register_user_module` handles this for pure-Hew user modules;
+                // this arm mirrors it for the stdlib Hew-source path so that
+                // `module.CONST` field access resolves in the type checker via
+                // the same `env.lookup_ref("{module}.{field}")` guard in
+                // `check_field_access`.
+                Item::Const(cd) => {
+                    if !cd.visibility.is_pub() {
+                        continue;
+                    }
+                    let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
+                    let qualified = format!("{module_short}.{}", cd.name);
+                    self.env.define(qualified, ty, false);
+                }
                 _ => {}
             }
         }

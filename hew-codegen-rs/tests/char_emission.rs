@@ -46,6 +46,7 @@ fn emit_ll(source: &str, module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(&pipeline, &options).expect("char pipeline must emit successfully");
     let ll_path: &Path = artefacts

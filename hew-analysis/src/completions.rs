@@ -53,6 +53,7 @@ pub fn complete(
             label: (*kw).to_string(),
             kind: CompletionKind::Keyword,
             detail: None,
+            documentation: None,
             insert_text: None,
             insert_text_is_snippet: false,
             sort_text: None,
@@ -69,6 +70,7 @@ pub fn complete(
                 label: name,
                 kind,
                 detail: None,
+                documentation: None,
                 insert_text: None,
                 insert_text_is_snippet: false,
                 sort_text: None,
@@ -83,6 +85,7 @@ pub fn complete(
                 label: name.clone(),
                 kind: CompletionKind::Type,
                 detail: None,
+                documentation: None,
                 insert_text: None,
                 insert_text_is_snippet: false,
                 sort_text: None,
@@ -96,7 +99,14 @@ pub fn complete(
     // Collect local variables visible at cursor offset.
     items.extend(collect_locals_at(parse_result, offset));
 
-    // Deduplicate by label, preferring items with detail (richer completions).
+    // Deduplicate by label, preferring items with detail and/or documentation
+    // (richer completions). Sort so that items with detail come first so that
+    // `retain`'s first-seen rule retains the richest entry.
+    items.sort_by(|a, b| {
+        let a_rich = a.detail.is_some() || a.documentation.is_some();
+        let b_rich = b.detail.is_some() || b.documentation.is_some();
+        b_rich.cmp(&a_rich)
+    });
     let mut seen = HashSet::new();
     items.retain(|item| seen.insert(item.label.clone()));
 
@@ -121,6 +131,7 @@ fn try_is_type_pattern_completions(
             label: name.clone(),
             kind: CompletionKind::Type,
             detail: None,
+            documentation: None,
             insert_text: None,
             insert_text_is_snippet: false,
             sort_text: None,
@@ -143,6 +154,7 @@ fn try_is_type_pattern_completions(
             label: (*canonical).to_string(),
             kind: CompletionKind::Type,
             detail: Some("builtin primitive type".to_string()),
+            documentation: None,
             insert_text: None,
             insert_text_is_snippet: false,
             sort_text: None,
@@ -179,6 +191,7 @@ fn try_dot_completions(
                 label: field_name.clone(),
                 kind: CompletionKind::Field,
                 detail: Some(field_ty.user_facing().to_string()),
+                documentation: None,
                 insert_text: None,
                 insert_text_is_snippet: false,
                 sort_text: None,
@@ -229,6 +242,7 @@ fn try_struct_init_completions(
             label: field_name.clone(),
             kind: CompletionKind::Field,
             detail: Some(field_ty.user_facing().to_string()),
+            documentation: None,
             insert_text: Some(format!("{field_name}: ")),
             insert_text_is_snippet: false,
             sort_text: None,
@@ -267,6 +281,7 @@ fn try_enum_variant_completions(
             label: variant_name.clone(),
             kind: CompletionKind::Constant,
             detail: variant_completion_detail(variant_def),
+            documentation: None,
             insert_text: None,
             insert_text_is_snippet: false,
             sort_text: None,
@@ -345,6 +360,7 @@ fn try_spawn_completions(
                     label: a.name.clone(),
                     kind: CompletionKind::Actor,
                     detail: Some("actor".to_string()),
+                    documentation: None,
                     insert_text: None,
                     insert_text_is_snippet: false,
                     sort_text: None,
@@ -355,6 +371,7 @@ fn try_spawn_completions(
                     label: s.name.clone(),
                     kind: CompletionKind::Actor,
                     detail: Some("supervisor".to_string()),
+                    documentation: None,
                     insert_text: None,
                     insert_text_is_snippet: false,
                     sort_text: None,
@@ -765,6 +782,7 @@ fn local_completion(name: &str) -> CompletionItem {
         label: name.to_string(),
         kind: CompletionKind::Variable,
         detail: None,
+        documentation: None,
         insert_text: None,
         insert_text_is_snippet: false,
         sort_text: None,
@@ -778,6 +796,7 @@ fn fn_sig_completion(name: &str, sig: &FnSig) -> CompletionItem {
         label: name.to_string(),
         kind: CompletionKind::Function,
         detail: Some(detail),
+        documentation: sig.doc_comment.clone(),
         insert_text: None,
         insert_text_is_snippet: false,
         sort_text: None,
@@ -786,6 +805,10 @@ fn fn_sig_completion(name: &str, sig: &FnSig) -> CompletionItem {
 
 /// Snippet completions for common language constructs.
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "data-table of snippet tuples; no logic to extract"
+)]
 pub fn keyword_snippets() -> Vec<CompletionItem> {
     let snippets = [
         (
@@ -881,9 +904,10 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
         .map(|(label, snippet, detail)| CompletionItem {
             label: format!("{label}..."),
             kind: CompletionKind::Snippet,
+            detail: Some(detail.to_string()),
+            documentation: None,
             insert_text: Some(snippet.to_string()),
             insert_text_is_snippet: true,
-            detail: Some(detail.to_string()),
             sort_text: Some(format!("0_{label}")),
         })
         .collect()
@@ -1349,6 +1373,36 @@ impl Box {
         );
     }
 
+    #[test]
+    fn actor_handle_dot_completions_include_receive_handler_and_exclude_internal_fields() {
+        // Dot-completing on a `LocalPid<Counter>` handle must offer the actor's
+        // declared receive handler (`increment`) and must NOT leak the actor's
+        // internal struct fields (`count`).
+        //
+        // This test uses an empty module registry (no stdlib), so `tell` /
+        // `to_remote_via` won't appear here — those are covered by the stdlib-
+        // loaded hew-lsp integration test.
+        let source = r"actor Counter {
+    count: i64;
+    receive fn increment(n: i64) { count = count + n; }
+}
+fn main() {
+    let c = spawn Counter(count: 0);
+    c./*cursor*/increment(1);
+}";
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let items = items_at_cursor(source, Some(&tc));
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"increment"),
+            "expected receive handler `increment` in actor-handle completions; got: {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"count"),
+            "internal actor field `count` must not appear in handle completions; got: {labels:?}"
+        );
+    }
+
     /// A local declared INSIDE the tail-promoted then-branch must be visible at
     /// the cursor.  This exercises the empty-span universal-containment rule:
     /// `span_contains_offset` returns true for the empty wrapper span, causing
@@ -1368,6 +1422,43 @@ impl Box {
         assert!(
             labels.iter().any(|l| l == "inner"),
             "local declared inside tail-promoted then-branch must be visible at cursor; got: {labels:?}",
+        );
+    }
+
+    #[test]
+    fn fn_completion_carries_doc_comment() {
+        // A function with a doc comment must surface that comment on the
+        // completion item's `documentation` field so editors can display it.
+        let source = "/// Computes the sum of two integers.\nfn add(x: i64, y: i64) -> i64 { x + y }\nfn main() { /*cursor*/ }";
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let items = items_at_cursor(source, Some(&tc));
+        let add = items
+            .iter()
+            .find(|item| item.label == "add")
+            .expect("completion for `add` not found");
+        assert_eq!(
+            add.documentation.as_deref(),
+            Some("Computes the sum of two integers."),
+            "completion item should carry the doc comment; got: {:?}",
+            add.documentation
+        );
+    }
+
+    #[test]
+    fn fn_completion_without_doc_comment_has_none_documentation() {
+        // A function with no doc comment must yield `None` for `documentation`
+        // rather than an empty string.
+        let source = r"fn bare(x: i64) -> i64 { x }
+fn main() { /*cursor*/ }";
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let items = items_at_cursor(source, Some(&tc));
+        let bare = items
+            .iter()
+            .find(|item| item.label == "bare")
+            .expect("completion for `bare` not found");
+        assert_eq!(
+            bare.documentation, None,
+            "function without doc comment must have None documentation"
         );
     }
 }

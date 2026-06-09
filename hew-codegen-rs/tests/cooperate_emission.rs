@@ -15,6 +15,7 @@ fn emit_ll_result(pipeline: &IrPipeline, module_name: &str) -> Result<String, Co
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(pipeline, &options)?;
     let ll_path: &Path = artefacts

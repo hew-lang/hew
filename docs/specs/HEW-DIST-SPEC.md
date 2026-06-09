@@ -253,11 +253,11 @@ Connection setup must negotiate enough information to reject incompatible peers 
 
 The handshake contract includes:
 
-- `NodeId`
-- Hew version
-- HBF major/minor version
-- feature flags
-- capability proof appropriate to the transport/security mode
+- `NodeId` (`node_id: u16`)
+- Hew protocol version (`protocol_version: u16`)
+- Schema hash (`schema_hash: u32`)
+- Feature flags (`feature_flags: u32`)
+- Noise static key (capability proof appropriate to the transport/security mode)
 
 Payloads that require typed compatibility must carry schema identity/version. Incompatible ALPN major versions are rejected at negotiation time. Incompatible payload or feature negotiation resolves to `VersionMismatch`; malformed envelopes or payloads resolve to `DecodeFailure`.
 
@@ -426,18 +426,14 @@ The concrete follow-on work named by the distributed research record maps to thi
 14. virtual-actor placement (`Cluster::activate`) — explicitly later than v0, stage 7
 15. production hardening and soak/version-skew readiness — stage 8, after the earlier stages land
 
-Ratification of the deferred ownership clauses in sections 3, 8, and 12 is
-complete. All deferred-ownership markers have been resolved:
+Normative ownership status for sections 3, 8, and 12:
 
-- **§3 (pid-reference ownership):** Ratified. `LocalPid` and `RemotePid` are
-  refcounted identity references (`Frozen`, `Send`) consistent with
-  `HEW-SPEC-2026.md` §3.7.8. This
-  matches already-shipped runtime behaviour; no implementation obligation
-  survives.
-- **§8 (supervision ownership):** Ratified as normative spec intent. Runtime
-  enforcement of single-holder restart-authority tokens is tracked under issue
-  #1228 (RuntimeContext handle-shaped API) and issue #1399 (move-checker
-  substrate).
-- **§12 (capability transfer):** Ratified as normative spec intent. Runtime
-  enforcement of capability transfer ownership and revocation is tracked under
-  issue #1706.
+- **§3 (pid-reference ownership):** `LocalPid` and `RemotePid` are refcounted
+  identity references (`Frozen`, `Send`) consistent with `HEW-SPEC-2026.md`
+  §3.7.8. This matches shipped runtime behaviour; no outstanding implementation
+  obligation.
+- **§8 (supervision ownership):** Normative spec intent. Runtime enforcement of
+  single-holder restart-authority tokens is tracked under issue #1228
+  (RuntimeContext handle-shaped API) and issue #1399 (move-checker substrate).
+- **§12 (capability transfer):** Normative spec intent. Runtime enforcement of
+  capability transfer ownership and revocation is tracked under issue #1706.

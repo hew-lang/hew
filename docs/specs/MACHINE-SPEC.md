@@ -1,4 +1,4 @@
-# Hew `machine` Surface Specification v0.5
+# Hew `machine` Surface Specification
 
 A `machine` is a **value type** that defines a closed set of named states, a closed set of named events, and transition rules mapping `(State, Event)` pairs to new states. It compiles to a tagged union with a generated `step()` function. Machines are not actors — they are data, like enums with per-state fields and compiler-checked transition logic.
 
@@ -9,9 +9,7 @@ A `machine` is a **value type** that defines a closed set of named states, a clo
 - **Composability** — machines embed in actors, structs, collections, and function parameters.
 - **Zero-cost** — compiles to an integer tag + union of structs. No allocations, no threads.
 
-**Status in v0.5:**
-
-_This document records the shipped v0.5 machine surface: the `=>` routing
+_This document specifies the machine surface: the `=>` routing
 arrow, `events {}` / `emits {}` vocabulary headers, the `reenter` keyword,
 optional `on E(payload):` head bindings, inline state `entry {}` / `exit {}`
 blocks, the `default { state }` unhandled-stays arm, depth-1 composite state
@@ -32,8 +30,8 @@ A machine value is always in exactly one state. The only way to change state is 
 ### §1.1 Non-goals and feature notes
 
 > Guard conditions (`when`), inline `entry {}` / `exit {}` hooks, and depth-1
-> composite (hierarchical) state blocks are all **implemented and shipping** in
-> v0.5. The list below records the remaining non-goals.
+> composite (hierarchical) state blocks are all implemented. The list below
+> records the remaining non-goals.
 
 - No nesting deeper than depth-1 (a substate may not itself contain substates) — reserved for v0.6.
 - No side effects in transition bodies beyond `entry`/`exit`/`emit` (pure transformation otherwise).
@@ -220,30 +218,29 @@ The transition body MUST evaluate to a value of the machine type. Specifically:
 
 ### §3.4 Purity
 
-Transition bodies are **pure** — they compute a new state from the old state and event data. They MUST NOT:
+Transition bodies are **pure** by intent — they compute a new state from the old state and event data. They MUST NOT:
 
 - Perform I/O.
 - Access mutable external state.
 - Call `receive fn` methods on actors.
 - Spawn actors or tasks.
 
-_Implementation note: The compiler MAY enforce transition purity through effect analysis or a future annotation system. For v0.1, the compiler SHOULD emit a warning (not an error) for impure calls, to allow incremental adoption._
+_Implementation note: `gen {}` blocks (suspension expressions) inside a transition body are compile errors (`E_GENBLOCK_IN_MACHINE_TRANSITION`). Full effect analysis for I/O calls and actor messages is not yet enforced; those restrictions are the language invariant, not the current compiler gate._
 
-### §3.5 No output values (Mealy restriction)
+### §3.5 Output values
 
-For v0.1, transitions produce **only** the new state — they do not produce output values. This is a Moore machine model. Side effects (sending messages, logging, I/O) happen in the actor or function that calls `step()`:
+Transitions produce a new state and may additionally emit named output events via `emit EventName { … }` statements (Mealy-style outputs), declared up front in the `emits {}` manifest (§2.3). Side effects unrelated to the machine — actor sends, I/O, logging — happen in the actor or function that calls `step()`:
 
 ```hew
 actor ConnectionManager {
     var tcp: TcpState = TcpState::Closed;
 
     receive fn handle(event: TcpStateEvent) {
-        let old = tcp;
         tcp.step(event);
 
-        // Side effects happen here, not in the machine
+        // Side effects happen here, not in the machine body
         match tcp {
-            TcpState::Established { .. } => println("Connection established"),
+            TcpState::Established { local_seq, remote_seq } => println("Connection established"),
             TcpState::Closed => println("Connection closed"),
             _ => {}
         }
@@ -251,9 +248,7 @@ actor ConnectionManager {
 }
 ```
 
-_Mealy outputs are expressed with `emit EventName { … }` statements in a
-transition body, declared up front in the `emits {}` manifest (§2.3). A
-dedicated `/ Output` arrow syntax is a declined non-goal — `emit` covers it._
+_A dedicated `/ Output` arrow syntax is a declined non-goal — `emit` covers Mealy outputs. Unit-event `emit` lowers; non-unit payload `emit` is not yet wired in codegen._
 
 ---
 
@@ -634,36 +629,44 @@ TcpState TcpState_step(TcpState self, TcpStateEvent event) {
 
 _Implementation note: The internal step function still returns the new machine value. The compiler handles the store-back at the call site, similar to how `Vec.push()` mutates through the binding._
 
-### §8.5 MessagePack schema
+### §8.5 AST serialisation shape
 
-The machine declaration serializes to MessagePack as:
+The machine AST node serialises via `serde_json` (not MessagePack). The `Item`
+enum uses an untagged outer wrapper, so the JSON shape is:
 
-```
+```json
 {
-  "kind": "machine",
-  "name": "TcpState",
-  "type_params": [],
-  "states": [
-    { "name": "Closed", "fields": [] },
-    { "name": "Listen", "fields": [{ "name": "backlog", "type": "i64" }] },
-    ...
-  ],
-  "events": [
-    { "name": "Connect", "fields": [] },
-    { "name": "Data", "fields": [{ "name": "payload", "type": "string" }] },
-    ...
-  ],
-  "transitions": [
-    { "event": "Connect", "source": "Closed", "target": "Listen", "body": <Expr> },
-    { "event": "Timeout", "source": "_", "target": "_", "body": <Expr> },
-    ...
-  ]
+  "Machine": {
+    "name": "TcpState",
+    "type_params": [],
+    "states": [
+      { "name": "Closed", "fields": [] },
+      { "name": "Listen", "fields": [{ "name": "backlog", "type": "i64" }] }
+    ],
+    "events": [
+      { "name": "Connect", "fields": [] },
+      { "name": "Data", "fields": [{ "name": "payload", "type": "string" }] }
+    ],
+    "transitions": [
+      { "event": "Connect", "source": "Closed", "target": "Listen", "body": "…" },
+      { "event": "Timeout", "source": "_", "target": "_", "body": "…" }
+    ]
+  }
 }
 ```
+
+The outer key is `"Machine"` (the variant name), not `"kind"`. This is an
+illustrative pseudo-schema — the exact field set follows the `ast::Machine`
+struct definition.
 
 ---
 
 ## §9 Complete example: Circuit Breaker
+
+The machine itself compiles and is verified against the Hew compiler. The actor
+usage snippet shows the intended integration pattern; embedding a machine type as
+an actor field is a known in-progress MIR limitation (`ActorStateCloneClassificationFailed`
+for user-defined record types used as actor state).
 
 ```hew
 machine CircuitBreaker {
@@ -682,7 +685,9 @@ machine CircuitBreaker {
         Closed { failures: 0 }
     }
 
-    on Success: HalfOpen => HalfOpen reenter {
+    // HalfOpen success: use wildcard target to avoid `state` in a conditional branch.
+    // Three consecutive successes recover to Closed; fewer increment the counter.
+    on Success: HalfOpen => _ {
         if self.successes + 1 >= 3 {
             Closed { failures: 0 }
         } else {
@@ -695,7 +700,8 @@ machine CircuitBreaker {
     }
 
     // --- Failure transitions ---
-    on Failure(timestamp): Closed => Closed reenter {
+    // Closed failure: use wildcard target for the conditional open/stay branch.
+    on Failure(timestamp): Closed => _ {
         if self.failures + 1 >= 5 {
             Open { expires_at: timestamp + 10000 }
         } else {
@@ -712,11 +718,12 @@ machine CircuitBreaker {
     }
 
     // --- Tick transitions ---
-    on Tick(now): Open => Open reenter {
+    // Open tick: use wildcard target to avoid `state` in a conditional else-branch.
+    on Tick(now): Open => _ {
         if now >= self.expires_at {
             HalfOpen { successes: 0 }
         } else {
-            state
+            Open { expires_at: self.expires_at }
         }
     }
 
@@ -726,7 +733,13 @@ machine CircuitBreaker {
 }
 ```
 
-Usage in an actor:
+> **Note on `=> _` vs `=> X reenter { state }`:** `state` is valid as the sole
+> expression of a `reenter` body (unconditional stay). It is not yet valid as a
+> branch of an if/else inside a `reenter` body. Use `=> _` (wildcard target) for
+> transitions whose body conditionally returns different variants.
+
+Usage in an actor (pattern illustration — actor embedding of machine types is a
+current MIR limitation, not yet fully lowered):
 
 ```hew
 actor ApiGateway {
@@ -735,7 +748,7 @@ actor ApiGateway {
     receive fn call(req: Request) -> Result<Response, string> {
         // Check circuit state
         match breaker {
-            CircuitBreaker::Open { .. } => {
+            CircuitBreaker::Open { expires_at } => {
                 return Err("circuit open");
             },
             _ => {}
@@ -759,31 +772,26 @@ actor ApiGateway {
 }
 ```
 
-Testing:
+Testing (verified to compile and pass `hew check`):
 
 ```hew
-test "circuit opens after 5 failures" {
+fn main() {
+    // Test: circuit opens after 5 failures
     var breaker = CircuitBreaker::Closed { failures: 0 };
-
-    // 5 failures should open the circuit
     for i in 0..5 {
         breaker.step(CircuitBreakerEvent::Failure { timestamp: i * 1000 });
     }
-
     match breaker {
-        CircuitBreaker::Open { .. } => assert(true),
+        CircuitBreaker::Open { expires_at } => assert(expires_at > 0),
         _ => assert(false),
     }
-}
 
-test "half-open recovers after 3 successes" {
-    var breaker = CircuitBreaker::HalfOpen { successes: 0 };
-
-    for _ in 0..3 {
-        breaker.step(CircuitBreakerEvent::Success);
+    // Test: half-open recovers after 3 successes
+    var b2 = CircuitBreaker::HalfOpen { successes: 0 };
+    for i in 0..3 {
+        b2.step(CircuitBreakerEvent::Success);
     }
-
-    match breaker {
+    match b2 {
         CircuitBreaker::Closed { failures } => assert(failures == 0),
         _ => assert(false),
     }
@@ -828,7 +836,9 @@ TransitionDecl = "on" Ident [ "(" Ident { "," Ident } ")" ] ":"
                  TransitionSource "=>" TransitionTarget
                  [ "reenter" ] [ "when" Expr ] TransitionBody ;
 
-DefaultArm     = "default" "{" "state" "}" ;
+DefaultArm     = "default" "{" Body "}" ;
+                 (* Body is a brace-balanced expression; `state` is canonical,
+                    `self` is also accepted by the parser *)
 
 TransitionSource = Ident | "_" ;            (* dotted Composite.Leaf strips to Leaf *)
 
@@ -854,10 +864,11 @@ rejected with a v0.6 diagnostic.
 
 ## §11 Future work
 
-The following features are explicitly deferred to future versions:
+The following features are explicitly deferred to future editions:
 
 1. **Depth > 1 nesting** — composites containing composites. Depth-1 composite
-   state blocks ship in v0.5; deeper nesting is reserved for v0.6.
+   state blocks are supported; deeper nesting (depth > 1) is reserved for a
+   future edition.
 2. **History states** — returning to a previously active sub-state. `history`
    may be reserved as a contextual keyword but is not yet lowered.
 3. **Composite-scoped auto-fill** — auto-synthesised identity fill for uncovered
@@ -868,8 +879,8 @@ The following features are explicitly deferred to future versions:
 
 Guard conditions (`when`), inline state `entry {}` / `exit {}` blocks, the
 `default { state }` arm, depth-1 composite states, and the `=>` / `events {}` /
-`emits {}` / `reenter` / head-binding surface all ship in v0.5. Visualization
-ships via the CLI: `hew machine diagram` emits Mermaid by default,
+`emits {}` / `reenter` / head-binding surface are implemented. Visualization
+is available via the CLI: `hew machine diagram` emits Mermaid by default,
 `--format graphviz` emits Graphviz DOT, and `--format json` emits a tooling
 schema — all three render depth-1 composite nesting.
 

@@ -255,20 +255,12 @@ mod tests {
             vec![
                 coerce(
                     "Iterator",
-                    ResolvedTy::Named {
-                        name: "Counter".into(),
-                        args: vec![],
-                        builtin: None,
-                    },
+                    ResolvedTy::named_user("Counter", vec![]),
                     vec![e_int],
                 ),
                 coerce(
                     "Iterator",
-                    ResolvedTy::Named {
-                        name: "Counter".into(),
-                        args: vec![],
-                        builtin: None,
-                    },
+                    ResolvedTy::named_user("Counter", vec![]),
                     vec![e_str],
                 ),
             ],

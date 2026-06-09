@@ -41,6 +41,7 @@ fn machine_ctor_expr(machine_name: &str, state_idx: usize) -> HirExpr {
             name: machine_name.to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         },
         value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
@@ -61,6 +62,7 @@ fn machine_self_expr(machine_name: &str) -> HirExpr {
             name: machine_name.to_string(),
             args: vec![],
             builtin: None,
+            is_opaque: false,
         },
         value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
@@ -111,6 +113,7 @@ fn transition_body(machine_name: &str, target_idx: usize, emits: &[usize]) -> Hi
         name: machine_name.to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     HirExpr {
         node: hew_hir::HirNodeId(0),
@@ -168,6 +171,7 @@ fn named_ty(name: &str) -> ResolvedTy {
         name: name.to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     }
 }
 
@@ -260,6 +264,7 @@ fn transition_bodies_entry_exit_reenter() {
         name: "Lifecycle".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     let idle = HirMachineState {
         name: "Idle".to_string(),
@@ -769,11 +774,13 @@ fn synthesised_step_signature_is_self_event_returning_self() {
         name: "TrafficLight".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     let event_ty = ResolvedTy::Named {
         name: "TrafficLightEvent".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
 
     assert_eq!(
@@ -872,6 +879,7 @@ fn generic_machine_preserves_type_params_in_synthesised_signature() {
         name: "Lifecycle".to_string(),
         args: vec![ResolvedTy::I64],
         builtin: None,
+        is_opaque: false,
     };
     assert_eq!(step_fn.params[0], expected_self);
     assert_eq!(step_fn.return_ty, expected_self);
@@ -883,6 +891,7 @@ fn generic_machine_preserves_type_params_in_synthesised_signature() {
             name: "LifecycleEvent".to_string(),
             args: vec![ResolvedTy::I64],
             builtin: None,
+            is_opaque: false,
         }
     );
 }
@@ -940,11 +949,13 @@ fn step_shell_signature_and_switch_shape() {
         name: "TrafficLight".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     let event_ty = ResolvedTy::Named {
         name: "TrafficLightEvent".to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     assert_eq!(
         step_fn.params,

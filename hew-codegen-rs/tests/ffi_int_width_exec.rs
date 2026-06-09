@@ -207,3 +207,34 @@ fn find_not_found_round_trips_negative_one() {
         "find sentinel did not round-trip as signed -1: {stdout:?}"
     );
 }
+
+/// New UTF-8 codepoint helpers must also preserve the signed -1 sentinel across
+/// the i32 C-ABI return → Hew-facing i64 boundary.
+#[test]
+fn unicode_codepoint_at_oob_round_trips_negative_one() {
+    let repo = repo_root();
+    let stdout = run_hew_source(
+        &repo,
+        "unicode_codepoint_oob",
+        r#"
+        import std::text::unicode;
+
+        fn main() {
+            let s = "café";
+            let n = unicode.rune_count(s);
+            let oob = unicode.codepoint_at(s, n);
+            print(f"oob={oob};");
+            if oob < 0 {
+                print("guard_fires");
+            } else {
+                print("guard_broken");
+            }
+        }
+        "#,
+    );
+
+    assert_eq!(
+        stdout, "oob=-1;guard_fires",
+        "unicode.codepoint_at OOB sentinel did not round-trip as signed -1: {stdout:?}",
+    );
+}

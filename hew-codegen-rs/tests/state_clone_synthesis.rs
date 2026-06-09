@@ -127,6 +127,7 @@ fn emit_to_string(pipeline: &IrPipeline, slug: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     emit_module(pipeline, &options).expect("emit_module should succeed");
     let ll = tmp.join("probe.ll");
@@ -212,6 +213,7 @@ fn state_clone_chatroom_string_and_vec_clone_with_rollback() {
                 name: "Vec".into(),
                 args: vec![ResolvedTy::I32],
                 builtin: None,
+                is_opaque: false,
             },
         ],
         vec![
@@ -229,6 +231,7 @@ fn state_clone_chatroom_string_and_vec_clone_with_rollback() {
                 name: "Vec".into(),
                 args: vec![ResolvedTy::I32],
                 builtin: None,
+                is_opaque: false,
             },
         ],
     };
@@ -313,16 +316,19 @@ fn state_clone_router_three_vecs_full_rollback_chain() {
                 name: "Vec".into(),
                 args: vec![ResolvedTy::I64],
                 builtin: None,
+                is_opaque: false,
             },
             ResolvedTy::Named {
                 name: "Vec".into(),
                 args: vec![ResolvedTy::I64],
                 builtin: None,
+                is_opaque: false,
             },
             ResolvedTy::Named {
                 name: "Vec".into(),
                 args: vec![ResolvedTy::I64],
                 builtin: None,
+                is_opaque: false,
             },
         ],
         vec![
@@ -373,6 +379,7 @@ fn state_clone_workspace_nested_user_record_synthesizes_record_helper() {
                 name: "Vec".into(),
                 args: vec![ResolvedTy::I32],
                 builtin: None,
+                is_opaque: false,
             }, // payload
         ],
     };
@@ -383,6 +390,7 @@ fn state_clone_workspace_nested_user_record_synthesizes_record_helper() {
                 name: "Entry".into(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             }, // entry
             ResolvedTy::String, // name
         ],
@@ -395,6 +403,7 @@ fn state_clone_workspace_nested_user_record_synthesizes_record_helper() {
                 name: "Entry".into(),
                 args: vec![],
                 builtin: None,
+                is_opaque: false,
             },
             ResolvedTy::String,
         ],
@@ -455,6 +464,7 @@ fn state_clone_connection_actor_returns_null_up_front() {
         name: "LocalPid".into(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     let conn_actor = classified_actor(
         "NetReader",
@@ -531,6 +541,7 @@ fn state_clone_alloc_fail_per_field_rollback_cardinality_and_order() {
                 name: "Vec".into(),
                 args: vec![ResolvedTy::I32],
                 builtin: None,
+                is_opaque: false,
             },
             ResolvedTy::String,
             ResolvedTy::String,
@@ -691,6 +702,7 @@ fn state_clone_hashmap_and_hashset_string_elem_route_to_layout_helpers() {
         name: "LocalPid".into(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     let actor = classified_actor(
         "MapAndSetStringElem",
@@ -769,6 +781,7 @@ fn state_clone_hashmap_and_hashset_layout_route_to_layout_free() {
         name: "LocalPid".into(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     // Record `K` is the user-record key/elem; its in-place clone/drop
     // is synthesised by the runtime helper, not invoked from the actor
@@ -885,6 +898,7 @@ fn state_clone_actor_enum_field_tag_dispatches_payload_clone_and_drop() {
         name: "Maybe".into(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     };
     let mailbox = classified_actor(
         "Mailbox",

@@ -42,6 +42,7 @@ fn vec_slice_i64_pipeline() -> IrPipeline {
         name: "Vec".to_string(),
         args: vec![ResolvedTy::I64],
         builtin: None,
+        is_opaque: false,
     };
 
     let vec_place = Place::Local(0);
@@ -247,6 +248,7 @@ fn emit_ll(module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts =
         emit_module(&pipeline, &options).expect("C-3 Vec-slice pipeline must emit successfully");

@@ -265,11 +265,11 @@ mod tests {
     fn duplex_named_ty_resolves_to_affine_resource() {
         let mut table: TypeClassTable = HashMap::default();
         seed_builtin_type_classes(&mut table);
-        let ty = ResolvedTy::Named {
-            name: "Duplex".to_string(),
-            args: vec![ResolvedTy::I64, ResolvedTy::I64],
-            builtin: Some(hew_types::BuiltinType::Duplex),
-        };
+        let ty = ResolvedTy::named_builtin(
+            "Duplex",
+            hew_types::BuiltinType::Duplex,
+            vec![ResolvedTy::I64, ResolvedTy::I64],
+        );
         assert_eq!(ValueClass::of_ty(&ty, &table), ValueClass::AffineResource);
     }
 
@@ -288,11 +288,7 @@ mod tests {
     fn crash_info_named_ty_resolves_to_bitcopy() {
         let mut table: TypeClassTable = HashMap::default();
         seed_builtin_type_classes(&mut table);
-        let ty = ResolvedTy::Named {
-            name: "CrashInfo".to_string(),
-            args: vec![],
-            builtin: None,
-        };
+        let ty = ResolvedTy::named_user("CrashInfo", vec![]);
         assert_eq!(ValueClass::of_ty(&ty, &table), ValueClass::BitCopy);
     }
 

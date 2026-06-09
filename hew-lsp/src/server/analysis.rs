@@ -11,7 +11,8 @@ use hew_types::error::{Severity, TypeErrorKind};
 use hew_types::module_registry::build_module_search_paths;
 use hew_types::{Checker, TypeCheckOutput};
 use tower_lsp::lsp_types::{
-    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location, Url,
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location,
+    NumberOrString, Url,
 };
 
 use super::{DiagnosticMap, DiagnosticSource, DocumentState};
@@ -414,10 +415,12 @@ pub(super) fn build_dangling_import_diagnostics(
             "unresolved import '{}'",
             dangling_import.module_id.path.join(".")
         );
+        let dangling_code = Some(NumberOrString::String("UnresolvedImport".to_string()));
         let diagnostic = if uri == *source_uri {
             Diagnostic {
                 range: super::span_to_range(source, line_offsets, &dangling_import.span),
                 severity: Some(DiagnosticSeverity::ERROR),
+                code: dangling_code,
                 source: Some("hew-lsp".to_string()),
                 message,
                 ..Default::default()
@@ -426,6 +429,7 @@ pub(super) fn build_dangling_import_diagnostics(
             Diagnostic {
                 range: super::span_to_range(&doc.source, &doc.line_offsets, &dangling_import.span),
                 severity: Some(DiagnosticSeverity::ERROR),
+                code: dangling_code,
                 source: Some("hew-lsp".to_string()),
                 message,
                 ..Default::default()
@@ -443,6 +447,7 @@ pub(super) fn build_dangling_import_diagnostics(
                     &dangling_import.span,
                 ),
                 severity: Some(DiagnosticSeverity::ERROR),
+                code: dangling_code,
                 source: Some("hew-lsp".to_string()),
                 message,
                 ..Default::default()
@@ -485,10 +490,12 @@ pub(super) fn build_module_cycle_diagnostics(
             continue;
         };
 
+        let cycle_code = Some(NumberOrString::String("ModuleCycle".to_string()));
         let diagnostic = if uri == *source_uri {
             Diagnostic {
                 range: super::span_to_range(source, line_offsets, &import.span),
                 severity: Some(DiagnosticSeverity::ERROR),
+                code: cycle_code,
                 source: Some("hew-lsp".to_string()),
                 message: message.clone(),
                 ..Default::default()
@@ -497,6 +504,7 @@ pub(super) fn build_module_cycle_diagnostics(
             Diagnostic {
                 range: super::span_to_range(&doc.source, &doc.line_offsets, &import.span),
                 severity: Some(DiagnosticSeverity::ERROR),
+                code: cycle_code,
                 source: Some("hew-lsp".to_string()),
                 message: message.clone(),
                 ..Default::default()
@@ -509,6 +517,7 @@ pub(super) fn build_module_cycle_diagnostics(
             Diagnostic {
                 range: super::span_to_range(&target_source, &target_line_offsets, &import.span),
                 severity: Some(DiagnosticSeverity::ERROR),
+                code: cycle_code,
                 source: Some("hew-lsp".to_string()),
                 message: message.clone(),
                 ..Default::default()
@@ -834,6 +843,7 @@ pub(super) fn build_diagnostics_by_uri(
             Diagnostic {
                 range: super::span_to_range(source, lo, &err.span),
                 severity: Some(severity),
+                code: Some(NumberOrString::String(err.kind.as_kind_str().to_string())),
                 source: Some("hew-parser".to_string()),
                 message,
                 data: Some(parse_diagnostic_data(&err.kind)),
@@ -897,6 +907,7 @@ pub(super) fn build_diagnostics_by_uri(
                 Diagnostic {
                     range: super::span_to_range(target_source, target_line_offsets, &diag.span),
                     severity: Some(severity_to_lsp(diag.severity)),
+                    code: Some(NumberOrString::String(diag.kind.as_kind_str().to_string())),
                     tags: unnecessary_diagnostic_tags(&diag.kind),
                     source: Some("hew-types".to_string()),
                     message,
@@ -999,6 +1010,9 @@ fn build_hir_lsp_diagnostics(
             Diagnostic {
                 range,
                 severity: Some(DiagnosticSeverity::ERROR),
+                code: Some(NumberOrString::String(hir_diagnostic_kind_string(
+                    &diagnostic.kind,
+                ))),
                 source: Some("hew-hir".to_string()),
                 message,
                 related_information,
@@ -1347,5 +1361,95 @@ mod tests {
             tail.span = span;
         }
         module
+    }
+
+    // ── Diagnostic.code tests ────────────────────────────────────────────
+
+    #[test]
+    fn type_diagnostic_code_is_set_to_kind_string() {
+        // A type error (UndefinedVariable) should produce a diagnostic whose
+        // `code` field is `Some(NumberOrString::String("UndefinedVariable"))`.
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let source = "fn main() { missing_name }\n";
+        let lo = compute_line_offsets(source);
+        let parse_result = hew_parser::parse(source);
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let tc = checker.check_program(&parse_result.program);
+
+        let diagnostics = build_diagnostics(&uri, source, &lo, &parse_result, Some(&tc));
+        let type_diag = diagnostics
+            .iter()
+            .find(|d| d.source.as_deref() == Some("hew-types"))
+            .expect("expected at least one hew-types diagnostic");
+
+        assert!(
+            type_diag.code.is_some(),
+            "type diagnostic must carry a code; got None"
+        );
+        let code_str = match &type_diag.code {
+            Some(NumberOrString::String(s)) => s.as_str(),
+            other => panic!("expected NumberOrString::String, got {other:?}"),
+        };
+        assert_eq!(code_str, "UndefinedVariable");
+    }
+
+    #[test]
+    fn parse_diagnostic_code_is_set_to_kind_string() {
+        // A parse error should produce a diagnostic whose `code` field is
+        // `Some(NumberOrString::String(<kind-string>))`.
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let source = "fn main() { let x = ; }\n"; // missing expression after `=`
+        let lo = compute_line_offsets(source);
+        let parse_result = hew_parser::parse(source);
+
+        // Source must contain at least one parse error for the test to be useful.
+        assert!(
+            !parse_result.errors.is_empty(),
+            "test source must produce a parse error"
+        );
+
+        let diagnostics = build_diagnostics(&uri, source, &lo, &parse_result, None);
+        let parse_diag = diagnostics
+            .iter()
+            .find(|d| d.source.as_deref() == Some("hew-parser"))
+            .expect("expected at least one hew-parser diagnostic");
+
+        assert!(
+            parse_diag.code.is_some(),
+            "parse diagnostic must carry a code; got None"
+        );
+        assert!(
+            matches!(&parse_diag.code, Some(NumberOrString::String(_))),
+            "parse diagnostic code must be a string variant"
+        );
+    }
+
+    #[test]
+    fn hir_diagnostic_code_is_set_to_kind_string() {
+        // An HIR diagnostic should produce a Diagnostic whose `code` field
+        // is `Some(NumberOrString::String("TaskCannotEscape"))`.
+        let source = "fn main() {}\n";
+        let lo = compute_line_offsets(source);
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let diagnostics = vec![HirDiagnostic::new(
+            HirDiagnosticKind::TaskCannotEscape,
+            3..7,
+            "",
+        )];
+
+        let by_uri = build_hir_lsp_diagnostics(&uri, source, &lo, &HashMap::new(), &diagnostics);
+        let rendered = by_uri.get(&uri).expect("root diagnostic expected");
+        let diag = rendered.first().expect("expected one HIR diagnostic");
+
+        assert!(
+            diag.code.is_some(),
+            "HIR diagnostic must carry a code; got None"
+        );
+        match &diag.code {
+            Some(NumberOrString::String(s)) => {
+                assert_eq!(s, "TaskCannotEscape");
+            }
+            other => panic!("expected NumberOrString::String, got {other:?}"),
+        }
     }
 }

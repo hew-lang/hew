@@ -16,6 +16,7 @@ fn stream_ty(item: ResolvedTy) -> ResolvedTy {
         name: "Stream".to_string(),
         args: vec![item],
         builtin: None,
+        is_opaque: false,
     }
 }
 
@@ -119,6 +120,7 @@ fn compile_to_ll(pipeline: &IrPipeline, module_name: &str) -> PathBuf {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     emit_module(pipeline, &options)
         .unwrap_or_else(|e| panic!("emit_module for {module_name}: {e}"))

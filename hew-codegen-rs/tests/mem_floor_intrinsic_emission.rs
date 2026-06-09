@@ -110,6 +110,7 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts =
         emit_module(pipeline, &options).expect("floor-intrinsic pipeline must emit successfully");
@@ -232,6 +233,7 @@ fn unknown_floor_intrinsic_id_fails_closed() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     match emit_module(&pipeline, &options) {
         Err(CodegenError::FailClosed(msg)) => {

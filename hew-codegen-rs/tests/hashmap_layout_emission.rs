@@ -28,6 +28,7 @@ fn named(name: &str) -> ResolvedTy {
         name: name.to_string(),
         args: vec![],
         builtin: None,
+        is_opaque: false,
     }
 }
 
@@ -36,6 +37,7 @@ fn vec_of(elem: ResolvedTy) -> ResolvedTy {
         name: "Vec".to_string(),
         args: vec![elem],
         builtin: None,
+        is_opaque: false,
     }
 }
 
@@ -124,6 +126,7 @@ fn emit_ll(pipeline: IrPipeline, module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(&pipeline, &options)
         .expect("hashmap layout synthesis pipeline must emit successfully");
@@ -746,6 +749,7 @@ fn hashmap_layout_emit_for_wasm_target_emits_descriptor_object() {
         out_dir: tmp.path(),
         native: false,
         wasm: true,
+        target_triple: None,
     };
     let artefacts = emit_module_objects(&pipeline, &options)
         .expect("layout HashMap descriptor path must emit a wasm object");
@@ -797,6 +801,7 @@ fn hashset_layout_emit_for_wasm_target_emits_descriptor_object() {
         out_dir: tmp.path(),
         native: false,
         wasm: true,
+        target_triple: None,
     };
     let artefacts = emit_module_objects(&pipeline, &options)
         .expect("layout HashSet descriptor path must emit a wasm object");
@@ -864,6 +869,7 @@ fn lower_hashmap_layout_probe_with_wrong_arity_fails_closed() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     match emit_module(&pipeline, &options) {
         Err(CodegenError::FailClosed(msg)) => {
@@ -897,6 +903,7 @@ fn lower_hashset_layout_probe_with_wrong_arity_fails_closed() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     match emit_module(&pipeline, &options) {
         Err(CodegenError::FailClosed(msg)) => {
@@ -927,6 +934,7 @@ fn lower_hashmap_layout_probe_with_dest_fails_closed() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     match emit_module(&pipeline, &options) {
         Err(CodegenError::FailClosed(msg)) => {

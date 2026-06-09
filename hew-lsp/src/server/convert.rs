@@ -1,7 +1,7 @@
 use hew_analysis::util::offset_to_line_col;
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, DocumentSymbol, InsertTextFormat, SemanticToken,
-    SemanticTokenModifier, SymbolKind,
+    CompletionItem, CompletionItemKind, DocumentSymbol, Documentation, InsertTextFormat,
+    MarkupContent, MarkupKind, SemanticToken, SemanticTokenModifier, SymbolKind,
 };
 
 use super::{modifier_bit, offset_range_to_lsp};
@@ -23,10 +23,17 @@ pub(super) fn to_lsp_completion(item: hew_analysis::CompletionItem) -> Completio
         CompletionKind::Method => CompletionItemKind::METHOD,
         CompletionKind::Module => CompletionItemKind::MODULE,
     };
+    let documentation = item.documentation.map(|doc| {
+        Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: doc,
+        })
+    });
     CompletionItem {
         label: item.label,
         kind: Some(kind),
         detail: item.detail,
+        documentation,
         insert_text: item.insert_text,
         insert_text_format: if item.insert_text_is_snippet {
             Some(InsertTextFormat::SNIPPET)

@@ -405,6 +405,7 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> std::path::PathBuf {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts =
         emit_module(pipeline, &options).expect("floor exec pipeline must emit successfully");
@@ -605,6 +606,7 @@ fn mem_floor_is_not_a_wasm_excluded_substrate() {
         out_dir: &tmp,
         native: false,
         wasm: true,
+        target_triple: None,
     };
     if let Err(CodegenError::WasmUnsupportedSubstrate { symbol }) = emit_module(&pipeline, &options)
     {
@@ -636,6 +638,7 @@ fn mem_floor_emits_linkable_wasm_module() {
         out_dir: &tmp,
         native: false,
         wasm: true,
+        target_triple: None,
     };
     let artefacts = emit_module(&pipeline, &options)
         .expect("floor pipeline must emit a wasm module (wasm toolchain required)");

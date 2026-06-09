@@ -1509,6 +1509,173 @@ pub unsafe extern "C" fn hew_string_slice_codepoints(
     unsafe { malloc_cstring(bytes.as_ptr(), bytes.len()) }
 }
 
+// ---------------------------------------------------------------------------
+// Unicode codepoint classification — std::text::unicode
+// ---------------------------------------------------------------------------
+//
+// These functions operate on a Unicode scalar value (Unicode codepoint) passed
+// as `i32`, matching the Hew `i64` ABI after Hew's widening cast. They back
+// `unicode.is_upper`, `unicode.is_lower`, `unicode.is_space`, `unicode.is_digit`,
+// `unicode.is_letter`, `unicode.is_alnum`, `unicode.to_upper`, `unicode.to_lower`.
+//
+// Rust's `char` type directly implements the Unicode-derived predicates we need
+// (via the `unicode_core` tables baked into stdlib), so no additional crates are
+// required.
+//
+// The `-1` input is used as an "invalid codepoint" sentinel by the Hew caller
+// (e.g. from `char_at_utf8` returning -1 on OOB). All functions return
+// `false`/original-codepoint for invalid inputs rather than panicking.
+
+/// Test whether the Unicode codepoint `cp` is an uppercase letter.
+///
+/// Returns `false` for invalid codepoints.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "negative cp reinterprets as a high u32 value that char::from_u32 rejects — \
+              the sign-loss is the intentional invalid-codepoint guard"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_unicode_is_upper(cp: i32) -> bool {
+    char::from_u32(cp as u32).is_some_and(char::is_uppercase)
+}
+
+/// Test whether the Unicode codepoint `cp` is a lowercase letter.
+///
+/// Returns `false` for invalid codepoints.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "negative cp reinterprets as a high u32 value that char::from_u32 rejects — \
+              the sign-loss is the intentional invalid-codepoint guard"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_unicode_is_lower(cp: i32) -> bool {
+    char::from_u32(cp as u32).is_some_and(char::is_lowercase)
+}
+
+/// Test whether the Unicode codepoint `cp` is a whitespace character.
+///
+/// Returns `false` for invalid codepoints.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "negative cp reinterprets as a high u32 value that char::from_u32 rejects — \
+              the sign-loss is the intentional invalid-codepoint guard"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_unicode_is_space(cp: i32) -> bool {
+    char::from_u32(cp as u32).is_some_and(char::is_whitespace)
+}
+
+/// Test whether the Unicode codepoint `cp` is a decimal digit (0–9).
+///
+/// Returns `false` for invalid codepoints.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "negative cp reinterprets as a high u32 value that char::from_u32 rejects — \
+              the sign-loss is the intentional invalid-codepoint guard"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_unicode_is_digit(cp: i32) -> bool {
+    char::from_u32(cp as u32).is_some_and(|c| c.is_ascii_digit())
+}
+
+/// Test whether the Unicode codepoint `cp` is a Unicode letter (alphabetic).
+///
+/// Returns `false` for invalid codepoints.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "negative cp reinterprets as a high u32 value that char::from_u32 rejects — \
+              the sign-loss is the intentional invalid-codepoint guard"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_unicode_is_letter(cp: i32) -> bool {
+    char::from_u32(cp as u32).is_some_and(char::is_alphabetic)
+}
+
+/// Test whether the Unicode codepoint `cp` is a Unicode letter or decimal digit.
+///
+/// Returns `false` for invalid codepoints.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "negative cp reinterprets as a high u32 value that char::from_u32 rejects — \
+              the sign-loss is the intentional invalid-codepoint guard"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_unicode_is_alnum(cp: i32) -> bool {
+    char::from_u32(cp as u32).is_some_and(char::is_alphanumeric)
+}
+
+/// Convert the Unicode codepoint `cp` to its uppercase equivalent.
+///
+/// Returns the first codepoint in the Unicode to-uppercase mapping, which
+/// covers the common case. Ligature decompositions (e.g. ß → SS) are not
+/// represented; callers needing full title-case must use string-level
+/// `to_uppercase()`.
+///
+/// Returns `cp` unchanged for codepoints with no uppercase mapping or for
+/// invalid codepoints.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "negative cp reinterprets as a high u32 value that char::from_u32 rejects — \
+              the sign-loss is the intentional invalid-codepoint guard"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_unicode_to_upper(cp: i32) -> i32 {
+    let Some(ch) = char::from_u32(cp as u32) else {
+        return cp;
+    };
+    ch.to_uppercase().next().map_or(cp, |u| u as i32)
+}
+
+/// Convert the Unicode codepoint `cp` to its lowercase equivalent.
+///
+/// Returns the first codepoint in the Unicode to-lowercase mapping.
+/// Returns `cp` unchanged for codepoints with no lowercase mapping or for
+/// invalid codepoints.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "negative cp reinterprets as a high u32 value that char::from_u32 rejects — \
+              the sign-loss is the intentional invalid-codepoint guard"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_unicode_to_lower(cp: i32) -> i32 {
+    let Some(ch) = char::from_u32(cp as u32) else {
+        return cp;
+    };
+    ch.to_lowercase().next().map_or(cp, |u| u as i32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2264,5 +2431,173 @@ mod tests {
             other => panic!("unknown abort case: {other}"),
         }
         unreachable!("abort case {case} should have terminated the process");
+    }
+
+    // ── Unicode codepoint classification ──────────────────────────────────────
+
+    #[test]
+    fn unicode_is_upper_ascii_uppercase() {
+        // 'A' = 0x41
+        // SAFETY: hew_unicode_is_upper takes only an i32; no pointers.
+        assert!(unsafe { hew_unicode_is_upper(0x41) });
+    }
+
+    #[test]
+    fn unicode_is_upper_ascii_lowercase_is_false() {
+        // 'a' = 0x61
+        // SAFETY: hew_unicode_is_upper takes only an i32; no pointers.
+        assert!(!unsafe { hew_unicode_is_upper(0x61) });
+    }
+
+    #[test]
+    fn unicode_is_upper_latin_extended() {
+        // 'É' (U+00C9) is uppercase
+        // SAFETY: hew_unicode_is_upper takes only an i32; no pointers.
+        assert!(unsafe { hew_unicode_is_upper(0xC9) });
+    }
+
+    #[test]
+    fn unicode_is_upper_invalid_codepoint_is_false() {
+        // -1 cast to u32 = 0xFFFFFFFF, not a valid Unicode scalar
+        // SAFETY: hew_unicode_is_upper takes only an i32; no pointers.
+        assert!(!unsafe { hew_unicode_is_upper(-1) });
+    }
+
+    #[test]
+    fn unicode_is_lower_ascii_lowercase() {
+        // 'a' = 0x61
+        // SAFETY: hew_unicode_is_lower takes only an i32; no pointers.
+        assert!(unsafe { hew_unicode_is_lower(0x61) });
+    }
+
+    #[test]
+    fn unicode_is_lower_ascii_uppercase_is_false() {
+        // SAFETY: hew_unicode_is_lower takes only an i32; no pointers.
+        assert!(!unsafe { hew_unicode_is_lower(0x41) });
+    }
+
+    #[test]
+    fn unicode_is_lower_latin_extended() {
+        // 'é' (U+00E9) is lowercase
+        // SAFETY: hew_unicode_is_lower takes only an i32; no pointers.
+        assert!(unsafe { hew_unicode_is_lower(0xE9) });
+    }
+
+    #[test]
+    fn unicode_is_space_ascii_space() {
+        // SAFETY: hew_unicode_is_space takes only an i32; no pointers.
+        assert!(unsafe { hew_unicode_is_space(0x20) });
+    }
+
+    #[test]
+    fn unicode_is_space_tab_and_newline() {
+        // SAFETY: hew_unicode_is_space takes only an i32; no pointers.
+        assert!(unsafe { hew_unicode_is_space(0x09) }); // \t
+                                                        // SAFETY: hew_unicode_is_space takes only an i32; no pointers.
+        assert!(unsafe { hew_unicode_is_space(0x0A) }); // \n
+    }
+
+    #[test]
+    fn unicode_is_space_letter_is_false() {
+        // SAFETY: hew_unicode_is_space takes only an i32; no pointers.
+        assert!(!unsafe { hew_unicode_is_space(0x41) }); // 'A'
+    }
+
+    #[test]
+    fn unicode_is_digit_zero_through_nine() {
+        for cp in 0x30..=0x39 {
+            // SAFETY: hew_unicode_is_digit takes only an i32; no pointers.
+            assert!(unsafe { hew_unicode_is_digit(cp) });
+        }
+    }
+
+    #[test]
+    fn unicode_is_digit_letter_is_false() {
+        // SAFETY: hew_unicode_is_digit takes only an i32; no pointers.
+        assert!(!unsafe { hew_unicode_is_digit(0x41) }); // 'A'
+    }
+
+    #[test]
+    fn unicode_is_letter_ascii_alpha() {
+        // SAFETY: hew_unicode_is_letter takes only an i32; no pointers.
+        assert!(unsafe { hew_unicode_is_letter(0x41) }); // 'A'
+                                                         // SAFETY: hew_unicode_is_letter takes only an i32; no pointers.
+        assert!(unsafe { hew_unicode_is_letter(0x61) }); // 'a'
+    }
+
+    #[test]
+    fn unicode_is_letter_cjk() {
+        // CJK Unified Ideographs block — 日 = U+65E5
+        // SAFETY: hew_unicode_is_letter takes only an i32; no pointers.
+        assert!(unsafe { hew_unicode_is_letter(0x65E5) });
+    }
+
+    #[test]
+    fn unicode_is_letter_digit_is_false() {
+        // SAFETY: hew_unicode_is_letter takes only an i32; no pointers.
+        assert!(!unsafe { hew_unicode_is_letter(0x31) }); // '1'
+    }
+
+    #[test]
+    fn unicode_is_alnum_letter_and_digit() {
+        // SAFETY: hew_unicode_is_alnum takes only an i32; no pointers.
+        assert!(unsafe { hew_unicode_is_alnum(0x41) }); // 'A'
+                                                        // SAFETY: hew_unicode_is_alnum takes only an i32; no pointers.
+        assert!(unsafe { hew_unicode_is_alnum(0x31) }); // '1'
+                                                        // SAFETY: hew_unicode_is_alnum takes only an i32; no pointers.
+        assert!(!unsafe { hew_unicode_is_alnum(0x20) }); // space
+    }
+
+    #[test]
+    fn unicode_to_upper_ascii() {
+        // 'a' -> 'A'
+        // SAFETY: hew_unicode_to_upper takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_unicode_to_upper(0x61) }, 0x41);
+    }
+
+    #[test]
+    fn unicode_to_upper_already_upper() {
+        // 'A' stays 'A'
+        // SAFETY: hew_unicode_to_upper takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_unicode_to_upper(0x41) }, 0x41);
+    }
+
+    #[test]
+    fn unicode_to_upper_latin_extended() {
+        // 'é' (U+00E9) -> 'É' (U+00C9)
+        // SAFETY: hew_unicode_to_upper takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_unicode_to_upper(0xE9) }, 0xC9);
+    }
+
+    #[test]
+    fn unicode_to_upper_invalid_returns_unchanged() {
+        // SAFETY: hew_unicode_to_upper takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_unicode_to_upper(-1) }, -1);
+    }
+
+    #[test]
+    fn unicode_to_lower_ascii() {
+        // 'A' -> 'a'
+        // SAFETY: hew_unicode_to_lower takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_unicode_to_lower(0x41) }, 0x61);
+    }
+
+    #[test]
+    fn unicode_to_lower_already_lower() {
+        // SAFETY: hew_unicode_to_lower takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_unicode_to_lower(0x61) }, 0x61);
+    }
+
+    #[test]
+    fn unicode_to_lower_latin_extended() {
+        // 'É' (U+00C9) -> 'é' (U+00E9)
+        // SAFETY: hew_unicode_to_lower takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_unicode_to_lower(0xC9) }, 0xE9);
+    }
+
+    #[test]
+    fn unicode_to_lower_invalid_returns_unchanged() {
+        // SAFETY: hew_unicode_to_lower takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_unicode_to_lower(-1) }, -1);
     }
 }

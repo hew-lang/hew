@@ -92,16 +92,24 @@ pub(crate) async fn initialized(server: &HewLanguageServer) {
 
 pub(crate) fn shutdown(_: &HewLanguageServer) {}
 
+#[expect(
+    clippy::unused_async,
+    reason = "called from an async LanguageServer impl; reanalyze is now sync (spawns internally)"
+)]
 pub(crate) async fn did_open(server: &HewLanguageServer, params: DidOpenTextDocumentParams) {
     let uri = params.text_document.uri;
     let source = params.text_document.text;
-    server.reanalyze(&uri, &source).await;
+    server.reanalyze(&uri, &source);
 }
 
+#[expect(
+    clippy::unused_async,
+    reason = "called from an async LanguageServer impl; reanalyze is now sync (spawns internally)"
+)]
 pub(crate) async fn did_change(server: &HewLanguageServer, params: DidChangeTextDocumentParams) {
     let uri = params.text_document.uri;
     if let Some(change) = params.content_changes.into_iter().last() {
-        server.reanalyze(&uri, &change.text).await;
+        server.reanalyze(&uri, &change.text);
     }
 }
 

@@ -211,6 +211,7 @@ fn generic_record_returned_from_fn_does_not_mismatch() {
             name: "Vec".to_string(),
             args: vec![ResolvedTy::I64],
             builtin: None,
+            is_opaque: false,
         }],
     );
     let names = layout_names(&pl);

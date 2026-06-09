@@ -1,0 +1,32 @@
+//! Integration probe: structured logging in JSON format.
+//!
+//! Run with: hew run examples/log/structured_json.hew
+//!
+//! Expected stderr output (one JSON object per line):
+//!   {"ts":...,"level":"INFO","msg":"server started","port":"8080","env":"prod"}
+//!   {"ts":...,"level":"WARN","msg":"high memory","threshold":"90%"}
+//!   {"ts":...,"level":"ERROR","msg":"request failed","status":"500","path":"/api"}
+
+import std::misc::log;
+
+fn main() {
+    log.set_level(log.INFO);
+    log.set_format(log.JSON);
+    let info_fields: Vec<string> = Vec::new();
+    info_fields.push(log.field_int("port", 8080));
+    info_fields.push(log.field("env", "prod"));
+    log.info_with("server started", info_fields);
+
+    // DEBUG is filtered — no JSON line emitted
+    let debug_fields: Vec<string> = Vec::new();
+    debug_fields.push(log.field("key", "user:42"));
+    log.debug_with("filtered line", debug_fields);
+    let warn_fields: Vec<string> = Vec::new();
+    warn_fields.push(log.field("threshold", "90%"));
+    log.warn_with("high memory", warn_fields);
+    let error_fields: Vec<string> = Vec::new();
+    error_fields.push(log.field_int("status", 500));
+    error_fields.push(log.field("path", "/api"));
+    log.error_with("request failed", error_fields);
+    log.set_format(log.TEXT);
+}

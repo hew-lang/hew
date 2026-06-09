@@ -2155,4 +2155,47 @@ mod tests {
             other => panic!("expected HIR diagnostic, got {other:?}"),
         }
     }
+
+    /// `std::misc::log` ships `pub const JSON: i64 = 1` and `pub const TEXT: i64 = 0`
+    /// in its Hew source layer.  The stdlib registration path routes these through
+    /// `register_stdlib_hew_items`, which previously had no `Item::Const` arm and
+    /// silently dropped them so `log.JSON` / `log.TEXT` were unknown to the type
+    /// checker.
+    ///
+    /// This test verifies the real stdlib const resolution works end-to-end: the
+    /// source goes through import resolution (which populates `resolved_items` on
+    /// the import decl) and type checking (which must find the const in env via
+    /// `check_field_access`).  Regression guard for the
+    /// `register_stdlib_hew_items` const arm.
+    #[test]
+    fn stdlib_log_module_consts_resolve() {
+        // CARGO_MANIFEST_DIR is `hew-compile/`; the repo root is one level up.
+        // That root contains `std/` so the module registry's tier-2 walk finds it.
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives under repo root");
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let source = concat!(
+            "import std::misc::log;\n",
+            "fn main() {\n",
+            "    log.set_format(log.JSON);\n",
+            "    log.set_format(log.TEXT);\n",
+            "    log.info(\"ok\");\n",
+            "}\n",
+        );
+        let input = write_source(dir.path(), "main.hew", source);
+
+        let options = FrontendOptions {
+            project_dir: Some(repo_root.to_path_buf()),
+            ..Default::default()
+        };
+
+        let result = check_file(&input, &options);
+        assert!(
+            result.is_ok(),
+            "log.JSON and log.TEXT should resolve cleanly; got: {:#?}",
+            result.err()
+        );
+    }
 }

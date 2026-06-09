@@ -24,6 +24,7 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let artefacts = emit_module(pipeline, &options)
         .expect("emit_module must succeed for composite-return fixture");
@@ -40,6 +41,7 @@ fn option_some_pipeline() -> IrPipeline {
         name: "Option".to_string(),
         args: vec![ResolvedTy::I64],
         builtin: None,
+        is_opaque: false,
     };
     let enum_layout = EnumLayout {
         name: "Option$$i64".to_string(),
@@ -130,6 +132,7 @@ fn option_string_pipeline() -> IrPipeline {
         name: "Option".to_string(),
         args: vec![ResolvedTy::String],
         builtin: None,
+        is_opaque: false,
     };
     let enum_layout = EnumLayout {
         name: "Option$$string".to_string(),
@@ -231,6 +234,7 @@ fn option_i64_return_module_verifies() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     emit_module(&pipeline, &options)
         .expect("emit_module with Option<i64> return must verify cleanly");
@@ -266,6 +270,7 @@ fn envelope_i64_pipeline() -> IrPipeline {
         name: "Envelope".to_string(),
         args: vec![ResolvedTy::I64],
         builtin: None,
+        is_opaque: false,
     };
     // Monomorphised layout name follows `mangle("Envelope", [i64])` → "Envelope$$i64".
     let enum_layout = EnumLayout {
@@ -490,6 +495,7 @@ fn generic_record_of_string_return_pipeline() -> IrPipeline {
         name: "Pair".to_string(),
         args: vec![ResolvedTy::String],
         builtin: None,
+        is_opaque: false,
     };
     let record_layout = RecordLayout {
         name: "Pair$$string".to_string(),
@@ -552,6 +558,7 @@ fn generic_record_of_string_return_still_fails_closed() {
         out_dir: &tmp,
         native: false,
         wasm: false,
+        target_triple: None,
     };
     let err = emit_module(&pipeline, &options)
         .expect_err("a generic record instantiation carrying owned heap must still fail closed");

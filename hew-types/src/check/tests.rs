@@ -7132,6 +7132,132 @@ fn user_module_const_bare_import_qualified_only() {
     );
 }
 
+// -- Module-qualified const field access --
+
+/// `module.CONST` resolves to the const's declared type without an
+/// "undefined variable" diagnostic.  This covers the `check_field_access`
+/// pre-dispatch added to fix R2 (module-scope const binding).
+#[test]
+fn module_qualified_const_field_access_resolves() {
+    use hew_parser::ast::ConstDecl;
+
+    let pub_const = ConstDecl {
+        visibility: Visibility::Pub,
+        name: "LIMIT".to_string(),
+        ty: (
+            TypeExpr::Named {
+                name: "i64".to_string(),
+                type_args: None,
+            },
+            0..0,
+        ),
+        value: make_int_literal(50, 0..2),
+        doc_comment: None,
+    };
+    // Parse a function that references the const via qualified access.
+    let mut root = hew_parser::parse(
+        r"
+import myapp::config;
+
+fn caller() -> i64 {
+    config.LIMIT
+}
+",
+    );
+    assert!(
+        root.errors.is_empty(),
+        "program should parse cleanly, got: {:#?}",
+        root.errors
+    );
+    // Inject resolved items into the import so the checker sees the const.
+    let import_decl = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(imp) => Some(imp),
+            _ => None,
+        })
+        .expect("import decl should exist");
+    import_decl.resolved_items = Some(vec![(Item::Const(pub_const), 0..0)]);
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&root.program);
+    assert!(
+        output.errors.is_empty(),
+        "module-qualified const access should resolve cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Accessing a non-existent const via `module.NONEXISTENT` should produce a
+/// targeted "module has no exported constant" diagnostic rather than the leaky
+/// "undefined variable `module`" error.
+#[test]
+fn module_qualified_const_undefined_emits_targeted_diagnostic() {
+    use hew_parser::ast::ConstDecl;
+
+    let pub_const = ConstDecl {
+        visibility: Visibility::Pub,
+        name: "LIMIT".to_string(),
+        ty: (
+            TypeExpr::Named {
+                name: "i64".to_string(),
+                type_args: None,
+            },
+            0..0,
+        ),
+        value: make_int_literal(50, 0..2),
+        doc_comment: None,
+    };
+    let mut root = hew_parser::parse(
+        r"
+import myapp::config;
+
+fn caller() -> i64 {
+    config.NONEXISTENT
+}
+",
+    );
+    assert!(
+        root.errors.is_empty(),
+        "program should parse cleanly, got: {:#?}",
+        root.errors
+    );
+    let import_decl = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(imp) => Some(imp),
+            _ => None,
+        })
+        .expect("import decl should exist");
+    import_decl.resolved_items = Some(vec![(Item::Const(pub_const), 0..0)]);
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&root.program);
+    assert!(
+        output.errors.iter().any(|err| {
+            err.kind == TypeErrorKind::UndefinedField
+                && err
+                    .message
+                    .contains("module `config` has no exported constant `NONEXISTENT`")
+        }),
+        "expected targeted 'no exported constant' diagnostic, got: {:#?}",
+        output.errors
+    );
+    // Must NOT produce the leaky "undefined variable `config`" error.
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|err| err.message.contains("undefined variable `config`")),
+        "must not emit 'undefined variable `config`' leak, got: {:#?}",
+        output.errors
+    );
+}
+
 // -- User module type registration --
 
 #[test]

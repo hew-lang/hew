@@ -1,10 +1,4 @@
-//! Bounded `wasmtime` wrapper for WASI eval and future WASI run support.
-
-#![allow(
-    dead_code,
-    reason = "`hew eval --target wasm32-wasi` uses the captured runner; the \
-              interactive `run_module` path is retained for future WASI run support"
-)]
+//! Bounded `wasmtime` wrapper for WASI eval and `hew run --target wasm32-wasi`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};

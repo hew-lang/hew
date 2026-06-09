@@ -292,11 +292,7 @@ fn generic_in_generic_box_vec_int_produces_one_entry_for_box_only() {
 
     // The single arg is `Vec<i64>` — the layout retains the nested
     // generic shape verbatim.
-    let expected_arg = ResolvedTy::Named {
-        name: "Vec".into(),
-        args: vec![ResolvedTy::I64],
-        builtin: Some(BuiltinType::Vec),
-    };
+    let expected_arg = ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::I64]);
     assert_eq!(layouts[0].key.type_args, vec![expected_arg.clone()]);
 
     // The substituted field shape is `(value, Vec<i64>)` — T was

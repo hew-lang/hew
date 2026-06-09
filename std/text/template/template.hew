@@ -1,0 +1,498 @@
+//! Go-style text/template rendering.
+//!
+//! Render a template string against a `Ctx` value.  Directives inside
+//! `{{...}}` are substituted; all other text passes through verbatim.
+//!
+//! # Supported directives
+//!
+//! | Directive                             | Meaning                                              |
+//! |---------------------------------------|------------------------------------------------------|
+//! | `{{.key}}`                            | Substitute the scalar bound to `key` in the context |
+//! | `{{.}}`                               | Substitute the current element (inside `{{range}}`) |
+//! | `{{if .key}}...{{end}}`               | Render body only when `key` is non-empty/non-zero    |
+//! | `{{if .key}}...{{else}}...{{end}}`    | Conditional with else branch                         |
+//! | `{{range .key}}...{{end}}`            | Iterate a list; inside the body `.` is the item      |
+//!
+//! # Data model
+//!
+//! Because Hew has no reflection and recursive enum/vec nesting is not yet
+//! supported by the v0.5 codegen-front, the context is a flat `Ctx` value
+//! with two independent parallel-vector maps:
+//!
+//! - **scalar map** — `string` keys to `string` values (integers and bools
+//!   are stored pre-rendered via `ctx_set_int` / `ctx_set_bool`).
+//! - **list map** — `string` keys to flat-stored lists of `string` items,
+//!   indexed by per-entry start/length metadata.
+//!
+//! WHY (flat design): `Vec<Entry>` where `Entry` carries a `Vec` field is
+//! rejected by the v0.5 codegen-front ("recursive owned clone/drop thunk
+//! synthesis not implemented").  Recursive enum variants (`Value::List(Vec<Value>)`)
+//! trigger the same limit.  The flat parallel-vec layout works within these
+//! constraints with no expressiveness loss for the basic template surface.
+//!
+//! WHEN: replace with a proper recursive `Value` type once the codegen-front
+//! lifts the recursive-clone restriction.
+//!
+//! WHAT: the real model is `enum Value { Str(string), Num(i64), Bool(bool),
+//! Null, List(Vec<Value>), Map(Ctx) }` with `Ctx` as `HashMap<string, Value>`.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::text::template;
+//!
+//! fn main() {
+//!     let ctx = template.new_ctx();
+//!     template.ctx_set_str(ctx, "name", "Alice");
+//!     template.ctx_set_int(ctx, "age", 30);
+//!     let items: Vec<string> = Vec::new();
+//!     items.push("red");
+//!     items.push("green");
+//!     template.ctx_set_list(ctx, "colours", items);
+//!
+//!     let result = template.render("Hello {{.name}}, age {{.age}}!", ctx);
+//!     match result {
+//!         Ok(s) => println(s),
+//!         Err(e) => println(e),
+//!     }
+//! }
+//! ```
+
+// ── Context type ──────────────────────────────────────────────────────
+//
+// SHIM (flat parallel-vec design):
+// WHY: Hew v0.5 codegen-front rejects `Vec<T>` when `T` contains a `Vec`
+//      field, and recursive enum variants hit the same clone/drop limit.
+//      Two independent parallel-vec maps avoid both constraints.
+// WHEN: replace with `HashMap<string, Value>` once recursive owned types land.
+// WHAT: the real shape is a single generic map from string to a recursive Value.
+/// Template rendering context.
+///
+/// Construct with `new_ctx()`, then populate with `ctx_set_str`,
+/// `ctx_set_int`, `ctx_set_bool`, and `ctx_set_list`.
+pub type Ctx {
+    /// Keys for scalar (string-valued) entries.
+    skeys: Vec<string>;
+    /// String-rendered values for scalar entries (parallel to `skeys`).
+    svals: Vec<string>;
+    /// Keys for list entries.
+    lkeys: Vec<string>;
+    /// Flat concatenation of all list items across all list entries.
+    litems: Vec<string>;
+    /// Start index into `litems` for each list entry (parallel to `lkeys`).
+    lstart: Vec<i64>;
+    /// Item count for each list entry (parallel to `lkeys`).
+    llen: Vec<i64>;
+}
+
+// ── Internal helper: (rendered-text, next-position) pair ─────────────
+//
+// SHIM: Hew v0.5 does not support tuple return types or multi-field
+// composite Results. A named record is the idiomatic v0.5 substitute.
+// WHY: `consume_if_body` and `consume_range_body` must return both a
+//      rendered string and the byte offset past the consumed `{{end}}`.
+// WHEN: replace with `(string, i64)` tuple return once tuple returns land.
+// WHAT: the real shape is `Result<(string, i64), string>`.
+pub type RenderPair {
+    text: string;
+    next_pos: i64;
+}
+
+// ── Internal context helpers ──────────────────────────────────────────
+fn lookup_scalar(ctx: Ctx, key: string) -> string {
+    let n = ctx.skeys.len();
+    var i = 0;
+    while i < n {
+        if ctx.skeys.get(i) == key {
+            return ctx.svals.get(i);
+        }
+        i = i + 1;
+    }
+    ""
+}
+
+fn is_truthy(ctx: Ctx, key: string) -> bool {
+    let v = lookup_scalar(ctx, key);
+    v != "" && v != "false" && v != "0"
+}
+
+fn lookup_list_start(ctx: Ctx, key: string) -> i64 {
+    let n = ctx.lkeys.len();
+    var i = 0;
+    while i < n {
+        if ctx.lkeys.get(i) == key {
+            return ctx.lstart.get(i);
+        }
+        i = i + 1;
+    }
+    -1
+}
+
+fn lookup_list_len(ctx: Ctx, key: string) -> i64 {
+    let n = ctx.lkeys.len();
+    var i = 0;
+    while i < n {
+        if ctx.lkeys.get(i) == key {
+            return ctx.llen.get(i);
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// ── Internal tag classifiers ──────────────────────────────────────────
+fn tag_is_dot_key(tag: string) -> bool {
+    tag.len() >= 2 && tag.slice(0, 1) == "." && tag.slice(1, 2) != " "
+}
+
+fn tag_is_if(tag: string) -> bool {
+    tag.starts_with("if ")
+}
+
+fn tag_is_range(tag: string) -> bool {
+    tag.starts_with("range ")
+}
+
+// Extract the key from `if .key` → `key`.
+fn if_key(tag: string) -> string {
+    let after_if = tag.slice(3, tag.len()).trim();
+    if after_if.len() >= 1 && after_if.slice(0, 1) == "." {
+        after_if.slice(1, after_if.len())
+    } else {
+        after_if
+    }
+}
+
+// Extract the key from `range .key` → `key`.
+fn range_key(tag: string) -> string {
+    let after_range = tag.slice(6, tag.len()).trim();
+    if after_range.len() >= 1 && after_range.slice(0, 1) == "." {
+        after_range.slice(1, after_range.len())
+    } else {
+        after_range
+    }
+}
+
+// ── {{if}} body consumer ──────────────────────────────────────────────
+//
+// Scans forward from `start` to the matching `{{end}}`, respecting nesting
+// depth.  Splits at an optional `{{else}}`.  Returns (rendered branch, pos
+// right after `{{end}}`).
+fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: string, in_range: bool, cond: bool) -> Result<RenderPair, string> {
+    var pos = start;
+    var depth = 0;
+    var true_end = -1; // byte offset of the end of the "true" branch (exclusive)
+    var false_start = -1; // byte offset of the start of the "false" branch
+    var end_pos = -1; // byte offset right after the `{{end}}` that closes this if
+    while pos < tlen {
+        let rest = tmpl.slice(pos, tlen);
+        let open = rest.find("{{");
+        if open < 0 {
+            return Err("template: unclosed `{{if}}` — missing `{{end}}`");
+        }
+        let tag_start = pos + open + 2;
+        let after_open = tmpl.slice(tag_start, tlen);
+        let close = after_open.find("}}");
+        if close < 0 {
+            return Err("template: unclosed `{{` inside `{{if}}` body");
+        }
+        let tag = tmpl.slice(tag_start, tag_start + close).trim();
+        let next_pos = tag_start + close + 2;
+        if tag_is_if(tag) || tag_is_range(tag) {
+            depth = depth + 1;
+            pos = next_pos;
+        } else if tag == "end" {
+            if depth == 0 {
+                // The body of the true branch ends here if no {{else}} was seen.
+                if true_end < 0 {
+                    true_end = pos + open;
+                }
+                end_pos = next_pos;
+                // Exit the scan loop.
+                pos = tlen + 1;
+            } else {
+                depth = depth - 1;
+                pos = next_pos;
+            }
+        } else if tag == "else" && depth == 0 {
+            true_end = pos + open;
+            false_start = next_pos;
+            pos = next_pos;
+        } else {
+            pos = next_pos;
+        }
+    }
+    if end_pos < 0 {
+        return Err("template: unclosed `{{if}}` — missing `{{end}}`");
+    }
+    if cond {
+        let branch = tmpl.slice(start, true_end);
+        let rendered = render_segment(branch, ctx, range_elem, in_range);
+        match rendered {
+            Ok(s) => Ok(RenderPair { text: s, next_pos: end_pos }),
+            Err(e) => Err(e),
+        }
+    } else {
+        if false_start >= 0 {
+            // false_end is the start of the `{{end}}` that we found; it is
+            // `true_end` as set by the `{{else}}` branch of the scan above,
+            // which may already hold the right offset.  Recompute from end_pos:
+            // `{{end}}` is 7 bytes, so the `{{` preceding `end` starts at
+            // end_pos - 7.
+            let false_end = end_pos - 7;
+            let branch = tmpl.slice(false_start, false_end);
+            let rendered = render_segment(branch, ctx, range_elem, in_range);
+            match rendered {
+                Ok(s) => Ok(RenderPair { text: s, next_pos: end_pos }),
+                Err(e) => Err(e),
+            }
+        } else {
+            Ok(RenderPair { text: "", next_pos: end_pos })
+        }
+    }
+}
+
+// ── {{range}} body consumer ───────────────────────────────────────────
+//
+// Scans forward from `start` to the matching `{{end}}`.  Renders the body
+// once per item in the list bound to `key`, binding `{{.}}` each time.
+fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string) -> Result<RenderPair, string> {
+    var pos = start;
+    var depth = 0;
+    var body_end = -1;
+    var end_pos = -1;
+    while pos < tlen {
+        let rest = tmpl.slice(pos, tlen);
+        let open = rest.find("{{");
+        if open < 0 {
+            return Err("template: unclosed `{{range}}` — missing `{{end}}`");
+        }
+        let tag_start = pos + open + 2;
+        let after_open = tmpl.slice(tag_start, tlen);
+        let close = after_open.find("}}");
+        if close < 0 {
+            return Err("template: unclosed `{{` inside `{{range}}` body");
+        }
+        let tag = tmpl.slice(tag_start, tag_start + close).trim();
+        let next_pos = tag_start + close + 2;
+        if tag_is_if(tag) || tag_is_range(tag) {
+            depth = depth + 1;
+            pos = next_pos;
+        } else if tag == "end" {
+            if depth == 0 {
+                body_end = pos + open;
+                end_pos = next_pos;
+                pos = tlen + 1;
+            } else {
+                depth = depth - 1;
+                pos = next_pos;
+            }
+        } else {
+            pos = next_pos;
+        }
+    }
+    if end_pos < 0 {
+        return Err("template: unclosed `{{range}}` — missing `{{end}}`");
+    }
+    let body = tmpl.slice(start, body_end);
+    let list_start = lookup_list_start(ctx, key);
+    let list_len = lookup_list_len(ctx, key);
+    var out = "";
+    if list_start >= 0 {
+        var i = 0;
+        while i < list_len {
+            let elem = ctx.litems.get(list_start + i);
+            let rendered = render_segment(body, ctx, elem, true);
+            match rendered {
+                Ok(s) => {
+                    out = out + s;
+                },
+                Err(e) => {
+                    return Err(e);
+                },
+            }
+            i = i + 1;
+        }
+    }
+    Ok(RenderPair { text: out, next_pos: end_pos })
+}
+
+// ── Core rendering pass ───────────────────────────────────────────────
+fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) -> Result<string, string> {
+    var out = "";
+    var pos = 0;
+    let tlen = tmpl.len();
+    while pos < tlen {
+        let rest = tmpl.slice(pos, tlen);
+        let open = rest.find("{{");
+        if open < 0 {
+            out = out + rest;
+            return Ok(out);
+        }
+        // Append literal text before `{{`.
+        out = out + tmpl.slice(pos, pos + open);
+        let tag_start = pos + open + 2;
+        let after_open = tmpl.slice(tag_start, tlen);
+        let close = after_open.find("}}");
+        if close < 0 {
+            return Err("template: unclosed `{{` directive");
+        }
+        let tag = tmpl.slice(tag_start, tag_start + close).trim();
+        pos = tag_start + close + 2;
+        if tag == "." {
+            if !in_range {
+                return Err("template: `{{.}}` used outside `{{range}}`");
+            }
+            out = out + range_elem;
+        } else if tag_is_dot_key(tag) {
+            let key = tag.slice(1, tag.len());
+            out = out + lookup_scalar(ctx, key);
+        } else if tag_is_if(tag) {
+            let key = if_key(tag);
+            let cond = is_truthy(ctx, key);
+            let r = consume_if_body(tmpl, pos, tlen, ctx, range_elem, in_range, cond);
+            match r {
+                Ok(pair) => {
+                    out = out + pair.text;
+                    pos = pair.next_pos;
+                },
+                Err(e) => {
+                    return Err(e);
+                },
+            }
+        } else if tag_is_range(tag) {
+            let key = range_key(tag);
+            let r = consume_range_body(tmpl, pos, tlen, ctx, key);
+            match r {
+                Ok(pair) => {
+                    out = out + pair.text;
+                    pos = pair.next_pos;
+                },
+                Err(e) => {
+                    return Err(e);
+                },
+            }
+        } else if tag == "end" {
+            return Err("template: unexpected `{{end}}`");
+        } else if tag == "else" {
+            return Err("template: unexpected `{{else}}`");
+        } else {
+            return Err(f"template: unknown directive `{{
+                {
+                    {
+                        {
+                            tag
+                        }
+                    }
+                }
+            }}`");
+        }
+    }
+    Ok(out)
+}
+
+// ── Public API ────────────────────────────────────────────────────────
+/// Create an empty rendering context.
+///
+/// # Examples
+///
+/// ```
+/// import std::text::template;
+///
+/// fn main() {
+///     let ctx = template.new_ctx();
+///     template.ctx_set_str(ctx, "greeting", "hello");
+/// }
+/// ```
+pub fn new_ctx() -> Ctx {
+    Ctx { skeys: Vec::new(), svals: Vec::new(), lkeys: Vec::new(), litems: Vec::new(), lstart: Vec::new(), llen: Vec::new() }
+}
+
+/// Bind `key` to the string `val` in the context.
+///
+/// # Examples
+///
+/// ```
+/// template.ctx_set_str(ctx, "name", "Alice");
+/// ```
+pub fn ctx_set_str(ctx: Ctx, key: string, val: string) {
+    ctx.skeys.push(key);
+    ctx.svals.push(val);
+}
+
+/// Bind `key` to the integer `val` (stored as its decimal representation).
+///
+/// # Examples
+///
+/// ```
+/// template.ctx_set_int(ctx, "count", 42);
+/// ```
+pub fn ctx_set_int(ctx: Ctx, key: string, val: i64) {
+    ctx.skeys.push(key);
+    ctx.svals.push(f"{val}");
+}
+
+/// Bind `key` to the boolean `val` (`"true"` or `"false"`).
+///
+/// # Examples
+///
+/// ```
+/// template.ctx_set_bool(ctx, "active", true);
+/// ```
+pub fn ctx_set_bool(ctx: Ctx, key: string, val: bool) {
+    ctx.skeys.push(key);
+    ctx.svals.push(if val {
+        "true"
+    } else {
+        "false"
+    });
+}
+
+/// Bind `key` to the list of strings `items`.
+///
+/// Inside a `{{range .key}}...{{end}}` block, each element is bound to `{{.}}`.
+///
+/// # Examples
+///
+/// ```
+/// let colours: Vec<string> = Vec::new();
+/// colours.push("red");
+/// colours.push("blue");
+/// template.ctx_set_list(ctx, "colours", colours);
+/// ```
+pub fn ctx_set_list(ctx: Ctx, key: string, items: Vec<string>) {
+    let n = items.len();
+    let start = ctx.litems.len();
+    ctx.lkeys.push(key);
+    ctx.lstart.push(start);
+    ctx.llen.push(n);
+    var i = 0;
+    while i < n {
+        ctx.litems.push(items.get(i));
+        i = i + 1;
+    }
+}
+
+/// Render `tmpl` against `ctx`, returning the substituted string on success.
+///
+/// Returns `Err(message)` if the template is malformed (unclosed `{{`,
+/// unmatched `{{end}}`, or `{{.}}` outside a `{{range}}` block).
+///
+/// # Examples
+///
+/// ```
+/// import std::text::template;
+///
+/// fn main() {
+///     let ctx = template.new_ctx();
+///     template.ctx_set_str(ctx, "who", "world");
+///     let r = template.render("hello {{.who}}!", ctx);
+///     match r {
+///         Ok(s) => println(s),    // "hello world!"
+///         Err(e) => println(e),
+///     }
+/// }
+/// ```
+pub fn render(tmpl: string, ctx: Ctx) -> Result<string, string> {
+    render_segment(tmpl, ctx, "", false)
+}

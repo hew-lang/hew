@@ -482,6 +482,209 @@ pub unsafe extern "C" fn hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_v
 }
 
 // ---------------------------------------------------------------------------
+// Range-slice (C-3)
+//
+// `hew_vec_slice_range_T(v, start, end)` allocates a fresh `HewVec<T>` and
+// populates it with elements from `v` in the half-open range `[start, end)`.
+//
+// Bounds discipline: the MIR emitter performs `start <= end` and
+// `end <= len(v)` checks BEFORE calling these functions. The runtime
+// repeats the same checks as defence-in-depth (matching `hew_vec_get_T`),
+// so a stray caller that forgets the front-end check still fails closed
+// rather than reading past the end.
+//
+// String element ownership: `hew_vec_slice_range_str` strdups each element
+// into the fresh vec and sets `elem_kind == String`, so the existing
+// free-on-drop path in `hew_vec_free` frees the copies. Other element
+// kinds use a single bulk byte-copy. Both shapes follow `hew_vec_clone`.
+// ---------------------------------------------------------------------------
+
+/// Helper: validate `start` and `end` are within `[0, len]` and `start <=
+/// end`. Aborts with the OOB message if either check fails, matching the
+/// `abort_oob` used by the `_get_*` family. The MIR emitter has already
+/// checked the same invariants; this runtime check is defence-in-depth.
+///
+/// # Safety
+///
+/// `v` must be a valid `HewVec` pointer.
+unsafe fn check_slice_bounds(v: *mut HewVec, start: i64, end: i64) -> (usize, usize) {
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        let len = (*v).len;
+        // Negative endpoints would wrap to a very large usize, which the
+        // `> len` check below catches. Match the `_get_*` family which
+        // does the same `index as usize` cast and relies on the
+        // `>= len` check to catch negatives.
+        let start_u = start as usize;
+        let end_u = end as usize;
+        if start > end || end_u > len || start_u > len {
+            abort_oob(start_u, len);
+        }
+        (start_u, end_u)
+    }
+}
+
+/// Allocate a new `HewVec` populated from `v[start..end)` for i32 elements.
+///
+/// # Safety
+///
+/// `v` must be a valid i32 `HewVec` pointer. The returned pointer must be
+/// freed via [`hew_vec_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_slice_range_i32(
+    v: *mut HewVec,
+    start: i64,
+    end: i64,
+) -> *mut HewVec {
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        let (start_u, end_u) = check_slice_bounds(v, start, end);
+        let count = end_u - start_u;
+        let out = hew_vec_new();
+        if count == 0 {
+            return out;
+        }
+        ensure_cap(out, count);
+        let src = (*v).data.cast::<i32>().add(start_u);
+        let dst = (*out).data.cast::<i32>();
+        core::ptr::copy_nonoverlapping(src, dst, count);
+        (*out).len = count;
+        out
+    }
+}
+
+/// Allocate a new `HewVec` populated from `v[start..end)` for i64 elements.
+///
+/// # Safety
+///
+/// `v` must be a valid i64 `HewVec` pointer. The returned pointer must be
+/// freed via [`hew_vec_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_slice_range_i64(
+    v: *mut HewVec,
+    start: i64,
+    end: i64,
+) -> *mut HewVec {
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        let (start_u, end_u) = check_slice_bounds(v, start, end);
+        let count = end_u - start_u;
+        let out = hew_vec_new_i64();
+        if count == 0 {
+            return out;
+        }
+        ensure_cap(out, count);
+        let src = (*v).data.cast::<i64>().add(start_u);
+        let dst = (*out).data.cast::<i64>();
+        core::ptr::copy_nonoverlapping(src, dst, count);
+        (*out).len = count;
+        out
+    }
+}
+
+/// Allocate a new `HewVec` populated from `v[start..end)` for f64 elements.
+///
+/// # Safety
+///
+/// `v` must be a valid f64 `HewVec` pointer. The returned pointer must be
+/// freed via [`hew_vec_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_slice_range_f64(
+    v: *mut HewVec,
+    start: i64,
+    end: i64,
+) -> *mut HewVec {
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        let (start_u, end_u) = check_slice_bounds(v, start, end);
+        let count = end_u - start_u;
+        let out = hew_vec_new_f64();
+        if count == 0 {
+            return out;
+        }
+        ensure_cap(out, count);
+        let src = (*v).data.cast::<f64>().add(start_u);
+        let dst = (*out).data.cast::<f64>();
+        core::ptr::copy_nonoverlapping(src, dst, count);
+        (*out).len = count;
+        out
+    }
+}
+
+/// Allocate a new `HewVec` populated from `v[start..end)` for pointer-sized
+/// elements (handles, named heap types). The element pointers are byte-
+/// copied verbatim; the result vec does not duplicate or refcount them.
+///
+/// # Safety
+///
+/// `v` must be a valid pointer `HewVec`. The returned pointer must be freed
+/// via [`hew_vec_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_slice_range_ptr(
+    v: *mut HewVec,
+    start: i64,
+    end: i64,
+) -> *mut HewVec {
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        let (start_u, end_u) = check_slice_bounds(v, start, end);
+        let count = end_u - start_u;
+        let out = hew_vec_new_ptr();
+        if count == 0 {
+            return out;
+        }
+        ensure_cap(out, count);
+        let src = (*v).data.cast::<*mut c_void>().add(start_u);
+        let dst = (*out).data.cast::<*mut c_void>();
+        core::ptr::copy_nonoverlapping(src, dst, count);
+        (*out).len = count;
+        out
+    }
+}
+
+/// Allocate a new `HewVec` populated from `v[start..end)` for string
+/// elements. Each element is `strdup`'d into the fresh vec; the result vec
+/// owns the duplicates and frees them via the standard
+/// `elem_kind == String` path in [`hew_vec_free`].
+///
+/// # Safety
+///
+/// `v` must be a valid string `HewVec` (`elem_kind == String`). The
+/// returned pointer must be freed via [`hew_vec_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_slice_range_str(
+    v: *mut HewVec,
+    start: i64,
+    end: i64,
+) -> *mut HewVec {
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        let (start_u, end_u) = check_slice_bounds(v, start, end);
+        let count = end_u - start_u;
+        let out = hew_vec_new_str();
+        if count == 0 {
+            return out;
+        }
+        ensure_cap(out, count);
+        for i in 0..count {
+            let src_ptr = (*v).data.cast::<*const c_char>().add(start_u + i).read();
+            let duped = if src_ptr.is_null() {
+                ptr::null_mut()
+            } else {
+                let result = libc::strdup(src_ptr);
+                if result.is_null() {
+                    libc::abort();
+                }
+                result
+            };
+            (*out).data.cast::<*mut c_char>().add(i).write(duped);
+        }
+        (*out).len = count;
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Set
 // ---------------------------------------------------------------------------
 
@@ -1817,6 +2020,124 @@ mod tests {
         unsafe {
             let result = hwvec_to_u8(core::ptr::null_mut());
             assert!(result.is_empty());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Range-slice (C-3): hew_vec_slice_range_T
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn slice_range_i64_returns_fresh_vec_with_subrange_elements() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new_i64.
+        unsafe {
+            let v = hew_vec_new_i64();
+            for i in 0..5_i64 {
+                hew_vec_push_i64(v, 10 * (i + 1));
+            }
+            // [10, 20, 30, 40, 50]
+            let sub = hew_vec_slice_range_i64(v, 1, 4); // [20, 30, 40]
+            assert!(!sub.is_null());
+            assert_ne!(sub, v, "slice must allocate a fresh Vec, not alias");
+            assert_eq!(hew_vec_len(sub), 3);
+            assert_eq!(hew_vec_get_i64(sub, 0), 20);
+            assert_eq!(hew_vec_get_i64(sub, 1), 30);
+            assert_eq!(hew_vec_get_i64(sub, 2), 40);
+            hew_vec_free(sub);
+            // Original vec must be untouched.
+            assert_eq!(hew_vec_len(v), 5);
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn slice_range_i64_empty_range_returns_empty_vec() {
+        // SAFETY: FFI calls use valid vec pointer.
+        unsafe {
+            let v = hew_vec_new_i64();
+            hew_vec_push_i64(v, 1);
+            hew_vec_push_i64(v, 2);
+            let sub = hew_vec_slice_range_i64(v, 1, 1);
+            assert!(!sub.is_null());
+            assert_eq!(hew_vec_len(sub), 0);
+            hew_vec_free(sub);
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn slice_range_i64_full_range_clones_all_elements() {
+        // SAFETY: FFI calls use valid vec pointer.
+        unsafe {
+            let v = hew_vec_new_i64();
+            hew_vec_push_i64(v, 7);
+            hew_vec_push_i64(v, 11);
+            let sub = hew_vec_slice_range_i64(v, 0, 2);
+            assert_eq!(hew_vec_len(sub), 2);
+            assert_eq!(hew_vec_get_i64(sub, 0), 7);
+            assert_eq!(hew_vec_get_i64(sub, 1), 11);
+            hew_vec_free(sub);
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn slice_range_f64_returns_fresh_vec() {
+        // SAFETY: FFI calls use valid vec pointer.
+        unsafe {
+            let v = hew_vec_new_f64();
+            hew_vec_push_f64(v, 1.5);
+            hew_vec_push_f64(v, 2.5);
+            hew_vec_push_f64(v, 3.5);
+            let sub = hew_vec_slice_range_f64(v, 0, 2);
+            assert_eq!(hew_vec_len(sub), 2);
+            assert!((hew_vec_get_f64(sub, 0) - 1.5).abs() < f64::EPSILON);
+            assert!((hew_vec_get_f64(sub, 1) - 2.5).abs() < f64::EPSILON);
+            hew_vec_free(sub);
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn slice_range_i32_returns_fresh_vec() {
+        // SAFETY: FFI calls use valid vec pointer.
+        unsafe {
+            let v = hew_vec_new();
+            hew_vec_push_i32(v, 100);
+            hew_vec_push_i32(v, 200);
+            hew_vec_push_i32(v, 300);
+            let sub = hew_vec_slice_range_i32(v, 1, 3);
+            assert_eq!(hew_vec_len(sub), 2);
+            assert_eq!(hew_vec_get_i32(sub, 0), 200);
+            assert_eq!(hew_vec_get_i32(sub, 1), 300);
+            hew_vec_free(sub);
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn slice_range_str_strdups_each_element_so_drops_are_independent() {
+        // SAFETY: FFI calls use valid vec pointer and valid C strings.
+        unsafe {
+            let v = hew_vec_new_str();
+            let s1 = CString::new("alpha").unwrap();
+            let s2 = CString::new("beta").unwrap();
+            let s3 = CString::new("gamma").unwrap();
+            hew_vec_push_str(v, s1.as_ptr());
+            hew_vec_push_str(v, s2.as_ptr());
+            hew_vec_push_str(v, s3.as_ptr());
+
+            let sub = hew_vec_slice_range_str(v, 0, 2);
+            assert_eq!(hew_vec_len(sub), 2);
+            assert_eq!((*sub).elem_kind, ElemKind::String);
+            // Freeing the slice must NOT invalidate strings in the original
+            // vec — strdup gives each side its own copies.
+            hew_vec_free(sub);
+
+            let r0 = hew_vec_get_str(v, 0);
+            assert_eq!(std::ffi::CStr::from_ptr(r0).to_string_lossy(), "alpha");
+            libc::free(r0.cast_mut().cast());
+            hew_vec_free(v);
         }
     }
 }

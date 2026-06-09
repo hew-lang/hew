@@ -4262,6 +4262,8 @@ mod tests {
                             0..0,
                         )],
                         restart: Some(RestartPolicy::Permanent),
+                        wired_to: None,
+                        is_pool: false,
                     }],
                 }),
                 0..40,

@@ -92,6 +92,7 @@ mod shared {
             7 => "SIGBUS",
             8 => "SIGFPE",
             4 => "SIGILL",
+            5 => "SIGTRAP",
             _ => "UNKNOWN",
         }
     }
@@ -478,7 +479,18 @@ mod platform {
         });
 
         // Install signal handlers.
-        let crash_signals = [libc::SIGSEGV, libc::SIGBUS, libc::SIGFPE, libc::SIGILL];
+        //
+        // SIGTRAP is included because `llvm.trap` lowers to `brk #1` on
+        // Linux aarch64, which the kernel delivers as SIGTRAP (not SIGILL).
+        // On macOS aarch64 `brk #1` delivers SIGILL, so SIGTRAP is harmless
+        // there. On x86-64 `ud2` delivers SIGILL regardless of OS.
+        let crash_signals = [
+            libc::SIGSEGV,
+            libc::SIGBUS,
+            libc::SIGFPE,
+            libc::SIGILL,
+            libc::SIGTRAP,
+        ];
 
         for &sig in &crash_signals {
             // SAFETY: sa is fully initialized. sigaction is safe to call

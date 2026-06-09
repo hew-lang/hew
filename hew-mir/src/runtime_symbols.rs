@@ -48,11 +48,22 @@
 /// `stable` is broader (per-actor / per-mailbox / per-IO entries);
 /// the substrate subset that MIR producers can emit today is the
 /// list below.
-// Lexicographically sorted: `hew_duplex_*` < `hew_lambda_actor_*`
+// Lexicographically sorted: `hew_actor_*` < `hew_duplex_*` < `hew_lambda_actor_*`
 // < `hew_recv_half_*` < `hew_send_half_*`. Section comments mark
 // the substrate-grouping for readability; the binary-search
 // invariant is over the flat ordering.
 const M2_RUNTIME_SYMBOLS: &[&str] = &[
+    // --- Actor link/monitor surface (native-only; WASM-TODO(#1451)) --------
+    // `hew_actor_link(parent, child)` — bidirectional link; void return. The
+    // Hew `link()` builtin wraps the call in `Ok(())` unconditionally because
+    // the current runtime does not surface AlreadyLinked as a return code.
+    // Codegen composite-return synthesis (Result<(), LinkError>) requires the
+    // Cluster 2 spine; the codegen arm is a tracked-gap shim until that lands.
+    "hew_actor_link",
+    // `hew_actor_monitor(watcher, target) -> u64` — returns a ref_id. Dead
+    // targets return immediately with a DOWN signal; ref_id is still non-zero.
+    // Codegen struct-wrapping (MonitorRef { ref_id }) requires Cluster 2 spine.
+    "hew_actor_monitor",
     // --- Duplex<S, R> dual-queue substrate ----------------------
     "hew_duplex_clone",
     "hew_duplex_close",
@@ -77,9 +88,75 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // --- RecvHalf<T> ---------------------------------------------
     "hew_recv_half_recv",
     "hew_recv_half_try_recv",
+    // --- scope{} structured-concurrency surface (Phase 2, rows 2/3/4) ---------
+    // `hew_scope_spawn(scope: *mut HewScope, actor: *mut c_void) -> i32`
+    // (`hew-runtime/src/scope.rs:169`). Adds an actor to the scope's actor
+    // list and returns 0 on success or -1 if the scope is full.
+    // Needed for lowering `scope {}` blocks (inventory row 2) and spawned
+    // calls (row 3). MIR producers must not wire a dest — the i32 return is
+    // a runtime-internal signal, not a user-visible value.
+    "hew_scope_spawn",
     // --- SendHalf<T> ---------------------------------------------
     "hew_send_half_send",
     "hew_send_half_try_send",
+    // --- Task ABI (scope{}/spawn/await) — Phase 2, rows 2/3/4 ----------------
+    // `hew_task_await_blocking(task: *mut HewTask) -> *mut c_void`
+    // (`hew-runtime/src/task_scope.rs:411`). Blocks the calling thread until
+    // the task completes, then returns the result pointer (or null if no
+    // result). Needed for `await task` (row 4).
+    "hew_task_await_blocking",
+    // `hew_task_free(task: *mut HewTask) -> void`
+    // (`hew-runtime/src/task_scope.rs:237`). Frees a Box-allocated HewTask
+    // and its result buffer. Called by the scope teardown path and by the
+    // await-sequence after consuming the result. Part of row 4.
+    "hew_task_free",
+    // `hew_task_get_result(task: *mut HewTask) -> *mut c_void`
+    // (`hew-runtime/src/task_scope.rs:283`). Returns the task's result
+    // pointer if done, null otherwise. Must be called after
+    // `hew_task_await_blocking` which guarantees the task is done.
+    // Part of row 4.
+    "hew_task_get_result",
+    // `hew_task_new() -> *mut HewTask`
+    // (`hew-runtime/src/task_scope.rs:214`). Box-allocates and returns a
+    // new HewTask in the Ready state with all fields zeroed/null. Needed
+    // for spawned calls (row 3) — producer calls this before
+    // `hew_task_spawn_thread`.
+    "hew_task_new",
+    // `hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void`
+    // (`hew-runtime/src/task_scope.rs:368`). Spawns `task_fn(task)` on a
+    // new OS thread. `TaskFn = unsafe extern "C" fn(*mut HewTask)`. The
+    // function pointer arg has no precedent in the current Place/arg-load
+    // pattern; the codegen arm is fail-closed with a SHIM comment naming
+    // the producer-contract decision. Needed for spawned calls (row 3).
+    "hew_task_spawn_thread",
+    // --- Vec<T> indexing (C-2) ----------------------------------
+    // hew_vec_get_T(v: *mut HewVec, index: i64) -> T — one per element type.
+    // Element types supported: i32, i64, f64, ptr (handle/opaque), str (returns
+    // strdup copy — caller owns; deferred to a follow-on slice for managed drop).
+    // String (hew_vec_get_str) is allowlisted but not emitted by this slice's
+    // MIR producer; the caller would need to manage the strdup return.
+    // Lexicographic note: hew_vec_get_* < hew_vec_len (g < l).
+    "hew_vec_get_f64",
+    "hew_vec_get_i32",
+    "hew_vec_get_i64",
+    "hew_vec_get_ptr",
+    "hew_vec_get_str",
+    // hew_vec_len(v: *mut HewVec) -> i64
+    "hew_vec_len",
+    // --- Vec<T> range-slice (C-3) -------------------------------
+    // hew_vec_slice_range_T(v, start, end) -> *mut HewVec<T> — allocates
+    // a fresh Vec<T> populated from [start, end) on `v`. The MIR emitter
+    // bounds-checks `start <= end` and `end <= len(v)` with trap-on-OOB
+    // before calling; runtime defends-in-depth with the same checks.
+    // Element types covered: i32, i64, f64, ptr (handle/opaque), str
+    // (strdup copy per element; result vec owns and frees via existing
+    // ElemKind::String free-on-drop path in hew_vec_free).
+    // Lexicographic note: hew_vec_len < hew_vec_slice_range_* (l < s).
+    "hew_vec_slice_range_f64",
+    "hew_vec_slice_range_i32",
+    "hew_vec_slice_range_i64",
+    "hew_vec_slice_range_ptr",
+    "hew_vec_slice_range_str",
 ];
 
 /// Error returned when a `RuntimeCall` is constructed with a symbol that
@@ -147,7 +224,13 @@ pub fn user_name_to_c_symbol(name: &str) -> Option<&'static str> {
     // C-ABI counterpart that MIR can emit today.  Extend this table
     // when a new builtin gains a producer arm.
     match name {
+        // Duplex substrate.
         "duplex_pair" => Some("hew_duplex_pair"),
+        // Actor link/monitor builtins. The Hew user-facing name matches the
+        // builtin name registered by `Checker::register_builtins`; the C-ABI
+        // symbol adds the `hew_actor_` prefix.
+        "link" => Some("hew_actor_link"),
+        "monitor" => Some("hew_actor_monitor"),
         _ => None,
     }
 }
@@ -203,5 +286,18 @@ mod tests {
         assert!(is_known_runtime_symbol("hew_duplex_send"));
         assert!(is_known_runtime_symbol("hew_duplex_recv"));
         assert!(is_known_runtime_symbol("hew_duplex_close"));
+    }
+
+    #[test]
+    fn task_abi_symbols_present() {
+        // Phase 2 substrate for scope{}/spawn/await (inventory rows 2/3/4).
+        // Each of these must be recognised before the MIR producer arms can
+        // be wired in lower.rs.
+        assert!(is_known_runtime_symbol("hew_scope_spawn"));
+        assert!(is_known_runtime_symbol("hew_task_new"));
+        assert!(is_known_runtime_symbol("hew_task_spawn_thread"));
+        assert!(is_known_runtime_symbol("hew_task_await_blocking"));
+        assert!(is_known_runtime_symbol("hew_task_get_result"));
+        assert!(is_known_runtime_symbol("hew_task_free"));
     }
 }

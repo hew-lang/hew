@@ -126,8 +126,11 @@ fn unquote_str(s: &str) -> &str {
 /// These attributes are permitted on plain `fn` declarations inside an
 /// actor body; all other attributes on such fns are rejected.
 ///
-/// The parameterized form `#[on(start)]` / `#[on(stop)]` uses a single
-/// attribute name `on` with the hook kind as a positional argument.
+/// The parameterized form `#[on(<event>)]` uses a single attribute name
+/// `on` with the hook kind as a positional argument. Recognised events
+/// in v0.5 are `start`, `stop`, `crash`, and `upgrade`. Validation of
+/// the event identifier and per-event signature shape lives in the
+/// type-checker (`hew-types::check::items`).
 pub(crate) fn is_lifecycle_hook_attr(name: &str) -> bool {
     name == "on"
 }
@@ -2741,6 +2744,7 @@ impl<'src> Parser<'src> {
                         name: target_state.clone(),
                         fields,
                         type_args: None,
+                        base: None,
                     };
                     (struct_init, bs, be)
                 } else {
@@ -2859,6 +2863,10 @@ impl<'src> Parser<'src> {
                             self.advance();
                             Some(SupervisorStrategy::RestForOne)
                         }
+                        Some(Token::SimpleOneForOne) => {
+                            self.advance();
+                            Some(SupervisorStrategy::SimpleOneForOne)
+                        }
                         _ => None,
                     };
                     if !self.eat(&Token::Semicolon) {
@@ -2898,7 +2906,8 @@ impl<'src> Parser<'src> {
                         self.eat(&Token::Comma);
                     }
                 }
-                Some(Token::Child) => {
+                Some(Token::Child | Token::Pool) => {
+                    let is_pool = matches!(self.peek(), Some(Token::Pool));
                     self.advance();
                     let child_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
@@ -2915,7 +2924,8 @@ impl<'src> Parser<'src> {
                         self.expect(&Token::RightParen)?;
                     }
 
-                    let restart = match self.peek() {
+                    // Legacy bare restart keyword (e.g. `child n: T permanent`)
+                    let mut restart = match self.peek() {
                         Some(Token::Permanent) => {
                             self.advance();
                             Some(RestartPolicy::Permanent)
@@ -2931,7 +2941,61 @@ impl<'src> Parser<'src> {
                         _ => None,
                     };
 
-                    // Skip inline modifiers like restart(...) budget(...) strategy(...)
+                    // New-surface: `with restart: <policy>` clause
+                    if matches!(self.peek(), Some(Token::Identifier(s)) if *s == "with") {
+                        self.advance(); // consume `with`
+                        if self.eat(&Token::Restart) {
+                            self.expect(&Token::Colon)?;
+                            restart = match self.peek() {
+                                Some(Token::Permanent) => {
+                                    self.advance();
+                                    Some(RestartPolicy::Permanent)
+                                }
+                                Some(Token::Transient) => {
+                                    self.advance();
+                                    Some(RestartPolicy::Transient)
+                                }
+                                Some(Token::Temporary) => {
+                                    self.advance();
+                                    Some(RestartPolicy::Temporary)
+                                }
+                                _ => None,
+                            };
+                        }
+                    }
+
+                    // New-surface: `wired_to: { key: sibling, bare_sibling }` clause
+                    let wired_to = if matches!(self.peek(), Some(Token::Identifier(s)) if *s == "wired_to")
+                    {
+                        self.advance(); // consume `wired_to`
+                        self.expect(&Token::Colon)?;
+                        self.expect(&Token::LeftBrace)?;
+                        let mut map = std::collections::HashMap::new();
+                        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                            let key = self.expect_ident()?;
+                            if self.eat(&Token::Colon) {
+                                // explicit `key: sibling_name` form
+                                let val = self.expect_ident()?;
+                                map.insert(key, val);
+                            } else {
+                                // shorthand `sibling_name` — key and value are the same
+                                map.insert(key.clone(), key);
+                            }
+                            if !self.eat(&Token::Comma) {
+                                break;
+                            }
+                        }
+                        self.expect(&Token::RightBrace)?;
+                        if map.is_empty() {
+                            None
+                        } else {
+                            Some(map)
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Skip legacy inline modifiers like restart(...) budget(...) strategy(...)
                     while matches!(
                         self.peek(),
                         Some(
@@ -2967,6 +3031,8 @@ impl<'src> Parser<'src> {
                         actor_type,
                         args,
                         restart,
+                        wired_to,
+                        is_pool,
                     });
                 }
                 _ => {
@@ -4866,6 +4932,9 @@ impl<'src> Parser<'src> {
                         let probe = if self.peek() == Some(&Token::RightBrace) {
                             // Empty struct literal: Foo {}
                             true
+                        } else if self.peek() == Some(&Token::DotDot) {
+                            // Functional-update-only form: `Foo { ..base }`.
+                            true
                         } else if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
                             self.advance();
                             self.peek() == Some(&Token::Colon)
@@ -4879,7 +4948,22 @@ impl<'src> Parser<'src> {
                     if is_struct_init {
                         self.advance(); // consume {
                         let mut fields = Vec::new();
+                        let mut base: Option<Box<Spanned<Expr>>> = None;
                         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                            if self.peek() == Some(&Token::DotDot) {
+                                // `..base_expr` — must be the last item in the list.
+                                self.advance(); // consume `..`
+                                let base_expr = self.parse_expr()?;
+                                base = Some(Box::new(base_expr));
+                                // Allow an optional trailing comma before `}`.
+                                self.eat(&Token::Comma);
+                                if self.peek() != Some(&Token::RightBrace) {
+                                    self.error(
+                                        "functional-update `..base` must be the last item in the field list".to_string(),
+                                    );
+                                }
+                                break;
+                            }
                             let field_name = self.expect_ident()?;
                             self.expect(&Token::Colon)?;
                             let value = self.parse_expr()?;
@@ -4894,6 +4978,7 @@ impl<'src> Parser<'src> {
                             name,
                             fields,
                             type_args: explicit_type_args,
+                            base,
                         }
                     } else {
                         Expr::Identifier(name)
@@ -5620,7 +5705,108 @@ impl<'src> Parser<'src> {
         let start = lhs.1.start;
         self.advance(); // consume [
 
-        let index = self.parse_expr()?;
+        // C-3 range-slice support: detect the five range forms in index
+        // position and emit `Expr::Range` (with the inclusive flag) so the
+        // checker/HIR can route to slice lowering. Forms:
+        //   xs[..]      — both endpoints open
+        //   xs[..b]     — open start, closed end (also `..=b`)
+        //   xs[a..]     — closed start, open end
+        //   xs[a..b]    — both endpoints closed
+        //   xs[a..=b]   — closed start, inclusive end
+        // All other contents (e.g. `xs[i]`, `xs[f()]`) remain `Expr::Index`.
+
+        let bracket_start_span = self.peek_span();
+
+        // Form 1: leading `..` or `..=` — open start.
+        if matches!(self.peek(), Some(Token::DotDot | Token::DotDotEqual)) {
+            let inclusive = matches!(self.peek(), Some(Token::DotDotEqual));
+            let dotdot_span = self.peek_span();
+            self.advance(); // consume `..` or `..=`
+                            // After the `..`, either `]` (xs[..] / xs[..=] — the latter is
+                            // ill-formed but we accept it as `..` with a closed inclusive flag
+                            // and let the checker complain about the missing endpoint via
+                            // type inference) or an expression for the closed end.
+            let end_expr = if self.peek() == Some(&Token::RightBracket) {
+                None
+            } else {
+                Some(Box::new(self.parse_expr()?))
+            };
+            self.expect(&Token::RightBracket)?;
+            let end_pos = self.peek_span().start;
+            let range_span = dotdot_span.start..end_pos;
+            let range_expr = (
+                Expr::Range {
+                    start: None,
+                    end: end_expr,
+                    inclusive,
+                },
+                range_span,
+            );
+            return Some((
+                Expr::Index {
+                    object: Box::new(lhs),
+                    index: Box::new(range_expr),
+                },
+                start..end_pos,
+            ));
+        }
+
+        // Parse the start sub-expression with `min_bp = 5` — above the
+        // range precedence (3, 4) — so the Pratt loop does NOT fold a
+        // trailing `..` / `..=` into a binary range. We then inspect the
+        // next token to discriminate `xs[a]` (single-element index) from
+        // `xs[a..]` (open-end slice) and `xs[a..b]` / `xs[a..=b]` (closed
+        // slice). This lets `xs[a..]` succeed even though the normal
+        // Pratt loop would demand a RHS after `..` and bail.
+        let first = self.parse_expr_bp(5)?;
+
+        let (inclusive, has_range_op) = match self.peek() {
+            Some(Token::DotDot) => (false, true),
+            Some(Token::DotDotEqual) => (true, true),
+            _ => (false, false),
+        };
+
+        if has_range_op {
+            // `xs[a..]` / `xs[a..b]` / `xs[a..=b]`.
+            let range_start_pos = first.1.start;
+            self.advance(); // consume `..` or `..=`
+            let end_expr = if self.peek() == Some(&Token::RightBracket) {
+                None
+            } else {
+                // Parse the upper bound at full `parse_expr` precedence
+                // so nested expressions (`xs[a..b+1]`) work.
+                Some(Box::new(self.parse_expr()?))
+            };
+            self.expect(&Token::RightBracket)?;
+            let end_pos = self.peek_span().start;
+            let range_span = range_start_pos..end_pos;
+            let range_expr = (
+                Expr::Range {
+                    start: Some(Box::new(first)),
+                    end: end_expr,
+                    inclusive,
+                },
+                range_span,
+            );
+            return Some((
+                Expr::Index {
+                    object: Box::new(lhs),
+                    index: Box::new(range_expr),
+                },
+                start..end_pos,
+            ));
+        }
+
+        // No range operator after the start expression: this is a single-
+        // element index (`xs[i]`, `xs[a + b]`, etc.). `parse_expr_bp(5)`
+        // already absorbed every infix operator above range precedence,
+        // which is the right closure for single-element indexing — range
+        // operators in index position go through the branch above.
+        let index = first;
+        // Silence unused-binding warning: `bracket_start_span` is consulted
+        // only by the leading-`..` branch above.
+        let _ = bracket_start_span;
+
         self.expect(&Token::RightBracket)?;
         let end = self.peek_span().start;
 
@@ -6680,6 +6866,49 @@ mod tests {
         } else {
             panic!("expected actor");
         }
+    }
+
+    #[test]
+    fn parse_actor_on_crash_hook_attaches_to_method() {
+        // E1: `#[on(crash)]` parses on an actor method. Signature shape
+        // (params/return type) is owned by E2 — parser just attaches
+        // the attribute to the FnDecl.
+        let source = r"actor Worker {
+    #[on(crash)]
+    fn on_crash() { }
+}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.methods.len(), 1);
+        assert_eq!(actor.methods[0].attributes.len(), 1);
+        assert_eq!(actor.methods[0].attributes[0].name, "on");
+        assert_eq!(actor.methods[0].attributes[0].args.len(), 1);
+        assert_eq!(actor.methods[0].attributes[0].args[0].as_str(), "crash");
+    }
+
+    #[test]
+    fn parse_actor_on_upgrade_hook_attaches_to_method() {
+        // E1: `#[on(upgrade)]` parses on an actor method. v0.5 emits a
+        // reserved-marker only; runtime invocation is deferred.
+        // WASM-TODO(#1817): wire `#[on(upgrade)]` to a live runtime
+        // invocation path (E3 of the failure-philosophy plan).
+        let source = r"actor Worker {
+    #[on(upgrade)]
+    fn on_upgrade() { }
+}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.methods.len(), 1);
+        assert_eq!(actor.methods[0].attributes.len(), 1);
+        assert_eq!(actor.methods[0].attributes[0].name, "on");
+        assert_eq!(actor.methods[0].attributes[0].args.len(), 1);
+        assert_eq!(actor.methods[0].attributes[0].args[0].as_str(), "upgrade");
     }
 
     #[test]
@@ -8334,5 +8563,137 @@ wire type Msg {
                 r.errors
             );
         }
+    }
+
+    // ── functional_update: `R { x: 5, ..base }` ───────────────────────────
+
+    #[test]
+    fn functional_update_basic_parses() {
+        // `Point { x: 1, ..old }` must parse as a StructInit with base = Some(old).
+        let src = r"
+            record Point { x: int, y: int }
+            fn f(old: Point) { let p = Point { x: 1, ..old }; }
+        ";
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "functional update must parse without errors; got: {:?}",
+            result.errors
+        );
+        let Item::Function(f) = &result.program.items[1].0 else {
+            panic!("expected function");
+        };
+        let stmt = &f.body.stmts[0];
+        let Stmt::Let {
+            value: Some((expr, _)),
+            ..
+        } = &stmt.0
+        else {
+            panic!("expected let with value");
+        };
+        let Expr::StructInit { fields, base, .. } = expr else {
+            panic!("expected StructInit, got {expr:?}");
+        };
+        assert_eq!(fields.len(), 1, "one explicit field expected");
+        let base = base.as_ref().expect("base should be Some");
+        assert!(
+            matches!(&base.0, Expr::Identifier(name) if name == "old"),
+            "base should be Identifier 'old', got {:?}",
+            base.0
+        );
+    }
+
+    #[test]
+    fn functional_update_no_explicit_fields_parses() {
+        // `Point { ..old }` (zero explicit fields, only base) must also parse.
+        let src = r"
+            record Point { x: int, y: int }
+            fn f(old: Point) { let p = Point { ..old }; }
+        ";
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "functional update with no explicit fields must parse; got: {:?}",
+            result.errors
+        );
+        let Item::Function(f) = &result.program.items[1].0 else {
+            panic!("expected function");
+        };
+        let stmt = &f.body.stmts[0];
+        let Stmt::Let {
+            value: Some((expr, _)),
+            ..
+        } = &stmt.0
+        else {
+            panic!("expected let with value");
+        };
+        let Expr::StructInit { fields, base, .. } = expr else {
+            panic!("expected StructInit, got {expr:?}");
+        };
+        assert_eq!(fields.len(), 0, "no explicit fields expected");
+        assert!(base.is_some(), "base should be Some");
+    }
+
+    #[test]
+    fn functional_update_mid_list_base_is_rejected() {
+        // `Point { ..base, x: 1 }` — base is not last; must produce a parse error.
+        let src = r"
+            record Point { x: int, y: int }
+            fn f(old: Point) { let p = Point { ..old, x: 1 }; }
+        ";
+        let result = parse(src);
+        assert!(
+            !result.errors.is_empty(),
+            "functional-update base not at end must produce a parse error"
+        );
+    }
+
+    #[test]
+    fn functional_update_base_is_none_for_regular_struct_init() {
+        // A plain struct literal must have base = None.
+        let src = r"
+            record Point { x: int, y: int }
+            fn f() { let p = Point { x: 1, y: 2 }; }
+        ";
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "plain struct init must parse without errors; got: {:?}",
+            result.errors
+        );
+        let Item::Function(f) = &result.program.items[1].0 else {
+            panic!("expected function");
+        };
+        let stmt = &f.body.stmts[0];
+        let Stmt::Let {
+            value: Some((expr, _)),
+            ..
+        } = &stmt.0
+        else {
+            panic!("expected let with value");
+        };
+        let Expr::StructInit { base, .. } = expr else {
+            panic!("expected StructInit, got {expr:?}");
+        };
+        assert!(base.is_none(), "plain struct init must have base = None");
+    }
+
+    #[test]
+    fn functional_update_double_base_is_rejected() {
+        // `R { ..a, ..b }` must be a parse error — only one base allowed.
+        let src = r"
+            record Point { x: int, y: int }
+            fn f(a: Point, b: Point) { let p = Point { ..a, ..b }; }
+        ";
+        let result = parse(src);
+        let has_expected_error = result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("must be the last item"));
+        assert!(
+            has_expected_error,
+            "double base `..a, ..b` must produce a 'must be the last item' error; got: {:?}",
+            result.errors
+        );
     }
 } // mod tests

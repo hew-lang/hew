@@ -10,9 +10,10 @@ use hew_types::ResolvedTy;
 use crate::dataflow;
 use crate::model::{
     BasicBlock, BlockKind, CheckedMirFunction, CmpPred, DecisionFact, DropKind, DropPlan,
-    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IntArithOp, IntSignedness,
-    IrPipeline, LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
-    RawMirFunction, Strategy, Terminator, ThirFunction, TrapKind,
+    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, Instr,
+    IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MirCheck, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy, Terminator, ThirFunction,
+    TrapKind,
 };
 
 /// Classify a resolved integer type as signed or unsigned. Returns
@@ -68,6 +69,18 @@ fn integer_bit_width(ty: &ResolvedTy) -> Option<i64> {
     }
 }
 
+/// Classify a resolved type as a float width. Returns `None` for
+/// non-float types. Used to dispatch float arithmetic lowering in
+/// `lower_binary` and `lower_div_rem` before falling through to the
+/// integer-only `IntArithChecked` / `lower_div_rem` paths.
+fn float_width(ty: &ResolvedTy) -> Option<FloatWidth> {
+    match ty {
+        ResolvedTy::F32 => Some(FloatWidth::F32),
+        ResolvedTy::F64 => Some(FloatWidth::F64),
+        _ => None,
+    }
+}
+
 /// Return the signed minimum value for a concrete signed integer type
 /// as an `i64`. Used to emit the `lhs == iN::MIN` constant in the
 /// signed-MIN/-1 trap check for `/` and `%`.
@@ -113,9 +126,14 @@ fn signed_min_value(ty: &ResolvedTy) -> Option<i64> {
 fn check_function(
     builder: &Builder,
     blocks: &[BasicBlock],
-    _func: &HirFn,
+    func: &HirFn,
 ) -> dataflow::DataflowResult {
-    let mut result = dataflow::analyze(blocks, &builder.type_classes);
+    // Collect the BindingId of each parameter so the dataflow checker can
+    // pre-seed them as `Live` at function entry.  Parameters are initialised
+    // by the calling convention (LLVM function argument + parameter prologue
+    // in codegen), never by a `Bind` statement in the checker-authority stream.
+    let param_ids: Vec<hew_hir::BindingId> = func.params.iter().map(|p| p.id).collect();
+    let mut result = dataflow::analyze(blocks, &builder.type_classes, &param_ids);
     let checks = &mut result.checks;
 
     // DecisionMapTotal. Every `DecisionFact` on this function must
@@ -153,21 +171,84 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     let mut elaborated_mir = Vec::new();
     let mut diagnostics = Vec::new();
 
+    // Build the declaration-order field descriptor table once for the whole module.
+    // Keys are record type names; values are (field_name, field_ty) pairs in
+    // declaration order. Used by StructInit and FieldAccess lowering to resolve
+    // a field name to its 0-based FieldOffset and to look up field types for
+    // intermediate place allocation during functional-update desugaring. Tuple
+    // records have an empty field list and their constructor is a Call, not a
+    // StructInit, so they never appear here.
+    let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+    let mut record_layouts: Vec<crate::model::RecordLayout> = Vec::new();
+    for item in &module.items {
+        if let HirItem::Record(decl) = item {
+            let fields: Vec<(String, ResolvedTy)> = decl
+                .fields
+                .iter()
+                .map(|f| (f.name.clone(), f.ty.clone()))
+                .collect();
+            // Named-form records have a non-empty `fields` list; tuple-form
+            // records have an empty list (their positional layout lives on
+            // the parser's `RecordKind::Tuple` discriminator and is not
+            // promoted into HIR fields). Tuple records construct via
+            // `Expr::Call`, never via `StructInit`, so they need no layout
+            // descriptor in this slice — codegen will fail-closed on any
+            // `ResolvedTy::Named` reach-through that names a tuple record.
+            if !fields.is_empty() {
+                record_layouts.push(crate::model::RecordLayout {
+                    name: decl.name.clone(),
+                    field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                });
+            }
+            record_field_orders.insert(decl.name.clone(), fields);
+        }
+    }
+
+    // Collect the names of every user-defined function in the module.
+    // This set is threaded into each function's Builder so the `Call`
+    // lowering arm can distinguish user-fn callees (→ `Instr::CallDirect`)
+    // from runtime-ABI callees (→ `Instr::CallRuntimeAbi`) and from
+    // indirect/unknown callees (→ `CutoverUnsupported`). Name-string
+    // matching is the right discriminator here because the HIR bridge
+    // does not yet emit `ResolvedRef::Item` for function callees (see
+    // the SHIM comment at `lower_value` HirExprKind::Call).
+    let module_fn_names: HashSet<String> = module
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let HirItem::Function(f) = item {
+                Some(f.name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
     for item in &module.items {
         match item {
             HirItem::Function(func) => {
-                let lowered = lower_function(func, &module.type_classes);
+                let lowered = lower_function(
+                    func,
+                    &module.type_classes,
+                    &record_field_orders,
+                    &module_fn_names,
+                );
                 thir.push(lowered.thir);
                 raw_mir.push(lowered.raw);
                 checked_mir.push(lowered.checked);
                 elaborated_mir.push(lowered.elaborated);
                 diagnostics.extend(lowered.diagnostics);
             }
-            HirItem::TypeDecl(_) | HirItem::Machine(_) => {
-                // Neither type declarations nor Lane A machine declarations
-                // have executable MIR bodies. TypeDecl markers are consumed
-                // via `HirModule.type_classes`; machine codegen (step()
-                // dispatch, tagged-union layout) is Lane B.
+            HirItem::Record(_)
+            | HirItem::TypeDecl(_)
+            | HirItem::Machine(_)
+            | HirItem::Actor(_)
+            | HirItem::Supervisor(_) => {
+                // Neither type declarations nor Lane A machine / actor /
+                // supervisor declarations have executable MIR bodies in S-A.
+                // TypeDecl markers are consumed via `HirModule.type_classes`;
+                // machine codegen is Lane B; actor body lowering is the next
+                // M6 slice; supervisor lowering is S-C (separate slice).
             }
         }
     }
@@ -178,6 +259,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         checked_mir,
         elaborated_mir,
         diagnostics,
+        record_layouts,
     }
 }
 
@@ -190,11 +272,28 @@ struct LoweredFunction {
     diagnostics: Vec<MirDiagnostic>,
 }
 
-fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> LoweredFunction {
+fn lower_function(
+    func: &HirFn,
+    type_classes: &hew_hir::TypeClassTable,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    module_fn_names: &HashSet<String>,
+) -> LoweredFunction {
     let mut builder = Builder {
         type_classes: type_classes.clone(),
+        record_field_orders: record_field_orders.clone(),
+        module_fn_names: module_fn_names.clone(),
         ..Builder::default()
     };
+    // Allocate parameter locals BEFORE lowering the function body so
+    // that `BindingRef` expressions that reference parameters resolve
+    // to real `Place::Local(i)` slots instead of hitting `UnresolvedPlace`.
+    //
+    // Each parameter gets its own `Place::Local` in declaration order;
+    // subsequent body-local allocations are appended after these slots
+    // (enforced by `alloc_local`'s monotone `locals.len()` counter).
+    // Codegen emits a parameter-prologue that stores each LLVM function
+    // argument into the corresponding alloca slot before the first instruction.
+    builder.lower_params(func);
     builder.function_body(func);
 
     // Drain the in-flight current block into a sealed `BasicBlock` with
@@ -225,6 +324,7 @@ fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> Lower
     let raw = RawMirFunction {
         name: func.name.clone(),
         return_ty: func.return_ty.clone(),
+        params: func.params.iter().map(|p| p.ty.clone()).collect(),
         locals: builder.locals.clone(),
         blocks,
         decisions: builder.decisions.clone(),
@@ -470,9 +570,51 @@ struct Builder {
     /// WHAT: replace with `Place::Projection { base, index }` variant or a
     ///   `Terminator::Call`-style multi-dest encoding.
     tuple_decomp: HashMap<u32, Vec<Place>>,
+    /// Declaration-order field descriptors for every `record` type in the module.
+    ///
+    /// Key: record type name (e.g. `"Point"`).
+    /// Value: `(field_name, field_ty)` pairs in declaration order.
+    ///
+    /// Used by `StructInit` and `FieldAccess` lowering to resolve a field
+    /// name to its 0-based `FieldOffset` and to look up the field type when
+    /// allocating intermediate places for functional-update base reads.
+    /// Built from `HirItem::Record` items in `lower_hir_module` and threaded
+    /// through to the builder.
+    ///
+    /// Tuple records have an empty field list by design (`HirRecordDecl.fields`
+    /// is empty for tuple records — their constructor is a `Call`, not a
+    /// `StructInit`). They will never be looked up here.
+    record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>>,
+    /// Names of every user-defined function declared in the module. Used by
+    /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
+    /// (→ `Instr::CallDirect`) from runtime-ABI callees (→
+    /// `Instr::CallRuntimeAbi`) and from indirect/closure callees
+    /// (→ `CutoverUnsupported`). Name-string matching is the reliable
+    /// discriminator here because the HIR bridge does not yet emit
+    /// `ResolvedRef::Item` for function-item callees (see the SHIM comment
+    /// at the Call lowering arm). The set is populated once per module by
+    /// `lower_hir_module` before any function body is lowered, so forward
+    /// references (calling a function declared later in the file) are
+    /// handled correctly.
+    module_fn_names: HashSet<String>,
 }
 
 impl Builder {
+    /// Allocate one `Place::Local` per function parameter and register each
+    /// in `binding_locals` so that `BindingRef` expressions in the function
+    /// body resolve to a real slot.
+    ///
+    /// Must be called BEFORE `function_body`. The allocated locals occupy
+    /// `locals[0..params.len()]`; all subsequent `alloc_local` calls
+    /// produce indices ≥ `params.len()`, maintaining the invariant documented
+    /// on `RawMirFunction.params`.
+    fn lower_params(&mut self, func: &HirFn) {
+        for param in &func.params {
+            let slot = self.alloc_local(param.ty.clone());
+            self.binding_locals.insert(param.id, slot);
+        }
+    }
+
     fn alloc_local(&mut self, ty: ResolvedTy) -> Place {
         // u32::MAX locals per function is well beyond any realistic Hew
         // function size; the cast is bounded by `locals.len()` growing one
@@ -766,6 +908,15 @@ impl Builder {
             }
             HirExprKind::BindingRef { .. } => None,
             HirExprKind::Binary { op, left, right } => {
+                // Short-circuit logical operators must intercept BEFORE the rhs
+                // is lowered: evaluating `right` unconditionally would break
+                // the short-circuit contract (rhs side effects would run even
+                // when lhs already determines the result).
+                match op {
+                    BinaryOp::And => return self.lower_logical_and(left, right, &expr.ty),
+                    BinaryOp::Or => return self.lower_logical_or(left, right, &expr.ty),
+                    _ => {}
+                }
                 let lhs = self.lower_value(left);
                 let rhs = self.lower_value(right);
                 match (lhs, rhs) {
@@ -774,19 +925,21 @@ impl Builder {
                 }
             }
             HirExprKind::Call { callee, args } => {
-                // SHIM(E2→checker): runtime-symbol detection uses the callee
-                // name string rather than a checker-resolved `ResolvedRef::Builtin`.
+                // SHIM(E2→checker): callee classification uses the callee name
+                // string rather than a checker-resolved `ResolvedRef`.
                 // WHY: the typecheck→HIR bridge (E1) emits `BindingRef { name:
                 //   c_symbol, resolved: ResolvedRef::Unresolved }` for every
                 //   runtime-symbol callee because the Rust MIR pipeline does not
                 //   thread `TypeCheckOutput.method_call_rewrites` resolver IDs
                 //   into HIR's `ResolvedRef`.  The name is the only available
-                //   discriminator at MIR time.
-                // WHEN obsolete: when HIR emits `ResolvedRef::Builtin { c_symbol }`
-                //   for runtime-symbol callees and MIR can match on the resolved
-                //   variant instead of the name string.
-                // WHAT: replace with `matches!(callee.resolved, ResolvedRef::Builtin { .. })`
-                //   and remove the `is_known_runtime_symbol` name check.
+                //   discriminator at MIR time. User functions are identified by
+                //   membership in `module_fn_names` (collected in
+                //   `lower_hir_module` before any body is lowered).
+                // WHEN obsolete: when HIR emits `ResolvedRef::Item` for user-fn
+                //   callees and `ResolvedRef::Builtin` for runtime callees so MIR
+                //   can match on the resolved variant instead of name strings.
+                // WHAT: replace with variant-based dispatch; remove the
+                //   `is_known_runtime_symbol` and `module_fn_names` checks.
                 let callee_name = match &callee.kind {
                     HirExprKind::BindingRef { name, .. } => Some(name.as_str()),
                     _ => None,
@@ -804,24 +957,30 @@ impl Builder {
                     if let Some(c_sym) = crate::runtime_symbols::user_name_to_c_symbol(name) {
                         return self.lower_runtime_call(c_sym, args, expr.site);
                     }
+                    // User-defined function in the same module: emit CallDirect.
+                    // The callee symbol is the bare function name as declared;
+                    // codegen resolves it against the module's fn_symbols table.
+                    if self.module_fn_names.contains(name) {
+                        return self.lower_direct_call(name, args, &expr.ty, expr.site);
+                    }
                 }
-                // Non-runtime calls: Cluster 1 does not lower these to backend
-                // instructions yet (Terminator::Call is wired but the spine subset
-                // accepts only literal/binary/return). Walk the children so any
-                // Unsupported inside an argument still surfaces, then fail closed so
-                // the emitter never sees a return slot with no producer
-                // (LESSONS `boundary-fail-closed`).
+                // Indirect calls (closures, higher-order function values,
+                // or unresolved bindings): not yet supported. Walk the children
+                // so any Unsupported inside an argument still surfaces, then
+                // fail closed so the emitter never sees a return slot with no
+                // producer (LESSONS `boundary-fail-closed`).
                 let _ = self.lower_value(callee);
                 for arg in args {
                     let _ = self.lower_value(arg);
                 }
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::CutoverUnsupported {
-                        construct: "function call".to_string(),
+                        construct: "indirect or unresolved function call".to_string(),
                         site: expr.site,
                     },
-                    note: "non-runtime call expressions are not yet lowered to the \
-                           backend instruction stream in the Cluster 1 spine subset"
+                    note: "only direct calls to module-declared user functions and \
+                           runtime-ABI builtins are supported; indirect/closure/\
+                           higher-order calls are not yet lowered"
                         .to_string(),
                 });
                 None
@@ -848,11 +1007,163 @@ impl Builder {
                 then_expr,
                 else_expr,
             } => self.lower_if(condition, then_expr, else_expr.as_deref(), &expr.ty),
-            HirExprKind::StructInit { fields, .. } => {
-                for (_, field) in fields {
-                    let _ = self.lower_value(field);
+            HirExprKind::StructInit {
+                name, fields, base, ..
+            } => {
+                // Look up the declaration-order field list for this record.
+                // If it's missing, the checker allowed a type that was never
+                // registered — fail closed rather than silently producing
+                // malformed MIR.
+                let field_order = if let Some(order) = self.record_field_orders.get(name.as_str()) {
+                    order.clone()
+                } else {
+                    // Walk sub-expressions for checker-stream coverage.
+                    for (_, fexpr) in fields {
+                        let _ = self.lower_value(fexpr);
+                    }
+                    if let Some(base_expr) = base {
+                        let _ = self.lower_value(base_expr);
+                    }
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::CutoverUnsupported {
+                            construct: format!(
+                                "record type `{name}` (not registered in field-order table)"
+                            ),
+                            site: expr.site,
+                        },
+                        note: "record type was not found in the field-order table; \
+                               this is a checker bug (the type must be declared before use)"
+                            .to_string(),
+                    });
+                    return None;
+                };
+
+                // Lower each explicit field value to a Place, keyed by name.
+                let mut explicit: HashMap<String, Place> = HashMap::new();
+                for (fname, fexpr) in fields {
+                    if let Some(place) = self.lower_value(fexpr) {
+                        explicit.insert(fname.clone(), place);
+                    }
                 }
-                None
+
+                // Lower the functional-update base, if any.
+                let base_place: Option<Place> = if let Some(base_expr) = base {
+                    self.lower_value(base_expr)
+                } else {
+                    None
+                };
+
+                // Build the (offset, source) pairs in declaration order.
+                // For each field: use the explicit value if present; otherwise
+                // emit a RecordFieldLoad from the base and use that intermediate.
+                let mut field_pairs: Vec<(FieldOffset, Place)> = Vec::new();
+                for (idx, (fname, fty)) in field_order.iter().enumerate() {
+                    let offset = FieldOffset(
+                        u32::try_from(idx)
+                            .expect("record field count exceeds u32::MAX — impossible in Hew"),
+                    );
+                    if let Some(&src) = explicit.get(fname.as_str()) {
+                        field_pairs.push((offset, src));
+                    } else if let Some(base_rec) = base_place {
+                        // Field absent from the explicit list — load it from base.
+                        // The intermediate place carries the declared field type.
+                        let intermediate = self.alloc_local(fty.clone());
+                        self.instructions.push(Instr::RecordFieldLoad {
+                            record: base_rec,
+                            field_offset: offset,
+                            dest: intermediate,
+                        });
+                        field_pairs.push((offset, intermediate));
+                    } else {
+                        // No explicit value and no base — checker should have
+                        // rejected this; fail closed.
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::CutoverUnsupported {
+                                construct: format!(
+                                    "record `{name}` missing field `{fname}` with no functional-update base"
+                                ),
+                                site: expr.site,
+                            },
+                            note: "field absent from initialiser and no `..base` provided; \
+                                   the checker should have rejected this program"
+                                .to_string(),
+                        });
+                        return None;
+                    }
+                }
+
+                let dest = self.alloc_local(expr.ty.clone());
+                self.instructions.push(Instr::RecordInit {
+                    ty: expr.ty.clone(),
+                    fields: field_pairs,
+                    dest,
+                });
+                Some(dest)
+            }
+            HirExprKind::FieldAccess { object, field } => {
+                // Resolve the record type name from the object's type so we can
+                // look up the field offset in the field-order table.
+                let type_name = match &object.ty {
+                    ResolvedTy::Named { name, .. } => name.clone(),
+                    other => {
+                        let _ = self.lower_value(object);
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::CutoverUnsupported {
+                                construct: format!("field access on non-named type `{other:?}`"),
+                                site: expr.site,
+                            },
+                            note: "field access is only supported on named record types"
+                                .to_string(),
+                        });
+                        return None;
+                    }
+                };
+                let field_order =
+                    if let Some(order) = self.record_field_orders.get(type_name.as_str()) {
+                        order.clone()
+                    } else {
+                        let _ = self.lower_value(object);
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::CutoverUnsupported {
+                                construct: format!(
+                                    "field access on unregistered record type `{type_name}`"
+                                ),
+                                site: expr.site,
+                            },
+                            note: "record type was not found in the field-order table; \
+                                   this is a checker bug"
+                                .to_string(),
+                        });
+                        return None;
+                    };
+                let field_offset = if let Some(idx) =
+                    field_order.iter().position(|(f, _)| f == field.as_str())
+                {
+                    FieldOffset(
+                        u32::try_from(idx)
+                            .expect("field index exceeds u32::MAX — impossible in Hew"),
+                    )
+                } else {
+                    let _ = self.lower_value(object);
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::CutoverUnsupported {
+                            construct: format!("unknown field `{field}` on record `{type_name}`"),
+                            site: expr.site,
+                        },
+                        note: "field not found in declaration-order table; \
+                                   this is a checker bug"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                let record_place = self.lower_value(object)?;
+                let dest = self.alloc_local(expr.ty.clone());
+                self.instructions.push(Instr::RecordFieldLoad {
+                    record: record_place,
+                    field_offset,
+                    dest,
+                });
+                Some(dest)
             }
             HirExprKind::Scope { body } => {
                 // TODO: MIR lowering for scope{} bodies. Required runtime contract:
@@ -1011,27 +1322,58 @@ impl Builder {
                 // the indexed DuplexHandle Place directly without emitting any
                 // additional instructions.  This is the complement of the
                 // `lower_runtime_call` path that stores the output Places into
-                // `tuple_decomp`.  Any `TupleIndex` on a tuple whose producer
-                // did NOT populate `tuple_decomp` falls through to fail-closed.
-                let inner_place = self.lower_value(tuple);
-                if let Some(Place::Local(local_idx)) = inner_place {
+                // `tuple_decomp`.
+                let inner_place = self.lower_value(tuple)?;
+                if let Place::Local(local_idx) = inner_place {
                     if let Some(parts) = self.tuple_decomp.get(&local_idx) {
                         if *index < parts.len() {
                             return Some(parts[*index]);
                         }
                     }
                 }
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
-                        construct: format!("tuple-index .{index}"),
-                        site: expr.site,
-                    },
-                    note: "TupleIndex MIR lowering is only implemented for runtime-call \
-                           outputs registered in the tuple_decomp table; general tuple \
-                           projection is not yet supported"
-                        .to_string(),
+                // General case: the tuple is a regular tuple-typed local.
+                // Emit `Instr::TupleFieldLoad` — codegen lowers this to a
+                // GEP at `field_index` into the struct alloca + load.
+                let field_index = u32::try_from(*index)
+                    .expect("tuple index exceeds u32::MAX — impossible in Hew");
+                let dest = self.alloc_local(expr.ty.clone());
+                self.instructions.push(Instr::TupleFieldLoad {
+                    tuple: inner_place,
+                    field_index,
+                    dest,
                 });
-                None
+                Some(dest)
+            }
+            HirExprKind::Index { container, index } => {
+                self.lower_vec_index(container, index, &expr.ty, expr.site)
+            }
+            HirExprKind::Slice {
+                container,
+                start,
+                end,
+                inclusive,
+            } => self.lower_vec_slice(
+                container,
+                start.as_deref(),
+                end.as_deref(),
+                *inclusive,
+                &expr.ty,
+                expr.site,
+            ),
+            HirExprKind::IdentityCompare { left, right } => {
+                // `lhs is rhs` — emit `Instr::IdentityCompare` so codegen can
+                // select `ptrtoint` + `icmp eq` for pointer-shaped handles or
+                // plain `icmp eq` for machine-id integers.  The dest is typed
+                // `ResolvedTy::Bool` (inherited from `expr.ty`) so the i1
+                // result widening path in codegen works the same as `IntCmp`.
+                // LESSONS: `checker-authority` (P0) — the allowance set was
+                // validated by the checker; we just lower the node.
+                let lhs = self.lower_value(left)?;
+                let rhs = self.lower_value(right)?;
+                let dest = self.alloc_local(expr.ty.clone());
+                self.instructions
+                    .push(Instr::IdentityCompare { dest, lhs, rhs });
+                Some(dest)
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
@@ -1057,22 +1399,19 @@ impl Builder {
         ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        // Spine subset: only integer + bool literals reach the backend in
-        // the CFG-construction lane. Float/String/Char/Duration/Unit
-        // literals remain out of scope (Cluster 2 takes String; Cluster 4
-        // takes the rest). Bool lands here because the CFG-construction
-        // surface needs a constructible condition Place for `If`:
-        // without bool literals, no non-trivial `If` condition compiles.
-        // Fail closed so the emitter never produces a binary with an
-        // uninitialised return slot (LESSONS `boundary-fail-closed`).
-        let construct = match lit {
+        // All HirLiteral variants are wired. Each arm allocates a dest local,
+        // pushes the corresponding Instr, and returns early with `Some(dest)`.
+        // Fail-closed behaviour (LESSONS `boundary-fail-closed`) is preserved
+        // through the float arm's type-mismatch guard, which still returns
+        // `None` on checker-invariant violations.
+        match lit {
             HirLiteral::Integer(value) => {
                 let dest = self.alloc_local(ty.clone());
                 self.instructions.push(Instr::ConstI64 {
                     dest,
                     value: *value,
                 });
-                return Some(dest);
+                Some(dest)
             }
             HirLiteral::Bool(value) => {
                 // Bool lowers as an integer truth value (1 / 0) into the
@@ -1087,26 +1426,116 @@ impl Builder {
                     dest,
                     value: i64::from(*value),
                 });
-                return Some(dest);
+                Some(dest)
             }
-            HirLiteral::Float(_) => "float literal",
-            HirLiteral::String(_) => "string literal",
-            HirLiteral::Char(_) => "char literal",
-            HirLiteral::Unit => "unit literal",
-            HirLiteral::Duration(_) => "duration literal",
-        };
-        self.diagnostics.push(MirDiagnostic {
-            kind: MirDiagnosticKind::CutoverUnsupported {
-                construct: construct.to_string(),
-                site,
-            },
-            note: "non-integer literals are not yet lowered to the backend \
-                   instruction stream in the Cluster 1 spine subset"
-                .to_string(),
-        });
-        None
+            HirLiteral::Float(value) => {
+                // `HirLiteral::Float` always carries an `f64` regardless of
+                // the declared type. When the resolved type is `f32`, narrow
+                // to single precision before encoding as a bit pattern so the
+                // constant round-trips exactly through the MIR → codegen boundary.
+                // Storing as bits avoids a floating-point field in the MIR model
+                // (which would need special PartialEq treatment for NaN) while
+                // keeping the round-trip exact (mirrors `ConstI64.value`).
+                let (value_bits, width) = match ty {
+                    ResolvedTy::F32 => {
+                        // Narrow to f32 before encoding — f64 bits for a value
+                        // that will be stored in an f32 slot would be wrong.
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            reason = "literal coercion from f64 source value to f32 slot is \
+                                      the intended semantics; checker accepted the source as \
+                                      f32, so any precision loss is the developer's call"
+                        )]
+                        let narrowed = *value as f32;
+                        (u64::from(narrowed.to_bits()), FloatWidth::F32)
+                    }
+                    ResolvedTy::F64 => (value.to_bits(), FloatWidth::F64),
+                    _ => {
+                        // Type mismatch: float literal with non-float resolved
+                        // type is a checker bug. Fail closed per LESSONS
+                        // `boundary-fail-closed`.
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::CutoverUnsupported {
+                                construct: "float literal with non-float resolved type".to_string(),
+                                site,
+                            },
+                            note: "HirLiteral::Float reached MIR lowering with a \
+                                   non-float resolved type — checker invariant violated"
+                                .to_string(),
+                        });
+                        return None;
+                    }
+                };
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::FloatLit {
+                    dest,
+                    value_bits,
+                    width,
+                });
+                Some(dest)
+            }
+            HirLiteral::String(s) => {
+                // String literal lowering: allocate a `ResolvedTy::String`
+                // local (an opaque pointer at the LLVM level) and emit
+                // `Instr::StringLit` to fill it. The codegen emitter will
+                // produce an LLVM global constant for the bytes + a pointer
+                // store into the dest alloca — matching the C++ codegen's
+                // `hew.global_string` / `llvm.mlir.addressof` pattern.
+                //
+                // Escape decoding: the parser's `unescape_string` already
+                // ran; `s` is a decoded Rust String and `as_bytes()` gives
+                // the correct UTF-8 byte sequence.
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::StringLit {
+                    bytes: s.as_bytes().to_vec(),
+                    dest,
+                });
+                Some(dest)
+            }
+            HirLiteral::Char(c) => {
+                // Hew `char` is a Unicode scalar value. Store as `u32` bit
+                // pattern; codegen maps it to an `i32` constant. The cast is
+                // total — Rust's `char` guarantees scalar-value range.
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::CharLit {
+                    value: *c as u32,
+                    dest,
+                });
+                Some(dest)
+            }
+            HirLiteral::Unit => {
+                // Unit is zero-sized; codegen may emit nothing. The dest
+                // place is allocated so that any downstream use-after-consume
+                // tracking has a definition point.
+                //
+                // NOTE: `HirLiteral::Unit` is currently unreachable from
+                // real Hew source — no parser `Literal::Unit` exists and
+                // the HIR lowerer does not produce this variant. This arm
+                // exists for exhaustiveness so a future producer has a
+                // corresponding MIR variant.
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::UnitLit { dest });
+                Some(dest)
+            }
+            HirLiteral::Duration(nanos) => {
+                // Duration literals carry nanoseconds already (`i64`) from
+                // parse time. Forward directly — no conversion needed.
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::DurationLit {
+                    nanos: *nanos,
+                    dest,
+                });
+                Some(dest)
+            }
+        }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "lower_binary is a flat dispatch over the BinaryOp enum; line count grows \
+                  with the operator set (int + float arms). Splitting would obscure the \
+                  per-operator codegen path each reader expects to find here."
+    )]
     fn lower_binary(
         &mut self,
         op: BinaryOp,
@@ -1176,17 +1605,29 @@ impl Builder {
             _ => {}
         }
 
+        // Bitwise operators: well-defined for any integer width × signedness.
+        // No traps, no overflow checks — emit a single instruction directly.
+        let bitwise_instr = match op {
+            BinaryOp::BitAnd => Some(Instr::IntBitAnd { dest, lhs, rhs }),
+            BinaryOp::BitOr => Some(Instr::IntBitOr { dest, lhs, rhs }),
+            BinaryOp::BitXor => Some(Instr::IntBitXor { dest, lhs, rhs }),
+            _ => None,
+        };
+        if let Some(instr) = bitwise_instr {
+            self.instructions.push(instr);
+            return Some(dest);
+        }
+
         let arith_op = match op {
             BinaryOp::Add => IntArithOp::Add,
             BinaryOp::Subtract => IntArithOp::Sub,
             BinaryOp::Multiply => IntArithOp::Mul,
-            // The spine subset still rejects logical / range / send /
-            // regex / bitwise binops. Previously this arm silently
-            // popped the dest local and returned `None`, letting the
-            // parent expression succeed with a missing producer (quiet
-            // fail-soft — caller's `decide` ran, `MirDiagnostic` did
-            // not). Fail closed now: drop the dest local, emit a
-            // `CutoverUnsupported` so the CLI rejection surface sees
+            // The spine subset still rejects range / send / regex binops.
+            // Previously this arm silently popped the dest local and returned
+            // `None`, letting the parent expression succeed with a missing
+            // producer (quiet fail-soft — caller's `decide` ran,
+            // `MirDiagnostic` did not). Fail closed now: drop the dest local,
+            // emit a `CutoverUnsupported` so the CLI rejection surface sees
             // the offending construct, and return `None`.
             // LESSONS `boundary-fail-closed`.
             _ => {
@@ -1203,6 +1644,34 @@ impl Builder {
                 return None;
             }
         };
+        // Float `+` / `-` / `*`: emit `Instr::Float{Add,Sub,Mul}` directly —
+        // no trap blocks, no overflow flag. IEEE 754 overflow produces
+        // ±inf, not a runtime trap.
+        if let Some(width) = float_width(ty) {
+            let float_instr = match arith_op {
+                IntArithOp::Add => Instr::FloatAdd {
+                    dest,
+                    lhs,
+                    rhs,
+                    width,
+                },
+                IntArithOp::Sub => Instr::FloatSub {
+                    dest,
+                    lhs,
+                    rhs,
+                    width,
+                },
+                IntArithOp::Mul => Instr::FloatMul {
+                    dest,
+                    lhs,
+                    rhs,
+                    width,
+                },
+            };
+            self.instructions.push(float_instr);
+            return Some(dest);
+        }
+
         // B-2 overflow-trap lowering. The default `+` / `-` / `*` on
         // integer types lowers to the checked LLVM intrinsic family
         // (`llvm.{s,u}{add,sub,mul}.with.overflow.iN`) with a hard
@@ -1217,18 +1686,17 @@ impl Builder {
         // default arithmetic IS the boundary; trap-on-overflow is
         // fail-closed for accidental overflow).
         let Some(signed) = integer_signedness(ty) else {
-            // Non-integer reaching `+` / `-` / `*` would be a B-1
-            // mixed-width or non-integer violation upstream. Fail
-            // closed rather than emit unchecked arithmetic.
+            // Non-integer, non-float reaching `+` / `-` / `*` is a
+            // B-1 mixed-width or unsupported-type violation upstream.
+            // Fail closed rather than emit unchecked arithmetic.
             self.locals.pop();
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::CutoverUnsupported {
-                    construct: format!("binary operator `{op}` on non-integer type"),
+                    construct: format!("binary operator `{op}` on non-integer, non-float type"),
                     site,
                 },
                 note: "B-2 overflow-trap lowering requires an integer-typed result \
-                       (i8/i16/i32/i64/u8/u16/u32/u64/isize/usize); float arithmetic \
-                       does not use the checked intrinsics and is not yet wired here"
+                       (i8/i16/i32/i64/u8/u16/u32/u64/isize/usize)"
                     .to_string(),
             });
             return None;
@@ -1322,12 +1790,35 @@ impl Builder {
         ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
+        // Float `/` and `%`: emit `Instr::FloatDiv` / `Instr::FloatRem`
+        // directly. IEEE 754 defines `x / 0.0` → ±inf and `x % 0.0` →
+        // NaN — neither traps. Do NOT add a zero-check CFG split here.
+        if let Some(width) = float_width(ty) {
+            let float_instr = match op {
+                BinaryOp::Divide => Instr::FloatDiv {
+                    dest,
+                    lhs,
+                    rhs,
+                    width,
+                },
+                BinaryOp::Modulo => Instr::FloatRem {
+                    dest,
+                    lhs,
+                    rhs,
+                    width,
+                },
+                _ => unreachable!("lower_div_rem called with non-div/rem op"),
+            };
+            self.instructions.push(float_instr);
+            return Some(dest);
+        }
+
         let Some(signed) = integer_signedness(ty) else {
-            // Non-integer reaching `/` or `%` — B-1 violation upstream.
+            // Non-integer, non-float reaching `/` or `%` — B-1 violation upstream.
             self.locals.pop();
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::CutoverUnsupported {
-                    construct: format!("binary operator `{op}` on non-integer type"),
+                    construct: format!("binary operator `{op}` on non-integer, non-float type"),
                     site,
                 },
                 note: "B-5 div/rem trap lowering requires an integer-typed result".to_string(),
@@ -1649,6 +2140,479 @@ impl Builder {
         Some(result_place)
     }
 
+    /// Lower `lhs && rhs` with short-circuit semantics.
+    ///
+    /// CFG shape:
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   result_place = false          // pessimistic default
+    ///   lhs_place = lower(lhs)
+    ///   Branch { cond: lhs_place, then: rhs_bb, else: join_bb }
+    ///
+    /// rhs_bb:
+    ///   rhs_place = lower(rhs)
+    ///   Move { dest: result_place, src: rhs_place }
+    ///   Goto join_bb
+    ///
+    /// join_bb:
+    ///   -- result_place holds the final bool --
+    /// ```
+    ///
+    /// The rhs block is only entered when lhs is true, so rhs side effects
+    /// are correctly guarded. On the false path, `result_place` retains the
+    /// `false` constant written in the entry block.
+    fn lower_logical_and(
+        &mut self,
+        lhs_expr: &HirExpr,
+        rhs_expr: &HirExpr,
+        result_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        let result_place = self.alloc_local(result_ty.clone());
+        // Write `false` as the pessimistic default (the join block reads
+        // result_place, and the else path never writes to it).
+        self.instructions.push(Instr::ConstI64 {
+            dest: result_place,
+            value: 0,
+        });
+
+        let lhs_place = self.lower_value(lhs_expr)?;
+
+        let rhs_bb = self.alloc_block();
+        let join_bb = self.alloc_block();
+
+        self.finish_current_block(Terminator::Branch {
+            cond: lhs_place,
+            then_target: rhs_bb,
+            else_target: join_bb,
+        });
+
+        // rhs_bb: lhs was true, evaluate rhs and move into result.
+        self.start_block(rhs_bb);
+        if let Some(rhs_place) = self.lower_value(rhs_expr) {
+            self.instructions.push(Instr::Move {
+                dest: result_place,
+                src: rhs_place,
+            });
+        }
+        self.finish_current_block(Terminator::Goto { target: join_bb });
+
+        self.start_block(join_bb);
+        Some(result_place)
+    }
+
+    /// Lower `lhs || rhs` with short-circuit semantics.
+    ///
+    /// CFG shape:
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   result_place = true           // optimistic default
+    ///   lhs_place = lower(lhs)
+    ///   Branch { cond: lhs_place, then: join_bb, else: rhs_bb }
+    ///
+    /// rhs_bb:
+    ///   rhs_place = lower(rhs)
+    ///   Move { dest: result_place, src: rhs_place }
+    ///   Goto join_bb
+    ///
+    /// join_bb:
+    ///   -- result_place holds the final bool --
+    /// ```
+    ///
+    /// The rhs block is only entered when lhs is false, so rhs side effects
+    /// are correctly guarded. On the true path, `result_place` retains the
+    /// `true` constant written in the entry block.
+    fn lower_logical_or(
+        &mut self,
+        lhs_expr: &HirExpr,
+        rhs_expr: &HirExpr,
+        result_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        let result_place = self.alloc_local(result_ty.clone());
+        // Write `true` as the optimistic default (the then path never writes
+        // to result_place; the else path writes the rhs value into it).
+        self.instructions.push(Instr::ConstI64 {
+            dest: result_place,
+            value: 1,
+        });
+
+        let lhs_place = self.lower_value(lhs_expr)?;
+
+        let rhs_bb = self.alloc_block();
+        let join_bb = self.alloc_block();
+
+        self.finish_current_block(Terminator::Branch {
+            cond: lhs_place,
+            then_target: join_bb,
+            else_target: rhs_bb,
+        });
+
+        // rhs_bb: lhs was false, evaluate rhs and move into result.
+        self.start_block(rhs_bb);
+        if let Some(rhs_place) = self.lower_value(rhs_expr) {
+            self.instructions.push(Instr::Move {
+                dest: result_place,
+                src: rhs_place,
+            });
+        }
+        self.finish_current_block(Terminator::Goto { target: join_bb });
+
+        self.start_block(join_bb);
+        Some(result_place)
+    }
+
+    /// Lower `xs[i]` (`HirExprKind::Index`) for a `Vec<T>` container.
+    ///
+    /// CFG shape (C-2 OOB trap pattern, mirrors B-2/B-5 bounds-check
+    /// discipline):
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   CallRuntimeAbi { symbol: "hew_vec_len", args: [vec_place], dest: len_place }
+    ///   IntCmp { pred: UnsignedGreaterEq, dest: oob_flag,
+    ///            lhs: index_place, rhs: len_place }
+    ///   Branch { cond: oob_flag, then: trap_bb, else: cont_bb }
+    ///
+    /// trap_bb:
+    ///   Trap { kind: IndexOutOfBounds }
+    ///
+    /// cont_bb:
+    ///   CallRuntimeAbi { symbol: "hew_vec_get_T",
+    ///                    args: [vec_place, index_place], dest: result_place }
+    /// ```
+    ///
+    /// The `UnsignedGreaterEq` predicate catches both negative indices
+    /// (which wrap to values > `i64::MAX` when reinterpreted as unsigned)
+    /// and indices ≥ `len` in a single compare — the same technique used
+    /// by B-5's shift-range check. LESSONS: `boundary-fail-closed` (P0) —
+    /// the trap is always emitted; the compiler never relies on the runtime's
+    /// own bounds check.
+    ///
+    /// Element-type dispatch (`hew_vec_get_T`):
+    /// - `i32` → `hew_vec_get_i32`
+    /// - `i64` → `hew_vec_get_i64`
+    /// - `f64` → `hew_vec_get_f64`
+    /// - ptr-shaped (`Duplex`, `LambdaActorHandle`, Named heap types) → `hew_vec_get_ptr`
+    ///
+    /// Unsupported element types emit `MirDiagnostic::CutoverUnsupported`
+    /// and return `None` (tracked gap, not silent shim).
+    fn lower_vec_index(
+        &mut self,
+        container: &HirExpr,
+        index: &HirExpr,
+        elem_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // Lower the container and index sub-expressions.
+        let vec_place = self.lower_value(container)?;
+        let index_place = self.lower_value(index)?;
+
+        // Step 1: Call hew_vec_len(vec) -> i64 to get the length.
+        let len_place = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new("hew_vec_len", vec![vec_place], Some(len_place))
+                .expect("hew_vec_len is an allowlisted runtime symbol"),
+        ));
+
+        // Step 2: Bounds check via UnsignedGreaterEq. A signed i64 index
+        // that is negative will wrap to a value > i64::MAX when treated
+        // as unsigned, which is ≥ any valid len. This catches both negative
+        // and out-of-bounds indices in one compare.
+        let oob_flag = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            dest: oob_flag,
+            pred: CmpPred::UnsignedGreaterEq,
+            lhs: index_place,
+            rhs: len_place,
+        });
+
+        // Seal current block with Branch → trap or continue.
+        let trap_bb = self.alloc_block();
+        let cont_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: oob_flag,
+            then_target: trap_bb,
+            else_target: cont_bb,
+        });
+
+        // Trap block: hard-abort with IndexOutOfBounds.
+        self.start_block(trap_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::IndexOutOfBounds,
+        });
+
+        // Continuation block: emit the actual element load.
+        self.start_block(cont_bb);
+
+        // Dispatch to the typed runtime getter based on element type.
+        let get_symbol = match elem_ty {
+            ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_get_i32",
+            ResolvedTy::I64 | ResolvedTy::U64 => "hew_vec_get_i64",
+            ResolvedTy::F64 => "hew_vec_get_f64",
+            // Pointer-shaped heap handles: Duplex, LambdaActorHandle, and
+            // Named types that are resource/linear (their heap-backing is
+            // opaque to the element-load ABI). hew_vec_get_ptr returns a
+            // *mut c_void which codegen casts to the appropriate pointer.
+            ResolvedTy::Named { .. } => "hew_vec_get_ptr",
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!("Vec<{other:?}> element type for xs[i]"),
+                        site,
+                    },
+                    note: "hew_vec_get_T dispatch: element types supported by this \
+                           slice are i32/u32, i64/u64, f64, and Named heap types. \
+                           String (hew_vec_get_str strdup ownership) is a follow-on \
+                           slice. bool/char and other scalars map to i32/i64 in a \
+                           future width-normalisation slice."
+                        .to_string(),
+                });
+                return None;
+            }
+        };
+
+        let result_place = self.alloc_local(elem_ty.clone());
+        self.instructions.push(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(
+                get_symbol,
+                vec![vec_place, index_place],
+                Some(result_place),
+            )
+            .expect("hew_vec_get_T is an allowlisted runtime symbol"),
+        ));
+
+        Some(result_place)
+    }
+
+    /// Lower `xs[a..b]` / `xs[a..=b]` / `xs[..b]` / `xs[a..]` / `xs[..]`
+    /// (`HirExprKind::Slice`) for a `Vec<T>` container (C-3).
+    ///
+    /// CFG shape (extends C-2's OOB pattern with a two-stage bounds check
+    /// and an optional integer-overflow trap for the inclusive form):
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   [start open?]     start_place := ConstI64(0)
+    ///   [end open?]       end_place := CallRuntimeAbi("hew_vec_len", [vec])
+    ///   [inclusive?]      one := ConstI64(1)
+    ///                     end_place := IntArithChecked(Add, signed, end_place, one)
+    ///                       → on overflow → trap_overflow_bb { TrapKind::IntegerOverflow }
+    ///                       → on success → cont1_bb (subsequent emission)
+    ///   IntCmp { pred: SignedGreater, dest: bad1, lhs: start, rhs: end }
+    ///   Branch { cond: bad1, then: trap_oob_bb, else: cont2_bb }
+    ///
+    /// cont2_bb:
+    ///   [end_place already holds end; reuse]
+    ///   len := CallRuntimeAbi("hew_vec_len", [vec])    -- second probe so
+    ///                                                    inclusive +1 is not
+    ///                                                    compared to the
+    ///                                                    pre-Add len
+    ///   IntCmp { pred: SignedGreater, dest: bad2, lhs: end_place, rhs: len }
+    ///   Branch { cond: bad2, then: trap_oob_bb, else: cont3_bb }
+    ///
+    /// trap_oob_bb:
+    ///   Trap { kind: IndexOutOfBounds }
+    ///
+    /// cont3_bb:
+    ///   CallRuntimeAbi { hew_vec_slice_range_T, args: [vec, start, end],
+    ///                    dest: result }
+    /// ```
+    ///
+    /// `SignedGreater` is the right predicate for `start > end` and
+    /// `end > len` because both endpoints are checker-validated i64. The
+    /// inclusive overflow guard runs BEFORE the bounds check so an
+    /// `i64::MAX..=i64::MAX` form traps as `IntegerOverflow` (not
+    /// `IndexOutOfBounds`), matching B-2's discipline that each trap
+    /// reports its true cause.
+    ///
+    /// Element-type dispatch (`hew_vec_slice_range_T`) covers the same
+    /// set as `hew_vec_get_T` (C-2) plus `str`: i32/u32, i64/u64, f64,
+    /// Named heap (ptr), and `String`. For Vec<String> the runtime
+    /// strdups each element into the fresh vec and sets `elem_kind ==
+    /// String` so the existing free-on-drop path frees them.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "explicit CFG construction: each block + bounds-check branch is its own \
+                  step; splitting would obscure the trap-graph shape"
+    )]
+    fn lower_vec_slice(
+        &mut self,
+        container: &HirExpr,
+        start: Option<&HirExpr>,
+        end: Option<&HirExpr>,
+        inclusive: bool,
+        result_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // Resolve element type from the result Vec<T> for runtime dispatch.
+        let elem_ty = match result_ty {
+            ResolvedTy::Named { name, args } if name == "Vec" && !args.is_empty() => {
+                args[0].clone()
+            }
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!(
+                            "Vec range-slice result type must be Vec<T>; got {other:?}"
+                        ),
+                        site,
+                    },
+                    note: "C-3 range-slice expects the checker to record `Vec<T>` as the \
+                           expression type; receiving anything else indicates a checker/HIR \
+                           boundary violation upstream"
+                        .to_string(),
+                });
+                return None;
+            }
+        };
+
+        let slice_symbol = match &elem_ty {
+            ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_slice_range_i32",
+            ResolvedTy::I64 | ResolvedTy::U64 => "hew_vec_slice_range_i64",
+            ResolvedTy::F64 => "hew_vec_slice_range_f64",
+            ResolvedTy::String => "hew_vec_slice_range_str",
+            // Pointer-shaped heap handles (Duplex/LambdaActor/Named types).
+            ResolvedTy::Named { .. } => "hew_vec_slice_range_ptr",
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!("Vec<{other:?}> element type for xs[a..b]"),
+                        site,
+                    },
+                    note: "hew_vec_slice_range_T dispatch: element types supported are \
+                           i32/u32, i64/u64, f64, str (String), and Named heap types. \
+                           bool/char and other scalars map to i32/i64 in a future \
+                           width-normalisation slice."
+                        .to_string(),
+                });
+                return None;
+            }
+        };
+
+        let vec_place = self.lower_value(container)?;
+
+        // Resolve start. Open `start` materialises as ConstI64(0).
+        let start_place = if let Some(s) = start {
+            self.lower_value(s)?
+        } else {
+            let p = self.alloc_local(ResolvedTy::I64);
+            self.instructions
+                .push(Instr::ConstI64 { dest: p, value: 0 });
+            p
+        };
+
+        // Resolve end. Open `end` materialises as `hew_vec_len(vec)`.
+        // For inclusive `a..=b`, lower `b` first then add 1 with overflow trap.
+        let end_place = if let Some(e) = end {
+            let base = self.lower_value(e)?;
+            if inclusive {
+                // b + 1 via IntArithChecked(Add, Signed). The endpoint is i64
+                // per the checker; overflow on i64::MAX traps as
+                // TrapKind::IntegerOverflow.
+                let one_place = self.alloc_local(ResolvedTy::I64);
+                self.instructions.push(Instr::ConstI64 {
+                    dest: one_place,
+                    value: 1,
+                });
+                let bumped = self.alloc_local(ResolvedTy::I64);
+                let overflow_flag = self.alloc_local(ResolvedTy::Bool);
+                self.instructions.push(Instr::IntArithChecked {
+                    op: IntArithOp::Add,
+                    signed: IntSignedness::Signed,
+                    dest: bumped,
+                    lhs: base,
+                    rhs: one_place,
+                    overflow_flag,
+                });
+                let overflow_trap_bb = self.alloc_block();
+                let after_inc_bb = self.alloc_block();
+                self.finish_current_block(Terminator::Branch {
+                    cond: overflow_flag,
+                    then_target: overflow_trap_bb,
+                    else_target: after_inc_bb,
+                });
+                self.start_block(overflow_trap_bb);
+                self.finish_current_block(Terminator::Trap {
+                    kind: TrapKind::IntegerOverflow,
+                });
+                self.start_block(after_inc_bb);
+                bumped
+            } else {
+                base
+            }
+        } else {
+            // Open end: probe length via hew_vec_len.
+            let p = self.alloc_local(ResolvedTy::I64);
+            self.instructions.push(Instr::CallRuntimeAbi(
+                crate::model::RuntimeCall::new("hew_vec_len", vec![vec_place], Some(p))
+                    .expect("hew_vec_len is an allowlisted runtime symbol"),
+            ));
+            p
+        };
+
+        // Bounds check 1: start <= end. Implemented as `start > end` ?
+        // → trap_oob.
+        let oob_trap_bb = self.alloc_block();
+        let after_check1_bb = self.alloc_block();
+        let bad1 = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            dest: bad1,
+            pred: CmpPred::SignedGreater,
+            lhs: start_place,
+            rhs: end_place,
+        });
+        self.finish_current_block(Terminator::Branch {
+            cond: bad1,
+            then_target: oob_trap_bb,
+            else_target: after_check1_bb,
+        });
+
+        // Bounds check 2 (in the success-of-check-1 block): end <= len.
+        // Re-probe len here so the comparison uses the post-inclusive-bump
+        // end against the current container length.
+        self.start_block(after_check1_bb);
+        let len_place = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new("hew_vec_len", vec![vec_place], Some(len_place))
+                .expect("hew_vec_len is an allowlisted runtime symbol"),
+        ));
+        let bad2 = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            dest: bad2,
+            pred: CmpPred::SignedGreater,
+            lhs: end_place,
+            rhs: len_place,
+        });
+        let after_check2_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: bad2,
+            then_target: oob_trap_bb,
+            else_target: after_check2_bb,
+        });
+
+        // Single shared OOB trap block for both bounds-check branches.
+        self.start_block(oob_trap_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::IndexOutOfBounds,
+        });
+
+        // Success path: emit the runtime slice call. The result is a fresh
+        // `*mut HewVec<T>` handle (ptr-shaped local typed as Vec<T>).
+        self.start_block(after_check2_bb);
+        let result_place = self.alloc_local(result_ty.clone());
+        self.instructions.push(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(
+                slice_symbol,
+                vec![vec_place, start_place, end_place],
+                Some(result_place),
+            )
+            .expect("hew_vec_slice_range_T is an allowlisted runtime symbol"),
+        ));
+
+        Some(result_place)
+    }
+
     /// Lower a recognised `hew_*` runtime-ABI call to
     /// `Instr::CallRuntimeAbi`.
     ///
@@ -1690,6 +2654,52 @@ impl Builder {
     // WHY: MIR names semantics; address materialisation is a codegen-target concern.
     // WHEN obsolete: when E4's lower_instr arm is wired and tested for each of these conventions.
     // WHAT: replace with direct LLVMBuildCall emission for each symbol group.
+    /// Emit `Instr::CallDirect` for a static call to a user-defined function
+    /// in the same module. Arguments are lowered left-to-right; if any
+    /// argument fails to produce a Place (an unsupported construct in its
+    /// own right), the whole call fails closed and returns `None` —
+    /// diagnostics from the argument lowering already capture the root cause.
+    ///
+    /// The `dest` Place is allocated here and written by the emitted
+    /// `Instr::CallDirect`. For void-return functions (`ret_ty` is
+    /// `ResolvedTy::Unit`) the dest is `None`; the instruction emits
+    /// only the call with no result binding. For all other return types
+    /// a fresh local is allocated and returned so the caller can bind it.
+    fn lower_direct_call(
+        &mut self,
+        callee_symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        ret_ty: &ResolvedTy,
+        _site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // Lower each argument left-to-right.  If any fails to produce a
+        // Place, fail the whole call — argument diagnostics already capture
+        // the root cause.
+        let mut arg_places = Vec::with_capacity(hir_args.len());
+        for arg in hir_args {
+            match self.lower_value(arg) {
+                Some(p) => arg_places.push(p),
+                None => return None,
+            }
+        }
+
+        // Allocate a destination local for the return value, unless the
+        // callee is declared void (Unit return type).
+        let dest = if matches!(ret_ty, ResolvedTy::Unit) {
+            None
+        } else {
+            Some(self.alloc_local(ret_ty.clone()))
+        };
+
+        self.instructions.push(Instr::CallDirect {
+            callee_symbol: callee_symbol.to_string(),
+            args: arg_places,
+            dest,
+        });
+
+        dest
+    }
+
     fn lower_runtime_call(
         &mut self,
         symbol: &str,
@@ -2884,17 +3894,28 @@ fn transfer_block_split(
 /// Return every `Place` mentioned by a backend `Instr`. Used by the
 /// cross-block split-state seed pass to discover which parent
 /// locals participate in the dataflow.
+#[allow(
+    clippy::match_same_arms,
+    reason = "int and float arithmetic arms share the same place-extraction shape but \
+              represent semantically distinct ops; consolidating would force a later \
+              re-split when codegen needs per-op dispatch"
+)]
 fn instr_places(instr: &Instr) -> Vec<Place> {
     match instr {
-        Instr::ConstI64 { dest, .. } => vec![*dest],
+        // ConstI64 and StringLit both produce only their dest place.
+        Instr::ConstI64 { dest, .. } | Instr::StringLit { dest, .. } => vec![*dest],
         Instr::IntAdd { dest, lhs, rhs }
         | Instr::IntSub { dest, lhs, rhs }
         | Instr::IntMul { dest, lhs, rhs }
         | Instr::IntDiv { dest, lhs, rhs, .. }
         | Instr::IntRem { dest, lhs, rhs, .. }
+        | Instr::IntBitAnd { dest, lhs, rhs }
+        | Instr::IntBitOr { dest, lhs, rhs }
+        | Instr::IntBitXor { dest, lhs, rhs }
         | Instr::IntShl { dest, lhs, rhs }
         | Instr::IntShr { dest, lhs, rhs, .. }
-        | Instr::IntCmp { dest, lhs, rhs, .. } => vec![*dest, *lhs, *rhs],
+        | Instr::IntCmp { dest, lhs, rhs, .. }
+        | Instr::IdentityCompare { dest, lhs, rhs } => vec![*dest, *lhs, *rhs],
         Instr::IntArithChecked {
             dest,
             lhs,
@@ -2913,6 +3934,44 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             let mut places: Vec<Place> = call.args().to_vec();
             if let Some(d) = call.dest() {
                 places.push(d);
+            }
+            places
+        }
+        Instr::RecordInit { fields, dest, .. } => {
+            let mut places: Vec<Place> = fields.iter().map(|(_, p)| *p).collect();
+            places.push(*dest);
+            places
+        }
+        Instr::RecordFieldLoad { record, dest, .. } => vec![*record, *dest],
+        Instr::TupleFieldLoad { tuple, dest, .. } => vec![*tuple, *dest],
+        Instr::FloatLit { dest, .. } => vec![*dest],
+        Instr::FloatAdd { dest, lhs, rhs, .. }
+        | Instr::FloatSub { dest, lhs, rhs, .. }
+        | Instr::FloatMul { dest, lhs, rhs, .. }
+        | Instr::FloatDiv { dest, lhs, rhs, .. }
+        | Instr::FloatRem { dest, lhs, rhs, .. } => vec![*dest, *lhs, *rhs],
+        // Char, Unit, and Duration literals each produce only their dest place
+        // (no operand places). Grouped with the existing dest-only pattern
+        // for clarity; kept as separate arms per the `match_same_arms` allow
+        // above — they are semantically distinct even if the extraction shape
+        // is identical.
+        Instr::CharLit { dest, .. } | Instr::UnitLit { dest } | Instr::DurationLit { dest, .. } => {
+            vec![*dest]
+        }
+        Instr::CallDirect {
+            callee_symbol: _,
+            args,
+            dest,
+        } => {
+            // All argument Places are live at the call site (read),
+            // and the dest Place (if present) is written. Surface all
+            // so the cross-block split-state seed pass and dataflow
+            // passes can observe value movement through user function
+            // calls. Field names are all destructured explicitly (no `..`)
+            // so a future field addition produces a compile error here.
+            let mut places: Vec<Place> = args.clone();
+            if let Some(d) = dest {
+                places.push(*d);
             }
             places
         }

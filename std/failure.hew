@@ -1,0 +1,48 @@
+//! Failure-philosophy stdlib types for `#[on(crash)]` / `#[on(upgrade)]`
+//! lifecycle hooks.
+//!
+//! Import `std::failure` to name `PanicInfo` or `CrashAction` explicitly
+//! in a `#[on(crash)]` hook's signature.  Both types are also pre-bound
+//! in the inline-test checker (no `std` search path required) via
+//! `register_builtin_failure_surface` so isolated fixtures can pin the
+//! hook signature without importing.
+//!
+//! ## `PanicInfo` is int-tag only for v0.5
+//!
+//! WHY: the codegen-rs spine does not yet accept `String` / `Function` /
+//! `Closure` types as struct fields (S9 in the spine-widening registry).
+//! WHEN: replace `code` with a richer payload after the spine-widening
+//! lane (Q20 (c) of the failure-philosophy plan) lands.
+//! WHAT: the real shape grows a string field carrying the panic message
+//! and a stack-pointer-style cursor for trampoline diagnostics.  Until
+//! then, `code` is an opaque integer discriminator the runtime sets per
+//! crash class (arena exhaustion, link-cascade, explicit panic, …).
+
+/// Diagnostic payload passed to `#[on(crash)]` hooks.
+///
+/// The integer `code` discriminates crash classes; the v0.5 runtime sets
+/// it before invoking `on_crash`.  Hooks may match on `code` to decide a
+/// `CrashAction`, but the canonical reading is "any non-zero code is a
+/// real fault — the hook's job is to choose between Restart, Escalate,
+/// and Kill".  See `JOURNEY.md` for the per-code assignment plan.
+pub type PanicInfo {
+    code: int;
+}
+
+/// Advisory return value of a `#[on(crash)]` hook.
+///
+/// The supervisor consults the returned variant but honours its own
+/// restart-budget rules; if the budget is exhausted the supervisor
+/// escalates regardless of what the hook requested (per Q46 / A23 of
+/// the failure-philosophy plan).
+///
+/// - `Restart`: re-spawn the actor under the same supervisor (default
+///   when no hook is registered).
+/// - `Escalate`: propagate the failure to the supervisor's supervisor
+///   instead of restarting locally.
+/// - `Kill`: terminate the actor permanently; no restart attempt.
+pub enum CrashAction {
+    Restart;
+    Escalate;
+    Kill;
+}

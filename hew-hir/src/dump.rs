@@ -3,6 +3,11 @@ use std::fmt::Write as _;
 use crate::node::{HirExpr, HirExprKind, HirItem, HirModule, HirStmtKind};
 
 #[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "single match on HirItem variants; each arm renders one item kind \
+              and splitting would obscure per-variant locality"
+)]
 pub fn dump_hir(module: &HirModule) -> String {
     let mut out = String::new();
     for item in &module.items {
@@ -93,6 +98,68 @@ pub fn dump_hir(module: &HirModule) -> String {
                     .expect("write to string");
                 }
             }
+            HirItem::Record(record) => {
+                writeln!(out, "record {} {}", record.id, record.name).expect("write to string");
+                for field in &record.fields {
+                    writeln!(out, "  field {}: {}", field.name, field.ty.user_facing())
+                        .expect("write to string");
+                }
+            }
+            HirItem::Actor(actor) => {
+                writeln!(
+                    out,
+                    "actor {} {} isolated={} max_heap={:?} mailbox={:?} cycle_capable={}",
+                    actor.id,
+                    actor.name,
+                    actor.is_isolated,
+                    actor.max_heap_bytes,
+                    actor.mailbox_capacity,
+                    actor.cycle_capable
+                )
+                .expect("write to string");
+                for field in &actor.state_fields {
+                    writeln!(out, "  field {}: {}", field.name, field.ty.user_facing())
+                        .expect("write to string");
+                }
+                if let Some(init) = &actor.init {
+                    writeln!(out, "  init params={}", init.params.len()).expect("write to string");
+                }
+                for rf in &actor.receive_handlers {
+                    writeln!(
+                        out,
+                        "  receive {} params={} -> {} every_ns={:?}",
+                        rf.name,
+                        rf.params.len(),
+                        rf.return_ty.user_facing(),
+                        rf.every_ns
+                    )
+                    .expect("write to string");
+                }
+                for m in &actor.methods {
+                    writeln!(
+                        out,
+                        "  method {} params={} -> {}",
+                        m.name,
+                        m.params.len(),
+                        m.return_ty.user_facing()
+                    )
+                    .expect("write to string");
+                }
+                for h in &actor.lifecycle_hooks {
+                    writeln!(
+                        out,
+                        "  on({:?}) {} params={} -> {}",
+                        h.kind,
+                        h.name,
+                        h.params.len(),
+                        h.return_ty.user_facing()
+                    )
+                    .expect("write to string");
+                }
+            }
+            HirItem::Supervisor(sup) => {
+                writeln!(out, "supervisor {} {}", sup.id, sup.name).expect("write to string");
+            }
         }
     }
     out
@@ -127,6 +194,11 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             dump_expr(out, left, indent + 4);
             dump_expr(out, right, indent + 4);
         }
+        HirExprKind::IdentityCompare { left, right } => {
+            writeln!(out, "{pad}  identity-compare").expect("write to string");
+            dump_expr(out, left, indent + 4);
+            dump_expr(out, right, indent + 4);
+        }
         HirExprKind::Call { callee, args } => {
             writeln!(out, "{pad}  call").expect("write to string");
             dump_expr(out, callee, indent + 4);
@@ -140,11 +212,22 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::If { .. } => {
             writeln!(out, "{pad}  if").expect("write to string");
         }
-        HirExprKind::StructInit { name, fields, .. } => {
+        HirExprKind::StructInit {
+            name, fields, base, ..
+        } => {
             writeln!(out, "{pad}  struct-init {name}").expect("write to string");
-            for (_, value) in fields {
-                dump_expr(out, value, indent + 4);
+            for (field_name, value) in fields {
+                writeln!(out, "{pad}    .{field_name}").expect("write to string");
+                dump_expr(out, value, indent + 6);
             }
+            if let Some(base) = base {
+                writeln!(out, "{pad}    ..base").expect("write to string");
+                dump_expr(out, base, indent + 6);
+            }
+        }
+        HirExprKind::FieldAccess { object, field } => {
+            writeln!(out, "{pad}  field-access .{field}").expect("write to string");
+            dump_expr(out, object, indent + 4);
         }
         HirExprKind::Scope { body } => {
             writeln!(out, "{pad}  scope scope={}", body.scope).expect("write to string");
@@ -243,6 +326,35 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::TupleIndex { tuple, index } => {
             writeln!(out, "{pad}  tuple-index .{index}").expect("write to string");
             dump_expr(out, tuple, indent + 4);
+        }
+        HirExprKind::Index { container, index } => {
+            writeln!(out, "{pad}  vec-index").expect("write to string");
+            dump_expr(out, container, indent + 4);
+            dump_expr(out, index, indent + 4);
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            inclusive,
+        } => {
+            let kind = if *inclusive {
+                "vec-slice-inclusive"
+            } else {
+                "vec-slice"
+            };
+            writeln!(out, "{pad}  {kind}").expect("write to string");
+            dump_expr(out, container, indent + 4);
+            if let Some(s) = start {
+                dump_expr(out, s, indent + 4);
+            } else {
+                writeln!(out, "{pad}    start (open)").expect("write to string");
+            }
+            if let Some(e) = end {
+                dump_expr(out, e, indent + 4);
+            } else {
+                writeln!(out, "{pad}    end (open)").expect("write to string");
+            }
         }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");

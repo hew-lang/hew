@@ -54,12 +54,12 @@ supervisor Pool {
 fn main() {
     println("=== Supervised Worker Pool ===");
     println("");
-    let pool = spawn Pool;
+    let sup = spawn Pool;
     sleep_ms(30);
-    let w0 = supervisor_child(pool, 0);
-    let w1 = supervisor_child(pool, 1);
-    let w2 = supervisor_child(pool, 2);
-    let w3 = supervisor_child(pool, 3);
+    let w0 = supervisor_child(sup, 0);
+    let w1 = supervisor_child(sup, 1);
+    let w2 = supervisor_child(sup, 2);
+    let w3 = supervisor_child(sup, 3);
     // ── Fan-out: distribute work, collect all results ──
     println("--- Fan-out: 4 jobs across 4 workers ---");
     let (r0, r1, r2, r3) = join {
@@ -89,7 +89,7 @@ fn main() {
     sleep_ms(200);
 
     // Supervisor has already restarted worker 2 — get the fresh handle
-    let w2_new = supervisor_child(pool, 2);
+    let w2_new = supervisor_child(sup, 2);
     println("--- Post-crash fan-out ---");
     let (p, q, r, s) = join {
         w0.compute(5),

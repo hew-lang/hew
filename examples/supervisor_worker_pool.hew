@@ -52,13 +52,13 @@ supervisor WorkerPool {
 }
 
 fn main() {
-    let pool = spawn WorkerPool;
+    let sup = spawn WorkerPool;
     sleep_ms(30);
 
     // Get worker handles (typed — the compiler knows these are Worker actors)
-    let w1 = supervisor_child(pool, 0);
-    let w2 = supervisor_child(pool, 1);
-    let w3 = supervisor_child(pool, 2);
+    let w1 = supervisor_child(sup, 0);
+    let w2 = supervisor_child(sup, 1);
+    let w3 = supervisor_child(sup, 2);
     // Round-robin some work
     w1.process(100);
     w2.process(200);
@@ -75,7 +75,7 @@ fn main() {
     // Workers 1 and 3 are unaffected.
     // Worker 2 has been restarted with fresh state (processed=0).
     println("--- after restart, all workers operational ---");
-    let w2_new = supervisor_child(pool, 1);
+    let w2_new = supervisor_child(sup, 1);
     w1.process(102);
     w2_new.process(202);
     w3.process(301);

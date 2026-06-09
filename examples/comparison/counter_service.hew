@@ -38,9 +38,9 @@ fn main() {
     println("=== Hew Counter Service ===");
 
     // Spawn the supervisor — it starts and monitors the Counter children.
-    let pool = spawn CounterPool;
-    let c1 = supervisor_child(pool, 0);
-    let c2 = supervisor_child(pool, 1);
+    let sup = spawn CounterPool;
+    let c1 = supervisor_child(sup, 0);
+    let c2 = supervisor_child(sup, 1);
     // Increment each independently — no shared state.
     c1.increment(10);
     c1.increment(5);

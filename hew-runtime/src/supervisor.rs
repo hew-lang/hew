@@ -179,6 +179,26 @@ const RESTART_TEMPORARY: c_int = 2;
 /// for any other exit kind.
 pub const HEW_TRAP_HEAP_EXCEEDED: i32 = 200;
 
+/// Error code recorded when a MIR `Terminator::Trap { kind: IntegerOverflow }`
+/// fires inside an actor dispatch. Routed through the longjmp crash seam by
+/// `hew_trap_with_code` so the supervisor can distinguish overflow from a
+/// raw SIGILL (the LLVM `llvm.trap` fallback on non-actor contexts).
+pub const HEW_TRAP_INTEGER_OVERFLOW: i32 = 201;
+
+/// Error code recorded for `Terminator::Trap { kind: DivideByZero }`.
+pub const HEW_TRAP_DIVIDE_BY_ZERO: i32 = 202;
+
+/// Error code recorded for `Terminator::Trap { kind: SignedMinDivNegOne }`
+/// — signed integer division of the minimum value by `-1`, whose mathematical
+/// result is not representable in the operand width.
+pub const HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE: i32 = 203;
+
+/// Error code recorded for `Terminator::Trap { kind: ShiftOutOfRange }`.
+pub const HEW_TRAP_SHIFT_OUT_OF_RANGE: i32 = 204;
+
+/// Error code recorded for `Terminator::Trap { kind: IndexOutOfBounds }`.
+pub const HEW_TRAP_INDEX_OUT_OF_BOUNDS: i32 = 205;
+
 /// Named exit reason for a crashed actor.
 ///
 /// Interprets the i32 `error_code` stored on a `HewActor` after a crash.
@@ -195,6 +215,23 @@ pub enum ExitReason {
     /// `error_code`, so teardown (timers, links, monitors, arena) runs as
     /// for any other crash (`cleanup-all-exits` LESSON).
     HeapExceeded,
+    /// Actor crashed because a `Terminator::Trap { kind: IntegerOverflow }`
+    /// fired during dispatch (error code 201). The MIR producer attaches
+    /// this kind to `+`, `-`, `*` overflow on the default (non-wrapping)
+    /// operators; codegen routes through `hew_trap_with_code(201)` before
+    /// emitting `llvm.trap` as the non-actor fallback.
+    IntegerOverflow,
+    /// Actor crashed on `/` or `%` with a zero divisor (error code 202).
+    DivideByZero,
+    /// Actor crashed on signed `i{N}::MIN / -1` (error code 203), whose
+    /// mathematical result overflows the operand width.
+    SignedMinDivNegOne,
+    /// Actor crashed on `<<` or `>>` with a shift count outside `[0, width)`
+    /// (error code 204).
+    ShiftOutOfRange,
+    /// Actor crashed on an out-of-bounds index into a `Vec<T>` or array
+    /// (error code 205).
+    IndexOutOfBounds,
     /// Actor crashed with a hardware signal (SIGSEGV, SIGBUS, SIGFPE, SIGILL)
     /// or via `hew_panic()` / `hew_panic_msg()`. The raw signal number is
     /// preserved.
@@ -211,8 +248,41 @@ impl ExitReason {
         match code {
             0 => ExitReason::Normal,
             HEW_TRAP_HEAP_EXCEEDED => ExitReason::HeapExceeded,
+            HEW_TRAP_INTEGER_OVERFLOW => ExitReason::IntegerOverflow,
+            HEW_TRAP_DIVIDE_BY_ZERO => ExitReason::DivideByZero,
+            HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE => ExitReason::SignedMinDivNegOne,
+            HEW_TRAP_SHIFT_OUT_OF_RANGE => ExitReason::ShiftOutOfRange,
+            HEW_TRAP_INDEX_OUT_OF_BOUNDS => ExitReason::IndexOutOfBounds,
             sig => ExitReason::Signal(sig),
         }
+    }
+}
+
+/// C-ABI trap entry-point invoked by codegen-emitted IR before the
+/// `llvm.trap` terminator on a `Terminator::Trap { kind }` block.
+///
+/// Inside an actor-dispatch context, this records `code` as the actor's
+/// crash reason and longjmps back to the scheduler's recovery frame —
+/// matching the `HEW_TRAP_HEAP_EXCEEDED` precedent. Outside a dispatch
+/// context (top-level `main`, `hew eval` REPL, JIT preview) there is no
+/// recovery context; `try_direct_longjmp_with_code` is a no-op and this
+/// function returns. The caller's `llvm.trap` then aborts the process
+/// with SIGILL, preserving today's behaviour for non-actor crashes.
+///
+/// # Safety
+///
+/// Must be called from a worker thread that may or may not be in a
+/// dispatch context; the underlying `try_direct_longjmp_with_code` is
+/// safe to call in either case (it checks the thread-local recovery
+/// context). Codegen always pairs the call with `llvm.trap` +
+/// `unreachable` to keep the LLVM basic block terminated when the
+/// longjmp path is inactive.
+#[no_mangle]
+pub unsafe extern "C" fn hew_trap_with_code(code: i32) {
+    // SAFETY: `try_direct_longjmp_with_code` checks the per-thread
+    // recovery context internally; it is a no-op when none is active.
+    unsafe {
+        crate::signal::try_direct_longjmp_with_code(code);
     }
 }
 
@@ -259,6 +329,11 @@ pub struct HewChildSpec {
     pub restart_policy: c_int,
     pub mailbox_capacity: c_int,
     pub overflow: c_int,
+    /// Per-dispatch arena cap in bytes. 0 = unbounded. Mirrors
+    /// `hew_actor_spawn_opts::arena_cap_bytes`; supervisor restart path
+    /// re-applies this cap to every restarted child so `#[max_heap(N)]`
+    /// actors retain their cap across crashes.
+    pub arena_cap_bytes: usize,
 }
 
 /// Child lifecycle event (sent as system message payload).
@@ -387,6 +462,11 @@ struct InternalChildSpec {
     next_restart_time_ns: u64,
     /// Circuit breaker state for this child.
     circuit_breaker: CircuitBreakerState,
+    /// Per-dispatch arena cap in bytes. 0 = unbounded. Copied from
+    /// `HewChildSpec::arena_cap_bytes` at spec-registration time and
+    /// applied by every restart path so restarted actors keep the cap
+    /// originally set by `#[max_heap(N)]`.
+    arena_cap_bytes: usize,
     /// Codegen-emitted drop callback for owned state fields (e.g. `Vec`, `String`).
     /// Registered via [`hew_supervisor_set_child_state_drop`] after the child spec
     /// is added. Every restart path calls this on the newly spawned actor so that
@@ -425,6 +505,7 @@ impl Default for InternalChildSpec {
             max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
             next_restart_time_ns: 0,
             circuit_breaker: CircuitBreakerState::default(),
+            arena_cap_bytes: 0,
             state_drop_fn: None,
         }
     }
@@ -982,14 +1063,7 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             coalesce_key_fn: None,
             coalesce_fallback: HewOverflowPolicy::DropOld as c_int,
             budget: 0,
-            // WHY: InternalChildSpec does not yet carry arena_cap_bytes; the
-            // supervisor restart path therefore spawns restarted actors with
-            // an unbounded arena even when the original had #[max_heap].
-            // WHEN: Obsolete once hew_supervisor_add_child_spec carries and
-            // threads the cap through InternalChildSpec.
-            // WHAT: Add arena_cap_bytes to InternalChildSpec + HewChildSpec
-            // and plumb it through hew_supervisor_add_child_spec.
-            arena_cap_bytes: 0,
+            arena_cap_bytes: spec.arena_cap_bytes,
         };
         (opts, spec.state_drop_fn)
     };
@@ -1507,6 +1581,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
         next_restart_time_ns: 0,
         circuit_breaker: CircuitBreakerState::default(),
+        arena_cap_bytes: sp.arena_cap_bytes,
         // Registered by hew_supervisor_set_child_state_drop after this call.
         state_drop_fn: None,
     });
@@ -1744,6 +1819,7 @@ mod tests {
                 restart_policy: RESTART_TEMPORARY,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             assert_eq!(hew_supervisor_start(sup), 0);
@@ -2417,6 +2493,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
         next_restart_time_ns: 0,
         circuit_breaker: CircuitBreakerState::default(),
+        arena_cap_bytes: sp.arena_cap_bytes,
         // Registered by the caller via hew_supervisor_set_child_state_drop
         // immediately after this call returns. See the function doc comment
         // for the race-window analysis and calling contract.

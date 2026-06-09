@@ -190,6 +190,10 @@ pub enum Token<'src> {
     OneForAll,
     #[token("rest_for_one")]
     RestForOne,
+    #[token("simple_one_for_one")]
+    SimpleOneForOne,
+    #[token("pool")]
+    Pool,
     #[token("scope")]
     Scope,
     #[token("fork")]
@@ -621,9 +625,11 @@ define_keywords! {
     Permanent  => "permanent",
     Transient  => "transient",
     Temporary  => "temporary",
-    OneForOne  => "one_for_one",
-    OneForAll  => "one_for_all",
-    RestForOne => "rest_for_one",
+    OneForOne        => "one_for_one",
+    OneForAll        => "one_for_all",
+    RestForOne       => "rest_for_one",
+    SimpleOneForOne  => "simple_one_for_one",
+    Pool             => "pool",
     Scope      => "scope",
     Fork       => "fork",
     Spawn      => "spawn",
@@ -785,12 +791,13 @@ mod tests {
         let src = "let var const fn if else match loop for while break continue return \
                    import pub package super struct enum trait impl wire actor \
                    supervisor child restart budget strategy permanent transient temporary \
-                   one_for_one one_for_all rest_for_one scope fork spawn async await receive \
+                   one_for_one one_for_all rest_for_one simple_one_for_one pool \
+                   scope fork spawn async await receive \
                    init type this dyn move try true false reserved optional deprecated \
                    default unsafe extern foreign in select race join from after gen yield \
                    where cooperate catch defer is";
         let toks = tokens(src);
-        assert_eq!(toks.len(), 68);
+        assert_eq!(toks.len(), 70);
         // Spot-check first and last
         assert_eq!(toks[0], Token::Let);
         assert_eq!(toks[67], Token::Is);

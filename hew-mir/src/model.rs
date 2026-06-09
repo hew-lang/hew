@@ -21,6 +21,37 @@ pub struct IrPipeline {
     pub checked_mir: Vec<CheckedMirFunction>,
     pub elaborated_mir: Vec<ElaboratedMirFunction>,
     pub diagnostics: Vec<MirDiagnostic>,
+    /// Layout descriptors for every named-form `record` declaration in the
+    /// module. Populated by `lower_hir_module` from the same `HirItem::Record`
+    /// walk that builds the field-order table. Codegen (`hew-codegen-rs`)
+    /// consumes this to register LLVM named struct types and resolve the
+    /// `ResolvedTy::Named { name, .. }` of record-typed locals to the
+    /// corresponding struct layout for alloca / GEP emission.
+    ///
+    /// Tuple-form records (`record Pair(int, int)`) are NOT included here:
+    /// their `HirRecordDecl.fields` is empty (the parser keeps positional
+    /// fields on the `RecordKind::Tuple` discriminator, which the HIR lowerer
+    /// does not promote into `HirField`s). Tuple records construct via
+    /// `Expr::Call`, not `StructInit`, so they never produce `RecordInit`
+    /// or `RecordFieldLoad` instructions and need no codegen layout entry
+    /// in this slice.
+    pub record_layouts: Vec<RecordLayout>,
+}
+
+/// Layout descriptor for a named-form `record` declaration. The codegen
+/// emitter materialises this as an LLVM named struct type whose body is the
+/// field-type list in declaration order. Field-name resolution to the
+/// `FieldOffset` ordinal has already been performed by the MIR producer at
+/// `RecordInit` / `RecordFieldLoad` construction time, so codegen consumes
+/// only the positional type list here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordLayout {
+    /// Record type name. Matches the `name` field on
+    /// `ResolvedTy::Named { name, .. }` for a record-typed local.
+    pub name: String,
+    /// Field types in declaration order. Index `i` corresponds to
+    /// `FieldOffset(i)`.
+    pub field_tys: Vec<ResolvedTy>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,10 +65,22 @@ pub struct ThirFunction {
 pub struct RawMirFunction {
     pub name: String,
     pub return_ty: ResolvedTy,
+    /// Declared parameter types in declaration order. `params[i]` is the
+    /// `ResolvedTy` of the i-th function parameter. Codegen uses this to
+    /// declare the LLVM function signature and to emit the parameter-prologue
+    /// (store each `llvm_fn.get_nth_param(i)` into `locals[i]`).
+    ///
+    /// Invariant: `params.len()` equals the number of initial `locals` entries
+    /// that correspond to parameter slots. The lowering pass allocates one
+    /// `Place::Local` per parameter at the top of `function_body` — these
+    /// occupy `locals[0..params.len()]` — and subsequent body-local
+    /// allocations begin at `locals[params.len()]`.
+    pub params: Vec<ResolvedTy>,
     /// Type-indexed local registers consumed by the backend-authority `Instr`
     /// stream. `locals[i]` is the `ResolvedTy` of `Place::Local(i as u32)`.
     /// The lowering pass allocates one local per value-producing HIR
-    /// expression and per `Let`-introduced binding.
+    /// expression and per `Let`-introduced binding. Parameters occupy
+    /// `locals[0..params.len()]` (see `params` invariant above).
     pub locals: Vec<ResolvedTy>,
     pub blocks: Vec<BasicBlock>,
     pub decisions: Vec<DecisionFact>,
@@ -392,6 +435,23 @@ pub enum IntSignedness {
     Unsigned,
 }
 
+/// Width discriminator for float instructions. Carried on every
+/// `Instr::FloatLit` and `Instr::Float*` variant so codegen can select
+/// the correct LLVM float type (`float` vs `double`) without re-deriving
+/// the width from operand locals. Mirrors `IntSignedness` for integers.
+///
+/// No implicit widening: `f32 + f64` is rejected by the type checker
+/// before MIR construction. Same-width operands only reach these
+/// variants, so a single `width` field is sufficient — matches the
+/// design invariant in `IntArithChecked.signed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FloatWidth {
+    /// IEEE 754 single-precision (32-bit).
+    F32,
+    /// IEEE 754 double-precision (64-bit).
+    F64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instr {
     /// `dest = const <value>` as i64.
@@ -432,6 +492,16 @@ pub enum Instr {
         lhs: Place,
         rhs: Place,
     },
+    /// Bitwise AND `dest = lhs & rhs`. Well-defined for all bit widths and
+    /// signednesses; no traps, no overflow. Operands and dest must share the
+    /// same integer type (enforced upstream by the type checker).
+    IntBitAnd { dest: Place, lhs: Place, rhs: Place },
+    /// Bitwise OR `dest = lhs | rhs`. Same well-defined semantics as
+    /// `IntBitAnd`; no traps or overflow conditions.
+    IntBitOr { dest: Place, lhs: Place, rhs: Place },
+    /// Bitwise XOR `dest = lhs ^ rhs`. Same well-defined semantics as
+    /// `IntBitAnd`; no traps or overflow conditions.
+    IntBitXor { dest: Place, lhs: Place, rhs: Place },
     /// Left shift `dest = lhs << rhs`. No signedness on the shift
     /// itself (LLVM `shl`). Producers must check `(rhs as unsigned) >=
     /// bit_width(dest)` before emitting this instruction and branch to
@@ -493,6 +563,28 @@ pub enum Instr {
         lhs: Place,
         rhs: Place,
     },
+    /// `dest = (lhs is rhs)` — pointer/handle identity comparison.
+    ///
+    /// Produced exclusively from `HirExprKind::IdentityCompare`, which the
+    /// HIR lowering emits for `Expr::Is` once the checker (D-2) has
+    /// validated that both operands are identity-bearing types (actor refs,
+    /// `Vec`, `HashMap`, `HashSet`, `bytes`, machine instances, user named
+    /// `type` declarations). The result is a boolean (`1` = same identity,
+    /// `0` = distinct identities), stored in `dest`.
+    ///
+    /// Codegen (D-3): for pointer-shaped LLVM values (`ptr` alloca, i.e.
+    /// `ResolvedTy::Named { name: "Duplex", .. }` and future heap-backed
+    /// types), `ptrtoint` both operands to `i64`, compare with `icmp eq`,
+    /// then `zext` the `i1` result to the dest's stored width. For
+    /// machine-id integers (encoded as stable `i64` identifiers by the
+    /// machine runtime), the `ptrtoint` step is skipped and `icmp eq` is
+    /// applied directly to the loaded integer values.
+    ///
+    /// LESSONS: `checker-authority` (P0) — codegen reads the operand's
+    /// `ResolvedTy` to select between the pointer-path and the integer-path.
+    /// The identity allowance set is the checker's sole responsibility; MIR
+    /// and codegen never re-check which types are allowed.
+    IdentityCompare { dest: Place, lhs: Place, rhs: Place },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
     /// Call into a `hew_*` runtime-ABI entry by name. The carried
@@ -539,6 +631,35 @@ pub enum Instr {
     /// impossible because `RuntimeCall`'s fields are private
     /// (LESSONS P0 `boundary-fail-closed`).
     CallRuntimeAbi(RuntimeCall),
+    /// Direct call to a user-defined function in the same module. The callee
+    /// is identified by its bare function name (the same string that appears
+    /// as `RawMirFunction::name` for the target function). Arguments are
+    /// passed in declaration order and must match the callee's `params` list
+    /// in count; type agreement is enforced by the HIR checker upstream.
+    ///
+    /// `dest = Some(place)` writes the call's return value into `place`;
+    /// `dest = None` is emitted when the caller discards the return value
+    /// (e.g. a void-result call in a statement context). Codegen looks up the
+    /// callee in the `fn_symbols` map populated by `declare_function`, which
+    /// runs over ALL module functions before any body is lowered, so forward
+    /// references are handled correctly.
+    ///
+    /// Indirect calls (closures, higher-order function values) are out of
+    /// scope for this instruction; the producer emits `CutoverUnsupported`
+    /// for those. Only static callee names that appear in the module's
+    /// function-item registry are lowered here.
+    ///
+    /// LESSONS: `boundary-fail-closed` — the callee name is validated against
+    /// `module_fn_names` at MIR construction in `lower_value`; an unrecognised
+    /// name never silently produces a broken `CallDirect`.
+    CallDirect {
+        /// Bare function name matching the callee's `RawMirFunction::name`.
+        callee_symbol: String,
+        /// Argument Places in declaration order.
+        args: Vec<Place>,
+        /// Destination for the return value, or `None` if discarded.
+        dest: Option<Place>,
+    },
     /// Run the drop ritual for `place`. Cluster 3 makes this first-class:
     /// `drop_fn = Some(name)` calls the `@resource` type's declared
     /// `close(consuming self)` method; `drop_fn = None` is a trivial drop
@@ -552,7 +673,232 @@ pub enum Instr {
         ty: ResolvedTy,
         drop_fn: Option<String>,
     },
+    /// `dest = <global_str_ptr>` — emit an LLVM-level global constant for
+    /// `bytes` (null-terminated, internal linkage, read-only) and store the
+    /// pointer into `dest`. The `dest` local's type is `ResolvedTy::String`,
+    /// which codegen maps to an opaque `ptr` (matching the runtime's
+    /// `*const c_char` ABI). No runtime call is made: the pointer refers to
+    /// data in the compiled binary's read-only data segment, so
+    /// `hew_string_drop` safely skips freeing it via its `is_static_string`
+    /// guard. This mirrors the C++ codegen's `hew.global_string` →
+    /// `llvm.mlir.global` + `llvm.mlir.addressof` pattern (codegen.cpp
+    /// `ConstantOpLowering` / `GlobalStringOpLowering`).
+    ///
+    /// Escape decoding: `bytes` carries the already-decoded UTF-8 byte
+    /// sequence from `HirLiteral::String` — the parser's `unescape_string`
+    /// function runs at parse time, so MIR sees decoded bytes. No re-decoding
+    /// is needed here.
+    ///
+    /// Embedded NUL: Hew strings are NUL-terminated C strings at the runtime
+    /// boundary. A literal with an embedded NUL byte would be truncated
+    /// silently at the first NUL by all C-string runtime operations. The
+    /// parser does not produce such literals today; this variant makes no
+    /// additional guarantee beyond what the runtime's C-string contract implies.
+    StringLit {
+        /// Decoded UTF-8 bytes of the literal. LLVM global is emitted as
+        /// `bytes` + one NUL terminator byte.
+        bytes: Vec<u8>,
+        dest: Place,
+    },
+    /// Construct a record value by storing each field into a freshly
+    /// allocated destination place. `fields` carries `(offset, src)`
+    /// pairs in declaration order; `dest` receives the completed record.
+    ///
+    /// The `FieldOffset` is the 0-based index of the field within the
+    /// record's declared field order — the same ordinal that
+    /// `RecordFieldLoad` uses for reads. Codegen (A-7) uses the offset
+    /// to select the struct GEP index for each field store.
+    ///
+    /// Functional-update (`R { x: 1, ..base }`) is desugared by the MIR
+    /// producer: for every field absent from the explicit list it emits a
+    /// `RecordFieldLoad` from the base place, then includes the loaded
+    /// place here as if it were an explicit field. No `base` field is
+    /// needed on this Instr — codegen sees only flat store-each-field.
+    ///
+    /// WHY flat: keeps codegen dumb, makes the checker stream see every
+    /// field read from the base (important for use-after-consume), and
+    /// leaves the memcpy optimisation to A-7 pattern recognition.
+    /// WHEN-OBSOLETE: if A-7 determines a memcpy path is always better
+    ///   for large records, it can introduce a `RecordCopy { base, dest }`
+    ///   variant and route functional-update through it instead.
+    RecordInit {
+        /// Resolved type of the constructed record (used by codegen to
+        /// look up the LLVM struct type for the alloca).
+        ty: ResolvedTy,
+        /// `(field_offset, source_place)` pairs in declaration order.
+        fields: Vec<(FieldOffset, Place)>,
+        /// Destination place that receives the constructed record value.
+        dest: Place,
+    },
+    /// Load a single field from a record value by its declaration-order
+    /// offset. `dest` receives the field value.
+    ///
+    /// Produced from `HirExprKind::FieldAccess { object, field }` after
+    /// the MIR producer resolves the field name to its 0-based
+    /// `FieldOffset` via the record-field-order table.
+    ///
+    /// Codegen (A-7) lowers this to a GEP + load on the record's alloca.
+    RecordFieldLoad {
+        /// The record value to read from.
+        record: Place,
+        /// 0-based index of the field within the record's declared field order.
+        field_offset: FieldOffset,
+        /// Destination place that receives the loaded field value.
+        dest: Place,
+    },
+    /// Load a single element from a tuple value by its 0-based positional index.
+    ///
+    /// Produced from `HirExprKind::TupleIndex { tuple, index }` when the tuple
+    /// sub-expression resolves to a regular tuple-typed local (not a
+    /// `tuple_decomp` runtime-call proxy). The tuple local is laid out as a
+    /// packed LLVM struct (declaration-order positional fields, `packed = false`
+    /// for natural alignment); codegen emits `build_struct_gep(field_index) +
+    /// build_load`.
+    ///
+    /// The `tuple_decomp` proxy path (runtime multi-output calls) bypasses this
+    /// instruction entirely and recovers the individual `Place`s from the side-
+    /// table without emitting any additional instructions. This variant handles
+    /// every other `TupleIndex` site.
+    ///
+    /// Producer: `lower_value`'s `HirExprKind::TupleIndex` arm (general case).
+    /// Codegen: GEP at `field_index` into the tuple's struct alloca + load.
+    TupleFieldLoad {
+        /// The tuple value to read from.
+        tuple: Place,
+        /// 0-based element index (positional declaration order).
+        field_index: u32,
+        /// Destination place that receives the loaded element value.
+        dest: Place,
+    },
+    /// `dest = const <float>` stored as a bit pattern.
+    ///
+    /// `value_bits` is the IEEE 754 bit-pattern of the float constant:
+    /// - For `F32`: `(value as f32).to_bits() as u64` (upper 32 bits zero).
+    /// - For `F64`: `value.to_bits()`.
+    ///
+    /// Storing the bit pattern avoids f32/f64 coercion in the MIR model
+    /// and lets codegen reconstruct the exact constant via
+    /// `f32_type().const_float_from_apfloat` / `f64_type().const_float`.
+    ///
+    /// Producer: `lower_literal` for `HirLiteral::Float`, width from `expr.ty`.
+    FloatLit {
+        dest: Place,
+        value_bits: u64,
+        width: FloatWidth,
+    },
+    /// `dest = const <char>` stored as its Unicode scalar value.
+    ///
+    /// Hew `char` is a Unicode scalar value (U+0000 to U+D7FF and U+E000 to
+    /// U+10FFFF). The scalar value is stored as a `u32` bit pattern; codegen
+    /// maps it to an `i32` constant (matching C's `int32_t` convention for
+    /// Unicode code points). The `u32` encoding is total — Rust's `char as u32`
+    /// never produces a surrogate or out-of-range value.
+    ///
+    /// Producer: `lower_literal` for `HirLiteral::Char`, cast via `c as u32`.
+    CharLit {
+        /// Unicode scalar value of the character constant.
+        value: u32,
+        dest: Place,
+    },
+    /// `dest = ()` — a unit value with no data content.
+    ///
+    /// Unit is zero-sized. The MIR producer emits this variant to give the
+    /// dest place a definition point in the instruction stream; codegen may
+    /// emit nothing, a zero-size alloca, or an undef constant depending on
+    /// whether `dest` is ever read after this point. In practice, unit-typed
+    /// bindings are dropped before they reach codegen in well-typed programs,
+    /// so the variant is primarily a completeness placeholder.
+    ///
+    /// NOTE: `HirLiteral::Unit` is currently never produced by the HIR
+    /// lowerer (no parser `Literal::Unit` exists; unit expressions reach MIR
+    /// via other HIR node kinds). This variant is present for exhaustiveness
+    /// so that a future producer arm has a corresponding MIR representation.
+    ///
+    /// Producer: `lower_literal` for `HirLiteral::Unit`.
+    UnitLit { dest: Place },
+    /// `dest = const <duration>` stored as nanoseconds in an `i64`.
+    ///
+    /// Hew duration literals (`100ms`, `5s`, `1h`, `10ns`, etc.) are
+    /// resolved to nanoseconds at parse time by `parse_duration_literal`.
+    /// The `i64` nanosecond encoding can represent durations from ~−292 years
+    /// to ~+292 years, which covers all practical use cases.
+    ///
+    /// The runtime representation (nanoseconds as `i64`) is consistent with
+    /// `HirLiteral::Duration(i64)` and the parser's `Literal::Duration(i64)`,
+    /// which both carry nanoseconds. No representation decision is made here;
+    /// the upstream has already committed to `i64` nanoseconds.
+    ///
+    /// Producer: `lower_literal` for `HirLiteral::Duration`, forwarding the
+    /// pre-computed nanosecond value directly.
+    DurationLit {
+        /// Duration value in nanoseconds.
+        nanos: i64,
+        dest: Place,
+    },
+    /// IEEE 754 float addition `dest = lhs + fadd rhs`. No overflow trap —
+    /// out-of-range results produce `+inf`/`-inf` per IEEE 754 §6.1.
+    FloatAdd {
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        width: FloatWidth,
+    },
+    /// IEEE 754 float subtraction `dest = lhs - rhs` (`fsub`).
+    FloatSub {
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        width: FloatWidth,
+    },
+    /// IEEE 754 float multiplication `dest = lhs * rhs` (`fmul`).
+    FloatMul {
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        width: FloatWidth,
+    },
+    /// IEEE 754 float division `dest = lhs / rhs` (`fdiv`).
+    ///
+    /// Division by zero yields `+inf`, `-inf`, or `NaN` per IEEE 754 §7.3 —
+    /// there is no runtime trap. Producers MUST NOT add a divisor-zero check
+    /// (contrast with `IntDiv`, which requires one). No trap blocks are emitted.
+    FloatDiv {
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        width: FloatWidth,
+    },
+    /// IEEE 754 float remainder `dest = lhs % rhs` (`frem`, equivalent to
+    /// C99 `fmod`). IEEE 754 semantics: `frem(x, 0)` → `NaN`; no trap.
+    FloatRem {
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        width: FloatWidth,
+    },
 }
+
+/// 0-based declaration-order index of a field within a `record` type.
+///
+/// For named records (`record Point { x: int, y: int }`) the offset of
+/// `x` is `0` and the offset of `y` is `1`, matching the order in which
+/// fields were declared. This ordinal is the number codegen passes to the
+/// LLVM GEP `struct_gep` call to address the field's alloca slot.
+///
+/// For tuple records the field order matches the positional declaration
+/// (`record Pair(int, int)` → field 0 and field 1), but tuple records
+/// use the function-call constructor and are NOT reachable via
+/// `HirExprKind::StructInit` — they never produce `RecordInit` or
+/// `RecordFieldLoad` instructions. The offset type is shared for
+/// symmetry and for future use if tuple destructuring is added.
+///
+/// WHY u32: matches the existing convention for `Place::Local(u32)` and
+/// `BasicBlock::id: u32`. A record with > 4 billion fields is impossible
+/// in practice; the cast from `usize` at the construction site is checked
+/// via `try_from` so an impossibly large offset would panic at MIR time
+/// rather than silently truncate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FieldOffset(pub u32);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedMirFunction {

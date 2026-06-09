@@ -22,8 +22,329 @@ impl Checker {
             | Item::TypeDecl(_)
             | Item::TypeAlias(_)
             | Item::Wire(_)
-            | Item::ExternBlock(_)
-            | Item::Supervisor(_) => {}
+            | Item::ExternBlock(_) => {}
+            Item::Supervisor(sd) => self.check_supervisor(sd, span),
+        }
+    }
+
+    /// Validate a `supervisor` declaration at the structural level.
+    ///
+    /// Checks:
+    /// - Duplicate child names (`E_SUPERVISOR_DUPLICATE_CHILD`).
+    /// - `wired_to` keys each reference a declared sibling (`E_SUPERVISOR_WIRED_TO_UNKNOWN_SIBLING`).
+    /// - `wired_to` sibling ref type matches the dependent actor's init param type
+    ///   (`E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH`).
+    /// - No `wired_to` dependency cycles (`E_SUPERVISOR_WIRED_CYCLE`).
+    /// - `simple_one_for_one` strategy requires exactly one `pool` child and no `child` decls
+    ///   (`E_SUPERVISOR_STRATEGY_POOL_MISMATCH`).
+    /// - Any other strategy rejects `pool` decls (`E_SUPERVISOR_STRATEGY_POOL_MISMATCH`).
+    pub(super) fn check_supervisor(&mut self, sd: &SupervisorDecl, span: &Span) {
+        // ── 1. Duplicate child names ─────────────────────────────────────────
+        self.check_supervisor_duplicate_children(sd, span);
+
+        // ── 2. Strategy / pool consistency ──────────────────────────────────
+        self.check_supervisor_strategy_pool(sd, span);
+
+        // ── 3. wired_to key resolution + type compatibility ──────────────────
+        self.check_supervisor_wired_to(sd, span);
+
+        // ── 4. Dependency cycle detection ────────────────────────────────────
+        self.check_supervisor_wired_to_cycles(sd, span);
+    }
+
+    fn check_supervisor_duplicate_children(&mut self, sd: &SupervisorDecl, span: &Span) {
+        let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for (i, child) in sd.children.iter().enumerate() {
+            match seen.entry(child.name.as_str()) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(i);
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::DuplicateDefinition,
+                        span.clone(),
+                        format!(
+                            "E_SUPERVISOR_DUPLICATE_CHILD: supervisor `{}` declares child `{}` \
+                             more than once; child names must be unique within a supervisor",
+                            sd.name, child.name
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    fn check_supervisor_strategy_pool(&mut self, sd: &SupervisorDecl, span: &Span) {
+        let pool_children: Vec<&ChildSpec> = sd.children.iter().filter(|c| c.is_pool).collect();
+        let static_children: Vec<&ChildSpec> = sd.children.iter().filter(|c| !c.is_pool).collect();
+
+        let is_soo = matches!(sd.strategy, Some(SupervisorStrategy::SimpleOneForOne));
+
+        if is_soo {
+            // simple_one_for_one: exactly one pool child, no static children.
+            if pool_children.len() != 1 {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span.clone(),
+                    format!(
+                        "E_SUPERVISOR_STRATEGY_POOL_MISMATCH: supervisor `{}` uses \
+                         `simple_one_for_one` strategy but has {} `pool` child declaration(s); \
+                         exactly one `pool` child is required",
+                        sd.name,
+                        pool_children.len()
+                    ),
+                ));
+            }
+            if !static_children.is_empty() {
+                let names: Vec<&str> = static_children.iter().map(|c| c.name.as_str()).collect();
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span.clone(),
+                    format!(
+                        "E_SUPERVISOR_STRATEGY_POOL_MISMATCH: supervisor `{}` uses \
+                         `simple_one_for_one` strategy but has `child` declarations ({}); \
+                         `simple_one_for_one` supervisors may only contain a single `pool` child",
+                        sd.name,
+                        names.join(", ")
+                    ),
+                ));
+            }
+        } else if !pool_children.is_empty() {
+            // Any non-simple_one_for_one strategy (or no strategy specified) rejects pool children.
+            let names: Vec<&str> = pool_children.iter().map(|c| c.name.as_str()).collect();
+            let strategy_label = sd.strategy.map_or("default (one_for_one)", |s| match s {
+                SupervisorStrategy::OneForOne => "one_for_one",
+                SupervisorStrategy::OneForAll => "one_for_all",
+                SupervisorStrategy::RestForOne => "rest_for_one",
+                SupervisorStrategy::SimpleOneForOne => unreachable!(),
+            });
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                span.clone(),
+                format!(
+                    "E_SUPERVISOR_STRATEGY_POOL_MISMATCH: supervisor `{}` uses `{}` strategy \
+                     but has `pool` child declarations ({}); `pool` children require \
+                     `simple_one_for_one` strategy",
+                    sd.name,
+                    strategy_label,
+                    names.join(", ")
+                ),
+            ));
+        }
+    }
+
+    fn check_supervisor_wired_to(&mut self, sd: &SupervisorDecl, span: &Span) {
+        // Build a sibling-name → actor-type map for fast resolution.
+        let sibling_types: std::collections::HashMap<&str, &str> = sd
+            .children
+            .iter()
+            .map(|c| (c.name.as_str(), c.actor_type.as_str()))
+            .collect();
+
+        for child in &sd.children {
+            let Some(wired_to) = &child.wired_to else {
+                continue;
+            };
+
+            for (param_key, sibling_name) in wired_to {
+                // ── Key resolution: sibling must exist ──────────────────────
+                let Some(&sibling_type) = sibling_types.get(sibling_name.as_str()) else {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        span.clone(),
+                        format!(
+                            "E_SUPERVISOR_WIRED_TO_UNKNOWN_SIBLING: in supervisor `{}`, \
+                             child `{}` has `wired_to: {{ {param_key}: {sibling_name} }}` but \
+                             `{sibling_name}` is not a declared child of this supervisor",
+                            sd.name, child.name
+                        ),
+                    ));
+                    continue;
+                };
+
+                // Self-reference is a degenerate cycle — caught separately but
+                // the unknown-sibling check fires first if the name doesn't exist.
+                // If the child wires itself, it's a cycle; we flag it during cycle
+                // detection rather than here to avoid double-reporting.
+                if sibling_name.as_str() == child.name.as_str() {
+                    // Will be caught by cycle detection.
+                    continue;
+                }
+
+                // ── Type compatibility ──────────────────────────────────────
+                // The dependent child's actor init must have a param named `param_key`
+                // with type `ActorRef<sibling_type>`.
+                self.check_supervisor_wired_to_type_compat(
+                    &sd.name,
+                    &child.name,
+                    &child.actor_type,
+                    param_key,
+                    sibling_type,
+                    span,
+                );
+            }
+        }
+    }
+
+    /// Verify that `dependent_actor`'s init has a parameter `param_key` typed
+    /// `ActorRef<sibling_type>`. Emits `E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH` on failure.
+    ///
+    /// If the actor type is completely unknown (not registered at all), the check
+    /// is skipped — a separate undefined-type diagnostic covers that case.
+    /// Actors registered with no `init` block have an empty param list; the
+    /// "no parameter named X" branch below fires for those.
+    fn check_supervisor_wired_to_type_compat(
+        &mut self,
+        supervisor_name: &str,
+        dependent_child_name: &str,
+        dependent_actor_type: &str,
+        param_key: &str,
+        expected_sibling_type: &str,
+        span: &Span,
+    ) {
+        let Some(params) = self.actor_init_params.get(dependent_actor_type).cloned() else {
+            // Actor not registered at all (unknown type). A separate undefined-type
+            // diagnostic covers the missing actor. Skip here to avoid double-reporting.
+            return;
+        };
+
+        let Some(param) = params.iter().find(|(name, _, _)| name == param_key) else {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                span.clone(),
+                format!(
+                    "E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: in supervisor `{supervisor_name}`, \
+                     child `{dependent_child_name}` (`{dependent_actor_type}`) is wired via key \
+                     `{param_key}` but `{dependent_actor_type}::init` has no parameter named \
+                     `{param_key}`"
+                ),
+            ));
+            return;
+        };
+
+        let (_, outer_type, first_inner_type) = param;
+
+        // Expected: outer = "ActorRef", inner = expected_sibling_type.
+        let type_ok = outer_type == "ActorRef"
+            && first_inner_type
+                .as_deref()
+                .is_some_and(|t| t == expected_sibling_type);
+
+        if !type_ok {
+            let actual_type = if first_inner_type.is_some() {
+                format!(
+                    "{}<{}>",
+                    outer_type,
+                    first_inner_type.as_deref().unwrap_or("?")
+                )
+            } else {
+                outer_type.clone()
+            };
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                span.clone(),
+                format!(
+                    "E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: in supervisor `{supervisor_name}`, \
+                     child `{dependent_child_name}` wires `{param_key}` to sibling of type \
+                     `{expected_sibling_type}`, but `{dependent_actor_type}::init` parameter \
+                     `{param_key}` has type `{actual_type}` (expected `ActorRef<{expected_sibling_type}>`)"
+                ),
+            ));
+        }
+    }
+
+    /// Topological sort of children by `wired_to` deps. If a cycle is found,
+    /// emits `E_SUPERVISOR_WIRED_CYCLE`. Self-references are also rejected here.
+    fn check_supervisor_wired_to_cycles(&mut self, sd: &SupervisorDecl, span: &Span) {
+        use std::collections::VecDeque;
+
+        // Build an adjacency list: child_name → set of child_names it depends on.
+        let child_names: std::collections::HashSet<&str> =
+            sd.children.iter().map(|c| c.name.as_str()).collect();
+
+        // Only track deps that actually exist as siblings (unknown siblings already reported).
+        // Maps child_name → list of siblings it depends on (via wired_to values).
+        let deps: std::collections::HashMap<&str, Vec<&str>> = sd
+            .children
+            .iter()
+            .map(|c| {
+                let dep_list: Vec<&str> = c
+                    .wired_to
+                    .as_ref()
+                    .map(|wt| {
+                        wt.values()
+                            .filter(|s| child_names.contains(s.as_str()))
+                            .map(std::string::String::as_str)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (c.name.as_str(), dep_list)
+            })
+            .collect();
+
+        // Kahn's algorithm for cycle detection.
+        // Dependency graph: if child A wired_to B, edge A→B means A depends on B.
+        // For Kahn's: build reverse edges (dep → dependents) and count in-degrees
+        // (how many deps each child still has).
+        let mut reverse_deps: std::collections::HashMap<&str, Vec<&str>> =
+            child_names.iter().map(|&n| (n, vec![])).collect();
+        let mut in_degree: std::collections::HashMap<&str, usize> =
+            child_names.iter().map(|&n| (n, 0usize)).collect();
+
+        for (&child, dep_list) in &deps {
+            for &dep in dep_list {
+                // child depends on dep → dep must come before child.
+                // In topo-sort: dep→child edge; dep has in-degree += 0; child in-degree += 1.
+                if let Some(v) = reverse_deps.get_mut(dep) {
+                    v.push(child);
+                }
+                if let Some(d) = in_degree.get_mut(child) {
+                    *d += 1;
+                }
+            }
+        }
+
+        let mut queue: VecDeque<&str> = in_degree
+            .iter()
+            .filter(|(_, &d)| d == 0)
+            .map(|(&n, _)| n)
+            .collect();
+
+        let mut visited = 0usize;
+        while let Some(node) = queue.pop_front() {
+            visited += 1;
+            if let Some(dependents) = reverse_deps.get(node) {
+                for &dep in &dependents.clone() {
+                    if let Some(d) = in_degree.get_mut(dep) {
+                        *d -= 1;
+                        if *d == 0 {
+                            queue.push_back(dep);
+                        }
+                    }
+                }
+            }
+        }
+
+        if visited < child_names.len() {
+            // Cycle exists. Collect the names in the cycle.
+            let cycle_nodes: Vec<&str> = in_degree
+                .iter()
+                .filter(|(_, &d)| d > 0)
+                .map(|(&n, _)| n)
+                .collect();
+            let mut sorted_cycle = cycle_nodes.clone();
+            sorted_cycle.sort_unstable();
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                span.clone(),
+                format!(
+                    "E_SUPERVISOR_WIRED_CYCLE: supervisor `{}` has a `wired_to` dependency \
+                     cycle involving children: {}; children must form a DAG so start order \
+                     can be determined",
+                    sd.name,
+                    sorted_cycle.join(", ")
+                ),
+            ));
         }
     }
 
@@ -220,13 +541,27 @@ impl Checker {
         }
 
         // Separate lifecycle-hook fns from regular methods. Hooks carry
-        // `#[on(start)]` or `#[on(stop)]` and have a fixed signature;
-        // regular methods carry no attributes and are checked as
-        // ordinary actor methods.
+        // one of `#[on(start)]`, `#[on(stop)]`, `#[on(crash)]`, or
+        // `#[on(upgrade)]`. The start/stop variants have a fixed
+        // signature checked here; the crash/upgrade variants are
+        // recognised in E1 but their signature shape is owned by E2
+        // (failure-philosophy phase 2). Regular methods carry no
+        // attributes and are checked as ordinary actor methods.
         //
         // `#[on(start)]` is at most once per actor; `#[on(stop)]` may
         // appear multiple times (lexical declaration order is the
         // run order — see HEW-SPEC-2026 §9.1.2).
+        self.check_actor_methods(ad);
+
+        self.current_actor_type = prev_actor_type;
+        self.current_actor_fields = prev_actor_fields;
+    }
+
+    /// Walk an actor's `methods` list, dispatching each fn to either the
+    /// lifecycle-hook validator or the regular-method validator based on
+    /// its `#[on(<event>)]` annotation. Tracks `#[on(start)]` uniqueness
+    /// across the loop.
+    fn check_actor_methods(&mut self, ad: &ActorDecl) {
         let mut on_start_seen: Option<Span> = None;
         for method in &ad.methods {
             let hook_attrs: Vec<_> = method
@@ -257,36 +592,10 @@ impl Checker {
             }
             let hook_attr = hook_attrs[0];
 
-            // Resolve the hook kind from the first positional arg.
-            let hook_kind = hook_attr.args.first().map(AttributeArg::as_str);
-            match hook_kind {
-                None | Some("") => {
-                    self.errors.push(TypeError::new(
-                        TypeErrorKind::InvalidOperation,
-                        hook_attr.span.clone(),
-                        format!(
-                            "`#[on]` on `{}::{}` requires a hook kind argument; \
-                             valid hook kinds are: start, stop",
-                            ad.name, method.name
-                        ),
-                    ));
-                    continue;
-                }
-                Some("start" | "stop") => {}
-                Some(unknown) => {
-                    self.errors.push(TypeError::new(
-                        TypeErrorKind::InvalidOperation,
-                        hook_attr.span.clone(),
-                        format!(
-                            "`#[on({unknown})]` on `{}::{}` is not a recognised lifecycle hook; \
-                             valid hook kinds are: start, stop",
-                            ad.name, method.name
-                        ),
-                    ));
-                    continue;
-                }
-            }
-            let hook_kind_str = hook_kind.unwrap();
+            let Some(hook_kind_str) = self.resolve_on_hook_kind(&ad.name, &method.name, hook_attr)
+            else {
+                continue;
+            };
 
             if hook_kind_str == "start" {
                 if let Some(prev) = &on_start_seen {
@@ -304,14 +613,84 @@ impl Checker {
                 }
             }
 
+            // `#[on(crash)]` and `#[on(upgrade)]` diverge from start/stop
+            // signature-wise: crash takes a `PanicInfo` parameter and returns
+            // `CrashAction`; upgrade is a reserved marker with the same
+            // no-params/unit shape as stop but no runtime invocation in v0.5
+            // (tracked in #1817).
+            match hook_kind_str {
+                "crash" => {
+                    self.check_crash_hook(&ad.name, method, &ad.fields);
+                    continue;
+                }
+                "upgrade" => {
+                    self.check_upgrade_hook(&ad.name, method, &ad.fields);
+                    continue;
+                }
+                _ => {}
+            }
+
             // Validate signature and body. Hooks bind actor fields in
             // scope (bare names) and have no parameters beyond `self`.
             let display_kind = format!("on({hook_kind_str})");
             self.check_lifecycle_hook(&ad.name, method, &display_kind, &ad.fields);
         }
+    }
 
-        self.current_actor_type = prev_actor_type;
-        self.current_actor_fields = prev_actor_fields;
+    /// Resolve and validate the event identifier inside `#[on(<event>)]`.
+    /// Pushes a diagnostic and returns `None` if the event is missing,
+    /// unknown, or carries extra arguments that the event does not accept.
+    fn resolve_on_hook_kind<'a>(
+        &mut self,
+        actor_name: &str,
+        method_name: &str,
+        hook_attr: &'a hew_parser::ast::Attribute,
+    ) -> Option<&'a str> {
+        let hook_kind = hook_attr.args.first().map(AttributeArg::as_str);
+        match hook_kind {
+            None | Some("") => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    hook_attr.span.clone(),
+                    format!(
+                        "`#[on]` on `{actor_name}::{method_name}` requires a hook kind argument; \
+                         valid hook kinds are: start, stop, crash, upgrade"
+                    ),
+                ));
+                return None;
+            }
+            Some("start" | "stop" | "crash" | "upgrade") => {}
+            Some(unknown) => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    hook_attr.span.clone(),
+                    format!(
+                        "`#[on({unknown})]` on `{actor_name}::{method_name}` is not a recognised \
+                         lifecycle hook; valid hook kinds are: start, stop, crash, upgrade"
+                    ),
+                ));
+                return None;
+            }
+        }
+        let hook_kind_str = hook_kind.unwrap();
+
+        // Reject `#[on(crash, …)]` / `#[on(upgrade, …)]` with extra arguments.
+        // start/stop already reject extra args via `check_lifecycle_hook`'s
+        // signature checks; for crash/upgrade we validate the attribute
+        // shape here because their signature/body checking is owned by E2.
+        if matches!(hook_kind_str, "crash" | "upgrade") && hook_attr.args.len() > 1 {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                hook_attr.span.clone(),
+                format!(
+                    "`#[on({hook_kind_str})]` on `{actor_name}::{method_name}` does not accept \
+                     extra arguments"
+                ),
+            ));
+            return None;
+        }
+
+        Some(hook_kind_str)
     }
 
     pub(super) fn bind_actor_fields(&mut self, fields: &[FieldDecl]) {
@@ -465,6 +844,207 @@ impl Checker {
 
         self.current_function = prev_function;
         self.env.pop_scope();
+    }
+
+    /// Type-check an actor `#[on(crash)]` hook.
+    ///
+    /// Signature shape (failure-philosophy plan E2, Q45/A22, Q46/A23):
+    /// - exactly one parameter `info: PanicInfo` (the runtime supplies
+    ///   the int-tag payload — string fields wait on the spine-widening
+    ///   lane).
+    /// - return type `CrashAction` (variants `Restart | Escalate | Kill`;
+    ///   the supervisor consults but honours its own budget rules).
+    /// - not `pure`, no type parameters, no `where` clause.
+    ///
+    /// `PanicInfo` and `CrashAction` are provided by `std/failure.hew`
+    /// (also pre-bound via `register_builtin_failure_surface` for inline
+    /// tests).  Body type-checking binds actor fields as bare names in
+    /// scope, same idiom as `init { }` / `#[on(start)]` / `#[on(stop)]`.
+    ///
+    /// Runtime invocation of this hook is owned by failure-philosophy
+    /// slice E3.  This slice validates the signature shape so the
+    /// compiled actor method symbol (`<Actor>::on_crash`, emitted via
+    /// the existing actor-method serialize path) has the contract the
+    /// runtime will rely on.
+    /// Reject `pure`, generic, and `where`-clause modifiers shared by every
+    /// `#[on(<event>)]` lifecycle hook.  Extracted from `check_crash_hook`
+    /// because the same triad applies to future event-specific validators
+    /// and keeps the per-event entry under the clippy `too_many_lines`
+    /// threshold.
+    fn reject_hook_modifier_set(&mut self, actor_name: &str, hook: &FnDecl, hook_kind: &str) {
+        if hook.is_pure {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                hook.decl_span.clone(),
+                format!(
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` cannot be `pure`",
+                    hook.name
+                ),
+            ));
+        }
+        if hook.type_params.as_ref().is_some_and(|tps| !tps.is_empty()) {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                hook.decl_span.clone(),
+                format!(
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` cannot \
+                     have type parameters",
+                    hook.name
+                ),
+            ));
+        }
+        if hook.where_clause.is_some() {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                hook.decl_span.clone(),
+                format!(
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` cannot \
+                     have a `where` clause",
+                    hook.name
+                ),
+            ));
+        }
+    }
+
+    /// Validate the parameter list of a `#[on(crash)]` hook: exactly one
+    /// parameter typed `PanicInfo`.  Diagnostics live here rather than in
+    /// `check_crash_hook` to keep that entry under the clippy line limit.
+    fn check_crash_hook_param(&mut self, actor_name: &str, hook: &FnDecl, hook_kind: &str) {
+        match hook.params.as_slice() {
+            [p] => {
+                let pty = self.resolve_type_expr(&p.ty);
+                let is_panic_info = matches!(
+                    &pty,
+                    Ty::Named { name, args } if name == "PanicInfo" && args.is_empty()
+                );
+                if !is_panic_info {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        p.ty.1.clone(),
+                        format!(
+                            "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` parameter \
+                             must have type `PanicInfo` (from `std::failure`)",
+                            hook.name
+                        ),
+                    ));
+                }
+            }
+            other => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    hook.decl_span.clone(),
+                    format!(
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must take \
+                         exactly one parameter `info: PanicInfo`; got {} parameter(s)",
+                        hook.name,
+                        other.len()
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// Validate and resolve the declared return type of a `#[on(crash)]`
+    /// hook.  Returns the resolved `Ty` (falling back to a bare
+    /// `Ty::Named("CrashAction")` when the user omitted the return type)
+    /// so the body checker has a target type for the trailing expression.
+    fn check_crash_hook_return_type(
+        &mut self,
+        actor_name: &str,
+        hook: &FnDecl,
+        hook_kind: &str,
+    ) -> Ty {
+        if let Some(rt) = &hook.return_type {
+            let ty = self.resolve_type_expr(rt);
+            if !matches!(&ty, Ty::Named { name, args } if name == "CrashAction" && args.is_empty())
+            {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    rt.1.clone(),
+                    format!(
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must \
+                         return `CrashAction` (from `std::failure`)",
+                        hook.name
+                    ),
+                ));
+            }
+            ty
+        } else {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                hook.decl_span.clone(),
+                format!(
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must declare \
+                     a return type of `CrashAction` (from `std::failure`)",
+                    hook.name
+                ),
+            ));
+            Ty::Named {
+                name: "CrashAction".to_string(),
+                args: vec![],
+            }
+        }
+    }
+
+    pub(super) fn check_crash_hook(
+        &mut self,
+        actor_name: &str,
+        hook: &FnDecl,
+        fields: &[FieldDecl],
+    ) {
+        let hook_kind = "on(crash)";
+
+        self.reject_hook_modifier_set(actor_name, hook, hook_kind);
+        self.check_crash_hook_param(actor_name, hook, hook_kind);
+        let return_ty = self.check_crash_hook_return_type(actor_name, hook, hook_kind);
+
+        // ── Body checking ───────────────────────────────────────────────
+        self.env.push_scope();
+
+        let qualified_name = format!("{actor_name}::{}", hook.name);
+        let prev_function = self.current_function.take();
+        self.current_function = Some(qualified_name);
+
+        // Bind actor fields as bare names (mutable), then the `info`
+        // parameter on top of them.  Field-shadowing by the param name
+        // is intentionally permitted — same precedent as `init` and
+        // receive fn parameters (HEW-SPEC-2026 §9.1.1).
+        self.bind_actor_fields(fields);
+        if let Some(p) = hook.params.first() {
+            let pty = self.resolve_type_expr(&p.ty);
+            self.env.define(p.name.clone(), pty, p.is_mutable);
+        }
+
+        self.current_return_type = Some(return_ty);
+        self.check_block(&hook.body, None);
+        self.current_return_type = None;
+
+        self.current_function = prev_function;
+        self.env.pop_scope();
+    }
+
+    /// Type-check an actor `#[on(upgrade)]` hook.
+    ///
+    /// v0.5 reserves the surface but defers runtime invocation. The hook
+    /// must therefore have the minimal shape that the runtime can ignore
+    /// safely: no parameters, return type `()` — identical to the
+    /// `#[on(stop)]` shape today.  Runtime invocation, state-handoff,
+    /// and WASM hot-reload land later; tracked in #1817.
+    ///
+    /// `WASM-TODO(#1817)`: `#[on(upgrade)]` codegen and runtime
+    /// invocation are deferred to a follow-up slice (failure-philosophy
+    /// E3+).  The actor method serializes as a regular function symbol
+    /// through the existing actor-method path; no invocation site exists
+    /// in the v0.5 runtime or WASM scheduler.
+    pub(super) fn check_upgrade_hook(
+        &mut self,
+        actor_name: &str,
+        hook: &FnDecl,
+        fields: &[FieldDecl],
+    ) {
+        // Same shape constraints as `#[on(stop)]`, expressed inline so the
+        // diagnostic carries the `on(upgrade)` kind string.
+        self.check_lifecycle_hook(actor_name, hook, "on(upgrade)", fields);
     }
 
     /// Validate `#[every(duration)]` attributes on a receive fn.

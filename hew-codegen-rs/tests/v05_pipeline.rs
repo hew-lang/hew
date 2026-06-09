@@ -52,10 +52,11 @@ fn v05_pipeline_accepts_bool_literal_return() {
     );
 }
 
-/// As above for float literals — `1.5` cannot be moved into the return slot
-/// because `Instr::ConstF64` does not exist in the Cluster 1 spine.
+/// Float literals now lower to `Instr::FloatLit` in the MIR. The MIR
+/// diagnostic stream must be empty — no `CutoverUnsupported` — for a
+/// simple `fn main() -> f64 { 1.5 }` program.
 #[test]
-fn v05_pipeline_rejects_float_literal_return_before_codegen() {
+fn v05_pipeline_accepts_float_literal_in_mir() {
     let parsed = hew_parser::parse("fn main() -> f64 { 1.5 }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
@@ -63,30 +64,25 @@ fn v05_pipeline_rejects_float_literal_return_before_codegen() {
     let verify = verify_hir(&output.module);
     assert!(
         output.diagnostics.is_empty() && verify.is_empty(),
-        "hir gate must accept this; cutover happens at MIR: hir={:?} verify={:?}",
+        "hir must accept float literal: hir={:?} verify={:?}",
         output.diagnostics,
         verify
     );
 
     let pipeline = hew_mir::lower_hir_module(&output.module);
     assert!(
-        pipeline.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            MirDiagnosticKind::CutoverUnsupported { construct, .. }
-                if construct == "float literal"
-        )),
-        "float literal must surface a CutoverUnsupported diagnostic: {:?}",
+        pipeline.diagnostics.is_empty(),
+        "float literal must lower without MIR diagnostics: {:?}",
         pipeline.diagnostics
     );
 }
 
-/// A call expression must fail closed at MIR. `main` returns the result of
-/// `add(10, 32)`; without Call lowering the return slot is uninitialised, so
-/// the cutover boundary refuses the program and the driver short-circuits.
-/// The function parameters surface `UnresolvedPlace` diagnostics as well —
-/// either signal is sufficient to reject the program.
+/// A direct call to a module function now lowers cleanly via
+/// `Instr::CallDirect`. `main` returns `add(10, 32)`; the MIR pipeline must
+/// accept the program without `CutoverUnsupported` or `UnresolvedPlace`
+/// diagnostics, and codegen must emit valid LLVM IR.
 #[test]
-fn v05_pipeline_rejects_call_expression_before_codegen() {
+fn v05_pipeline_accepts_user_fn_call_via_call_direct() {
     let parsed = hew_parser::parse(
         "fn add(x: int, y: int) -> int { x + y }\n\
          fn main() -> int { add(10, 32) }\n",
@@ -97,28 +93,15 @@ fn v05_pipeline_rejects_call_expression_before_codegen() {
     let verify = verify_hir(&output.module);
     assert!(
         output.diagnostics.is_empty() && verify.is_empty(),
-        "hir gate must accept this; cutover happens at MIR: hir={:?} verify={:?}",
+        "hir must accept user-fn call: hir={:?} verify={:?}",
         output.diagnostics,
         verify
     );
 
     let pipeline = hew_mir::lower_hir_module(&output.module);
-    let has_call_reject = pipeline.diagnostics.iter().any(|d| {
-        matches!(
-            &d.kind,
-            MirDiagnosticKind::CutoverUnsupported { construct, .. }
-                if construct == "function call"
-        )
-    });
-    let has_unresolved_param = pipeline
-        .diagnostics
-        .iter()
-        .any(|d| matches!(&d.kind, MirDiagnosticKind::UnresolvedPlace { .. }));
     assert!(
-        has_call_reject || has_unresolved_param,
-        "call expression with parameter use must surface either a \
-         CutoverUnsupported{{construct=\"function call\"}} or an \
-         UnresolvedPlace diagnostic: {:?}",
+        pipeline.diagnostics.is_empty(),
+        "user-fn call pipeline must have no MIR diagnostics: {:#?}",
         pipeline.diagnostics
     );
 }

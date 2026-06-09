@@ -121,6 +121,26 @@ pub enum RecvError {
     /// A `try_recv` saw the queue empty and the caller asked for
     /// non-blocking semantics.
     Empty = 2,
+    /// The recv side detected a node-level partition: the peer node
+    /// is unreachable (heartbeat timeout or explicit partition injection
+    /// in tests). Unlike `Closed`, the partition may heal — the
+    /// application layer decides whether to retry or escalate.
+    ///
+    /// In v0.5 (single-node), this variant is only reachable via
+    /// [`Queue::force_partition_for_test`] (cfg(test)) or future
+    /// multi-node peer machinery.
+    ///
+    /// WHY unit variant: `#[repr(i32)]` + stable ABI discriminants
+    /// mean a payload (peer-id) would require a separate out-parameter
+    /// or a repr change. The Q48/A25 spec says "marker + peer-id minimal
+    /// for v0.5 (a)-tier"; peer-id expansion belongs to M3 with node
+    /// peering (partition tier (b)).
+    /// WHEN obsolete: when the multi-node peer layer lands (M3+) and
+    /// adds a payload-carrying `PartitionDetectedWithPeer { peer_id }`
+    /// variant on a richer type.
+    /// WHAT the real solution looks like: a non-repr(i32) rich error type
+    /// with an optional `PeerId` field, returned via an out-parameter.
+    PartitionDetected = 3,
 }
 
 // ── Per-direction queue ────────────────────────────────────────────────────
@@ -152,6 +172,11 @@ pub struct Queue {
     /// authoritative state is recomputed under the mutex.
     closed_for_send: AtomicBool,
     closed_for_recv: AtomicBool,
+    /// Test-injection flag: when set, `recv`/`try_recv` return
+    /// `RecvError::PartitionDetected` instead of blocking or delivering.
+    /// Only compiled in `cfg(test)`. Set via `force_partition_for_test`.
+    #[cfg(test)]
+    partitioned: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -175,7 +200,24 @@ impl Queue {
             receivers: AtomicUsize::new(0),
             closed_for_send: AtomicBool::new(false),
             closed_for_recv: AtomicBool::new(false),
+            #[cfg(test)]
+            partitioned: AtomicBool::new(false),
         })
+    }
+
+    /// Inject a simulated partition: the next `recv` or `try_recv` will
+    /// return `RecvError::PartitionDetected` instead of blocking.
+    ///
+    /// Wakes any blocked receiver so it observes the partition immediately.
+    ///
+    /// Only available in `cfg(test)`. v0.5 single-node runtimes trigger
+    /// `PartitionDetected` exclusively via this path; multi-node peer
+    /// machinery (M3+) will set the flag from a real heartbeat timeout.
+    #[cfg(test)]
+    pub(crate) fn force_partition_for_test(&self) {
+        self.partitioned.store(true, Ordering::Release);
+        let _g = self.state.lock_or_recover();
+        self.not_empty.notify_all();
     }
 
     /// Atomically bump the sender-capability count. Returns the prior
@@ -264,10 +306,19 @@ impl Queue {
 
     /// Blocking recv. Returns the next buffered message, or
     /// `RecvError::Closed` once the queue is drained AND `senders`
-    /// has reached zero.
+    /// has reached zero, or `RecvError::PartitionDetected` if a
+    /// partition was injected via [`Self::force_partition_for_test`]
+    /// (cfg(test)) or future heartbeat machinery.
     fn recv(&self) -> Result<Vec<u8>, RecvError> {
         let mut state = self.state.lock_or_recover();
         loop {
+            // Partition check takes priority over buffered messages:
+            // once a partition is detected, the connection is considered
+            // degraded and the caller decides whether to retry.
+            #[cfg(test)]
+            if self.partitioned.load(Ordering::Acquire) {
+                return Err(RecvError::PartitionDetected);
+            }
             if let Some(msg) = state.buffer.pop_front() {
                 self.not_full.notify_one();
                 return Ok(msg);
@@ -281,8 +332,16 @@ impl Queue {
         }
     }
 
-    /// Non-blocking recv.
+    /// Non-blocking recv. Returns `RecvError::PartitionDetected` if a
+    /// partition was injected, `RecvError::Empty` if no message is
+    /// waiting, or `RecvError::Closed` if all senders dropped.
     fn try_recv(&self) -> Result<Vec<u8>, RecvError> {
+        // Partition check before acquiring the mutex: avoids holding the
+        // lock for a fast-path rejection.
+        #[cfg(test)]
+        if self.partitioned.load(Ordering::Acquire) {
+            return Err(RecvError::PartitionDetected);
+        }
         let mut state = self.state.lock_or_recover();
         if let Some(msg) = state.buffer.pop_front() {
             self.not_full.notify_one();
@@ -434,6 +493,16 @@ impl HewDuplex {
         (Arc::clone(&self.s_queue), Arc::clone(&self.r_queue))
     }
 
+    /// Inject a simulated partition on the R-direction (recv side).
+    /// The next `recv` or `try_recv` on this handle will return
+    /// `RecvError::PartitionDetected`. Wakes any blocked receiver.
+    ///
+    /// Only available in `cfg(test)`. See [`Queue::force_partition_for_test`].
+    #[cfg(test)]
+    pub(crate) fn force_partition_for_test(&self) {
+        self.r_queue.force_partition_for_test();
+    }
+
     /// Refcount-bump clone. Both directions get a new capability,
     /// matching the unified handle's two-cap contract.
     #[must_use = "dropping the clone immediately releases the refcount it just bumped"]
@@ -507,6 +576,15 @@ impl HewRecvHalf {
         Self {
             r_queue: Arc::clone(&self.r_queue),
         }
+    }
+
+    /// Inject a simulated partition: the next `recv` or `try_recv` will
+    /// return `RecvError::PartitionDetected`. Wakes any blocked receiver.
+    ///
+    /// Only available in `cfg(test)`. See [`Queue::force_partition_for_test`].
+    #[cfg(test)]
+    pub(crate) fn force_partition_for_test(&self) {
+        self.r_queue.force_partition_for_test();
     }
 }
 
@@ -2271,5 +2349,65 @@ mod tests {
         assert_eq!(n, 0);
         // SAFETY: a is still valid.
         unsafe { hew_duplex_close(a) };
+    }
+
+    // ── PartitionDetected variant tests ───────────────────────────────────
+
+    /// `RecvError::PartitionDetected` has discriminant 3, does not alias
+    /// `Ok`/`Closed`/`Empty`, and round-trips through `as i32`.
+    #[test]
+    fn recv_partition_variant_discriminant() {
+        assert_eq!(RecvError::Ok as i32, 0);
+        assert_eq!(RecvError::Closed as i32, 1);
+        assert_eq!(RecvError::Empty as i32, 2);
+        assert_eq!(RecvError::PartitionDetected as i32, 3);
+    }
+
+    /// `force_partition_for_test` on `HewDuplex` causes the next `recv`
+    /// to return `RecvError::PartitionDetected` without blocking.
+    #[test]
+    fn recv_partition_detected_via_duplex_injection() {
+        let (a, b) = HewDuplex::new_pair(4, 4);
+        // Inject partition on b's recv side before any send.
+        b.force_partition_for_test();
+        assert!(
+            matches!(b.recv(), Err(RecvError::PartitionDetected)),
+            "expected PartitionDetected after injection on Duplex"
+        );
+        // a is unaffected — its recv side is a different queue.
+        a.send(b"probe".to_vec());
+        drop(a);
+        // b cannot receive on its own inbound queue, but a can still be
+        // observed from a fresh pair for symmetry; we simply verify b
+        // keeps returning PartitionDetected.
+        assert!(
+            matches!(b.try_recv(), Err(RecvError::PartitionDetected)),
+            "expected PartitionDetected from try_recv after injection"
+        );
+    }
+
+    /// `force_partition_for_test` on `HewRecvHalf` causes the next `recv`
+    /// to return `RecvError::PartitionDetected` and wakes a blocked receiver.
+    #[test]
+    fn recv_partition_detected_via_recv_half_injection() {
+        let (a, b) = HewDuplex::new_pair(4, 4);
+        let b_recv = b.into_recv_half();
+        // Inject from another thread to simulate a peer-timeout wake.
+        let b_recv_addr = (&raw const b_recv) as usize;
+        let injector = std::thread::spawn(move || {
+            // SAFETY: the test holds `b_recv` alive for the duration;
+            // the pointer was cast from a live reference.
+            let half = unsafe { &*(b_recv_addr as *const HewRecvHalf) };
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            half.force_partition_for_test();
+        });
+        // Block on recv — injector will wake us with PartitionDetected.
+        let result = b_recv.recv();
+        injector.join().expect("injector thread panicked");
+        assert!(
+            matches!(result, Err(RecvError::PartitionDetected)),
+            "expected PartitionDetected after injector woke blocked recv; got {result:?}"
+        );
+        drop(a);
     }
 }

@@ -95,10 +95,10 @@ supervisor ConnectionPool {
 fn main() {
     println("─── Connection Pool Demo ───");
     println("");
-    let pool = spawn ConnectionPool;
+    let sup = spawn ConnectionPool;
     sleep_ms(30);
-    let reader = supervisor_child(pool, 0);
-    let writer = supervisor_child(pool, 1);
+    let reader = supervisor_child(sup, 0);
+    let writer = supervisor_child(sup, 1);
     // Normal operation
     reader.handle(1);
     sleep_ms(10);
@@ -116,7 +116,7 @@ fn main() {
     // New reader is already running (supervisor restarted it)
     println("");
     println("After automatic restart:");
-    let reader2 = supervisor_child(pool, 0);
+    let reader2 = supervisor_child(sup, 0);
     reader2.handle(4);
     sleep_ms(10);
     writer.handle(5);

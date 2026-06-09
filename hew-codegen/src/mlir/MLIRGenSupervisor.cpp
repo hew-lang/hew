@@ -245,10 +245,13 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
     auto mbCapVal = createIntConstant(builder, location, i32Type, mbCap);
     auto overflowVal =
         createIntConstant(builder, location, i32Type, static_cast<int>(actorInfo.overflowPolicy));
+    // arena_cap_bytes: 0 = unbounded; non-zero from #[max_heap(N)] annotation.
+    uint64_t arenaCap = actorInfo.maxHeapBytes.has_value() ? *actorInfo.maxHeapBytes : 0;
+    auto arenaCapVal = createIntConstant(builder, location, builder.getI64Type(), arenaCap);
 
     auto specPtr =
         hew::ChildSpecCreateOp::create(builder, location, ptrType, nameStr, stateAlloca, stateSize,
-                                       dispatchPtr, restartVal, mbCapVal, overflowVal)
+                                       dispatchPtr, restartVal, mbCapVal, overflowVal, arenaCapVal)
             .getResult();
 
     // 8. Call hew_supervisor_add_child_spec(supervisor, &spec)

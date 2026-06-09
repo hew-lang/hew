@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
 use hew_parser::ast::{
-    BinaryOp, Block, Expr, FnDecl, Item, LambdaParam, Literal, MachineDecl, Pattern, Program,
-    ResourceMarker, SelectArm, Span, Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl,
-    TypeExpr,
+    ActorDecl, AttributeArg, BinaryOp, Block, Expr, FnDecl, Item, LambdaParam, Literal,
+    MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, ResourceMarker,
+    RestartPolicy, SelectArm, Span, Spanned, Stmt, SupervisorDecl, SupervisorStrategy,
+    TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
 };
 use hew_types::{
     AssignTargetKind, AssignTargetShape, LoweringFact, MethodCallRewrite, ResolvedTy, SpanKey, Ty,
@@ -14,10 +15,12 @@ use crate::builtin_type_classes::seed_builtin_type_classes;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef};
 use crate::node::{
-    HirBinding, HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem,
-    HirLambdaCapture, HirLiteral, HirMachineDecl, HirMachineEvent, HirMachineState,
-    HirMachineTransition, HirModule, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt,
-    HirStmtKind, HirTypeDecl,
+    HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn, HirBinding,
+    HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLambdaCapture,
+    HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent,
+    HirMachineState, HirMachineTransition, HirModule, HirRecordDecl, HirRestartPolicy, HirSelect,
+    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirSupervisorStrategy, HirTypeDecl,
 };
 use crate::{IntentKind, ValueClass};
 
@@ -116,6 +119,17 @@ pub fn lower_program(
                 if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
                     items.push(HirItem::Machine(hir_machine));
                 }
+            }
+            Item::Actor(actor) => {
+                items.push(HirItem::Actor(ctx.lower_actor(actor, span.clone())));
+            }
+            Item::Record(decl) => {
+                items.push(HirItem::Record(ctx.lower_record_decl(decl, span.clone())));
+            }
+            Item::Supervisor(decl) => {
+                items.push(HirItem::Supervisor(
+                    ctx.lower_supervisor(decl, span.clone()),
+                ));
             }
             _ => ctx.unsupported(span.clone(), "top-level-item", "slice-2"),
         }
@@ -225,16 +239,10 @@ struct LowerCtx {
     )]
     assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     /// Actor type names that participate in reference cycles, computed by the
-    /// checker's cycle-detection pass.
-    ///
-    /// Passive pass-through: no production consumer exists anywhere yet.
-    /// Future consumer: Machine Lane B actor codegen (refcount-cycle-breaking
-    /// strategy selection).
+    /// checker's cycle-detection pass. Consumed by `lower_actor` to populate
+    /// `HirActorDecl.cycle_capable`. Future runtime consumer: actor codegen
+    /// (refcount-cycle-breaking strategy selection).
     /// (LESSONS: producer-bridge-before-codegen P1)
-    #[expect(
-        dead_code,
-        reason = "passive pass-through; future consumer is Machine Lane B actor cycle handling"
-    )]
     cycle_capable_actors: HashSet<String>,
 }
 
@@ -386,6 +394,87 @@ impl LowerCtx {
             marker: decl.resource_marker,
             consuming_methods: decl.consuming_methods.clone(),
             fields,
+            span,
+        }
+    }
+
+    /// Lower a `record` declaration into `HirRecordDecl`.
+    ///
+    /// Only named-form records produce a field list; tuple-form records have an
+    /// empty field list (`HirRecordDecl.fields` is empty) because their
+    /// constructor is a `Call` (`R(a, b)`) rather than a `StructInit`
+    /// (`R { x: a, y: b }`). Tuple records are never looked up in the
+    /// `record_field_orders` table — the MIR producer only handles named-form.
+    fn lower_record_decl(
+        &mut self,
+        decl: &RecordDecl,
+        span: std::ops::Range<usize>,
+    ) -> HirRecordDecl {
+        let type_params: Vec<String> = decl.type_params.as_ref().map_or(vec![], |params| {
+            params.iter().map(|p| p.name.clone()).collect()
+        });
+
+        let fields: Vec<HirField> = match &decl.kind {
+            RecordKind::Named(record_fields) => record_fields
+                .iter()
+                .map(|rf| HirField {
+                    name: rf.name.clone(),
+                    ty: self.lower_type(&rf.ty),
+                    span: rf.span.clone(),
+                })
+                .collect(),
+            // Tuple records have no named fields; their constructor fn handles
+            // positional argument binding.
+            RecordKind::Tuple(_) => vec![],
+        };
+
+        HirRecordDecl {
+            id: self.ids.item(),
+            node: self.ids.node(),
+            name: decl.name.clone(),
+            type_params,
+            fields,
+            span,
+        }
+    }
+
+    /// Lower a `supervisor` declaration to `HirSupervisorDecl`.
+    ///
+    /// Bodies (MIR producer wiring, codegen) are deferred to slices S-C/S-D.
+    /// This function mirrors `lower_record_decl` in structure: structural lift
+    /// only, no HIR expression lowering.
+    fn lower_supervisor(&mut self, decl: &SupervisorDecl, span: Span) -> HirSupervisorDecl {
+        let strategy = decl.strategy.map(|s| match s {
+            SupervisorStrategy::OneForOne => HirSupervisorStrategy::OneForOne,
+            SupervisorStrategy::OneForAll => HirSupervisorStrategy::OneForAll,
+            SupervisorStrategy::RestForOne => HirSupervisorStrategy::RestForOne,
+            SupervisorStrategy::SimpleOneForOne => HirSupervisorStrategy::SimpleOneForOne,
+        });
+
+        let children = decl
+            .children
+            .iter()
+            .map(|child| HirSupervisorChild {
+                name: child.name.clone(),
+                ty: child.actor_type.clone(),
+                restart_policy: child.restart.map(|r| match r {
+                    RestartPolicy::Permanent => HirRestartPolicy::Permanent,
+                    RestartPolicy::Transient => HirRestartPolicy::Transient,
+                    RestartPolicy::Temporary => HirRestartPolicy::Temporary,
+                }),
+                wired_to: child.wired_to.clone(),
+                is_pool: child.is_pool,
+            })
+            .collect();
+
+        HirSupervisorDecl {
+            id: self.ids.item(),
+            node: self.ids.node(),
+            name: decl.name.clone(),
+            strategy,
+            max_restarts: decl.max_restarts,
+            window: decl.window.clone(),
+            children,
             span,
         }
     }
@@ -671,6 +760,133 @@ impl LowerCtx {
             has_default: decl.has_default,
             span,
         })
+    }
+
+    /// Lower an `actor` declaration into `HirActorDecl`. Structural-only:
+    /// `init`, `receive fn`, method, and lifecycle-hook bodies are NOT lowered
+    /// to `HirBlock` in Lane A — they remain on the parser AST and are
+    /// consumed by the C++ MLIR pipeline today. The next M6 slice will
+    /// promote bodies to `HirBlock`. See `HirActorDecl` doc comment.
+    fn lower_actor(&mut self, decl: &ActorDecl, span: Span) -> HirActorDecl {
+        let state_fields: Vec<HirField> = decl
+            .fields
+            .iter()
+            .map(|f| HirField {
+                name: f.name.clone(),
+                ty: self.lower_type(&f.ty),
+                span: f.ty.1.clone(),
+            })
+            .collect();
+
+        let init = decl.init.as_ref().map(|init| HirActorInit {
+            params: self.lower_actor_params(&init.params),
+        });
+
+        let receive_handlers: Vec<HirActorReceiveFn> = decl
+            .receive_fns
+            .iter()
+            .map(|rf| self.lower_actor_receive_fn(rf))
+            .collect();
+
+        let (methods, lifecycle_hooks) = self.partition_actor_methods(&decl.methods);
+
+        HirActorDecl {
+            id: self.ids.item(),
+            node: self.ids.node(),
+            name: decl.name.clone(),
+            state_fields,
+            init,
+            receive_handlers,
+            methods,
+            lifecycle_hooks,
+            max_heap_bytes: decl.max_heap_bytes,
+            is_isolated: decl.is_isolated,
+            mailbox_capacity: decl.mailbox_capacity,
+            overflow_policy: decl.overflow_policy.clone(),
+            cycle_capable: self.cycle_capable_actors.contains(&decl.name),
+            span,
+        }
+    }
+
+    fn lower_actor_params(&mut self, params: &[Param]) -> Vec<HirActorParam> {
+        params
+            .iter()
+            .map(|p| HirActorParam {
+                name: p.name.clone(),
+                ty: self.lower_type(&p.ty),
+                mutable: p.is_mutable,
+                span: p.ty.1.clone(),
+            })
+            .collect()
+    }
+
+    fn lower_actor_receive_fn(&mut self, rf: &ReceiveFnDecl) -> HirActorReceiveFn {
+        let params = self.lower_actor_params(&rf.params);
+        let return_ty = rf
+            .return_type
+            .as_ref()
+            .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
+        let every_ns = rf
+            .attributes
+            .iter()
+            .find(|a| a.name == "every")
+            .and_then(|a| a.args.first())
+            .and_then(AttributeArg::as_duration_ns);
+        HirActorReceiveFn {
+            name: rf.name.clone(),
+            params,
+            return_ty,
+            every_ns,
+            span: rf.span.clone(),
+        }
+    }
+
+    /// Partition an actor's `methods` vec into plain methods and lifecycle
+    /// hooks (`#[on(start|stop|crash|upgrade)]`). The checker has already
+    /// validated hook-kind spellings and uniqueness; HIR consumes the
+    /// post-validation shape and silently ignores methods whose `#[on(...)]`
+    /// attribute is malformed (the checker has emitted a diagnostic and the
+    /// HIR consumer should not see the entry as a lifecycle hook).
+    fn partition_actor_methods(
+        &mut self,
+        methods: &[FnDecl],
+    ) -> (Vec<HirActorMethod>, Vec<HirLifecycleHook>) {
+        let mut plain = Vec::new();
+        let mut hooks = Vec::new();
+        for method in methods {
+            let params = self.lower_actor_params(&method.params);
+            let return_ty = method
+                .return_type
+                .as_ref()
+                .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
+            let hook_attr = method.attributes.iter().find(|a| a.name == "on");
+            let hook_kind = hook_attr
+                .and_then(|a| a.args.first())
+                .map(AttributeArg::as_str)
+                .and_then(|k| match k {
+                    "start" => Some(HirLifecycleHookKind::Start),
+                    "stop" => Some(HirLifecycleHookKind::Stop),
+                    "crash" => Some(HirLifecycleHookKind::Crash),
+                    "upgrade" => Some(HirLifecycleHookKind::Upgrade),
+                    _ => None,
+                });
+            match hook_kind {
+                Some(kind) => hooks.push(HirLifecycleHook {
+                    kind,
+                    name: method.name.clone(),
+                    params,
+                    return_ty,
+                    span: method.fn_span.clone(),
+                }),
+                None => plain.push(HirActorMethod {
+                    name: method.name.clone(),
+                    params,
+                    return_ty,
+                    span: method.fn_span.clone(),
+                }),
+            }
+        }
+        (plain, hooks)
     }
 
     fn lower_block(&mut self, block: &Block, expected_ty: &ResolvedTy) -> HirBlock {
@@ -1178,16 +1394,27 @@ impl LowerCtx {
                 // slice rejects user types at the MIR boundary anyway, so
                 // dropping the args here cannot widen an accepted program.
                 type_args: _,
+                base,
             } => {
-                let fields = fields
+                let hir_fields = fields
                     .iter()
-                    .map(|(name, expr)| (name.clone(), self.lower_expr(expr, IntentKind::Read)))
+                    .map(|(fname, expr)| (fname.clone(), self.lower_expr(expr, IntentKind::Read)))
                     .collect();
+                // Lower the functional-update base if present. The checker has
+                // already validated type-compatibility and field coverage; HIR
+                // carries it verbatim so MIR lowering (A-7) can read the
+                // un-overridden fields from the base value.
+                let hir_base = base.as_deref().map(|(base_expr, base_span)| {
+                    Box::new(
+                        self.lower_expr(&(base_expr.clone(), base_span.clone()), IntentKind::Read),
+                    )
+                });
                 (
                     HirExprKind::StructInit {
                         name: name.clone(),
                         type_args: Vec::new(),
-                        fields,
+                        fields: hir_fields,
+                        base: hir_base,
                     },
                     ResolvedTy::Named {
                         name: name.clone(),
@@ -1351,6 +1578,134 @@ impl LowerCtx {
                 let hir_block = self.lower_block(block, &ResolvedTy::Unit);
                 let ty = hir_block.ty.clone();
                 (HirExprKind::Block(hir_block), ty)
+            }
+            Expr::Index { object, index } => {
+                // The checker records the element/result type at the whole
+                // index expression's span. LESSONS: `checker-authority` P0 —
+                // we never re-derive the element type from the container;
+                // the checker is the sole owner.
+                let checker_key = SpanKey::from(&span);
+                let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+                    match ResolvedTy::from_ty(&ty) {
+                        Ok(resolved) => resolved,
+                        Err(err) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: "xs[..]".to_string(),
+                                    reason: err.to_string(),
+                                },
+                                span.clone(),
+                                "checker-authoritative index/slice result type failed boundary conversion",
+                            ));
+                            ResolvedTy::Unit
+                        }
+                    }
+                } else {
+                    // Fall through: no checker entry. This can happen when the
+                    // checker emitted an error for this expression (e.g.
+                    // indexing into a non-Vec) and skipped recording the
+                    // type. The diagnostic from the checker covers the
+                    // user-facing error; emit Unit to stay well-formed.
+                    ResolvedTy::Unit
+                };
+
+                // Distinguish range-slice (`xs[a..b]` and the four open-end
+                // forms) from single-element indexing (`xs[i]`). The parser
+                // emits `Expr::Range` only when the bracket contents are a
+                // range; all other expressions remain as `Expr::Index`.
+                let container = self.lower_expr(object, IntentKind::Read);
+                if let Expr::Range {
+                    start,
+                    end,
+                    inclusive,
+                } = &index.0
+                {
+                    // C-3 range-slice: result type is Vec<T> (checker-authoritative).
+                    let lowered_start = start
+                        .as_ref()
+                        .map(|s| Box::new(self.lower_expr(s, IntentKind::Read)));
+                    let lowered_end = end
+                        .as_ref()
+                        .map(|e| Box::new(self.lower_expr(e, IntentKind::Read)));
+                    (
+                        HirExprKind::Slice {
+                            container: Box::new(container),
+                            start: lowered_start,
+                            end: lowered_end,
+                            inclusive: *inclusive,
+                        },
+                        result_ty,
+                    )
+                } else {
+                    // C-2 single-element indexing: result type is element type T.
+                    let index_expr = self.lower_expr(index, IntentKind::Read);
+                    (
+                        HirExprKind::Index {
+                            container: Box::new(container),
+                            index: Box::new(index_expr),
+                        },
+                        result_ty,
+                    )
+                }
+            }
+            Expr::Is { lhs, rhs } => {
+                // Identity comparison: `lhs is rhs`. The checker (D-2) has already
+                // validated that both operands carry identity-bearing types and
+                // that neither is a scalar/String/record. The result is `bool`.
+                // LESSONS: `checker-authority` P0 — we do not re-validate the
+                // allowance set here; that is the checker's sole responsibility.
+                let left = self.lower_expr(lhs, IntentKind::Read);
+                let right = self.lower_expr(rhs, IntentKind::Read);
+                (
+                    HirExprKind::IdentityCompare {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    ResolvedTy::Bool,
+                )
+            }
+            Expr::FieldAccess { object, field } => {
+                // Named-field read on a record or struct type. The checker has
+                // already resolved the field and recorded the result type in
+                // `expr_types`. LESSONS: `checker-authority` P0 — the type of
+                // the field read comes exclusively from the checker side-table,
+                // never re-derived here.
+                let hir_object = self.lower_expr(object, IntentKind::Read);
+                let checker_key = SpanKey::from(&span);
+                let field_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+                    match ResolvedTy::from_ty(&ty) {
+                        Ok(resolved) => resolved,
+                        Err(err) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: field.clone(),
+                                    reason: err.to_string(),
+                                },
+                                span.clone(),
+                                "field-access result type failed checker-boundary conversion",
+                            ));
+                            ResolvedTy::Unit
+                        }
+                    }
+                } else {
+                    // No checker entry: malformed checker output. Fail-closed.
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: field.clone(),
+                            reason: "expr_types has no entry for field-access site".into(),
+                        },
+                        span.clone(),
+                        "field-access result type missing from checker side-table",
+                    ));
+                    ResolvedTy::Unit
+                };
+                (
+                    HirExprKind::FieldAccess {
+                        object: Box::new(hir_object),
+                        field: field.clone(),
+                    },
+                    field_ty,
+                )
             }
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
@@ -2319,6 +2674,10 @@ impl LowerCtx {
 /// outer body referencing a name that the inner lambda also referenced;
 /// but `BindingRef` lives only in the outer body's expression tree, so
 /// this falls out naturally from not descending into the inner body.
+#[expect(
+    clippy::too_many_lines,
+    reason = "single-pass HIR walker; one arm per HirExprKind variant by design"
+)]
 fn collect_captures_walk(
     expr: &HirExpr,
     param_ids: &std::collections::HashSet<BindingId>,
@@ -2361,7 +2720,7 @@ fn collect_captures_walk(
         | HirExprKind::Literal(_)
         | HirExprKind::SpawnLambdaActor { .. }
         | HirExprKind::Unsupported(_) => {}
-        HirExprKind::Binary { left, right, .. } => {
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_captures_walk(left, param_ids, seen, captures, self_id);
             collect_captures_walk(right, param_ids, seen, captures, self_id);
         }
@@ -2385,10 +2744,16 @@ fn collect_captures_walk(
                 collect_captures_walk(else_expr, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::StructInit { fields, .. } => {
+        HirExprKind::StructInit { fields, base, .. } => {
             for (_, field) in fields {
                 collect_captures_walk(field, param_ids, seen, captures, self_id);
             }
+            if let Some(base) = base {
+                collect_captures_walk(base, param_ids, seen, captures, self_id);
+            }
+        }
+        HirExprKind::FieldAccess { object, .. } => {
+            collect_captures_walk(object, param_ids, seen, captures, self_id);
         }
         HirExprKind::AwaitTask { binding_id, .. } => {
             // The awaited task handle is captured from the enclosing
@@ -2434,6 +2799,24 @@ fn collect_captures_walk(
         }
         HirExprKind::TupleIndex { tuple, .. } => {
             collect_captures_walk(tuple, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::Index { container, index } => {
+            collect_captures_walk(container, param_ids, seen, captures, self_id);
+            collect_captures_walk(index, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            inclusive: _,
+        } => {
+            collect_captures_walk(container, param_ids, seen, captures, self_id);
+            if let Some(s) = start {
+                collect_captures_walk(s, param_ids, seen, captures, self_id);
+            }
+            if let Some(e) = end {
+                collect_captures_walk(e, param_ids, seen, captures, self_id);
+            }
         }
     }
 }

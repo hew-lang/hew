@@ -223,6 +223,11 @@ pub enum Expr {
         /// Absent when the user omits them and inference fills the gap.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         type_args: Option<Vec<Spanned<TypeExpr>>>,
+        /// Functional-update base expression: `R { x: 5, ..base }`.
+        /// When `Some`, the base is required to have the same record type as
+        /// the literal; unspecified fields are filled from the base value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base: Option<Box<Spanned<Expr>>>,
     },
     Select {
         arms: Vec<SelectArm>,
@@ -1226,6 +1231,9 @@ pub enum SupervisorStrategy {
     OneForOne,
     OneForAll,
     RestForOne,
+    /// Dynamic pool strategy: children spawned and terminated at runtime.
+    /// Use with `pool name: Type` declarations.
+    SimpleOneForOne,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1233,7 +1241,17 @@ pub struct ChildSpec {
     pub name: String,
     pub actor_type: String,
     pub args: Vec<Spanned<Expr>>,
+    #[serde(default)]
     pub restart: Option<RestartPolicy>,
+    /// Declarative sibling wiring: maps init-param name → sibling child name.
+    /// Populated by `wired_to: { key: sibling, ... }` clauses. S-B validates
+    /// that each key matches a sibling name and the ref type is compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wired_to: Option<std::collections::HashMap<String, String>>,
+    /// True when declared with `pool name: Type` instead of `child name: Type`.
+    /// Indicates a dynamic pool (`simple_one_for_one` strategy child).
+    #[serde(default)]
+    pub is_pool: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

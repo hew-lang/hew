@@ -60,8 +60,8 @@ use std::path::Path;
 use std::process::Command;
 
 use hew_mir::{
-    CmpPred, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IntArithOp, IntSignedness,
-    IrPipeline, Place, RawMirFunction, Terminator, TrapKind,
+    CmpPred, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, Instr, IntArithOp,
+    IntSignedness, IrPipeline, Place, RawMirFunction, RecordLayout, Terminator, TrapKind,
 };
 use hew_types::ResolvedTy;
 
@@ -70,7 +70,7 @@ use inkwell::context::Context;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
 use inkwell::targets::TargetMachine;
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
+use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, StructType};
 use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 use inkwell::IntPredicate;
@@ -369,6 +369,21 @@ struct FnCtx<'a, 'ctx> {
     /// borrows `FnCtx` immutably) can register new declarations lazily
     /// from inside `Instr::CallRuntimeAbi` and `Instr::Drop` arms.
     runtime_decls: RefCell<RuntimeDeclMap<'ctx>>,
+    /// Module-wide record layouts (A-7). Keyed by record name; values are
+    /// the LLVM named struct types registered up front in `build_module`
+    /// via `register_record_layouts`. `Instr::RecordInit` /
+    /// `Instr::RecordFieldLoad` consult this through `record_struct_for`
+    /// to resolve a record-typed local's slot to its `StructType` for GEP
+    /// indexing. The map is borrowed (no ownership) — the registered
+    /// `StructType<'ctx>` values share the codegen context's lifetime.
+    record_layouts: &'a RecordLayoutMap<'ctx>,
+    /// Module-wide function symbol table. Populated before any body is
+    /// lowered by the `declare_function` pass in `build_module`. Carried
+    /// here so `Instr::CallDirect` arms in `lower_instruction` can resolve
+    /// the callee without being promoted to a terminator. The borrow is
+    /// shared (read-only) — no new declarations are added during body
+    /// lowering.
+    fn_symbols: &'a FnSymbolMap<'ctx>,
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
@@ -412,6 +427,18 @@ fn intern_runtime_decl<'ctx>(
     let i64_ty = ctx.i64_type();
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let fn_ty = match symbol {
+        // hew_actor_link(a: *mut HewActor, b: *mut HewActor) -> void
+        // (`hew-runtime/src/link.rs:80`). Establishes a bidirectional link.
+        // Actor handles are opaque ptrs on the spine. Return is void — the
+        // Hew `link()` builtin synthesises Ok(()) in Cluster 2.
+        "hew_actor_link" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_actor_monitor(watcher: *mut HewActor, target: *mut HewActor) -> u64
+        // (`hew-runtime/src/monitor.rs:157`). Returns a ref_id; 0 only on
+        // null inputs. Actor handles are opaque ptrs. The u64 is wrapped into
+        // MonitorRef { ref_id } in Cluster 2.
+        "hew_actor_monitor" => i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         // hew_duplex_pair(s_cap: usize, r_cap: usize,
         //                 out_a: *mut *mut HewDuplexHandle,
         //                 out_b: *mut *mut HewDuplexHandle) -> i32
@@ -433,6 +460,80 @@ fn intern_runtime_decl<'ctx>(
         // (`hew-runtime/src/lambda_actor.rs:411`). Same signature shape
         // as hew_duplex_close — one ptr arg, i32 result discarded.
         "hew_lambda_actor_release" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_vec_len(v: *mut HewVec) -> i64
+        // (`hew-runtime/src/vec.rs:649`). Returns the element count as i64.
+        "hew_vec_len" => i64_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_vec_get_i32(v: *mut HewVec, index: i64) -> i32
+        // (`hew-runtime/src/vec.rs:394`). Bounds-checked by the MIR emitter
+        // before this call; the runtime also aborts on OOB as defence-in-depth.
+        "hew_vec_get_i32" => i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        // hew_vec_get_i64(v: *mut HewVec, index: i64) -> i64
+        // (`hew-runtime/src/vec.rs:411`).
+        "hew_vec_get_i64" => i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        // hew_vec_get_f64(v: *mut HewVec, index: i64) -> double
+        // (`hew-runtime/src/vec.rs:456`).
+        "hew_vec_get_f64" => ctx
+            .f64_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        // hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void
+        // (`hew-runtime/src/vec.rs:473`). For pointer-shaped elements
+        // (Duplex handles, Named heap types). The caller casts the returned
+        // opaque pointer to the appropriate concrete pointer type.
+        "hew_vec_get_ptr" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        // hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c_char
+        // (`hew-runtime/src/vec.rs:430`). Returns a strdup'd copy; the
+        // caller owns and must free the returned string. Allowlisted but
+        // not emitted by this slice's MIR producer — Vec<String> indexing
+        // deferred to a follow-on slice that wires the drop for the copy.
+        "hew_vec_get_str" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        // C-3 Vec<T> range-slice: hew_vec_slice_range_T(v, start, end) ->
+        // *mut HewVec<T>. Caller owns the freshly-allocated result; drop
+        // elaboration frees it via the existing hew_vec_free path.
+        // (`hew-runtime/src/vec.rs` — added in this slice.)
+        "hew_vec_slice_range_i32"
+        | "hew_vec_slice_range_i64"
+        | "hew_vec_slice_range_f64"
+        | "hew_vec_slice_range_ptr"
+        | "hew_vec_slice_range_str" => {
+            ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false)
+        }
+        // ── scope{}/spawn/await task ABI (Phase 2, inventory rows 2/3/4) ──────
+        //
+        // hew_scope_spawn(scope: *mut HewScope, actor: *mut c_void) -> i32
+        // (`hew-runtime/src/scope.rs:169`). Adds an actor to the scope's
+        // actor list; returns 0 on success, -1 if full. i32 return is a
+        // runtime-internal signal — MIR producers discard it (dest: None).
+        "hew_scope_spawn" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_task_new() -> *mut HewTask
+        // (`hew-runtime/src/task_scope.rs:214`). Box-allocates a HewTask
+        // in the Ready state. Producer calls this to obtain a task handle
+        // before calling hew_task_spawn_thread.
+        "hew_task_new" => ptr_ty.fn_type(&[], false),
+        // hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void
+        // (`hew-runtime/src/task_scope.rs:368`). Spawns task_fn(task) on
+        // a new OS thread. TaskFn = unsafe extern "C" fn(*mut HewTask).
+        // Both args are opaque pointers at the LLVM level — the task handle
+        // is ptr-typed; the function pointer is also ptr-typed in opaque-
+        // pointer mode (LLVM 15+ ptr is used for all pointee types).
+        "hew_task_spawn_thread" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_task_await_blocking(task: *mut HewTask) -> *mut c_void
+        // (`hew-runtime/src/task_scope.rs:411`). Blocks until the task
+        // completes and returns its result pointer (null for void tasks).
+        // Producer must supply a dest for the result pointer; callers that
+        // ignore the result still need the blocking guarantee.
+        "hew_task_await_blocking" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_task_get_result(task: *mut HewTask) -> *mut c_void
+        // (`hew-runtime/src/task_scope.rs:283`). Returns the result pointer
+        // if Done, null otherwise. Called after hew_task_await_blocking
+        // when the producer needs to read the result separately.
+        "hew_task_get_result" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_task_free(task: *mut HewTask) -> void
+        // (`hew-runtime/src/task_scope.rs:237`). Frees the Box-allocated
+        // HewTask and its result buffer. Called by the scope teardown path
+        // after all tasks have been awaited.
+        "hew_task_free" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "intern_runtime_decl: codegen has no LLVM signature for runtime \
@@ -450,6 +551,100 @@ fn intern_runtime_decl<'ctx>(
 // ---------------------------------------------------------------------------
 // Type mapping
 // ---------------------------------------------------------------------------
+
+/// Per-module map from a `record` type's name to its registered LLVM named
+/// struct type. Populated once per `build_module` from
+/// `IrPipeline.record_layouts` (A-7 slice). Codegen consults this map in
+/// `resolve_ty` before falling to `primitive_to_llvm` so that
+/// `ResolvedTy::Named { name, .. }` references to user records resolve to
+/// the struct type rather than tripping the D10-violation fail-closed arm.
+///
+/// The map is keyed by the bare record name (no generic-args mangling)
+/// because A-7's surface is monomorphic — generic records are deferred.
+type RecordLayoutMap<'ctx> = HashMap<String, StructType<'ctx>>;
+
+/// Register every named-form record from `layouts` as an LLVM named struct
+/// type on `ctx`, populating the body with each field's LLVM lowering.
+///
+/// Two-pass to support records that reference each other by name (forward /
+/// mutual references are valid Hew; the struct body resolution must see
+/// every record's opaque type before we attempt to set any body):
+/// 1. Pass 1: create an opaque named struct for every record so cross-
+///    references can resolve.
+/// 2. Pass 2: lower each field type and call `set_body` on the opaque
+///    struct.
+///
+/// Returns the populated map. Fails closed if any field type cannot be
+/// lowered — e.g. a record field with a `Tuple` or `Array` type (Cluster 2
+/// composite lowering pending), or a `Named` type that names neither a
+/// registered record nor a built-in handle. The MIR producer + checker
+/// would have rejected such a record at HIR-validation time, so reaching
+/// the fail-closed arm here is itself a bug.
+fn register_record_layouts<'ctx>(
+    ctx: &'ctx Context,
+    layouts: &[RecordLayout],
+) -> CodegenResult<RecordLayoutMap<'ctx>> {
+    let mut map: RecordLayoutMap<'ctx> = HashMap::new();
+    // Pass 1: opaque named structs.
+    for layout in layouts {
+        let st = ctx.opaque_struct_type(&layout.name);
+        map.insert(layout.name.clone(), st);
+    }
+    // Pass 2: set body for each. Records-of-records resolve via the map's
+    // opaque entries created in pass 1.
+    for layout in layouts {
+        let st = map
+            .get(&layout.name)
+            .copied()
+            .expect("pass 1 populated every record name");
+        let mut field_tys: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(layout.field_tys.len());
+        for fty in &layout.field_tys {
+            field_tys.push(resolve_ty(ctx, fty, &map)?);
+        }
+        // packed = false: use the target's natural alignment per
+        // `RecordLayout` doc (A-6b). LESSONS: parity-or-tracked-gap.
+        st.set_body(&field_tys, false);
+    }
+    Ok(map)
+}
+
+/// Resolve any `ResolvedTy` to its LLVM `BasicTypeEnum`, consulting the
+/// record-layout map first for named user records. This is the codegen-side
+/// entry point for type lowering — it replaces direct calls to
+/// `primitive_to_llvm` at any site that may encounter a record-typed value.
+///
+/// Tuples lower as anonymous LLVM struct types with fields in declaration order
+/// (`packed = false` for natural alignment). The struct type is constructed
+/// on demand; anonymous structs are not interned by LLVM and share the same
+/// `StructType` ABI as named structs, so GEP field-index addressing works
+/// identically to `RecordFieldLoad`. Field types are resolved recursively via
+/// `resolve_ty` so records nested inside tuples resolve through the layout map.
+///
+/// WHY anonymous (not opaque/named): tuple types have no canonical name in
+/// Hew source; the positional field list is the entire identity. Constructing
+/// an anonymous struct per call is safe — LLVM deduplicates structurally
+/// identical anonymous types within the same `Context`.
+/// WHEN-OBSOLETE: if Hew adds named tuple types (type aliases with struct
+/// semantics) this arm can be updated to look up the map first.
+fn resolve_ty<'ctx>(
+    ctx: &'ctx Context,
+    ty: &ResolvedTy,
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<BasicTypeEnum<'ctx>> {
+    if let ResolvedTy::Named { name, .. } = ty {
+        if let Some(st) = record_layouts.get(name) {
+            return Ok((*st).into());
+        }
+    }
+    if let ResolvedTy::Tuple(elems) = ty {
+        let mut field_tys: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(elems.len());
+        for elem in elems {
+            field_tys.push(resolve_ty(ctx, elem, record_layouts)?);
+        }
+        return Ok(ctx.struct_type(&field_tys, false).into());
+    }
+    primitive_to_llvm(ctx, ty)
+}
 
 fn primitive_to_llvm<'ctx>(
     ctx: &'ctx Context,
@@ -489,22 +684,27 @@ fn primitive_to_llvm<'ctx>(
         ResolvedTy::Unit => Ok(ctx.i8_type().into()),
         ResolvedTy::F32 => Ok(ctx.f32_type().into()),
         ResolvedTy::F64 => Ok(ctx.f64_type().into()),
-        // Cluster 1's spine subset is integer-only; heap and composite
-        // types belong to Cluster 2/3/4. Fail closed so an unexpected
-        // shape doesn't silently produce a malformed binary
-        // (LESSONS `boundary-fail-closed`).
-        ResolvedTy::String => Err(CodegenError::Unsupported(
-            "String type — Cluster 2 will add owned-string lowering",
-        )),
-        ResolvedTy::Char => Err(CodegenError::Unsupported(
-            "Char type — Cluster 2 lowering pending",
-        )),
+        // `String` is a null-terminated heap string at the runtime ABI
+        // boundary (`*mut c_char`). LLVM represents it as an opaque `ptr`
+        // in the alloca — the same representation used for Duplex/Vec/Task
+        // handles. `Instr::StringLit` stores the address of an LLVM global
+        // constant into this slot; C-string runtime ops (`hew_string_*`) load
+        // from it. Matches the C++ codegen's `hew.global_string` →
+        // `llvm.mlir.addressof` pattern (codegen.cpp ~line 264).
+        ResolvedTy::String => Ok(ctx.ptr_type(AddressSpace::default()).into()),
+        // Cluster 1's spine subset. Heap and composite types below belong to
+        // Cluster 2/3/4. Fail closed so an unexpected shape doesn't silently
+        // produce a malformed binary (LESSONS `boundary-fail-closed`).
+        // `Char` is a Unicode scalar value (U+0000..U+10FFFF). Stored as i32
+        // (matching the C `int32_t` convention for code points). The upper two
+        // billion i32 values are unused — all scalar values fit in 21 bits.
+        ResolvedTy::Char => Ok(ctx.i32_type().into()),
         ResolvedTy::Bytes => Err(CodegenError::Unsupported(
             "Bytes type — Cluster 2 lowering pending",
         )),
-        ResolvedTy::Duration => Err(CodegenError::Unsupported(
-            "Duration type — Cluster 2 lowering pending",
-        )),
+        // `Duration` is i64 nanoseconds. The `i64` encoding covers ±292 years
+        // of nanosecond precision, which is sufficient for all practical use.
+        ResolvedTy::Duration => Ok(ctx.i64_type().into()),
         ResolvedTy::Never => Err(CodegenError::Unsupported(
             "Never type cannot occur in a value-bearing position",
         )),
@@ -526,6 +726,40 @@ fn primitive_to_llvm<'ctx>(
             // `hew_duplex_pair` out-param protocol writes through this
             // alloca; `hew_duplex_send` loads from it. LESSONS:
             // exhaustive-traversal-and-lowering, boundary-fail-closed.
+            Ok(ctx.ptr_type(AddressSpace::default()).into())
+        }
+        ResolvedTy::Named { name, .. } if name == "Vec" => {
+            // C-2 Vec<T> handle. A Vec<T> local is a `*mut HewVec` pointer.
+            // The producer (`lower_vec_index`) allocates the result local
+            // with the element type (i32/i64/f64/ptr); the vec-handle locals
+            // themselves are function parameters at this stage (ptr-sized).
+            // We represent the Vec handle as an opaque `ptr` in the alloca
+            // so `load_ptr_arg` can load the raw pointer from the slot and
+            // pass it to `hew_vec_len` / `hew_vec_get_T`. LESSONS:
+            // exhaustive-traversal-and-lowering, boundary-fail-closed.
+            Ok(ctx.ptr_type(AddressSpace::default()).into())
+        }
+        ResolvedTy::Named { name, .. } if name == "HewTask" => {
+            // Phase 2 task handle. A `HewTask` local holds a `*mut HewTask`
+            // opaque pointer — the Box-allocated task struct returned by
+            // `hew_task_new` and consumed by `hew_task_free`. The MIR
+            // producer for `spawn fn(...)` (inventory row 3) allocates a
+            // `ResolvedTy::Named { name: "HewTask", .. }` local for each
+            // spawned task and uses `Place::DuplexHandle(N)` to reference
+            // it (reusing the duplex-handle tag — the underlying alloca
+            // shape is identical: an opaque ptr slot). Codegen materialises
+            // this as an opaque `ptr` alloca, same as Duplex and Vec handles.
+            // LESSONS: exhaustive-traversal-and-lowering.
+            Ok(ctx.ptr_type(AddressSpace::default()).into())
+        }
+        ResolvedTy::Named { name, .. } if name == "HewScope" => {
+            // Phase 2 scope handle. A `HewScope` local holds a `*mut HewScope`
+            // opaque pointer — returned by `hew_scope_create` and consumed by
+            // `hew_scope_free`. The MIR producer for `scope {}` (inventory row
+            // 2) allocates a `ResolvedTy::Named { name: "HewScope", .. }` local
+            // and references it via `Place::DuplexHandle(N)`. Codegen emits an
+            // opaque `ptr` alloca, same as other runtime handle types.
+            // LESSONS: exhaustive-traversal-and-lowering.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
         ResolvedTy::Named { name, .. } => Err(CodegenError::FailClosed(format!(
@@ -815,6 +1049,50 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                 .build_store(dest_ptr, result)
                 .map_err(|e| CodegenError::Llvm(format!("shr store: {e:?}")))?;
         }
+        // Bitwise &, |, ^. Well-defined for all integer widths/signednesses;
+        // no traps, no overflow checks. Operands and dest share the same int
+        // type (enforced upstream by the checker).
+        Instr::IntBitAnd { dest, lhs, rhs }
+        | Instr::IntBitOr { dest, lhs, rhs }
+        | Instr::IntBitXor { dest, lhs, rhs } => {
+            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
+            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let lhs_int = match lhs_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntBitwise lhs is not an int".into(),
+                    ))
+                }
+            };
+            if rhs_ty != lhs_ty || dest_ty != lhs_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntBitwise operands and dest must share the same int type".into(),
+                ));
+            }
+            let lhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, lhs_ptr, "bitwise_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("bitwise lhs load: {e:?}")))?
+                .into_int_value();
+            let rhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, rhs_ptr, "bitwise_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("bitwise rhs load: {e:?}")))?
+                .into_int_value();
+            let result = match instr {
+                Instr::IntBitAnd { .. } => fn_ctx.builder.build_and(lhs_v, rhs_v, "bitand"),
+                Instr::IntBitOr { .. } => fn_ctx.builder.build_or(lhs_v, rhs_v, "bitor"),
+                Instr::IntBitXor { .. } => fn_ctx.builder.build_xor(lhs_v, rhs_v, "bitxor"),
+                _ => unreachable!("matched on three bitwise variants above"),
+            }
+            .map_err(|e| CodegenError::Llvm(format!("bitwise: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result)
+                .map_err(|e| CodegenError::Llvm(format!("bitwise store: {e:?}")))?;
+        }
         Instr::IntArithChecked {
             op,
             signed,
@@ -1000,6 +1278,93 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                 .map_err(|e| CodegenError::Llvm(format!("cmp store: {e:?}")))?;
             let _ = ctx;
         }
+        Instr::IdentityCompare { dest, lhs, rhs } => {
+            // Emit pointer/handle identity comparison for `lhs is rhs`.
+            //
+            // The operands are pointer-shaped allocas (`ptr` LLVM type) —
+            // the checker (D-2) has already validated that only identity-
+            // bearing types reach this instruction. We load the `ptr`
+            // value from each operand's alloca, convert both to `i64` via
+            // `ptrtoint`, compare with `icmp eq` to get an `i1`, then
+            // zero-extend to the dest width (matching the `IntCmp` path).
+            //
+            // LESSONS: `checker-authority` (P0) — the type is read from
+            // the operand's LLVM type at codegen time; we do not re-derive
+            // the identity allowance set here.
+            let i64_ty = fn_ctx.ctx.i64_type();
+            let ptr_ty = fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default());
+            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
+            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let dest_int = match dest_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IdentityCompare dest is not an int".into(),
+                    ))
+                }
+            };
+            // Load the pointer/handle value from each alloca.
+            let lhs_val = fn_ctx
+                .builder
+                .build_load(lhs_ty, lhs_ptr, "is_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("is lhs load: {e:?}")))?;
+            let rhs_val = fn_ctx
+                .builder
+                .build_load(rhs_ty, rhs_ptr, "is_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("is rhs load: {e:?}")))?;
+            // Convert both operands to i64 integers for comparison.
+            // Pointer operands: `ptrtoint ptr to i64`.
+            // Integer operands (machine-id, already i64): bitcast or no-op.
+            let lhs_int = match lhs_val {
+                inkwell::values::BasicValueEnum::PointerValue(p) => fn_ctx
+                    .builder
+                    .build_ptr_to_int(p, i64_ty, "is_lhs_int")
+                    .map_err(|e| CodegenError::Llvm(format!("is lhs ptrtoint: {e:?}")))?,
+                inkwell::values::BasicValueEnum::IntValue(v) => {
+                    // Machine-id or other integer-shaped handle: extend/truncate
+                    // to i64 so the icmp operands are uniform width.
+                    fn_ctx
+                        .builder
+                        .build_int_z_extend_or_bit_cast(v, i64_ty, "is_lhs_i64")
+                        .map_err(|e| CodegenError::Llvm(format!("is lhs cast: {e:?}")))?
+                }
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IdentityCompare lhs must be a pointer or integer value".into(),
+                    ))
+                }
+            };
+            let rhs_int = match rhs_val {
+                inkwell::values::BasicValueEnum::PointerValue(p) => fn_ctx
+                    .builder
+                    .build_ptr_to_int(p, i64_ty, "is_rhs_int")
+                    .map_err(|e| CodegenError::Llvm(format!("is rhs ptrtoint: {e:?}")))?,
+                inkwell::values::BasicValueEnum::IntValue(v) => fn_ctx
+                    .builder
+                    .build_int_z_extend_or_bit_cast(v, i64_ty, "is_rhs_i64")
+                    .map_err(|e| CodegenError::Llvm(format!("is rhs cast: {e:?}")))?,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IdentityCompare rhs must be a pointer or integer value".into(),
+                    ))
+                }
+            };
+            let _ = (ptr_ty, lhs_ty, rhs_ty);
+            let bit = fn_ctx
+                .builder
+                .build_int_compare(inkwell::IntPredicate::EQ, lhs_int, rhs_int, "is_bit")
+                .map_err(|e| CodegenError::Llvm(format!("is icmp: {e:?}")))?;
+            let widened = fn_ctx
+                .builder
+                .build_int_z_extend_or_bit_cast(bit, dest_int, "is_zext")
+                .map_err(|e| CodegenError::Llvm(format!("is zext: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, widened)
+                .map_err(|e| CodegenError::Llvm(format!("is store: {e:?}")))?;
+            let _ = ctx;
+        }
         Instr::Move { dest, src } => {
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let (src_ptr, src_ty) = place_pointer(fn_ctx, *src)?;
@@ -1058,7 +1423,523 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
             }
             let _ = ctx;
         }
+        Instr::StringLit { bytes, dest } => {
+            // Emit an LLVM global constant for the string bytes (NUL-terminated,
+            // internal linkage, read-only) and store its address into the `dest`
+            // alloca. Matches the C++ codegen's `hew.global_string` →
+            // `llvm.mlir.addressof` pattern (codegen.cpp `ConstantOpLowering` /
+            // `GlobalStringOpLowering`, ~lines 257-265).
+            //
+            // The `dest` local must have been allocated with `ResolvedTy::String`,
+            // which `primitive_to_llvm` maps to an opaque `ptr`. The pointer to the
+            // global is the `String` value at the ABI boundary (`*const c_char`).
+            // `hew_string_drop` skips freeing static-segment pointers via its
+            // `is_static_string` guard, so no clone or heap allocation is needed.
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::StringLit dest is not a pointer type: dest_ty={dest_ty:?}"
+                )));
+            }
+            // `build_global_string_ptr` emits:
+            //   @.str.N = private unnamed_addr constant [len+1 x i8] c"...\00"
+            // and returns a GlobalValue whose as_pointer_value() is the address
+            // of the first byte (an opaque `ptr` in LLVM 17+ opaque-pointer mode).
+            //
+            // Safety note: `build_global_string_ptr` takes `&str` and internally
+            // calls `to_c_str` which NUL-terminates via CString. Since Hew source
+            // strings are UTF-8 and `bytes` carries the parser-decoded sequence,
+            // `from_utf8` is infallible for valid programs. The SHIM note below
+            // covers the embedded-NUL edge case.
+            //
+            // SHIM: embedded NUL bytes in the literal byte sequence would be
+            // truncated at the first NUL by `to_c_str` → `CStr::from_bytes_until_nul`.
+            // WHY: the Hew runtime treats all strings as null-terminated C strings;
+            //      embedded NULs are silently truncated by every C-string runtime op.
+            // WHEN: obsolete if Hew ever adopts a length-prefixed or fat-pointer
+            //       string representation.
+            // WHAT: replace `build_global_string_ptr` with a manual `add_global` +
+            //       set_initializer using an i8 array to preserve bytes exactly.
+            let s = std::str::from_utf8(bytes).map_err(|e| {
+                CodegenError::FailClosed(format!("Instr::StringLit bytes are not valid UTF-8: {e}"))
+            })?;
+            let global = fn_ctx
+                .builder
+                .build_global_string_ptr(s, "str_lit")
+                .map_err(|e| CodegenError::Llvm(format!("build_global_string_ptr: {e:?}")))?;
+            let ptr_val = global.as_pointer_value();
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, ptr_val)
+                .map_err(|e| CodegenError::Llvm(format!("StringLit store: {e:?}")))?;
+            let _ = ctx;
+        }
+        Instr::RecordInit { ty, fields, dest } => {
+            lower_record_init(fn_ctx, ty, fields, *dest)?;
+            let _ = ctx;
+        }
+        Instr::RecordFieldLoad {
+            record,
+            field_offset,
+            dest,
+        } => {
+            lower_record_field_load(fn_ctx, *record, *field_offset, *dest)?;
+            let _ = ctx;
+        }
+        Instr::TupleFieldLoad {
+            tuple,
+            field_index,
+            dest,
+        } => {
+            lower_tuple_field_load(fn_ctx, *tuple, *field_index, *dest)?;
+            let _ = ctx;
+        }
+        Instr::FloatLit {
+            dest,
+            value_bits,
+            width,
+        } => {
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let float_ty = match dest_ty {
+                BasicTypeEnum::FloatType(f) => f,
+                _ => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "FloatLit dest is not a float type: dest_ty={dest_ty:?}"
+                    )))
+                }
+            };
+            // Reconstruct the IEEE 754 value from its stored bit pattern.
+            // For F32: lower 32 bits are the f32 pattern; widen to f64 for
+            // inkwell's `const_float(f64)` API (exact for all finite values
+            // that Hew literal syntax can produce).
+            // For F64: all 64 bits are the f64 pattern.
+            let value_f64 = match width {
+                FloatWidth::F32 => f32::from_bits(*value_bits as u32) as f64,
+                FloatWidth::F64 => f64::from_bits(*value_bits),
+            };
+            let v = float_ty.const_float(value_f64);
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, v)
+                .map_err(|e| CodegenError::Llvm(format!("FloatLit store: {e:?}")))?;
+            let _ = ctx;
+        }
+        Instr::FloatAdd { dest, lhs, rhs, .. }
+        | Instr::FloatSub { dest, lhs, rhs, .. }
+        | Instr::FloatMul { dest, lhs, rhs, .. }
+        | Instr::FloatDiv { dest, lhs, rhs, .. }
+        | Instr::FloatRem { dest, lhs, rhs, .. } => {
+            // IEEE 754 float arithmetic. No `nsw`/`nuw` flags — those are
+            // integer-only. Out-of-range results produce ±inf or NaN per
+            // IEEE 754; no trap path is emitted.
+            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
+            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let lhs_float = match lhs_ty {
+                BasicTypeEnum::FloatType(f) => f,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "float arithmetic lhs is not a float type".into(),
+                    ))
+                }
+            };
+            if rhs_ty != lhs_ty || dest_ty != lhs_ty {
+                return Err(CodegenError::FailClosed(
+                    "float arithmetic operands and dest must share the same float type".into(),
+                ));
+            }
+            let lhs_v = fn_ctx
+                .builder
+                .build_load(lhs_float, lhs_ptr, "farith_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("farith lhs load: {e:?}")))?
+                .into_float_value();
+            let rhs_v = fn_ctx
+                .builder
+                .build_load(lhs_float, rhs_ptr, "farith_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("farith rhs load: {e:?}")))?
+                .into_float_value();
+            let result = match instr {
+                Instr::FloatAdd { .. } => {
+                    fn_ctx.builder.build_float_add(lhs_v, rhs_v, "farith_add")
+                }
+                Instr::FloatSub { .. } => {
+                    fn_ctx.builder.build_float_sub(lhs_v, rhs_v, "farith_sub")
+                }
+                Instr::FloatMul { .. } => {
+                    fn_ctx.builder.build_float_mul(lhs_v, rhs_v, "farith_mul")
+                }
+                Instr::FloatDiv { .. } => {
+                    fn_ctx.builder.build_float_div(lhs_v, rhs_v, "farith_div")
+                }
+                Instr::FloatRem { .. } => {
+                    fn_ctx.builder.build_float_rem(lhs_v, rhs_v, "farith_rem")
+                }
+                _ => unreachable!("matched on five float-arith variants above"),
+            }
+            .map_err(|e| CodegenError::Llvm(format!("float arith: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result)
+                .map_err(|e| CodegenError::Llvm(format!("farith store: {e:?}")))?;
+            let _ = ctx;
+        }
+        Instr::CharLit { value, dest } => {
+            // `char` is i32: the Unicode scalar value U+0000..U+10FFFF.
+            // Stored as `u32` in MIR; emit as an i32 constant (sign-extension
+            // is harmless — no scalar value exceeds 0x10FFFF, well within i32
+            // positive range).
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let int_ty = match dest_ty {
+                BasicTypeEnum::IntType(i) => i,
+                _ => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "CharLit dest is not an int: dest_ty={dest_ty:?}"
+                    )))
+                }
+            };
+            let v = int_ty.const_int(*value as u64, false);
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, v)
+                .map_err(|e| CodegenError::Llvm(format!("CharLit store: {e:?}")))?;
+            let _ = ctx;
+        }
+        Instr::UnitLit { dest } => {
+            // Unit is zero-sized. `primitive_to_llvm(Unit)` maps to i8 as a
+            // stand-in. Store 0 to give the slot a well-defined value; the
+            // consumer never observes it in well-typed programs (unit bindings
+            // are dropped before escaping the codegen boundary).
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let int_ty = match dest_ty {
+                BasicTypeEnum::IntType(i) => i,
+                _ => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "UnitLit dest is not an int (expected i8 stand-in): dest_ty={dest_ty:?}"
+                    )))
+                }
+            };
+            let v = int_ty.const_int(0, false);
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, v)
+                .map_err(|e| CodegenError::Llvm(format!("UnitLit store: {e:?}")))?;
+            let _ = ctx;
+        }
+        Instr::DurationLit { nanos, dest } => {
+            // Duration is i64 nanoseconds. `nanos` is already the final
+            // nanosecond representation — no conversion needed.
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let int_ty = match dest_ty {
+                BasicTypeEnum::IntType(i) => i,
+                _ => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "DurationLit dest is not an int: dest_ty={dest_ty:?}"
+                    )))
+                }
+            };
+            #[allow(clippy::cast_sign_loss)]
+            let v = int_ty.const_int(*nanos as u64, true);
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, v)
+                .map_err(|e| CodegenError::Llvm(format!("DurationLit store: {e:?}")))?;
+            let _ = ctx;
+        }
+        Instr::CallDirect {
+            callee_symbol,
+            args,
+            dest,
+        } => {
+            // Direct call to a user-defined function in the same module.
+            // The callee is resolved from `fn_symbols` (populated up front
+            // by `declare_function` for every `raw_mir` function). Arguments
+            // are loaded from their local slots and passed as LLVM value
+            // arguments in declaration order; the return value (if any) is
+            // stored into the `dest` slot.
+            let (llvm_fn, callee_ret_ty) =
+                *fn_ctx.fn_symbols.get(callee_symbol).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "Instr::CallDirect: callee `{callee_symbol}` was not found in fn_symbols; \
+                     the MIR producer must only emit CallDirect for functions declared in the \
+                     same module (module_fn_names gate)"
+                    ))
+                })?;
+            let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
+                Vec::with_capacity(args.len());
+            for arg in args {
+                let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
+                let loaded = fn_ctx
+                    .builder
+                    .build_load(arg_ty, arg_ptr, "direct_call_arg")
+                    .map_err(|e| CodegenError::Llvm(format!("CallDirect arg load: {e:?}")))?;
+                arg_vals.push(match loaded {
+                    BasicValueEnum::IntValue(v) => v.into(),
+                    BasicValueEnum::FloatValue(v) => v.into(),
+                    BasicValueEnum::PointerValue(v) => v.into(),
+                    BasicValueEnum::StructValue(v) => v.into(),
+                    BasicValueEnum::ArrayValue(v) => v.into(),
+                    BasicValueEnum::VectorValue(v) => v.into(),
+                    BasicValueEnum::ScalableVectorValue(v) => v.into(),
+                });
+            }
+            let call_site = fn_ctx
+                .builder
+                .build_call(llvm_fn, &arg_vals, "direct_call_result")
+                .map_err(|e| CodegenError::Llvm(format!("CallDirect build_call: {e:?}")))?;
+            if let Some(dest_place) = dest {
+                let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+                if dest_ty != callee_ret_ty {
+                    return Err(CodegenError::FailClosed(format!(
+                        "Instr::CallDirect(`{callee_symbol}`): dest type {dest_ty:?} does not \
+                         match callee return type {callee_ret_ty:?}; type-checker invariant \
+                         violation"
+                    )));
+                }
+                let ret_val = call_site.try_as_basic_value().basic().ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "Instr::CallDirect(`{callee_symbol}`): callee returns void but dest \
+                         place is present; MIR producer must not emit a dest for void callees"
+                    ))
+                })?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, ret_val)
+                    .map_err(|e| CodegenError::Llvm(format!("CallDirect store result: {e:?}")))?;
+            }
+            let _ = ctx;
+        }
     }
+    Ok(())
+}
+
+/// Resolve the LLVM `StructType` for a record-typed place by inspecting the
+/// place's `ResolvedTy::Named { name, .. }` name against the registered
+/// record layout map. Fails closed if `ty` is not a `Named` type or if the
+/// named type is not in the layout map — both indicate the MIR producer
+/// emitted a `RecordInit` / `RecordFieldLoad` against a Place whose type
+/// wasn't a registered record, which is an upstream invariant violation.
+fn record_struct_for<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    ty: &ResolvedTy,
+) -> CodegenResult<StructType<'ctx>> {
+    match ty {
+        ResolvedTy::Named { name, .. } => {
+            fn_ctx.record_layouts.get(name).copied().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "record codegen: type `{name}` reached RecordInit/RecordFieldLoad \
+                 but is not in the registered record-layout map; either the MIR \
+                 producer emitted the instruction against a non-record type, or \
+                 `IrPipeline.record_layouts` was not populated for this module"
+                ))
+            })
+        }
+        other => Err(CodegenError::FailClosed(format!(
+            "record codegen: expected a Named record type, got {other:?}"
+        ))),
+    }
+}
+
+/// Lower `Instr::RecordInit { ty, fields, dest }` to per-field GEP+store
+/// into the record's destination alloca.
+///
+/// `dest` is a `Place::Local(N)` whose slot was already allocated by
+/// `lower_function`'s prologue with the struct type (via `resolve_ty`). The
+/// alloca itself IS the destination record value — no second allocation is
+/// needed. We GEP into each field offset and store the source value loaded
+/// from its place.
+///
+/// Field source values may be either scalar (loaded with `build_load`) or
+/// composite (a nested record, loaded as a struct value). The LLVM
+/// `build_load` call uses the field's declared LLVM type from the parent
+/// struct's element-types list, so both shapes go through the same path.
+///
+/// Functional-update (`R { x: 1, ..base }`) is handled by the MIR producer
+/// expanding to per-field `RecordFieldLoad` from the base + `RecordInit`
+/// with all field-pairs explicit — A-7 sees only the flat store-each-field
+/// shape; no `base` parameter is consumed here.
+fn lower_record_init(
+    fn_ctx: &FnCtx<'_, '_>,
+    ty: &ResolvedTy,
+    fields: &[(FieldOffset, Place)],
+    dest: Place,
+) -> CodegenResult<()> {
+    let struct_ty = record_struct_for(fn_ctx, ty)?;
+    let (dest_ptr, dest_slot_ty) = place_pointer(fn_ctx, dest)?;
+    // Sanity: the destination slot must already be allocated as the struct
+    // type. If it's a different type, `lower_function`'s alloca prologue
+    // did not see the same `ResolvedTy::Named` for this local — a
+    // producer/codegen disagreement.
+    if dest_slot_ty != BasicTypeEnum::StructType(struct_ty) {
+        return Err(CodegenError::FailClosed(format!(
+            "RecordInit dest slot type does not match registered struct: \
+             slot={dest_slot_ty:?}, struct={struct_ty:?}"
+        )));
+    }
+    let element_tys = struct_ty.get_field_types();
+    for (offset, src_place) in fields {
+        let idx = offset.0;
+        let idx_usize = usize::try_from(idx).map_err(|_| {
+            CodegenError::FailClosed(format!(
+                "RecordInit field offset {idx} exceeds usize::MAX — impossible"
+            ))
+        })?;
+        let field_ty = *element_tys.get(idx_usize).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "RecordInit field offset {idx} is out of bounds for struct with \
+                 {} fields",
+                element_tys.len()
+            ))
+        })?;
+        let (src_ptr, src_slot_ty) = place_pointer(fn_ctx, *src_place)?;
+        if src_slot_ty != field_ty {
+            return Err(CodegenError::FailClosed(format!(
+                "RecordInit field {idx} source slot type does not match struct field \
+                 type: src={src_slot_ty:?}, field={field_ty:?}"
+            )));
+        }
+        // GEP to the field within the destination struct alloca.
+        let field_ptr = fn_ctx
+            .builder
+            .build_struct_gep(struct_ty, dest_ptr, idx, &format!("field_{idx}_init_ptr"))
+            .map_err(|e| CodegenError::Llvm(format!("RecordInit struct_gep field {idx}: {e:?}")))?;
+        // Load the source value (scalar or struct), store it into the field.
+        let src_val = fn_ctx
+            .builder
+            .build_load(field_ty, src_ptr, &format!("field_{idx}_init_src"))
+            .map_err(|e| CodegenError::Llvm(format!("RecordInit field {idx} load: {e:?}")))?;
+        fn_ctx
+            .builder
+            .build_store(field_ptr, src_val)
+            .map_err(|e| CodegenError::Llvm(format!("RecordInit field {idx} store: {e:?}")))?;
+    }
+    Ok(())
+}
+
+/// Lower `Instr::RecordFieldLoad { record, field_offset, dest }` to a
+/// GEP+load on the record's alloca, storing the loaded field value into
+/// the dest place.
+///
+/// The record's `Place` must reference a struct-typed local slot (allocated
+/// by `lower_function` from a `ResolvedTy::Named` record-typed local). We
+/// recover the struct type from the slot's LLVM type, GEP to the field, and
+/// load using the field's declared element type from the parent struct.
+fn lower_record_field_load(
+    fn_ctx: &FnCtx<'_, '_>,
+    record: Place,
+    field_offset: FieldOffset,
+    dest: Place,
+) -> CodegenResult<()> {
+    let (record_ptr, record_slot_ty) = place_pointer(fn_ctx, record)?;
+    let struct_ty = match record_slot_ty {
+        BasicTypeEnum::StructType(st) => st,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "RecordFieldLoad record place has non-struct slot type: {other:?}"
+            )))
+        }
+    };
+    let idx = field_offset.0;
+    let idx_usize = usize::try_from(idx).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "RecordFieldLoad field offset {idx} exceeds usize::MAX — impossible"
+        ))
+    })?;
+    let element_tys = struct_ty.get_field_types();
+    let field_ty = *element_tys.get(idx_usize).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "RecordFieldLoad field offset {idx} is out of bounds for struct with \
+             {} fields",
+            element_tys.len()
+        ))
+    })?;
+    let (dest_ptr, dest_slot_ty) = place_pointer(fn_ctx, dest)?;
+    if dest_slot_ty != field_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "RecordFieldLoad dest slot type does not match field type: \
+             dest={dest_slot_ty:?}, field={field_ty:?}"
+        )));
+    }
+    let field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(struct_ty, record_ptr, idx, &format!("field_{idx}_load_ptr"))
+        .map_err(|e| {
+            CodegenError::Llvm(format!("RecordFieldLoad struct_gep field {idx}: {e:?}"))
+        })?;
+    let field_val = fn_ctx
+        .builder
+        .build_load(field_ty, field_ptr, &format!("field_{idx}_load"))
+        .map_err(|e| CodegenError::Llvm(format!("RecordFieldLoad field {idx} load: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, field_val)
+        .map_err(|e| CodegenError::Llvm(format!("RecordFieldLoad field {idx} store: {e:?}")))?;
+    Ok(())
+}
+
+/// Lower `Instr::TupleFieldLoad { tuple, field_index, dest }` to a GEP+load on
+/// the tuple's struct alloca, storing the loaded element value into the dest place.
+///
+/// Tuples are laid out as anonymous LLVM struct types (positional field order,
+/// `packed = false`). The GEP+load pattern is identical to `RecordFieldLoad`;
+/// the only difference is that the struct type is recovered from the slot's
+/// LLVM type rather than from the named record-layout map, since tuple types are
+/// anonymous and carry no layout registration entry.
+///
+/// Fail-closed when:
+/// - The tuple place does not reference a struct-typed alloca (i.e. the MIR
+///   producer allocated the wrong type for the local — a bug in the lowerer).
+/// - `field_index` is out of bounds for the struct's field count.
+/// - The dest slot type does not match the element type (type-mismatch in MIR).
+fn lower_tuple_field_load(
+    fn_ctx: &FnCtx<'_, '_>,
+    tuple: Place,
+    field_index: u32,
+    dest: Place,
+) -> CodegenResult<()> {
+    let (tuple_ptr, tuple_slot_ty) = place_pointer(fn_ctx, tuple)?;
+    let struct_ty = match tuple_slot_ty {
+        BasicTypeEnum::StructType(st) => st,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "TupleFieldLoad tuple place has non-struct slot type: {other:?}"
+            )))
+        }
+    };
+    let idx = field_index;
+    let idx_usize = usize::try_from(idx).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "TupleFieldLoad field index {idx} exceeds usize::MAX — impossible"
+        ))
+    })?;
+    let element_tys = struct_ty.get_field_types();
+    let field_ty = *element_tys.get(idx_usize).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "TupleFieldLoad field index {idx} is out of bounds for tuple with \
+             {} elements",
+            element_tys.len()
+        ))
+    })?;
+    let (dest_ptr, dest_slot_ty) = place_pointer(fn_ctx, dest)?;
+    if dest_slot_ty != field_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "TupleFieldLoad dest slot type does not match element type: \
+             dest={dest_slot_ty:?}, element={field_ty:?}"
+        )));
+    }
+    let field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(struct_ty, tuple_ptr, idx, &format!("tuple_{idx}_load_ptr"))
+        .map_err(|e| {
+            CodegenError::Llvm(format!("TupleFieldLoad struct_gep element {idx}: {e:?}"))
+        })?;
+    let field_val = fn_ctx
+        .builder
+        .build_load(field_ty, field_ptr, &format!("tuple_{idx}_load"))
+        .map_err(|e| CodegenError::Llvm(format!("TupleFieldLoad element {idx} load: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, field_val)
+        .map_err(|e| CodegenError::Llvm(format!("TupleFieldLoad element {idx} store: {e:?}")))?;
     Ok(())
 }
 
@@ -1177,6 +2058,99 @@ fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
+        // Actor link/monitor builtins.
+        //
+        // SHIM(B3→Cluster2): `link()` returns `Result<(), LinkError>` and
+        // `monitor()` returns `MonitorRef { ref_id: int }`. Both require
+        // composite-type construction (enum variant / struct literal) in the
+        // LLVM IR, which the Cluster 1 spine does not yet support.
+        //
+        // WHY this shim exists: the producer (MIR lower.rs) calls
+        // `lower_runtime_call("hew_actor_link", ...)` via
+        // `user_name_to_c_symbol("link")`.  Codegen must not silently discard
+        // the call, but also cannot construct the composite return today.
+        // The FFI call is emitted; return wrapping is deferred.
+        //
+        // WHEN obsolete: when the Cluster 2 spine lands enum-variant and
+        // struct-literal construction in `hew-codegen-rs`.  At that point,
+        // `hew_actor_link` wraps the void return as `Ok(())`, and
+        // `hew_actor_monitor` wraps the u64 ref_id as `MonitorRef { ref_id }`.
+        //
+        // WHAT the real solution looks like:
+        //   hew_actor_link:   call void → alloca Result<(),LinkError> → store
+        //                     discriminant 0 (Ok), zero-length payload.
+        //   hew_actor_monitor: call i64 → alloca MonitorRef → store ref_id.
+        "hew_actor_link" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_actor_link): expected 2 args \
+                     (parent, child), got {}",
+                    args.len()
+                )));
+            }
+            // arg0: parent actor handle (opaque ptr).
+            let parent = load_int_arg(fn_ctx, args[0], i64_ty, "link_parent")?;
+            // arg1: child actor handle (opaque ptr).
+            let child = load_int_arg(fn_ctx, args[1], i64_ty, "link_child")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let llvm_args: [BasicMetadataValueEnum; 2] = [parent.into(), child.into()];
+            fn_ctx
+                .builder
+                .build_call(fv, &llvm_args, "hew_actor_link_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_actor_link call: {e:?}")))?;
+            // SHIM(B3→Cluster2): `link()` returns Result<(), LinkError>.
+            // Composite-type construction is not yet available in the Cluster 1
+            // spine. Until the Cluster 2 spine lands, producers must not wire a
+            // dest slot for this call — fail-closed if they do.
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_actor_link Result<(),LinkError> return synthesis requires \
+                     Cluster 2 composite-type spine; producer must not supply \
+                     dest={d:?} until that lands"
+                )));
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        "hew_actor_monitor" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_actor_monitor): expected 2 args \
+                     (watcher, target), got {}",
+                    args.len()
+                )));
+            }
+            // arg0: watcher actor handle (opaque ptr).
+            let watcher = load_int_arg(fn_ctx, args[0], i64_ty, "monitor_watcher")?;
+            // arg1: target actor handle (opaque ptr).
+            let target = load_int_arg(fn_ctx, args[1], i64_ty, "monitor_target")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let llvm_args: [BasicMetadataValueEnum; 2] = [watcher.into(), target.into()];
+            fn_ctx
+                .builder
+                .build_call(fv, &llvm_args, "hew_actor_monitor_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_actor_monitor call: {e:?}")))?;
+            // SHIM(B3→Cluster2): `monitor()` returns MonitorRef { ref_id: int }.
+            // Struct-literal construction requires the Cluster 2 spine.
+            // Producers must not wire a dest until that lands.
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_actor_monitor MonitorRef{{ref_id}} struct synthesis requires \
+                     Cluster 2 composite-type spine; producer must not supply \
+                     dest={d:?} until that lands"
+                )));
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
         // `hew_duplex_close` is only called from the Drop ritual
         // (`lower_drop`); reaching it via `Instr::CallRuntimeAbi`
         // means a producer mis-routed a destructor through the
@@ -1189,6 +2163,346 @@ fn lower_call_runtime_abi(
                  ritual fires after the close"
                     .to_string(),
             ));
+        }
+        // ── Vec<T> indexing (C-2) ────────────────────────────────────────
+        //
+        // hew_vec_len(v: *mut HewVec) -> i64
+        // args[0]: Place::Local(N) holding a `*mut HewVec` pointer — load the
+        // ptr from the alloca. dest: Place::Local(M) of type i64 — store result.
+        "hew_vec_len" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_vec_len): expected 1 arg (vec), got {}",
+                    args.len()
+                )));
+            }
+            let vec_ptr = load_duplex_handle(fn_ctx, args[0], "hew_vec_len arg0")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[vec_ptr.into()], "hew_vec_len_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_len call: {e:?}")))?;
+            let len_val = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_vec_len returned void".into()))?;
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_len: producer must supply a dest place for the length".into(),
+                )
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, len_val)
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_len store: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_vec_get_i32(v: *mut HewVec, index: i64) -> i32
+        // hew_vec_get_i64(v: *mut HewVec, index: i64) -> i64
+        // hew_vec_get_f64(v: *mut HewVec, index: i64) -> f64
+        // hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void
+        // hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c_char
+        //
+        // All five share the same ABI shape: load vec ptr from arg0, load
+        // index i64 from arg1, call, store result into dest. The result type
+        // differs per variant and is encoded in the function return type from
+        // `intern_runtime_decl`.
+        "hew_vec_get_i32" | "hew_vec_get_i64" | "hew_vec_get_f64" | "hew_vec_get_ptr"
+        | "hew_vec_get_str" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected 2 args (vec, index), got {}",
+                    args.len()
+                )));
+            }
+            // arg0: Vec pointer. `load_duplex_handle` loads a `ptr`-typed
+            // value from any `ptr`-alloca — correct for Vec handles too.
+            let vec_ptr = load_duplex_handle(fn_ctx, args[0], &format!("{symbol} arg0"))?;
+            // arg1: index as i64.
+            let index_val = load_int_arg(fn_ctx, args[1], i64_ty, &format!("{symbol} arg1"))?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), index_val.into()],
+                    &format!("{symbol}_call"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+            let result_val = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} returned void")))?;
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(format!("{symbol}: producer must supply a dest place"))
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result_val)
+                .map_err(|e| CodegenError::Llvm(format!("{symbol} store: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        // ── Vec<T> range-slice (C-3) ──────────────────────────────────────
+        //
+        // hew_vec_slice_range_{i32,i64,f64,ptr,str}(v: *mut HewVec,
+        //   start: i64, end: i64) -> *mut HewVec
+        //
+        // All five share the same ABI shape: load vec ptr from arg0, load
+        // start/end i64 from args 1..2, call, store the returned `*mut
+        // HewVec` into dest (a ptr-typed Vec<T> alloca). The element type
+        // is encoded in the suffix and selected by the MIR producer.
+        "hew_vec_slice_range_i32"
+        | "hew_vec_slice_range_i64"
+        | "hew_vec_slice_range_f64"
+        | "hew_vec_slice_range_ptr"
+        | "hew_vec_slice_range_str" => {
+            if args.len() != 3 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected 3 args (vec, start, end), got {}",
+                    args.len()
+                )));
+            }
+            let vec_ptr = load_duplex_handle(fn_ctx, args[0], &format!("{symbol} arg0"))?;
+            let start_val = load_int_arg(fn_ctx, args[1], i64_ty, &format!("{symbol} arg1"))?;
+            let end_val = load_int_arg(fn_ctx, args[2], i64_ty, &format!("{symbol} arg2"))?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), start_val.into(), end_val.into()],
+                    &format!("{symbol}_call"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+            let result_val = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} returned void")))?;
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(format!("{symbol}: producer must supply a dest place"))
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result_val)
+                .map_err(|e| CodegenError::Llvm(format!("{symbol} store: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        // ── scope{}/spawn/await task ABI (Phase 2, inventory rows 2/3/4) ──────
+        //
+        // hew_scope_spawn(scope: *mut HewScope, actor: *mut c_void) -> i32
+        // args[0]: scope ptr. args[1]: actor ptr (opaque c_void).
+        // Destination: None — the i32 return is a runtime-internal signal.
+        "hew_scope_spawn" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_scope_spawn): expected 2 args \
+                     (scope, actor), got {}",
+                    args.len()
+                )));
+            }
+            let scope_ptr = load_duplex_handle(fn_ctx, args[0], "hew_scope_spawn arg0")?;
+            let actor_ptr = load_duplex_handle(fn_ctx, args[1], "hew_scope_spawn arg1")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[scope_ptr.into(), actor_ptr.into()],
+                    "hew_scope_spawn_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_scope_spawn call: {e:?}")))?;
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_scope_spawn i32 return is runtime-internal; \
+                     producer must not supply dest={d:?}"
+                )));
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_task_new() -> *mut HewTask
+        // No args. dest: Place holding the task pointer.
+        "hew_task_new" => {
+            if !args.is_empty() {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_new): expected 0 args, got {}",
+                    args.len()
+                )));
+            }
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[], "hew_task_new_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_new call: {e:?}")))?;
+            let task_ptr = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_task_new returned void".into()))?;
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_task_new: producer must supply a dest place for the task ptr".into(),
+                )
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, task_ptr)
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_new store: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void
+        // args[0]: task ptr. args[1]: function pointer (ptr-typed in opaque-ptr mode).
+        //
+        // SHIM(row3→producer): the upcoming MIR producer for `spawn fn(...)` has
+        // not landed yet (inventory row 3). The Place shape for a function-pointer
+        // argument is an open design question — no existing arm loads a fn-ptr from
+        // a Place. When the producer lands it must pick one of:
+        //   (a) Place::Local(N) of a ptr-typed alloca storing the fn ptr, using
+        //       `load_duplex_handle` (which loads any ptr from a ptr alloca).
+        //   (b) A new Place variant specifically for function pointers.
+        // Emitting a fail-closed arm now locks in the allowlist guard without
+        // committing to the wrong ABI shape prematurely. WHEN-OBSOLETE: when the
+        // `spawn fn(...)` MIR producer lands and picks a Place convention; replace
+        // this shim with a real two-arg call matching that convention. WHAT: load
+        // task ptr from args[0], load fn-ptr from args[1] using the chosen Place
+        // shape, call void hew_task_spawn_thread(task, fn_ptr).
+        "hew_task_spawn_thread" => {
+            return Err(CodegenError::FailClosed(
+                "Instr::CallRuntimeAbi(hew_task_spawn_thread): no MIR producer for \
+                 spawn fn(...) has landed yet (inventory row 3). The fn-ptr Place \
+                 convention is undecided. Wire this arm when the spawn producer lands \
+                 and picks a Place shape for the function-pointer argument."
+                    .to_string(),
+            ));
+        }
+        // hew_task_await_blocking(task: *mut HewTask) -> *mut c_void
+        // args[0]: task ptr. dest: Place for the result pointer (may be None for
+        // void-result tasks; the blocking guarantee is unconditional).
+        "hew_task_await_blocking" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_await_blocking): expected 1 arg \
+                     (task), got {}",
+                    args.len()
+                )));
+            }
+            let task_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_await_blocking arg0")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[task_ptr.into()], "hew_task_await_blocking_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_await_blocking call: {e:?}")))?;
+            // Result pointer — optional; void-result tasks may pass dest: None.
+            if let Some(dest_place) = dest {
+                let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
+                    CodegenError::FailClosed("hew_task_await_blocking returned void".into())
+                })?;
+                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, result_val)
+                    .map_err(|e| {
+                        CodegenError::Llvm(format!("hew_task_await_blocking store: {e:?}"))
+                    })?;
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_task_get_result(task: *mut HewTask) -> *mut c_void
+        // args[0]: task ptr. dest: Place for the result pointer.
+        // Must be called after hew_task_await_blocking (task is Done).
+        "hew_task_get_result" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_get_result): expected 1 arg \
+                     (task), got {}",
+                    args.len()
+                )));
+            }
+            let task_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_get_result arg0")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[task_ptr.into()], "hew_task_get_result_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_get_result call: {e:?}")))?;
+            let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_task_get_result returned void".into())
+            })?;
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_task_get_result: producer must supply a dest place for the result ptr"
+                        .into(),
+                )
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result_val)
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_get_result store: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_task_free(task: *mut HewTask) -> void
+        // args[0]: task ptr. dest: None — frees the task allocation.
+        "hew_task_free" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_free): expected 1 arg (task), got {}",
+                    args.len()
+                )));
+            }
+            let task_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_free arg0")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(fv, &[task_ptr.into()], "hew_task_free_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_free call: {e:?}")))?;
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_task_free returns void; producer must not supply dest={d:?}"
+                )));
+            }
+            let _ = (i32_ty, ptr_ty);
         }
         other => {
             // Allowlisted but not wired. Names a missing follow-on
@@ -1588,15 +2902,75 @@ fn lower_terminator<'ctx>(
                 .map_err(|e| CodegenError::Llvm(format!("call br: {e:?}")))?;
         }
         Terminator::Trap { kind } => {
-            // Emit `llvm.trap` followed by `unreachable`. The `kind`
-            // discriminant is carried only in the MIR; at the LLVM IR
-            // level all trap causes lower identically to a hard abort
-            // (LLVM will remove the block if it proves it unreachable;
-            // on the taken path the trap fires before the unreachable).
+            // Per-kind trap lowering. Each `TrapKind` is mapped to a
+            // stable i32 exit code (mirrors `HEW_TRAP_HEAP_EXCEEDED` =
+            // 200 in `hew-runtime/src/supervisor.rs`); we emit a call
+            // to the runtime entry-point `hew_trap_with_code(code)`
+            // and then fall through to `llvm.trap` + `unreachable`.
             //
-            // `llvm.trap` is a non-overloaded void intrinsic so
-            // `get_declaration` takes an empty type slice.
-            let _kind: TrapKind = *kind; // exhaustiveness: future arms may discriminate
+            // Inside an actor-dispatch context, `hew_trap_with_code`
+            // longjmps back to the scheduler with `code` stored as
+            // the actor's `error_code`, so the supervisor sees
+            // `ExitReason::IntegerOverflow` (etc.) instead of a
+            // generic `Signal(4)`. Outside a dispatch context (top-
+            // level `main`, `hew eval`, JIT preview) the runtime
+            // function returns and the following `llvm.trap` aborts
+            // the process with SIGILL — matching today's behaviour
+            // for non-actor crashes.
+            //
+            // The trailing `llvm.trap` + `unreachable` is mandatory:
+            // (1) it terminates the LLVM basic block when the
+            //     longjmp path is inactive, satisfying the verifier;
+            // (2) regression tests that assert `ll.contains("@llvm.trap")`
+            //     for the trap path still hold.
+            //
+            // WASM: `hew_trap_with_code` resolves to a stub that
+            // returns without longjmping (signal.rs WASM module);
+            // `llvm.trap` is the actual terminator on WASM. No
+            // codegen branch is needed.
+            //
+            // The exit-code constants here MUST stay in lock-step
+            // with `HEW_TRAP_*` in `hew-runtime/src/supervisor.rs`.
+            const HEW_TRAP_INTEGER_OVERFLOW: u64 = 201;
+            const HEW_TRAP_DIVIDE_BY_ZERO: u64 = 202;
+            const HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE: u64 = 203;
+            const HEW_TRAP_SHIFT_OUT_OF_RANGE: u64 = 204;
+            const HEW_TRAP_INDEX_OUT_OF_BOUNDS: u64 = 205;
+            let code: u64 = match *kind {
+                TrapKind::IntegerOverflow => HEW_TRAP_INTEGER_OVERFLOW,
+                TrapKind::DivideByZero => HEW_TRAP_DIVIDE_BY_ZERO,
+                TrapKind::SignedMinDivNegOne => HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+                TrapKind::ShiftOutOfRange => HEW_TRAP_SHIFT_OUT_OF_RANGE,
+                TrapKind::IndexOutOfBounds => HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+            };
+
+            // Look up (or declare on first use) the runtime trap
+            // entry-point. Declared directly on the LLVM module —
+            // this is a fixed runtime FFI seam, not an
+            // `Instr::CallRuntimeAbi` (no `M2_RUNTIME_SYMBOLS`
+            // allowlist participation; the codegen-side declaration
+            // is the source of truth).
+            let trap_with_code_fn = match fn_ctx.llvm_mod.get_function("hew_trap_with_code") {
+                Some(fv) => fv,
+                None => {
+                    let i32_ty = fn_ctx.ctx.i32_type();
+                    let fn_ty = fn_ctx.ctx.void_type().fn_type(&[i32_ty.into()], false);
+                    fn_ctx.llvm_mod.add_function(
+                        "hew_trap_with_code",
+                        fn_ty,
+                        Some(Linkage::External),
+                    )
+                }
+            };
+            let code_val = fn_ctx.ctx.i32_type().const_int(code, false);
+            fn_ctx
+                .builder
+                .build_call(trap_with_code_fn, &[code_val.into()], "trap_with_code")
+                .map_err(|e| CodegenError::Llvm(format!("hew_trap_with_code call: {e:?}")))?;
+
+            // Fallback / verifier-required terminator: `llvm.trap`
+            // is a non-overloaded void intrinsic so `get_declaration`
+            // takes an empty type slice.
             let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
                 CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into())
             })?;
@@ -1775,28 +3149,49 @@ fn declare_function<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     func: &RawMirFunction,
+    record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<(FunctionValue<'ctx>, BasicTypeEnum<'ctx>)> {
     let linkage = if func.name == "main" {
         Some(Linkage::External)
     } else {
         Some(Linkage::Internal)
     };
-    let return_ty_llvm = primitive_to_llvm(ctx, &func.return_ty)?;
-    // Cluster 1's spine subset only lowers integer-returning functions.
+    let return_ty_llvm = resolve_ty(ctx, &func.return_ty, record_layouts)?;
+    // Accept integer and pointer return types. Integer covers the original
+    // Cluster 1 spine; pointer covers `String` (a `*mut c_char` / opaque
+    // `ptr` in LLVM IR) which is now lowerable via `Instr::StringLit`.
     // Bool/Unit/F32/F64 all reach `primitive_to_llvm` with valid shapes,
     // but the MIR `Instr` stream cannot populate the return slot for them
     // — the function body would emit `ret` against an uninitialised
     // alloca. Reject the return type at declaration time so the failure
     // is loud and well-located (LESSONS `boundary-fail-closed`).
-    if !matches!(return_ty_llvm, BasicTypeEnum::IntType(_)) {
+    if !matches!(
+        return_ty_llvm,
+        BasicTypeEnum::IntType(_) | BasicTypeEnum::PointerType(_)
+    ) {
         return Err(CodegenError::Unsupported(
-            "Cluster 1 only lowers integer-returning functions; \
-             non-integer return types are out of the spine subset",
+            "only integer- and pointer-returning functions are lowerable; \
+             non-integer/non-pointer return types are out of the current spine subset",
         ));
     }
-    // Cluster 1 functions are zero-arg. When Cluster 2 adds params it
-    // grows this loop; the shape is here so the diff is small.
-    let param_tys: Vec<BasicMetadataTypeEnum> = Vec::new();
+    // Resolve parameter types from `func.params`. Each parameter type must
+    // be representable as a `BasicMetadataTypeEnum` (integers and pointers
+    // are both legal LLVM value-param types for the current spine subset).
+    // The parameter-prologue in `lower_function` stores each LLVM function
+    // argument into the corresponding `locals[i]` alloca slot.
+    let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(func.params.len());
+    for param_ty in &func.params {
+        let llvm_ty = resolve_ty(ctx, param_ty, record_layouts)?;
+        param_tys.push(match llvm_ty {
+            BasicTypeEnum::IntType(t) => t.into(),
+            BasicTypeEnum::PointerType(t) => t.into(),
+            BasicTypeEnum::FloatType(t) => t.into(),
+            BasicTypeEnum::StructType(t) => t.into(),
+            BasicTypeEnum::ArrayType(t) => t.into(),
+            BasicTypeEnum::VectorType(t) => t.into(),
+            BasicTypeEnum::ScalableVectorType(t) => t.into(),
+        });
+    }
     let fn_ty = match return_ty_llvm {
         BasicTypeEnum::IntType(i) => i.fn_type(&param_tys, false),
         // Other shapes are pre-filtered above; keep the arms exhaustive so
@@ -1828,6 +3223,7 @@ fn lower_function<'ctx>(
     func: &RawMirFunction,
     fn_symbols: &FnSymbolMap<'ctx>,
     elab: Option<&ElaboratedMirFunction>,
+    record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<()> {
     let (llvm_fn, return_ty_llvm) = *fn_symbols.get(&func.name).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -1857,7 +3253,12 @@ fn lower_function<'ctx>(
 
     let mut locals: HashMap<u32, (PointerValue, BasicTypeEnum)> = HashMap::new();
     for (idx, ty) in func.locals.iter().enumerate() {
-        let llvm_ty = primitive_to_llvm(ctx, ty)?;
+        // Use `resolve_ty` (not bare `primitive_to_llvm`) so record-typed
+        // locals materialise as struct allocas rather than tripping the
+        // D10-violation arm. Record-typed locals get an alloca sized to
+        // the full struct; codegen for `RecordInit` writes into this slot
+        // in place via per-field GEP+store.
+        let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
         let idx_u32 = u32::try_from(idx).map_err(|_| {
             CodegenError::FailClosed("function exceeds u32::MAX locals — impossible".into())
         })?;
@@ -1865,6 +3266,34 @@ fn lower_function<'ctx>(
             .build_alloca(llvm_ty, &format!("local_{idx}"))
             .map_err(|e| CodegenError::Llvm(format!("alloca local {idx}: {e:?}")))?;
         locals.insert(idx_u32, (slot, llvm_ty));
+    }
+
+    // Parameter prologue: store each LLVM function argument into the
+    // corresponding `locals[i]` alloca slot. Parameters occupy
+    // `locals[0..func.params.len()]` by the invariant established in
+    // `RawMirFunction` (see `lower_params` in hew-mir/src/lower.rs).
+    // This runs after all allocas so the store is always in the entry
+    // block and dominates every use in successor blocks.
+    for (param_idx, _param_ty) in func.params.iter().enumerate() {
+        let param_idx_u32 = u32::try_from(param_idx).map_err(|_| {
+            CodegenError::FailClosed("function exceeds u32::MAX params — impossible".into())
+        })?;
+        let llvm_param = llvm_fn.get_nth_param(param_idx as u32).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "function `{}` has no LLVM param at index {param_idx}; \
+                     declare_function and lower_function param counts disagree",
+                func.name
+            ))
+        })?;
+        let (slot, _slot_ty) = *locals.get(&param_idx_u32).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "function `{}` has no local slot for param index {param_idx}",
+                func.name
+            ))
+        })?;
+        builder
+            .build_store(slot, llvm_param)
+            .map_err(|e| CodegenError::Llvm(format!("param store {param_idx}: {e:?}")))?;
     }
 
     let fn_ctx = FnCtx {
@@ -1876,6 +3305,8 @@ fn lower_function<'ctx>(
         locals,
         blocks: blocks.clone(),
         runtime_decls: RefCell::new(HashMap::new()),
+        record_layouts,
+        fn_symbols,
     };
 
     // Extract drop_plans from the matched elaborated function, or use an
@@ -1912,9 +3343,17 @@ fn build_module<'ctx>(
     name: &str,
 ) -> CodegenResult<LlvmModule<'ctx>> {
     let llvm_mod = ctx.create_module(name);
+    // Register every named-form record from `pipeline.record_layouts` as an
+    // LLVM named struct on `ctx` BEFORE any function declaration or body
+    // lowering touches `resolve_ty`. Records can appear in function return
+    // types (declare_function) and in local slot types (lower_function);
+    // both paths consult `record_layouts` via `resolve_ty`, so the map must
+    // be populated up front. Empty `record_layouts` (most existing pipelines)
+    // produces an empty map and changes no behaviour for record-free code.
+    let record_layouts = register_record_layouts(ctx, &pipeline.record_layouts)?;
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     for func in &pipeline.raw_mir {
-        let sym = declare_function(ctx, &llvm_mod, func)?;
+        let sym = declare_function(ctx, &llvm_mod, func, &record_layouts)?;
         fn_symbols.insert(func.name.clone(), sym);
     }
     for func in &pipeline.raw_mir {
@@ -1923,7 +3362,7 @@ fn build_module<'ctx>(
         // elaborated_mir empty; `find` returns `None` in that case and
         // `lower_function` falls back to the inline Instr::Drop path.
         let elab = pipeline.elaborated_mir.iter().find(|e| e.name == func.name);
-        lower_function(ctx, &llvm_mod, func, &fn_symbols, elab)?;
+        lower_function(ctx, &llvm_mod, func, &fn_symbols, elab, &record_layouts)?;
     }
     llvm_mod
         .verify()
@@ -1955,6 +3394,16 @@ fn link_wasm_module(obj: &Path, out: &Path) -> CodegenResult<()> {
         command
             .arg("--no-entry")
             .arg("--export=main")
+            // `--import-undefined`: undefined runtime symbols (e.g.
+            // `hew_trap_with_code` from `Terminator::Trap` lowering) become
+            // wasm imports the host module provides. The native link path
+            // resolves these against the hew-runtime static archive in
+            // `hew-cli/src/link.rs`; the codegen-internal wasm link in this
+            // helper does not pull in the runtime, so the symbols must be
+            // host-imports instead of hard link errors. WASM-TODO(#1451):
+            // a follow-up wires per-kind trap reporting into a real wasm
+            // runtime stub.
+            .arg("--import-undefined")
             .arg("-o")
             .arg(out)
             .arg(obj);
@@ -1995,6 +3444,7 @@ mod tests {
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: return_ty.clone(),
+            params: vec![],
             locals: vec![return_ty.clone()],
             blocks: vec![BasicBlock {
                 id: 0,
@@ -2019,6 +3469,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
         }
     }
 
@@ -2030,12 +3481,64 @@ mod tests {
         assert!(m.verify().is_ok(), "const-42 module must pass LLVM verify");
     }
 
+    // `String` is now a lowerable return type (maps to opaque `ptr`).
+    // This test exercises a String-returning function with a `StringLit`
+    // instruction that populates the return slot. It must build and verify.
     #[test]
-    fn unsupported_string_return_fails_closed() {
+    fn string_literal_return_builds_and_verifies() {
+        // fn main() -> String { "hello" }
+        // Locals: [0: String (the lit dest), ReturnSlot: String]
         let return_ty = ResolvedTy::String;
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: return_ty.clone(),
+            params: vec![],
+            locals: vec![return_ty.clone()],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![
+                    Instr::StringLit {
+                        bytes: b"hello".to_vec(),
+                        dest: Place::Local(0),
+                    },
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(0),
+                    },
+                ],
+                terminator: Terminator::Return,
+            }],
+            decisions: Vec::new(),
+        };
+        let pipeline = IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![main],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
+        };
+        let ctx = Context::create();
+        let m =
+            build_module(&ctx, &pipeline, "string_lit_test").expect("StringLit module must build");
+        assert!(m.verify().is_ok(), "StringLit module must pass LLVM verify");
+        // Confirm the textual IR contains the global string constant.
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("hello"),
+            "emitted IR must contain the literal bytes: {ir}"
+        );
+    }
+
+    // Float return is still unsupported — verify the fail-closed boundary.
+    #[test]
+    fn unsupported_float_return_fails_closed() {
+        let return_ty = ResolvedTy::F64;
+        let main = RawMirFunction {
+            name: "main".to_string(),
+            return_ty: return_ty.clone(),
+            params: vec![],
             locals: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
@@ -2051,13 +3554,14 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
         };
         let ctx = Context::create();
-        let err = build_module(&ctx, &pipeline, "string_return")
-            .expect_err("String return must be rejected");
+        let err =
+            build_module(&ctx, &pipeline, "float_return").expect_err("F64 return must be rejected");
         assert!(
             matches!(err, CodegenError::Unsupported(_)),
-            "String return must surface as Unsupported, got: {err:?}"
+            "F64 return must surface as Unsupported, got: {err:?}"
         );
     }
 
@@ -2073,6 +3577,7 @@ mod tests {
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
+            params: vec![],
             locals: vec![ResolvedTy::I64],
             blocks: vec![BasicBlock {
                 id: 0,
@@ -2095,6 +3600,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
         }
     }
 

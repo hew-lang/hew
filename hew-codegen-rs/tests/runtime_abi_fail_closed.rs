@@ -41,6 +41,7 @@ fn pipeline_with_call_runtime_abi(symbol: &str) -> IrPipeline {
         raw_mir: vec![RawMirFunction {
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
+            params: vec![],
             locals: vec![ResolvedTy::I64],
             blocks: raw_blocks.clone(),
             decisions: vec![],
@@ -68,6 +69,7 @@ fn pipeline_with_call_runtime_abi(symbol: &str) -> IrPipeline {
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        record_layouts: vec![],
     }
 }
 

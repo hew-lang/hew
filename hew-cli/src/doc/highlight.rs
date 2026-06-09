@@ -114,6 +114,8 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::OneForOne
         | Token::OneForAll
         | Token::RestForOne
+        | Token::SimpleOneForOne
+        | Token::Pool
         | Token::True
         | Token::False => CONST,
 

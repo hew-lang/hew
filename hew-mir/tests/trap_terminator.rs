@@ -34,6 +34,7 @@ fn trap_fn(kind: TrapKind) -> RawMirFunction {
     RawMirFunction {
         name: format!("trap_{kind:?}"),
         return_ty: ResolvedTy::I64,
+        params: vec![],
         locals: vec![],
         blocks: vec![BasicBlock {
             id: 0,
@@ -196,7 +197,7 @@ fn trap_terminator_is_terminal_in_block_shape() {
     // analyze runs build_preds + successors + transfer internally;
     // a Trap block has no successors so the exit_states map has one entry
     // (for the single block id 0) and the checks vec is empty.
-    let result = analyze(&blocks, &TypeClassTable::default());
+    let result = analyze(&blocks, &TypeClassTable::default(), &[]);
     assert_eq!(
         result.exit_states.len(),
         1,

@@ -1,6 +1,6 @@
 use hew_hir::{lower_program, verify_hir, HirDiagnosticKind, ResolutionCtx};
 use hew_mir::{
-    lower_hir_module, CmpPred, Instr, MirCheck, MirDiagnosticKind, MirStatement, Terminator,
+    lower_hir_module, CmpPred, Instr, MirCheck, MirDiagnosticKind, MirStatement, Place, Terminator,
     TrapKind,
 };
 use hew_types::TypeCheckOutput;
@@ -389,14 +389,12 @@ fn checked_mir_accepts_spine_integer_function() {
 }
 
 #[test]
-fn cross_function_call_types_typecheck_then_fail_closed_at_mir() {
-    // With the function registry, calling add() returns i64, not Unit — so
-    // HIR no longer produces a ReturnTypeMismatch. The MIR boundary is the
-    // next gate: Cluster 1's spine subset does not yet lower Call
-    // expressions, and function parameters do not bind to backend
-    // `Place`s, so the program must fail closed at the MIR boundary
-    // (LESSONS `boundary-fail-closed`). The pipeline() helper already
-    // asserts HIR is clean; this test pins the MIR rejection shape.
+fn cross_function_call_types_lower_via_call_direct() {
+    // Direct calls to user-defined functions in the same module are now
+    // lowered via `Instr::CallDirect` — no `CutoverUnsupported` for function
+    // calls to module functions. The pipeline() helper asserts HIR is clean;
+    // this test pins the MIR acceptance shape: both functions appear in
+    // `raw_mir` and the diagnostic stream is clean.
     let pipeline = pipeline(
         "fn add(a: i64, b: i64) -> i64 { return a + b; } \
          fn main() -> i64 { return add(0, 1); }",
@@ -410,13 +408,20 @@ fn cross_function_call_types_typecheck_then_fail_closed_at_mir() {
         names.contains(&"main"),
         "raw_mir must include main: {names:?}"
     );
+    // Direct user-function calls must not produce CutoverUnsupported.
+    let cutover_diags: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(&d.kind, MirDiagnosticKind::CutoverUnsupported { .. }))
+        .collect();
     assert!(
-        pipeline.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            MirDiagnosticKind::CutoverUnsupported { construct, .. }
-                if construct == "function call"
-        )),
-        "call expressions must fail closed at the MIR boundary: {:?}",
+        cutover_diags.is_empty(),
+        "direct user-function calls must lower without CutoverUnsupported: {cutover_diags:?}"
+    );
+    // Must have no diagnostics at all.
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "direct user-function call pipeline must have no MIR diagnostics: {:?}",
         pipeline.diagnostics
     );
 }
@@ -591,27 +596,29 @@ fn lower_unsupported_binop_fails_closed_with_diagnostic() {
     // `CutoverUnsupported` so the CLI rejection surface catches the
     // construct.
     //
-    // B-5 wired `/`, `%`, `<<`, `>>` — use a bitwise `&` which is
-    // still genuinely unsupported in the v0.5 spine to exercise the
-    // fail-closed path.
-    let parsed = hew_parser::parse("fn main() -> i64 { let a: i64 = 1; let b: i64 = 2; a & b }");
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
-    assert!(
-        output.diagnostics.is_empty(),
-        "Bitwise-AND should parse + lower cleanly through HIR: {:?}",
-        output.diagnostics
-    );
-    let pipeline = lower_hir_module(&output.module);
-    assert!(
-        pipeline.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            MirDiagnosticKind::CutoverUnsupported { construct, .. }
-                if construct.contains("binary operator")
-        )),
-        "Bitwise `&` must emit CutoverUnsupported at MIR: {:?}",
-        pipeline.diagnostics
-    );
+    // Bitwise (&, |, ^) and shift (<<, >>), divide, and modulo are now
+    // all wired. This test verifies the complementary property: that
+    // implemented operators do NOT emit CutoverUnsupported. Regression
+    // against the earlier fail-soft: if lower_binary were to accidentally
+    // fall through to the catch-all for a wired operator, no instruction
+    // would be emitted and a CutoverUnsupported would appear.
+    for src in [
+        "fn main() -> i64 { let a: i64 = 1; let b: i64 = 2; a & b }",
+        "fn main() -> i64 { let a: i64 = 1; let b: i64 = 2; a | b }",
+        "fn main() -> i64 { let a: i64 = 1; let b: i64 = 2; a ^ b }",
+    ] {
+        let parsed = hew_parser::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let pipeline = lower_hir_module(&output.module);
+        assert!(
+            pipeline.diagnostics.is_empty(),
+            "Implemented bitwise op must not emit CutoverUnsupported: \
+             {src} => {:?}",
+            pipeline.diagnostics
+        );
+    }
 }
 
 #[test]
@@ -1054,5 +1061,58 @@ fn linear_consumed_only_in_then_branch_rejects() {
         "@linear binding consumed on only one branch must fire MustConsume \
          from MaybeConsumed-at-Return: {:?}",
         func.checks
+    );
+}
+
+#[test]
+fn lower_string_literal_emits_string_lit_instr() {
+    // `let s = "hello"` must lower to `Instr::StringLit` with the decoded
+    // bytes `b"hello"` in the raw MIR instruction stream.
+    let pipeline = pipeline(r#"fn main() -> i64 { let s = "hello"; 0 }"#);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "string literal must lower without diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let func = &pipeline.raw_mir[0];
+    let found = func.blocks[0].instructions.iter().find_map(|i| match i {
+        Instr::StringLit { bytes, dest } => Some((bytes.clone(), *dest)),
+        _ => None,
+    });
+    let (bytes, dest) =
+        found.expect("string literal `\"hello\"` must produce Instr::StringLit in raw MIR");
+    assert_eq!(
+        bytes, b"hello",
+        "Instr::StringLit bytes must be the decoded UTF-8 literal"
+    );
+    assert!(
+        matches!(dest, Place::Local(_)),
+        "Instr::StringLit dest must be a Local place"
+    );
+}
+
+#[test]
+fn lower_escaped_string_literal_carries_decoded_bytes() {
+    // Escape sequences are decoded by the parser; MIR must carry the
+    // decoded bytes, not the source escape notation.
+    let pipeline = pipeline(r#"fn main() -> i64 { let s = "foo\nbar"; 0 }"#);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "escaped string literal must lower without diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let func = &pipeline.raw_mir[0];
+    let bytes = func.blocks[0]
+        .instructions
+        .iter()
+        .find_map(|i| match i {
+            Instr::StringLit { bytes, .. } => Some(bytes.clone()),
+            _ => None,
+        })
+        .expect("escaped string literal must produce Instr::StringLit");
+    // Parser decodes `\n` to a single newline byte (0x0A).
+    assert_eq!(
+        bytes, b"foo\nbar",
+        "Instr::StringLit bytes must carry the decoded byte, not the escape notation"
     );
 }

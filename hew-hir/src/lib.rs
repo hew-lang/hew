@@ -20,10 +20,11 @@ pub use ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 pub use intent::IntentKind;
 pub use lower::{lower_program, LowerOutput, ResolutionCtx};
 pub use node::{
-    HirBinding, HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem,
-    HirLambdaCapture, HirLiteral, HirMachineDecl, HirMachineEvent, HirMachineState,
-    HirMachineTransition, HirModule, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt,
-    HirStmtKind, HirTypeDecl,
+    HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn, HirBinding,
+    HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLambdaCapture,
+    HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent,
+    HirMachineState, HirMachineTransition, HirModule, HirSelect, HirSelectArm, HirSelectArmKind,
+    HirStmt, HirStmtKind, HirTypeDecl,
 };
 pub use value_class::{contains_named_type, named_type_names, TypeClassTable, ValueClass};
 pub use verify::verify_hir;

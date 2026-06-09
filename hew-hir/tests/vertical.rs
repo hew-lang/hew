@@ -142,7 +142,11 @@ fn find_first_select(output: &hew_hir::LowerOutput) -> &hew_hir::HirSelect {
         .iter()
         .find_map(|item| match item {
             hew_hir::HirItem::Function(f) => Some(f),
-            hew_hir::HirItem::TypeDecl(_) | hew_hir::HirItem::Machine(_) => None,
+            hew_hir::HirItem::TypeDecl(_)
+            | hew_hir::HirItem::Machine(_)
+            | hew_hir::HirItem::Record(_)
+            | hew_hir::HirItem::Actor(_)
+            | hew_hir::HirItem::Supervisor(_) => None,
         })
         .expect("expected at least one function in lowered module");
     for stmt in &func.body.statements {

@@ -4259,18 +4259,22 @@ fn primitive_impl_dispatch_resolves_vec_receiver() {
 fn primitive_impl_dispatch_preserves_builtin_numeric_conversion() {
     // R5 mitigation: the side table is consulted only when the compiler
     // builtin returns "no match".  Numeric width-conversion methods like
-    // `.to_i32()` flow through their own dispatch arm (methods.rs around
+    // `.to_i64()` flow through their own dispatch arm (methods.rs around
     // the `is_numeric() && starts_with("to_")` guard).  With a user
-    // `Display for int` in scope, calling the builtin must still resolve
-    // to `Ty::I32`, not be hijacked into the user trait's `fmt` method.
+    // `Display for i32` in scope, calling the builtin must still resolve
+    // to `Ty::I64`, not be hijacked into the user trait's `fmt` method.
+    //
+    // Uses `i32.to_i64()` (infallible widening) rather than the previously
+    // tested `int.to_i32()` (i64→i32 narrowing), which now requires
+    // `.try_to_i32()` under the B-1c strict-width rules.
     let source = r#"
         pub trait Display { fn fmt(val: Self) -> String; }
-        impl Display for int {
-            fn fmt(n: int) -> String { "" }
+        impl Display for i32 {
+            fn fmt(n: i32) -> String { "" }
         }
         fn main() {
-            let n: int = 7;
-            let _: i32 = n.to_i32();
+            let n: i32 = 7;
+            let _: i64 = n.to_i64();
         }
     "#;
     let parsed = hew_parser::parse(source);
@@ -4283,7 +4287,7 @@ fn primitive_impl_dispatch_preserves_builtin_numeric_conversion() {
     let output = checker.check_program(&parsed.program);
     assert!(
         output.errors.is_empty(),
-        "builtin int.to_i32 regressed under Stage A2 dispatch: {:?}",
+        "builtin i32.to_i64 regressed under Stage A2 dispatch: {:?}",
         output.errors
     );
 }
@@ -8069,6 +8073,7 @@ fn struct_init_coerces_literal_to_expected_type_arg() {
             name: "Wrapper".to_string(),
             fields: vec![("value".to_string(), make_int_literal(42, 10..12))],
             type_args: None,
+            base: None,
         },
         0..20,
     );
@@ -8097,6 +8102,7 @@ fn struct_init_infers_type_param_from_literal() {
             name: "Wrapper".to_string(),
             fields: vec![("value".to_string(), make_int_literal(42, 10..12))],
             type_args: None,
+            base: None,
         },
         0..20,
     );
@@ -8126,6 +8132,7 @@ fn struct_init_overflow_in_expected_type() {
             name: "Wrapper".to_string(),
             fields: vec![("value".to_string(), make_int_literal(256, 10..13))],
             type_args: None,
+            base: None,
         },
         0..20,
     );
@@ -8215,6 +8222,7 @@ fn struct_init_explicit_type_arg_arity_mismatch_errors() {
             name: "Wrapper".to_string(),
             fields: vec![("value".to_string(), make_int_literal(1, 20..21))],
             type_args,
+            base: None,
         },
         span.clone(),
     );
@@ -8333,6 +8341,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
         name: "Holding".to_string(),
         fields: vec![("value".to_string(), make_int_literal(42, 10..12))],
         type_args,
+        base: None,
     };
     let expected = Ty::Named {
         name: "Keeper".to_string(),
@@ -8389,6 +8398,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
         name: "Keeper::Holding".to_string(),
         fields: vec![("value".to_string(), make_int_literal(42, 10..12))],
         type_args,
+        base: None,
     };
     let result = checker.synthesize(&init, &span);
     assert!(
@@ -11649,6 +11659,7 @@ fn module_graph_body_private_local_type_is_available() {
                             name: "Local".to_string(),
                             fields: vec![("x".to_string(), make_int_literal(1, 0..1))],
                             type_args: None,
+                            base: None,
                         },
                         0..10,
                     )),
@@ -14072,6 +14083,8 @@ mod wasm_rejects {
     // ── Reject-level features now fail closed on WASM ────────────────────────
 
     fn supervisor_calls_source() -> &'static str {
+        // `pool` is a reserved keyword from S-A (supervisor `pool` child decls).
+        // Use `wp` for the local WorkerPool ref to avoid the keyword conflict.
         r"
             actor Worker {
                 receive fn ping() {}
@@ -14085,9 +14098,9 @@ mod wasm_rejects {
             }
 
             fn main() {
-                let pool = spawn WorkerPool;
-                let worker = supervisor_child(pool, 0);
-                supervisor_stop(pool);
+                let wp = spawn WorkerPool;
+                let worker = supervisor_child(wp, 0);
+                supervisor_stop(wp);
                 worker.ping();
             }
         "
@@ -15531,6 +15544,157 @@ mod record_admission {
             "`.0` access on a tuple record must produce an error; got: {:#?}",
             output.errors
         );
+    }
+}
+
+/// Tests for functional-update syntax `R { field: v, ..base }`.
+/// Slice A-5 of the primitives surface plan.
+#[cfg(test)]
+mod record {
+    mod functional_update {
+        use super::super::*;
+
+        #[test]
+        fn base_fills_unspecified_fields_accepted() {
+            // `Point { x: 5, ..base }` where base is Point — checker accepts it
+            // because `base` fills the missing `y` field.
+            let output = check_source(
+                r"
+                record Point { x: int, y: int }
+                fn f(base: Point) -> Point {
+                    Point { x: 5, ..base }
+                }
+                ",
+            );
+            assert!(
+                output.errors.is_empty(),
+                "functional update with matching base type must have no errors; got: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn all_fields_explicit_with_base_accepted() {
+            // All fields listed explicitly plus base — still valid (explicit overrides).
+            let output = check_source(
+                r"
+                record Point { x: int, y: int }
+                fn f(base: Point) -> Point {
+                    Point { x: 1, y: 2, ..base }
+                }
+                ",
+            );
+            assert!(
+                output.errors.is_empty(),
+                "functional update overriding all fields must have no errors; got: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn no_explicit_fields_base_only_accepted() {
+            // `Point { ..base }` — base fills all fields.
+            let output = check_source(
+                r"
+                record Point { x: int, y: int }
+                fn f(base: Point) -> Point {
+                    Point { ..base }
+                }
+                ",
+            );
+            assert!(
+                output.errors.is_empty(),
+                "functional update with zero explicit fields must have no errors; got: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn base_wrong_type_rejected() {
+            // `Point { x: 5, ..other }` where `other` is a different type — must error.
+            let output = check_source(
+                r"
+                record Point { x: int, y: int }
+                record Color { r: int, g: int, b: int }
+                fn f(other: Color) -> Point {
+                    Point { x: 5, ..other }
+                }
+                ",
+            );
+            let has_error = output
+                .errors
+                .iter()
+                .any(|e| e.message.contains("functional-update base"));
+            assert!(
+                has_error,
+                "functional update with wrong base type must produce a type error; got: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn missing_field_without_base_still_rejected() {
+            // No functional update — missing field still an error.
+            let output = check_source(
+                r"
+                record Point { x: int, y: int }
+                fn f() -> Point {
+                    Point { x: 1 }
+                }
+                ",
+            );
+            let has_missing = output
+                .errors
+                .iter()
+                .any(|e| e.message.contains("missing field") && e.message.contains('y'));
+            assert!(
+                has_missing,
+                "missing field without base must still produce a missing-field error; got: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn explicit_field_type_wrong_rejected() {
+            // Explicit field type mismatch must still be caught even when base is present.
+            let output = check_source(
+                r#"
+                record Point { x: int, y: int }
+                fn f(base: Point) -> Point {
+                    Point { x: "not-an-int", ..base }
+                }
+                "#,
+            );
+            assert!(
+                !output.errors.is_empty(),
+                "wrong type for explicit field in functional update must produce an error; got: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn base_wrong_type_in_typed_let_rejected() {
+            // Typed `let p: Point = Point { x: 5, ..other }` where `other` is a
+            // different type — the check_against path must also validate the base.
+            let output = check_source(
+                r"
+                record Point { x: int, y: int }
+                record Color { r: int, g: int, b: int }
+                fn f(other: Color) {
+                    let p: Point = Point { x: 5, ..other };
+                }
+                ",
+            );
+            let has_error = output
+                .errors
+                .iter()
+                .any(|e| e.message.contains("functional-update base"));
+            assert!(
+                has_error,
+                "wrong base type must be caught even with type annotation on let; got: {:#?}",
+                output.errors
+            );
+        }
     }
 }
 

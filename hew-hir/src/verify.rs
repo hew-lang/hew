@@ -45,6 +45,28 @@ impl Verifier {
                     // the machine's own node ID.
                     self.node(machine.node, machine.span.clone());
                 }
+                HirItem::Record(record) => {
+                    // Record declarations contribute only their HirNodeId
+                    // uniqueness to the verifier — they carry no bindings,
+                    // sites, or expressions to validate. The @linear-field
+                    // guard fires upstream in `lower_record_decl`.
+                    self.node(record.node, record.span.clone());
+                }
+                HirItem::Actor(actor) => {
+                    // Actor declarations contribute only their HirNodeId
+                    // uniqueness to the verifier in Lane A — method, receive,
+                    // and lifecycle-hook bodies are not lowered to HirExpr in
+                    // this slice (see `HirActorDecl` doc comment). Lifecycle
+                    // hook uniqueness (`#[on(start)]` at most once, etc.) is
+                    // enforced upstream by the checker.
+                    self.node(actor.node, actor.span.clone());
+                }
+                HirItem::Supervisor(sup) => {
+                    // Supervisor declarations contribute only their HirNodeId
+                    // uniqueness in S-A; children-list resolution and
+                    // wired_to validation are S-B's job.
+                    self.node(sup.node, sup.span.clone());
+                }
             }
         }
     }
@@ -88,7 +110,8 @@ impl Verifier {
                     ));
                 }
             }
-            HirExprKind::Binary { left, right, .. } => {
+            HirExprKind::Binary { left, right, .. }
+            | HirExprKind::IdentityCompare { left, right } => {
                 self.expr(left);
                 self.expr(right);
             }
@@ -110,10 +133,16 @@ impl Verifier {
                     self.expr(else_expr);
                 }
             }
-            HirExprKind::StructInit { fields, .. } => {
+            HirExprKind::StructInit { fields, base, .. } => {
                 for (_, field) in fields {
                     self.expr(field);
                 }
+                if let Some(base) = base {
+                    self.expr(base);
+                }
+            }
+            HirExprKind::FieldAccess { object, .. } => {
+                self.expr(object);
             }
             HirExprKind::Literal(_) => {}
             HirExprKind::Scope { body } => self.block(body),
@@ -174,6 +203,24 @@ impl Verifier {
             }
             HirExprKind::TupleIndex { tuple, .. } => {
                 self.expr(tuple);
+            }
+            HirExprKind::Index { container, index } => {
+                self.expr(container);
+                self.expr(index);
+            }
+            HirExprKind::Slice {
+                container,
+                start,
+                end,
+                inclusive: _,
+            } => {
+                self.expr(container);
+                if let Some(s) = start {
+                    self.expr(s);
+                }
+                if let Some(e) = end {
+                    self.expr(e);
+                }
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive

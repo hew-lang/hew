@@ -1,0 +1,200 @@
+//! Contract tests for `Instr::CallDirect` — MIR shape produced for direct
+//! calls to user-defined functions in the same module.
+//!
+//! Tests exercise the full pipeline:
+//!   parse → typecheck → HIR lower → MIR lower
+//! to verify that `HirExprKind::Call` with a callee that resolves to a
+//! module function emits `Instr::CallDirect` with the correct callee symbol
+//! and argument Places, and that function parameters resolve to real
+//! `Place::Local` slots rather than emitting `UnresolvedPlace` diagnostics.
+
+use hew_hir::{lower_program, ResolutionCtx};
+use hew_mir::{lower_hir_module, Instr, IrPipeline, MirDiagnosticKind};
+use hew_types::module_registry::ModuleRegistry;
+use hew_types::{Checker, TypeCheckOutput};
+
+fn pipeline_with_tc(source: &str) -> IrPipeline {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    lower_hir_module(&output.module)
+}
+
+/// `add(2, 3)` from `main` must produce `Instr::CallDirect` with callee
+/// `"add"` and two `Place::Local` arguments, with no `UnresolvedPlace` or
+/// `CutoverUnsupported` diagnostics.
+#[test]
+fn call_direct_emits_calldirect_instr_with_correct_callee_and_args() {
+    let src = r"
+        fn add(a: int, b: int) -> int {
+            a + b
+        }
+        fn main() -> int {
+            add(2, 3)
+        }
+    ";
+
+    let pipeline = pipeline_with_tc(src);
+
+    // No MIR diagnostics that would indicate lowering failure.
+    let bad_diags: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.kind,
+                MirDiagnosticKind::CutoverUnsupported { .. }
+                    | MirDiagnosticKind::UnresolvedPlace { .. }
+            )
+        })
+        .collect();
+    assert!(
+        bad_diags.is_empty(),
+        "unexpected MIR diagnostics: {bad_diags:#?}"
+    );
+
+    // Find `main` in raw_mir.
+    let main_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "main")
+        .expect("main function must be in raw_mir");
+
+    // Collect all CallDirect instructions across main's blocks.
+    let call_directs: Vec<&Instr> = main_fn
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .filter(|i| matches!(i, Instr::CallDirect { .. }))
+        .collect();
+
+    assert_eq!(
+        call_directs.len(),
+        1,
+        "main must contain exactly one CallDirect; got: {call_directs:#?}"
+    );
+
+    match call_directs[0] {
+        Instr::CallDirect {
+            callee_symbol,
+            args,
+            dest,
+        } => {
+            assert_eq!(
+                callee_symbol, "add",
+                "callee_symbol must be \"add\", got {callee_symbol:?}"
+            );
+            assert_eq!(
+                args.len(),
+                2,
+                "add() takes 2 args; CallDirect has {} args: {args:?}",
+                args.len()
+            );
+            assert!(
+                dest.is_some(),
+                "add() returns int; CallDirect dest must be Some"
+            );
+        }
+        other => panic!("expected CallDirect, got {other:?}"),
+    }
+}
+
+/// Parameters of the callee (`add`) must resolve to `Place::Local` slots,
+/// not emit `UnresolvedPlace` diagnostics. Verifies `lower_params` wires
+/// each `HirBinding` param into `binding_locals`.
+#[test]
+fn callee_params_resolve_to_local_slots_no_unresolved_place() {
+    let src = r"
+        fn add(a: int, b: int) -> int {
+            a + b
+        }
+        fn main() -> int {
+            add(2, 3)
+        }
+    ";
+
+    let pipeline = pipeline_with_tc(src);
+
+    // Find `add` in raw_mir and check no UnresolvedPlace diagnostics.
+    let unresolved: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.kind, MirDiagnosticKind::UnresolvedPlace { .. }))
+        .collect();
+    assert!(
+        unresolved.is_empty(),
+        "function parameters must resolve to local slots; got UnresolvedPlace: {unresolved:#?}"
+    );
+
+    // `add` must have at least 2 params in its raw_mir entry.
+    let add_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "add")
+        .expect("add function must be in raw_mir");
+
+    assert_eq!(
+        add_fn.params.len(),
+        2,
+        "add must have 2 params in RawMirFunction; got {}",
+        add_fn.params.len()
+    );
+}
+
+/// An unresolved call (a callee name that is neither a runtime-ABI symbol
+/// nor a declared module function) must produce `CutoverUnsupported`, not
+/// `CallDirect`. Guards the fail-closed boundary in `lower_value`.
+///
+/// The test uses a bare identifier `unknown_fn(42)` that is not declared in
+/// the module — the HIR bridge emits `BindingRef { resolved: Unresolved }`.
+/// After the runtime-ABI and module-fn checks both fail, the fallthrough
+/// path must emit `CutoverUnsupported`.
+#[test]
+fn unresolved_call_emits_cutover_unsupported_not_call_direct() {
+    // `unknown_fn` is not declared in this module and is not a runtime symbol.
+    let src = r"
+        fn main() -> int {
+            unknown_fn(42)
+        }
+    ";
+
+    // Parse and HIR-lower without a type checker (TypeCheckOutput::default)
+    // so that `unknown_fn` stays unresolved.
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let pipeline = hew_mir::lower_hir_module(&output.module);
+
+    // Must produce CutoverUnsupported for the unresolved call.
+    let has_cutover = pipeline
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, MirDiagnosticKind::CutoverUnsupported { .. }));
+    assert!(
+        has_cutover,
+        "unresolved call must produce CutoverUnsupported; got diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+
+    // Must not produce CallDirect — the fail-closed path must fire.
+    let has_direct = pipeline
+        .raw_mir
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| &b.instructions)
+        .any(|i| matches!(i, Instr::CallDirect { .. }));
+    assert!(
+        !has_direct,
+        "unresolved call must not emit CallDirect; fail-closed path must fire"
+    );
+}

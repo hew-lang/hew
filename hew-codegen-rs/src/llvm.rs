@@ -5627,8 +5627,22 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
                 })?
                 .into_pointer_value();
 
+            // Derive the ABI alignment of the state struct from the host
+            // target data so the memcpy instruction carries the real
+            // alignment rather than the conservative align=1. Supervisors
+            // are HIR-gated off wasm32, so `host_target_data` is always
+            // the right authority here. Over-claiming alignment is UB;
+            // `get_abi_alignment` returns the alignment LLVM guarantees
+            // for this struct on the ABI boundary, which is exact.
+            let state_align = host_target_data().get_abi_alignment(state_struct_ty);
             builder
-                .build_memcpy(heap_ptr, 1, state_slot, 1, state_size_i64)
+                .build_memcpy(
+                    heap_ptr,
+                    state_align,
+                    state_slot,
+                    state_align,
+                    state_size_i64,
+                )
                 .llvm_ctx("child state template memcpy")?;
 
             (heap_ptr.into(), state_size_i64.into())
@@ -6526,6 +6540,21 @@ fn emit_actor_state_clone_body<'ctx>(
     let size_bytes = state_struct
         .map(|st| struct_abi_size(st, target_data))
         .unwrap_or(0);
+    // ABI alignment of the state struct: derived from target data so we
+    // never over-claim. For zero-sized (None) structs, align=1 is harmless
+    // (size_bytes=0 makes the memcpy a no-op).
+    let state_align: u32 = state_struct
+        .map(|st| {
+            let host_td;
+            let td = if let Some(td) = target_data {
+                td
+            } else {
+                host_td = host_target_data();
+                &host_td
+            };
+            td.get_abi_alignment(&st)
+        })
+        .unwrap_or(1);
     let malloc_fn = get_or_declare_libc_malloc(ctx, llvm_mod);
     // `malloc`'s size param is `size_t` (i32 on wasm32, i64 native): build the
     // const at the target-correct width so the call matches the declaration.
@@ -6563,7 +6592,13 @@ fn emit_actor_state_clone_body<'ctx>(
     // no-op (LLVM lowers it away).
     if size_bytes > 0 {
         builder
-            .build_memcpy(dst, 1, src, 1, i64_ty.const_int(size_bytes, false))
+            .build_memcpy(
+                dst,
+                state_align,
+                src,
+                state_align,
+                i64_ty.const_int(size_bytes, false),
+            )
             .llvm_ctx("clone wholesale memcpy")?;
     }
 
@@ -8567,6 +8602,22 @@ fn overflow_intrinsic_name(op: IntArithOp, signed: IntSignedness) -> &'static st
     }
 }
 
+/// Return the `llvm.{s,u}{add,sub}.sat` base name for Add/Sub.
+/// LLVM does not provide `llvm.smul.sat`; callers must keep the
+/// `.with.overflow` + select path for Mul. Panics on Mul to enforce the
+/// call-site invariant (the `IntArithSaturating` arm only routes Add/Sub here).
+fn saturating_intrinsic_name(op: IntArithOp, signed: IntSignedness) -> &'static str {
+    match (op, signed) {
+        (IntArithOp::Add, IntSignedness::Signed) => "llvm.sadd.sat",
+        (IntArithOp::Add, IntSignedness::Unsigned) => "llvm.uadd.sat",
+        (IntArithOp::Sub, IntSignedness::Signed) => "llvm.ssub.sat",
+        (IntArithOp::Sub, IntSignedness::Unsigned) => "llvm.usub.sat",
+        (IntArithOp::Mul, _) => {
+            panic!("saturating_intrinsic_name: llvm.smul.sat does not exist; use overflow path for Mul")
+        }
+    }
+}
+
 fn validate_numeric_method_width(
     width: NumericWidth,
     int_ty: inkwell::types::IntType<'_>,
@@ -8813,18 +8864,50 @@ fn lower_numeric_cast(
                 .build_load(src_float, src_ptr, "cast_float_int_src")
                 .llvm_ctx("float to int source load")?
                 .into_float_value();
-            match cast_int_signedness(target)? {
-                IntSignedness::Signed => fn_ctx
-                    .builder
-                    .build_float_to_signed_int(src_v, dest_int, "cast_float_to_sint")
-                    .llvm_ctx("float to signed int cast")?
-                    .into(),
-                IntSignedness::Unsigned => fn_ctx
-                    .builder
-                    .build_float_to_unsigned_int(src_v, dest_int, "cast_float_to_uint")
-                    .llvm_ctx("float to unsigned int cast")?
-                    .into(),
-            }
+            // Use llvm.fptosi.sat / llvm.fptoui.sat instead of the plain
+            // fptosi / fptoui instructions, which are LLVM **poison** for
+            // NaN, ±Inf, and out-of-range values.
+            //
+            // Saturating semantics (HEW-SPEC §12.1):
+            //   NaN            → 0
+            //   +Inf / >MAX    → integer MAX (INT_MAX or UINT_MAX)
+            //   -Inf / <MIN    → integer MIN (INT_MIN or 0 for unsigned)
+            //
+            // The .sat intrinsics are overloaded on (result-int-type,
+            // source-fp-type); pass both as type args to get_declaration.
+            // They lower correctly on every LLVM target including wasm32
+            // even when the wasm `nontrapping-fptoint` feature is absent —
+            // LLVM emits a clamped sequence rather than the single-instruction
+            // form.
+            let (sat_name, signedness) = match cast_int_signedness(target)? {
+                IntSignedness::Signed => ("llvm.fptosi.sat", IntSignedness::Signed),
+                IntSignedness::Unsigned => ("llvm.fptoui.sat", IntSignedness::Unsigned),
+            };
+            let sat_intrinsic = Intrinsic::find(sat_name).ok_or_else(|| {
+                llvm_err!("float→int sat intrinsic `{sat_name}` not in LLVM build")
+            })?;
+            let sat_fn = sat_intrinsic
+                .get_declaration(
+                    fn_ctx.llvm_mod,
+                    &[dest_int.into(), src_float.into()],
+                )
+                .ok_or_else(|| {
+                    llvm_err!("float→int sat intrinsic `{sat_name}` declaration failed for dest={dest_int:?} src={src_float:?}")
+                })?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    sat_fn,
+                    &[src_v.into()],
+                    match signedness {
+                        IntSignedness::Signed => "cast_float_to_sint_sat",
+                        IntSignedness::Unsigned => "cast_float_to_uint_sat",
+                    },
+                )
+                .llvm_ctx("float to int saturating cast")?;
+            call.try_as_basic_value()
+                .basic()
+                .ok_or_else(|| llvm_err!("float→int sat intrinsic `{sat_name}` returned void"))?
         }
         (source, target) if source.is_float() && target.is_float() => {
             let src_float = expect_float_type(src_storage, "float->float cast source")?;
@@ -9754,13 +9837,6 @@ fn lower_instruction(
                 ));
             }
             validate_numeric_method_width(*width, lhs_int, "IntArithSaturating")?;
-            let intrinsic_name = overflow_intrinsic_name(*op, *signed);
-            let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
-                llvm_err!("with-overflow intrinsic `{intrinsic_name}` not found in LLVM build")
-            })?;
-            let intrinsic_fn = intrinsic
-                .get_declaration(fn_ctx.llvm_mod, &[lhs_int.into()])
-                .ok_or_else(|| llvm_err!("with-overflow intrinsic `{intrinsic_name}` declaration failed for width {lhs_int:?}"))?;
             let lhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, lhs_ptr, "saturating_lhs")
@@ -9771,36 +9847,88 @@ fn lower_instruction(
                 .build_load(lhs_int, rhs_ptr, "saturating_rhs")
                 .llvm_ctx("saturating rhs load")?
                 .into_int_value();
-            let call_site = fn_ctx
-                .builder
-                .build_call(
-                    intrinsic_fn,
-                    &[lhs_v.into(), rhs_v.into()],
-                    "saturating_with_overflow",
-                )
-                .llvm_ctx("saturating intrinsic call")?;
-            let agg = call_site
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    llvm_err!("with-overflow intrinsic `{intrinsic_name}` returned void")
-                })?
-                .into_struct_value();
-            let result_v = fn_ctx
-                .builder
-                .build_extract_value(agg, 0, "saturating_result")
-                .llvm_ctx("saturating result extract")?
-                .into_int_value();
-            let of_bit = fn_ctx
-                .builder
-                .build_extract_value(agg, 1, "saturating_overflow")
-                .llvm_ctx("saturating overflow extract")?
-                .into_int_value();
-            let bound = saturating_bound(fn_ctx, *op, *signed, lhs_int, lhs_v, rhs_v)?;
-            let final_v = fn_ctx
-                .builder
-                .build_select(of_bit, bound, result_v, "saturating_select")
-                .llvm_ctx("saturating select")?;
+            // Add and Sub lower to the dedicated LLVM saturating intrinsics
+            // (`llvm.{s,u}{add,sub}.sat`) which return the saturated result
+            // directly — no overflow-flag extraction, no select. This is a
+            // single instruction on x86_64 (PADDUSW/PSUBUSW etc.) and a
+            // recognised pattern on all LLVM targets.
+            //
+            // Mul has no `llvm.smul.sat` counterpart in LLVM, so the
+            // `.with.overflow` + select path is kept for multiplication.
+            let final_v = match op {
+                IntArithOp::Add | IntArithOp::Sub => {
+                    let intrinsic_name = saturating_intrinsic_name(*op, *signed);
+                    let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
+                        llvm_err!("sat intrinsic `{intrinsic_name}` not found in LLVM build")
+                    })?;
+                    let intrinsic_fn = intrinsic
+                        .get_declaration(fn_ctx.llvm_mod, &[lhs_int.into()])
+                        .ok_or_else(|| {
+                            llvm_err!(
+                                "sat intrinsic `{intrinsic_name}` declaration failed for {lhs_int:?}"
+                            )
+                        })?;
+                    let call_site = fn_ctx
+                        .builder
+                        .build_call(
+                            intrinsic_fn,
+                            &[lhs_v.into(), rhs_v.into()],
+                            "saturating_result",
+                        )
+                        .llvm_ctx("sat intrinsic call")?;
+                    call_site
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| llvm_err!("sat intrinsic `{intrinsic_name}` returned void"))?
+                        .into_int_value()
+                }
+                IntArithOp::Mul => {
+                    // `llvm.smul.sat` does not exist in LLVM; keep the
+                    // with.overflow + saturating_bound + select sequence.
+                    let intrinsic_name = overflow_intrinsic_name(*op, *signed);
+                    let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
+                        llvm_err!(
+                            "with-overflow intrinsic `{intrinsic_name}` not found in LLVM build"
+                        )
+                    })?;
+                    let intrinsic_fn = intrinsic
+                        .get_declaration(fn_ctx.llvm_mod, &[lhs_int.into()])
+                        .ok_or_else(|| {
+                            llvm_err!("with-overflow intrinsic `{intrinsic_name}` declaration failed for width {lhs_int:?}")
+                        })?;
+                    let call_site = fn_ctx
+                        .builder
+                        .build_call(
+                            intrinsic_fn,
+                            &[lhs_v.into(), rhs_v.into()],
+                            "saturating_with_overflow",
+                        )
+                        .llvm_ctx("saturating mul intrinsic call")?;
+                    let agg = call_site
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| {
+                            llvm_err!("with-overflow intrinsic `{intrinsic_name}` returned void")
+                        })?
+                        .into_struct_value();
+                    let result_v = fn_ctx
+                        .builder
+                        .build_extract_value(agg, 0, "saturating_mul_result")
+                        .llvm_ctx("saturating mul result extract")?
+                        .into_int_value();
+                    let of_bit = fn_ctx
+                        .builder
+                        .build_extract_value(agg, 1, "saturating_mul_overflow")
+                        .llvm_ctx("saturating mul overflow extract")?
+                        .into_int_value();
+                    let bound = saturating_bound(fn_ctx, *op, *signed, lhs_int, lhs_v, rhs_v)?;
+                    fn_ctx
+                        .builder
+                        .build_select(of_bit, bound, result_v, "saturating_mul_select")
+                        .llvm_ctx("saturating mul select")?
+                        .into_int_value()
+                }
+            };
             fn_ctx
                 .builder
                 .build_store(dest_ptr, final_v)
@@ -19807,12 +19935,18 @@ fn emit_math_builtin_intrinsic_call<'ctx>(
     let i64_ty = fn_ctx.ctx.i64_type();
     let i1_ty = fn_ctx.ctx.bool_type();
 
-    let (intrinsic_name, fn_ty, call_args, expected_ret_ty): (
-        &'static str,
-        FunctionType<'ctx>,
-        Vec<BasicMetadataValueEnum<'ctx>>,
-        BasicTypeEnum<'ctx>,
-    ) = match intrinsic {
+    // `UnaryF64` / `BinaryF64` float intrinsics are resolved via
+    // `add_function`; they carry no integer-only attributes and their
+    // `IntrNoMem` / `Speculatable` markers are preserved through the
+    // external-linkage declaration.
+    //
+    // `AbsI64` and `BinaryI64` (abs / smin / smax / umin / umax) are
+    // resolved via `Intrinsic::find` + `get_declaration` so LLVM
+    // attaches the `IntrNoMem`, `Speculatable`, and `willreturn`
+    // attributes that `add_function(..., External)` would strip.
+    // These attributes enable InstCombine folding and LICM on
+    // abs/min/max calls.
+    match intrinsic {
         MathBuiltinIntrinsic::UnaryF64(name) => {
             let [arg] = args else {
                 return Err(CodegenError::FailClosed(format!(
@@ -19821,12 +19955,35 @@ fn emit_math_builtin_intrinsic_call<'ctx>(
                 )));
             };
             let value = load_math_f64_arg(fn_ctx, *arg, &format!("{callee}_arg0"), callee)?;
-            (
-                name,
-                f64_ty.fn_type(&[f64_ty.into()], false),
-                vec![value.into()],
-                f64_ty.into(),
-            )
+            let fn_ty = f64_ty.fn_type(&[f64_ty.into()], false);
+            let intrinsic_fn = fn_ctx.llvm_mod.get_function(name).unwrap_or_else(|| {
+                fn_ctx
+                    .llvm_mod
+                    .add_function(name, fn_ty, Some(Linkage::External))
+            });
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    intrinsic_fn,
+                    &[value.into()],
+                    &format!("{callee}_intrinsic"),
+                )
+                .llvm_ctx_with(|| format!("{name} call"))?;
+            let result = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "math builtin `{callee}` intrinsic `{name}` returned void"
+                ))
+            })?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            if dest_ty != BasicTypeEnum::FloatType(f64_ty) {
+                return Err(CodegenError::FailClosed(format!(
+                    "math builtin `{callee}` dest type {dest_ty:?} does not match f64"
+                )));
+            }
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result)
+                .llvm_ctx_with(|| format!("{callee} intrinsic store"))?;
         }
         MathBuiltinIntrinsic::BinaryF64(name) => {
             let [lhs, rhs] = args else {
@@ -19837,12 +19994,35 @@ fn emit_math_builtin_intrinsic_call<'ctx>(
             };
             let lhs = load_math_f64_arg(fn_ctx, *lhs, &format!("{callee}_lhs"), callee)?;
             let rhs = load_math_f64_arg(fn_ctx, *rhs, &format!("{callee}_rhs"), callee)?;
-            (
-                name,
-                f64_ty.fn_type(&[f64_ty.into(), f64_ty.into()], false),
-                vec![lhs.into(), rhs.into()],
-                f64_ty.into(),
-            )
+            let fn_ty = f64_ty.fn_type(&[f64_ty.into(), f64_ty.into()], false);
+            let intrinsic_fn = fn_ctx.llvm_mod.get_function(name).unwrap_or_else(|| {
+                fn_ctx
+                    .llvm_mod
+                    .add_function(name, fn_ty, Some(Linkage::External))
+            });
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    intrinsic_fn,
+                    &[lhs.into(), rhs.into()],
+                    &format!("{callee}_intrinsic"),
+                )
+                .llvm_ctx_with(|| format!("{name} call"))?;
+            let result = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "math builtin `{callee}` intrinsic `{name}` returned void"
+                ))
+            })?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            if dest_ty != BasicTypeEnum::FloatType(f64_ty) {
+                return Err(CodegenError::FailClosed(format!(
+                    "math builtin `{callee}` dest type {dest_ty:?} does not match f64"
+                )));
+            }
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result)
+                .llvm_ctx_with(|| format!("{callee} intrinsic store"))?;
         }
         MathBuiltinIntrinsic::AbsI64 => {
             let [arg] = args else {
@@ -19857,12 +20037,40 @@ fn emit_math_builtin_intrinsic_call<'ctx>(
                     "math builtin `{callee}` expected i64 argument, got {value:?}"
                 )));
             };
-            (
-                "llvm.abs.i64",
-                i64_ty.fn_type(&[i64_ty.into(), i1_ty.into()], false),
-                vec![value.into(), i1_ty.const_zero().into()],
-                i64_ty.into(),
-            )
+            // Resolve via Intrinsic::find so LLVM preserves the IntrNoMem /
+            // Speculatable / willreturn attributes that add_function strips.
+            // llvm.abs is overloaded on the integer type; pass [i64] as the
+            // type arg.  The second argument (is_int_min_poison) is i1 false —
+            // conservative: INT_MIN.abs() == INT_MIN, no poison.
+            let intrinsic_fn = Intrinsic::find("llvm.abs")
+                .ok_or_else(|| CodegenError::FailClosed("llvm.abs not in LLVM build".into()))?
+                .get_declaration(fn_ctx.llvm_mod, &[i64_ty.into()])
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("llvm.abs.i64 declaration failed".into())
+                })?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    intrinsic_fn,
+                    &[value.into(), i1_ty.const_zero().into()],
+                    &format!("{callee}_intrinsic"),
+                )
+                .llvm_ctx_with(|| "llvm.abs.i64 call".to_owned())?;
+            let result = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "math builtin `abs` intrinsic llvm.abs.i64 returned void".into(),
+                )
+            })?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            if dest_ty != BasicTypeEnum::IntType(i64_ty) {
+                return Err(CodegenError::FailClosed(format!(
+                    "math builtin `abs` dest type {dest_ty:?} does not match i64"
+                )));
+            }
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result)
+                .llvm_ctx_with(|| "abs intrinsic store".to_owned())?;
         }
         MathBuiltinIntrinsic::BinaryI64(name) => {
             let [lhs, rhs] = args else {
@@ -19878,43 +20086,41 @@ fn emit_math_builtin_intrinsic_call<'ctx>(
                     "math builtin `{callee}` expected i64 arguments"
                 )));
             };
-            (
-                name,
-                i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
-                vec![lhs.into(), rhs.into()],
-                i64_ty.into(),
-            )
-        }
-    };
-
-    let intrinsic_fn = fn_ctx
-        .llvm_mod
-        .get_function(intrinsic_name)
-        .unwrap_or_else(|| {
+            // Resolve via Intrinsic::find so LLVM preserves IntrNoMem /
+            // Speculatable / willreturn on llvm.smin / llvm.smax / llvm.umin /
+            // llvm.umax.  These intrinsics are overloaded on the integer type;
+            // the base name (without the .i64 suffix) is what Intrinsic::find
+            // consumes; get_declaration produces the mangled form.
+            let base_name = name.strip_suffix(".i64").unwrap_or(name);
+            let intrinsic_fn = Intrinsic::find(base_name)
+                .ok_or_else(|| CodegenError::FailClosed(format!("{base_name} not in LLVM build")))?
+                .get_declaration(fn_ctx.llvm_mod, &[i64_ty.into()])
+                .ok_or_else(|| CodegenError::FailClosed(format!("{name} declaration failed")))?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    intrinsic_fn,
+                    &[lhs.into(), rhs.into()],
+                    &format!("{callee}_intrinsic"),
+                )
+                .llvm_ctx_with(|| format!("{name} call"))?;
+            let result = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "math builtin `{callee}` intrinsic `{name}` returned void"
+                ))
+            })?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            if dest_ty != BasicTypeEnum::IntType(i64_ty) {
+                return Err(CodegenError::FailClosed(format!(
+                    "math builtin `{callee}` dest type {dest_ty:?} does not match i64"
+                )));
+            }
             fn_ctx
-                .llvm_mod
-                .add_function(intrinsic_name, fn_ty, Some(Linkage::External))
-        });
-    let call = fn_ctx
-        .builder
-        .build_call(intrinsic_fn, &call_args, &format!("{callee}_intrinsic"))
-        .llvm_ctx_with(|| format!("{intrinsic_name} call"))?;
-    let result = call.try_as_basic_value().basic().ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "math builtin `{callee}` intrinsic `{intrinsic_name}` returned void"
-        ))
-    })?;
-
-    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
-    if dest_ty != expected_ret_ty {
-        return Err(CodegenError::FailClosed(format!(
-            "math builtin `{callee}` dest type {dest_ty:?} does not match return {expected_ret_ty:?}"
-        )));
+                .builder
+                .build_store(dest_ptr, result)
+                .llvm_ctx_with(|| format!("{callee} intrinsic store"))?;
+        }
     }
-    fn_ctx
-        .builder
-        .build_store(dest_ptr, result)
-        .llvm_ctx_with(|| format!("{callee} intrinsic store"))?;
 
     let next_bb = *fn_ctx
         .blocks
@@ -23047,39 +23253,11 @@ fn emit_select_terminator<'ctx>(
 /// follows with `llvm.trap` + `unreachable` as the non-actor fallback
 /// (mirrors the `Terminator::Send` send-fail trap shape).
 fn emit_select_setup_failure_trap<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<()> {
+    // Delegate to the single-sourced emit_trap_with_code helper so the
+    // hew_trap_with_code declaration, llvm.trap, and unreachable are
+    // emitted in one place.
     const HEW_TRAP_ACTOR_SEND_FAILED: u64 = 206;
-    let trap_with_code_fn = match fn_ctx.llvm_mod.get_function("hew_trap_with_code") {
-        Some(fv) => fv,
-        None => {
-            let i32_ty = fn_ctx.ctx.i32_type();
-            let fn_ty = fn_ctx.ctx.void_type().fn_type(&[i32_ty.into()], false);
-            fn_ctx
-                .llvm_mod
-                .add_function("hew_trap_with_code", fn_ty, Some(Linkage::External))
-        }
-    };
-    let code = fn_ctx
-        .ctx
-        .i32_type()
-        .const_int(HEW_TRAP_ACTOR_SEND_FAILED, false);
-    fn_ctx
-        .builder
-        .build_call(trap_with_code_fn, &[code.into()], "select_setup_fail_trap")
-        .llvm_ctx("select setup fail trap")?;
-    let trap_intrinsic = Intrinsic::find("llvm.trap")
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into()))?;
-    let trap_fn = trap_intrinsic
-        .get_declaration(fn_ctx.llvm_mod, &[])
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-    fn_ctx
-        .builder
-        .build_call(trap_fn, &[], "select_setup_fail_llvm_trap")
-        .llvm_ctx("select setup fail llvm.trap")?;
-    fn_ctx
-        .builder
-        .build_unreachable()
-        .llvm_ctx("select setup fail unreachable")?;
-    Ok(())
+    emit_trap_with_code(fn_ctx, HEW_TRAP_ACTOR_SEND_FAILED, "select_setup_fail_trap")
 }
 
 /// Emit a fail-closed trap for the unreachable "no winner" arm of the
@@ -25784,16 +25962,6 @@ fn emit_regex_module_init<'ctx>(
             })
     };
 
-    // hew_trap_with_code for fail-closed on null return.
-    let trap_fn = {
-        let trap_ty = void_ty.fn_type(&[i32_ty.into(), i32_ty.into()], false);
-        llvm_mod
-            .get_function("hew_trap_with_code")
-            .unwrap_or_else(|| {
-                llvm_mod.add_function("hew_trap_with_code", trap_ty, Some(Linkage::External))
-            })
-    };
-
     for (i, pat_ptr) in pattern_ptrs.iter().enumerate() {
         // Call hew_regex_compile(pattern).
         let call_result = builder
@@ -25814,7 +25982,7 @@ fn emit_regex_module_init<'ctx>(
             .into_pointer_value();
 
         // Fail-closed trap if null: pattern was validated by the checker; null is OOM or
-        // a code invariant violation. Trap code 206 (InvalidRegex) per hew-runtime TrapKind.
+        // a code invariant violation.
         // WHY trap not unreachable: LLVM may speculate past `unreachable` at -O2; a call to
         // `hew_trap_with_code` is opaque to the optimiser and always terminates. WHEN-OBSOLETE:
         // when LLVM's opaque-pointer + assume attributes land in hew-codegen-rs, the assume
@@ -25837,19 +26005,20 @@ fn emit_regex_module_init<'ctx>(
         // and update the constant table in lower_call_runtime_abi.
         // WHY not 206: 206 is HEW_TRAP_ACTOR_SEND_FAILED; reusing it would
         // make diagnostics misleading.
+        //
+        // Use emit_trap_with_code_raw so the declaration is single-sourced
+        // at fn(i32) matching the runtime's `hew_trap_with_code(code: i32)`
+        // (supervisor.rs:364). The old inline declaration used fn(i32, i32)
+        // which would produce an arity-mismatch IR if no prior declaration
+        // of the correct shape existed in the module.
         const HEW_TRAP_MODULE_INIT_REGEX_FAILED: u64 = 209;
-        let trap_code = i32_ty.const_int(HEW_TRAP_MODULE_INIT_REGEX_FAILED, false);
-        let lit_id_code = i32_ty.const_int(u64::from(literals[i].literal_id), false);
-        builder
-            .build_call(
-                trap_fn,
-                &[trap_code.into(), lit_id_code.into()],
-                "trap_null_regex",
-            )
-            .llvm_ctx("trap call in module-init")?;
-        builder
-            .build_unreachable()
-            .llvm_ctx("unreachable in module-init")?;
+        emit_trap_with_code_raw(
+            ctx,
+            llvm_mod,
+            &builder,
+            HEW_TRAP_MODULE_INIT_REGEX_FAILED,
+            &format!("regex_init_null_trap_{i}"),
+        )?;
 
         builder.position_at_end(ok_bb);
         // Store handle into @hew_regex_handles[i].

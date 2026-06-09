@@ -4498,10 +4498,29 @@ All numeric types support explicit conversion methods:
 let x: i32 = 42;
 let f: f64 = x.to_f64();      // 42.0
 
-// Float → integer (truncates toward zero)
+// Float → integer (saturating)
 let pi: f64 = 3.14;
-let n: i32 = pi.to_i32();     // 3
+let n: i32 = pi.to_i32();     // 3 (truncates toward zero for in-range values)
+
+// Out-of-range and non-finite values saturate instead of producing poison:
+let big: f64 = 1.0e30;
+let clamped: i32 = big.to_i32();    // i32::MAX (2147483647) — positive overflow clamps to MAX
+let neg_big: f64 = -1.0e30;
+let neg_clamped: i32 = neg_big.to_i32(); // i32::MIN (-2147483648) — negative overflow clamps to MIN
+let nan: f64 = 0.0 / 0.0;
+let nan_as_int: i32 = nan.to_i32();     // 0 — NaN converts to zero
 ```
+
+**Float-to-integer conversion semantics:**
+
+| Source value          | Signed result      | Unsigned result |
+| --------------------- | ------------------ | --------------- |
+| In-range finite       | Truncated toward 0 | Truncated toward 0 |
+| `+Inf` or > MAX       | Integer `MAX`      | Integer `MAX` (`UINT_MAX`) |
+| `-Inf` or < MIN       | Integer `MIN`      | `0` |
+| `NaN`                 | `0`                | `0` |
+
+These semantics are guaranteed on all Hew targets (x86_64, aarch64, wasm32). The underlying LLVM lowering uses `llvm.fptosi.sat` / `llvm.fptoui.sat`, which produce defined behaviour for all input values. Plain `fptosi` / `fptoui` (which produce LLVM poison for out-of-range inputs) are never emitted.
 
 These are compiler intrinsics on all numeric types: `.to_i8()`, `.to_i16()`, `.to_i32()`, `.to_i64()`, `.to_u8()`, `.to_u16()`, `.to_u32()`, `.to_u64()`, `.to_f32()`, `.to_f64()`, `.to_isize()`, `.to_usize()`.
 

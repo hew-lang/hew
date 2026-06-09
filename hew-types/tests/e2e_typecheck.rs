@@ -5092,3 +5092,88 @@ fn await_stream_recv_non_abi_element_rejected() {
         output.errors
     );
 }
+
+// ── WASM gate: std::crypto::encrypt and std::crypto::sign (native-only) ──────
+
+/// `std::crypto::encrypt` module calls are rejected on wasm32 with a structured
+/// `PlatformLimitation` diagnostic.  The encrypt and sign modules are backed by
+/// native-only staticlib companion crates absent from the wasm32 link set.
+#[test]
+fn wasm_rejects_crypto_encrypt_module_calls() {
+    // The gate fires at the method call level; argument types need not be valid.
+    let output = typecheck_inline_wasm(
+        "import std::crypto::encrypt;\n\
+         fn main() { let _ = encrypt.seal(bytes [0x61], bytes [0x62]); }",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::PlatformLimitation
+                && e.message.contains("std::crypto::encrypt")
+        }),
+        "expected PlatformLimitation for encrypt module call on wasm32, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `std::crypto::sign` module calls are rejected on wasm32 with a structured
+/// `PlatformLimitation` diagnostic.
+#[test]
+fn wasm_rejects_crypto_sign_module_calls() {
+    let output = typecheck_inline_wasm(
+        r"
+        import std::crypto::sign;
+
+        fn main() {
+            let kp = sign.keypair();
+            let msg = bytes [0x01, 0x02, 0x03];
+            let _ = sign.sign(msg, kp.private_key);
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::PlatformLimitation
+                && e.message.contains("std::crypto::sign")
+        }),
+        "expected PlatformLimitation for sign module call on wasm32, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Native target parity: the same encrypt/sign module calls that are rejected
+/// on wasm32 must NOT produce a `PlatformLimitation` error on the native target.
+#[test]
+fn native_allows_crypto_encrypt_and_sign_module_calls() {
+    let encrypt_output = typecheck_inline(
+        "import std::crypto::encrypt;\n\
+         fn main() { let _ = encrypt.seal(bytes [0x61], bytes [0x62]); }",
+    );
+    assert!(
+        !encrypt_output
+            .errors
+            .iter()
+            .any(|e| { e.kind == hew_types::error::TypeErrorKind::PlatformLimitation }),
+        "encrypt module must not be rejected on native target, got: {:#?}",
+        encrypt_output.errors
+    );
+
+    let sign_output = typecheck_inline(
+        r"
+        import std::crypto::sign;
+
+        fn main() {
+            let kp = sign.keypair();
+            let msg = bytes [0x01, 0x02, 0x03];
+            let _ = sign.sign(msg, kp.private_key);
+        }
+        ",
+    );
+    assert!(
+        !sign_output
+            .errors
+            .iter()
+            .any(|e| { e.kind == hew_types::error::TypeErrorKind::PlatformLimitation }),
+        "sign module must not be rejected on native target, got: {:#?}",
+        sign_output.errors
+    );
+}

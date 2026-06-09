@@ -4115,6 +4115,17 @@ impl Checker {
                         "quic" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Quic),
                         "dns" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Dns),
                         "os" => self.reject_wasm_feature(span, WasmUnsupportedFeature::OsEnv),
+                        // std::crypto::encrypt and std::crypto::sign are backed by
+                        // native-only staticlib companion crates absent from the wasm32
+                        // link set.  Reject at check time so the caller gets a structured
+                        // diagnostic rather than a `wasm-ld` undefined-symbol failure.
+                        // WASM-TODO(#1451): design WASI-capable crypto surfaces.
+                        "encrypt" => {
+                            self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoEncrypt);
+                        }
+                        "sign" => {
+                            self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoSign);
+                        }
                         _ => {}
                     }
                     // Warn-level module-qualified calls with degraded wasm32

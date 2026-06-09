@@ -1468,6 +1468,20 @@ pub(super) enum WasmUnsupportedFeature {
     /// not cryptographically secure. Warn so callers can gate their use.
     /// WASM-TODO(#1451): plumb host entropy through WASI `random_get`.
     CryptoRandom,
+    /// `encrypt.*` (`std::crypto::encrypt`): AES-256-GCM seal/open helpers are
+    /// provided by a native-only staticlib companion crate (`std/crypto/encrypt`)
+    /// that is absent from the wasm32 link set. Reject so the caller sees a
+    /// structured diagnostic at check time rather than a `wasm-ld` undefined-
+    /// symbol error. WASM-TODO(#1451): design a WASI-capable symmetric-
+    /// encryption surface.
+    CryptoEncrypt,
+    /// `sign.*` (`std::crypto::sign`): Ed25519 key-pair generation, signing, and
+    /// verification are provided by a native-only staticlib companion crate
+    /// (`std/crypto/sign`) that is absent from the wasm32 link set. Reject so
+    /// the caller sees a structured diagnostic at check time rather than a
+    /// `wasm-ld` undefined-symbol error. WASM-TODO(#1451): design a
+    /// WASI-capable signature surface.
+    CryptoSign,
 }
 
 impl WasmUnsupportedFeature {
@@ -1491,6 +1505,8 @@ impl WasmUnsupportedFeature {
             Self::Dns => "std::net::dns resolver operations",
             Self::OsEnv => "std::os environment and path operations",
             Self::CryptoRandom => "std::crypto::crypto.random_bytes operations",
+            Self::CryptoEncrypt => "std::crypto::encrypt operations",
+            Self::CryptoSign => "std::crypto::sign operations",
         }
     }
 
@@ -1561,6 +1577,16 @@ impl WasmUnsupportedFeature {
                 "on wasm32 crypto.random_bytes falls back to a seeded PRNG without host \
                  entropy and is not cryptographically secure; \
                  the result is suitable for test data but not for key material"
+            }
+            Self::CryptoEncrypt => {
+                "the std::crypto::encrypt module is backed by a native-only staticlib \
+                 companion crate (std/crypto/encrypt) that is absent from the wasm32 link \
+                 set; no wasm32 AES-GCM seal/open implementation exists yet"
+            }
+            Self::CryptoSign => {
+                "the std::crypto::sign module is backed by a native-only staticlib \
+                 companion crate (std/crypto/sign) that is absent from the wasm32 link \
+                 set; no wasm32 Ed25519 implementation exists yet"
             }
         }
     }

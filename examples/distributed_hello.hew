@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: v0.7+ distributed Node API and transport stabilization)
+//! Status: runnable
 //! Description: Distributed actors example — demonstrates the Node API.
 
 // Distributed actors example — demonstrates the Node API.

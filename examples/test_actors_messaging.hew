@@ -30,13 +30,21 @@ fn test_basic_actor() -> i64 {
     counter.increment(10);
     counter.increment(20);
     counter.increment(12);
-    let count = await counter.get_count();
-    if count == 42 {
-        println("PASS: basic actor spawn + messaging");
-        1
-    } else {
-        println("FAIL: basic actor spawn + messaging");
-        0
+    let count_result = await counter.get_count();
+    match count_result {
+        Ok(count) => {
+            if count == 42 {
+                println("PASS: basic actor spawn + messaging");
+                1
+            } else {
+                println("FAIL: basic actor spawn + messaging");
+                0
+            }
+        },
+        Err(_) => {
+            println("FAIL: basic actor spawn + messaging");
+            0
+        },
     }
 }
 
@@ -44,12 +52,30 @@ fn test_multiple_actors() -> i64 {
     println("--- test_multiple_actors ---");
     let p1 = spawn Printer(prefix: 1);
     let p2 = spawn Printer(prefix: 2);
-    let first = p1.print_msg(100);
-    let second = p2.print_msg(200);
-    let third = p1.print_msg(300);
-    await first;
-    await second;
-    await third;
+    let first = await p1.print_msg(100);
+    match first {
+        Ok(_) => {},
+        Err(_) => {
+            println("FAIL: multiple actors");
+            return 0;
+        },
+    }
+    let second = await p2.print_msg(200);
+    match second {
+        Ok(_) => {},
+        Err(_) => {
+            println("FAIL: multiple actors");
+            return 0;
+        },
+    }
+    let third = await p1.print_msg(300);
+    match third {
+        Ok(_) => {},
+        Err(_) => {
+            println("FAIL: multiple actors");
+            return 0;
+        },
+    }
     println("PASS: multiple actors");
     1
 }

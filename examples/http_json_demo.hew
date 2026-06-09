@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Status: runnable
 //! Description: HTTP + JSON pipeline demo.
 
 // HTTP + JSON pipeline demo.

@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: v0.6 stdlib/data-structure port plus codegen-rs parity)
+//! Status: runnable
 //! Description: Result and Option type test
 
 // Result and Option type test

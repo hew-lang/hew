@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Status: runnable
 //! Description: stress_scheduler.hew - Test M:N scheduling with many actors
 
 // stress_scheduler.hew - Test M:N scheduling with many actors

@@ -1,14 +1,13 @@
-//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Status: runnable
 //! Description: HTTP static file server in Hew
 
 // HTTP static file server in Hew
 //
-// Accepts connections in main, dispatches each request to a Handler
-// actor for concurrent file serving with MIME type detection.
+// Accepts connections in main and serves files with MIME type detection.
 //
 // Usage: http_server [port] [root_dir]
 // Defaults: port=8080, root_dir="."
-import std::net::http;
+import std::net::http::http;
 
 import std::fs;
 
@@ -16,33 +15,31 @@ import std::os;
 
 import std::net::mime;
 
-actor Handler {
-    let root: string;
-    receive fn serve(req: Request, request_path: string) {
-        if request_path.contains("..") {
-            req.respond_text(403, "403 Forbidden");
+fn serve_request(root: string, req: Request) {
+    let request_path = req.path();
+    if request_path.contains("..") {
+        req.respond_text(403, "403 Forbidden");
+    } else {
+        var file_path = root + request_path;
+        if request_path.ends_with("/") {
+            file_path = file_path + "index.html";
+        }
+        if fs.exists(file_path) {
+            let body = fs.read(file_path);
+            let content_type = mime.from_path(file_path);
+            req.respond(200, content_type, body);
         } else {
-            var file_path = root + request_path;
-            if request_path.ends_with("/") {
-                file_path = file_path + "index.html";
-            }
-            if fs.exists(file_path) {
-                let body = fs.read(file_path);
-                let content_type = mime.from_path(file_path);
+            let index_path = file_path + "/index.html";
+            if fs.exists(index_path) {
+                let body = fs.read(index_path);
+                let content_type = mime.from_path(index_path);
                 req.respond(200, content_type, body);
             } else {
-                let index_path = file_path + "/index.html";
-                if fs.exists(index_path) {
-                    let body = fs.read(index_path);
-                    let content_type = mime.from_path(index_path);
-                    req.respond(200, content_type, body);
-                } else {
-                    req.respond_text(404, "404 Not Found");
-                }
+                req.respond_text(404, "404 Not Found");
             }
         }
-        req.free();
     }
+    req.free();
 }
 
 fn main() {
@@ -58,11 +55,9 @@ fn main() {
     let addr = f"0.0.0.0:{port}";
     println("=== Hew HTTP Static File Server ===");
     println(f"Listening on http://{addr}  root={root}");
-    let handler = spawn Handler(root: root);
     let srv = http.listen(addr);
     loop {
         let req = srv.accept();
-        let request_path = req.path();
-        handler.serve(req, request_path);
+        serve_request(root, req);
     }
 }

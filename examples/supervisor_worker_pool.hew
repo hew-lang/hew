@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Status: runnable
 //! Description: Resilient Worker Pool
 
 // Resilient Worker Pool

@@ -42,7 +42,7 @@
 //!                     done = true;
 //!                 }
 //!             }
-//!             if reads > http_async_client.MAX_READS {              // F2: read ceiling
+//!             if reads > http_async_client.CLIENT_MAX_READS {       // F2: read ceiling
 //!                 done = true;
 //!             }
 //!         }
@@ -58,20 +58,20 @@ import std::string;
 // ── Hardening limits (fail-closed DoS bounds) ─────────────────────────
 /// Maximum bytes accepted in the response head (status line + headers). A head
 /// larger than this fails closed (`status == -1`) rather than buffering unbounded.
-pub const MAX_HEADER_BYTES: i64 = 65536;
+pub const CLIENT_MAX_HEADER_BYTES: i64 = 65536;
 
 /// Maximum bytes accepted in the response body — also the `Content-Length`
 /// ceiling. A declared or buffered body larger than this fails closed.
-pub const MAX_BODY_BYTES: i64 = 16777216;
+pub const CLIENT_MAX_BODY_BYTES: i64 = 16777216;
 
 /// Maximum total response bytes buffered before the read loop fails closed
-/// (`MAX_HEADER_BYTES + MAX_BODY_BYTES`). Bounds the accumulator regardless of
-/// framing so a malicious server cannot OOM the client.
-pub const MAX_RESPONSE_BYTES: i64 = 16842752;
+/// (`CLIENT_MAX_HEADER_BYTES + CLIENT_MAX_BODY_BYTES`). Bounds the accumulator
+/// regardless of framing so a malicious server cannot OOM the client.
+pub const CLIENT_MAX_RESPONSE_BYTES: i64 = 16842752;
 
 /// Maximum number of read iterations a response loop will accept before failing
 /// closed. Bounds an endless-trickle server that never closes the connection.
-pub const MAX_READS: i64 = 8192;
+pub const CLIENT_MAX_READS: i64 = 8192;
 
 /// A fully-buffered HTTP/1.1 response parsed from the raw bytes read off a
 /// suspending connection. Exposes the same accessor surface as the blocking
@@ -263,19 +263,19 @@ fn authority_with_port(authority: string, scheme: string) -> string {
 /// each iteration so a malicious server cannot OOM the client with an unbounded
 /// head/body or an enormous `Content-Length`.
 pub fn response_over_limit(raw: string) -> bool {
-    if raw.len() > MAX_RESPONSE_BYTES {
+    if raw.len() > CLIENT_MAX_RESPONSE_BYTES {
         return true;
     }
     let sep = raw.find("\r\n\r\n");
     if sep < 0 {
-        return raw.len() > MAX_HEADER_BYTES;
+        return raw.len() > CLIENT_MAX_HEADER_BYTES;
     }
     let head = raw.slice(0, sep);
-    if head.len() > MAX_HEADER_BYTES {
+    if head.len() > CLIENT_MAX_HEADER_BYTES {
         return true;
     }
     let declared = declared_content_length(header_section_of(head));
-    return declared > MAX_BODY_BYTES;
+    return declared > CLIENT_MAX_BODY_BYTES;
 }
 
 /// Parse the raw bytes read off a connection into an [`AsyncResponse`]. The
@@ -394,7 +394,7 @@ fn find_response_header(header_section: string, name: string) -> string {
 /// Used to bound the read loop (see [`response_over_limit`]).
 ///
 /// The value is parsed into a BOUNDED integer (SF1): an all-digit value that
-/// OVERFLOWS i64 saturates to `MAX_BODY_BYTES + 1` — guaranteed to exceed the
+/// OVERFLOWS i64 saturates to `CLIENT_MAX_BODY_BYTES + 1` — guaranteed to exceed the
 /// body ceiling — so an overflowing `Content-Length` fails closed (the response
 /// is rejected with `status == -1`) rather than `string.to_int` returning `0`
 /// and the oversized body bypassing the cap. A non-numeric value reads to close.
@@ -408,7 +408,7 @@ fn declared_content_length(header_section: string) -> i64 {
     }
     match string.try_to_int(value) {
         Ok(n) => n,
-        Err(_) => MAX_BODY_BYTES + 1,
+        Err(_) => CLIENT_MAX_BODY_BYTES + 1,
     }
 }
 

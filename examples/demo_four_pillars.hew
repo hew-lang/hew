@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Status: runnable
 //! Description: demo_four_pillars.hew — Overview of Hew's four pillars
 
 // demo_four_pillars.hew — Overview of Hew's four pillars

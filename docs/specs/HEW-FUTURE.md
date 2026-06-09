@@ -101,12 +101,16 @@ APIs — are deferred.
 
 ### 1.6 Generators (`gen fn`, `async gen fn`, `receive gen fn`, `Lazy<T>`, `#[prefetch(N)]`)
 
-**[Target: v0.6 / gated on Cluster 4]**
+**[Partially live in v0.5.0 / parameterized forms gated on Cluster 1]**
 
-Generators compile to LLVM coroutines and depend on closure lowering
-being stable. The four spike-fixture failures from PR #1772 are exactly
-the bug class generators expose. Until closures + generators land
-together as Cluster 4, the generator surface is informative.
+Zero-parameter `gen fn` functions compile and run at the current tip; the
+LLVM coroutine machinery, `yield`, `.next()`, and `for x in generator()` path
+are live for that shape. Parameterized generators are still blocked by the
+Cluster 1 spine: function parameters and captured bindings do not yet have
+backend slots in every generator lowering path. The four spike-fixture
+failures from PR #1772 remain the bug class exposed by parameterized and
+capturing generator forms, so those forms stay deferred until the Cluster 1
+parameter/capture lowering is complete.
 
 Surface inventory:
 

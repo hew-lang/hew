@@ -1100,8 +1100,8 @@ fn broadcast<T: Send>(message: T, recipients: Vec<LocalPid<Receiver>>) {
 > dispatch through a `dyn` reference works for simple cases, but
 > object-safety enforcement, associated-type bounds, and higher-ranked
 > trait bounds remain incomplete. See HEW-FUTURE.md §2.2 for the
-> full object-type roadmap. This is the same status-note pattern as
-> §3.11 (machine codegen) — admitted surface, partial implementation.
+> full object-type roadmap. This status note is specific to trait objects;
+> machine codegen is live as described in §3.11.
 
 ---
 
@@ -2318,12 +2318,10 @@ returned from functions.
 ## 3.11 `machine` Types
 
 > **Implementation status:** The front-end (lexer keywords, parser, AST, HIR
-> lowering, static checks) and the `hew machine diagram` visualisation subcommand
-> are fully implemented. Code generation (`step()`, tagged-union layout, event
-> enum emission) is not yet implemented — machines parse, type-check at the HIR
-> layer, and render to Mermaid/Graphviz/JSON, but are not yet executable.
-> Sections §3.11.6 and §3.11.7 describe the intended API and are marked
-> accordingly.
+> lowering, static checks), the `hew machine diagram` visualisation subcommand,
+> and native code generation are implemented. Machine values are executable:
+> the compiler emits the tagged-union layout, companion event enum, `step()`,
+> `state_name()`, and enum-like pattern matching support described below.
 
 A `machine` is a **value type** that defines a closed set of named states, a
 closed set of named events, and transition rules mapping `(State, Event)` pairs
@@ -2541,11 +2539,7 @@ Priority order (highest to lowest):
 
 Specific transitions always win over wildcards for the same event.
 
-### 3.11.6 Generated API *(not yet implemented)*
-
-> Code generation for `machine` is not yet implemented.  The API described
-> here is the intended design; `step()` and the companion event enum are not
-> emitted by the current compiler.
+### 3.11.6 Generated API
 
 The compiler generates the following for every `machine Name { ... }`:
 
@@ -2578,10 +2572,7 @@ match cb {
 }
 ```
 
-### 3.11.7 Using Machines Inside Actors *(not yet implemented)*
-
-> This section describes the intended runtime embedding pattern.  Machine
-> values are not yet executable — `step()` is not generated.
+### 3.11.7 Using Machines Inside Actors
 
 Machines are values — they are commonly embedded as actor fields:
 

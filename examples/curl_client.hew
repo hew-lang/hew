@@ -1,10 +1,9 @@
-//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Status: runnable
 //! Description: Simple HTTP downloader (curl-like client) in Hew
 
 // Simple HTTP downloader (curl-like client) in Hew
 //
-// Demonstrates: TCP networking, string manipulation, file I/O,
-// lambda actors for concurrent progress reporting, and f-strings.
+// Demonstrates: TCP networking, string manipulation, file I/O, and f-strings.
 //
 // Usage:
 //   curl_client <url> [output_file]
@@ -126,10 +125,6 @@ Connection: close
     println("  Request sent");
     println("");
 
-    // Spawn a progress reporter actor
-    let reporter = actor |bytes_so_far: i64| {
-        print(f"  Progress: {bytes_so_far} bytes received");
-    };
     // Read response in chunks
     var total_bytes: i64 = 0;
     var full_response: string = "";
@@ -145,7 +140,7 @@ Connection: close
                 hew_bytes_to_string(chunk_bytes)
             };
             full_response = full_response + chunk;
-            reporter.send(total_bytes);
+            print(f"  Progress: {total_bytes} bytes received");
         }
     }
     println("");
@@ -153,16 +148,19 @@ Connection: close
 
     // Separate headers from body
     let header_end = full_response.find("\r\n\r\n");
-    var body = full_response;
+    let response_len = full_response.len();
+    var body = "";
     if header_end >= 0 {
         let headers = full_response.slice(0, header_end);
-        body = full_response.slice(header_end + 4, full_response.len());
+        body = full_response.slice(header_end + 4, response_len);
         // Print status line
         let first_newline = headers.find("\r\n");
         if first_newline >= 0 {
             let status_line = headers.slice(0, first_newline);
             println(f"  Status: {status_line}");
         }
+    } else {
+        body = full_response;
     }
     // Write body to file
     let write_result = fs.write(outfile, body);
@@ -173,6 +171,5 @@ Connection: close
         println(f"  Error: failed to write {outfile}");
     }
     conn.close();
-    sleep_ms(50);
     println("  Done!");
 }

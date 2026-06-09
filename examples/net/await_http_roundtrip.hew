@@ -84,7 +84,7 @@ actor Client {
                     done = true;
                 }
             }
-            if reads > http_async_client.MAX_READS {
+            if reads > http_async_client.CLIENT_MAX_READS {
                 done = true;
             }
         }

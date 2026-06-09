@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Status: runnable
 //! Description: stress_ping_pong.hew - Classic actor stress test
 
 // stress_ping_pong.hew - Classic actor stress test

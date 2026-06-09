@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: v0.6 advanced trait surface plus codegen-rs parity)
+//! Status: runnable
 //! Description: Types, traits, and dynamic dispatch in Hew.
 
 // Types, traits, and dynamic dispatch in Hew.

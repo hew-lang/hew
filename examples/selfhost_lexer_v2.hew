@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Status: runnable
 //! Description: selfhost_lexer_v2.hew - Enhanced Hew lexer using string methods
 
 // selfhost_lexer_v2.hew - Enhanced Hew lexer using string methods

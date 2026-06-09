@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Status: runnable
 //! Description: Fibonacci across actors - demonstrates deterministic fan-out with joins
 
 // Fibonacci across actors - demonstrates deterministic fan-out with joins

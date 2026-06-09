@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: v0.6 concurrency surfaces plus codegen-rs parity)
+//! Status: runnable
 //! Description: Actor call-and-await example with no used return value.
 
 actor Messenger {

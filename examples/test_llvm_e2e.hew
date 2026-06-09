@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Status: runnable
 //! Description: End-to-end test for the LLVM API backend.
 
 // End-to-end test for the LLVM API backend.

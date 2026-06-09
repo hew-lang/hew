@@ -93,6 +93,8 @@ pub enum ManifestError {
         edition: String,
         supported: &'static [&'static str],
     },
+    /// The `[native]` section is malformed (bad `kind` or empty `lib`).
+    InvalidNative(String),
 }
 
 impl fmt::Display for ManifestError {
@@ -108,6 +110,7 @@ impl fmt::Display for ManifestError {
                 f,
                 "E_UNSUPPORTED_EDITION: hew.toml declares edition = \"{edition}\", which this build does not support (supported: {supported:?})"
             ),
+            Self::InvalidNative(msg) => write!(f, "E_INVALID_NATIVE: {msg}"),
         }
     }
 }
@@ -118,7 +121,7 @@ impl std::error::Error for ManifestError {
             Self::Io(e) => Some(e),
             Self::Parse(e) => Some(e),
             Self::Serialize(e) => Some(e),
-            Self::UnsupportedEdition { .. } => None,
+            Self::UnsupportedEdition { .. } | Self::InvalidNative(_) => None,
         }
     }
 }
@@ -190,6 +193,36 @@ pub struct Package {
     pub hew: Option<String>,
 }
 
+/// `[native]` — declares the Rust FFI library that backs this package's `extern`
+/// functions. `adze` builds the crate at [`crate_dir`](NativeLib::crate_dir) and
+/// stages the produced `lib<lib>.a` (or `.dylib`); the compiler links it when the
+/// package is imported, so consumers never pass `--link-lib` manually.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct NativeLib {
+    /// Path to the Cargo crate directory, relative to `hew.toml` (default `"."`).
+    #[serde(rename = "crate", default = "default_native_crate")]
+    pub crate_dir: String,
+    /// The `[lib] name` the crate produces; the staged artifact is `lib<lib>.a`/`.dylib`.
+    pub lib: String,
+    /// Library kind: `"staticlib"` (default) or `"cdylib"`.
+    #[serde(default = "default_native_kind")]
+    pub kind: String,
+    /// Extra system libraries to pass to the linker (e.g. `["sqlite3"]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<Vec<String>>,
+}
+
+fn default_native_crate() -> String {
+    ".".to_string()
+}
+
+fn default_native_kind() -> String {
+    "staticlib".to_string()
+}
+
+/// Library kinds accepted in a `[native]` section.
+const NATIVE_KINDS: &[&str] = &["staticlib", "cdylib"];
+
 /// Template kind used when generating a default `hew.toml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManifestTemplate {
@@ -238,6 +271,9 @@ pub struct HewManifest {
     /// `[features]` — named feature flags and their implications.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub features: BTreeMap<String, Vec<String>>,
+    /// `[native]` — optional Rust FFI library backing this package's externs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<NativeLib>,
 }
 
 impl HewManifest {
@@ -279,6 +315,19 @@ pub fn parse_manifest(path: &Path) -> Result<HewManifest, ManifestError> {
             edition: manifest.package.edition.clone(),
             supported: SUPPORTED_EDITIONS,
         });
+    }
+    if let Some(native) = &manifest.native {
+        if native.lib.trim().is_empty() {
+            return Err(ManifestError::InvalidNative(
+                "[native] lib must be a non-empty library name".to_string(),
+            ));
+        }
+        if !NATIVE_KINDS.contains(&native.kind.as_str()) {
+            return Err(ManifestError::InvalidNative(format!(
+                "[native] kind = \"{}\" is invalid (expected one of {NATIVE_KINDS:?})",
+                native.kind
+            )));
+        }
     }
     Ok(manifest)
 }
@@ -456,6 +505,51 @@ mod tests {
     }
 
     #[test]
+    fn parse_native_section_with_defaults() {
+        let f = write_temp(
+            "[package]\nname = \"hew::db::sqlite\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[native]\nlib = \"hew_hew_db_sqlite\"\nlink = [\"sqlite3\"]\n",
+        );
+        let m = parse_manifest(f.path()).unwrap();
+        let n = m.native.expect("native section");
+        assert_eq!(n.lib, "hew_hew_db_sqlite");
+        assert_eq!(n.crate_dir, ".");
+        assert_eq!(n.kind, "staticlib");
+        assert_eq!(n.link.as_deref(), Some(&["sqlite3".to_string()][..]));
+    }
+
+    #[test]
+    fn native_invalid_kind_is_error() {
+        let f = write_temp(
+            "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[native]\nlib = \"foo\"\nkind = \"bogus\"\n",
+        );
+        let err = parse_manifest(f.path()).unwrap_err();
+        assert!(matches!(err, ManifestError::InvalidNative(_)), "{err}");
+    }
+
+    #[test]
+    fn native_empty_lib_is_error() {
+        let f = write_temp(
+            "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[native]\nlib = \"\"\n",
+        );
+        assert!(matches!(
+            parse_manifest(f.path()).unwrap_err(),
+            ManifestError::InvalidNative(_)
+        ));
+    }
+
+    #[test]
+    fn native_roundtrips_through_serialize() {
+        let f = write_temp(
+            "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[native]\ncrate = \"native\"\nlib = \"foo\"\nkind = \"cdylib\"\n",
+        );
+        let m = parse_manifest(f.path()).unwrap();
+        let serialized = toml::to_string(&m).unwrap();
+        assert!(serialized.contains("[native]"), "{serialized}");
+        assert!(serialized.contains("crate = \"native\""), "{serialized}");
+        assert!(serialized.contains("kind = \"cdylib\""), "{serialized}");
+    }
+
+    #[test]
     fn missing_required_field_is_error() {
         let f = write_temp("[package]\nname = \"missingversion\"\n");
         assert!(parse_manifest(f.path()).is_err());
@@ -600,6 +694,7 @@ mod tests {
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
+            native: None,
         };
         save_manifest(&path, &manifest).unwrap();
         let m = parse_manifest(&path).unwrap();
@@ -657,6 +752,7 @@ mod tests {
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
+            native: None,
         };
         let s = m.summary();
         assert!(s.contains("by Alice, Bob"), "summary = {s}");
@@ -834,6 +930,7 @@ mod tests {
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
+            native: None,
         };
         assert!(validate_for_publish(&m).is_empty());
     }
@@ -861,6 +958,7 @@ mod tests {
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
+            native: None,
         };
         let missing = validate_for_publish(&m);
         assert!(missing.contains(&"description"));
@@ -903,6 +1001,7 @@ mod tests {
             dependencies: deps,
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
+            native: None,
         };
         let missing = validate_for_publish(&m);
         assert!(!missing.is_empty());

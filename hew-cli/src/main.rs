@@ -34,6 +34,7 @@ mod host_death;
 mod jit;
 mod link;
 mod machine;
+mod native_link;
 mod platform;
 mod playground;
 mod process;
@@ -203,7 +204,7 @@ fn lower_file_to_mir_for_target(
     input_path: &Path,
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
-) -> Result<hew_mir::IrPipeline, ()> {
+) -> Result<(hew_mir::IrPipeline, Vec<std::path::PathBuf>), ()> {
     let input = input_path.display().to_string();
     let fopts = compile::frontend_options(target, options);
 
@@ -263,7 +264,8 @@ fn lower_file_to_mir_for_target(
         return Err(());
     }
 
-    Ok(pipeline)
+    let native_pkg_dirs = native_link::collect_import_pkg_dirs(&state.program);
+    Ok((pipeline, native_pkg_dirs))
 }
 
 fn hir_target_arch(target: &target::TargetSpec) -> hew_hir::TargetArch {
@@ -624,7 +626,7 @@ fn compile_build_binary(
     extra_libs: &[String],
     options: &compile::CompileOptions,
 ) -> Result<(), ()> {
-    let pipeline = lower_file_to_mir_for_target(input, target, options)?;
+    let (pipeline, native_pkg_dirs) = lower_file_to_mir_for_target(input, target, options)?;
     let emit_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = output_path
         .file_stem()
@@ -651,7 +653,14 @@ fn compile_build_binary(
             let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
                 eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
             })?;
-            link_native_object_for_target(obj, output_path, target, debug, extra_libs)
+            // Auto-link native (FFI) staticlibs declared by imported packages
+            // (`[native]` in their `hew.toml`), built on demand, in addition to
+            // any explicit `--link-lib` archives.
+            let auto_libs = native_link::build_native_link_libs(&native_pkg_dirs).map_err(|e| {
+                eprintln!("Error: {e}");
+            })?;
+            let all_libs: Vec<String> = extra_libs.iter().cloned().chain(auto_libs).collect();
+            link_native_object_for_target(obj, output_path, target, debug, &all_libs)
         }
         CompileEmitTarget::Wasm => {
             let wasm = artefacts.wasm_path.as_deref().ok_or_else(|| {
@@ -682,7 +691,7 @@ fn emit_obj_only(
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
 ) -> Result<(), ()> {
-    let pipeline = lower_file_to_mir_for_target(input, target, options)?;
+    let (pipeline, _native_pkg_dirs) = lower_file_to_mir_for_target(input, target, options)?;
     let stem = input
         .file_stem()
         .and_then(|s| s.to_str())
@@ -931,7 +940,8 @@ fn compile_temp_wasi_module(
     };
 
     let result = (|| -> Result<(), ()> {
-        let pipeline = lower_file_to_mir_for_target(Path::new(input), &target_spec, options)?;
+        let (pipeline, _native_pkg_dirs) =
+            lower_file_to_mir_for_target(Path::new(input), &target_spec, options)?;
         let emit_dir = tmp_dir_of_path(&wasm_path);
         // Emit the wasm object only — the WASI runtime link happens in
         // `link::link_executable` below, which links against libhew_runtime.a.
@@ -975,9 +985,29 @@ fn tmp_dir_of_path(path: &Path) -> &Path {
 fn compile_temp_artifact(
     input: &str,
     artifact: CompiledTempExecutable,
-    _options: &compile::CompileOptions,
+    options: &compile::CompileOptions,
 ) -> CompiledTempExecutable {
-    if let Ok(()) = compile_native_binary(Path::new(input), artifact.path()) {
+    // Route through the same path as `hew build` so `hew run` honours
+    // `--pkg-path` (resolving `hew::<pkg>` imports) and auto-links the native
+    // (FFI) staticlibs declared by imported packages.
+    let target = match target::TargetSpec::from_requested(options.target.as_deref()) {
+        Ok(target) => target,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            drop(artifact);
+            std::process::exit(1);
+        }
+    };
+    if compile_build_binary(
+        Path::new(input),
+        artifact.path(),
+        &target,
+        false,
+        &[],
+        options,
+    )
+    .is_ok()
+    {
         artifact
     } else {
         drop(artifact);
@@ -1580,6 +1610,18 @@ fn cmd_observe(a: &args::ObserveArgs) {
 /// first, then falls back to PATH resolution.
 fn cmd_lsp(a: &args::LspArgs) {
     exec_sibling_binary("hew-lsp", &a.args);
+}
+
+/// Run the bundled package manager (`adze`) in-process as `hew package …`.
+///
+/// `hew` ships a single binary: the package-manager command surface lives in
+/// the `adze-cli` library and is invoked directly here (no sibling `adze`
+/// process). The leading argument is the display name used in usage/help text.
+fn cmd_package(a: &args::PackageArgs) {
+    let mut argv: Vec<String> = Vec::with_capacity(a.args.len() + 1);
+    argv.push("hew package".to_string());
+    argv.extend(a.args.iter().cloned());
+    adze_cli::cli::run_from_args(argv);
 }
 
 /// Replace the current process with `binary_name [extra_args]`.

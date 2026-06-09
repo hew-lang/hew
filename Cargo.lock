@@ -1596,6 +1596,7 @@ dependencies = [
 name = "hew-cli"
 version = "0.5.0-pre"
 dependencies = [
+ "adze-cli",
  "clap",
  "clap_complete",
  "dirs",

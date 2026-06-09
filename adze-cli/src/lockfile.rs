@@ -199,6 +199,7 @@ mod tests {
                 .collect::<BTreeMap<_, _>>(),
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
+            native: None,
         }
     }
 

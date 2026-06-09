@@ -25,6 +25,7 @@ pub(crate) trait CommandDispatcher {
     fn help(&mut self);
     fn observe(&mut self, args: &args::ObserveArgs);
     fn lsp(&mut self, args: &args::LspArgs);
+    fn package(&mut self, args: &args::PackageArgs);
 }
 
 pub(crate) struct MainCommandDispatcher;
@@ -109,6 +110,10 @@ impl CommandDispatcher for MainCommandDispatcher {
     fn lsp(&mut self, args: &args::LspArgs) {
         crate::cmd_lsp(args);
     }
+
+    fn package(&mut self, args: &args::PackageArgs) {
+        crate::cmd_package(args);
+    }
 }
 
 pub(crate) fn parse_cli_or_exit() -> Cli {
@@ -135,6 +140,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         Some(Command::Version) => dispatcher.version(),
         Some(Command::Observe(args)) => dispatcher.observe(args),
         Some(Command::Lsp(args)) => dispatcher.lsp(args),
+        Some(Command::Package(args)) => dispatcher.package(args),
         None => dispatcher.help(),
     }
 }
@@ -426,6 +432,10 @@ mod tests {
 
         fn lsp(&mut self, _args: &crate::args::LspArgs) {
             self.calls.push("lsp".to_string());
+        }
+
+        fn package(&mut self, _args: &crate::args::PackageArgs) {
+            self.calls.push("package".to_string());
         }
     }
 }

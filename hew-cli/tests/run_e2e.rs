@@ -231,6 +231,69 @@ fn run_program_with_simple_arithmetic_succeeds() {
 }
 
 #[test]
+fn tcp_loopback_read_string_roundtrip_returns_written_bytes() {
+    require_codegen();
+
+    let addr = unused_loopback_addr();
+    let dir = support::tempdir();
+    let path = dir.path().join("tcp_loopback_roundtrip.hew");
+    std::fs::write(
+        &path,
+        format!(
+            r#"
+import std::net;
+
+actor EchoServer {{
+    receive fn connect_send_and_read(unused: i64) {{
+        let conn = net.connect("{addr}");
+        conn.write_string("client-ping:r319");
+        let reply = conn.read_string();
+        println(f"client-read={{reply}}");
+        conn.close();
+    }}
+}}
+
+fn main() {{
+    let listener = net.listen("{addr}");
+    let client = spawn EchoServer;
+    client.connect_send_and_read(0);
+
+    let conn = listener.accept();
+    let request = conn.read_string();
+    println(f"server-read={{request}}");
+    conn.write_string("tcp-echo:hew-net-r319");
+    conn.close();
+    listener.close();
+}}
+"#,
+        ),
+    )
+    .expect("write TCP loopback fixture");
+
+    let output = run_bounded_hew_run(&path, dir.path());
+
+    assert!(
+        output.status.success(),
+        "hew run should complete the TCP roundtrip; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(
+        actual,
+        "server-read=client-ping:r319\nclient-read=tcp-echo:hew-net-r319\n"
+    );
+}
+
+fn unused_loopback_addr() -> String {
+    std::net::TcpListener::bind(("127.0.0.1", 0))
+        .expect("bind ephemeral loopback listener")
+        .local_addr()
+        .expect("read ephemeral loopback address")
+        .to_string()
+}
+
+#[test]
 fn run_float_comparison_branches_for_f64_and_f32() {
     require_codegen();
 

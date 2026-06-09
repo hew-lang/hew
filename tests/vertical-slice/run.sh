@@ -79,6 +79,36 @@ run_check_run_expect_stdout() {
   diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"
 }
 
+expect_wasm_actor_runtime_reject() {
+  local fixture="$1"
+  local target="$2"
+  if "${HEW}" compile --target "${target}" \
+      "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" \
+      >"${reject_output}" 2>&1; then
+    echo "expected ${fixture} to fail closed for ${target}: actor runtime ABI is unavailable" >&2
+    exit 1
+  fi
+  grep -q 'actor runtime ABI' "${reject_output}"
+}
+
+expect_check_fail_contains() {
+  local fixture_path="$1"
+  local expected_substr="$2"
+  local label="$3"
+  if "${HEW}" check "${fixture_path}" >"${reject_output}" 2>&1; then
+    echo "expected ${label} to fail closed under hew check" >&2
+    exit 1
+  fi
+  grep -qF -- "${expected_substr}" "${reject_output}"
+}
+
+apply_optional_virtual_memory_limit() {
+  # GNU/Linux accepts `ulimit -v`; Darwin reports "Invalid argument". The cap is
+  # a best-effort guard for collection stress fixtures, not part of the semantic
+  # oracle, so unsupported hosts run the same fixture without the cap.
+  ulimit -v 524288 2>/dev/null || true
+}
+
 "${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/string_return.hew" >"${accept_output}"
 grep -q 'return_ty: String' "${accept_output}"
 
@@ -296,11 +326,14 @@ grep -q 'ResourceCloseMustReturnUnit' "${reject_output}"
 # Actor body: increment(10) + increment(32) = 42.
 run_accept_expect_status "actor_counter" 42
 
-# Actor-only wasm smoke: `actor_counter` has actor state, so wasm compilation
-# must keep resolving the actor state drop/clone setter pair.
-"${HEW}" compile --target wasm32-unknown-unknown \
-  "${ROOT}/tests/vertical-slice/accept/actor_counter.hew" >"${accept_output}" 2>&1
-test -s "${ROOT}/.tmp/compile-out/actor_counter.wasm"
+# Actor runtime ABI fail-closed smoke: `actor_counter` is an accept fixture on
+# native targets, but actors require the production scheduler/mailbox ABI. Bare
+# `wasm32-unknown-unknown` has no runtime ABI at all, and the current Tier-2
+# `wasm32-wasip1` path is also gated at HIR until the actor ABI is ported. Keep
+# wasm-capable fixtures in the compile-positive smoke above; actor fixtures must
+# reject explicitly instead of accidentally failing an accept compile.
+expect_wasm_actor_runtime_reject "actor_counter" "wasm32-unknown-unknown"
+expect_wasm_actor_runtime_reject "actor_counter" "wasm32-wasip1"
 
 # Q87 slice 1 regression: same actor body as `actor_counter`, but the two
 # `receive fn`s appear in reversed source order. Pre-Q87 the source-order
@@ -572,18 +605,29 @@ if grep -q 'panicked at' "${reject_output}"; then
   exit 1
 fi
 
-# Lambda-actor and Duplex surface: type-checker-level fixtures (slice 2).
-# These use `hew check` rather than `compile` because the HIR codegen
-# path does not yet support actor expressions (slice 4 concern).
+# Lambda-actor and Duplex surface: the type checker accepts these surfaces, but
+# `hew check` now also runs HIR/MIR/codegen-front gates. Lambda-actor dispatch
+# remains a fail-closed native lowering gap, so the vertical slice pins the
+# explicit diagnostic instead of treating these typechecker-only fixtures as
+# end-to-end accept fixtures.
 
-# Accept: tell-shaped lambda actor call dispatch.
-"${HEW}" check "${ROOT}/tests/vertical-slice/accept/lambda_callable_tell.hew"
+# Typechecker-accept: tell-shaped lambda actor call dispatch.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/accept/lambda_callable_tell.hew" \
+  "M2 SendHalf / RecvHalf / LambdaActorHandle Place lowering is not yet wired" \
+  "lambda_callable_tell"
 
-# Accept: ask-shaped lambda actor call dispatch.
-"${HEW}" check "${ROOT}/tests/vertical-slice/accept/lambda_callable_ask.hew"
+# Typechecker-accept: ask-shaped lambda actor call dispatch.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/accept/lambda_callable_ask.hew" \
+  "MIR lowering for indirect or unresolved function call is not implemented yet" \
+  "lambda_callable_ask"
 
-# Accept: lambda actor recursive self-call via let-binding name (§5.9 ratification 2).
-"${HEW}" check "${ROOT}/tests/vertical-slice/accept/lambda_self_recursion.hew"
+# Typechecker-accept: lambda actor recursive self-call via let-binding name (§5.9 ratification 2).
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/accept/lambda_self_recursion.hew" \
+  "MIR lowering for indirect or unresolved function call is not implemented yet" \
+  "lambda_self_recursion"
 
 # Reject: non-Send message type (E_DUPLEX_NON_SEND).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/duplex_non_send.hew" >"${reject_output}" 2>&1; then
@@ -599,15 +643,16 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_arrow_operator.hew
 fi
 grep -q 'E_OPERATOR_REMOVED' "${reject_output}"
 
-# Accept: .send() on a lambda-actor handle is now allowed (allowed-secondary surface).
+# Typechecker-accept: .send() on a lambda-actor handle is allowed by the
+# frontend, then rejected by the native lowering gate until the lambda-actor
+# C-ABI place path is wired.
 # Lambda-actor handles are Duplex<Msg, Reply> underneath; `.send()` routes to
 # hew_duplex_send, the same symbol as call-syntax.  The old reject/lambda_method_send.hew
-# file is kept for reference but now passes hew check.
-if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/lambda_method_send.hew" >"${reject_output}" 2>&1; then
-  echo "expected lambda-method-send fixture to pass; got:" >&2
-  cat "${reject_output}" >&2
-  exit 1
-fi
+# file is kept for reference.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/accept/lambda_method_send.hew" \
+  "M2 SendHalf / RecvHalf / LambdaActorHandle Place lowering is not yet wired" \
+  "lambda_method_send"
 
 # Reject: ask-shaped actor body return type mismatch (E_LAMBDA_RETURN_TYPE_MISMATCH).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_return_mismatch.hew" >"${reject_output}" 2>&1; then
@@ -701,35 +746,32 @@ grep -qF 'spawned call' "${reject_output}"
 grep -qF 'no-argument functions returning unit' "${reject_output}"
 
 # Reject: fork-spawned callee takes arguments.
-# Same gate as fork_non_unit_return; pins the no-args boundary.
+# Pins the HIR no-argument task-spawn boundary.
 # Moves to accept/ when S5 lands argument-bearing fork callees.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_with_args.hew" >"${reject_output}" 2>&1; then
   echo "expected fork-with-args fixture to fail" >&2
   exit 1
 fi
-grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
-grep -qF 'spawned call' "${reject_output}"
-grep -qF 'no-argument functions returning unit' "${reject_output}"
+grep -q 'E_HIR' "${reject_output}"
+grep -qF 'spawned call must have zero arguments' "${reject_output}"
 
 # Reject: `fork { ... }` block with multiple statements.
-# Pins the fail-closed boundary at hew-mir/src/lower.rs:lower_fork_block_task.
+# Pins the HIR fail-closed fork-block body boundary.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_multi_stmt.hew" >"${reject_output}" 2>&1; then
   echo "expected fork-multi-stmt fixture to fail" >&2
   exit 1
 fi
-grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
-grep -qF 'fork block cancellation child' "${reject_output}"
-grep -qF 'exactly one statement' "${reject_output}"
+grep -q 'E_HIR' "${reject_output}"
+grep -qF 'fork block body must contain exactly one statement or expression' "${reject_output}"
 
 # Reject: `after(duration) { ... }` with a non-empty timeout body.
-# Pins the fail-closed boundary at hew-mir/src/lower.rs:lower_scope_deadline.
+# Pins the HIR fail-closed deadline body boundary.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/scope_deadline_body.hew" >"${reject_output}" 2>&1; then
   echo "expected scope-deadline-body fixture to fail" >&2
   exit 1
 fi
-grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
-grep -qF 'scope deadline body' "${reject_output}"
-grep -qF 'non-empty timeout bodies remain fail-closed' "${reject_output}"
+grep -q 'E_HIR' "${reject_output}"
+grep -qF 'deadline body must be empty' "${reject_output}"
 
 # Reject: `for x in non_iterable` — Vec<T> is accepted through IntoIterator,
 # but values with no iterable contract must still fail closed.
@@ -827,33 +869,22 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/sink_non_wire_payload.hew
 fi
 grep -qF 'Encode + Decode' "${reject_output}"
 
-# Reject: literal payload subpattern in a constructor match arm.
-# Shape::Line(1) must be rejected at check time with UnsupportedPayloadSubpattern
-# rather than silently lowered as a wildcard that matches any payload value.
-if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/enum_payload_literal_subpattern.hew" >"${reject_output}" 2>&1; then
-  echo "expected enum-payload-literal-subpattern fixture to fail" >&2
-  exit 1
-fi
-grep -q 'payload subpattern' "${reject_output}"
-grep -q 'literal' "${reject_output}"
-if grep -q 'panicked at' "${reject_output}"; then
-  echo "enum-payload-literal-subpattern fixture panicked instead of reporting a diagnostic" >&2
-  exit 1
-fi
+# Accept: literal payload subpattern in a constructor match arm compares the
+# payload value. Shape::Line(1) must not silently lower as a wildcard that also
+# matches Shape::Line(2); exit 2 proves the fallback binding arm handled it.
+run_accept_expect_status "enum_payload_literal_subpattern" 2
 
 # ---------------------------------------------------------------------------
 # Regex literal match-arm patterns
 # ---------------------------------------------------------------------------
 
-# Accept: `re"..."` in match-arm predicate position type-checks cleanly.
-# The pattern syntax is validated at check time via the regex-syntax crate.
-# End-to-end compilation requires HIR ExternBlock support for the
-# auto-imported std::text::regex module (tracked as a follow-on lane).
-if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/regex_match_arm.hew" >"${reject_output}" 2>&1; then
-  echo "expected regex_match_arm fixture to pass hew check; got:" >&2
-  cat "${reject_output}" >&2
-  exit 1
-fi
+# Typechecker-accept: `re"..."` in match-arm predicate position validates regex
+# syntax, then `hew check` fails closed at codegen-front until regex literal
+# handles are threaded through the pipeline.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/accept/regex_match_arm.hew" \
+  "hew_regex_match: @hew_regex_handles global not found" \
+  "regex_match_arm"
 
 # Reject: malformed regex literal in match-arm position (E_INVALID_REGEX_LITERAL).
 # The type checker validates regex syntax before HIR lowering.
@@ -1050,14 +1081,8 @@ if gtimeout 30 "${HEW}" check \
 fi
 grep -q 'takes 1 type argument but 2 were supplied' "${reject_output}"
 
-# Reject: concrete generic user aggregate with a heap-owning string field.
-if "${HEW}" compile \
-    "${ROOT}/tests/vertical-slice/reject/user_record_non_bitcopy.hew" \
-    >"${reject_output}" 2>&1; then
-  echo "expected user_record_non_bitcopy fixture to fail" >&2
-  exit 1
-fi
-grep -q 'UnsupportedUserRecordValueClass' "${reject_output}"
+# Accept: concrete generic user aggregate with a heap-owning string field.
+run_accept_expect_status "user_record_non_bitcopy" 0
 
 # ---------------------------------------------------------------------------
 # Generic enum monomorphisation — end-to-end acceptance fixtures
@@ -1160,26 +1185,10 @@ run_accept_expect_stdout "result_heap_drop_loop"
 # A clean exit (no SIGABRT) proves the alloc_cstring_from_str path is correct.
 run_accept_expect_stdout "stream_last_error_drops_cleanly"
 
-# Reject: heap-owning composite returns with NO tag-aware drop coverage stay
-# fail-closed (boundary-fail-closed). A tuple carrying an owned string is not an
-# enum composite, so the move-out + in-place drop spine does not cover it.
-cat >"${ROOT}/.tmp/reject_tuple_heap_return.hew" <<'REJECT_EOF'
-fn pair() -> (string, i64) {
-    ("hello", 42)
-}
-fn main() -> i64 {
-    let p = pair();
-    p.1
-}
-REJECT_EOF
-if "${HEW}" compile \
-    "${ROOT}/.tmp/reject_tuple_heap_return.hew" \
-    >"${reject_output}" 2>&1; then
-  echo "expected tuple heap-owning composite return to fail closed" >&2
-  exit 1
-fi
-grep -q 'composite return of heap-owning payload' "${reject_output}"
-rm -f "${ROOT}/.tmp/reject_tuple_heap_return.hew"
+# Accept: tuple composite return carrying a heap-owned string. This used to
+# fail closed before tuple composite-return drop coverage landed; exit 42 proves
+# the caller receives the scalar field while the string payload remains owned.
+run_accept_expect_status "tuple_heap_return" 42
 
 # WASM: composite return for Option<i64> compiles to wasm32.
 "${HEW}" compile --target wasm32-unknown-unknown \
@@ -1224,8 +1233,10 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/negative_fn_msg_remote_te
   exit 1
 fi
 grep -q 'Serializable' "${reject_output}"
-"${HEW}" check "${ROOT}/tests/vertical-slice/accept/local_fn_msg_actor_method_allowed.hew" \
-    >"${accept_output}" 2>&1
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/accept/local_fn_msg_actor_method_allowed.hew" \
+  "cross-node serialize: unsupported value type Function" \
+  "local_fn_msg_actor_method_allowed"
 
 # ---------------------------------------------------------------------------
 # W2.006 Stage 1 — HewScope removal: scope{} MIR shape invariant.
@@ -1342,7 +1353,7 @@ fi
 # deliberately covered by the codegen fail-closed substrate gate for
 # hew_hashmap_*_layout / hew_hashset_*_layout.
 (
-  ulimit -v 524288
+  apply_optional_virtual_memory_limit
   timeout --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/hashmap_run_pass.hew"
 )
 
@@ -1353,7 +1364,7 @@ fi
 # moved in from `main`; teardown frees them through the corrected
 # `hew_hashset_free_layout`. Post-fix it prints `ok` and exits 0.
 (
-  ulimit -v 524288
+  apply_optional_virtual_memory_limit
   out="$(timeout --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/hashset_actor_drop_run_pass.hew")"
   if [[ "${out}" != "ok" ]]; then
     echo "W4.045: hashset actor drop run-pass: expected 'ok', got '${out}'" >&2
@@ -1371,7 +1382,7 @@ fi
 # Prints `ok` and exits 0. WASM is deliberately covered by the codegen
 # fail-closed substrate gate (native-only layout family; tracked #1820).
 (
-  ulimit -v 524288
+  apply_optional_virtual_memory_limit
   out="$(timeout --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/collection_actor_drop_run_pass.hew")"
   if [[ "${out}" != "ok" ]]; then
     echo "W5.001: collection actor drop run-pass: expected 'ok', got '${out}'" >&2
@@ -1388,7 +1399,7 @@ fi
 # the managed per-slot free is correct. WASM is deliberately covered by the
 # native-only collection substrate gate (tracked #1820).
 (
-  ulimit -v 524288
+  apply_optional_virtual_memory_limit
   out="$(timeout --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/vec_string_actor_drop_run_pass.hew")"
   if [[ "${out}" != "ok" ]]; then
     echo "W5.002: vec<string> actor drop run-pass: expected 'ok', got '${out}'" >&2

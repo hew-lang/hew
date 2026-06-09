@@ -1,0 +1,11 @@
+// Accept fixture: tuple composite return carrying a heap-owned string.
+// Exit 42 proves the tuple return crosses the boundary and the caller can read
+// the scalar field while the owned string remains under drop coverage.
+fn pair() -> (string, i64) {
+    ("hello", 42)
+}
+
+fn main() -> i64 {
+    let p = pair();
+    p.1
+}

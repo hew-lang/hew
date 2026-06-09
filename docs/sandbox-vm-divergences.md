@@ -13,6 +13,7 @@ The sandbox VM is deterministic by design. It admits programs whose observable b
 - [In-memory streams only (no file/network backing)](#in-memory-streams-only-no-filenetwork-backing)
 - [Web Worker single-threaded execution](#web-worker-single-threaded-execution)
 - [Regex engine differences](#regex-engine-differences)
+- [Windows parity enforcement](#windows-parity-enforcement)
 - [Profile admission diagnostics](#profile-admission-diagnostics)
 - [v0.5 substrate surface admission](#v05-substrate-surface-admission)
 - [Out-of-scope native surfaces](#out-of-scope-native-surfaces)
@@ -52,6 +53,10 @@ The browser sandbox runs inside a Web Worker and executes VM work on a single Ja
 ## Regex engine differences
 
 Sandbox regex support is limited to the admitted sandbox profile and may use the browser-compatible implementation selected by the VM. Patterns that depend on native-engine extensions, locale-specific behavior, or implementation-defined backtracking limits are outside the sandbox compatibility contract.
+
+## Windows parity enforcement
+
+Native↔sandbox parity is enforced on Linux CI through the provisioned `make sandbox-parity` gate. Windows currently skips that parity harness because the Windows runner does not provision the `hew-sandbox-vm` Node/npm toolchain for it. This tracked gap is issue #1823.
 
 ## Profile admission diagnostics
 

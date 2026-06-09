@@ -280,6 +280,18 @@ jobs:
           --exclude hew-cabi
           --profile ci
 
+      - name: Setup Node.js for sandbox parity
+        if: env.RUN_CODE_PATH == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: hew-sandbox-vm/package-lock.json
+
+      - name: Run sandbox VM parity
+        if: env.RUN_CODE_PATH == 'true'
+        run: make sandbox-parity
+
       - name: Upload test reports
         if: always() && env.RUN_CODE_PATH == 'true'
         uses: mikepenz/action-junit-report@v5

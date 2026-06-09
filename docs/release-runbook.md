@@ -253,6 +253,7 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 | Rust workspace tests         | ci.yml + release-gate.yml    | Yes       |
 | Codegen E2E (native)         | ci.yml + release-gate.yml    | Yes       |
 | Codegen E2E (WASM)           | ci.yml + release-gate.yml    | Yes       |
+| Native↔sandbox-VM parity     | ci.yml (Linux, `make sandbox-parity`) | Yes for PRs |
 | Smoke test (compile+run)     | release-gate.yml             | Yes       |
 | Packaged archive smoke (Linux/macOS) | release.yml (Unix matrix) | Yes    |
 | Packaged archive smoke (Windows zip) | release.yml (Windows job) | Best-effort |
@@ -273,6 +274,10 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
   The release.yml Windows job builds from source (~90 min). If the Windows build
   breaks at tag time, it uses `continue-on-error: true`. The packaged zip smoke
   is best-effort for the same reason.
+- **Release-gate sandbox parity**: native↔sandbox-VM parity is enforced per PR
+  on Linux by `ci.yml` with `make sandbox-parity`. The release gate does not
+  rerun that Node/npm-backed harness across its platform matrix; rerun
+  `make sandbox-parity` locally before tagging when cutting a release candidate.
 - **linux-aarch64**: No pre-tag CI gate before tagging; the tag workflow now
   runs both packaged-archive smoke and an Ubuntu clean-room smoke on arm64.
 - **FreeBSD**: Nightly plus tag-time packaged-archive smoke, but the tag job is

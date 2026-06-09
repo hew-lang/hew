@@ -16,6 +16,9 @@
 # NOT covered here (run separately before tagging):
 #   - FreeBSD (nightly via freebsd.yml or local `make pre-release PLATFORMS=freebsd`)
 #   - Sanitizers (nightly via nightly-sanitizers.yml)
+#   - Native↔sandbox-VM parity: PR CI enforces this on Linux with a provisioned
+#     `make sandbox-parity` step; release authors can rerun it locally without
+#     triplicating the Node + LLVM build across release-gate platforms.
 
 name: Pre-Release Cross-Platform Gate
 

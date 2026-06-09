@@ -60,7 +60,7 @@
     "expected_path": "concurrency/actor_pipeline.expected",
     "capabilities": {
       "browser": "analysis-only",
-      "sandbox": "unsupported_native_only",
+      "sandbox": "runnable",
       "wasi": "runnable"
     }
   },
@@ -73,7 +73,7 @@
     "expected_path": "concurrency/async_await.expected",
     "capabilities": {
       "browser": "analysis-only",
-      "sandbox": "unsupported_native_only",
+      "sandbox": "runnable",
       "wasi": "runnable"
     }
   },
@@ -86,7 +86,7 @@
     "expected_path": "concurrency/counter_actor.expected",
     "capabilities": {
       "browser": "analysis-only",
-      "sandbox": "unsupported_native_only",
+      "sandbox": "runnable",
       "wasi": "runnable"
     }
   },
@@ -112,7 +112,7 @@
     "expected_path": "machines/traffic_light.expected",
     "capabilities": {
       "browser": "analysis-only",
-      "sandbox": "unsupported_native_only",
+      "sandbox": "runnable",
       "wasi": "unsupported"
     }
   },

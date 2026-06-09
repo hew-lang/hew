@@ -97,7 +97,16 @@ struct ProfileChecker<'a> {
     user_functions: BTreeSet<String>,
     user_types: BTreeSet<String>,
     enum_variants: BTreeSet<String>,
+    /// Actor type names declared in the program (admits `spawn` + actor field/method access).
+    actors: BTreeSet<String>,
+    /// Receive-function names across all actors (admits `await ref.method(...)` asks).
+    actor_methods: BTreeSet<String>,
+    /// Machine type names declared in the program (admits `.step`/`.state_name`).
+    machines: BTreeSet<String>,
     type_output: &'a hew_types::TypeCheckOutput,
+    /// True while checking inside a receive handler body. Used to fail-closed on
+    /// `return` statements, which bypass the implicit actor.reply insertion.
+    in_receive_handler: bool,
 }
 
 impl<'a> ProfileChecker<'a> {
@@ -108,7 +117,11 @@ impl<'a> ProfileChecker<'a> {
             user_functions: BTreeSet::new(),
             user_types: BTreeSet::new(),
             enum_variants: BTreeSet::new(),
+            actors: BTreeSet::new(),
+            actor_methods: BTreeSet::new(),
+            machines: BTreeSet::new(),
             type_output,
+            in_receive_handler: false,
         };
         checker.collect_declarations(program);
         checker
@@ -131,6 +144,15 @@ impl<'a> ProfileChecker<'a> {
                 Item::Record(record) => {
                     self.user_types.insert(record.name.clone());
                 }
+                Item::Actor(actor) => {
+                    self.actors.insert(actor.name.clone());
+                    for receive_fn in &actor.receive_fns {
+                        self.actor_methods.insert(receive_fn.name.clone());
+                    }
+                }
+                Item::Machine(machine) => {
+                    self.machines.insert(machine.name.clone());
+                }
                 _ => {}
             }
         }
@@ -146,12 +168,42 @@ impl<'a> ProfileChecker<'a> {
                     NativeOnlySurface::NativeFfi.reason(),
                 ),
                 Item::Function(function) => self.check_block(&function.body),
-                Item::Actor(_)
-                | Item::Supervisor(_)
-                | Item::Machine(_)
-                | Item::Wire(_)
-                | Item::Trait(_)
-                | Item::Impl(_) => self.reject(
+                Item::Actor(actor) => {
+                    // Actors are admitted: the VM runtime (ActorScheduler) executes
+                    // actor bytecode. Walk each receive handler body fail-closed.
+                    for receive_fn in &actor.receive_fns {
+                        self.in_receive_handler = true;
+                        self.check_block(&receive_fn.body);
+                        self.in_receive_handler = false;
+                    }
+                }
+                Item::Supervisor(supervisor) => {
+                    // Supervisors are admitted: the VM scheduler models restart
+                    // strategies. Walk each child's init-arg expressions.
+                    // Child init args MUST be literals — the emitter bakes them
+                    // into the supervisor layout at compile time. Non-literal args
+                    // would silently become null placeholders, spawning actors with
+                    // wrong initial state. Reject non-literals fail-closed.
+                    for child in &supervisor.children {
+                        for (field_name, value) in &child.args {
+                            if !is_literal_expr(&value.0) {
+                                self.reject(
+                                    value.1.clone(),
+                                    "supervisor_child_init_requires_literal",
+                                    format!(
+                                        "supervisor child `{}` field `{}` must be a literal value; \
+                                         computed init args are not yet admitted in the browser sandbox \
+                                         (the emitter bakes child state at compile time)",
+                                        child.name, field_name
+                                    ),
+                                );
+                            }
+                            self.check_expr(value);
+                        }
+                    }
+                }
+                Item::Machine(machine) => self.check_machine(machine, span),
+                Item::Wire(_) | Item::Trait(_) | Item::Impl(_) => self.reject(
                     span.clone(),
                     "reserved_runtime_feature",
                     "this declaration requires runtime features that are reserved for a later sandbox VM milestone",
@@ -234,6 +286,53 @@ impl<'a> ProfileChecker<'a> {
         }
     }
 
+    /// Admit a flat, declarative state machine. The VM models the transition
+    /// table (`machine.new`/`step`/`state`), but does not yet run generic
+    /// monomorphisation, Mealy `emit` outputs, transition guards, or
+    /// state entry/exit lifecycle blocks — machines using those fail closed.
+    fn check_machine(
+        &mut self,
+        machine: &hew_parser::ast::MachineDecl,
+        span: &std::ops::Range<usize>,
+    ) {
+        let uses_unsupported = !machine.type_params.is_empty()
+            || !machine.const_params.is_empty()
+            || machine.where_clause.is_some()
+            || !machine.emits.is_empty()
+            || machine.has_default
+            || machine
+                .states
+                .iter()
+                .any(|state| state.entry.is_some() || state.exit.is_some())
+            || machine
+                .transitions
+                .iter()
+                .any(|transition| transition.guard.is_some());
+        if uses_unsupported {
+            self.reject(
+                span.clone(),
+                "reserved_runtime_feature",
+                "this machine uses generics, guards, emit outputs, or lifecycle hooks that are reserved for a later sandbox VM milestone",
+            );
+        }
+
+        // Transition bodies that do more than select the declared target state
+        // are silently ignored by the sandbox runtime (machine.step follows the
+        // static transition table). Fail closed if a body contains side-effects
+        // or non-trivial expressions so authors are not surprised.
+        for transition in &machine.transitions {
+            if !is_trivial_machine_transition_body(&transition.body.0) {
+                self.reject(
+                    transition.body.1.clone(),
+                    "machine_transition_body_not_admitted",
+                    "machine transition bodies with side-effects or computed expressions are not \
+                     admitted in the browser sandbox; the VM follows the static transition table \
+                     and ignores the body — use a plain state-name identifier as the body",
+                );
+            }
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "check_stmt walks every admitted statement variant fail-closed; splitting would obscure the admission contract"
@@ -298,6 +397,10 @@ impl<'a> ProfileChecker<'a> {
                 }
             }
             Stmt::Return(expr) => {
+                // Early `return` inside a receive handler is admitted: the sandbox
+                // scheduler's trampoline fallback (scheduler.ts `stepActor`) resolves
+                // the reply slot with the handler's return value after `invoke()` returns,
+                // mirroring the native dispatch trampoline (`llvm.rs:24730-24784`).
                 if let Some(expr) = expr.as_ref() {
                     self.check_expr(expr);
                 }
@@ -410,13 +513,20 @@ impl<'a> ProfileChecker<'a> {
             }
             Expr::Unary { operand, .. }
             | Expr::Cast { expr: operand, .. }
-            | Expr::PostfixTry(operand)
-            | Expr::Await(operand) => {
-                if matches!(expr, Expr::Await(_)) {
+            | Expr::PostfixTry(operand) => {
+                self.check_expr(operand);
+            }
+            Expr::Await(operand) => {
+                // Only the actor-ask form `await ref.handler(args)` is admitted.
+                // The emitter lowers this to `actor.ask`; any other await form is
+                // not supported and must be rejected here rather than silently
+                // trapping at runtime.
+                if !matches!(&operand.0, Expr::MethodCall { .. }) {
                     self.reject(
                         span.clone(),
                         "reserved_runtime_feature",
-                        "await requires task scheduling and is reserved for a later sandbox VM milestone",
+                        "`await` is only admitted in actor-ask form: `await handle.handler(args...)`; \
+                         other await forms are not supported in the browser sandbox",
                     );
                 }
                 self.check_expr(operand);
@@ -507,8 +617,14 @@ impl<'a> ProfileChecker<'a> {
                     self.check_expr(base);
                 }
             }
+            Expr::Spawn { target, args, .. } => {
+                // `spawn Actor(field: value)` — admitted; the VM scheduler spawns it.
+                self.check_expr(target);
+                for (_, value) in args {
+                    self.check_expr(value);
+                }
+            }
             Expr::Select { .. }
-            | Expr::Spawn { .. }
             | Expr::SpawnLambdaActor { .. }
             | Expr::ForkChild { .. }
             | Expr::ForkBlock { .. }
@@ -648,9 +764,35 @@ impl<'a> ProfileChecker<'a> {
             return true;
         }
 
+        // Actor asks: `await ref.handler(...)` where `handler` is a declared
+        // receive function AND the receiver is a handle to an admitted actor.
+        // Type-check the receiver: actor handles are `LocalPid<ActorName>` or
+        // `ActorRef` where `ActorName` is in the program's declared actors set.
+        // A name-only check without the receiver type would admit spurious method
+        // calls on non-actor receivers that happen to share a handler name.
+        if self.actor_methods.contains(method) {
+            if let Some(receiver_ty) = self.ty_for_expr(receiver) {
+                if self.ty_is_actor_handle(&receiver_ty) {
+                    return true;
+                }
+            }
+            // If the type is unavailable (e.g. inference not resolved), fall through
+            // to reject — the profile must not admit based on name alone.
+            return false;
+        }
+
         let Some(receiver_ty) = self.ty_for_expr(receiver) else {
             return false;
         };
+
+        // Machine state queries and event steps on a declared machine handle.
+        if matches!(method, "step" | "state_name") {
+            if let Ty::Named { name, .. } = receiver_ty.materialize_literal_defaults() {
+                if self.machines.contains(&name) {
+                    return true;
+                }
+            }
+        }
         match receiver_ty.materialize_literal_defaults() {
             Ty::String => matches!(method, "len" | "slice"),
             Ty::Array(_, _) | Ty::Slice(_) => matches!(method, "len" | "get"),
@@ -671,6 +813,32 @@ impl<'a> ProfileChecker<'a> {
             .expr_types
             .get(&SpanKey::from(&expr.1))
             .cloned()
+    }
+
+    /// True if `ty` is an actor handle type for a declared actor in this program.
+    /// Actor handles are `LocalPid<ActorName>` (the standard actor ref type) or
+    /// `Named { name: ActorName }` when the typechecker inlines the actor type
+    /// directly. Both are present in practice depending on the call site.
+    fn ty_is_actor_handle(&self, ty: &Ty) -> bool {
+        match ty.materialize_literal_defaults() {
+            // `LocalPid<ActorName>` — the standard form from `spawn Actor(...)`.
+            Ty::Named { name, args, .. }
+                if (name == "LocalPid" || name == "Pid" || name == "ActorRef")
+                    && args.len() == 1 =>
+            {
+                if let Ty::Named {
+                    name: actor_name, ..
+                } = &args[0]
+                {
+                    return self.actors.contains(actor_name);
+                }
+                false
+            }
+            // Bare actor type name — seen when the typechecker resolves the handle
+            // in scope (e.g. function parameters typed as the actor name).
+            Ty::Named { name, .. } => self.actors.contains(&name),
+            _ => false,
+        }
     }
 
     fn check_type_expr(&mut self, ty: &TypeExpr, span: &std::ops::Range<usize>) {
@@ -730,4 +898,41 @@ impl<'a> ProfileChecker<'a> {
         );
         self.reject(span, "sandbox_profile_rejected", message);
     }
+}
+
+/// Returns true if a machine transition body is trivial and carries no
+/// side-effects: a bare identifier (state-name reference), a block whose
+/// only statement is a bare identifier or a single literal, or a literal.
+/// Non-trivial bodies are fail-closed-rejected; the runtime ignores them and
+/// only uses the declared `to` state from the transition table.
+fn is_trivial_machine_transition_body(expr: &Expr) -> bool {
+    match expr {
+        // A bare `StateName`, `Machine::StateName` path, or a literal.
+        Expr::Identifier(_) | Expr::Literal(_) => true,
+        // A block `{ state_expr }` where the trailing expression is trivial and
+        // there are no statements (no side-effects in the block body).
+        Expr::Block(block) => {
+            block.stmts.is_empty()
+                && block
+                    .trailing_expr
+                    .as_ref()
+                    .is_none_or(|e| is_trivial_machine_transition_body(&e.0))
+        }
+        _ => false,
+    }
+}
+
+/// Returns true if the expression is a constant literal that the emitter
+/// can bake directly into a bytecode layout (integer, float, string, bool, char).
+fn is_literal_expr(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Literal(
+            hew_parser::ast::Literal::Integer { .. }
+                | hew_parser::ast::Literal::Float(_)
+                | hew_parser::ast::Literal::String(_)
+                | hew_parser::ast::Literal::Bool(_)
+                | hew_parser::ast::Literal::Char(_)
+        )
+    )
 }

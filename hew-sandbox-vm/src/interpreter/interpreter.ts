@@ -41,7 +41,8 @@ const MAX_LAYOUT_INT32 = 0x7fffffff;
 
 const NATIVE_ONLY_OP_PREFIXES = ["stream.file.", "stream.net."];
 
-const M6_DEFERRED_OP_PREFIXES = ["machine."];
+// Machine ops (machine.new/step/state) are implemented; no machine op is deferred.
+const M6_DEFERRED_OP_PREFIXES: readonly string[] = [];
 
 const IMPLEMENTED_STDLIB_HANDLERS: ReadonlySet<StdlibShimHandler> = new Set([
   "io.stdout.print",
@@ -82,6 +83,20 @@ interface ChannelCell {
   capacity: number;
   queue: VmValue[];
   closed: boolean;
+}
+
+interface MachineTransitionSpec {
+  event: string;
+  from: string;
+  to: string;
+}
+
+interface MachineLayout {
+  id: string;
+  name: string;
+  states: string[];
+  events: string[];
+  transitions: MachineTransitionSpec[];
 }
 
 interface TaskCell {
@@ -154,6 +169,7 @@ class Interpreter {
   private readonly enums: Map<string, SandboxBytecodePackage["layouts"]["enums"][number]>;
   private readonly actors: Map<string, ActorLayout>;
   private readonly supervisors: Map<string, SupervisorLayout>;
+  private readonly machines: Map<string, MachineLayout>;
   private readonly scheduler: ActorScheduler;
   private readonly channels = new Map<string, ChannelCell>();
   private readonly tasks = new Map<string, TaskCell>();
@@ -182,6 +198,10 @@ class Interpreter {
     this.supervisors = new Map(bytecode.layouts.supervisors.map((layout) => {
       const supervisor = supervisorLayout(layout);
       return [supervisor.id, supervisor];
+    }));
+    this.machines = new Map(bytecode.layouts.machines.map((layout) => {
+      const machine = machineLayout(layout);
+      return [machine.id, machine];
     }));
     this.scheduler = new ActorScheduler(trace.replay.seed, schedulerPolicy, trace, {
       invoke: (functionId, args) => this.invoke(this.functionFor(functionId, null), args),
@@ -289,7 +309,13 @@ class Interpreter {
       case "local.get":
       case "local.move":
       case "local.borrow":
-        this.writeDst(frame, instruction, cloneValue(this.readLocal(frame, this.localId(instruction.args[0], instruction.span), instruction.span)));
+        // Return the stored value directly (no deep-clone) so in-place mutation ops
+        // (vector.push, vector.set) that receive this value as their first operand
+        // observe the mutation on the same object that `local.set` stored.
+        // Aliasing safety: `local.set` clones on write, so an independent assignment
+        // `local:b = local:a` produces a distinct copy — the clone happens at the
+        // write site, not the read site.
+        this.writeDst(frame, instruction, this.readLocal(frame, this.localId(instruction.args[0], instruction.span), instruction.span));
         return;
       case "local.set": {
         const target = this.localId(instruction.args[0], instruction.span);
@@ -391,6 +417,15 @@ class Interpreter {
       case "supervisor.stop":
         this.assertSupervisorOpAllowed(instruction);
         this.unsupported(`Unsupported::M6_DEFERRED: ${instruction.op} direct control`, instruction.span);
+        return;
+      case "machine.new":
+        this.writeDst(frame, instruction, this.machineNew(instruction));
+        return;
+      case "machine.state":
+        this.writeDst(frame, instruction, this.machineState(frame, instruction));
+        return;
+      case "machine.step":
+        this.writeDst(frame, instruction, this.machineStep(frame, instruction));
         return;
       case "actor.send":
         this.withSchedulerError(instruction, () => {
@@ -1191,6 +1226,55 @@ class Interpreter {
     return cloneValue(value.payload[index]!);
   }
 
+  private machineNew(instruction: Instruction): VmValue {
+    const layoutId = this.stringOperand(instruction.args[0], instruction.span);
+    const layout = this.machines.get(layoutId);
+    if (!layout) {
+      this.trap("invalid_call", "machine layout not found", instruction.span);
+    }
+    const state = this.messageName(instruction.args[1], instruction.span);
+    if (!layout.states.includes(state)) {
+      this.trap("invalid_call", `machine ${layout.name} has no state ${state}`, instruction.span);
+    }
+    return { kind: "record", typeId: layoutId, fields: [{ kind: "string", value: state }] };
+  }
+
+  private machineState(frame: Frame, instruction: Instruction): VmValue {
+    const machine = this.resolve(frame, instruction.args[0], instruction.span);
+    return { kind: "string", value: this.machineCurrentState(machine, instruction.span) };
+  }
+
+  private machineStep(frame: Frame, instruction: Instruction): VmValue {
+    const machine = this.resolve(frame, instruction.args[0], instruction.span);
+    if (machine.kind !== "record") {
+      this.trap("invalid_local", "machine.step requires a machine value", instruction.span);
+    }
+    const current = this.machineCurrentState(machine, instruction.span);
+    const event = this.messageName(instruction.args[1], instruction.span);
+    const layout = this.machines.get(machine.typeId);
+    if (!layout) {
+      this.trap("invalid_call", "machine layout not found", instruction.span);
+    }
+    const transition = layout.transitions.find((candidate) => candidate.from === current && candidate.event === event);
+    if (!transition) {
+      this.trap("invalid_call", `machine ${layout.name} has no transition for ${event} in state ${current}`, instruction.span);
+    }
+    this.trace.snapshot("machine.step", {
+      machine: layout.id,
+      event,
+      from: current,
+      to: transition.to
+    }, this.trace.span(instruction.span));
+    return { kind: "record", typeId: machine.typeId, fields: [{ kind: "string", value: transition.to }] };
+  }
+
+  private machineCurrentState(machine: VmValue, span: string | null): string {
+    if (machine.kind !== "record" || machine.fields[0]?.kind !== "string") {
+      this.trap("invalid_local", "expected a machine value", span);
+    }
+    return machine.fields[0].value;
+  }
+
   private checkedDiv(frame: Frame, left: Operand | undefined, right: Operand | undefined, span: string | null): bigint {
     const lhs = this.i64Arg(frame, left, span);
     const rhs = this.i64Arg(frame, right, span);
@@ -1487,6 +1571,11 @@ class Interpreter {
 
   private unsupported(message: string, spanRef: string | null, unsupported?: UnsupportedStdlibDiagnostic): never {
     const failure = runtimeFailure("unsupported", message, "unsupported_instruction", this.trace.span(spanRef), unsupported);
+    // When executing inside an actor turn, route through ActorTurnCrash so that
+    // the supervisor can catch and restart the actor, rather than halting the whole VM.
+    if (this.scheduler.activeActor !== null) {
+      throw new ActorTurnCrash(failure);
+    }
     this.trace.fail("runtime_failure", "runtime.failure", failure);
     throw new VmHalt("runtime_failure");
   }
@@ -1635,6 +1724,23 @@ function actorLayout(value: unknown): ActorLayout {
   const maxMailbox = typeof value.max_mailbox === "number" ? value.max_mailbox : undefined;
   const maxHeap = typeof value.max_heap === "number" ? value.max_heap : undefined;
   return { id: value.id, name: value.name, state_fields: stateFields, handlers, max_mailbox: maxMailbox, max_heap: maxHeap };
+}
+
+function machineLayout(value: unknown): MachineLayout {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.name !== "string") {
+    throw new Error("invalid machine layout");
+  }
+  const states = Array.isArray(value.states) ? value.states.filter((state): state is string => typeof state === "string") : [];
+  const events = Array.isArray(value.events) ? value.events.filter((event): event is string => typeof event === "string") : [];
+  const transitions = Array.isArray(value.transitions)
+    ? value.transitions.map((raw) => {
+        if (!isRecord(raw) || typeof raw.event !== "string" || typeof raw.from !== "string" || typeof raw.to !== "string") {
+          throw new Error("invalid machine transition");
+        }
+        return { event: raw.event, from: raw.from, to: raw.to };
+      })
+    : [];
+  return { id: value.id, name: value.name, states, events, transitions };
 }
 
 function supervisorLayout(value: unknown): SupervisorLayout {

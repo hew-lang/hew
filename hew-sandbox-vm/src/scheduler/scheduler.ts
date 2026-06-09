@@ -314,6 +314,12 @@ export class ActorScheduler {
   }
 
   reply(token: VmValue, value: VmValue): void {
+    // A unit token means no reply was requested (tell / actor.send path).
+    // Drop the value silently rather than trapping — the handler trailing
+    // expression is a reply value only when a reply token is present.
+    if (token.kind === "unit") {
+      return;
+    }
     if (token.kind !== "reply") {
       throw new SchedulerRuntimeError("trap", "actor.reply requires a reply token", "invalid_local");
     }
@@ -441,6 +447,26 @@ export class ActorScheduler {
         ...message.payload.map(cloneValue)
       ];
       const returned = this.callbacks.invoke(handler.function, args);
+      // Trampoline-fallback reply: if this was an ask and the handler returned
+      // without executing actor.reply (e.g. via an early `return`), resolve the
+      // reply slot now with the handler's return value. Mirrors native behaviour:
+      // the native dispatch trampoline calls hew_reply() after the handler
+      // function returns, unconditionally, regardless of where the return landed.
+      // The resolved guard is REQUIRED — when the handler called actor.reply
+      // normally the slot is already resolved, and we must NOT double-reply.
+      if (message.replyId !== null) {
+        const slot = this.replies.get(message.replyId);
+        if (slot !== undefined && !slot.resolved) {
+          slot.resolved = true;
+          slot.value = cloneValue(returned);
+          this.trace.snapshot("actor.reply", {
+            actor_id: actor.id,
+            reply_id: message.replyId,
+            value: toJsonValue(returned),
+            via: "trampoline_fallback"
+          });
+        }
+      }
       this.updateStateFromReturn(actor, returned);
     } catch (error) {
       if (error instanceof ActorTurnCrash) {

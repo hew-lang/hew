@@ -1029,4 +1029,235 @@ fn main() {
             "statement_control_flow_rejected",
         );
     }
+
+    #[test]
+    fn early_return_in_receive_handler_is_admitted() {
+        // The sandbox scheduler's trampoline fallback (scheduler.ts `stepActor`)
+        // delivers the reply after `invoke()` returns, so early `return` in a
+        // receive handler is now semantically safe and must be admitted by the
+        // profile.  Mirrors native: the native dispatch trampoline always calls
+        // `hew_reply()` after the handler function returns regardless of where
+        // the return landed (llvm.rs:24730-24784).
+        //
+        // This test uses a handler with an unconditional early `return` (the
+        // simplest case that previously triggered `return_in_receive_handler_rejected`)
+        // to confirm the gate is gone without triggering other profile gates.
+        set_test_hewpath();
+        let source = r"
+actor Echo {
+    receive fn echo(n: i64) -> i64 {
+        return n;
+    }
+}
+fn main() {
+    let e = spawn Echo;
+    let r = match await e.echo(42) {
+        Ok(v) => v,
+        Err(_) => -1,
+    };
+    println(r);
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "early return in receive handler must be admitted; got diagnostics: {:#?}",
+            output.diagnostics
+        );
+        assert!(
+            output.bytecode.is_some(),
+            "early return in receive handler must emit bytecode"
+        );
+        // Verify no `return_in_receive_handler_rejected` diagnostic — this gate
+        // is intentionally absent; the trampoline fallback carries the guarantee.
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .all(|d| d.kind != "return_in_receive_handler_rejected"),
+            "return_in_receive_handler_rejected must not fire after trampoline-fallback fix"
+        );
+    }
+
+    /// A stateful actor whose receive handler early-returns a value that differs
+    /// from the current state must reply with that value AND preserve its state.
+    ///
+    /// Without the emitter fix, `bump`'s bytecode contains no `actor.reply` — the
+    /// scheduler falls back to using the return value as BOTH reply and next-state,
+    /// silently corrupting the actor's `count` field.
+    ///
+    /// With the fix, the emitter mirrors the normal-exit path: it emits
+    /// `actor.reply(reply_token, expr)` followed by `ret(<state record>)`.
+    #[test]
+    fn stateful_early_return_handler_emits_actor_reply_in_bytecode() {
+        set_test_hewpath();
+        let source = r"
+actor Counter {
+    let count: i64;
+    receive fn bump(n: i64) -> i64 { return n; }
+    receive fn get() -> i64 { return count; }
+}
+fn main() {
+    let c = spawn Counter(count: 100);
+    println(match await c.bump(5) { Ok(v) => v, Err(_e) => 0-1 });
+    println(match await c.get()   { Ok(v) => v, Err(_e) => 0-1 });
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "stateful early-return must be admitted; diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output
+            .bytecode
+            .expect("stateful early-return must emit bytecode");
+
+        // The `bump` handler must contain an `actor.reply` instruction.
+        // Before the emitter fix, early-return lowers to `ret([n])` only —
+        // no `actor.reply` is emitted — so this assertion will fail.
+        let bump_fn = bytecode
+            .functions
+            .iter()
+            .find(|f| f.name.contains("bump"))
+            .expect("Counter.bump function must exist in emitted bytecode");
+        let has_actor_reply = bump_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.instructions.iter())
+            .any(|instr| instr.op == "actor.reply");
+        assert!(
+            has_actor_reply,
+            "Counter.bump early-return path must emit `actor.reply`; \
+             got blocks: {:#?}",
+            bump_fn.blocks
+        );
+
+        // The `bump` handler must also return the state record (a single field
+        // for a one-field actor), NOT the reply expression, as its function
+        // return value.  Before the fix the terminator carries `n` (the early-
+        // return expr); after the fix it carries the state local (`count`).
+        //
+        // We verify indirectly: the return value must NOT be one of the
+        // message-param locals.  The bump handler params are
+        // [reply_token, count, n]; the state return must be the `count` local.
+        // Inspect that no block terminator returns a local named after "n" or
+        // carrying the same local id as the param `n`.
+        let param_n_id = bump_fn
+            .params
+            .last()
+            .expect("bump should have at least one param beyond the reply token");
+        let returns_param_n = bump_fn.blocks.iter().any(|b| {
+            b.terminator
+                .args
+                .iter()
+                .any(|a| a.value.as_str() == Some(param_n_id.as_str()))
+        });
+        assert!(
+            !returns_param_n,
+            "Counter.bump must return state local (not the param `n`) after emitter fix; \
+             bump params: {param_n_id:?}, blocks: {:#?}",
+            bump_fn.blocks
+        );
+    }
+
+    /// Multi-field actor with pre-return mutation: the mutation must survive the
+    /// early return.  Before the fix, `updateStateFromReturn` receives a scalar
+    /// (the reply value) and silently skips the multi-field update path, leaving
+    /// state stale.  After the fix, the state record is returned explicitly.
+    #[test]
+    fn stateful_early_return_multi_field_preserves_pre_return_mutations() {
+        set_test_hewpath();
+        let source = r"
+actor Pair {
+    let a: i64;
+    let b: i64;
+    receive fn set_a_return_b(x: i64) -> i64 {
+        a = x;
+        return b;
+    }
+    receive fn get_a() -> i64 { return a; }
+}
+fn main() {
+    let p = spawn Pair(a: 1, b: 99);
+    println(match await p.set_a_return_b(42) { Ok(v) => v, Err(_e) => 0-1 });
+    println(match await p.get_a()            { Ok(v) => v, Err(_e) => 0-1 });
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "multi-field early-return must be admitted; diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output
+            .bytecode
+            .expect("multi-field early-return must emit bytecode");
+
+        // The `set_a_return_b` handler must contain an `actor.reply` instruction.
+        let handler_fn = bytecode
+            .functions
+            .iter()
+            .find(|f| f.name.contains("set_a_return_b"))
+            .expect("Pair.set_a_return_b function must exist");
+        let has_actor_reply = handler_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.instructions.iter())
+            .any(|instr| instr.op == "actor.reply");
+        assert!(
+            has_actor_reply,
+            "Pair.set_a_return_b early-return path must emit `actor.reply`; \
+             got blocks: {:#?}",
+            handler_fn.blocks
+        );
+
+        // Must also contain a `record.new` for the state record on the early-return
+        // path — the multi-field state record is only built after the fix.
+        let has_record_new = handler_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.instructions.iter())
+            .any(|instr| instr.op == "record.new");
+        assert!(
+            has_record_new,
+            "Pair.set_a_return_b with two state fields must emit `record.new` for \
+             the state record on early-return; got blocks: {:#?}",
+            handler_fn.blocks
+        );
+    }
+
+    #[test]
+    fn other_profile_gates_still_reject_after_early_return_fix() {
+        // Smoke-check: relaxing the receive-handler `return` gate must not
+        // accidentally disable any adjacent profile gate.  Uses the same
+        // sources as `native_ffi_is_profile_rejected` and
+        // `unsafe_block_is_profile_rejected`.
+        set_test_hewpath();
+        assert_profile_rejection(
+            r#"
+extern "rt" {
+    fn hew_datetime_now_ms() -> i64;
+}
+
+fn main() {
+    println("ffi declaration");
+}
+"#,
+            "Unsupported::NATIVE_ONLY",
+        );
+        assert_profile_rejection(
+            r#"
+fn main() {
+    unsafe {
+        println("unsafe");
+    }
+}
+"#,
+            "unsafe_rejected",
+        );
+    }
 }

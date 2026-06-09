@@ -334,6 +334,11 @@
         "name": "regex.Pattern"
       },
       {
+        "id": "type:reply",
+        "kind": "opaque",
+        "name": "ReplyToken"
+      },
+      {
         "id": "type:string",
         "kind": "string",
         "name": "string"
@@ -369,7 +374,7 @@
       }
     ]
   },
-  "package_id": "pkg:df1634b45ea51b24",
+  "package_id": "pkg:b26a6c66f6065954",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

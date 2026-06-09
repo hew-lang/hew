@@ -38,32 +38,26 @@ const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
         test_name: "counter_actor",
         source_rel: "examples/playground/concurrency/counter_actor.hew",
-        accepted_divergences: &[
-            AcceptedDivergence::ReservedRuntimeFeatureLowering,
-            AcceptedDivergence::UnknownActorMethodSymbol,
-        ],
+        // Actor/supervisor/machine support now emits bytecode; no profile divergence.
+        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "actor_pipeline",
         source_rel: "examples/playground/concurrency/actor_pipeline.hew",
-        accepted_divergences: &[
-            AcceptedDivergence::ReservedRuntimeFeatureLowering,
-            AcceptedDivergence::UnknownActorMethodSymbol,
-        ],
+        // Actor support now emits bytecode; no profile divergence.
+        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "supervisor",
         source_rel: "examples/playground/concurrency/supervisor.hew",
-        accepted_divergences: &[
-            AcceptedDivergence::ReservedRuntimeFeatureLowering,
-            AcceptedDivergence::UnknownActorMethodSymbol,
-            AcceptedDivergence::UnknownProfileSymbol,
-        ],
+        // `supervisor_stop` is a native-only builtin not yet in the sandbox profile.
+        accepted_divergences: &[AcceptedDivergence::UnknownProfileSymbol],
     },
     ParityCase {
         test_name: "traffic_light",
         source_rel: "examples/playground/machines/traffic_light.hew",
-        accepted_divergences: &[AcceptedDivergence::ReservedRuntimeFeatureLowering],
+        // Machine support now emits bytecode; no profile divergence.
+        accepted_divergences: &[],
     },
 ];
 
@@ -76,10 +70,6 @@ struct ParityCase {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum AcceptedDivergence {
-    #[doc = "Catalog: docs/sandbox-vm-divergences.md#reserved-runtime-feature-lowering"]
-    ReservedRuntimeFeatureLowering,
-    #[doc = "Catalog: docs/sandbox-vm-divergences.md#unknown-actor-method-symbol"]
-    UnknownActorMethodSymbol,
     #[doc = "Catalog: docs/sandbox-vm-divergences.md#unknown-profile-symbol"]
     UnknownProfileSymbol,
 }
@@ -87,20 +77,12 @@ enum AcceptedDivergence {
 impl AcceptedDivergence {
     fn diagnostic_kind(self) -> &'static str {
         match self {
-            Self::ReservedRuntimeFeatureLowering => "reserved_runtime_feature",
-            Self::UnknownActorMethodSymbol => "unknown_method_symbol",
             Self::UnknownProfileSymbol => "unknown_symbol",
         }
     }
 
     fn reason(self) -> &'static str {
         match self {
-            Self::ReservedRuntimeFeatureLowering => {
-                "playground source uses actor, supervisor, machine, await, or spawn runtime features reserved for a later sandbox milestone"
-            }
-            Self::UnknownActorMethodSymbol => {
-                "playground source calls actor or machine methods that the current profile allowlist cannot resolve"
-            }
             Self::UnknownProfileSymbol => {
                 "playground source calls helpers or builtins that are not in the current sandbox profile allowlist"
             }

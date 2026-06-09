@@ -454,6 +454,11 @@
         "name": "regex"
       },
       {
+        "id": "type:reply",
+        "kind": "opaque",
+        "name": "ReplyToken"
+      },
+      {
         "id": "type:string",
         "kind": "string",
         "name": "string"
@@ -484,7 +489,7 @@
       }
     ]
   },
-  "package_id": "pkg:e71aac40f9983adc",
+  "package_id": "pkg:5dcc344e99be4fca",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

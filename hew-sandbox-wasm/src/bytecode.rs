@@ -50,7 +50,7 @@ pub struct ImportEdge {
     pub resolved_module: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layouts {
     pub types: Vec<TypeLayout>,
     pub records: Vec<RecordLayout>,
@@ -112,12 +112,31 @@ pub struct HandlerLayout {
     pub function: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SupervisorLayout {
     pub id: String,
     pub name: String,
     pub strategy: String,
-    pub children: Vec<String>,
+    pub restart_intensity: u32,
+    pub restart_window_ms: u64,
+    pub children: Vec<SupervisorChildSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SupervisorChildSpec {
+    pub id: String,
+    pub restart: String,
+    pub start_spec: SupervisorStartSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SupervisorStartSpec {
+    /// Actor layout id the child instantiates (e.g. `type:Worker`).
+    pub actor: String,
+    /// Initial state values baked from the child's `Actor(field: literal)`
+    /// init args, ordered by the actor's field layout. The VM rehydrates these
+    /// via `valueFromLiteral`.
+    pub args: Vec<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

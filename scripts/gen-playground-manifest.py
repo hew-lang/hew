@@ -77,12 +77,25 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     "basics/fibonacci": "runnable",
     "basics/string_interpolation": "runnable",
     "types/pattern_matching": "runnable",
+    # Actor/supervisor/machine support was added in the sandbox VM; these now compile
+    # to bytecode and execute in the educational browser sandbox.
+    "concurrency/counter_actor": "runnable",
+    "concurrency/actor_pipeline": "runnable",
+    # async_await uses actor+await which is now supported in the sandbox VM.
+    "concurrency/async_await": "runnable",
+    # machines/traffic_light has a fn main() demonstration and the sandbox VM
+    # implements machine.new/step/state.
+    "machines/traffic_light": "runnable",
+    # concurrency/supervisor uses supervisor_stop (native-only builtin); remains
+    # unsupported_native_only until that builtin is added to the sandbox profile.
 }
 
 # Entries omitted from WASI_CAPABILITY default to "runnable".
 WASI_CAPABILITY: dict[str, str] = {
     "concurrency/supervisor": "unsupported",  # supervision trees → WASM-TODO
-    "machines/traffic_light": "unsupported",  # state machines → WASM-TODO
+    # traffic_light now has fn main() but the machine runtime is not yet wired
+    # into the WASI/LLVM path; remains unsupported in WASI until that lands.
+    "machines/traffic_light": "unsupported",
 }
 
 

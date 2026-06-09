@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use hew_parser::ast::{
-    BinaryOp, Block as AstBlock, CallArg, Expr, FnDecl, Item, Literal, MatchArm, Pattern, Program,
-    Spanned, Stmt, TypeBodyItem, TypeDeclKind, VariantKind,
+    ActorDecl, BinaryOp, Block as AstBlock, CallArg, Expr, FnDecl, Item, Literal, MatchArm,
+    Pattern, Program, ReceiveFnDecl, Spanned, Stmt, TypeBodyItem, TypeDeclKind, VariantKind,
 };
 use hew_types::check::{SpanKey, TypeDefKind, VariantDef};
 use hew_types::Ty;
@@ -10,9 +10,11 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::bytecode::{
-    Block, Capability, EnumLayout, FieldLayout, Function, ImportEdge, Instruction, Layouts, Local,
-    Module, ModuleGraph, Operand, RecordLayout, SandboxBytecodePackage, SourceFile, SourceMap,
-    SourcePosition, SpanEntry, StdlibSymbol, Terminator, TypeLayout, VariantLayout,
+    ActorLayout, Block, Capability, EnumLayout, FieldLayout, Function, HandlerLayout, ImportEdge,
+    Instruction, Layouts, Local, MachineLayout, MachineTransition, Module, ModuleGraph, Operand,
+    RecordLayout, SandboxBytecodePackage, SourceFile, SourceMap, SourcePosition, SpanEntry,
+    StdlibSymbol, SupervisorChildSpec, SupervisorLayout, SupervisorStartSpec, Terminator,
+    TypeLayout, VariantLayout,
 };
 use crate::CompileError;
 
@@ -43,6 +45,24 @@ struct PackageEmitter<'a> {
     record_field_indexes: BTreeMap<String, BTreeMap<String, usize>>,
     enum_variant_tags: BTreeMap<String, (String, usize, Vec<Ty>)>,
     user_functions: BTreeSet<String>,
+    /// Actor descriptor tables keyed by the actor's `type:` id, populated in
+    /// `collect_layouts` and serialized into `layouts.actors`.
+    actor_layouts: BTreeMap<String, ActorLayout>,
+    /// Actor name -> declared state-field names in order, used to order
+    /// `spawn Actor(field: value)` arguments by the actor's field layout.
+    actor_field_order: BTreeMap<String, Vec<String>>,
+    /// Supervisor descriptor tables keyed by the supervisor's `type:` id,
+    /// serialized into `layouts.supervisors`.
+    supervisor_layouts: BTreeMap<String, SupervisorLayout>,
+    /// Declared supervisor names, used to route `spawn Name` to a
+    /// `supervisor.spawn` and child field access to `supervisor.child`.
+    supervisor_names: BTreeSet<String>,
+    /// Machine descriptor tables keyed by the machine's `type:` id, serialized
+    /// into `layouts.machines`.
+    machine_layouts: BTreeMap<String, MachineLayout>,
+    /// Declared machine names, used to route `Machine::State` literals and
+    /// `.step`/`.state_name` method calls to the machine ops.
+    machine_names: BTreeSet<String>,
 }
 
 impl<'a> PackageEmitter<'a> {
@@ -59,6 +79,12 @@ impl<'a> PackageEmitter<'a> {
             record_field_indexes: BTreeMap::new(),
             enum_variant_tags: BTreeMap::new(),
             user_functions: BTreeSet::new(),
+            actor_layouts: BTreeMap::new(),
+            actor_field_order: BTreeMap::new(),
+            supervisor_layouts: BTreeMap::new(),
+            supervisor_names: BTreeSet::new(),
+            machine_layouts: BTreeMap::new(),
+            machine_names: BTreeSet::new(),
         }
     }
 
@@ -69,8 +95,19 @@ impl<'a> PackageEmitter<'a> {
 
         let mut functions = Vec::new();
         for (item, span) in &program.items {
-            if let Item::Function(function) = item {
-                functions.push(self.emit_function(function, span.clone())?);
+            match item {
+                Item::Function(function) => {
+                    functions.push(self.emit_function(function, span.clone())?);
+                }
+                Item::Actor(actor) => {
+                    // Each receive handler becomes a callable bytecode function;
+                    // the actor scheduler invokes it by the id recorded in the
+                    // actor layout's handler table.
+                    for receive_fn in &actor.receive_fns {
+                        functions.push(self.emit_handler(actor, receive_fn, span.clone())?);
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -101,9 +138,9 @@ impl<'a> PackageEmitter<'a> {
             types: self.type_layouts.values().cloned().collect(),
             records: self.record_layouts.values().cloned().collect(),
             enums: self.enum_layouts.values().cloned().collect(),
-            actors: Vec::new(),
-            supervisors: Vec::new(),
-            machines: Vec::new(),
+            actors: self.actor_layouts.values().cloned().collect(),
+            supervisors: self.supervisor_layouts.values().cloned().collect(),
+            machines: self.machine_layouts.values().cloned().collect(),
         };
         let stdlib_symbols: Vec<_> = self.stdlib_symbols.values().cloned().collect();
         let capabilities: Vec<_> = self.capabilities.values().cloned().collect();
@@ -296,9 +333,213 @@ impl<'a> PackageEmitter<'a> {
                 TypeDefKind::Actor | TypeDefKind::Machine => {}
             }
         }
+
+        for (item, _) in &program.items {
+            if let Item::Actor(actor) = item {
+                self.collect_actor_layout(actor);
+            }
+        }
+        // Supervisors are collected after actors so their child specs can read
+        // each actor's field order when baking initial state.
+        for (item, _) in &program.items {
+            if let Item::Supervisor(supervisor) = item {
+                self.collect_supervisor_layout(supervisor);
+            }
+        }
+        for (item, _) in &program.items {
+            if let Item::Machine(machine) = item {
+                self.collect_machine_layout(machine);
+            }
+        }
+    }
+
+    fn collect_machine_layout(&mut self, machine: &hew_parser::ast::MachineDecl) {
+        let type_id = self.type_id_for_named(&machine.name, &[]);
+        self.type_layouts.insert(
+            type_id.clone(),
+            TypeLayout {
+                id: type_id.clone(),
+                kind: "machine".to_string(),
+                name: machine.name.clone(),
+                parameters: Vec::new(),
+            },
+        );
+
+        let states = machine.states.iter().map(|s| s.name.clone()).collect();
+        let events = machine.events.iter().map(|e| e.name.clone()).collect();
+        let transitions = machine
+            .transitions
+            .iter()
+            .map(|t| MachineTransition {
+                event: t.event_name.clone(),
+                from: t.source_state.clone(),
+                to: t.target_state.clone(),
+                span: None,
+            })
+            .collect();
+
+        self.machine_names.insert(machine.name.clone());
+        self.machine_layouts.insert(
+            type_id.clone(),
+            MachineLayout {
+                id: type_id,
+                name: machine.name.clone(),
+                states,
+                events,
+                transitions,
+            },
+        );
+    }
+
+    fn collect_supervisor_layout(&mut self, supervisor: &hew_parser::ast::SupervisorDecl) {
+        use hew_parser::ast::{RestartPolicy, SupervisorStrategy};
+
+        let type_id = self.type_id_for_named(&supervisor.name, &[]);
+        self.type_layouts.insert(
+            type_id.clone(),
+            TypeLayout {
+                id: type_id.clone(),
+                kind: "supervisor".to_string(),
+                name: supervisor.name.clone(),
+                parameters: Vec::new(),
+            },
+        );
+
+        let strategy = match supervisor.strategy {
+            Some(SupervisorStrategy::OneForAll) => "one_for_all",
+            Some(SupervisorStrategy::RestForOne) => "rest_for_one",
+            // The educational scheduler models the three static strategies;
+            // simple_one_for_one (dynamic pools) falls back to one_for_one.
+            _ => "one_for_one",
+        }
+        .to_string();
+
+        let (restart_intensity, restart_window_ms) =
+            supervisor
+                .intensity
+                .as_ref()
+                .map_or((1, 60_000), |intensity| {
+                    (
+                        u32::try_from(intensity.restarts.max(0)).unwrap_or(u32::MAX),
+                        parse_duration_ms(&intensity.window),
+                    )
+                });
+
+        let children = supervisor
+            .children
+            .iter()
+            .map(|child| {
+                let actor_type_id = self.type_id_for_named(&child.actor_type, &[]);
+                let field_order = self
+                    .actor_field_order
+                    .get(&child.actor_type)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut value_by_field = BTreeMap::new();
+                for (field_name, value) in &child.args {
+                    if let Some(literal) = literal_json(&value.0) {
+                        value_by_field.insert(field_name.clone(), literal);
+                    }
+                }
+                let args = field_order
+                    .iter()
+                    .map(|field_name| {
+                        value_by_field
+                            .get(field_name)
+                            .cloned()
+                            .unwrap_or(Value::Null)
+                    })
+                    .collect();
+                let restart = match child.restart {
+                    Some(RestartPolicy::Transient) => "transient",
+                    Some(RestartPolicy::Temporary) => "temporary",
+                    _ => "permanent",
+                }
+                .to_string();
+                SupervisorChildSpec {
+                    id: child.name.clone(),
+                    restart,
+                    start_spec: SupervisorStartSpec {
+                        actor: actor_type_id,
+                        args,
+                    },
+                }
+            })
+            .collect();
+
+        self.supervisor_names.insert(supervisor.name.clone());
+        self.supervisor_layouts.insert(
+            type_id.clone(),
+            SupervisorLayout {
+                id: type_id,
+                name: supervisor.name.clone(),
+                strategy,
+                restart_intensity,
+                restart_window_ms,
+                children,
+            },
+        );
+    }
+
+    fn collect_actor_layout(&mut self, actor: &ActorDecl) {
+        let type_id = self.type_id_for_named(&actor.name, &[]);
+        // Register (or overwrite) the actor's type as kind "actor" so it is not
+        // mistaken for a record by the on-demand `type_id_for_ty` path that runs
+        // later when lowering `spawn` destinations.
+        self.type_layouts.insert(
+            type_id.clone(),
+            TypeLayout {
+                id: type_id.clone(),
+                kind: "actor".to_string(),
+                name: actor.name.clone(),
+                parameters: Vec::new(),
+            },
+        );
+
+        let mut state_fields = Vec::new();
+        let mut field_order = Vec::new();
+        for (index, field) in actor.fields.iter().enumerate() {
+            let field_ty = ty_from_type_expr(&field.ty.0);
+            state_fields.push(FieldLayout {
+                name: field.name.clone(),
+                ty: self.type_id_for_ty(&field_ty),
+                index,
+            });
+            field_order.push(field.name.clone());
+        }
+
+        let handlers = actor
+            .receive_fns
+            .iter()
+            .map(|receive_fn| HandlerLayout {
+                name: receive_fn.name.clone(),
+                function: handler_function_id(&actor.name, &receive_fn.name),
+            })
+            .collect();
+
+        self.actor_field_order
+            .insert(actor.name.clone(), field_order);
+        self.actor_layouts.insert(
+            type_id.clone(),
+            ActorLayout {
+                id: type_id,
+                name: actor.name.clone(),
+                state_fields,
+                handlers,
+            },
+        );
     }
 
     fn ensure_core_types(&mut self) {
+        // The reply token threaded into every handler as its first parameter.
+        self.type_layouts
+            .entry("type:reply".to_string())
+            .or_insert(TypeLayout {
+                id: "type:reply".to_string(),
+                kind: "opaque".to_string(),
+                name: "ReplyToken".to_string(),
+                parameters: Vec::new(),
+            });
         self.type_layouts
             .entry("type:regex".to_string())
             .or_insert(TypeLayout {
@@ -369,6 +610,129 @@ impl<'a> PackageEmitter<'a> {
             blocks,
             span: self.spans.span_ref(&span),
         })
+    }
+
+    fn emit_handler(
+        &mut self,
+        actor: &ActorDecl,
+        receive_fn: &ReceiveFnDecl,
+        span: std::ops::Range<usize>,
+    ) -> Result<Function, CompileError> {
+        let function_name = format!("{}.{}", actor.name, receive_fn.name);
+        let function_id = handler_function_id(&actor.name, &receive_fn.name);
+        let result_ty = receive_fn
+            .return_type
+            .as_ref()
+            .map_or(Ty::Unit, |(ty, _)| ty_from_type_expr(ty));
+        let result = self.type_id_for_ty(&result_ty);
+
+        let mut ctx = FunctionEmitter::new(self, &function_name);
+        let mut params = Vec::new();
+
+        // The actor scheduler invokes a handler with the argument vector
+        // `[reply_token, ...state_fields, ...message_params]`. State fields are
+        // mutable locals so `field = expr` assignments lower to `local.set`.
+        let reply_local = ctx.declare_local_with_type_id(Some("reply".to_string()), "type:reply");
+        params.push(reply_local.clone());
+
+        let mut state_locals = Vec::new();
+        for field in &actor.fields {
+            let field_ty = ty_from_type_expr(&field.ty.0);
+            let local = ctx.declare_local(
+                Some(field.name.clone()),
+                &field_ty,
+                true,
+                Some(field.ty.1.clone()),
+            );
+            ctx.bindings.insert(field.name.clone(), local.clone());
+            params.push(local.clone());
+            state_locals.push(local);
+        }
+
+        for param in &receive_fn.params {
+            let param_ty = ty_from_type_expr(&param.ty.0);
+            let local = ctx.declare_local(
+                Some(param.name.clone()),
+                &param_ty,
+                false,
+                Some(param.ty.1.clone()),
+            );
+            ctx.bindings.insert(param.name.clone(), local.clone());
+            params.push(local);
+        }
+
+        // Thread reply token and state locals into the emitter context so that
+        // early `return` statements (Stmt::Return) can mirror the normal-exit
+        // lowering: emit actor.reply(token, expr) then ret(<state record>).
+        ctx.receive_context = Some(ReceiveHandlerContext {
+            reply_local: reply_local.clone(),
+            state_locals: state_locals.clone(),
+            actor_name: actor.name.clone(),
+        });
+
+        let reply_value = ctx.lower_block(&receive_fn.body)?;
+
+        // A handler that already terminated (e.g. an early `return`) keeps its
+        // own terminator; the implicit reply/return below is the common path for
+        // the straight-line handlers the sandbox profile admits.
+        if !ctx.current_is_terminated() {
+            let span_ref = ctx.package.spans.span_ref(&span);
+            if let Some(reply_value) = reply_value {
+                ctx.emit_instruction(
+                    "actor.reply",
+                    None,
+                    vec![
+                        Operand::local(reply_local.clone()),
+                        Operand::local(reply_value),
+                    ],
+                    None,
+                    None,
+                );
+            }
+            // The scheduler derives the actor's next state from this return:
+            // the bare value for a single field, a record for several. Handlers
+            // with no state return unit (a no-op state update).
+            let return_operand = match state_locals.as_slice() {
+                [] => Operand::local(ctx.emit_const_unit(Some(span.clone()))),
+                [single] => Operand::local(single.clone()),
+                fields => {
+                    let record_ty = ctx.package.actor_state_record_type_id(&actor.name);
+                    let mut operands = vec![Operand::ty(record_ty)];
+                    operands.extend(fields.iter().map(|local| Operand::local(local.clone())));
+                    let dst = ctx.temp_local(&Ty::Unit, Some(span.clone()));
+                    ctx.emit_instruction("record.new", Some(dst.clone()), operands, None, None);
+                    Operand::local(dst)
+                }
+            };
+            ctx.terminate(Terminator::ret(vec![return_operand], span_ref));
+        }
+
+        let locals = std::mem::take(&mut ctx.locals);
+        let blocks = ctx.finish();
+
+        Ok(Function {
+            id: function_id,
+            module: ROOT_MODULE_ID.to_string(),
+            name: function_name,
+            params,
+            result,
+            locals,
+            blocks,
+            span: self.spans.span_ref(&span),
+        })
+    }
+
+    /// Synthetic record type id used to package multi-field actor state into the
+    /// single value the scheduler's `updateStateFromReturn` expects.
+    fn actor_state_record_type_id(&mut self, actor_name: &str) -> String {
+        let id = format!("type:{}.state", sanitize_id(actor_name));
+        self.type_layouts.entry(id.clone()).or_insert(TypeLayout {
+            id: id.clone(),
+            kind: "record".to_string(),
+            name: format!("{actor_name}.State"),
+            parameters: Vec::new(),
+        });
+        id
     }
 
     fn type_id_for_type_expr(&mut self, ty: &hew_parser::ast::TypeExpr) -> String {
@@ -533,6 +897,55 @@ impl<'a> PackageEmitter<'a> {
         }
     }
 
+    /// Register the `Result<T, E>` enum layout (Ok=0, Err=1) plus its variant
+    /// tags so the match lowering and the VM's `enum.tag`/`enum.payload` ops can
+    /// operate on an actor-ask result. Returns the bytecode type id.
+    fn register_result_enum(&mut self, ok_ty: &Ty, err_ty: &Ty) -> String {
+        let ok_payload = self.type_id_for_ty(ok_ty);
+        let err_payload = self.type_id_for_ty(err_ty);
+        let type_id = self.type_id_for_named("Result", &[ok_ty.clone(), err_ty.clone()]);
+        self.enum_layouts
+            .entry(type_id.clone())
+            .or_insert(EnumLayout {
+                id: type_id.clone(),
+                name: "Result".to_string(),
+                variants: vec![
+                    VariantLayout {
+                        name: "Ok".to_string(),
+                        tag: 0,
+                        payload: vec![ok_payload],
+                    },
+                    VariantLayout {
+                        name: "Err".to_string(),
+                        tag: 1,
+                        payload: vec![err_payload],
+                    },
+                ],
+            });
+        // `type_id_for_named` recorded the arg layouts but not Result itself;
+        // mark it as an enum so on-demand `type_id_for_ty` agrees.
+        self.type_layouts.insert(
+            type_id.clone(),
+            TypeLayout {
+                id: type_id.clone(),
+                kind: "enum".to_string(),
+                name: "Result".to_string(),
+                parameters: Vec::new(),
+            },
+        );
+        self.enum_variant_tags.entry("Ok".to_string()).or_insert((
+            type_id.clone(),
+            0,
+            vec![ok_ty.clone()],
+        ));
+        self.enum_variant_tags.entry("Err".to_string()).or_insert((
+            type_id.clone(),
+            1,
+            vec![err_ty.clone()],
+        ));
+        type_id
+    }
+
     fn register_stdout(&mut self) -> String {
         let id = "sym:core.stdout.println".to_string();
         self.capabilities
@@ -626,6 +1039,24 @@ struct LoopTargets {
     label: Option<String>,
 }
 
+/// Context threading information needed to lower early `return` inside a
+/// receive handler correctly.  Without this, `Stmt::Return` can only emit
+/// `ret([expr])`, which conflates the reply value with the next-actor-state
+/// and silently corrupts stateful actors.
+///
+/// With this context, every early `return` mirrors the normal-exit path
+/// (emit.rs:664-698): emit `actor.reply(reply_token, expr)` then
+/// `ret(<state record>)`.
+#[derive(Debug, Clone)]
+struct ReceiveHandlerContext {
+    /// The reply-token parameter local (first param of every handler).
+    reply_local: String,
+    /// The state-field locals in declaration order (empty for stateless actors).
+    state_locals: Vec<String>,
+    /// Actor name, used to look up / intern the state-record type.
+    actor_name: String,
+}
+
 #[derive(Debug)]
 struct FunctionEmitter<'pkg, 'src> {
     package: &'pkg mut PackageEmitter<'src>,
@@ -637,6 +1068,9 @@ struct FunctionEmitter<'pkg, 'src> {
     next_block: usize,
     bindings: HashMap<String, String>,
     loop_targets: Vec<LoopTargets>,
+    /// Set only inside receive-handler emission; drives correct early-return
+    /// lowering (see `ReceiveHandlerContext`).
+    receive_context: Option<ReceiveHandlerContext>,
 }
 
 impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
@@ -651,6 +1085,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             next_block: 0,
             bindings: HashMap::new(),
             loop_targets: Vec::new(),
+            receive_context: None,
         }
     }
 
@@ -720,6 +1155,25 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
 
     fn temp_local(&mut self, ty: &Ty, span: Option<std::ops::Range<usize>>) -> String {
         self.declare_local(None, ty, false, span)
+    }
+
+    /// Declare a local with an explicit bytecode type id, for runtime-only types
+    /// (e.g. the actor reply token) that have no `hew_types::Ty` representation.
+    fn declare_local_with_type_id(&mut self, name: Option<String>, type_id: &str) -> String {
+        let id = format!(
+            "local:{}.{}",
+            sanitize_id(&self.function_name),
+            self.next_local
+        );
+        self.next_local += 1;
+        self.locals.push(Local {
+            id: id.clone(),
+            name,
+            ty: type_id.to_string(),
+            mutable: false,
+            span: None,
+        });
+        id
     }
 
     #[expect(
@@ -817,12 +1271,64 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             }
             Stmt::Return(value) => {
                 let span_ref = self.package.spans.span_ref(&span);
-                let values = if let Some(value) = value {
-                    vec![Operand::local(self.lower_expr(value)?)]
+                if let Some(rctx) = self.receive_context.clone() {
+                    // Inside a receive handler: mirror the normal-exit path.
+                    //
+                    // Normal exit (emit_handler, lines ~671-698) emits:
+                    //   1. actor.reply(reply_token, <trailing expr>)   — delivers the reply
+                    //   2. ret(<state record>)                         — next-actor-state
+                    //
+                    // An early `return expr` must do the same: the return
+                    // expression is the reply value; the state locals hold the
+                    // current (possibly mutated) actor state and must be returned
+                    // separately so the scheduler can update them.
+                    //
+                    // Without this path, `ret([expr])` collapses reply and state
+                    // into the same value, silently corrupting stateful actors.
+                    let reply_expr_local = if let Some(value) = value {
+                        self.lower_expr(value)?
+                    } else {
+                        self.emit_const_unit(Some(span.clone()))
+                    };
+                    self.emit_instruction(
+                        "actor.reply",
+                        None,
+                        vec![
+                            Operand::local(rctx.reply_local),
+                            Operand::local(reply_expr_local),
+                        ],
+                        None,
+                        None,
+                    );
+                    let return_operand = match rctx.state_locals.as_slice() {
+                        [] => Operand::local(self.emit_const_unit(Some(span.clone()))),
+                        [single] => Operand::local(single.clone()),
+                        fields => {
+                            let record_ty =
+                                self.package.actor_state_record_type_id(&rctx.actor_name);
+                            let mut operands = vec![Operand::ty(record_ty)];
+                            operands
+                                .extend(fields.iter().map(|local| Operand::local(local.clone())));
+                            let dst = self.temp_local(&Ty::Unit, Some(span.clone()));
+                            self.emit_instruction(
+                                "record.new",
+                                Some(dst.clone()),
+                                operands,
+                                None,
+                                None,
+                            );
+                            Operand::local(dst)
+                        }
+                    };
+                    self.terminate(Terminator::ret(vec![return_operand], span_ref));
                 } else {
-                    vec![Operand::local(self.emit_const_unit(Some(span.clone())))]
-                };
-                self.terminate(Terminator::ret(values, span_ref));
+                    let values = if let Some(value) = value {
+                        vec![Operand::local(self.lower_expr(value)?)]
+                    } else {
+                        vec![Operand::local(self.emit_const_unit(Some(span.clone())))]
+                    };
+                    self.terminate(Terminator::ret(values, span_ref));
+                }
             }
             Stmt::Expression(expr) => {
                 self.lower_expr(expr)?;
@@ -994,6 +1500,23 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                         None,
                     );
                     Ok(dst)
+                } else if let Some((machine, state)) = self.machine_state_path(name) {
+                    // `Machine::State` constructs a machine value in that state.
+                    let type_id = self.package.type_id_for_named(&machine, &[]);
+                    let machine_ty = Ty::Named {
+                        name: machine,
+                        args: Vec::new(),
+                        builtin: None,
+                    };
+                    let dst = self.temp_local(&machine_ty, Some(span.clone()));
+                    self.emit_instruction(
+                        "machine.new",
+                        Some(dst.clone()),
+                        vec![Operand::ty(type_id), Operand::symbol(state)],
+                        Some(span.clone()),
+                        None,
+                    );
+                    Ok(dst)
                 } else {
                     self.emit_unsupported(Some(span.clone()));
                     Ok(self.emit_const_unit(Some(span.clone())))
@@ -1054,8 +1577,27 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 Ok(dst)
             }
             Expr::FieldAccess { object, field } => {
-                let object_local = self.lower_expr(object)?;
                 let object_ty = self.ty_for_expr(object);
+                // `supervisor.childName` resolves a running child actor handle.
+                // The supervisor handle is a `LocalPid<SupervisorName>`, so we
+                // detect it by the pid's type argument.
+                if self.supervisor_handle_arg(&object_ty).is_some() {
+                    let supervisor_local = self.lower_expr(object)?;
+                    let child_ty = self.ty_for_expr(expr);
+                    let dst = self.temp_local(&child_ty, Some(span.clone()));
+                    self.emit_instruction(
+                        "supervisor.child",
+                        Some(dst.clone()),
+                        vec![
+                            Operand::local(supervisor_local),
+                            Operand::symbol(field.clone()),
+                        ],
+                        Some(span.clone()),
+                        None,
+                    );
+                    return Ok(dst);
+                }
+                let object_local = self.lower_expr(object)?;
                 let field_index = match object_ty {
                     Ty::Named { name, .. } => self
                         .package
@@ -1238,12 +1780,13 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     Ok(self.emit_const_unit(Some(span.clone())))
                 }
             }
+            Expr::Spawn { target, args, .. } => self.lower_spawn(target, args, span.clone()),
+            Expr::Await(operand) => self.lower_await(operand, span.clone()),
             Expr::IfLet { .. }
             | Expr::Tuple(_)
             | Expr::ArrayRepeat { .. }
             | Expr::MapLiteral { .. }
             | Expr::Lambda { .. }
-            | Expr::Spawn { .. }
             | Expr::SpawnLambdaActor { .. }
             | Expr::Scope { .. }
             | Expr::ForkChild { .. }
@@ -1259,7 +1802,6 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             | Expr::Cast { .. }
             | Expr::PostfixTry(_)
             | Expr::Range { .. }
-            | Expr::Await(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
             | Expr::Is { .. }
@@ -1528,6 +2070,186 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         dst
     }
 
+    fn lower_spawn(
+        &mut self,
+        target: &Spanned<Expr>,
+        args: &[(String, Spanned<Expr>)],
+        span: std::ops::Range<usize>,
+    ) -> Result<String, CompileError> {
+        let Expr::Identifier(actor_name) = &target.0 else {
+            self.emit_unsupported(Some(span.clone()));
+            return Ok(self.emit_const_unit(Some(span)));
+        };
+
+        // `spawn Supervisor` boots the whole tree; its child init state is baked
+        // into the layout, so the op carries only the layout id.
+        if self.package.supervisor_names.contains(actor_name) {
+            let type_id = self.package.type_id_for_named(actor_name, &[]);
+            let supervisor_ty = Ty::Named {
+                name: actor_name.clone(),
+                args: Vec::new(),
+                builtin: None,
+            };
+            let dst = self.temp_local(&supervisor_ty, Some(span.clone()));
+            self.emit_instruction(
+                "supervisor.spawn",
+                Some(dst.clone()),
+                vec![Operand::ty(type_id)],
+                Some(span),
+                None,
+            );
+            return Ok(dst);
+        }
+
+        let Some(field_order) = self.package.actor_field_order.get(actor_name).cloned() else {
+            // Not an admitted actor (e.g. a supervisor handle); reject cleanly.
+            self.emit_unsupported(Some(span.clone()));
+            return Ok(self.emit_const_unit(Some(span)));
+        };
+
+        // Lower the field initializers, then order them by the actor's declared
+        // field layout so they line up with `state_fields` at spawn time.
+        let mut value_by_field = BTreeMap::new();
+        for (field_name, value) in args {
+            let local = self.lower_expr(value)?;
+            value_by_field.insert(field_name.clone(), local);
+        }
+        let type_id = self.package.type_id_for_named(actor_name, &[]);
+        let mut operands = vec![Operand::ty(type_id)];
+        for field_name in &field_order {
+            if let Some(local) = value_by_field.get(field_name) {
+                operands.push(Operand::local(local.clone()));
+            } else {
+                // A field without an initializer would spawn with the wrong
+                // arity; the profile admits actors whose fields are all set at
+                // spawn, so this is a defensive trap rather than a silent unit.
+                self.emit_unsupported(Some(span.clone()));
+                return Ok(self.emit_const_unit(Some(span)));
+            }
+        }
+
+        let actor_ty = Ty::Named {
+            name: actor_name.clone(),
+            args: Vec::new(),
+            builtin: None,
+        };
+        let dst = self.temp_local(&actor_ty, Some(span.clone()));
+        self.emit_instruction("actor.spawn", Some(dst.clone()), operands, Some(span), None);
+        Ok(dst)
+    }
+
+    fn lower_await(
+        &mut self,
+        operand: &Spanned<Expr>,
+        span: std::ops::Range<usize>,
+    ) -> Result<String, CompileError> {
+        // The admitted await form is the actor ask: `await actor.handler(args)`.
+        let Expr::MethodCall {
+            receiver,
+            method,
+            args,
+        } = &operand.0
+        else {
+            self.emit_unsupported(Some(span.clone()));
+            return Ok(self.emit_const_unit(Some(span)));
+        };
+
+        let actor_local = self.lower_expr(receiver)?;
+        let mut operands = vec![Operand::local(actor_local), Operand::symbol(method.clone())];
+        for arg in args {
+            operands.push(Operand::local(self.lower_expr(arg.expr())?));
+        }
+
+        let result_ty = self.ty_for_span(&span);
+        // An actor ask is statically `Result<T, E>`. The educational VM resolves
+        // the ask to the raw reply value (an ask failure traps rather than
+        // yielding `Err`), so wrap the reply in `Ok(value)` to honour the type
+        // and let callers `match` on `Ok`/`Err`.
+        if let Ty::Named {
+            name,
+            args: ty_args,
+            ..
+        } = &result_ty
+        {
+            if name == "Result" && ty_args.len() == 2 {
+                let ok_ty = ty_args[0].clone();
+                let err_ty = ty_args[1].clone();
+                let result_type_id = self.package.register_result_enum(&ok_ty, &err_ty);
+                let reply_local = self.temp_local(&ok_ty, Some(span.clone()));
+                self.emit_instruction(
+                    "actor.ask",
+                    Some(reply_local.clone()),
+                    operands,
+                    Some(span.clone()),
+                    None,
+                );
+                let dst = self.temp_local(&result_ty, Some(span.clone()));
+                self.emit_instruction(
+                    "enum.new",
+                    Some(dst.clone()),
+                    vec![
+                        Operand::ty(result_type_id),
+                        Operand::literal(0u64),
+                        Operand::local(reply_local),
+                    ],
+                    Some(span),
+                    None,
+                );
+                return Ok(dst);
+            }
+        }
+
+        let dst = self.temp_local(&result_ty, Some(span.clone()));
+        self.emit_instruction("actor.ask", Some(dst.clone()), operands, Some(span), None);
+        Ok(dst)
+    }
+
+    fn lower_machine_method(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[CallArg],
+        span: std::ops::Range<usize>,
+    ) -> Result<String, CompileError> {
+        if method == "state_name" {
+            let machine_local = self.lower_expr(receiver)?;
+            let dst = self.temp_local(&Ty::String, Some(span.clone()));
+            self.emit_instruction(
+                "machine.state",
+                Some(dst.clone()),
+                vec![Operand::local(machine_local)],
+                Some(span),
+                None,
+            );
+            return Ok(dst);
+        }
+
+        // `machine.step(Event)` mutates the machine in place, so the receiver
+        // must be a bound local we can write the next state back into.
+        let Expr::Identifier(name) = &receiver.0 else {
+            self.emit_unsupported(Some(span.clone()));
+            return Ok(self.emit_const_unit(Some(span)));
+        };
+        let Some(local) = self.bindings.get(name).cloned() else {
+            self.emit_unsupported(Some(span.clone()));
+            return Ok(self.emit_const_unit(Some(span)));
+        };
+        let Some(Expr::Identifier(event)) = args.first().map(|arg| &arg.expr().0) else {
+            self.emit_unsupported(Some(span.clone()));
+            return Ok(self.emit_const_unit(Some(span)));
+        };
+        // Accept a bare `Event` or a `Machine::Event` path.
+        let event_name = event.rsplit("::").next().unwrap_or(event).to_string();
+        self.emit_instruction(
+            "machine.step",
+            Some(local.clone()),
+            vec![Operand::local(local), Operand::symbol(event_name)],
+            Some(span.clone()),
+            None,
+        );
+        Ok(self.emit_const_unit(Some(span)))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "method-call lowering maps each admitted sandbox opcode family in one dispatch point"
@@ -1565,6 +2287,16 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             );
             return Ok(dst);
         }
+
+        // Machine state queries / event steps on a declared machine handle.
+        if matches!(method, "step" | "state_name") {
+            if let Ty::Named { name, .. } = self.ty_for_expr(receiver) {
+                if self.package.machine_names.contains(&name) {
+                    return self.lower_machine_method(receiver, method, args, span);
+                }
+            }
+        }
+
         let receiver_local = self.lower_expr(receiver)?;
         match method {
             "find" | "is_match" | "replace" => {
@@ -1815,6 +2547,30 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 .map(|(_, tag, _)| *tag),
             _ => None,
         }
+    }
+
+    /// If `name` is a `Machine::State` path naming a declared machine, return
+    /// `(machine_name, state_name)`.
+    fn machine_state_path(&self, name: &str) -> Option<(String, String)> {
+        let (machine, state) = name.split_once("::")?;
+        if self.package.machine_names.contains(machine) {
+            Some((machine.to_string(), state.to_string()))
+        } else {
+            None
+        }
+    }
+
+    /// If `ty` is a pid handle whose type argument names a declared supervisor
+    /// (e.g. `LocalPid<WorkerPool>`), return that supervisor's name.
+    fn supervisor_handle_arg(&self, ty: &Ty) -> Option<String> {
+        if let Ty::Named { args, .. } = ty {
+            if let Some(Ty::Named { name, .. }) = args.first() {
+                if self.package.supervisor_names.contains(name) {
+                    return Some(name.clone());
+                }
+            }
+        }
+        None
     }
 
     fn ty_for_expr(&mut self, expr: &Spanned<Expr>) -> Ty {
@@ -2328,6 +3084,46 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn function_id(name: &str) -> String {
     format!("fn:{}", sanitize_id(name))
+}
+
+/// Bytecode function id for an actor receive handler. Kept distinct from the
+/// user-function namespace so an actor method never collides with a free
+/// function of the same name.
+fn handler_function_id(actor: &str, handler: &str) -> String {
+    format!("fn:actor.{}.{}", sanitize_id(actor), sanitize_id(handler))
+}
+
+/// Parse a supervisor intensity window (a raw `Token::Duration` source string
+/// such as `"60s"` or `"5m"`) into milliseconds. Unrecognised forms fall back
+/// to the runtime default of 60s.
+fn parse_duration_ms(raw: &str) -> u64 {
+    let raw = raw.trim();
+    let split = raw.find(|c: char| !c.is_ascii_digit()).unwrap_or(raw.len());
+    let (digits, unit) = raw.split_at(split);
+    let Ok(value) = digits.parse::<u64>() else {
+        return 60_000;
+    };
+    match unit.trim() {
+        "ms" => value,
+        "m" => value.saturating_mul(60_000),
+        "h" => value.saturating_mul(3_600_000),
+        // Seconds is both the explicit `"s"` unit and the fallback default.
+        _ => value.saturating_mul(1_000),
+    }
+}
+
+/// Evaluate a constant literal expression into a JSON value for baking a
+/// supervisor child's initial state. Returns `None` for non-literal initializers
+/// (which the educational profile does not yet admit in child specs).
+fn literal_json(expr: &Expr) -> Option<Value> {
+    match expr {
+        Expr::Literal(Literal::Integer { value, .. }) => Some(Value::from(*value)),
+        Expr::Literal(Literal::Float(value)) => Some(Value::from(*value)),
+        Expr::Literal(Literal::String(value)) => Some(Value::from(value.clone())),
+        Expr::Literal(Literal::Bool(value)) => Some(Value::from(*value)),
+        Expr::Literal(Literal::Char(value)) => Some(Value::from(value.to_string())),
+        _ => None,
+    }
 }
 
 fn sanitize_id(raw: &str) -> String {

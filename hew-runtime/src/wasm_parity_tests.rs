@@ -2,6 +2,8 @@
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::actor::HewActor;
 use crate::internal::types::{HewActorState, HewError, HewOverflowPolicy};
@@ -161,6 +163,21 @@ fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
         prof_processing_time_ns: AtomicU64::new(0),
         arena: std::ptr::null_mut(),
     })
+}
+
+fn stub_dispatch_actor(
+    mailbox: *mut c_void,
+    dispatch: crate::internal::types::HewDispatchFn,
+) -> Box<HewActor> {
+    let mut actor = stub_wasm_actor(mailbox);
+    actor
+        .actor_state
+        .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+    actor
+        .reductions
+        .store(crate::actor::HEW_DEFAULT_REDUCTIONS, Ordering::Relaxed);
+    actor.dispatch = Some(dispatch);
+    actor
 }
 
 #[test]
@@ -596,6 +613,226 @@ fn wasm_envelope_must_be_zero_mask_covers_bits_nine_through_thirtyone() {
             "wasm: bit {bit} is reserved-zero; mask must cover it"
         );
     }
+}
+
+// ── Execution-context dispatch parity ────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DispatchContextSnapshot {
+    current_id: i64,
+    self_pid: u64,
+    ctx_actor_id: u64,
+    context_matches_tls: bool,
+    self_matches_ctx_actor: bool,
+    prev_context_is_null: bool,
+    cooperate_result: i32,
+}
+
+static DISPATCH_CONTEXT_SNAPSHOTS: Mutex<Vec<DispatchContextSnapshot>> = Mutex::new(Vec::new());
+static DISPATCH_CONTEXT_READY: Condvar = Condvar::new();
+
+fn reset_dispatch_context_snapshots() {
+    DISPATCH_CONTEXT_SNAPSHOTS.lock().unwrap().clear();
+}
+
+fn wait_for_dispatch_context_snapshots(expected: usize) -> Vec<DispatchContextSnapshot> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut snapshots = DISPATCH_CONTEXT_SNAPSHOTS.lock().unwrap();
+    while snapshots.len() < expected {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for {expected} dispatch context snapshots"
+        );
+        let (guard, result) = DISPATCH_CONTEXT_READY
+            .wait_timeout(snapshots, remaining)
+            .unwrap();
+        snapshots = guard;
+        assert!(
+            !result.timed_out() || snapshots.len() >= expected,
+            "timed out waiting for {expected} dispatch context snapshots"
+        );
+    }
+    snapshots.clone()
+}
+
+fn push_dispatch_context_snapshot(
+    ctx: *mut crate::execution_context::HewExecutionContext,
+    cooperate_result: i32,
+) {
+    let self_actor = crate::actor::hew_actor_self();
+    let current_context = crate::execution_context::current_context();
+    let (ctx_actor_id, ctx_actor, prev_context) = if ctx.is_null() {
+        (0, std::ptr::null_mut(), std::ptr::null_mut())
+    } else {
+        // SAFETY: dispatch supplies the live scheduler-owned context pointer.
+        unsafe { ((*ctx).actor_id, (*ctx).actor, (*ctx).prev_context) }
+    };
+
+    DISPATCH_CONTEXT_SNAPSHOTS
+        .lock()
+        .unwrap()
+        .push(DispatchContextSnapshot {
+            current_id: crate::actor::hew_actor_current_id(),
+            self_pid: crate::actor::hew_actor_self_pid(),
+            ctx_actor_id,
+            context_matches_tls: current_context == ctx,
+            self_matches_ctx_actor: self_actor == ctx_actor,
+            prev_context_is_null: prev_context.is_null(),
+            cooperate_result,
+        });
+    DISPATCH_CONTEXT_READY.notify_all();
+}
+
+unsafe extern "C-unwind" fn native_dispatch_context_probe(
+    ctx: *mut crate::execution_context::HewExecutionContext,
+    _state: *mut c_void,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _data_size: usize,
+) {
+    push_dispatch_context_snapshot(ctx, crate::scheduler::hew_actor_cooperate());
+}
+
+unsafe extern "C-unwind" fn wasm_dispatch_context_probe(
+    ctx: *mut crate::execution_context::HewExecutionContext,
+    _state: *mut c_void,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _data_size: usize,
+) {
+    push_dispatch_context_snapshot(ctx, crate::scheduler_wasm::hew_actor_cooperate());
+}
+
+fn wait_for_actor_idle(actor: &HewActor) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while actor.actor_state.load(Ordering::Acquire) != HewActorState::Idle as i32 {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for dispatch actor to return to Idle"
+        );
+        std::thread::yield_now();
+    }
+}
+
+fn native_dispatch_context_snapshots() -> Vec<DispatchContextSnapshot> {
+    let _guard = crate::runtime_test_guard();
+    reset_dispatch_context_snapshots();
+
+    // SAFETY: test owns the mailbox and actor through direct test activation.
+    unsafe {
+        let mailbox = crate::mailbox::hew_mailbox_new().cast::<c_void>();
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            crate::mailbox::hew_mailbox_send(mailbox.cast(), 1, std::ptr::null_mut(), 0),
+            0
+        );
+        assert_eq!(
+            crate::mailbox::hew_mailbox_send(mailbox.cast(), 2, std::ptr::null_mut(), 0),
+            0
+        );
+
+        let actor = stub_dispatch_actor(mailbox, native_dispatch_context_probe);
+        let actor_ptr = Box::into_raw(actor);
+        crate::scheduler::activate_actor_for_test(actor_ptr);
+
+        let snapshots = wait_for_dispatch_context_snapshots(2);
+        wait_for_actor_idle(&*actor_ptr);
+        crate::mailbox::hew_mailbox_free(mailbox.cast());
+        drop(Box::from_raw(actor_ptr));
+        snapshots
+    }
+}
+
+fn wasm_dispatch_context_snapshots() -> Vec<DispatchContextSnapshot> {
+    let _guard = crate::runtime_test_guard();
+    crate::scheduler_wasm::hew_sched_shutdown();
+    crate::scheduler_wasm::hew_sched_init();
+    reset_dispatch_context_snapshots();
+
+    // SAFETY: test owns the mailbox and actor until hew_sched_run returns.
+    unsafe {
+        let mailbox = crate::mailbox_wasm::hew_mailbox_new().cast::<c_void>();
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            crate::mailbox_wasm::hew_mailbox_send(mailbox.cast(), 1, std::ptr::null_mut(), 0),
+            0
+        );
+        assert_eq!(
+            crate::mailbox_wasm::hew_mailbox_send(mailbox.cast(), 2, std::ptr::null_mut(), 0),
+            0
+        );
+
+        let actor = stub_dispatch_actor(mailbox, wasm_dispatch_context_probe);
+        let actor_ptr = Box::into_raw(actor);
+        crate::scheduler_wasm::sched_enqueue(actor_ptr.cast::<crate::scheduler_wasm::HewActor>());
+        crate::scheduler_wasm::hew_sched_run();
+
+        let snapshots = wait_for_dispatch_context_snapshots(2);
+        wait_for_actor_idle(&*actor_ptr);
+        crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
+        drop(Box::from_raw(actor_ptr));
+        crate::scheduler_wasm::hew_sched_shutdown();
+        snapshots
+    }
+}
+
+#[test]
+fn dispatch_context_install_restore_matches_native_and_wasm() {
+    let native = native_dispatch_context_snapshots();
+    let wasm = wasm_dispatch_context_snapshots();
+
+    assert_eq!(native, wasm);
+    assert_eq!(native.len(), 2);
+    for snapshot in native {
+        assert_eq!(snapshot.current_id, 1);
+        assert_eq!(snapshot.self_pid, 1);
+        assert_eq!(snapshot.ctx_actor_id, 1);
+        assert!(snapshot.context_matches_tls);
+        assert!(snapshot.self_matches_ctx_actor);
+        assert!(snapshot.prev_context_is_null);
+        assert_eq!(snapshot.cooperate_result, 0);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cooperate_with_cancelled_context(cooperate: extern "C" fn() -> i32) -> i32 {
+    // SAFETY: creates an owned task scope for this test and is destroyed below.
+    let scope = unsafe { crate::task_scope::hew_task_scope_new() };
+    assert!(!scope.is_null());
+    // SAFETY: scope is a live pointer returned by hew_task_scope_new.
+    unsafe { crate::task_scope::hew_task_scope_cancel(scope) };
+    // SAFETY: scope is live and owns its cancellation token.
+    let token = unsafe { crate::task_scope::hew_task_scope_cancel_token(scope) };
+    assert!(!token.is_null());
+
+    let actor = stub_wasm_actor(std::ptr::null_mut());
+    let mut ctx = crate::execution_context::HewExecutionContext {
+        actor: (&raw const *actor).cast_mut(),
+        actor_id: actor.id,
+        cancel_token: token,
+        task_scope: scope,
+        ..crate::execution_context::HewExecutionContext::default()
+    };
+    let previous = crate::execution_context::set_current_context(&raw mut ctx);
+    let result = cooperate();
+    let restored = crate::execution_context::set_current_context(previous);
+    assert_eq!(restored, &raw mut ctx);
+    // SAFETY: scope was allocated by hew_task_scope_new and is no longer installed.
+    unsafe { crate::task_scope::hew_task_scope_destroy(scope) };
+    result
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn cancel_observation_matches_native_and_wasm_cooperate() {
+    let _guard = crate::runtime_test_guard();
+
+    let native = cooperate_with_cancelled_context(crate::scheduler::hew_actor_cooperate);
+    let wasm = cooperate_with_cancelled_context(crate::scheduler_wasm::hew_actor_cooperate);
+
+    assert_eq!(native, 2);
+    assert_eq!(wasm, native);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 # Checked MIR reject fixtures
 
 Each `.hew` source in this directory exercises one `MirCheck` variant.
-`hew compile-v05 <fixture>` must:
+`hew compile <fixture>` must:
 
 - exit non-zero,
 - emit a `MirDiagnostic` whose `kind` matches the fixture's variant,

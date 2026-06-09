@@ -814,8 +814,9 @@ fn wait_for_dispatches(expected: i32, timeout: Duration) -> bool {
     true
 }
 
-/// Test dispatch function matching the Hew 4-param canonical signature.
-unsafe extern "C" fn test_dispatch(
+/// Test dispatch function matching the Hew context-leading canonical signature.
+unsafe extern "C-unwind" fn test_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,
@@ -926,7 +927,8 @@ fn actor_send_dispatches_via_scheduler() {
 fn actor_send_multiple_messages() {
     static MULTI_SIGNAL: (Mutex<i32>, Condvar) = (Mutex::new(0), Condvar::new());
 
-    unsafe extern "C" fn multi_dispatch(
+    unsafe extern "C-unwind" fn multi_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -984,7 +986,8 @@ fn actor_send_multiple_messages() {
 fn actor_dispatch_receives_correct_data() {
     static DATA_SIGNAL: (Mutex<i32>, Condvar) = (Mutex::new(-1), Condvar::new());
 
-    unsafe extern "C" fn data_dispatch(
+    unsafe extern "C-unwind" fn data_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         data: *mut c_void,
@@ -3307,7 +3310,8 @@ mod rest_for_one_tests {
     const RESTART_PERMANENT: i32 = 0;
     const OVERFLOW_DROP_NEW: i32 = 1;
 
-    unsafe extern "C" fn noop_dispatch(
+    unsafe extern "C-unwind" fn noop_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -3449,7 +3453,8 @@ mod supervisor_escalation_tests {
         *count
     }
 
-    unsafe extern "C" fn noop_dispatch(
+    unsafe extern "C-unwind" fn noop_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -3457,7 +3462,8 @@ mod supervisor_escalation_tests {
     ) {
     }
 
-    unsafe extern "C" fn counting_dispatch(
+    unsafe extern "C-unwind" fn counting_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -3468,7 +3474,8 @@ mod supervisor_escalation_tests {
         NESTED_DISPATCH_COUNT.1.notify_all();
     }
 
-    unsafe extern "C" fn sibling_dispatch(
+    unsafe extern "C-unwind" fn sibling_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -3852,7 +3859,8 @@ mod circuit_breaker_tests {
     const RESTART_PERMANENT: i32 = 0;
     const OVERFLOW_DROP_NEW: i32 = 1;
 
-    unsafe extern "C" fn noop_dispatch(
+    unsafe extern "C-unwind" fn noop_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -3927,7 +3935,8 @@ mod dynamic_supervision_tests {
     const RESTART_PERMANENT: i32 = 0;
     const OVERFLOW_DROP_NEW: i32 = 1;
 
-    unsafe extern "C" fn noop_dispatch(
+    unsafe extern "C-unwind" fn noop_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,

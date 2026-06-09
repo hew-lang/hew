@@ -35,6 +35,7 @@
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::ffi::{c_char, CString};
+use std::io::Write;
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -64,6 +65,26 @@ pub extern "C" fn hew_last_error() -> *const c_char {
 #[no_mangle]
 pub extern "C" fn hew_clear_error() {
     LAST_ERROR.with(|e| *e.borrow_mut() = None);
+}
+
+/// Terminate the current process with a Hew integer exit code.
+#[no_mangle]
+pub extern "C" fn hew_exit(code: i64) {
+    let Ok(code) = i32::try_from(code) else {
+        eprintln!("hew_exit: exit code {code} is outside the supported i32 range");
+        std::process::abort();
+    };
+
+    if let Err(error) = std::io::stdout().flush() {
+        eprintln!("hew_exit: failed to flush stdout before exit: {error}");
+        std::process::abort();
+    }
+    if let Err(error) = std::io::stderr().flush() {
+        eprintln!("hew_exit: failed to flush stderr before exit: {error}");
+        std::process::abort();
+    }
+
+    std::process::exit(code);
 }
 
 macro_rules! cabi_guard {
@@ -273,7 +294,7 @@ pub mod wasm_stubs {
     ///
     /// No preconditions — may be called from any context.
     #[no_mangle]
-    pub unsafe extern "C" fn hew_sleep_ms(ms: c_int) {
+    pub unsafe extern "C" fn hew_sleep_ms(ms: i64) {
         if ms <= 0 {
             return;
         }
@@ -397,6 +418,7 @@ pub mod channel;
 mod channel_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod duplex;
+pub mod execution_context;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lambda_actor;
 #[cfg(not(target_arch = "wasm32"))]
@@ -494,6 +516,15 @@ pub mod otel {
 }
 
 pub mod log_core;
+
+pub use execution_context::{
+    current_context, set_current_context, HewExecutionContext, HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED,
+    HEW_CTX_OFFSET_ACTOR, HEW_CTX_OFFSET_ACTOR_ID, HEW_CTX_OFFSET_ARENA,
+    HEW_CTX_OFFSET_CANCEL_TOKEN, HEW_CTX_OFFSET_FLAGS, HEW_CTX_OFFSET_LOCK_SEAT,
+    HEW_CTX_OFFSET_PARENT_SUPERVISOR, HEW_CTX_OFFSET_PARTITION_POLICY, HEW_CTX_OFFSET_PREV_CONTEXT,
+    HEW_CTX_OFFSET_REPLY_CHANNEL, HEW_CTX_OFFSET_SUPERVISOR_CHILD_INDEX, HEW_CTX_OFFSET_TASK_SCOPE,
+    HEW_CTX_OFFSET_TRACE, HEW_CTX_OFFSET_TRACE_SPAN,
+};
 
 // ── WASM entry point ─────────────────────────────────────────────────────────
 // Provides `_start` for WASI command modules. The compiler renames the user's

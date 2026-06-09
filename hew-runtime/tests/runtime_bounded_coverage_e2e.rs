@@ -117,7 +117,8 @@ impl DispatchGate {
 
 static DISPATCH_GATE: DispatchGate = DispatchGate::new();
 
-unsafe extern "C" fn gated_dispatch(
+unsafe extern "C-unwind" fn gated_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,

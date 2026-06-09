@@ -4,10 +4,10 @@
 //! type arguments, MIR lowering emits one specialised function per
 //! `(origin_fn, Vec<ResolvedTy>)` pair from the HIR's
 //! `HirModule.monomorphisations` registry, and rewrites each callsite
-//! to `Instr::CallDirect` with the mangled symbol name.
+//! to `Terminator::Call` with the mangled symbol name.
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, Instr, IrPipeline, MirDiagnosticKind};
+use hew_mir::{lower_hir_module, IrPipeline, MirDiagnosticKind, Terminator};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -73,10 +73,10 @@ fn two_instantiations_produce_two_specialised_mir_functions() {
     );
 }
 
-/// Each call site in `main` produces a `CallDirect` with the
+/// Each call site in `main` produces a call terminator with the
 /// monomorphisation's mangled symbol.
 #[test]
-fn callsite_rewrites_to_mangled_calldirect() {
+fn callsite_rewrites_to_mangled_call_terminator() {
     let source = r#"
         pub fn id<T>(x: T) -> T {
             x
@@ -98,10 +98,8 @@ fn callsite_rewrites_to_mangled_calldirect() {
 
     let mut callees: Vec<String> = Vec::new();
     for block in &main.blocks {
-        for instr in &block.instructions {
-            if let Instr::CallDirect { callee_symbol, .. } = instr {
-                callees.push(callee_symbol.clone());
-            }
+        if let Terminator::Call { callee, .. } = &block.terminator {
+            callees.push(callee.clone());
         }
     }
 
@@ -109,7 +107,7 @@ fn callsite_rewrites_to_mangled_calldirect() {
     assert_eq!(
         callees,
         vec!["id$$i64".to_string(), "id$$string".to_string()],
-        "main must emit two CallDirects to mangled monomorphisations; got {callees:?}"
+        "main must emit two call terminators to mangled monomorphisations; got {callees:?}"
     );
 }
 
@@ -151,10 +149,8 @@ fn inner_generic_call_dispatches_to_substituted_mangled_symbol() {
         .expect("outer$$i64 expected");
     let mut calls = Vec::new();
     for block in &outer.blocks {
-        for instr in &block.instructions {
-            if let Instr::CallDirect { callee_symbol, .. } = instr {
-                calls.push(callee_symbol.clone());
-            }
+        if let Terminator::Call { callee, .. } = &block.terminator {
+            calls.push(callee.clone());
         }
     }
     assert_eq!(

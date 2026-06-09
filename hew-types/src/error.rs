@@ -358,6 +358,8 @@ pub enum TypeErrorKind {
     InvalidSend,
     /// Operation not supported for this type
     InvalidOperation,
+    /// Execution-context reader used outside an actor handler context
+    ContextReaderOutsideHandler,
     /// Wrong number of arguments
     ArityMismatch,
     /// Generic bounds not satisfied
@@ -463,6 +465,24 @@ pub enum TypeErrorKind {
         /// Associated type names missing from the projection.
         missing: Vec<String>,
     },
+    /// A closure implicitly captured a non-`Copy` binding by value.
+    ///
+    /// v0.5 closure captures are by value only; non-copy values must be captured
+    /// with an explicit `move |...|` closure so the source binding is consumed
+    /// at a visible source span.
+    ClosureExplicitMoveRequired {
+        /// Captured binding name.
+        name: String,
+        /// User-facing type of the captured binding.
+        ty: String,
+    },
+    /// A closure attempted to capture the binding being defined by the same
+    /// closure literal. Recursive closures require a fixed-point surface that
+    /// v0.5 intentionally does not expose.
+    RecursiveClosureUnsupported {
+        /// Recursive binding name.
+        name: String,
+    },
     /// A dyn associated-type binding could not be projected from the concrete impl.
     ///
     /// Envelope code: `E_ASSOC_TYPE_PROJECTION_FAILED`.
@@ -492,6 +512,7 @@ impl TypeErrorKind {
             Self::UndefinedMethod => "UndefinedMethod",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
+            Self::ContextReaderOutsideHandler => "ContextReaderOutsideHandler",
             Self::ArityMismatch => "ArityMismatch",
             Self::BoundsNotSatisfied => "BoundsNotSatisfied",
             Self::InferenceFailed => "InferenceFailed",
@@ -523,6 +544,8 @@ impl TypeErrorKind {
             Self::UnsafeOperationRequiresBlock { .. } => "UnsafeOperationRequiresBlock",
             Self::TraitNotObjectSafe { .. } => "TraitNotObjectSafe",
             Self::MissingAssocTypeBinding { .. } => "MissingAssocTypeBinding",
+            Self::ClosureExplicitMoveRequired { .. } => "ClosureExplicitMoveRequired",
+            Self::RecursiveClosureUnsupported { .. } => "RecursiveClosureUnsupported",
             Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",
         }
     }

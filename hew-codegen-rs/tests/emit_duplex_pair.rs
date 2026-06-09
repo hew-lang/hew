@@ -100,6 +100,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
         raw_mir: vec![RawMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
+            call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![
                 ResolvedTy::I64,   // 0 cap
@@ -136,6 +137,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
         }],
         diagnostics: vec![],
         record_layouts: vec![],
+        actor_layouts: vec![],
     }
 }
 

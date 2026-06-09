@@ -37,7 +37,8 @@ static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 static DISPATCH_COUNT: AtomicI32 = AtomicI32::new(0);
 
-unsafe extern "C" fn counting_dispatch(
+unsafe extern "C-unwind" fn counting_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,

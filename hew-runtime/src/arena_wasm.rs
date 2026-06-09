@@ -5,22 +5,23 @@
 //!
 //! ```text
 //! hew_arena_new()
-//!   └─► hew_arena_set_current(arena)   ← install as current; alloc/free route here
+//!   └─► ctx.arena = arena              ← install in canonical context
 //!         │
 //!         │  [actor dispatch runs]
 //!         │    hew_arena_malloc(n)   → bump-allocates from the arena
 //!         │    hew_arena_free(ptr)   → **no-op** (bulk-free is cheaper)
 //!         │
-//!       hew_arena_set_current(null)   ← uninstall; alloc/free revert to libc
+//!       ctx.arena = null              ← uninstall; alloc/free fail closed
 //!         │
 //!         ├── hew_arena_reset(arena)  → cursor back to zero, chunks retained
-//!         │     └─► hew_arena_set_current(arena) … repeat for next dispatch
+//!         │     └─► ctx.arena = arena … repeat for next dispatch
 //!         │
 //!         └── hew_arena_free_all(arena) → free every chunk; pointer invalid
 //! ```
 //!
-//! **When no arena is active** (`CURRENT_ARENA` is null) `hew_arena_malloc`
-//! delegates to `libc::malloc` and `hew_arena_free` delegates to `libc::free`.
+//! When no execution context is installed, C ABI allocation/free readers set
+//! `hew_last_error` and return their sentinel instead of pretending direct
+//! `libc` ownership.
 //!
 //! # Backing allocator
 //!
@@ -47,6 +48,7 @@
 )]
 
 use std::alloc::{alloc, dealloc, Layout};
+#[cfg(all(not(target_arch = "wasm32"), test))]
 use std::cell::Cell;
 use std::os::raw::c_void;
 use std::ptr;
@@ -299,24 +301,50 @@ unsafe impl Send for ActorArena {}
 // SAFETY: WASM is single-threaded; no concurrent access possible.
 unsafe impl Sync for ActorArena {}
 
-// ── Thread-local current arena ────────────────────────────────────────────
-//
-// On wasm32 there is only one thread, so a thread-local is effectively a
-// global.  We still use thread_local! to keep the API identical to native
-// and to satisfy potential single-threaded wasm-bindgen / WASI thread models.
-
+#[cfg(all(not(target_arch = "wasm32"), test))]
 thread_local! {
-    static CURRENT_ARENA: Cell<*mut ActorArena> = const { Cell::new(ptr::null_mut()) };
+    static WASM_TEST_ARENA_SLOT: Cell<*mut ActorArena> = const { Cell::new(ptr::null_mut()) };
 }
 
-/// Set the current thread-local arena and return the previous one.
+/// Set the current context's arena lane and return the previous one.
+#[cfg(target_arch = "wasm32")]
 pub fn set_current_arena(arena: *mut ActorArena) -> *mut ActorArena {
-    CURRENT_ARENA.with(|current| current.replace(arena))
+    let ctx = crate::execution_context::require_current_context();
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary.
+    unsafe {
+        let previous = (*ctx).arena;
+        (*ctx).arena = arena;
+        previous
+    }
 }
 
-/// Get the current thread-local arena.
+/// Native unit-test build keeps this module separate from `crate::arena`, so
+/// its standalone arena tests use an isolated slot that is not part of the
+/// runtime ABI.
+#[cfg(all(not(target_arch = "wasm32"), test))]
+pub fn set_current_arena(arena: *mut ActorArena) -> *mut ActorArena {
+    WASM_TEST_ARENA_SLOT.with(|current| current.replace(arena))
+}
+
+/// Get the current context's arena lane.
+#[cfg(target_arch = "wasm32")]
 fn get_current_arena() -> *mut ActorArena {
-    CURRENT_ARENA.with(std::cell::Cell::get)
+    let ctx = crate::execution_context::require_current_context();
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary.
+    unsafe { (*ctx).arena }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), test))]
+fn get_current_arena() -> *mut ActorArena {
+    WASM_TEST_ARENA_SLOT.with(std::cell::Cell::get)
 }
 
 // ── C ABI ─────────────────────────────────────────────────────────────────
@@ -326,27 +354,32 @@ fn get_current_arena() -> *mut ActorArena {
 // test builds (for CI coverage) without clashing with the identical symbols
 // exported by `arena.rs`.  On wasm32 the symbols are always exported.
 
-/// Allocate memory from the current arena, falling back to `libc::malloc`.
+/// Allocate memory from the current execution context's arena.
+///
+/// **Requires an installed execution context with an active arena.** Returns
+/// null if no context is installed or if the context's arena lane is null.
+/// There is no libc-fallback; callers that run outside dispatch must use
+/// `libc::malloc` directly.
 ///
 /// When an arena with a non-zero cap is active and this allocation would
-/// exceed that cap, returns null. On native targets this also triggers a
-/// `HeapExceeded` actor crash via the longjmp/supervisor seam. On WASM the
-/// null propagates to the caller; the `catch_unwind` path handles any
-/// subsequent trap (`native-wasm-parity` LESSON: WASM longjmp is absent,
-/// so HeapExceeded-tagged crash is deferred to a follow-on lane that extends
-/// the WASM actor panic path).
+/// exceed that cap, returns null. On WASM the null propagates to the caller;
+/// the `catch_unwind` path handles any subsequent trap (WASM longjmp is
+/// absent; HeapExceeded-tagged crash handling is deferred to a follow-on
+/// lane extending the WASM actor panic path).
 ///
 /// # Safety
 ///
-/// The returned pointer must eventually be passed to `hew_arena_free` (while
-/// the same arena is active) or to `libc::free` (when no arena is active).
+/// The returned pointer must be freed via `hew_arena_reset` or
+/// `hew_arena_free_all` — never via `libc::free`. Mixing arena pointers
+/// with the system allocator is undefined behaviour.
 #[must_use]
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
     let arena_ptr = get_current_arena();
     if arena_ptr.is_null() {
-        // SAFETY: libc malloc is always safe to call.
-        unsafe { libc::malloc(size) }
+        // No arena active: fail closed. Callers outside dispatch must use
+        // libc::malloc directly; there is no silent fallback here.
+        ptr::null_mut()
     } else {
         // SAFETY: arena_ptr is a valid pointer set by hew_arena_set_current.
         let arena = unsafe { &mut *arena_ptr };
@@ -373,19 +406,26 @@ pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
     }
 }
 
-/// Free memory — no-op during arena dispatch, forwards to `libc::free` otherwise.
+/// Free memory — intentional no-op.
+///
+/// Arena memory is reclaimed in bulk via `hew_arena_reset` or
+/// `hew_arena_free_all`; per-pointer tracking is not supported. This
+/// function exists solely to satisfy C callers that pair every `malloc`
+/// with a `free`.
+///
+/// When no arena is active (null arena lane or no context installed), this
+/// function returns without touching the pointer. The pointer must **not**
+/// be passed to `libc::free` — it was allocated from an arena.
 ///
 /// # Safety
 ///
-/// `ptr` must be a valid pointer returned by `hew_arena_malloc` (or null).
+/// `ptr` must be a valid pointer returned by `hew_arena_malloc`, or null.
+/// Do **not** pass pointers allocated with `libc::malloc` to this function.
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
-pub unsafe extern "C" fn hew_arena_free(ptr: *mut c_void) {
-    let arena_ptr = get_current_arena();
-    if arena_ptr.is_null() {
-        // SAFETY: caller guarantees ptr is valid.
-        unsafe { libc::free(ptr) };
-    }
-    // Arena active → no-op; memory reclaimed in bulk via reset / free_all.
+pub unsafe extern "C" fn hew_arena_free(_ptr: *mut c_void) {
+    // No-op in all cases. Arena memory is freed in bulk via reset / free_all.
+    // When no context is installed, there is no action to take: a null from
+    // hew_arena_malloc is a valid "no allocation" sentinel, not a heap ptr.
 }
 
 /// Create a new arena and return an owning raw pointer.
@@ -440,7 +480,7 @@ pub unsafe extern "C" fn hew_arena_free_all(arena: *mut ActorArena) {
     }
 }
 
-/// Install `arena` as the current thread-local arena.
+/// Install `arena` as the current context's arena lane.
 ///
 /// # Safety
 ///
@@ -652,13 +692,15 @@ mod tests {
     }
 
     #[test]
-    fn hew_arena_malloc_free_fallback() {
-        // No arena active — must delegate to libc malloc/free.
-        // SAFETY: testing with valid allocation size.
+    fn hew_arena_malloc_without_arena_returns_null() {
+        // No arena active — must return null. There is no libc-fallback;
+        // callers outside dispatch must use libc::malloc directly.
+        // SAFETY: calling with no arena installed to verify fail-closed behaviour.
         let ptr = unsafe { hew_arena_malloc(100) };
-        assert!(!ptr.is_null());
-        // SAFETY: ptr is valid from hew_arena_malloc above.
-        unsafe { hew_arena_free(ptr) };
+        assert!(
+            ptr.is_null(),
+            "hew_arena_malloc must return null when no arena is active"
+        );
     }
 
     #[test]

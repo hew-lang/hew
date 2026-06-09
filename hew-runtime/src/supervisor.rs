@@ -355,6 +355,13 @@ pub const HEW_TRAP_SHIFT_OUT_OF_RANGE: i32 = 204;
 /// Error code recorded for `Terminator::Trap { kind: IndexOutOfBounds }`.
 pub const HEW_TRAP_INDEX_OUT_OF_BOUNDS: i32 = 205;
 
+/// Error code recorded when codegen checks the i32 return value of
+/// `hew_actor_send_by_id` and finds it nonzero — the recipient was gone, the
+/// queue was full, or the actor ID routed to a remote partition that rejected
+/// the message. Codegen routes through `hew_trap_with_code(206)` before
+/// `llvm.trap` so the supervisor can distinguish this case from a raw signal.
+pub const HEW_TRAP_ACTOR_SEND_FAILED: i32 = 206;
+
 /// Named exit reason for a crashed actor.
 ///
 /// Interprets the i32 `error_code` stored on a `HewActor` after a crash.
@@ -388,6 +395,11 @@ pub enum ExitReason {
     /// Actor crashed on an out-of-bounds index into a `Vec<T>` or array
     /// (error code 205).
     IndexOutOfBounds,
+    /// Actor crashed because `hew_actor_send_by_id` returned a nonzero status
+    /// (error code 206). The recipient was gone, the mailbox was full, or the
+    /// remote partition rejected the message. Codegen's fail-closed path
+    /// triggers `hew_trap_with_code(206)` rather than silently proceeding.
+    ActorSendFailed,
     /// Actor crashed with a hardware signal (SIGSEGV, SIGBUS, SIGFPE, SIGILL)
     /// or via `hew_panic()` / `hew_panic_msg()`. The raw signal number is
     /// preserved.
@@ -409,6 +421,7 @@ impl ExitReason {
             HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE => ExitReason::SignedMinDivNegOne,
             HEW_TRAP_SHIFT_OUT_OF_RANGE => ExitReason::ShiftOutOfRange,
             HEW_TRAP_INDEX_OUT_OF_BOUNDS => ExitReason::IndexOutOfBounds,
+            HEW_TRAP_ACTOR_SEND_FAILED => ExitReason::ActorSendFailed,
             sig => ExitReason::Signal(sig),
         }
     }
@@ -1564,7 +1577,8 @@ unsafe fn apply_restart(sup: &mut HewSupervisor, failed_index: usize, exit_state
 }
 
 /// Supervisor dispatch function (handles system messages).
-unsafe extern "C" fn supervisor_dispatch(
+unsafe extern "C-unwind" fn supervisor_dispatch(
+    _ctx: *mut crate::execution_context::HewExecutionContext,
     state: *mut c_void,
     msg_type: i32,
     data: *mut c_void,
@@ -1927,6 +1941,7 @@ pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::execution_context::{HewExecutionContext, TestExecutionContext};
 
     struct OwnedDeferredSupervisorSpawnFailureGuard;
 
@@ -1973,7 +1988,8 @@ mod tests {
         })
     }
 
-    unsafe extern "C" fn noop_child_dispatch(
+    unsafe extern "C-unwind" fn noop_child_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -2010,14 +2026,18 @@ mod tests {
     #[test]
     fn stop_supervisor_from_child_dispatch_is_deferred() {
         // SAFETY: this test owns the supervisor tree and only mutates the
-        // current actor/thread-local state within the test thread.
+        // current actor context within the test thread.
         unsafe {
             let (sup, child, self_actor) = make_supervisor_with_child();
             (*child)
                 .actor_state
                 .store(HewActorState::Running as i32, Ordering::Release);
 
-            let prev_actor = actor::set_current_actor(child);
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                actor: child,
+                actor_id: (*child).id,
+                ..HewExecutionContext::default()
+            });
             let unblock = defer_state_transition(
                 child,
                 HewActorState::Stopped,
@@ -2029,7 +2049,6 @@ mod tests {
             let elapsed = start.elapsed();
 
             unblock.join().unwrap();
-            actor::set_current_actor(prev_actor);
 
             assert!(
                 wait_for_condition(std::time::Duration::from_secs(2), || !actor::is_actor_live(
@@ -2064,13 +2083,16 @@ mod tests {
             child_ref.terminate_called.store(true, Ordering::Release);
             child_ref.terminate_finished.store(false, Ordering::Release);
 
-            let prev_actor = actor::set_current_actor(child);
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                actor: child,
+                actor_id: (*child).id,
+                ..HewExecutionContext::default()
+            });
             let start = std::time::Instant::now();
             hew_supervisor_stop(sup);
             let elapsed = start.elapsed();
 
             child_ref.terminate_finished.store(true, Ordering::Release);
-            actor::set_current_actor(prev_actor);
 
             assert!(
                 wait_for_condition(std::time::Duration::from_secs(2), || !actor::is_actor_live(
@@ -2110,7 +2132,11 @@ mod tests {
                 .actor_state
                 .store(HewActorState::Running as i32, Ordering::Release);
 
-            let prev_actor = actor::set_current_actor(child);
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                actor: child,
+                actor_id: (*child).id,
+                ..HewExecutionContext::default()
+            });
             let self_unblock = defer_state_transition(
                 self_actor,
                 HewActorState::Stopped,
@@ -2156,7 +2182,6 @@ mod tests {
             second.join().unwrap();
             self_unblock.join().unwrap();
             child_unblock.join().unwrap();
-            actor::set_current_actor(prev_actor);
 
             assert!(
                 wait_for_condition(std::time::Duration::from_secs(2), || {
@@ -2182,10 +2207,13 @@ mod tests {
             let (sup, child, _self_actor) = make_supervisor_with_child();
             let fail_guard = fail_owned_deferred_supervisor_spawn();
 
-            let prev_actor = actor::set_current_actor(child);
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                actor: child,
+                actor_id: (*child).id,
+                ..HewExecutionContext::default()
+            });
             crate::hew_clear_error();
             hew_supervisor_stop(sup);
-            actor::set_current_actor(prev_actor);
 
             assert!(
                 crate::shutdown::is_supervisor_registered_for_test(sup),

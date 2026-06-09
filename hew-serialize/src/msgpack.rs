@@ -47,6 +47,9 @@ pub enum MethodCallReceiverKindData {
     NamedTypeInstance {
         type_name: String,
     },
+    ActorInstance {
+        actor_name: String,
+    },
     HandleInstance {
         type_name: String,
     },
@@ -715,7 +718,13 @@ fn walk_program<V: SideTableVisitor>(
                     collect_expr(arg, tco, visitor, out);
                 }
             }
-            Expr::Scope { body } => collect_block(body, tco, visitor, out),
+            Expr::Scope { body } | Expr::ForkBlock { body } => {
+                collect_block(body, tco, visitor, out);
+            }
+            Expr::ScopeDeadline { duration, body } => {
+                collect_expr(duration, tco, visitor, out);
+                collect_block(body, tco, visitor, out);
+            }
             Expr::ForkChild { expr, .. } => collect_expr(expr, tco, visitor, out),
             Expr::InterpolatedString(parts) => {
                 for part in parts {
@@ -1090,6 +1099,11 @@ pub fn build_method_call_receiver_kind_entries(
                             type_name: type_name.clone(),
                         }
                     }
+                    CheckedMethodCallReceiverKind::ActorInstance { actor_name } => {
+                        MethodCallReceiverKindData::ActorInstance {
+                            actor_name: actor_name.clone(),
+                        }
+                    }
                     CheckedMethodCallReceiverKind::HandleInstance { type_name } => {
                         MethodCallReceiverKindData::HandleInstance {
                             type_name: type_name.clone(),
@@ -1136,6 +1150,11 @@ pub fn build_method_call_receiver_kind_entries(
                     CheckedMethodCallReceiverKind::NamedTypeInstance { type_name } => {
                         MethodCallReceiverKindData::NamedTypeInstance {
                             type_name: type_name.clone(),
+                        }
+                    }
+                    CheckedMethodCallReceiverKind::ActorInstance { actor_name } => {
+                        MethodCallReceiverKindData::ActorInstance {
+                            actor_name: actor_name.clone(),
                         }
                     }
                     CheckedMethodCallReceiverKind::HandleInstance { type_name } => {
@@ -2081,6 +2100,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -2101,10 +2121,12 @@ mod tests {
             record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);
@@ -2169,6 +2191,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -2190,10 +2213,12 @@ mod tests {
             record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);
@@ -2384,6 +2409,7 @@ mod tests {
             ]),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -2398,10 +2424,12 @@ mod tests {
             record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -2468,6 +2496,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::from([(
                 SpanKey {
                     start: assign_target_span.start,
@@ -2488,10 +2517,12 @@ mod tests {
             record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
         };
 
         let entries = build_assign_target_kind_entries(&program, &tco);
@@ -2559,6 +2590,7 @@ mod tests {
                 },
             )]),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -2573,10 +2605,12 @@ mod tests {
             record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
         };
 
         let entries = build_lowering_fact_entries(&program, &tco);
@@ -2674,6 +2708,7 @@ mod tests {
             )]),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -2688,10 +2723,12 @@ mod tests {
             record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3008,6 +3045,7 @@ mod tests {
                     c_symbol: "hew_tcp_close".to_string(),
                 },
             )]),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -3022,10 +3060,12 @@ mod tests {
             record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3103,6 +3143,7 @@ mod tests {
                 },
                 MethodCallRewrite::DeferToLowering,
             )]),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -3117,10 +3158,12 @@ mod tests {
             record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3188,6 +3231,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::from([(key.clone(), AssignTargetKind::LocalVar)]),
             assign_target_shapes: HashMap::from([(
                 key.clone(),
@@ -3205,10 +3249,12 @@ mod tests {
             record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
         };
 
         let entries = build_assign_target_shape_entries(&program, &tco);
@@ -3275,6 +3321,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::from([(key.clone(), AssignTargetKind::LocalVar)]),
             assign_target_shapes: HashMap::from([(
                 key.clone(),
@@ -3292,10 +3339,12 @@ mod tests {
             record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
         };
 
         let entries = build_assign_target_shape_entries(&program, &tco);

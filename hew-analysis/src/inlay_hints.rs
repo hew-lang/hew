@@ -363,8 +363,12 @@ fn collect_inlay_hints_from_expr(
         Expr::SpawnLambdaActor { body, .. } => {
             collect_inlay_hints_from_expr(source, &body.0, tc, hints);
         }
-        Expr::Block(block) | Expr::Scope { body: block } => {
+        Expr::Block(block) | Expr::Scope { body: block } | Expr::ForkBlock { body: block } => {
             collect_inlay_hints_from_block(source, block, tc, hints);
+        }
+        Expr::ScopeDeadline { duration, body } => {
+            collect_inlay_hints_from_expr(source, &duration.0, tc, hints);
+            collect_inlay_hints_from_block(source, body, tc, hints);
         }
         Expr::UnsafeBlock(block) => {
             collect_inlay_hints_from_block(source, block, tc, hints);
@@ -656,13 +660,16 @@ mod tests {
             record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
         }
     }
 

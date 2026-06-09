@@ -168,6 +168,7 @@ fn vec_index_i64_mir() -> RawMirFunction {
     RawMirFunction {
         name: "vec_index_i64_test".to_string(),
         return_ty: ResolvedTy::I64,
+        call_conv: hew_mir::FunctionCallConv::Default,
         params: vec![],
         locals: vec![
             ResolvedTy::Named {
@@ -343,6 +344,7 @@ fn vec_index_mir_wraps_in_pipeline_without_errors() {
         elaborated_mir: vec![],
         diagnostics: vec![],
         record_layouts: vec![],
+        actor_layouts: vec![],
     };
     // No diagnostics from the hand-built MIR (it is already valid).
     assert!(

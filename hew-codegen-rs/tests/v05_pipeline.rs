@@ -1,6 +1,51 @@
+use std::path::Path;
+
+use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_hir::{lower_program, verify_hir, ResolutionCtx};
 use hew_mir::MirDiagnosticKind;
-use hew_types::TypeCheckOutput;
+use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
+
+fn emit_ll_for_source(src: &str, module_name: &str) -> String {
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type-check errors: {:#?}",
+        tc_output.errors
+    );
+    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    assert!(
+        output.diagnostics.is_empty(),
+        "hir diagnostics: {:?}",
+        output.diagnostics
+    );
+    let pipeline = hew_mir::lower_hir_module(&output.module);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "mir diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let tmp = std::env::temp_dir().join(format!("hew-v05-pipeline-{module_name}"));
+    std::fs::create_dir_all(&tmp).expect("tmp dir");
+    let options = EmitOptions {
+        module_name,
+        out_dir: &tmp,
+        native: false,
+        wasm: false,
+    };
+    let artefacts = emit_module(&pipeline, &options).expect("emit_module must succeed");
+    let ll_path: &Path = artefacts
+        .ll_path
+        .as_deref()
+        .expect("emit_module must populate ll_path");
+    std::fs::read_to_string(ll_path).expect("read ll")
+}
 
 #[test]
 fn v05_pipeline_rejects_nested_named_type_before_codegen() {
@@ -78,11 +123,11 @@ fn v05_pipeline_accepts_float_literal_in_mir() {
 }
 
 /// A direct call to a module function now lowers cleanly via
-/// `Instr::CallDirect`. `main` returns `add(10, 32)`; the MIR pipeline must
+/// `Terminator::Call`. `main` returns `add(10, 32)`; the MIR pipeline must
 /// accept the program without `CutoverUnsupported` or `UnresolvedPlace`
 /// diagnostics, and codegen must emit valid LLVM IR.
 #[test]
-fn v05_pipeline_accepts_user_fn_call_via_call_direct() {
+fn v05_pipeline_accepts_user_fn_call_via_call_terminator() {
     let parsed = hew_parser::parse(
         "fn add(x: int, y: int) -> int { x + y }\n\
          fn main() -> int { add(10, 32) }\n",
@@ -103,5 +148,49 @@ fn v05_pipeline_accepts_user_fn_call_via_call_direct() {
         pipeline.diagnostics.is_empty(),
         "user-fn call pipeline must have no MIR diagnostics: {:#?}",
         pipeline.diagnostics
+    );
+}
+
+/// Verify that an actor with `#[on(stop)]` emits the terminate trampoline
+/// and the `hew_actor_set_terminate` registration call in the LLVM IR.
+#[test]
+fn actor_on_stop_emits_terminate_trampoline_and_registration() {
+    let src = r#"
+        actor Counter {
+            let count: int;
+            receive fn noop() { }
+            #[on(stop)]
+            fn shutdown() { count = 0; }
+        }
+        fn main() -> int {
+            let c = spawn Counter(count: 0);
+            0
+        }
+    "#;
+    let ir = emit_ll_for_source(src, "actor_on_stop_ir");
+    // Terminate trampoline function must be defined.
+    assert!(
+        ir.contains("__terminate_Counter"),
+        "LLVM IR must define the terminate trampoline;\ngot:\n{ir}"
+    );
+    // The on(stop) handler must be defined with ActorHandler ABI.
+    assert!(
+        ir.contains("Counter__on_stop"),
+        "LLVM IR must define Counter__on_stop;\ngot:\n{ir}"
+    );
+    // hew_actor_set_terminate must be called at spawn time.
+    assert!(
+        ir.contains("hew_actor_set_terminate"),
+        "LLVM IR must call hew_actor_set_terminate;\ngot:\n{ir}"
+    );
+    // The lock acquire call must appear inside the terminate trampoline.
+    assert!(
+        ir.contains("hew_actor_state_lock_acquire"),
+        "LLVM IR must call hew_actor_state_lock_acquire inside the trampoline;\ngot:\n{ir}"
+    );
+    // hew_require_execution_context must be called inside the trampoline.
+    assert!(
+        ir.contains("hew_require_execution_context"),
+        "LLVM IR must call hew_require_execution_context inside the trampoline;\ngot:\n{ir}"
     );
 }

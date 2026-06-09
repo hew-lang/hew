@@ -4,6 +4,9 @@
 
 ### Removed
 
+- **Legacy CLI compile surface removed.** `hew compile` is now the single
+  v0.5 IR-ladder compile entry point; the old `hew build` command, dormant
+  run/build bodies, and the legacy `compile::compile()` entry point are gone.
 - **`hew-codegen` C++/MLIR subtree retired.** The previous C++ MLIR-based
   code generator, its generated msgpack reader, and the `hew-astgen` helper
   crate have been deleted from the workspace. `hew-codegen-rs` (LLVM via

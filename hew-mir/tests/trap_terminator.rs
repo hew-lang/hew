@@ -34,6 +34,7 @@ fn trap_fn(kind: TrapKind) -> RawMirFunction {
     RawMirFunction {
         name: format!("trap_{kind:?}"),
         return_ty: ResolvedTy::I64,
+        call_conv: hew_mir::FunctionCallConv::Default,
         params: vec![],
         locals: vec![],
         blocks: vec![BasicBlock {

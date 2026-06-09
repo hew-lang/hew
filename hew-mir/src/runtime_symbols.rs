@@ -25,7 +25,7 @@
 //! WHY (M2 slice 4.5c shim): the typecheck→MIR bridge that maps
 //! `Duplex<S, R>::send(msg)` (a `MethodCallRewrite` side-table entry
 //! in `hew-types`) to a free-function call on a runtime ABI symbol
-//! does not yet reach the Rust MIR pipeline (`hew compile-v05`).
+//! does not yet reach the Rust MIR pipeline (`hew compile`).
 //! Producers in `hew-mir` therefore have no callsite today; the
 //! allowlist + the `Instr::CallRuntimeAbi` variant land first so
 //! slice 5 codegen (LLVM IR emission) has a target to wire and
@@ -54,6 +54,14 @@
 // invariant is over the flat ordering.
 const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // --- Actor cooperate/link/monitor surface -------------------------------
+    "hew_actor_ask",
+    // `hew_actor_ask_with_channel(actor, msg_type, data, size, ch) -> i32`
+    // (`hew-runtime/src/actor.rs:3259`). Sends a request with a caller-
+    // provided reply channel. Returns 0 (HewError::Ok) on success;
+    // non-zero indicates failure. Used by `Terminator::Select`
+    // codegen to issue per-arm asks before `hew_select_first` decides
+    // the winner.
+    "hew_actor_ask_with_channel",
     // `hew_actor_cooperate() -> c_int` — reduction-budget safepoint injected
     // by codegen at Checked MIR cooperate sites. Implemented by both native
     // and WASM schedulers.
@@ -68,6 +76,8 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // targets return immediately with a DOWN signal; ref_id is still non-zero.
     // Codegen struct-wrapping (MonitorRef { ref_id }) requires Cluster 2 spine.
     "hew_actor_monitor",
+    "hew_actor_send_by_id",
+    "hew_actor_spawn",
     // --- Duplex<S, R> dual-queue substrate ----------------------
     "hew_duplex_clone",
     "hew_duplex_close",
@@ -89,9 +99,33 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_lambda_actor_weak_clone",
     "hew_lambda_actor_weak_drop",
     "hew_lambda_actor_weak_send",
+    // --- Rc allocation for task-owned closure environments --------------------
+    "hew_rc_new",
     // --- RecvHalf<T> ---------------------------------------------
     "hew_recv_half_recv",
     "hew_recv_half_try_recv",
+    // --- Reply channel surface (select{} actor-ask arm) ----------
+    // `hew_reply_channel_cancel(ch) -> void`
+    // (`hew-runtime/src/reply_channel.rs:440`). Marks a reply channel
+    // cancelled so a late replier observes the flag and releases its
+    // sender-side ref without UAF. Codegen invokes this on every
+    // loser arm of a `Terminator::Select` BEFORE freeing the channel
+    // (cancel-then-free is the Risk R4 ordering invariant).
+    "hew_reply_channel_cancel",
+    // `hew_reply_channel_free(ch) -> void`
+    // (`hew-runtime/src/reply_channel.rs:409`). Releases one reference;
+    // frees the channel when refcount reaches zero. Symmetric with
+    // `hew_reply_channel_new`.
+    "hew_reply_channel_free",
+    // `hew_reply_channel_new() -> *mut HewReplyChannel`
+    // (`hew-runtime/src/reply_channel.rs:78`). Allocates a fresh
+    // single-shot reply channel with one caller-side reference.
+    "hew_reply_channel_new",
+    // `hew_reply_wait(ch) -> *mut c_void`
+    // (`hew-runtime/src/reply_channel.rs:296`). Blocks until the reply
+    // arrives; returns the reply pointer (caller frees with libc::free)
+    // or null on orphaned-ask. Does NOT consume the channel ref.
+    "hew_reply_wait",
     // --- scope{} structured-concurrency surface (Phase 2, rows 2/3/4) ---------
     // `hew_scope_spawn(scope: *mut HewScope, actor: *mut c_void) -> i32`
     // (`hew-runtime/src/scope.rs:169`). Adds an actor to the scope's actor
@@ -100,6 +134,14 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // calls (row 3). MIR producers must not wire a dest — the i32 return is
     // a runtime-internal signal, not a user-visible value.
     "hew_scope_spawn",
+    // --- Select winner-picker -----------------------------------
+    // `hew_select_first(channels, count, timeout_ms) -> i32`
+    // (`hew-runtime/src/reply_channel.rs:484`). Polls multiple reply
+    // channels; returns the index of the first ready channel, or -1
+    // on timeout. `timeout_ms < 0` waits indefinitely. Codegen
+    // marshals the per-arm channel array + AfterTimer duration into
+    // this call.
+    "hew_select_first",
     // --- SendHalf<T> ---------------------------------------------
     "hew_send_half_send",
     "hew_send_half_try_send",
@@ -122,11 +164,14 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // the task completes, then returns the result pointer (or null if no
     // result). Needed for `await task` (row 4).
     "hew_task_await_blocking",
+    "hew_task_complete_threaded",
     // `hew_task_free(task: *mut HewTask) -> void`
     // (`hew-runtime/src/task_scope.rs:237`). Frees a Box-allocated HewTask
     // and its result buffer. Called by the scope teardown path and by the
     // await-sequence after consuming the result. Part of row 4.
     "hew_task_free",
+    "hew_task_get_env",
+    "hew_task_get_error",
     // `hew_task_get_result(task: *mut HewTask) -> *mut c_void`
     // (`hew-runtime/src/task_scope.rs:283`). Returns the task's result
     // pointer if done, null otherwise. Must be called after
@@ -139,6 +184,13 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // for spawned calls (row 3) — producer calls this before
     // `hew_task_spawn_thread`.
     "hew_task_new",
+    "hew_task_scope_cancel_after_ns",
+    "hew_task_scope_destroy",
+    "hew_task_scope_join_all",
+    "hew_task_scope_new",
+    "hew_task_scope_set_current",
+    "hew_task_scope_spawn",
+    "hew_task_set_env",
     // `hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void`
     // (`hew-runtime/src/task_scope.rs:368`). Spawns `task_fn(task)` on a
     // new OS thread. `TaskFn = unsafe extern "C" fn(*mut HewTask)`. The

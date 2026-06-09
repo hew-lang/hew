@@ -58,6 +58,7 @@ fn loop_pipeline_with_sites(cooperate_sites: Vec<CooperateSite>) -> IrPipeline {
         raw_mir: vec![RawMirFunction {
             name: "main".to_string(),
             return_ty: return_ty.clone(),
+            call_conv: hew_mir::FunctionCallConv::Default,
             params: Vec::new(),
             locals: vec![return_ty.clone()],
             blocks: blocks.clone(),
@@ -74,6 +75,7 @@ fn loop_pipeline_with_sites(cooperate_sites: Vec<CooperateSite>) -> IrPipeline {
         elaborated_mir: Vec::new(),
         diagnostics: Vec::new(),
         record_layouts: Vec::new(),
+        actor_layouts: Vec::new(),
     }
 }
 
@@ -110,6 +112,10 @@ fn loop_cooperate_sites_emit_runtime_calls() {
         ll.matches("call i32 @hew_actor_cooperate()").count(),
         2,
         "function-entry and loop back-edge sites must each emit one cooperate call;\n--- IR ---\n{ll}"
+    );
+    assert!(
+        ll.contains("cancel_exit"),
+        "cooperate emission must materialize cancel-exit branches;\n--- IR ---\n{ll}"
     );
 
     let entry_call = ll

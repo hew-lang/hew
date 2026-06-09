@@ -67,6 +67,7 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
         raw_mir: vec![RawMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
+            call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![
                 ResolvedTy::I64, // 0 cap
@@ -101,6 +102,7 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
         }],
         diagnostics: vec![],
         record_layouts: vec![],
+        actor_layouts: vec![],
     }
 }
 
@@ -128,6 +130,7 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
         raw_mir: vec![RawMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
+            call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![duplex_ty()], // 0 Duplex handle
             blocks: raw_blocks.clone(),
@@ -158,6 +161,7 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
         }],
         diagnostics: vec![],
         record_layouts: vec![],
+        actor_layouts: vec![],
     }
 }
 
@@ -189,6 +193,7 @@ fn pipeline_no_duplex() -> IrPipeline {
         raw_mir: vec![RawMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
+            call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64, ResolvedTy::I64],
             blocks: raw_blocks.clone(),
@@ -219,6 +224,7 @@ fn pipeline_no_duplex() -> IrPipeline {
         }],
         diagnostics: vec![],
         record_layouts: vec![],
+        actor_layouts: vec![],
     }
 }
 
@@ -295,10 +301,10 @@ fn duplex_close_drop_blocks_wasm_emission() {
 }
 
 /// With `wasm: false`, the duplex pipeline emits the textual LLVM IR and
-/// native object normally — `--no-wasm` is the documented escape hatch.
+/// native object normally.
 /// The native path must NOT be blocked by the duplex detection gate.
 #[test]
-fn duplex_pair_native_only_succeeds_with_no_wasm() {
+fn duplex_pair_native_only_succeeds_without_wasm_emit() {
     let pipeline = pipeline_with_duplex_pair_call();
     let dir = out_dir("duplex-native-only");
     let options = EmitOptions {

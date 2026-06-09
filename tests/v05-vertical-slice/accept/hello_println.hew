@@ -1,0 +1,4 @@
+fn main() -> i64 {
+    println("hello");
+    0
+}

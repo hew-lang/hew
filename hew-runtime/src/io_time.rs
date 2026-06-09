@@ -95,7 +95,7 @@ pub unsafe extern "C" fn hew_read_file(path: *const c_char) -> *mut c_char {
 ///
 /// No preconditions — delegates to the OS.
 #[no_mangle]
-pub unsafe extern "C" fn hew_sleep_ms(ms: c_int) {
+pub unsafe extern "C" fn hew_sleep_ms(ms: i64) {
     if ms > 0 {
         // SAFETY: ms > 0 checked above, so cast is lossless.
         #[expect(clippy::cast_sign_loss, reason = "guarded by ms > 0")]

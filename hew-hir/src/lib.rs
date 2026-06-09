@@ -12,6 +12,7 @@ pub mod intent;
 pub mod lower;
 pub mod monomorph;
 pub mod node;
+pub mod stdlib_catalog;
 pub mod value_class;
 pub mod verify;
 
@@ -25,11 +26,11 @@ pub use monomorph::{
     MONOMORPHISATION_REGISTRY_CAP,
 };
 pub use node::{
-    HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn, HirBinding,
-    HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLambdaCapture,
-    HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent,
-    HirMachineState, HirMachineTransition, HirModule, HirRestartPolicy, HirSelect, HirSelectArm,
-    HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
+    HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
+    HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
+    HirMachineEvent, HirMachineState, HirMachineTransition, HirModule, HirRestartPolicy, HirSelect,
+    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
     HirSupervisorStrategy, HirTypeDecl,
 };
 pub use value_class::{contains_named_type, named_type_names, TypeClassTable, ValueClass};

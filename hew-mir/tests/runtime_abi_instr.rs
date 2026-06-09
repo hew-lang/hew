@@ -295,6 +295,7 @@ fn raw_mir_basic_block_round_trips_call_runtime_abi() {
     let func = RawMirFunction {
         name: "probe".to_string(),
         return_ty: ResolvedTy::Unit,
+        call_conv: hew_mir::FunctionCallConv::Default,
         params: vec![],
         locals: vec![ResolvedTy::I64],
         blocks: vec![BasicBlock {

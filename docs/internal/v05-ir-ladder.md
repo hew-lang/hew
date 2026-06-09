@@ -186,7 +186,7 @@ LLVM value layout; ownership/drop decisions; source-level diagnostics.
 unsupported MIR constructs, missing locals, unresolved runtime symbols, and
 LLVM verifier failures.
 
-**Dump:** textual `.ll` plus any requested MIR dump (`hew compile-v05
+**Dump:** textual `.ll` plus any requested MIR dump (`hew compile
 --dump-mir raw|checked|elab`).
 
 ---
@@ -444,7 +444,7 @@ the Checked MIR and Elaborated MIR stages.
 
 ## 7. Building the v0.5 spine
 
-`hew compile-v05` runs the v0.5 Rust HIR/MIR/codegen-rs path. The backend is a
+`hew compile` runs the v0.5 Rust HIR/MIR/codegen-rs path. The backend is a
 normal Cargo dependency of `hew`; no retired C++ backend build step is involved:
 
 ```

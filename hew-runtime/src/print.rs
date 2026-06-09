@@ -137,3 +137,50 @@ pub unsafe extern "C" fn hew_print_value(kind: u8, bits: u64, newline: bool) {
         }
     }
 }
+
+/// Print an integer with a trailing newline.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_println_int(value: i64) {
+    // SAFETY: value is a plain i64 payload.
+    unsafe { print_i64(value, true) };
+}
+
+/// Print a string with a trailing newline.
+///
+/// # Safety
+///
+/// `value` must be null or point to a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_println_str(value: *const c_char) {
+    let Ok(bits) = u64::try_from(value as usize) else {
+        std::process::abort();
+    };
+    // SAFETY: caller upholds the C string contract for non-null pointers.
+    unsafe { print_str(bits, true) };
+}
+
+/// Print a boolean with a trailing newline.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. Non-zero is true.
+#[no_mangle]
+pub unsafe extern "C" fn hew_println_bool(value: u8) {
+    // SAFETY: value is decoded to a Rust bool before printing.
+    unsafe { print_bool(value != 0, true) };
+}
+
+/// Print an f64 with a trailing newline.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_println_f64(value: f64) {
+    // SAFETY: value is a plain f64 payload.
+    unsafe { print_f64(value, true) };
+}

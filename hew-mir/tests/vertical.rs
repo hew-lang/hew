@@ -389,9 +389,9 @@ fn checked_mir_accepts_spine_integer_function() {
 }
 
 #[test]
-fn cross_function_call_types_lower_via_call_direct() {
+fn cross_function_call_types_lower_via_call_terminator() {
     // Direct calls to user-defined functions in the same module are now
-    // lowered via `Instr::CallDirect` — no `CutoverUnsupported` for function
+    // lowered via `Terminator::Call` — no `CutoverUnsupported` for function
     // calls to module functions. The pipeline() helper asserts HIR is clean;
     // this test pins the MIR acceptance shape: both functions appear in
     // `raw_mir` and the diagnostic stream is clean.

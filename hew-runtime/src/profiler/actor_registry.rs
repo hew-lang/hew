@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use crate::actor::HewActor;
-use crate::internal::types::HewActorState;
+use crate::internal::types::{HewActorState, HewDispatchFn};
 use crate::mailbox::HewMailbox;
 
 /// Wrapper to make `*mut HewActor` `Send` for the registry `HashMap`.
@@ -83,12 +83,7 @@ static HANDLER_NAME_REGISTRY: PoisonSafe<Option<HashMap<(usize, i32), String>>> 
 /// type.  Subsequent registrations for the same `dispatch_fn` key are ignored.
 ///
 /// `type_name` must be a `'static` string (a literal baked into the binary).
-pub fn register_dispatch_type(
-    dispatch_fn: Option<
-        unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut std::ffi::c_void, usize),
-    >,
-    type_name: &'static str,
-) {
+pub fn register_dispatch_type(dispatch_fn: Option<HewDispatchFn>, type_name: &'static str) {
     let key = dispatch_fn.map_or(0, |f| f as usize);
     if key == 0 {
         return;
@@ -105,11 +100,7 @@ pub fn register_dispatch_type(
 ///
 /// Returns `"Actor"` if the dispatch fn is not registered.
 #[must_use]
-pub fn lookup_dispatch_type(
-    dispatch_fn: Option<
-        unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut std::ffi::c_void, usize),
-    >,
-) -> &'static str {
+pub fn lookup_dispatch_type(dispatch_fn: Option<HewDispatchFn>) -> &'static str {
     let key = match dispatch_fn.map(|f| f as usize) {
         Some(k) if k != 0 => k,
         _ => return "Actor",
@@ -155,9 +146,7 @@ pub fn lookup_handler_name_by_ptr(dispatch_ptr: usize, msg_type: i32) -> Option<
 ///
 /// `handler_name` must be a `"ActorName::handler_name"` string.
 pub fn register_handler_name(
-    dispatch_fn: Option<
-        unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut std::ffi::c_void, usize),
-    >,
+    dispatch_fn: Option<HewDispatchFn>,
     msg_type: i32,
     handler_name: String,
 ) {
@@ -177,12 +166,7 @@ pub fn register_handler_name(
 ///
 /// Returns `Some("ActorName::handler_name")` when the pair was previously registered
 /// via `register_handler_name`, or `None` if not found.
-pub fn lookup_handler_name(
-    dispatch_fn: Option<
-        unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut std::ffi::c_void, usize),
-    >,
-    msg_type: i32,
-) -> Option<String> {
+pub fn lookup_handler_name(dispatch_fn: Option<HewDispatchFn>, msg_type: i32) -> Option<String> {
     let key = dispatch_fn.map_or(0, |f| f as usize);
     if key == 0 {
         return None;
@@ -375,7 +359,8 @@ mod tests {
     // barrier, closure API adds no value here.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    unsafe extern "C" fn fake_dispatch_a(
+    unsafe extern "C-unwind" fn fake_dispatch_a(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _s: *mut std::ffi::c_void,
         _m: i32,
         _p: *mut std::ffi::c_void,
@@ -383,7 +368,8 @@ mod tests {
     ) {
     }
 
-    unsafe extern "C" fn fake_dispatch_b(
+    unsafe extern "C-unwind" fn fake_dispatch_b(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _s: *mut std::ffi::c_void,
         _m: i32,
         _p: *mut std::ffi::c_void,
@@ -419,7 +405,8 @@ mod tests {
         assert_eq!(name, "Actor");
     }
 
-    unsafe extern "C" fn fake_dispatch_c(
+    unsafe extern "C-unwind" fn fake_dispatch_c(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _s: *mut std::ffi::c_void,
         _m: i32,
         _p: *mut std::ffi::c_void,
@@ -427,7 +414,8 @@ mod tests {
     ) {
     }
 
-    unsafe extern "C" fn fake_dispatch_d(
+    unsafe extern "C-unwind" fn fake_dispatch_d(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _s: *mut std::ffi::c_void,
         _m: i32,
         _p: *mut std::ffi::c_void,
@@ -474,7 +462,8 @@ mod tests {
         );
     }
 
-    unsafe extern "C" fn fake_dispatch_e(
+    unsafe extern "C-unwind" fn fake_dispatch_e(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _s: *mut std::ffi::c_void,
         _m: i32,
         _p: *mut std::ffi::c_void,
@@ -564,7 +553,8 @@ mod tests {
         unsafe { unregister(actor_ptr) };
     }
 
-    unsafe extern "C" fn fake_dispatch_handler(
+    unsafe extern "C-unwind" fn fake_dispatch_handler(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _s: *mut std::ffi::c_void,
         _m: i32,
         _p: *mut std::ffi::c_void,
@@ -635,7 +625,8 @@ mod tests {
         );
     }
 
-    unsafe extern "C" fn fake_dispatch_for_id_lookup(
+    unsafe extern "C-unwind" fn fake_dispatch_for_id_lookup(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _s: *mut std::ffi::c_void,
         _m: i32,
         _p: *mut std::ffi::c_void,

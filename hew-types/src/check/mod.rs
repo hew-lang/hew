@@ -35,9 +35,10 @@ mod types;
 mod util;
 
 pub use self::types::{
-    ActorSendAliasing, ActorSendCopyReason, AllocationClass, AssignTargetKind, AssignTargetShape,
-    Checker, ChildKind, ChildSlot, DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry,
-    DynVtableKey, FnSig, MethodCallReceiverKind, MethodCallRewrite, SpanKey, StackHint,
+    ActorMethodKind, ActorSendAliasing, ActorSendCopyReason, ActorStateGuard, AllocationClass,
+    AssignTargetKind, AssignTargetShape, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
+    ClosureCaptureMode, DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey,
+    ExecutionContextReader, FnSig, MethodCallReceiverKind, MethodCallRewrite, SpanKey, StackHint,
     TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
 };
 use self::types::{
@@ -283,6 +284,33 @@ impl Checker {
                     (k, resolved)
                 })
                 .collect();
+        let resolved_closure_capture_facts = std::mem::take(&mut self.closure_capture_facts)
+            .into_iter()
+            .map(|(k, facts)| {
+                let resolved = facts
+                    .into_iter()
+                    .map(|mut fact| {
+                        fact.ty = self.subst.resolve(&fact.ty).materialize_literal_defaults();
+                        fact
+                    })
+                    .collect();
+                (k, resolved)
+            })
+            .collect();
+        let resolved_actor_method_dispatch = std::mem::take(&mut self.actor_method_dispatch)
+            .into_iter()
+            .map(|(k, kind)| {
+                let resolved_kind = match kind {
+                    ActorMethodKind::Fire(method_id) => ActorMethodKind::Fire(method_id),
+                    ActorMethodKind::Ask(method_id, reply_ty) => ActorMethodKind::Ask(
+                        method_id,
+                        self.subst.resolve(&reply_ty).materialize_literal_defaults(),
+                    ),
+                };
+                (k, resolved_kind)
+            })
+            .collect();
+        self.actor_method_dispatch = resolved_actor_method_dispatch;
 
         // Move data out of Checker — it is not used after check_program.
         // Resolve any remaining type variables in expr_types via the
@@ -340,10 +368,12 @@ impl Checker {
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
             method_call_consumes_receiver: std::mem::take(&mut self.method_call_consumes_receiver),
             actor_send_aliasing: std::mem::take(&mut self.actor_send_aliasing),
+            actor_handler_state_guards: std::mem::take(&mut self.actor_handler_state_guards),
             actor_max_heap: std::mem::take(&mut self.actor_max_heap),
             supervisor_child_slots: std::mem::take(&mut self.supervisor_child_slots),
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
+            actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),
             assign_target_shapes: std::mem::take(&mut self.assign_target_shapes),
             errors: std::mem::take(&mut self.errors),
@@ -363,6 +393,7 @@ impl Checker {
             stack_hints: std::mem::take(&mut self.stack_hints),
             dyn_trait_coercions: std::mem::take(&mut self.dyn_trait_coercions),
             dyn_trait_method_calls: std::mem::take(&mut self.dyn_trait_method_calls),
+            closure_capture_facts: resolved_closure_capture_facts,
         };
 
         // Detect actor reference cycles and emit warnings.

@@ -1,4 +1,4 @@
-//! End-to-end LLVM-IR emission tests for `Instr::CallDirect`.
+//! End-to-end LLVM-IR emission tests for `Terminator::Call`.
 //!
 //! A direct call to a user-defined function in the same module must produce
 //! an LLVM `call` instruction with the callee's decorated symbol name. For
@@ -58,7 +58,7 @@ fn emit_ll(source: &str, module_name: &str) -> String {
 ///
 /// This verifies that:
 /// 1. `declare_function` emits a correct `define ... @add(i64, i64)` header.
-/// 2. `Instr::CallDirect` lowers to `call <ret_ty> @callee(<args>)`.
+/// 2. `Terminator::Call` lowers to `call <ret_ty> @callee(<args>)`.
 /// 3. The result is stored into a local and returned from `main`.
 #[test]
 fn call_i64_user_fn_emits_call_instruction() {

@@ -1,14 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
 use hew_parser::ast::{
-    ActorDecl, AttributeArg, BinaryOp, Block, Expr, FnDecl, Item, LambdaParam, Literal,
-    MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, ResourceMarker,
-    RestartPolicy, SelectArm, Span, Spanned, Stmt, SupervisorDecl, SupervisorStrategy,
-    TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
+    ActorDecl, AttributeArg, BinaryOp, Block, CompoundAssignOp, Expr, FnDecl, Item, LambdaParam,
+    Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind,
+    ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, SupervisorDecl,
+    SupervisorStrategy, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
 };
 use hew_types::{
-    AssignTargetKind, AssignTargetShape, LoweringFact, MethodCallRewrite, ResolvedTy, SpanKey, Ty,
-    TypeCheckOutput,
+    ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ClosureCaptureFact,
+    ExecutionContextReader, LoweringFact, MethodCallReceiverKind, MethodCallRewrite, ResolvedTy,
+    SpanKey, Ty, TypeCheckOutput,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -19,14 +20,20 @@ use crate::monomorph::{
     RecordLayoutRegistry, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,
 };
 use crate::node::{
-    HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn, HirBinding,
-    HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLambdaCapture,
-    HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent,
-    HirMachineState, HirMachineTransition, HirModule, HirRecordDecl, HirRestartPolicy, HirSelect,
-    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
-    HirSupervisorStrategy, HirTypeDecl,
+    HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
+    HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
+    HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
+    HirMachineEvent, HirMachineState, HirMachineTransition, HirModule, HirRecordDecl,
+    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind,
+    HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
 };
+use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ValueClass};
+
+type ScopeBinding = (BindingId, ResolvedTy, std::ops::Range<usize>);
+type ScopeMap = HashMap<String, ScopeBinding>;
+type OuterClosureBinding = (String, ResolvedTy, std::ops::Range<usize>);
+type ClosureCaptureCandidate = (BindingId, String, std::ops::Range<usize>);
 
 #[derive(Debug, Clone, Default)]
 pub struct ResolutionCtx;
@@ -43,6 +50,7 @@ struct FnEntry {
     id: ItemId,
     return_ty: ResolvedTy,
     param_tys: Vec<ResolvedTy>,
+    linkage: Option<BuiltinLinkage>,
     /// Source-declared generic type parameter names, in order. Empty for
     /// non-generic functions. Consulted at `Expr::Call` lowering sites to
     /// decide whether the callee is a generic top-level user fn that
@@ -107,6 +115,7 @@ pub fn lower_program_with_mono_cap(
     mono_cap: usize,
 ) -> LowerOutput {
     let mut ctx = LowerCtx::new(type_check_output, mono_cap);
+    ctx.seed_stdlib_fn_registry();
 
     // First pass: collect all function signatures so that forward and mutual
     // references in call expressions resolve to the correct return type.
@@ -414,6 +423,10 @@ fn collect_call_sites_in_stmt(stmt: &HirStmt, out: &mut Vec<(String, SiteId)>) {
         HirStmtKind::Let(_, Some(e)) | HirStmtKind::Expr(e) | HirStmtKind::Return(Some(e)) => {
             collect_call_sites_in_expr(e, out);
         }
+        HirStmtKind::Assign { target, value } => {
+            collect_call_sites_in_expr(target, out);
+            collect_call_sites_in_expr(value, out);
+        }
         _ => {}
     }
 }
@@ -428,6 +441,18 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
             collect_call_sites_in_expr(callee, out);
             for a in args {
                 collect_call_sites_in_expr(a, out);
+            }
+        }
+        HirExprKind::Spawn { args, .. } => {
+            for (_, arg) in args {
+                collect_call_sites_in_expr(arg, out);
+            }
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. } => {
+            collect_call_sites_in_expr(receiver, out);
+            for arg in args {
+                collect_call_sites_in_expr(arg, out);
             }
         }
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
@@ -455,7 +480,13 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
             }
         }
         HirExprKind::FieldAccess { object, .. } => collect_call_sites_in_expr(object, out),
-        HirExprKind::Scope { body } => collect_call_sites_in_block(body, out),
+        HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => {
+            collect_call_sites_in_block(body, out);
+        }
+        HirExprKind::ScopeDeadline { duration, body } => {
+            collect_call_sites_in_expr(duration, out);
+            collect_call_sites_in_block(body, out);
+        }
         HirExprKind::TupleIndex { tuple, .. } => collect_call_sites_in_expr(tuple, out),
         HirExprKind::Index { container, index } => {
             collect_call_sites_in_expr(container, out);
@@ -475,7 +506,9 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
                 collect_call_sites_in_expr(e, out);
             }
         }
-        HirExprKind::SpawnLambdaActor { body, .. } => collect_call_sites_in_expr(body, out),
+        HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
+            collect_call_sites_in_expr(body, out);
+        }
         _ => {}
     }
 }
@@ -573,7 +606,7 @@ fn contains_abstract_symbol(
 #[derive(Debug)]
 struct LowerCtx {
     ids: IdGen,
-    scopes: Vec<HashMap<String, (BindingId, ResolvedTy)>>,
+    scopes: Vec<ScopeMap>,
     /// Maps function name → pre-allocated `ItemId` + return type + param types.
     fn_registry: HashMap<String, FnEntry>,
     /// Per-named-type marker + close-method registry. Pre-populated from
@@ -588,6 +621,14 @@ struct LowerCtx {
     /// here and rewrites to `HirExprKind::Call` with the runtime symbol.
     /// A missing entry is a fail-closed diagnostic (`MethodCallNoRewrite`).
     method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Checker-owned actor receive dispatch decisions keyed by method-call span.
+    /// HIR consumes these to choose `ActorSend` / `ActorAsk` without reclassifying
+    /// receiver types.
+    actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    /// Checker-owned method-call receiver classifications. Used only to fail
+    /// closed when the checker classified a receiver as actor-dispatchable but
+    /// omitted the corresponding `actor_method_dispatch` discriminator.
+    method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     /// Per-call-site `T → dyn Trait` coercion side-table. Keyed by the
     /// argument expression span. `lower_expr` consults this at every
     /// expression's exit; if the just-lowered expression's span has an
@@ -608,6 +649,10 @@ struct LowerCtx {
     /// (e.g. `duplex_pair`) that have no AST `fn` entry and therefore no
     /// `fn_registry` hit.
     expr_types: HashMap<SpanKey, Ty>,
+    /// Checker-authoritative general-closure capture facts keyed by closure
+    /// literal span. HIR consumes this ledger fail-closed when materialising
+    /// `HirExprKind::Closure`; it does not infer capture legality from syntax.
+    closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
     /// Depth counter for nested `scope{}` bodies. When > 0, statement-expression
     /// calls are inferred as child-task spawns (TI-1); outside any scope body
     /// all calls are synchronous (TI-3). Using a depth counter rather than a
@@ -678,6 +723,8 @@ struct LowerCtx {
         reason = "passive pass-through; future consumer is compound-assignment signedness in codegen"
     )]
     assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
+    /// Checker-owned actor receive-handler guard policy keyed by receive span.
+    actor_handler_state_guards: HashMap<SpanKey, ActorStateGuard>,
     /// Actor type names that participate in reference cycles, computed by the
     /// checker's cycle-detection pass. Consumed by `lower_actor` to populate
     /// `HirActorDecl.cycle_capable`. Future runtime consumer: actor codegen
@@ -751,9 +798,12 @@ impl LowerCtx {
             type_classes,
             diagnostics: Vec::new(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
+            actor_method_dispatch: tc_output.actor_method_dispatch.clone(),
+            method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
+            closure_capture_facts: tc_output.closure_capture_facts.clone(),
             scope_depth: 0,
             statement_position: false,
             current_actor_self: None,
@@ -761,6 +811,7 @@ impl LowerCtx {
             lowering_facts: tc_output.lowering_facts.clone(),
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
             assign_target_shapes: tc_output.assign_target_shapes.clone(),
+            actor_handler_state_guards: tc_output.actor_handler_state_guards.clone(),
             cycle_capable_actors: tc_output.cycle_capable_actors.clone(),
             mono_registry: MonoRegistry::with_cap(mono_cap),
             mono_cap_diag_emitted: false,
@@ -869,6 +920,11 @@ impl LowerCtx {
             // line 79).
             return;
         };
+        if entry.linkage.is_some() {
+            // Catalog-seeded stdlib functions are already monomorphic HIR
+            // targets. They never produce user-function specialisations.
+            return;
+        }
         if entry.type_params.is_empty() {
             // Non-generic callee — nothing to monomorphise.
             return;
@@ -1099,6 +1155,26 @@ impl LowerCtx {
 }
 
 impl LowerCtx {
+    fn seed_stdlib_fn_registry(&mut self) {
+        for (index, builtin) in stdlib_catalog::entries().iter().enumerate() {
+            // Keep catalog IDs out of the source-item sequence so existing HIR
+            // item IDs remain stable while builtin callees still carry Item refs.
+            let index = u32::try_from(index).expect("stdlib catalog fits in u32");
+            let id = ItemId(u32::MAX - index);
+            let param_tys = builtin.params.iter().map(|ty| ty.to_resolved()).collect();
+            self.fn_registry.insert(
+                builtin.name.to_string(),
+                FnEntry {
+                    id,
+                    return_ty: builtin.return_ty.to_resolved(),
+                    param_tys,
+                    linkage: Some(builtin.linkage),
+                    type_params: Vec::new(),
+                },
+            );
+        }
+    }
+
     fn register_fn_entry(&mut self, name: &str, func: &FnDecl) {
         let id = self.ids.item();
         let return_ty = func
@@ -1117,9 +1193,137 @@ impl LowerCtx {
                 id,
                 return_ty,
                 param_tys,
+                linkage: None,
                 type_params,
             },
         );
+    }
+
+    fn lower_stdlib_callee(&mut self, entry: &BuiltinEntry, span: Span) -> HirExpr {
+        let (id, param_tys, return_ty) = {
+            let registry_entry = self
+                .fn_registry
+                .get(entry.name)
+                .expect("catalog entries are seeded before expression lowering");
+            (
+                registry_entry.id,
+                registry_entry.param_tys.clone(),
+                registry_entry.return_ty.clone(),
+            )
+        };
+        let fn_ty = ResolvedTy::Function {
+            params: param_tys,
+            ret: Box::new(return_ty),
+        };
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&fn_ty, &self.type_classes),
+            ty: fn_ty,
+            intent: IntentKind::Read,
+            kind: HirExprKind::BindingRef {
+                name: entry.name.to_string(),
+                resolved: ResolvedRef::Item(id),
+            },
+            span,
+        }
+    }
+
+    fn unresolved_builtin_callee(&mut self, name: &str, span: Span) -> HirExpr {
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::BitCopy,
+            ty: ResolvedTy::Unit,
+            intent: IntentKind::Read,
+            kind: HirExprKind::BindingRef {
+                name: name.to_string(),
+                resolved: ResolvedRef::Unresolved,
+            },
+            span,
+        }
+    }
+
+    fn unresolved_module_object(&mut self, name: &str, span: Span) -> HirExpr {
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::BitCopy,
+            ty: ResolvedTy::Unit,
+            intent: IntentKind::Read,
+            kind: HirExprKind::BindingRef {
+                name: name.to_string(),
+                resolved: ResolvedRef::Unresolved,
+            },
+            span,
+        }
+    }
+
+    fn lower_regular_call(
+        &mut self,
+        function: &Spanned<Expr>,
+        args: Vec<HirExpr>,
+        span: &Span,
+        site: SiteId,
+    ) -> (HirExprKind, ResolvedTy) {
+        let callee = self.lower_expr(function, IntentKind::Read);
+        // Record the per-instantiation monomorphisation if the callee is a
+        // generic top-level user fn. Direct-name callees only;
+        // `record_monomorphisation` filters out non-generic callees, non-
+        // `fn_registry` callees (builtins, runtime symbols, local bindings),
+        // and callsites the checker did not record. Fail-closed on poisoned
+        // entries and on registry-cap exhaustion.
+        self.record_monomorphisation(&function.0, span, site);
+        // Checker authority takes precedence: consult expr_types at the full
+        // call-expression span. The checker records the call result type here
+        // for checker-registered builtins that have no AST `fn` item and
+        // therefore no `fn_registry` hit. (LESSONS: checker-authority P0)
+        let checker_key = SpanKey::from(span);
+        let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+            match ResolvedTy::from_ty(&ty) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    let callee_name = if let Expr::Identifier(name) = &function.0 {
+                        name.clone()
+                    } else {
+                        "<expr>".to_string()
+                    };
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: callee_name,
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "checker-authoritative call result type failed boundary conversion",
+                    ));
+                    ResolvedTy::Unit
+                }
+            }
+        } else if let ResolvedTy::Function { ret, .. } = &callee.ty {
+            *ret.clone()
+        } else {
+            if matches!(
+                callee.kind,
+                HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Unresolved,
+                    ..
+                }
+            ) {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::UnresolvedInferenceVar,
+                    span.clone(),
+                    "call result type cannot be determined: callee is unresolved",
+                ));
+            }
+            ResolvedTy::Unit
+        };
+        (
+            HirExprKind::Call {
+                callee: Box::new(callee),
+                args,
+            },
+            result_ty,
+        )
     }
 
     fn lower_fn(&mut self, func: &FnDecl, span: std::ops::Range<usize>) -> HirFn {
@@ -1655,11 +1859,8 @@ impl LowerCtx {
         })
     }
 
-    /// Lower an `actor` declaration into `HirActorDecl`. Structural-only:
-    /// `init`, `receive fn`, method, and lifecycle-hook bodies are NOT lowered
-    /// to `HirBlock` in Lane A — they remain on the parser AST and are
-    /// consumed by the C++ MLIR pipeline today. The next M6 slice will
-    /// promote bodies to `HirBlock`. See `HirActorDecl` doc comment.
+    /// Lower an `actor` declaration into `HirActorDecl`, including executable
+    /// bodies for init blocks, receive handlers, methods, and lifecycle hooks.
     fn lower_actor(&mut self, decl: &ActorDecl, span: Span) -> HirActorDecl {
         let state_fields: Vec<HirField> = decl
             .fields
@@ -1671,17 +1872,19 @@ impl LowerCtx {
             })
             .collect();
 
-        let init = decl.init.as_ref().map(|init| HirActorInit {
-            params: self.lower_actor_params(&init.params),
+        let init = decl.init.as_ref().map(|init| {
+            let (params, body) =
+                self.lower_actor_body(&state_fields, &init.params, &init.body, &ResolvedTy::Unit);
+            HirActorInit { params, body }
         });
 
         let receive_handlers: Vec<HirActorReceiveFn> = decl
             .receive_fns
             .iter()
-            .map(|rf| self.lower_actor_receive_fn(rf))
+            .map(|rf| self.lower_actor_receive_fn(rf, &state_fields))
             .collect();
 
-        let (methods, lifecycle_hooks) = self.partition_actor_methods(&decl.methods);
+        let (methods, lifecycle_hooks) = self.partition_actor_methods(&decl.methods, &state_fields);
 
         HirActorDecl {
             id: self.ids.item(),
@@ -1701,24 +1904,70 @@ impl LowerCtx {
         }
     }
 
-    fn lower_actor_params(&mut self, params: &[Param]) -> Vec<HirActorParam> {
-        params
+    fn lower_actor_body(
+        &mut self,
+        state_fields: &[HirField],
+        params: &[Param],
+        body: &Block,
+        expected_ty: &ResolvedTy,
+    ) -> (Vec<HirBinding>, HirBlock) {
+        let saved_scope_depth = self.scope_depth;
+        self.scope_depth = 0;
+        self.push_scope();
+        for field in state_fields {
+            self.bind(
+                field.name.clone(),
+                field.ty.clone(),
+                true,
+                field.span.clone(),
+            );
+        }
+        let params = params
             .iter()
-            .map(|p| HirActorParam {
-                name: p.name.clone(),
-                ty: self.lower_type(&p.ty),
-                mutable: p.is_mutable,
-                span: p.ty.1.clone(),
+            .map(|p| {
+                let ty = self.lower_type(&p.ty);
+                self.bind(p.name.clone(), ty, p.is_mutable, p.ty.1.clone())
             })
-            .collect()
+            .collect();
+        let body = self.lower_block(body, expected_ty);
+        self.pop_scope();
+        self.scope_depth = saved_scope_depth;
+        (params, body)
     }
 
-    fn lower_actor_receive_fn(&mut self, rf: &ReceiveFnDecl) -> HirActorReceiveFn {
-        let params = self.lower_actor_params(&rf.params);
+    fn lower_actor_receive_fn(
+        &mut self,
+        rf: &ReceiveFnDecl,
+        state_fields: &[HirField],
+    ) -> HirActorReceiveFn {
         let return_ty = rf
             .return_type
             .as_ref()
             .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
+        let body_expected_ty = if rf.is_generator {
+            ResolvedTy::Unit
+        } else {
+            return_ty.clone()
+        };
+        let (params, body) =
+            self.lower_actor_body(state_fields, &rf.params, &rf.body, &body_expected_ty);
+        let state_guard = match self
+            .actor_handler_state_guards
+            .get(&SpanKey::from(&rf.span))
+            .copied()
+        {
+            Some(ActorStateGuard::Exclusive) => HirActorStateGuard::Exclusive,
+            None => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::ActorStateGuardMissing {
+                        handler: rf.name.clone(),
+                    },
+                    rf.span.clone(),
+                    "missing checker-owned actor-state guard fact",
+                ));
+                HirActorStateGuard::Exclusive
+            }
+        };
         let every_ns = rf
             .attributes
             .iter()
@@ -1727,8 +1976,11 @@ impl LowerCtx {
             .and_then(AttributeArg::as_duration_ns);
         HirActorReceiveFn {
             name: rf.name.clone(),
+            is_generator: rf.is_generator,
             params,
             return_ty,
+            body,
+            state_guard,
             every_ns,
             span: rf.span.clone(),
         }
@@ -1743,15 +1995,17 @@ impl LowerCtx {
     fn partition_actor_methods(
         &mut self,
         methods: &[FnDecl],
+        state_fields: &[HirField],
     ) -> (Vec<HirActorMethod>, Vec<HirLifecycleHook>) {
         let mut plain = Vec::new();
         let mut hooks = Vec::new();
         for method in methods {
-            let params = self.lower_actor_params(&method.params);
             let return_ty = method
                 .return_type
                 .as_ref()
                 .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
+            let (params, body) =
+                self.lower_actor_body(state_fields, &method.params, &method.body, &return_ty);
             let hook_attr = method.attributes.iter().find(|a| a.name == "on");
             let hook_kind = hook_attr
                 .and_then(|a| a.args.first())
@@ -1769,12 +2023,14 @@ impl LowerCtx {
                     name: method.name.clone(),
                     params,
                     return_ty,
+                    body,
                     span: method.fn_span.clone(),
                 }),
                 None => plain.push(HirActorMethod {
                     name: method.name.clone(),
                     params,
                     return_ty,
+                    body,
                     span: method.fn_span.clone(),
                 }),
             }
@@ -2097,6 +2353,15 @@ impl LowerCtx {
                 let binding = self.bind(name.clone(), binding_ty, true, span.clone());
                 HirStmtKind::Let(binding, value)
             }
+            Stmt::Assign { target, op, value } => {
+                if let Some(op) = op {
+                    self.lower_compound_assignment(target, *op, value, &span)
+                } else {
+                    let target = self.lower_expr(target, IntentKind::Modify);
+                    let value = self.lower_expr(value, IntentKind::Consume);
+                    HirStmtKind::Assign { target, value }
+                }
+            }
             Stmt::Expression(expr) => {
                 // Inside a scope{} body, statement-expression calls are child-task
                 // spawns (TI-1). Outside scope{} bodies all calls are synchronous
@@ -2161,6 +2426,51 @@ impl LowerCtx {
         }
     }
 
+    fn lower_compound_assignment(
+        &mut self,
+        target: &Spanned<Expr>,
+        op: CompoundAssignOp,
+        value: &Spanned<Expr>,
+        span: &Span,
+    ) -> HirStmtKind {
+        let binary_op = Self::compound_assign_binary_op(op);
+        let target_read = self.lower_expr(target, IntentKind::Read);
+        let rhs = self.lower_expr(value, IntentKind::Read);
+        let target_write = self.lower_expr(target, IntentKind::Modify);
+        let value = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: target_read.ty.clone(),
+            value_class: target_read.value_class,
+            intent: IntentKind::Consume,
+            kind: HirExprKind::Binary {
+                op: binary_op,
+                left: Box::new(target_read),
+                right: Box::new(rhs),
+            },
+            span: span.clone(),
+        };
+        HirStmtKind::Assign {
+            target: target_write,
+            value,
+        }
+    }
+
+    fn compound_assign_binary_op(op: CompoundAssignOp) -> BinaryOp {
+        match op {
+            CompoundAssignOp::Add => BinaryOp::Add,
+            CompoundAssignOp::Subtract => BinaryOp::Subtract,
+            CompoundAssignOp::Multiply => BinaryOp::Multiply,
+            CompoundAssignOp::Divide => BinaryOp::Divide,
+            CompoundAssignOp::Modulo => BinaryOp::Modulo,
+            CompoundAssignOp::BitAnd => BinaryOp::BitAnd,
+            CompoundAssignOp::BitOr => BinaryOp::BitOr,
+            CompoundAssignOp::BitXor => BinaryOp::BitXor,
+            CompoundAssignOp::Shl => BinaryOp::Shl,
+            CompoundAssignOp::Shr => BinaryOp::Shr,
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "single large match on expr variants; splitting would hurt readability"
@@ -2196,83 +2506,48 @@ impl LowerCtx {
                 )
             }
             Expr::Call { function, args, .. } => {
-                let callee = self.lower_expr(function, IntentKind::Read);
                 let args = args
                     .iter()
                     .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
-                    .collect();
-                // Record the per-instantiation monomorphisation if the
-                // callee is a generic top-level user fn. Direct-name
-                // callees only; `record_monomorphisation` filters out
-                // non-generic callees, non-`fn_registry` callees (builtins,
-                // runtime symbols, local bindings), and callsites the
-                // checker did not record. Fail-closed on poisoned entries
-                // and on registry-cap exhaustion.
-                //
-                // Also threads the resolved `Vec<ResolvedTy>` for this
-                // call site (concrete or symbolic-T) into
-                // `call_site_type_args` keyed by the wrapping HirExpr's
-                // SiteId so MIR lowering can rewrite the call to the
-                // mangled symbol of the right per-monomorphisation MIR
-                // function.
-                self.record_monomorphisation(&function.0, &span, site);
-                // Checker authority takes precedence: consult expr_types at the
-                // full call-expression span.  The checker records the call result
-                // type here — including for checker-registered builtins like
-                // `duplex_pair` that have no AST `fn` item and therefore no
-                // `fn_registry` hit.  (LESSONS: checker-authority P0)
-                let checker_key = SpanKey::from(&span);
-                let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
-                    match ResolvedTy::from_ty(&ty) {
-                        Ok(resolved) => resolved,
-                        Err(err) => {
-                            // Fail-closed: checker side-table is poisoned for
-                            // this call.  Emit a diagnostic; never silently
-                            // substitute Unit.  (LESSONS: checker-output-boundary P0)
-                            let callee_name = if let Expr::Identifier(name) = &function.0 {
-                                name.clone()
-                            } else {
-                                "<expr>".to_string()
-                            };
+                    .collect::<Vec<_>>();
+                if let Expr::Identifier(name) = &function.0 {
+                    if stdlib_catalog::is_overloaded_builtin(name) {
+                        let arg_tys = args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>();
+                        if let Some(entry) = stdlib_catalog::resolve_overload(name, &arg_tys) {
+                            let result_ty = entry.return_ty.to_resolved();
+                            let callee = self.lower_stdlib_callee(entry, function.1.clone());
+                            (
+                                HirExprKind::Call {
+                                    callee: Box::new(callee),
+                                    args,
+                                },
+                                result_ty,
+                            )
+                        } else {
+                            let arg_ty = arg_tys.first().cloned().unwrap_or(ResolvedTy::Unit);
                             self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: callee_name,
-                                    reason: err.to_string(),
+                                HirDiagnosticKind::UnresolvedBuiltinOverload {
+                                    name: name.clone(),
+                                    arg_ty,
                                 },
                                 span.clone(),
-                                "checker-authoritative call result type failed boundary conversion",
+                                "builtin call has no registered monomorphic overload for this argument type",
                             ));
-                            ResolvedTy::Unit
+                            let callee = self.unresolved_builtin_callee(name, function.1.clone());
+                            (
+                                HirExprKind::Call {
+                                    callee: Box::new(callee),
+                                    args,
+                                },
+                                ResolvedTy::Unit,
+                            )
                         }
+                    } else {
+                        self.lower_regular_call(function, args, &span, site)
                     }
-                } else if let ResolvedTy::Function { ret, .. } = &callee.ty {
-                    // No checker entry: fall through to the callee's HIR-inferred
-                    // function type (used for calls to functions that are in
-                    // fn_registry or locally resolved).
-                    *ret.clone()
                 } else {
-                    if matches!(
-                        callee.kind,
-                        HirExprKind::BindingRef {
-                            resolved: ResolvedRef::Unresolved,
-                            ..
-                        }
-                    ) {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::UnresolvedInferenceVar,
-                            span.clone(),
-                            "call result type cannot be determined: callee is unresolved",
-                        ));
-                    }
-                    ResolvedTy::Unit
-                };
-                (
-                    HirExprKind::Call {
-                        callee: Box::new(callee),
-                        args,
-                    },
-                    result_ty,
-                )
+                    self.lower_regular_call(function, args, &span, site)
+                }
             }
             Expr::Block(block) => {
                 let block = self.lower_block(block, &ResolvedTy::Unit);
@@ -2391,7 +2666,79 @@ impl LowerCtx {
                     )
                 }
             }
+            Expr::ForkBlock { body } => {
+                if self.scope_depth == 0 || !in_stmt_position {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::AwaitOutOfPosition,
+                        span.clone(),
+                        "`fork { ... }` child-task blocks are only legal as statements inside a `scope{}` body",
+                    ));
+                    (
+                        HirExprKind::Unsupported(
+                            "`fork { ... }` outside scope statement".to_string(),
+                        ),
+                        ResolvedTy::Unit,
+                    )
+                } else {
+                    let task_ty = ResolvedTy::Task(Box::new(ResolvedTy::Unit));
+                    (
+                        HirExprKind::ForkBlock {
+                            body: self.lower_cancellation_clause_block(body),
+                            task_ty: task_ty.clone(),
+                        },
+                        task_ty,
+                    )
+                }
+            }
+            Expr::ScopeDeadline { duration, body } => {
+                if self.scope_depth == 0 || !in_stmt_position {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::AwaitOutOfPosition,
+                        span.clone(),
+                        "`after(duration) { ... }` deadline clauses are only legal as statements inside a `scope{}` body",
+                    ));
+                    (
+                        HirExprKind::Unsupported(
+                            "`after(duration) { ... }` outside scope statement".to_string(),
+                        ),
+                        ResolvedTy::Unit,
+                    )
+                } else {
+                    let duration = self.lower_expr(duration, IntentKind::Read);
+                    (
+                        HirExprKind::ScopeDeadline {
+                            duration: Box::new(duration),
+                            body: self.lower_cancellation_clause_block(body),
+                        },
+                        ResolvedTy::Unit,
+                    )
+                }
+            }
             Expr::Await(inner) => {
+                if matches!(
+                    self.actor_method_dispatch.get(&SpanKey::from(&inner.1)),
+                    Some(ActorMethodKind::Ask(_, _))
+                ) {
+                    if !in_stmt_position {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::AwaitOutOfPosition,
+                            span.clone(),
+                            "`await actor.method(...)` is only legal as a statement-expression in v0.5",
+                        ));
+                        return HirExpr {
+                            node: self.ids.node(),
+                            site: self.ids.site(),
+                            value_class: ValueClass::BitCopy,
+                            ty: ResolvedTy::Unit,
+                            intent,
+                            kind: HirExprKind::Unsupported(
+                                "`await actor.method(...)` out of position".to_string(),
+                            ),
+                            span,
+                        };
+                    }
+                    return self.lower_expr(inner, intent);
+                }
                 // `await expr` — only legal as the direct statement-expression
                 // inside a `scope{}` body in v0.5 (TI-4). Sub-expression positions
                 // (return value, function argument, binary operand, let value, block
@@ -2481,12 +2828,19 @@ impl LowerCtx {
             Expr::Select { arms, timeout } => {
                 self.lower_select(arms, timeout.as_deref(), span.clone())
             }
+            Expr::Spawn { target, args } => self.lower_spawn(target, args, span.clone()),
             Expr::SpawnLambdaActor {
                 params,
                 return_type,
                 body,
                 ..
             } => self.lower_spawn_lambda_actor(params, return_type.as_ref(), body),
+            Expr::Lambda {
+                params,
+                return_type,
+                body,
+                ..
+            } => self.lower_closure(params, return_type.as_ref(), body, span.clone()),
             Expr::MethodCall {
                 receiver,
                 method,
@@ -2650,47 +3004,74 @@ impl LowerCtx {
                 )
             }
             Expr::FieldAccess { object, field } => {
-                // Named-field read on a record or struct type. The checker has
-                // already resolved the field and recorded the result type in
-                // `expr_types`. LESSONS: `checker-authority` P0 — the type of
-                // the field read comes exclusively from the checker side-table,
-                // never re-derived here.
-                let hir_object = self.lower_expr(object, IntentKind::Read);
-                let checker_key = SpanKey::from(&span);
-                let field_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
-                    match ResolvedTy::from_ty(&ty) {
-                        Ok(resolved) => resolved,
-                        Err(err) => {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: field.clone(),
-                                    reason: err.to_string(),
-                                },
-                                span.clone(),
-                                "field-access result type failed checker-boundary conversion",
-                            ));
-                            ResolvedTy::Unit
-                        }
-                    }
+                let missing_import = if let Expr::Identifier(module_name) = &object.0 {
+                    self.missing_stdlib_module_import(module_name)
+                        .map(|module| (module_name, module))
                 } else {
-                    // No checker entry: malformed checker output. Fail-closed.
+                    None
+                };
+                if let Some((module_name, module)) = missing_import {
+                    let name = format!("{module_name}.{field}");
                     self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: field.clone(),
-                            reason: "expr_types has no entry for field-access site".into(),
+                        HirDiagnosticKind::ImportMissing {
+                            module: module.to_string(),
+                            name,
                         },
                         span.clone(),
-                        "field-access result type missing from checker side-table",
+                        stdlib_catalog::missing_import_hint(module),
                     ));
-                    ResolvedTy::Unit
-                };
-                (
-                    HirExprKind::FieldAccess {
-                        object: Box::new(hir_object),
-                        field: field.clone(),
-                    },
-                    field_ty,
-                )
+                    (
+                        HirExprKind::FieldAccess {
+                            object: Box::new(
+                                self.unresolved_module_object(module_name, object.1.clone()),
+                            ),
+                            field: field.clone(),
+                        },
+                        ResolvedTy::Unit,
+                    )
+                } else {
+                    // Named-field read on a record or struct type. The checker has
+                    // already resolved the field and recorded the result type in
+                    // `expr_types`. LESSONS: `checker-authority` P0 — the type of
+                    // the field read comes exclusively from the checker side-table,
+                    // never re-derived here.
+                    let hir_object = self.lower_expr(object, IntentKind::Read);
+                    let checker_key = SpanKey::from(&span);
+                    let field_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+                        match ResolvedTy::from_ty(&ty) {
+                            Ok(resolved) => resolved,
+                            Err(err) => {
+                                self.diagnostics.push(HirDiagnostic::new(
+                                    HirDiagnosticKind::CheckerBoundaryViolation {
+                                        name: field.clone(),
+                                        reason: err.to_string(),
+                                    },
+                                    span.clone(),
+                                    "field-access result type failed checker-boundary conversion",
+                                ));
+                                ResolvedTy::Unit
+                            }
+                        }
+                    } else {
+                        // No checker entry: malformed checker output. Fail-closed.
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: field.clone(),
+                                reason: "expr_types has no entry for field-access site".into(),
+                            },
+                            span.clone(),
+                            "field-access result type missing from checker side-table",
+                        ));
+                        ResolvedTy::Unit
+                    };
+                    (
+                        HirExprKind::FieldAccess {
+                            object: Box::new(hir_object),
+                            field: field.clone(),
+                        },
+                        field_ty,
+                    )
+                }
             }
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
@@ -2784,6 +3165,41 @@ impl LowerCtx {
         inner
     }
 
+    /// Derive the HIR binding type for a select arm's named pattern.
+    ///
+    /// For `ActorAsk` arms the reply type comes from the checker-authoritative
+    /// `actor_method_dispatch` table keyed on the arm source expression's span.
+    /// For `StreamNext` and `TaskAwait` arms `Unit` is returned as a placeholder
+    /// — these arm kinds remain unsupported through MIR (slice 2+) and the real
+    /// element type is recoverable from the lowered source expression's `.ty`
+    /// field when those slices land. WHY placeholder: HIR has no type-inference
+    /// machinery; keeping a real element type here would require either duplicating
+    /// the checker's unification or adding a side table entry. WHEN obsolete: when
+    /// `StreamNext` and `TaskAwait` arm lowering lands in slice 2+.
+    fn select_arm_binding_ty(
+        &self,
+        kind: &HirSelectArmKind,
+        source_span: &std::ops::Range<usize>,
+    ) -> ResolvedTy {
+        match kind {
+            HirSelectArmKind::ActorAsk { .. } => {
+                match self
+                    .actor_method_dispatch
+                    .get(&SpanKey::from(source_span))
+                    .cloned()
+                {
+                    Some(ActorMethodKind::Ask(_, reply_ty)) => {
+                        ResolvedTy::from_ty(&reply_ty).unwrap_or(ResolvedTy::Unit)
+                    }
+                    Some(ActorMethodKind::Fire(_)) | None => ResolvedTy::Unit,
+                }
+            }
+            HirSelectArmKind::StreamNext { .. }
+            | HirSelectArmKind::TaskAwait { .. }
+            | HirSelectArmKind::AfterTimer { .. } => ResolvedTy::Unit,
+        }
+    }
+
     /// Lower a parsed `select { ... }` expression to HIR.
     ///
     /// Per HEW-SPEC-2026 §4.11.1 the four arm forms are exhaustive:
@@ -2840,7 +3256,26 @@ impl LowerCtx {
                     first_after_span = Some(arm.source.1.clone());
                 }
             }
+            // Each arm body lowers inside its own scope so `binding_name`
+            // resolves to this arm's reply value within the body, and is
+            // invisible to sibling arms and the surrounding scope.
+            //
+            // The `BindingId` returned by `bind()` is recorded on the
+            // arm so MIR's `Terminator::Select` producer can register
+            // `binding_locals[id] = <reply_dest_place>` before lowering
+            // the arm body; without this id the body's `BindingRef`
+            // resolves to an unbound `Place` and falls back to
+            // `MirDiagnosticKind::UnresolvedPlace`.
+            self.push_scope();
+            let binding_id = if let Some(ref name) = binding_name {
+                let binding_ty = self.select_arm_binding_ty(&kind, &arm.source.1);
+                let bound = self.bind(name.clone(), binding_ty, false, arm.binding.1.clone());
+                Some(bound.id)
+            } else {
+                None
+            };
             let body = self.lower_expr(&arm.body, IntentKind::Read);
+            self.pop_scope();
             if let Some(expected) = expected_ty.as_ref() {
                 if &body.ty != expected {
                     self.diagnostics.push(HirDiagnostic::new(
@@ -2859,6 +3294,7 @@ impl LowerCtx {
             hir_arms.push(HirSelectArm {
                 kind,
                 binding_name,
+                binding_id,
                 body,
             });
         }
@@ -2893,6 +3329,7 @@ impl LowerCtx {
                     duration: Box::new(duration),
                 },
                 binding_name: None,
+                binding_id: None,
                 body,
             });
         }
@@ -2949,6 +3386,292 @@ impl LowerCtx {
             name: "Duplex".to_string(),
             args: vec![msg_ty, reply_ty],
         }
+    }
+
+    fn closure_signature_from_ty(ty: &ResolvedTy) -> Option<(Vec<ResolvedTy>, ResolvedTy)> {
+        match ty {
+            ResolvedTy::Function { params, ret } | ResolvedTy::Closure { params, ret, .. } => {
+                Some((params.clone(), ret.as_ref().clone()))
+            }
+            _ => None,
+        }
+    }
+
+    fn visible_outer_bindings(&self) -> HashMap<BindingId, OuterClosureBinding> {
+        let mut visible_by_name: HashMap<String, ScopeBinding> = HashMap::new();
+        for scope in self.scopes.iter().rev() {
+            for (name, (id, ty, span)) in scope {
+                visible_by_name
+                    .entry(name.clone())
+                    .or_insert_with(|| (*id, ty.clone(), span.clone()));
+            }
+        }
+        visible_by_name
+            .into_iter()
+            .map(|(name, (id, ty, span))| (id, (name, ty, span)))
+            .collect()
+    }
+
+    fn lower_closure(
+        &mut self,
+        params: &[LambdaParam],
+        return_type: Option<&Spanned<TypeExpr>>,
+        body: &Spanned<Expr>,
+        span: std::ops::Range<usize>,
+    ) -> (HirExprKind, ResolvedTy) {
+        let checker_key = SpanKey::from(&span);
+        let closure_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+            match ResolvedTy::from_ty(&ty) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "closure literal".to_string(),
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "closure literal type failed checker-boundary conversion",
+                    ));
+                    ResolvedTy::Function {
+                        params: vec![],
+                        ret: Box::new(ResolvedTy::Unit),
+                    }
+                }
+            }
+        } else {
+            let param_tys: Vec<ResolvedTy> = params
+                .iter()
+                .map(|p| {
+                    p.ty.as_ref()
+                        .map_or(ResolvedTy::Unit, |annotation| self.lower_type(annotation))
+                })
+                .collect();
+            let ret_ty = return_type
+                .as_ref()
+                .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
+            ResolvedTy::Function {
+                params: param_tys,
+                ret: Box::new(ret_ty),
+            }
+        };
+
+        let (signature_params, ret_ty) = Self::closure_signature_from_ty(&closure_ty)
+            .unwrap_or_else(|| {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "closure literal".to_string(),
+                        reason: format!("expected Function/Closure type, got {closure_ty:?}"),
+                    },
+                    span.clone(),
+                    "closure literal did not type as a callable value",
+                ));
+                (vec![], ResolvedTy::Unit)
+            });
+
+        let outer_bindings = self.visible_outer_bindings();
+        self.push_scope();
+        let mut hir_params: Vec<HirBinding> = Vec::with_capacity(params.len());
+        for (idx, param) in params.iter().enumerate() {
+            let ty = signature_params
+                .get(idx)
+                .cloned()
+                .or_else(|| {
+                    param
+                        .ty
+                        .as_ref()
+                        .map(|annotation| self.lower_type(annotation))
+                })
+                .unwrap_or(ResolvedTy::Unit);
+            let binding = self.bind(param.name.clone(), ty, false, 0..0);
+            hir_params.push(binding);
+        }
+        let lowered_body = self.lower_expr(body, IntentKind::Read);
+        self.pop_scope();
+
+        let checker_facts = if let Some(facts) = self.closure_capture_facts.get(&checker_key) {
+            facts.clone()
+        } else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "closure literal".to_string(),
+                    reason: "closure_capture_facts has no record for closure literal span"
+                        .to_string(),
+                },
+                span.clone(),
+                "closure literal reached HIR without checker capture metadata",
+            ));
+            Vec::new()
+        };
+
+        let captures =
+            self.materialize_closure_captures(&lowered_body, &outer_bindings, checker_facts, span);
+
+        (
+            HirExprKind::Closure {
+                params: hir_params,
+                ret_ty,
+                body: Box::new(lowered_body),
+                captures,
+            },
+            closure_ty,
+        )
+    }
+
+    fn materialize_closure_captures(
+        &mut self,
+        body: &HirExpr,
+        outer_bindings: &HashMap<BindingId, OuterClosureBinding>,
+        facts: Vec<ClosureCaptureFact>,
+        span: std::ops::Range<usize>,
+    ) -> Vec<HirClosureCapture> {
+        let mut seen: HashSet<BindingId> = HashSet::new();
+        let mut ordered: Vec<ClosureCaptureCandidate> = Vec::new();
+        collect_general_closure_captures_walk(body, outer_bindings, &mut seen, &mut ordered);
+
+        let mut remaining_facts = facts;
+        let mut captures = Vec::with_capacity(ordered.len());
+        for (binding, name, def_span) in ordered {
+            let fact_idx = remaining_facts.iter().position(|fact| {
+                fact.name == name
+                    && fact
+                        .def_span
+                        .as_ref()
+                        .is_some_and(|fact_def_span| *fact_def_span == def_span)
+            });
+            let fact_idx = fact_idx.or_else(|| {
+                let mut matches = remaining_facts
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, fact)| fact.name == name);
+                let first = matches.next()?;
+                if matches.next().is_none() {
+                    Some(first.0)
+                } else {
+                    None
+                }
+            });
+            let Some(fact_idx) = fact_idx else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: name.clone(),
+                        reason:
+                            "closure_capture_facts has no unambiguous entry for captured HIR binding"
+                                .to_string(),
+                    },
+                    span.clone(),
+                    "closure capture reached HIR without checker materialization metadata",
+                ));
+                continue;
+            };
+            let fact = remaining_facts.remove(fact_idx);
+            let ty = match ResolvedTy::from_ty(&fact.ty) {
+                Ok(ty) => ty,
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: fact.name.clone(),
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "closure capture type failed checker-boundary conversion",
+                    ));
+                    continue;
+                }
+            };
+            captures.push(HirClosureCapture {
+                binding,
+                name,
+                ty,
+                mode: fact.mode,
+                is_send: fact.is_send,
+            });
+        }
+
+        for fact in remaining_facts {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: fact.name,
+                    reason:
+                        "checker reported a capture that HIR name resolution did not materialize"
+                            .to_string(),
+                },
+                span.clone(),
+                "closure capture metadata and lowered HIR body disagree",
+            ));
+        }
+
+        captures
+    }
+
+    fn lower_spawn(
+        &mut self,
+        target: &Spanned<Expr>,
+        args: &[(String, Spanned<Expr>)],
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let actor_name = match &target.0 {
+            Expr::Identifier(name) => Some(name.clone()),
+            Expr::FieldAccess { object, field } => {
+                if let Expr::Identifier(module) = &object.0 {
+                    Some(format!("{module}.{field}"))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let Some(actor_name) = actor_name else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CutoverUnsupported {
+                    construct: "spawn target expression".to_string(),
+                    slice_target: "actor-body-slice3".to_string(),
+                },
+                span,
+                "`spawn` currently requires a named actor target",
+            ));
+            return (
+                HirExprKind::Unsupported("unsupported spawn target".to_string()),
+                ResolvedTy::Unit,
+            );
+        };
+
+        let lowered_args = args
+            .iter()
+            .map(|(name, expr)| (name.clone(), self.lower_expr(expr, IntentKind::Read)))
+            .collect::<Vec<_>>();
+        let ty = if let Some(ty) = self.expr_types.get(&SpanKey::from(&span)).cloned() {
+            match ResolvedTy::from_ty(&ty) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: format!("spawn {actor_name}"),
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "checker-authoritative spawn result type failed boundary conversion",
+                    ));
+                    ResolvedTy::Unit
+                }
+            }
+        } else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: format!("spawn {actor_name}"),
+                    reason: "missing expr_types entry".to_string(),
+                },
+                span.clone(),
+                "checker did not provide a result type for this actor spawn expression",
+            ));
+            ResolvedTy::Unit
+        };
+        (
+            HirExprKind::Spawn {
+                actor_name,
+                args: lowered_args,
+            },
+            ty,
+        )
     }
 
     /// Lower an `Expr::SpawnLambdaActor` to an
@@ -3195,6 +3918,17 @@ impl LowerCtx {
         name: &str,
         span: std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
+        if let Some(reader) = ExecutionContextReader::from_surface_name(name) {
+            let key = SpanKey::from(&span);
+            if self
+                .expr_types
+                .get(&key)
+                .is_some_and(|ty| *ty == reader.ty())
+            {
+                let ty = ResolvedTy::from_ty(&reader.ty()).expect("reader type resolves");
+                return (HirExprKind::ContextReader { reader }, ty);
+            }
+        }
         if let Some((id, ty)) = self.lookup(name) {
             (
                 HirExprKind::BindingRef {
@@ -3219,13 +3953,24 @@ impl LowerCtx {
                 fn_ty,
             )
         } else {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::UnresolvedSymbol {
-                    name: name.to_string(),
-                },
-                span,
-                "identifier has no binding in resolved HIR",
-            ));
+            if let Some(module) = self.missing_stdlib_module_import(name) {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::ImportMissing {
+                        module: module.to_string(),
+                        name: name.to_string(),
+                    },
+                    span,
+                    stdlib_catalog::missing_import_hint(module),
+                ));
+            } else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::UnresolvedSymbol {
+                        name: name.to_string(),
+                    },
+                    span,
+                    "identifier has no binding in resolved HIR",
+                ));
+            }
             (
                 HirExprKind::BindingRef {
                     name: name.to_string(),
@@ -3370,6 +4115,69 @@ impl LowerCtx {
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         let key = SpanKey::from(&span);
+        if let Some(dispatch) = self.actor_method_dispatch.get(&key).cloned() {
+            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            let lowered_args: Vec<HirExpr> = args
+                .iter()
+                .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                .collect();
+            return match dispatch {
+                ActorMethodKind::Fire(method_id) => (
+                    HirExprKind::ActorSend {
+                        receiver: Box::new(lowered_receiver),
+                        method_id,
+                        args: lowered_args,
+                    },
+                    ResolvedTy::Unit,
+                ),
+                ActorMethodKind::Ask(method_id, reply_ty) => match ResolvedTy::from_ty(&reply_ty) {
+                    Ok(reply_ty) => (
+                        HirExprKind::ActorAsk {
+                            receiver: Box::new(lowered_receiver),
+                            method_id,
+                            args: lowered_args,
+                            reply_ty: reply_ty.clone(),
+                        },
+                        reply_ty,
+                    ),
+                    Err(err) => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: format!("actor method `.{method}`"),
+                                reason: err.to_string(),
+                            },
+                            span.clone(),
+                            "checker-authoritative actor_method_dispatch reply type failed boundary conversion",
+                        ));
+                        (
+                            HirExprKind::Unsupported(format!(
+                                "actor method `.{method}` has poisoned dispatch reply type"
+                            )),
+                            ResolvedTy::Unit,
+                        )
+                    }
+                },
+            };
+        }
+        if matches!(
+            self.method_call_receiver_kinds.get(&key),
+            Some(MethodCallReceiverKind::ActorInstance { .. })
+        ) {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: format!("actor method `.{method}`"),
+                    reason: "missing actor_method_dispatch entry".to_string(),
+                },
+                span.clone(),
+                "checker classified this method-call receiver as actor-typed but omitted the actor dispatch discriminator",
+            ));
+            return (
+                HirExprKind::Unsupported(format!(
+                    "actor method `.{method}` has no dispatch discriminator"
+                )),
+                ResolvedTy::Unit,
+            );
+        }
         // `dyn Trait` receivers take precedence: the checker's
         // `dyn_trait_method_calls` side-table pins the trait/method/slot
         // resolution authoritatively, and these calls do NOT have a
@@ -3483,6 +4291,30 @@ impl LowerCtx {
                 )
             }
             None => {
+                if let Expr::Identifier(module_name) = &receiver.0 {
+                    if let Some(module) = self.missing_stdlib_module_import(module_name) {
+                        let lowered_args: Vec<HirExpr> = args
+                            .iter()
+                            .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                            .collect();
+                        let name = format!("{module_name}.{method}");
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::ImportMissing {
+                                module: module.to_string(),
+                                name: name.clone(),
+                            },
+                            span.clone(),
+                            stdlib_catalog::missing_import_hint(module),
+                        ));
+                        return (
+                            HirExprKind::Call {
+                                callee: Box::new(self.unresolved_module_object(&name, span)),
+                                args: lowered_args,
+                            },
+                            ResolvedTy::Unit,
+                        );
+                    }
+                }
                 // No rewrite entry — fail closed.  Do not re-infer from the receiver type.
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::MethodCallNoRewrite {
@@ -3520,7 +4352,7 @@ impl LowerCtx {
     ) -> HirBinding {
         let id = self.ids.binding();
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.clone(), (id, ty.clone()));
+            scope.insert(name.clone(), (id, ty.clone(), span.clone()));
         }
         HirBinding {
             id,
@@ -3535,7 +4367,15 @@ impl LowerCtx {
         self.scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.get(name).map(|(id, ty)| (*id, ty.clone())))
+            .find_map(|scope| scope.get(name).map(|(id, ty, _)| (*id, ty.clone())))
+    }
+
+    fn missing_stdlib_module_import(&self, name: &str) -> Option<&'static str> {
+        if self.lookup(name).is_none() && !self.fn_registry.contains_key(name) {
+            stdlib_catalog::missing_import_module(name)
+        } else {
+            None
+        }
     }
 
     fn push_scope(&mut self) {
@@ -3544,6 +4384,14 @@ impl LowerCtx {
 
     fn pop_scope(&mut self) {
         self.scopes.pop();
+    }
+
+    fn lower_cancellation_clause_block(&mut self, block: &Block) -> HirBlock {
+        let saved_scope_depth = self.scope_depth;
+        self.scope_depth = 0;
+        let lowered = self.lower_block(block, &ResolvedTy::Unit);
+        self.scope_depth = saved_scope_depth;
+        lowered
     }
 
     fn unsupported(
@@ -3836,8 +4684,10 @@ fn collect_captures_walk(
         //     frame and were classified when the inner lambda lowered.
         //   - Unsupported: nothing to walk.
         HirExprKind::BindingRef { .. }
+        | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
         | HirExprKind::SpawnLambdaActor { .. }
+        | HirExprKind::Closure { .. }
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_captures_walk(left, param_ids, seen, captures, self_id);
@@ -3849,8 +4699,27 @@ fn collect_captures_walk(
                 collect_captures_walk(arg, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::Block(block) | HirExprKind::Scope { body: block } => {
+        HirExprKind::Spawn { args, .. } => {
+            for (_, arg) in args {
+                collect_captures_walk(arg, param_ids, seen, captures, self_id);
+            }
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
+            for arg in args {
+                collect_captures_walk(arg, param_ids, seen, captures, self_id);
+            }
+        }
+        HirExprKind::Block(block)
+        | HirExprKind::Scope { body: block }
+        | HirExprKind::ForkBlock { body: block, .. } => {
             collect_captures_walk_block(block, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::ScopeDeadline { duration, body } => {
+            collect_captures_walk(duration, param_ids, seen, captures, self_id);
+            collect_captures_walk_block(body, param_ids, seen, captures, self_id);
         }
         HirExprKind::If {
             condition,
@@ -3940,12 +4809,203 @@ fn collect_captures_walk(
         HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_captures_walk(value, param_ids, seen, captures, self_id);
         }
-        HirExprKind::CallDynMethod { receiver, args, .. } => {
-            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
-            for arg in args {
-                collect_captures_walk(arg, param_ids, seen, captures, self_id);
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "single exhaustive walker over HirExprKind variants; splitting risks traversal gaps"
+)]
+fn collect_general_closure_captures_walk(
+    expr: &HirExpr,
+    outer_bindings: &HashMap<BindingId, OuterClosureBinding>,
+    seen: &mut HashSet<BindingId>,
+    captures: &mut Vec<ClosureCaptureCandidate>,
+) {
+    match &expr.kind {
+        HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(id),
+        } if outer_bindings.contains_key(id) => {
+            if seen.insert(*id) {
+                let span = outer_bindings
+                    .get(id)
+                    .map(|(_, _, span)| span.clone())
+                    .unwrap_or_default();
+                captures.push((*id, name.clone(), span));
             }
         }
+        HirExprKind::Closure {
+            captures: nested, ..
+        } => {
+            for capture in nested {
+                if outer_bindings.contains_key(&capture.binding) && seen.insert(capture.binding) {
+                    let span = outer_bindings
+                        .get(&capture.binding)
+                        .map(|(_, _, span)| span.clone())
+                        .unwrap_or_default();
+                    captures.push((capture.binding, capture.name.clone(), span));
+                }
+            }
+        }
+        HirExprKind::BindingRef { .. }
+        | HirExprKind::ContextReader { .. }
+        | HirExprKind::Literal(_)
+        | HirExprKind::SpawnLambdaActor { .. }
+        | HirExprKind::Unsupported(_) => {}
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+            collect_general_closure_captures_walk(left, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(right, outer_bindings, seen, captures);
+        }
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            collect_general_closure_captures_walk(callee, outer_bindings, seen, captures);
+            for arg in args {
+                collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::Spawn { args, .. } => {
+            for (_, arg) in args {
+                collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
+            for arg in args {
+                collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::Block(block)
+        | HirExprKind::Scope { body: block }
+        | HirExprKind::ForkBlock { body: block, .. } => {
+            collect_general_closure_captures_walk_block(block, outer_bindings, seen, captures);
+        }
+        HirExprKind::ScopeDeadline { duration, body } => {
+            collect_general_closure_captures_walk(duration, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_general_closure_captures_walk(condition, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(then_expr, outer_bindings, seen, captures);
+            if let Some(else_expr) = else_expr {
+                collect_general_closure_captures_walk(else_expr, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::StructInit { fields, base, .. } => {
+            for (_, field) in fields {
+                collect_general_closure_captures_walk(field, outer_bindings, seen, captures);
+            }
+            if let Some(base) = base {
+                collect_general_closure_captures_walk(base, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::FieldAccess { object, .. } => {
+            collect_general_closure_captures_walk(object, outer_bindings, seen, captures);
+        }
+        HirExprKind::AwaitTask { binding_id, .. } => {
+            if let Some((name, _, span)) = outer_bindings.get(binding_id) {
+                if seen.insert(*binding_id) {
+                    captures.push((*binding_id, name.clone(), span.clone()));
+                }
+            }
+        }
+        HirExprKind::Select(select) => {
+            for arm in &select.arms {
+                match &arm.kind {
+                    HirSelectArmKind::StreamNext { stream } => {
+                        collect_general_closure_captures_walk(
+                            stream,
+                            outer_bindings,
+                            seen,
+                            captures,
+                        );
+                    }
+                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                        collect_general_closure_captures_walk(
+                            actor,
+                            outer_bindings,
+                            seen,
+                            captures,
+                        );
+                        for arg in args {
+                            collect_general_closure_captures_walk(
+                                arg,
+                                outer_bindings,
+                                seen,
+                                captures,
+                            );
+                        }
+                    }
+                    HirSelectArmKind::TaskAwait { task } => {
+                        collect_general_closure_captures_walk(task, outer_bindings, seen, captures);
+                    }
+                    HirSelectArmKind::AfterTimer { duration } => {
+                        collect_general_closure_captures_walk(
+                            duration,
+                            outer_bindings,
+                            seen,
+                            captures,
+                        );
+                    }
+                }
+                collect_general_closure_captures_walk(&arm.body, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::TupleIndex { tuple, .. } => {
+            collect_general_closure_captures_walk(tuple, outer_bindings, seen, captures);
+        }
+        HirExprKind::Index { container, index } => {
+            collect_general_closure_captures_walk(container, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(index, outer_bindings, seen, captures);
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            inclusive: _,
+        } => {
+            collect_general_closure_captures_walk(container, outer_bindings, seen, captures);
+            if let Some(s) = start {
+                collect_general_closure_captures_walk(s, outer_bindings, seen, captures);
+            }
+            if let Some(e) = end {
+                collect_general_closure_captures_walk(e, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
+        }
+    }
+}
+
+fn collect_general_closure_captures_walk_block(
+    block: &HirBlock,
+    outer_bindings: &HashMap<BindingId, OuterClosureBinding>,
+    seen: &mut HashSet<BindingId>,
+    captures: &mut Vec<ClosureCaptureCandidate>,
+) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(_, Some(value)) => {
+                collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
+            }
+            HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
+                collect_general_closure_captures_walk(expr, outer_bindings, seen, captures);
+            }
+            HirStmtKind::Assign { target, value } => {
+                collect_general_closure_captures_walk(target, outer_bindings, seen, captures);
+                collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
+            }
+            HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_general_closure_captures_walk(tail, outer_bindings, seen, captures);
     }
 }
 
@@ -3963,6 +5023,10 @@ fn collect_captures_walk_block(
             }
             HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
                 collect_captures_walk(expr, param_ids, seen, captures, self_id);
+            }
+            HirStmtKind::Assign { target, value } => {
+                collect_captures_walk(target, param_ids, seen, captures, self_id);
+                collect_captures_walk(value, param_ids, seen, captures, self_id);
             }
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
         }
@@ -4068,5 +5132,484 @@ fn describe_select_source_shape(expr: &Expr) -> String {
         Expr::Yield(_) => "yield expression".into(),
         Expr::This => "this".into(),
         _ => "expression".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hew_types::module_registry::ModuleRegistry;
+    use hew_types::Checker;
+
+    fn parse_typecheck_and_lower(
+        source: &str,
+    ) -> (hew_parser::ast::Program, TypeCheckOutput, LowerOutput) {
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&parsed.program);
+        assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+
+        let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx);
+        (parsed.program, tco, lowered)
+    }
+
+    fn main_function_body(output: &LowerOutput) -> &HirBlock {
+        let Some(HirItem::Function(function)) =
+            output.module.items.iter().find(
+                |item| matches!(item, HirItem::Function(function) if function.name == "main"),
+            )
+        else {
+            panic!("expected lowered main function: {:#?}", output.module.items);
+        };
+        &function.body
+    }
+
+    fn checker_fact_named<'a>(
+        facts: impl Iterator<Item = &'a ClosureCaptureFact>,
+        name: &str,
+    ) -> &'a ClosureCaptureFact {
+        let mut matches = facts.filter(|fact| fact.name == name);
+        let first = matches
+            .next()
+            .unwrap_or_else(|| panic!("expected checker fact named {name}"));
+        assert!(
+            matches.next().is_none(),
+            "expected exactly one checker fact named {name}"
+        );
+        first
+    }
+
+    #[test]
+    fn closure_capture_uses_checker_mode_and_send_fact() {
+        let (_program, tco, lowered) = parse_typecheck_and_lower(
+            r"
+            fn main() {
+                let k: i32 = 2;
+                let f = |n: i32| n + k;
+            }
+            ",
+        );
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "lower diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+
+        let checker_fact = checker_fact_named(
+            tco.closure_capture_facts
+                .values()
+                .flat_map(|facts| facts.iter()),
+            "k",
+        );
+
+        let body = main_function_body(&lowered);
+        let HirStmtKind::Let(k_binding, _) = &body.statements[0].kind else {
+            panic!("expected first statement to bind k");
+        };
+        let HirStmtKind::Let(_, Some(closure_expr)) = &body.statements[1].kind else {
+            panic!("expected second statement to bind closure");
+        };
+        let HirExprKind::Closure { captures, .. } = &closure_expr.kind else {
+            panic!("expected closure initializer, got {:#?}", closure_expr.kind);
+        };
+        let hir_capture = captures
+            .iter()
+            .find(|capture| capture.name == "k")
+            .unwrap_or_else(|| panic!("expected HIR capture named k: {captures:#?}"));
+
+        assert_eq!(hir_capture.binding, k_binding.id);
+        assert_eq!(hir_capture.mode, checker_fact.mode);
+        assert_eq!(hir_capture.is_send, checker_fact.is_send);
+    }
+
+    #[test]
+    fn missing_closure_capture_facts_emit_boundary_diagnostic() {
+        let (program, mut tco, _) = parse_typecheck_and_lower(
+            r"
+            fn main() {
+                let k: i32 = 2;
+                let f = |n: i32| n + k;
+            }
+            ",
+        );
+        assert!(
+            !tco.closure_capture_facts.is_empty(),
+            "test setup requires checker-produced closure capture facts"
+        );
+        tco.closure_capture_facts.clear();
+
+        let lowered = lower_program(&program, &tco, &ResolutionCtx);
+
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
+                    if name == "closure literal"
+                        && reason == "closure_capture_facts has no record for closure literal span"
+            )),
+            "missing closure_capture_facts entry must emit root-cause boundary diagnostic; got {:#?}",
+            lowered.diagnostics
+        );
+    }
+
+    #[test]
+    fn stdlib_println_resolves_to_i64_overload() {
+        let (_program, _tco, lowered) = parse_typecheck_and_lower(
+            r"
+            fn main() {
+                println(42);
+            }
+            ",
+        );
+        assert!(
+            !lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::UnresolvedSymbol { name } if name == "println"
+            )),
+            "println must not fall through to unresolved symbol: {:#?}",
+            lowered.diagnostics
+        );
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "lower diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+
+        let body = main_function_body(&lowered);
+        let HirStmtKind::Expr(expr) = &body.statements[0].kind else {
+            panic!("expected println statement expression");
+        };
+        let HirExprKind::Call { callee, .. } = &expr.kind else {
+            panic!("expected println call, got {:#?}", expr.kind);
+        };
+        let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
+            panic!("expected callee binding ref, got {:#?}", callee.kind);
+        };
+        assert_eq!(name, "println_i64");
+        assert!(
+            matches!(resolved, ResolvedRef::Item(_)),
+            "expected println_i64 item ref, got {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn stdlib_println_unsupported_type_emits_overload_diagnostic() {
+        let parsed = hew_parser::parse(
+            r"
+            fn main() {
+                let w: Widget;
+                println(w);
+            }
+            ",
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+
+        let lowered = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::UnresolvedBuiltinOverload { name, arg_ty }
+                    if name == "println"
+                        && matches!(arg_ty, ResolvedTy::Named { name, .. } if name == "Widget")
+            )),
+            "expected unsupported println overload diagnostic, got {:#?}",
+            lowered.diagnostics
+        );
+        assert!(
+            !lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::UnresolvedSymbol { name } if name == "println"
+            )),
+            "unsupported println overload must not fall through to UnresolvedSymbol: {:#?}",
+            lowered.diagnostics
+        );
+    }
+
+    #[test]
+    fn missing_stdlib_module_field_emits_import_missing() {
+        let parsed = hew_parser::parse(
+            r"
+            fn main() {
+                let _ = fs.read;
+            }
+            ",
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+
+        let lowered = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::ImportMissing { module, name }
+                    if module == "std::fs"
+                        && name == "fs.read"
+                        && diagnostic.note == "add 'import std::fs;' at the top of the file"
+            )),
+            "expected missing import diagnostic for fs.read, got {:#?}",
+            lowered.diagnostics
+        );
+        assert!(
+            !lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::UnresolvedSymbol { name } if name == "fs"
+            )),
+            "fs.read must not fall through to UnresolvedSymbol: {:#?}",
+            lowered.diagnostics
+        );
+    }
+
+    #[test]
+    fn missing_stdlib_module_call_emits_import_missing() {
+        let parsed = hew_parser::parse(
+            r#"
+            fn main() {
+                let _ = fs.read("test.txt");
+            }
+            "#,
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+
+        let lowered = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::ImportMissing { module, name }
+                    if module == "std::fs"
+                        && name == "fs.read"
+                        && diagnostic.note == "add 'import std::fs;' at the top of the file"
+            )),
+            "expected missing import diagnostic for fs.read call, got {:#?}",
+            lowered.diagnostics
+        );
+        assert!(
+            !lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::MethodCallNoRewrite { method } if method == "read"
+            )),
+            "fs.read call must not fall through to MethodCallNoRewrite: {:#?}",
+            lowered.diagnostics
+        );
+    }
+
+    // ── Select arm-binding scoping ──────────────────────────────────────────
+    //
+    // Source shared by several tests below: two actors both returning `int`.
+    // Both arm bodies return the bound name so the arm body types agree (the
+    // type checker requires all arm bodies to have the same type).  Distinct
+    // binding names (`reply` vs `verdict`) let us prove each arm has its own
+    // BindingId.
+
+    const SELECT_SCOPE_SOURCE: &str = r"
+        actor Pinger {
+            receive fn ping() -> int { 1 }
+        }
+        actor Counter {
+            receive fn count() -> int { 2 }
+        }
+        fn main() {
+            let p = spawn Pinger;
+            let c = spawn Counter;
+            let result = select {
+                reply from p.ping() => reply,
+                verdict from c.count() => verdict,
+            };
+        }
+    ";
+
+    /// Helper: walk a lowered HIR expression looking for the first
+    /// `BindingRef` whose `name` matches `target`. Returns `Some(resolved)`.
+    fn find_binding_ref_named<'a>(expr: &'a HirExpr, target: &str) -> Option<&'a ResolvedRef> {
+        if let HirExprKind::BindingRef { name, resolved } = &expr.kind {
+            if name == target {
+                return Some(resolved);
+            }
+        }
+        // Recurse into children where an arm body might live.
+        if let HirExprKind::Select(sel) = &expr.kind {
+            for arm in &sel.arms {
+                if let Some(r) = find_binding_ref_named(&arm.body, target) {
+                    return Some(r);
+                }
+            }
+        }
+        None
+    }
+
+    /// Walk each arm's body separately and return the resolved ref for
+    /// `target` found only within `arm_index`.
+    fn find_binding_ref_in_arm<'a>(
+        select_expr: &'a HirExpr,
+        arm_index: usize,
+        target: &str,
+    ) -> Option<&'a ResolvedRef> {
+        let HirExprKind::Select(sel) = &select_expr.kind else {
+            return None;
+        };
+        let arm = sel.arms.get(arm_index)?;
+        find_binding_ref_named(&arm.body, target)
+    }
+
+    /// Return the select expression from `main`'s first statement's let
+    /// initialiser.
+    fn main_select_expr(output: &LowerOutput) -> &HirExpr {
+        let body = main_function_body(output);
+        // The select is the initialiser of the third let (`let _ = select{..}`).
+        // Statements: 0=let p, 1=let c, 2=let _ = select.
+        let HirStmtKind::Let(_, Some(init)) = &body.statements[2].kind else {
+            panic!(
+                "expected third statement to be `let _ = select{{..}}`, got {:#?}",
+                body.statements
+            );
+        };
+        init
+    }
+
+    #[test]
+    fn select_actor_ask_arm_body_resolves_own_binding() {
+        // Arm body reference to `reply` must resolve to a Binding, not
+        // Unresolved — confirming the arm's scope registration works.
+        let (_, _, lowered) = parse_typecheck_and_lower(SELECT_SCOPE_SOURCE);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "unexpected lower diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+
+        let select_expr = main_select_expr(&lowered);
+        let resolved = find_binding_ref_in_arm(select_expr, 0, "reply")
+            .unwrap_or_else(|| panic!("expected BindingRef 'reply' in arm 0"));
+
+        assert!(
+            matches!(resolved, ResolvedRef::Binding(_)),
+            "arm 0 body 'reply' must resolve to Binding, got {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn select_sibling_arm_binding_is_not_visible() {
+        // Arm 1's body references `reply` (arm 0's binding name). Since
+        // there is no outer `reply` binding, it must produce UnresolvedSymbol.
+        let source = r"
+            actor Pinger {
+                receive fn ping() -> int { 1 }
+            }
+            actor Checker {
+                receive fn check() -> int { 2 }
+            }
+            fn main() {
+                let p = spawn Pinger;
+                let c = spawn Checker;
+                let result = select {
+                    reply from p.ping() => reply,
+                    _verdict from c.check() => reply,
+                };
+            }
+        ";
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        // Type errors are expected (reply is unresolved in arm 1 context);
+        // we proceed to HIR lowering regardless.
+        let tco = checker.check_program(&parsed.program);
+        let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx);
+
+        assert!(
+            lowered.diagnostics.iter().any(|d| matches!(
+                &d.kind,
+                HirDiagnosticKind::UnresolvedSymbol { name } if name == "reply"
+            )),
+            "arm 1 body referencing arm 0's 'reply' must emit UnresolvedSymbol; got {:#?}",
+            lowered.diagnostics
+        );
+    }
+
+    #[test]
+    fn select_arm_binding_not_visible_after_select() {
+        // A reference to `reply` after the select (outside the select body)
+        // must produce UnresolvedSymbol — the scope is popped on arm exit.
+        let source = r"
+            actor Pinger {
+                receive fn ping() -> int { 1 }
+            }
+            fn main() {
+                let p = spawn Pinger;
+                let result = select {
+                    reply from p.ping() => reply,
+                };
+                let late = reply;
+            }
+        ";
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&parsed.program);
+        let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx);
+
+        assert!(
+            lowered.diagnostics.iter().any(|d| matches!(
+                &d.kind,
+                HirDiagnosticKind::UnresolvedSymbol { name } if name == "reply"
+            )),
+            "reference to arm binding outside select must emit UnresolvedSymbol; got {:#?}",
+            lowered.diagnostics
+        );
+    }
+
+    #[test]
+    fn select_multiple_arms_have_independent_binding_ids() {
+        // Two arms with distinct binding names must each resolve to their own
+        // BindingId in their respective bodies.
+        let (_, _, lowered) = parse_typecheck_and_lower(SELECT_SCOPE_SOURCE);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "unexpected lower diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+
+        let select_expr = main_select_expr(&lowered);
+        let reply_ref = find_binding_ref_in_arm(select_expr, 0, "reply")
+            .unwrap_or_else(|| panic!("expected BindingRef 'reply' in arm 0"));
+        let verdict_ref = find_binding_ref_in_arm(select_expr, 1, "verdict")
+            .unwrap_or_else(|| panic!("expected BindingRef 'verdict' in arm 1"));
+
+        let ResolvedRef::Binding(reply_id) = reply_ref else {
+            panic!("arm 0 'reply' must be Binding, got {reply_ref:?}");
+        };
+        let ResolvedRef::Binding(verdict_id) = verdict_ref else {
+            panic!("arm 1 'verdict' must be Binding, got {verdict_ref:?}");
+        };
+
+        assert_ne!(
+            reply_id, verdict_id,
+            "distinct arm bindings must have distinct BindingIds"
+        );
     }
 }

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# test-release-binary.sh — Smoke-test the release hew binary via compile-v05.
+# test-release-binary.sh — Smoke-test the release hew binary via compile.
 #
 # Builds hew-cli in release mode and drives a trivial Hew program through
-# the v0.5 IR ladder (`hew compile-v05`) to confirm the release binary
+# the v0.5 IR ladder (`hew compile`) to confirm the release binary
 # produces a working native executable.
 #
 # This guard exists to catch ABI-mismatch aborts (see issue #1606): bugs
@@ -47,8 +47,8 @@ if [[ ! -x "$EMIT_V05" ]]; then
     exit 1
 fi
 
-# Drive the spine fixture through the v0.5 IR ladder. The compile-v05
-# subcommand emits artefacts under `.tmp/compile-v05-out/` relative to the
+# Drive the spine fixture through the v0.5 IR ladder. The compile
+# subcommand emits artefacts under `.tmp/compile-out/` relative to the
 # current working directory, so run it from a scratch directory and then
 # execute the native binary it produced. The fixture's `main` returns 42.
 FIXTURE="$REPO_ROOT/examples/v05/hello_int.hew"
@@ -58,14 +58,14 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 
 cp "$FIXTURE" "$WORK_DIR/hello_int.hew"
 
-echo "==> Running: $HEW compile-v05 hello_int.hew (cwd=$WORK_DIR)"
-if ! ( cd "$WORK_DIR" && "$HEW" compile-v05 hello_int.hew ); then
-    echo "FAIL: hew compile-v05 exited nonzero (expected 0)" >&2
+echo "==> Running: $HEW compile hello_int.hew (cwd=$WORK_DIR)"
+if ! ( cd "$WORK_DIR" && "$HEW" compile hello_int.hew ); then
+    echo "FAIL: hew compile exited nonzero (expected 0)" >&2
     echo "This may be a process-exit SIGABRT — see issue #1606." >&2
     exit 1
 fi
 
-NATIVE_BIN="$WORK_DIR/.tmp/compile-v05-out/hello_int"
+NATIVE_BIN="$WORK_DIR/.tmp/compile-out/hello_int"
 if [[ ! -x "$NATIVE_BIN" ]]; then
     echo "FAIL: expected native binary at $NATIVE_BIN, not found" >&2
     exit 1

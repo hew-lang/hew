@@ -629,16 +629,16 @@ fn fmt_this_expr_roundtrip() {
 
 #[test]
 fn fmt_lambda_with_types() {
-    let src = "fn main() { let f = (x: i32) -> i32 => x + 1; }";
+    let src = "fn main() { let f = |x: i32| -> i32 { x + 1 }; }";
     let out = roundtrip(src);
-    assert!(out.contains("(x: i32) -> i32 => x + 1"), "output: {out}");
+    assert!(out.contains("|x: i32| -> i32 {"), "output: {out}");
 }
 
 #[test]
 fn fmt_multi_param_lambda() {
-    let src = "fn main() { let add = (a, b) => a + b; }";
+    let src = "fn main() { let add = |a, b| a + b; }";
     let out = roundtrip(src);
-    assert!(out.contains("(a, b) => a + b"), "output: {out}");
+    assert!(out.contains("|a, b| a + b"), "output: {out}");
 }
 
 #[test]
@@ -1464,7 +1464,7 @@ fn fmt_lambda_actor_roundtrip() {
 
 #[test]
 fn fmt_move_lambda_roundtrip() {
-    exact_roundtrip("fn main() {\n    let f = move (x: i32) -> i32 => x + 1;\n}\n");
+    exact_roundtrip("fn main() {\n    let f = move |x: i32| -> i32 {\n        x + 1\n    };\n}\n");
 }
 
 #[test]

@@ -265,12 +265,13 @@ impl Checker {
 
             // Lambda (synthesize mode — no expected type)
             Expr::Lambda {
-                is_move: _,
+                is_move,
                 type_params,
                 params,
                 return_type,
                 body,
             } => self.check_lambda(
+                *is_move,
                 type_params.as_deref(),
                 params,
                 return_type.as_ref(),
@@ -766,10 +767,38 @@ impl Checker {
     }
 
     pub(super) fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
+        if let Some(reader) = ExecutionContextReader::from_surface_name(name) {
+            if self.in_actor_handler_context {
+                return reader.ty();
+            }
+            self.report_error(
+                TypeErrorKind::ContextReaderOutsideHandler,
+                span,
+                format!(
+                    "context reader `{}` is only available directly inside an actor handler body; \
+                     nested lambdas and ordinary functions have no in-scope execution context",
+                    reader.surface_name()
+                ),
+            );
+            return Ty::Error;
+        }
+        if name.starts_with('@') {
+            self.report_error(
+                TypeErrorKind::UndefinedVariable,
+                span,
+                format!(
+                    "unknown context reader `{name}`; valid readers are @actor_id, \
+                     @supervisor, and @trace_span"
+                ),
+            );
+            return Ty::Error;
+        }
         if let Some((depth, binding)) = self.env.lookup_with_depth(name) {
+            let binding_id = binding.id;
             let is_moved = binding.is_moved;
             let moved_at = binding.moved_at.clone();
             let ty = binding.ty.clone();
+            let def_span = binding.def_span.clone();
             if is_moved {
                 let mut err = TypeError::new(
                     TypeErrorKind::UseAfterMove,
@@ -800,6 +829,15 @@ impl Checker {
             if let Some(capture_depth) = self.lambda_capture_depth {
                 if depth < capture_depth {
                     self.lambda_captures.push(ty.clone());
+                    self.lambda_capture_facts.push(ClosureCaptureFact {
+                        binding_id,
+                        name: name.to_string(),
+                        ty: ty.clone(),
+                        mode: ClosureCaptureMode::Copy,
+                        is_send: false,
+                        use_span: span.clone(),
+                        def_span,
+                    });
                 }
             }
             ty
@@ -1133,10 +1171,10 @@ impl Checker {
                 Ty::Error
             }
             Expr::SpawnLambdaActor {
+                is_move,
                 params,
                 return_type,
                 body,
-                ..
             } => {
                 // Synthesise the body without propagating the return-type annotation as
                 // a contextual hint.  This lets us extract the actual body return type
@@ -1148,7 +1186,7 @@ impl Checker {
                 // WHEN-OBSOLETE: if a richer bidirectional inference mode is added that
                 // can propagate a "return type hint" without actually checking the body
                 // against it, restore the hint while keeping targeted diagnostics.
-                let lambda_ty = self.check_lambda(None, params, None, body, None, span);
+                let lambda_ty = self.check_lambda(*is_move, None, params, None, body, None, span);
                 // Check captures for Send (E_DUPLEX_NON_SEND).
                 let body_ret = match &lambda_ty {
                     Ty::Function { ret, .. } | Ty::Closure { ret, .. } => {
@@ -1393,11 +1431,11 @@ impl Checker {
             // Lambda with expected function type — propagate param types!
             (
                 Expr::Lambda {
+                    is_move,
                     type_params,
                     params,
                     return_type,
                     body,
-                    ..
                 },
                 Ty::Function {
                     params: expected_params,
@@ -1405,6 +1443,7 @@ impl Checker {
                 },
             ) => {
                 let result = self.check_lambda(
+                    *is_move,
                     type_params.as_deref(),
                     params,
                     return_type.as_ref(),
@@ -3086,6 +3125,8 @@ impl Checker {
             | Expr::SpawnLambdaActor { .. }
             | Expr::Scope { .. }
             | Expr::ForkChild { .. }
+            | Expr::ForkBlock { .. }
+            | Expr::ScopeDeadline { .. }
             | Expr::InterpolatedString(_)
             | Expr::Call { .. }
             | Expr::MethodCall { .. }
@@ -3420,11 +3461,13 @@ impl Checker {
     }
 
     #[expect(
+        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "lambda checking combines contextual inference with capture analysis"
     )]
     pub(super) fn check_lambda(
         &mut self,
+        is_move: bool,
         type_params: Option<&[TypeParam]>,
         params: &[LambdaParam],
         return_type: Option<&Spanned<TypeExpr>>,
@@ -3435,6 +3478,9 @@ impl Checker {
         // Save/restore capture tracking state for nested lambdas
         let prev_capture_depth = self.lambda_capture_depth;
         let prev_captures = std::mem::take(&mut self.lambda_captures);
+        let prev_capture_facts = std::mem::take(&mut self.lambda_capture_facts);
+        let prev_actor_handler_context = self.in_actor_handler_context;
+        self.in_actor_handler_context = false;
 
         // Record the scope depth BEFORE pushing the lambda scope — any variable
         // found below this depth during body checking is a capture.
@@ -3545,6 +3591,7 @@ impl Checker {
         };
 
         self.current_return_type = prev_return_type;
+        self.in_actor_handler_context = prev_actor_handler_context;
         self.in_generator = prev_in_generator;
         self.env.pop_scope();
 
@@ -3583,15 +3630,56 @@ impl Checker {
             }
         }
 
-        // Collect captures and resolve their types
-        let captures: Vec<Ty> = std::mem::take(&mut self.lambda_captures)
-            .into_iter()
-            .map(|c| self.subst.resolve(&c))
-            .collect();
+        // Collect binding-accurate captures, preserving first-use order.
+        let raw_capture_facts = std::mem::take(&mut self.lambda_capture_facts);
+        let mut seen_capture_bindings = HashSet::new();
+        let mut capture_facts = Vec::new();
+        for mut fact in raw_capture_facts {
+            if !seen_capture_bindings.insert(fact.binding_id) {
+                continue;
+            }
+            let resolved_ty = self.subst.resolve(&fact.ty).materialize_literal_defaults();
+            let is_copy = self
+                .registry
+                .implements_marker(&resolved_ty, MarkerTrait::Copy);
+            fact.is_send = self
+                .registry
+                .implements_marker(&resolved_ty, MarkerTrait::Send);
+            fact.mode = if is_move {
+                ClosureCaptureMode::Move
+            } else {
+                ClosureCaptureMode::Copy
+            };
+            fact.ty = resolved_ty.clone();
+            if !is_move && !is_copy && !matches!(resolved_ty, Ty::Error | Ty::Var(_)) {
+                self.report_error(
+                    TypeErrorKind::ClosureExplicitMoveRequired {
+                        name: fact.name.clone(),
+                        ty: resolved_ty.user_facing().to_string(),
+                    },
+                    &fact.use_span,
+                    format!(
+                        "closure captures non-Copy binding `{}` by value; use `move |...|` to consume `{}` explicitly",
+                        fact.name, fact.name
+                    ),
+                );
+            }
+            if is_move && !is_copy {
+                self.env.mark_moved(&fact.name, span.clone());
+            }
+            capture_facts.push(fact);
+        }
+        self.closure_capture_facts
+            .insert(SpanKey::from(span), capture_facts.clone());
+
+        // Keep the public callable type shape unchanged while deriving its
+        // capture payload from the binding-accurate ledger.
+        let captures: Vec<Ty> = capture_facts.iter().map(|fact| fact.ty.clone()).collect();
 
         // Restore outer capture tracking state
         self.lambda_capture_depth = prev_capture_depth;
         self.lambda_captures = prev_captures;
+        self.lambda_capture_facts = prev_capture_facts;
 
         if captures.is_empty() {
             Ty::Function {

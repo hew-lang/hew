@@ -6,41 +6,131 @@ HEW="${ROOT}/target/debug/hew"
 
 cargo build -q -p hew-cli
 
-"${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/accept/string_return.hew" \
-  | grep -q 'hew.return : !hew.string'
-
-"${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/accept/01-arith.hew" \
-  | grep -q 'hew.return : i64'
-
 mkdir -p "${ROOT}/.tmp"
+accept_output="${ROOT}/.tmp/v05-vertical-slice-accept-output.txt"
 reject_output="${ROOT}/.tmp/v05-vertical-slice-reject-output.txt"
-trap 'rm -f "${reject_output}"' EXIT
+stdout_output="${ROOT}/.tmp/v05-vertical-slice.stdout"
+stderr_output="${ROOT}/.tmp/v05-vertical-slice.stderr"
+trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_output}"' EXIT
 
-if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unresolved_symbol.hew" >"${reject_output}" 2>&1; then
+compile_accept() {
+  local fixture="$1"
+  "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/accept/${fixture}.hew" >"${accept_output}" 2>&1
+}
+
+run_accept_expect_status() {
+  local fixture="$1"
+  local expected_status="$2"
+  compile_accept "${fixture}"
+  local bin="${ROOT}/.tmp/compile-out/${fixture}"
+  local status=0
+  if bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "${status}" -ne "${expected_status}" ]]; then
+    echo "expected ${fixture} to exit ${expected_status}, got ${status}" >&2
+    cat "${accept_output}" >&2
+    cat "${stdout_output}" >&2
+    cat "${stderr_output}" >&2
+    exit 1
+  fi
+}
+
+run_accept_expect_stdout() {
+  local fixture="$1"
+  run_accept_expect_status "${fixture}" 0
+  diff -u "${ROOT}/tests/v05-vertical-slice/accept/${fixture}.expected" "${stdout_output}"
+}
+
+"${HEW}" compile --dump-mir raw "${ROOT}/tests/v05-vertical-slice/accept/string_return.hew" >"${accept_output}"
+grep -q 'return_ty: String' "${accept_output}"
+
+"${HEW}" compile --dump-mir raw "${ROOT}/tests/v05-vertical-slice/accept/01-arith.hew" >"${accept_output}"
+grep -q 'return_ty: I64' "${accept_output}"
+
+"${HEW}" compile "${ROOT}/tests/v05-vertical-slice/accept/arith_call.hew" >"${accept_output}" 2>&1
+arith_bin="${ROOT}/.tmp/compile-out/arith_call"
+if "${arith_bin}" >>"${accept_output}" 2>&1; then
+  arith_status=0
+else
+  arith_status=$?
+fi
+if [[ "${arith_status}" -ne 5 ]]; then
+  echo "expected arith_call fixture to exit 5, got ${arith_status}" >&2
+  cat "${accept_output}" >&2
+  exit 1
+fi
+
+"${HEW}" compile "${ROOT}/tests/v05-vertical-slice/accept/hello_println.hew" >"${accept_output}" 2>&1
+hello_println_bin="${ROOT}/.tmp/compile-out/hello_println"
+hello_stdout="${ROOT}/.tmp/hello_println.stdout"
+trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_output}" "${hello_stdout}"' EXIT
+"${hello_println_bin}" >"${hello_stdout}"
+diff -u "${ROOT}/tests/v05-vertical-slice/accept/hello_println.expected" "${hello_stdout}"
+
+run_accept_expect_status "assert" 0
+run_accept_expect_status "assert_eq" 0
+run_accept_expect_status "assert_ne" 0
+run_accept_expect_status "sleep_ms" 0
+
+run_accept_expect_status "assert_eq_fail" 134
+grep -q 'assertion failed: assert_eq(4, 5)' "${stderr_output}"
+
+run_accept_expect_status "exit_42" 42
+
+# Actor body: increment(10) + increment(32) = 42.
+run_accept_expect_status "actor_counter" 42
+
+# Actor body with init + on(start): initial=9, boot increments to 10, increment(32) = 42.
+# The exit code being 42 (not 41) proves on(start) fired before the first message.
+run_accept_expect_status "actor_counter_init" 42
+
+# Actor body with init + on(start) + on(stop): initial=9, boot increments to 10,
+# increment(32) = 42. The on(stop) handler zeroes count after the final ask —
+# the total() ask completes before teardown, so the returned value is 42 regardless.
+# Exit code 42 proves the actor ran its full lifecycle (spawn → start → messages → stop).
+run_accept_expect_status "actor_on_stop" 42
+
+# select{} with two actor-ask arms + after-timer: FastWorker replies with 42
+# immediately; SlowWorker sleeps 50 ms; after-arm deadline is 100 ms.
+# FastWorker always wins under normal CI load. Exit code 42 proves the winner
+# value is returned and the loser channel is cancelled without leaking.
+run_accept_expect_status "actor_ask_race" 42
+
+run_accept_expect_stdout "print_int"
+run_accept_expect_stdout "print_bool"
+run_accept_expect_stdout "print_f64"
+
+run_accept_expect_status "panic" 101
+grep -q 'panic fixture' "${stderr_output}"
+
+if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unresolved_symbol.hew" >"${reject_output}" 2>&1; then
   echo "expected unresolved symbol fixture to fail" >&2
   exit 1
 fi
-grep -q 'UnresolvedSymbol' "${reject_output}"
+grep -q 'UndefinedVariable' "${reject_output}"
 
-if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/use_after_consume.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/use_after_consume.hew" >"${reject_output}" 2>&1; then
   echo "expected use-after-consume fixture to fail" >&2
   exit 1
 fi
 grep -q 'UseAfterConsume' "${reject_output}"
 
-if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unresolved_inference.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unresolved_inference.hew" >"${reject_output}" 2>&1; then
   echo "expected unresolved-inference fixture to fail" >&2
   exit 1
 fi
 grep -q 'UnresolvedInferenceVar' "${reject_output}"
 
-if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_type.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_type.hew" >"${reject_output}" 2>&1; then
   echo "expected unknown-named-type fixture to fail" >&2
   exit 1
 fi
 grep -q 'UnknownType' "${reject_output}"
 
-if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_tuple_type.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_tuple_type.hew" >"${reject_output}" 2>&1; then
   echo "expected unknown-named-tuple-type fixture to fail" >&2
   exit 1
 fi
@@ -50,7 +140,7 @@ if grep -q 'panicked at' "${reject_output}"; then
   exit 1
 fi
 
-if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_array_type.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_array_type.hew" >"${reject_output}" 2>&1; then
   echo "expected unknown-named-array-type fixture to fail" >&2
   exit 1
 fi
@@ -61,7 +151,7 @@ if grep -q 'panicked at' "${reject_output}"; then
 fi
 
 # Lambda-actor and Duplex surface: type-checker-level fixtures (slice 2).
-# These use `hew check` rather than `compile-v05` because the HIR codegen
+# These use `hew check` rather than `compile` because the HIR codegen
 # path does not yet support actor expressions (slice 4 concern).
 
 # Accept: tell-shaped lambda actor call dispatch.

@@ -1552,7 +1552,8 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn websocket_test_dispatch(
+    unsafe extern "C-unwind" fn websocket_test_dispatch(
+        _ctx: *mut hew_runtime::HewExecutionContext,
         state: *mut c_void,
         msg_type: i32,
         data: *mut c_void,
@@ -1592,7 +1593,8 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn websocket_cancel_owner_dispatch(
+    unsafe extern "C-unwind" fn websocket_cancel_owner_dispatch(
+        _ctx: *mut hew_runtime::HewExecutionContext,
         state: *mut c_void,
         msg_type: i32,
         _data: *mut c_void,

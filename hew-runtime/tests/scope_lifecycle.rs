@@ -78,7 +78,8 @@ impl Signal {
     }
 }
 
-unsafe extern "C" fn noop_dispatch(
+unsafe extern "C-unwind" fn noop_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,
@@ -186,7 +187,8 @@ fn scope_wait_all_cleans_up_actors() {
     static SCOPE_SIGNAL: Signal = Signal::new();
     static SCOPE_LOCK: Mutex<()> = Mutex::new(());
 
-    unsafe extern "C" fn scope_dispatch(
+    unsafe extern "C-unwind" fn scope_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -240,7 +242,8 @@ fn scope_wait_all_multiple_actors() {
     static MULTI_SIGNAL: Signal = Signal::new();
     static MULTI_LOCK: Mutex<()> = Mutex::new(());
 
-    unsafe extern "C" fn multi_dispatch(
+    unsafe extern "C-unwind" fn multi_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -296,7 +299,8 @@ static CANCEL_LOCK: Mutex<()> = Mutex::new(());
 
 /// Dispatch that checks a scope's cancellation flag. The scope pointer
 /// is passed as the actor's state.
-unsafe extern "C" fn cancel_checking_dispatch(
+unsafe extern "C-unwind" fn cancel_checking_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,

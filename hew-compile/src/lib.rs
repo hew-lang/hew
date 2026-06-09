@@ -2329,6 +2329,7 @@ mod tests {
             method_call_receiver_kinds: std::collections::HashMap::new(),
             lowering_facts: std::collections::HashMap::new(),
             method_call_rewrites: std::collections::HashMap::new(),
+            actor_method_dispatch: std::collections::HashMap::new(),
             assign_target_kinds: std::collections::HashMap::new(),
             assign_target_shapes: std::collections::HashMap::new(),
             errors: Vec::new(),
@@ -2343,10 +2344,12 @@ mod tests {
             record_init_type_args: std::collections::HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: std::collections::HashMap::new(),
+            actor_handler_state_guards: std::collections::HashMap::new(),
             actor_max_heap: std::collections::HashMap::new(),
             supervisor_child_slots: std::collections::HashMap::new(),
             dyn_trait_coercions: std::collections::HashMap::new(),
             dyn_trait_method_calls: std::collections::HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
         };
 
         let err = enrich_program_ast(

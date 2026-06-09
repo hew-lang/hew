@@ -744,7 +744,14 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&value.0, &value.1, body);
                 }
             }
-            Expr::Scope { body: inner_body } => {
+            Expr::Scope { body: inner_body } | Expr::ForkBlock { body: inner_body } => {
+                self.walk_block(inner_body, body);
+            }
+            Expr::ScopeDeadline {
+                duration,
+                body: inner_body,
+            } => {
+                self.walk_expr(&duration.0, &duration.1, body);
                 self.walk_block(inner_body, body);
             }
             Expr::ForkChild { expr, .. } | Expr::Cast { expr, .. } => {
@@ -1110,7 +1117,7 @@ mod tests {
     #[test]
     fn lambda_params_to_bindings_use_non_zero_name_spans() {
         let source =
-            "fn main() { let first = (x: int) => x; let second = (y: int, z: int) => y + z; }";
+            "fn main() { let first = |x: int| x; let second = |y: int, z: int| { y + z }; }";
         let parse_result = hew_parser::parse(source);
         let Item::Function(function) = &parse_result.program.items[0].0 else {
             panic!("expected function");

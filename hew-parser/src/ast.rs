@@ -203,6 +203,15 @@ pub enum Expr {
         binding: Option<String>,
         expr: Box<Spanned<Expr>>,
     },
+    /// Anonymous child-task block inside a `scope { ... }` block: `fork { ... }`.
+    ForkBlock {
+        body: Block,
+    },
+    /// Scope deadline clause inside a `scope { ... }` block: `after(duration) { ... }`.
+    ScopeDeadline {
+        duration: Box<Spanned<Expr>>,
+        body: Block,
+    },
     InterpolatedString(Vec<StringPart>),
     Call {
         function: Box<Spanned<Expr>>,

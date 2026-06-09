@@ -1,6 +1,6 @@
-/// Integration tests for `hew compile-v05` native linking.
+/// Integration tests for `hew compile` native linking.
 ///
-/// These tests verify that `cmd_compile_v05` routes the native link step
+/// These tests verify that `cmd_compile` routes the native link step
 /// through `link::link_executable`, which resolves `libhew.a` (the combined
 /// runtime + stdlib staticlib) and applies the per-platform link plan.
 ///
@@ -19,52 +19,45 @@ use std::process::Command;
 
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
-/// `hew compile-v05 --no-wasm` on a trivial arithmetic program links without
+/// `hew compile` on a trivial arithmetic program links without
 /// error and produces a binary that runs to completion.
 ///
 /// This test exercises the full path:
 /// - Codegen emits a native `.o` object via `hew-emit-v05`.
-/// - `cmd_compile_v05` calls `link::link_executable` with the host
+/// - `cmd_compile` calls `link::link_executable` with the host
 ///   `TargetSpec`, which resolves `libhew.a` and applies the platform
 ///   link plan.
 /// - The produced binary runs and exits with the expected non-zero code
 ///   (3 + 4 = 7 from the fixture).
 ///
-/// Before this change, `cmd_compile_v05` used a raw `cc <obj> -o <bin>`
+/// Before this change, `cmd_compile` used a raw `cc <obj> -o <bin>`
 /// invocation with no `-l` flags, so any program referencing runtime
 /// symbols would have produced undefined-symbol linker errors.
 #[test]
-fn compile_v05_native_link_produces_runnable_binary() {
+fn compile_native_link_produces_runnable_binary() {
     require_codegen();
 
     let fixture = repo_root().join("tests/v05-vertical-slice/accept/01-arith.hew");
     assert!(fixture.exists(), "fixture not found: {}", fixture.display());
 
     let emit_dir = tempfile::Builder::new()
-        .prefix("compile-v05-link-test-")
+        .prefix("compile-link-test-")
         .tempdir()
-        .expect("create temp dir for compile-v05 output");
+        .expect("create temp dir for compile output");
 
     let fixture_str = fixture.to_str().expect("fixture path is valid UTF-8");
     let emit_dir_str = emit_dir.path().to_str().expect("emit dir is valid UTF-8");
 
-    // Compile the fixture to a native binary. --no-wasm skips the wasm32
-    // emit step (no wasm-ld required).
+    // Compile the fixture to a native binary. Native is the default target.
     let compile_output = Command::new(hew_binary())
-        .args([
-            "compile-v05",
-            "--no-wasm",
-            "--emit-dir",
-            emit_dir_str,
-            fixture_str,
-        ])
+        .args(["compile", "--emit-dir", emit_dir_str, fixture_str])
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile-v05");
+        .expect("invoke hew compile");
 
     assert!(
         compile_output.status.success(),
-        "hew compile-v05 failed:\n{}",
+        "hew compile failed:\n{}",
         describe_output(&compile_output),
     );
 
@@ -74,7 +67,7 @@ fn compile_v05_native_link_produces_runnable_binary() {
         .lines()
         .find_map(|line| line.strip_prefix("native: "))
         .unwrap_or_else(|| {
-            panic!("hew compile-v05 stdout did not contain a `native:` line:\n{stdout}")
+            panic!("hew compile stdout did not contain a `native:` line:\n{stdout}")
         });
 
     // Verify the binary exists and runs to completion. The arith fixture

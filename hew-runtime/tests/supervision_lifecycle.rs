@@ -96,7 +96,8 @@ static DISPATCH_COUNT: AtomicI32 = AtomicI32::new(0);
 static DISPATCH_SIGNAL: DispatchSignal = DispatchSignal::new();
 
 /// Simple dispatch: increments counter.
-unsafe extern "C" fn counting_dispatch(
+unsafe extern "C-unwind" fn counting_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,
@@ -199,7 +200,8 @@ impl MonitorDispatchSignal {
 
 static MONITOR_DISPATCH_SIGNAL: MonitorDispatchSignal = MonitorDispatchSignal::new();
 
-unsafe extern "C" fn monitor_dispatch(
+unsafe extern "C-unwind" fn monitor_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     msg_type: i32,
     data: *mut c_void,
@@ -208,7 +210,8 @@ unsafe extern "C" fn monitor_dispatch(
     MONITOR_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
 }
 
-unsafe extern "C" fn noop_dispatch(
+unsafe extern "C-unwind" fn noop_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,
@@ -442,7 +445,8 @@ fn link_delivers_exit_on_crash() {
     static LINK_EXIT_RECEIVED: AtomicI32 = AtomicI32::new(0);
     static LINK_EXIT_SIGNAL: DispatchSignal = DispatchSignal::new();
 
-    unsafe extern "C" fn exit_detecting_dispatch(
+    unsafe extern "C-unwind" fn exit_detecting_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         msg_type: i32,
         _data: *mut c_void,

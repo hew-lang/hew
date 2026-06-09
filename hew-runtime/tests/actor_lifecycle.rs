@@ -78,7 +78,8 @@ impl DispatchLog {
     }
 }
 
-unsafe extern "C" fn noop_dispatch(
+unsafe extern "C-unwind" fn noop_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,
@@ -95,7 +96,8 @@ static SEND_RECV_SIGNAL: DispatchLog = DispatchLog::new();
 /// Serialisation lock for tests that share `SEND_RECV_SIGNAL`.
 static SEND_RECV_LOCK: Mutex<()> = Mutex::new(());
 
-unsafe extern "C" fn send_recv_dispatch(
+unsafe extern "C-unwind" fn send_recv_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,
@@ -179,7 +181,8 @@ fn actor_full_lifecycle_spawn_send_close_free() {
     static LIFECYCLE_SIGNAL: DispatchLog = DispatchLog::new();
     static LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 
-    unsafe extern "C" fn lifecycle_dispatch(
+    unsafe extern "C-unwind" fn lifecycle_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
@@ -305,7 +308,8 @@ fn mailbox_try_recv_empty_returns_null() {
 ///
 /// The reply channel is retrieved from the scheduler's thread-local
 /// (set from `HewMsgNode.reply_channel` before dispatch).
-unsafe extern "C" fn echo_double_dispatch(
+unsafe extern "C-unwind" fn echo_double_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     data: *mut c_void,
@@ -474,7 +478,8 @@ fn ask_freed_queued_messages_unblock_caller() {
 /// well before this function finishes sleeping. The sleep must be
 /// well under `hew_actor_free`'s 2s deadline so the actor can be
 /// freed after the test.
-unsafe extern "C" fn slow_dispatch(
+unsafe extern "C-unwind" fn slow_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     data: *mut c_void,
@@ -561,7 +566,8 @@ impl OrderLog {
 static ORDER_LOG: OrderLog = OrderLog::new();
 static ORDER_LOCK: Mutex<()> = Mutex::new(());
 
-unsafe extern "C" fn order_dispatch(
+unsafe extern "C-unwind" fn order_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     msg_type: i32,
     data: *mut c_void,
@@ -625,7 +631,8 @@ static STATE_LOCK: Mutex<()> = Mutex::new(());
 /// Recorded actor state observed *during* dispatch (should be Running).
 static OBSERVED_STATE: AtomicI32 = AtomicI32::new(-1);
 
-unsafe extern "C" fn state_observing_dispatch(
+unsafe extern "C-unwind" fn state_observing_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,

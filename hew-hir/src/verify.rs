@@ -53,13 +53,31 @@ impl Verifier {
                     self.node(record.node, record.span.clone());
                 }
                 HirItem::Actor(actor) => {
-                    // Actor declarations contribute only their HirNodeId
-                    // uniqueness to the verifier in Lane A — method, receive,
-                    // and lifecycle-hook bodies are not lowered to HirExpr in
-                    // this slice (see `HirActorDecl` doc comment). Lifecycle
-                    // hook uniqueness (`#[on(start)]` at most once, etc.) is
-                    // enforced upstream by the checker.
                     self.node(actor.node, actor.span.clone());
+                    if let Some(init) = &actor.init {
+                        for param in &init.params {
+                            self.binding(param.id, param.span.clone());
+                        }
+                        self.block(&init.body);
+                    }
+                    for receive in &actor.receive_handlers {
+                        for param in &receive.params {
+                            self.binding(param.id, param.span.clone());
+                        }
+                        self.block(&receive.body);
+                    }
+                    for method in &actor.methods {
+                        for param in &method.params {
+                            self.binding(param.id, param.span.clone());
+                        }
+                        self.block(&method.body);
+                    }
+                    for hook in &actor.lifecycle_hooks {
+                        for param in &hook.params {
+                            self.binding(param.id, param.span.clone());
+                        }
+                        self.block(&hook.body);
+                    }
                 }
                 HirItem::Supervisor(sup) => {
                     // Supervisor declarations contribute only their HirNodeId
@@ -81,6 +99,10 @@ impl Verifier {
                     if let Some(value) = value {
                         self.expr(value);
                     }
+                }
+                HirStmtKind::Assign { target, value } => {
+                    self.expr(target);
+                    self.expr(value);
                 }
                 HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => self.expr(expr),
                 HirStmtKind::Return(None) => {}
@@ -121,6 +143,19 @@ impl Verifier {
                     self.expr(arg);
                 }
             }
+            HirExprKind::Spawn { args, .. } => {
+                for (_, arg) in args {
+                    self.expr(arg);
+                }
+            }
+            HirExprKind::ActorSend { receiver, args, .. }
+            | HirExprKind::ActorAsk { receiver, args, .. }
+            | HirExprKind::CallDynMethod { receiver, args, .. } => {
+                self.expr(receiver);
+                for arg in args {
+                    self.expr(arg);
+                }
+            }
             HirExprKind::Block(block) => self.block(block),
             HirExprKind::If {
                 condition,
@@ -144,8 +179,12 @@ impl Verifier {
             HirExprKind::FieldAccess { object, .. } => {
                 self.expr(object);
             }
-            HirExprKind::Literal(_) => {}
-            HirExprKind::Scope { body } => self.block(body),
+            HirExprKind::ContextReader { .. } | HirExprKind::Literal(_) => {}
+            HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => self.block(body),
+            HirExprKind::ScopeDeadline { duration, body } => {
+                self.expr(duration);
+                self.block(body);
+            }
             HirExprKind::AwaitTask { binding_id, .. } => {
                 // Verify the binding-id referenced by the await is known to the verifier.
                 // If it's not in `self.bindings`, that indicates a dangling reference.
@@ -201,6 +240,30 @@ impl Verifier {
                     }
                 }
             }
+            HirExprKind::Closure { body, captures, .. } => {
+                self.expr(body);
+                let mut seen = std::collections::HashSet::new();
+                for capture in captures {
+                    if !self.bindings.contains(&capture.binding) {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::DanglingRef {
+                                resolved: ResolvedRef::Binding(capture.binding),
+                            },
+                            expr.span.clone(),
+                            "closure capture references a binding not declared in resolved HIR",
+                        ));
+                    }
+                    if !seen.insert(capture.binding) {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::DuplicateBindingId {
+                                id: capture.binding,
+                            },
+                            expr.span.clone(),
+                            "closure capture list contains the same binding more than once",
+                        ));
+                    }
+                }
+            }
             HirExprKind::TupleIndex { tuple, .. } => {
                 self.expr(tuple);
             }
@@ -224,12 +287,6 @@ impl Verifier {
             }
             HirExprKind::CoerceToDynTrait { value, .. } => {
                 self.expr(value);
-            }
-            HirExprKind::CallDynMethod { receiver, args, .. } => {
-                self.expr(receiver);
-                for arg in args {
-                    self.expr(arg);
-                }
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive

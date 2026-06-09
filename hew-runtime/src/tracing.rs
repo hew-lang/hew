@@ -33,7 +33,6 @@
 
 use crate::lifetime::PoisonSafe;
 use crate::util::MutexExt;
-use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -161,17 +160,29 @@ pub(crate) fn io_span_evict(conn_id: c_int) {
     IO_SPAN_TABLE.lock_or_recover().remove(&conn_id);
 }
 
-// ── Per-thread trace context ───────────────────────────────────────────
+const TRACE_OWNS_EXECUTION_CONTEXT: u32 = 1 << 31;
 
-thread_local! {
-    /// Current trace context for this thread (set during actor dispatch).
-    static CURRENT_CONTEXT: Cell<HewTraceContext> = const { Cell::new(HewTraceContext {
-        trace_id_hi: 0,
-        trace_id_lo: 0,
-        span_id: 0,
-        parent_span_id: 0,
-        flags: 0,
-    }) };
+fn trace_context() -> Option<HewTraceContext> {
+    let ctx = crate::execution_context::require_current_context();
+    if ctx.is_null() {
+        return None;
+    }
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary.
+    Some(unsafe { (*ctx).trace })
+}
+
+fn write_trace_context(new_ctx: HewTraceContext) -> bool {
+    let ctx = crate::execution_context::require_current_context();
+    if ctx.is_null() {
+        return false;
+    }
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary.
+    unsafe {
+        (*ctx).trace = new_ctx;
+    }
+    true
 }
 
 // ── ID generation ──────────────────────────────────────────────────────
@@ -290,7 +301,9 @@ fn record_event(event: HewTraceEvent) {
 }
 
 fn record_lifecycle_event(actor_id: u64, event_type: i32, msg_type: i32) {
-    let ctx = CURRENT_CONTEXT.with(Cell::get);
+    let Some(ctx) = trace_context() else {
+        return;
+    };
 
     record_event(HewTraceEvent {
         trace_id_hi: ctx.trace_id_hi,
@@ -336,7 +349,9 @@ pub extern "C" fn hew_trace_begin(actor_id: u64, msg_type: i32) {
     if !TRACING_ENABLED.load(Ordering::Relaxed) {
         return;
     }
-    let parent = CURRENT_CONTEXT.with(Cell::get);
+    let Some(parent) = trace_context() else {
+        return;
+    };
     let span_id = next_random_id();
 
     let ctx = HewTraceContext {
@@ -355,7 +370,9 @@ pub extern "C" fn hew_trace_begin(actor_id: u64, msg_type: i32) {
         flags: parent.flags,
     };
 
-    CURRENT_CONTEXT.with(|c| c.set(ctx));
+    if !write_trace_context(ctx) {
+        return;
+    }
 
     record_event(HewTraceEvent {
         trace_id_hi: ctx.trace_id_hi,
@@ -375,7 +392,9 @@ pub extern "C" fn hew_trace_end(actor_id: u64, msg_type: i32) {
     if !TRACING_ENABLED.load(Ordering::Relaxed) {
         return;
     }
-    let ctx = CURRENT_CONTEXT.with(Cell::get);
+    let Some(ctx) = trace_context() else {
+        return;
+    };
 
     record_event(HewTraceEvent {
         trace_id_hi: ctx.trace_id_hi,
@@ -389,14 +408,12 @@ pub extern "C" fn hew_trace_end(actor_id: u64, msg_type: i32) {
     });
 
     // Restore parent context.
-    CURRENT_CONTEXT.with(|c| {
-        c.set(HewTraceContext {
-            trace_id_hi: ctx.trace_id_hi,
-            trace_id_lo: ctx.trace_id_lo,
-            span_id: ctx.parent_span_id,
-            parent_span_id: 0,
-            flags: ctx.flags,
-        });
+    let _ = write_trace_context(HewTraceContext {
+        trace_id_hi: ctx.trace_id_hi,
+        trace_id_lo: ctx.trace_id_lo,
+        span_id: ctx.parent_span_id,
+        parent_span_id: 0,
+        flags: ctx.flags,
     });
 }
 
@@ -422,7 +439,7 @@ pub unsafe extern "C" fn hew_trace_set_context(ctx: *const HewTraceContext) {
     cabi_guard!(ctx.is_null());
     // SAFETY: caller guarantees `ctx` is valid.
     let new_ctx = unsafe { *ctx };
-    CURRENT_CONTEXT.with(|c| c.set(new_ctx));
+    let _ = write_trace_context(new_ctx);
 }
 
 /// Get the current thread's trace context.
@@ -433,17 +450,18 @@ pub unsafe extern "C" fn hew_trace_set_context(ctx: *const HewTraceContext) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_trace_get_context(out: *mut HewTraceContext) {
     cabi_guard!(out.is_null());
-    let ctx = CURRENT_CONTEXT.with(Cell::get);
+    let ctx = trace_context().unwrap_or_default();
     // SAFETY: caller guarantees `out` is valid.
     unsafe { *out = ctx };
 }
 
 pub(crate) fn current_context() -> HewTraceContext {
-    CURRENT_CONTEXT.with(Cell::get)
+    trace_context().unwrap_or_default()
 }
 
+#[cfg(test)]
 pub(crate) fn set_context(ctx: HewTraceContext) {
-    CURRENT_CONTEXT.with(|c| c.set(ctx));
+    let _ = write_trace_context(ctx);
 }
 
 pub(crate) fn record_send(actor_id: u64, msg_type: i32) {
@@ -522,11 +540,11 @@ pub(crate) fn io_accept_span_begin(conn_id: c_int) {
 /// Called in `reader_loop` before `router_fn` is invoked for a decoded envelope.
 ///
 /// Looks up the accept span for `conn_id`, creates a child `SPAN_IO_RECV`
-/// span, emits its `SPAN_IO_RECV` begin event, and sets the thread-local
-/// context so that `msg_node_alloc` captures this span as the parent for
+/// span, emits its `SPAN_IO_RECV` begin event, and sets the canonical trace
+/// lane so that `msg_node_alloc` captures this span as the parent for
 /// the subsequent actor-dispatch span.
 ///
-/// Returns the prior thread-local context so the caller can restore it after
+/// Returns the prior trace context so the caller can restore it after
 /// `router_fn` returns.  If tracing is disabled, returns `None` (caller
 /// skips tracing entirely).
 pub(crate) fn io_recv_span_begin(conn_id: c_int) -> Option<HewTraceContext> {
@@ -561,12 +579,28 @@ pub(crate) fn io_recv_span_begin(conn_id: c_int) -> Option<HewTraceContext> {
 
     record_io_event(&recv_ctx, SPAN_IO_RECV);
 
-    // Install the io_recv context so mailbox enqueue captures it as the
-    // parent for the subsequent actor-dispatch span.
-    let saved = CURRENT_CONTEXT.with(Cell::get);
-    CURRENT_CONTEXT.with(|c| c.set(recv_ctx));
-
-    Some(saved)
+    let current = crate::execution_context::current_context();
+    if current.is_null() {
+        let mut boxed = Box::new(crate::execution_context::HewExecutionContext {
+            trace: recv_ctx,
+            flags: TRACE_OWNS_EXECUTION_CONTEXT,
+            prev_context: current,
+            ..crate::execution_context::HewExecutionContext::default()
+        });
+        let raw = (&raw mut *boxed).cast::<crate::execution_context::HewExecutionContext>();
+        let installed_prev = crate::execution_context::set_current_context(raw);
+        debug_assert_eq!(installed_prev, current);
+        let _ = Box::into_raw(boxed);
+        Some(HewTraceContext::default())
+    } else {
+        // SAFETY: current is the installed canonical context for this thread.
+        let saved = unsafe { (*current).trace };
+        // SAFETY: current is non-null and mutable through the TLS boundary.
+        unsafe {
+            (*current).trace = recv_ctx;
+        }
+        Some(saved)
+    }
 }
 
 /// Called in `reader_loop` after `router_fn` returns.
@@ -576,9 +610,31 @@ pub(crate) fn io_recv_span_begin(conn_id: c_int) -> Option<HewTraceContext> {
 /// `saved_ctx` must be the value returned by the matching `io_recv_span_begin`.
 pub(crate) fn io_recv_span_end(saved_ctx: HewTraceContext) {
     // Emit SPAN_END using the current (recv) context that was installed in begin.
-    let recv_ctx = CURRENT_CONTEXT.with(Cell::get);
+    let current = crate::execution_context::require_current_context();
+    if current.is_null() {
+        return;
+    }
+    // SAFETY: current is the installed canonical context for this thread.
+    let recv_ctx = unsafe { (*current).trace };
     record_io_event(&recv_ctx, SPAN_END);
-    CURRENT_CONTEXT.with(|c| c.set(saved_ctx));
+    // SAFETY: current is non-null and mutable through the TLS boundary.
+    let owns_context = unsafe { (*current).flags & TRACE_OWNS_EXECUTION_CONTEXT != 0 };
+    if owns_context {
+        // SAFETY: contexts tagged with TRACE_OWNS_EXECUTION_CONTEXT were
+        // allocated by io_recv_span_begin and are restored/dropped here.
+        let prev = unsafe { (*current).prev_context };
+        let restored = crate::execution_context::set_current_context(prev);
+        debug_assert_eq!(restored, current);
+        // SAFETY: current came from Box::into_raw in io_recv_span_begin.
+        unsafe {
+            drop(Box::from_raw(current));
+        }
+    } else {
+        // SAFETY: current is non-null and mutable through the TLS boundary.
+        unsafe {
+            (*current).trace = saved_ctx;
+        }
+    }
 }
 
 /// Enable or disable tracing globally.
@@ -660,7 +716,13 @@ pub(crate) fn register_trace_reset_hook() {
 pub extern "C" fn hew_trace_reset() {
     TRACING_ENABLED.store(false, Ordering::Release);
     TRACE_EVENTS.access(std::collections::VecDeque::clear);
-    CURRENT_CONTEXT.with(|c| c.set(HewTraceContext::default()));
+    let ctx = crate::execution_context::current_context();
+    if !ctx.is_null() {
+        // SAFETY: ctx is the installed canonical context for this thread.
+        unsafe {
+            (*ctx).trace = HewTraceContext::default();
+        }
+    }
     IO_SPAN_TABLE.lock_or_recover().clear();
 }
 
@@ -826,9 +888,16 @@ pub(crate) fn tracing_test_guard() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_context::{HewExecutionContext, TestExecutionContext};
 
-    fn setup() -> std::sync::MutexGuard<'static, ()> {
+    struct TraceTestSetup {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        _ctx: TestExecutionContext,
+    }
+
+    fn setup() -> TraceTestSetup {
         let guard = tracing_test_guard();
+        let ctx = TestExecutionContext::install(HewExecutionContext::default());
         hew_trace_reset();
         hew_trace_enable(1);
         // Prime the monotonic clock EPOCH before any events are recorded.
@@ -840,7 +909,10 @@ mod tests {
         // `trace_now_ns()` here ensures EPOCH is already set before any
         // assertions on `timestamp_ns` are made.
         let _ = trace_now_ns();
-        guard
+        TraceTestSetup {
+            _guard: guard,
+            _ctx: ctx,
+        }
     }
 
     #[test]
@@ -852,6 +924,35 @@ mod tests {
         assert_eq!(hew_trace_is_enabled(), 1);
         hew_trace_enable(0);
         assert_eq!(hew_trace_is_enabled(), 0);
+    }
+
+    #[test]
+    fn trace_get_context_without_execution_context_fails_closed() {
+        let _guard = tracing_test_guard();
+        crate::hew_clear_error();
+        let mut out = HewTraceContext {
+            trace_id_hi: 1,
+            trace_id_lo: 1,
+            span_id: 1,
+            parent_span_id: 1,
+            flags: 1,
+        };
+        // SAFETY: out is a valid output pointer.
+        unsafe { hew_trace_get_context(&raw mut out) };
+        assert_eq!(out.trace_id_hi, 0);
+        assert_eq!(out.trace_id_lo, 0);
+        assert_eq!(out.span_id, 0);
+        assert_eq!(out.parent_span_id, 0);
+        assert_eq!(out.flags, 0);
+        let err = crate::hew_last_error();
+        assert!(!err.is_null());
+        // SAFETY: hew_last_error returned a non-null C string.
+        let err = unsafe { std::ffi::CStr::from_ptr(err).to_str().unwrap() };
+        assert_eq!(
+            err,
+            crate::execution_context::EXECUTION_CONTEXT_NOT_INSTALLED
+        );
+        crate::hew_clear_error();
     }
 
     #[test]
@@ -1018,6 +1119,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _trace_guard = tracing_test_guard();
+        let _ctx = TestExecutionContext::install(HewExecutionContext::default());
 
         // Full reset of both subsystems.
         reset_bridge_full();
@@ -1074,10 +1176,7 @@ mod tests {
     #[cfg(feature = "profiler")]
     #[test]
     fn drain_events_json_includes_actor_type_fields() {
-        let _guard = tracing_test_guard();
-
-        hew_trace_reset();
-        hew_trace_enable(1);
+        let _guard = setup();
 
         // Emit a single trace event.
         hew_trace_begin(123, 0);
@@ -1116,6 +1215,7 @@ mod tests {
         // Acquire session lock first, tracing lock second (consistent order).
         let _session_guard = crate::session::reset_hooks_for_test();
         let _trace_guard = tracing_test_guard();
+        let _ctx = TestExecutionContext::install(HewExecutionContext::default());
 
         // Reset tracing state to a known baseline.
         hew_trace_reset();
@@ -1241,7 +1341,7 @@ mod tests {
         io_span_evict(99);
     }
 
-    /// Verify that `io_recv_span_begin` sets the thread-local context so that
+    /// Verify that `io_recv_span_begin` sets the canonical trace lane so that
     /// a mailbox-enqueue (which captures `current_context()`) sees the `io_recv`
     /// span as its parent — this is the causal link to the actor-dispatch span.
     #[test]
@@ -1261,7 +1361,7 @@ mod tests {
         // Simulate what reader_loop does before calling router_fn.
         let saved = io_recv_span_begin(77).expect("begin must succeed when tracing enabled");
 
-        // At this point the thread-local context should be the io_recv span.
+        // At this point the canonical trace lane should be the io_recv span.
         let ctx_inside = current_context();
         assert_ne!(
             ctx_inside.span_id, 0,
@@ -1279,11 +1379,11 @@ mod tests {
 
         io_recv_span_end(saved);
 
-        // After end the thread-local context is restored to the prior default.
+        // After end the canonical trace lane is restored to the prior default.
         let ctx_after = current_context();
         assert_eq!(
             ctx_after.span_id, 0,
-            "thread-local context must be restored after io_recv_span_end"
+            "trace lane must be restored after io_recv_span_end"
         );
 
         // The captured context (as mailbox would record it) links to the recv span.

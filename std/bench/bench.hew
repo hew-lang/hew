@@ -10,7 +10,7 @@
 //!
 //! fn main() {
 //!     let s = bench.suite("My Benchmarks");
-//!     s.add("fib_20", 1000, () => { fibonacci(20); });
+//!     s.add("fib_20", 1000, || { fibonacci(20); });
 //!     s.report();
 //! }
 //! ```

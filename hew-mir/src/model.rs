@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use hew_hir::{BindingId, IntentKind, SiteId, ValueClass};
 use hew_types::ResolvedTy;
 
@@ -36,6 +38,11 @@ pub struct IrPipeline {
     /// or `RecordFieldLoad` instructions and need no codegen layout entry
     /// in this slice.
     pub record_layouts: Vec<RecordLayout>,
+    /// Layout descriptors for every actor declaration in the module. Populated
+    /// by `lower_hir_module` from `HirItem::Actor` declarations in source
+    /// order. Codegen/runtime dispatch slices consume this to materialise actor
+    /// state storage and init-call signatures without re-reading HIR.
+    pub actor_layouts: Vec<ActorLayout>,
 }
 
 /// Layout descriptor for a named-form `record` declaration. The codegen
@@ -54,6 +61,41 @@ pub struct RecordLayout {
     pub field_tys: Vec<ResolvedTy>,
 }
 
+/// Layout descriptor for an `actor` declaration. The state field list follows
+/// declaration order; the init parameter list follows source parameter order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActorLayout {
+    /// Actor type name.
+    pub name: String,
+    /// Actor state field names in declaration order.
+    pub state_field_names: Vec<String>,
+    /// Actor state field types in declaration order.
+    pub state_field_tys: Vec<ResolvedTy>,
+    /// Actor init parameter names in declaration order. Empty when the actor
+    /// has no explicit init block.
+    pub init_param_names: Vec<String>,
+    /// Actor init parameter types in declaration order. Empty when the actor
+    /// has no explicit init block.
+    pub init_param_tys: Vec<ResolvedTy>,
+    /// Actor init handler symbol. `None` when the actor has no explicit init block.
+    pub init_symbol: Option<String>,
+    /// `#[on(start)]` handler symbol. `None` when the actor has no start hook.
+    pub on_start_symbol: Option<String>,
+    /// `#[on(stop)]` handler symbol. `None` when the actor has no stop hook.
+    pub on_stop_symbol: Option<String>,
+    /// Receive handlers in message-type order.
+    pub handlers: Vec<ActorHandlerLayout>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActorHandlerLayout {
+    pub name: String,
+    pub symbol: String,
+    pub msg_type: i32,
+    pub param_tys: Vec<ResolvedTy>,
+    pub return_ty: ResolvedTy,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThirFunction {
     pub name: String,
@@ -65,6 +107,7 @@ pub struct ThirFunction {
 pub struct RawMirFunction {
     pub name: String,
     pub return_ty: ResolvedTy,
+    pub call_conv: FunctionCallConv,
     /// Declared parameter types in declaration order. `params[i]` is the
     /// `ResolvedTy` of the i-th function parameter. Codegen uses this to
     /// declare the LLVM function signature and to emit the parameter-prologue
@@ -86,6 +129,229 @@ pub struct RawMirFunction {
     pub decisions: Vec<DecisionFact>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FunctionCallConv {
+    #[default]
+    Default,
+    ActorHandler,
+    ClosureInvoke,
+}
+
+impl FunctionCallConv {
+    #[must_use]
+    pub fn carries_execution_context(self) -> bool {
+        matches!(self, Self::ActorHandler | Self::ClosureInvoke)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextState {
+    Outside,
+    Inside,
+    Exited,
+    Invalid,
+}
+
+impl ContextState {
+    fn meet(self, other: Self) -> Self {
+        if self == other {
+            self
+        } else {
+            Self::Invalid
+        }
+    }
+}
+
+/// Validate execution-context carrier marker invariants on hand-built or
+/// lowered MIR.
+///
+/// Context-bearing functions must enter exactly at the entry block, exit before
+/// every terminal path, and use context-observing instructions only while the
+/// marker lattice is inside the context. Contextless functions reject all
+/// carrier instructions so the context substrate cannot be smuggled into
+/// ordinary code.
+#[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "CFG marker validation keeps entry/exit/use checks together so diagnostics share one dedupe ledger"
+)]
+pub fn validate_context_markers(func: &RawMirFunction) -> Vec<MirCheck> {
+    let mut findings = Vec::new();
+    let mut seen: HashSet<(String, u32, &'static str)> = HashSet::new();
+    let push = |findings: &mut Vec<MirCheck>,
+                seen: &mut HashSet<(String, u32, &'static str)>,
+                block: u32,
+                kind: &'static str,
+                reason: String| {
+        if seen.insert((func.name.clone(), block, kind)) {
+            findings.push(MirCheck::ContextBoundaryViolation {
+                function: func.name.clone(),
+                block,
+                kind,
+                reason,
+            });
+        }
+    };
+
+    if !func.call_conv.carries_execution_context() {
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                if matches!(
+                    instr,
+                    Instr::EnterContext
+                        | Instr::ExitContext
+                        | Instr::CheckCancellation
+                        | Instr::ContextField { .. }
+                ) {
+                    push(
+                        &mut findings,
+                        &mut seen,
+                        block.id,
+                        "context-marker-outside-handler",
+                            "execution-context carrier instructions are only legal in context-bearing functions"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        return findings;
+    }
+
+    let Some(entry) = func.blocks.first() else {
+        push(
+            &mut findings,
+            &mut seen,
+            0,
+            "missing-enter-context",
+            "context-bearing function has no entry block, so EnterContext cannot dominate the body"
+                .to_string(),
+        );
+        return findings;
+    };
+    if !matches!(entry.instructions.first(), Some(Instr::EnterContext)) {
+        push(
+            &mut findings,
+            &mut seen,
+            entry.id,
+            "missing-enter-context",
+            "context-bearing function entry block must start with EnterContext".to_string(),
+        );
+    }
+
+    for block in &func.blocks {
+        if matches!(
+            block.terminator,
+            Terminator::Return | Terminator::Trap { .. }
+        ) && !matches!(block.instructions.last(), Some(Instr::ExitContext))
+        {
+            push(
+                &mut findings,
+                &mut seen,
+                block.id,
+                "missing-exit-context",
+                "context-bearing function terminal block must end with ExitContext before its terminator"
+                    .to_string(),
+            );
+        }
+    }
+
+    let by_id: HashMap<u32, &BasicBlock> = func.blocks.iter().map(|b| (b.id, b)).collect();
+    let mut entry_states: HashMap<u32, ContextState> = HashMap::new();
+    let mut worklist = vec![entry.id];
+    entry_states.insert(entry.id, ContextState::Outside);
+
+    while let Some(block_id) = worklist.pop() {
+        let Some(block) = by_id.get(&block_id).copied() else {
+            continue;
+        };
+        let mut state = entry_states
+            .get(&block_id)
+            .copied()
+            .unwrap_or(ContextState::Invalid);
+
+        for instr in &block.instructions {
+            match instr {
+                Instr::EnterContext => {
+                    if state == ContextState::Outside {
+                        state = ContextState::Inside;
+                    } else {
+                        push(
+                            &mut findings,
+                            &mut seen,
+                            block.id,
+                            "invalid-enter-context",
+                            "EnterContext is only legal before the handler context has been entered"
+                                .to_string(),
+                        );
+                        state = ContextState::Invalid;
+                    }
+                }
+                Instr::ExitContext => {
+                    if state == ContextState::Inside {
+                        state = ContextState::Exited;
+                    } else {
+                        push(
+                            &mut findings,
+                            &mut seen,
+                            block.id,
+                            "invalid-exit-context",
+                            "ExitContext is only legal while the handler context is active"
+                                .to_string(),
+                        );
+                        state = ContextState::Invalid;
+                    }
+                }
+                Instr::CheckCancellation
+                | Instr::ContextField { .. }
+                | Instr::ActorStateFieldLoad { .. }
+                | Instr::ActorStateFieldStore { .. }
+                    if state != ContextState::Inside =>
+                {
+                    push(
+                        &mut findings,
+                        &mut seen,
+                        block.id,
+                        "context-use-outside-boundary",
+                        "context-observing instructions must execute between EnterContext and ExitContext"
+                            .to_string(),
+                    );
+                    state = ContextState::Invalid;
+                }
+                _ => {}
+            }
+        }
+
+        if matches!(
+            block.terminator,
+            Terminator::Return | Terminator::Trap { .. }
+        ) && state != ContextState::Exited
+        {
+            push(
+                &mut findings,
+                &mut seen,
+                block.id,
+                "missing-exit-context",
+                "context-bearing function terminal path reaches its terminator outside an exited context"
+                    .to_string(),
+            );
+        }
+
+        for succ in block.successors() {
+            let next = entry_states
+                .get(&succ)
+                .copied()
+                .map_or(state, |prev| prev.meet(state));
+            let changed = entry_states.get(&succ).copied() != Some(next);
+            if changed {
+                entry_states.insert(succ, next);
+                worklist.push(succ);
+            }
+        }
+    }
+
+    findings
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct BasicBlock {
     pub id: u32,
@@ -99,6 +365,26 @@ pub struct BasicBlock {
     /// agree on what each `SiteId` resolves to.
     pub instructions: Vec<Instr>,
     pub terminator: Terminator,
+}
+
+impl BasicBlock {
+    #[must_use]
+    pub fn successors(&self) -> Vec<u32> {
+        match &self.terminator {
+            Terminator::Return | Terminator::Trap { .. } => Vec::new(),
+            Terminator::Goto { target } => vec![*target],
+            Terminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } => vec![*then_target, *else_target],
+            Terminator::Call { next, .. }
+            | Terminator::Yield { next, .. }
+            | Terminator::Send { next, .. }
+            | Terminator::Ask { next, .. }
+            | Terminator::Select { next, .. } => vec![*next],
+        }
+    }
 }
 
 /// Failure class carried by `Terminator::Trap`. The discriminant lets
@@ -146,13 +432,12 @@ pub enum Terminator {
         then_target: u32,
         else_target: u32,
     },
-    /// Call into a sibling function by name; store its return value into
-    /// `dest`, then branch to `next`. Cluster 1 doesn't construct this; it
-    /// exists so the emitter match is exhaustive.
+    /// Call into a sibling function by name, optionally store its return value,
+    /// then branch to `next`.
     Call {
         callee: String,
         args: Vec<Place>,
-        dest: Place,
+        dest: Option<Place>,
         next: u32,
     },
     /// Hard abort: emit `llvm.trap` followed by `unreachable`. The
@@ -180,6 +465,7 @@ pub enum Terminator {
     /// the v0.5 integer spine never constructs it.
     Send {
         actor: Place,
+        msg_type: i32,
         value: Place,
         next: u32,
     },
@@ -209,8 +495,8 @@ pub enum Terminator {
     /// lands.
     Ask {
         actor: Place,
+        msg_type: i32,
         value: Place,
-        channel: Place,
         reply_dest: Place,
         next: u32,
     },
@@ -254,10 +540,20 @@ pub enum SelectArmKind {
     /// `next(<stream>)` — pending read on a stream.
     StreamNext { stream: Place },
     /// `<actor>.<method>(<args>)` — actor ask.
+    ///
+    /// `msg_type` and `value` mirror `Terminator::Ask` so codegen
+    /// consumes the same packed-payload shape per arm (slice 3
+    /// resolves the method name to its handler `msg_type` and packs
+    /// the args via `lower_actor_payload` at producer time, the same
+    /// path single-shot ask lowering uses). `method` is kept for
+    /// diagnostics and producer-side tests; codegen reads `msg_type`
+    /// and `value` only.
     ActorAsk {
         actor: Place,
         method: String,
         args: Vec<Place>,
+        msg_type: i32,
+        value: Place,
     },
     /// `await <task>` — task completion.
     TaskAwait { task: Place },
@@ -308,6 +604,9 @@ pub enum Place {
     /// Drop semantics: stop-on-last-handle-drop with weak-ref body
     /// capture (§5.9 ratification 2).
     LambdaActorHandle(u32),
+    /// A named actor handle returned by `spawn Actor(...)`. The carried `u32`
+    /// is the backing local whose resolved type is `LocalPid<Actor>`.
+    ActorHandle(u32),
     /// Write-only end of a `Duplex<S, R>`'s S-direction queue. The
     /// carried `u32` is the parent Duplex's `Local(N)` id (the same
     /// local that a `DuplexHandle` would address). Drop closes the
@@ -454,6 +753,23 @@ pub enum FloatWidth {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instr {
+    /// Semantic marker at actor-handler entry. Codegen emits no user-visible
+    /// instruction, but validates that the hidden execution-context argument is
+    /// bound before any context-dependent carrier op can execute.
+    EnterContext,
+    /// Semantic marker at actor-handler exit. Bounds context-derived values:
+    /// after this marker they may not be read, returned, captured, or otherwise
+    /// propagated across the handler boundary.
+    ExitContext,
+    /// Explicit cancellation observation point. Codegen lowers this through
+    /// the same `hew_actor_cooperate` runtime consult used by cooperate-site
+    /// injection.
+    CheckCancellation,
+    /// Load one field from the hidden `*mut HewExecutionContext` actor-handler
+    /// argument by stable byte offset. `dest` supplies the expected field type;
+    /// codegen validates it against the known execution-context ABI table before
+    /// emitting the byte-offset GEP + typed load.
+    ContextField { dest: Place, offset: usize },
     /// `dest = const <value>` as i64.
     ConstI64 { dest: Place, value: i64 },
     /// Two's-complement wrapping `dest = lhs + rhs`. No overflow check.
@@ -616,7 +932,7 @@ pub enum Instr {
     /// WHY (M2 slice 4.5c): the typecheck→HIR/MIR bridge that maps
     /// `Duplex<S, R>::send(msg)` (a `MethodCallRewrite` side-table
     /// entry produced by `hew-types` slice 4.5b) to this variant
-    /// does not yet reach the Rust MIR pipeline (`hew compile-v05`
+    /// does not yet reach the Rust MIR pipeline (`hew compile`
     /// never invokes the typechecker). The variant lands first so
     /// slice 5 codegen can wire a real `inkwell::BuildCall` arm and
     /// the producer-side bridge work in a follow-up slice does not
@@ -631,34 +947,69 @@ pub enum Instr {
     /// impossible because `RuntimeCall`'s fields are private
     /// (LESSONS P0 `boundary-fail-closed`).
     CallRuntimeAbi(RuntimeCall),
-    /// Direct call to a user-defined function in the same module. The callee
-    /// is identified by its bare function name (the same string that appears
-    /// as `RawMirFunction::name` for the target function). Arguments are
-    /// passed in declaration order and must match the callee's `params` list
-    /// in count; type agreement is enforced by the HIR checker upstream.
-    ///
-    /// `dest = Some(place)` writes the call's return value into `place`;
-    /// `dest = None` is emitted when the caller discards the return value
-    /// (e.g. a void-result call in a statement context). Codegen looks up the
-    /// callee in the `fn_symbols` map populated by `declare_function`, which
-    /// runs over ALL module functions before any body is lowered, so forward
-    /// references are handled correctly.
-    ///
-    /// Indirect calls (closures, higher-order function values) are out of
-    /// scope for this instruction; the producer emits `CutoverUnsupported`
-    /// for those. Only static callee names that appear in the module's
-    /// function-item registry are lowered here.
-    ///
-    /// LESSONS: `boundary-fail-closed` — the callee name is validated against
-    /// `module_fn_names` at MIR construction in `lower_value`; an unrecognised
-    /// name never silently produces a broken `CallDirect`.
-    CallDirect {
-        /// Bare function name matching the callee's `RawMirFunction::name`.
-        callee_symbol: String,
-        /// Argument Places in declaration order.
+    /// Construct a first-class callable value from a closure invoke shim and
+    /// the environment record materialised at the literal site.
+    MakeClosure {
+        /// Synthetic function symbol whose ABI is `(ctx, env_ptr, user_args...)`.
+        fn_symbol: String,
+        /// Environment record place. Codegen stores this place's address in
+        /// the closure pair; the env layout is registered in `record_layouts`.
+        env: Place,
+        /// Destination closure-pair value (`{ fn_ptr, env_ptr }`).
+        dest: Place,
+    },
+    /// Load one captured field from a closure invoke shim's environment pointer.
+    ClosureEnvFieldLoad {
+        /// Local holding the opaque env pointer parameter.
+        env: Place,
+        /// Named env-record type whose layout defines `field_offset`.
+        env_ty: ResolvedTy,
+        /// Capture field index in first-use order.
+        field_offset: FieldOffset,
+        /// Destination place receiving the field value.
+        dest: Place,
+    },
+    ActorStateFieldLoad {
+        field_offset: FieldOffset,
+        dest: Place,
+    },
+    ActorStateFieldStore {
+        field_offset: FieldOffset,
+        src: Place,
+    },
+    SpawnActor {
+        actor_name: String,
+        state: Option<Place>,
+        init_args: Vec<Place>,
+        dest: Place,
+    },
+    /// Call a first-class callable pair. Codegen loads the function pointer and
+    /// environment pointer from `callee`, then emits an indirect call with the
+    /// current execution context and environment pointer prepended to `args`.
+    CallClosure {
+        callee: Place,
         args: Vec<Place>,
-        /// Destination for the return value, or `None` if discarded.
+        ret_ty: ResolvedTy,
         dest: Option<Place>,
+    },
+    /// Spawn a no-argument, unit-returning user function as a scope-owned task.
+    ///
+    /// Codegen synthesises the C-ABI task wrapper (`void (*)(HewTask*)`) and
+    /// passes it to `hew_task_spawn_thread`. MIR only constructs this after
+    /// validating the fork body is directly observable by cancellation.
+    SpawnTaskDirect { task: Place, callee_symbol: String },
+    /// Spawn a no-argument, unit-returning closure as a scope-owned task.
+    ///
+    /// The producer materialises the closure environment record in the parent
+    /// frame, then codegen copies it into the task-owned Rc environment before
+    /// spawning the worker. The worker wrapper fetches the task env and calls
+    /// `fn_symbol(ctx, env_ptr)`, inheriting the parent execution context's
+    /// cancellation, supervisor-lineage, and trace lanes.
+    SpawnTaskClosure {
+        task: Place,
+        fn_symbol: String,
+        env: Place,
+        env_ty: ResolvedTy,
     },
     /// Run the drop ritual for `place`. Cluster 3 makes this first-class:
     /// `drop_fn = Some(name)` calls the `@resource` type's declared
@@ -1059,7 +1410,7 @@ pub struct CheckedMirFunction {
 
 /// Per-function legality findings produced by Checked MIR. A
 /// `CheckedMirFunction` with any non-`DecisionMapTotal` `MirCheck`
-/// is rejected by `hew compile-v05`; no backend artefact is emitted.
+/// is rejected by `hew compile`; no backend artefact is emitted.
 ///
 /// The variants are exhaustive over the v0.5 move/borrow/init/aliasing
 /// surface. Variants whose construction surface doesn't yet exist in
@@ -1139,6 +1490,18 @@ pub enum MirCheck {
     /// the offending block id and a short reason so the diagnostic
     /// surface can anchor the rejection.
     DropPlanUndetermined { block: u32, reason: String },
+    /// Execution-context carrier invariant failed: actor handlers must bracket
+    /// their bodies with EnterContext/ExitContext and ordinary functions must
+    /// not contain carrier instructions.
+    ContextBoundaryViolation {
+        function: String,
+        block: u32,
+        kind: &'static str,
+        reason: String,
+    },
+    /// A value derived from `Instr::ContextField` crossed an `ExitContext`
+    /// boundary by being read or returned after the context had been exited.
+    ContextBindingEscapes { place: Place, block: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1306,7 +1669,6 @@ pub enum ExitPath {
     Ask {
         block: u32,
         actor: Place,
-        channel: Place,
         next: u32,
     },
     /// Sealed `select{}` exit. Mirrors `Terminator::Select`; declared
@@ -1493,6 +1855,18 @@ pub enum MirDiagnosticKind {
     /// Defense-in-depth: an `HirExprKind::Unsupported` node reached MIR
     /// lowering.  The HIR diagnostic should have stopped the pipeline earlier.
     UnsupportedNode { reason: String },
+    /// A `select{}` arm of a kind the current lane does not lower
+    /// (today: `StreamNext` and `TaskAwait`). Distinct from
+    /// `UnsupportedNode` so the diagnostic names both the arm kind and
+    /// the future lane that will close it; the producer-bridge contract
+    /// for MIR's `Terminator::Select` is "only `ActorAsk` + `AfterTimer`
+    /// arms emit; everything else fails closed with a named pointer to
+    /// the lane that lifts the restriction."
+    SelectArmNotImplemented {
+        arm_kind: String,
+        lane_pointer: String,
+        site: SiteId,
+    },
     /// Cluster 1 spine subset rejection: an expression form (e.g. a call, a
     /// non-integer literal, a control-flow construct) is recognised but not
     /// yet lowered to the backend `Instr` stream. Fail-closed so the emitter
@@ -1508,12 +1882,39 @@ pub enum MirDiagnosticKind {
         name: String,
         site: SiteId,
     },
+    /// A HIR-declared closure/lambda-actor capture could not be mapped to a MIR
+    /// backend place. Capture analysis is checker/HIR authority; MIR must not
+    /// silently drop a capture and emit a smaller environment.
+    CannotMaterializeClosureCapture {
+        binding: BindingId,
+        name: String,
+        site: SiteId,
+    },
     /// Drop-elaboration aborted because the M2 substrate's per-exit
     /// drop plan could not be determined for a `Return` block. Surfaced
     /// from `MirCheck::DropPlanUndetermined`; the elaborator never
     /// emits a partial drop (fail-closed per LESSONS
     /// `cleanup-all-exits` / `boundary-fail-closed`).
     DropPlanUndetermined { block: u32, reason: String },
+    /// Execution-context carrier marker validation failed.
+    ContextBoundaryViolation {
+        function: String,
+        block: u32,
+        kind: &'static str,
+        reason: String,
+    },
+    /// A context-derived place escaped past `ExitContext`.
+    ContextBindingEscapes { place: Place, block: u32 },
+    /// A hand-built or malformed HIR actor body referenced `self.<field>` for a
+    /// field that is not declared in the actor's state layout.
+    UnknownActorStateField { actor: String, field: String },
+    /// Two actor receive handlers, or a handler and an existing function symbol,
+    /// resolved to the same emitted MIR symbol.
+    ActorHandlerSymbolCollision {
+        symbol: String,
+        existing: String,
+        duplicate: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

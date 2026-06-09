@@ -1,4 +1,4 @@
-use crate::env::TypeEnv;
+use crate::env::{TypeBindingId, TypeEnv};
 use crate::error::TypeError;
 use crate::lowering_facts::LoweringFact;
 use crate::module_registry::ModuleRegistry;
@@ -33,6 +33,45 @@ impl ImportKey {
 }
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExecutionContextReader {
+    ActorId,
+    Supervisor,
+    TraceSpan,
+}
+
+impl ExecutionContextReader {
+    #[must_use]
+    pub fn from_surface_name(name: &str) -> Option<Self> {
+        match name {
+            "@actor_id" => Some(Self::ActorId),
+            "@supervisor" => Some(Self::Supervisor),
+            "@trace_span" => Some(Self::TraceSpan),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn surface_name(self) -> &'static str {
+        match self {
+            Self::ActorId => "@actor_id",
+            Self::Supervisor => "@supervisor",
+            Self::TraceSpan => "@trace_span",
+        }
+    }
+
+    #[must_use]
+    pub fn ty(self) -> Ty {
+        match self {
+            Self::ActorId | Self::TraceSpan => Ty::U64,
+            Self::Supervisor => Ty::Pointer {
+                is_mutable: true,
+                pointee: Box::new(Ty::Unit),
+            },
+        }
+    }
+}
+
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
@@ -54,6 +93,13 @@ pub struct TypeCheckOutput {
     /// MLIR argument types. Missing entry means the checker could not produce a
     /// concrete lowering fact and downstream codegen must fail closed.
     pub lowering_facts: HashMap<SpanKey, LoweringFact>,
+    /// Checker-owned actor receive-handler state guard policy keyed by the
+    /// receive declaration span.
+    ///
+    /// Every receive handler is `Exclusive` in v0.5. The table is still
+    /// checker-owned so HIR/MIR/codegen consume a produced fact instead of
+    /// rediscovering actor-state safety from syntax downstream.
+    pub actor_handler_state_guards: HashMap<SpanKey, ActorStateGuard>,
     /// Checker-owned method-call lowering decisions keyed by the method call span.
     ///
     /// Populated during type checking for both receiver-based runtime rewrites
@@ -61,6 +107,12 @@ pub struct TypeCheckOutput {
     /// consume a single authoritative contract instead of re-resolving C
     /// symbols from receiver types or the module registry.
     pub method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Checker-owned actor mailbox dispatch decisions keyed by the method call span.
+    ///
+    /// Populated only when a method call resolves to an actor `receive fn`.
+    /// HIR lowering consumes this side table before the generic method-call
+    /// rewrite bridge and never reclassifies the receiver type downstream.
+    pub actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span. Missing entry means the checker rejected the target.
     pub assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
@@ -182,6 +234,40 @@ pub struct TypeCheckOutput {
     /// as a trait object but whose span is absent from this map is a HIR
     /// diagnostic, not a runtime panic.
     pub dyn_trait_method_calls: HashMap<SpanKey, DynMethodCall>,
+    /// Checker-authoritative closure capture facts keyed by the closure literal span.
+    ///
+    /// The checker records the exact lexical binding for every captured name before
+    /// HIR/MIR lowering. Downstream stages must consume this ledger rather than
+    /// rediscovering capture legality from expression shape.
+    pub closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+}
+
+/// By-value capture mode selected for one closure environment field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClosureCaptureMode {
+    /// The source value implements `Copy`, so an implicit by-value copy is legal.
+    Copy,
+    /// The closure was written `move |...|`; the source binding is consumed.
+    Move,
+}
+
+/// Checker-owned capture record for one binding referenced by a closure body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosureCaptureFact {
+    /// Checker-local identity of the captured lexical binding.
+    pub binding_id: TypeBindingId,
+    /// Surface name used at the capture site.
+    pub name: String,
+    /// Fully resolved captured type at checker-output time.
+    pub ty: Ty,
+    /// Capture mode selected by the checker.
+    pub mode: ClosureCaptureMode,
+    /// Whether the captured type satisfies the actor/task boundary marker.
+    pub is_send: bool,
+    /// Source span of this use inside the closure body.
+    pub use_span: Span,
+    /// Definition span of the captured binding when user-authored.
+    pub def_span: Option<Span>,
 }
 
 /// Checker-resolved metadata for a `T → dyn Trait` coercion call site.
@@ -348,6 +434,7 @@ impl Default for TypeCheckOutput {
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::default(),
             lowering_facts: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -364,8 +451,10 @@ impl Default for TypeCheckOutput {
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: HashMap::new(),
         }
     }
 }
@@ -435,6 +524,14 @@ pub enum ActorSendAliasing {
     /// move-checker to have invalidated the sender's binding so no
     /// post-send observation is possible.
     Alias,
+}
+
+/// Checker-owned actor-state guard policy for a dispatchable actor handler.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActorStateGuard {
+    /// Handler receives exclusive mutable access to actor state for its body.
+    Exclusive,
 }
 
 /// Why the type-checker classified an actor-send arg as `Copy` instead
@@ -516,6 +613,9 @@ pub enum MethodCallReceiverKind {
     NamedTypeInstance {
         type_name: String,
     },
+    ActorInstance {
+        actor_name: String,
+    },
     HandleInstance {
         type_name: String,
     },
@@ -551,6 +651,14 @@ pub enum MethodCallRewrite {
         c_symbol: String,
     },
     DeferToLowering,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActorMethodKind {
+    /// Fire-and-forget dispatch to an actor receive handler that returns `()`.
+    Fire(String),
+    /// Request/reply dispatch to an actor receive handler with a non-unit reply.
+    Ask(String, Ty),
 }
 
 #[derive(Debug, Clone)]
@@ -975,6 +1083,9 @@ pub struct Checker {
     /// `enforce_actor_boundary_send` and moved out at the end of
     /// `check_program`.
     pub(super) actor_send_aliasing: HashMap<SpanKey, ActorSendAliasing>,
+    /// Receive-handler actor-state guard policy produced by checker.
+    /// Mirrors [`TypeCheckOutput::actor_handler_state_guards`].
+    pub(super) actor_handler_state_guards: HashMap<SpanKey, ActorStateGuard>,
     /// Per-actor arena cap in bytes, from `#[max_heap(N)]` annotations.
     /// Mirrors [`TypeCheckOutput::actor_max_heap`]; populated in
     /// `check_actor` and moved out at the end of `check_program`.
@@ -1004,6 +1115,7 @@ pub struct Checker {
     /// same variable every time).
     pub(super) deferred_channel_rewrites: HashMap<SpanKey, DeferredChannelMethodRewrite>,
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     /// Diagnostic-only stack-allocation hints accumulated by `classify_stack_hints`.
@@ -1108,6 +1220,8 @@ pub struct Checker {
     /// into `TypeCheckOutput::dyn_trait_method_calls` at the end of
     /// `check_program`.
     pub(super) dyn_trait_method_calls: HashMap<SpanKey, DynMethodCall>,
+    /// Binding-accurate closure capture facts keyed by closure literal span.
+    pub(super) closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
     /// Maps actor name to its `init()` parameter list: `(param_name, outer_type, first_type_arg)`.
     ///
     /// `outer_type` is the outermost named type (e.g. `"ActorRef"` for `ActorRef<WorkerPool>`).
@@ -1119,6 +1233,8 @@ pub struct Checker {
     pub(super) lambda_capture_depth: Option<usize>,
     /// Captured variable types accumulated during lambda body checking.
     pub(super) lambda_captures: Vec<Ty>,
+    /// Binding-accurate capture facts accumulated during lambda body checking.
+    pub(super) lambda_capture_facts: Vec<ClosureCaptureFact>,
     /// Tracks imported module paths with their source spans and originating module for
     /// unused-import detection and source attribution.
     /// Key: (`owner_module`, `short_name`), Value: (import span, source module).
@@ -1146,6 +1262,12 @@ pub struct Checker {
     /// Whether we are currently inside an actor receive function body.
     /// Used to warn about blocking calls that can starve the scheduler.
     pub(super) in_receive_fn: bool,
+    /// Whether execution-context surface readers may resolve in the current body.
+    ///
+    /// Set for actor dispatch handlers and lifecycle hooks; cleared for nested
+    /// lambdas so `@actor_id`-style readers cannot silently capture a dispatch
+    /// context across an unmodelled closure boundary.
+    pub(super) in_actor_handler_context: bool,
     /// Whether we are currently inside an unsafe block.
     pub(super) in_unsafe: bool,
     /// The module currently being processed (enables per-module scoping in future).
@@ -1254,6 +1376,7 @@ impl Checker {
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             consume_receiver_methods: HashSet::new(),
             pending_lowering_facts: HashMap::new(),
@@ -1262,6 +1385,7 @@ impl Checker {
             deferred_vec_admission: HashMap::new(),
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             stack_hints: Vec::new(),
@@ -1299,9 +1423,11 @@ impl Checker {
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: HashMap::new(),
             actor_init_params: HashMap::new(),
             lambda_capture_depth: None,
             lambda_captures: Vec::new(),
+            lambda_capture_facts: Vec::new(),
             import_spans: HashMap::new(),
             used_modules: RefCell::new(HashSet::new()),
             user_modules: HashSet::new(),
@@ -1312,6 +1438,7 @@ impl Checker {
             in_for_binding: false,
             in_pure_function: false,
             in_receive_fn: false,
+            in_actor_handler_context: false,
             in_unsafe: false,
             current_module: None,
             local_type_defs: HashSet::new(),

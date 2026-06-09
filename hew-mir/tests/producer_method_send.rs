@@ -31,7 +31,7 @@
 //! hand-built test was approximating.  The hand-built scaffolding is retired.
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, DropKind, Instr, IrPipeline, Place};
+use hew_mir::{lower_hir_module, DropKind, ExitPath, Instr, IrPipeline, Place};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -69,6 +69,7 @@ fn all_drops(p: &IrPipeline, fn_name: &str) -> Vec<hew_mir::ElabDrop> {
         .expect("function must be present in elaborated_mir")
         .drop_plans
         .iter()
+        .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
         .flat_map(|(_, plan)| plan.drops.iter().cloned())
         .collect()
 }

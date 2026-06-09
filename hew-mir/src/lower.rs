@@ -1,20 +1,43 @@
 use std::collections::{HashMap, HashSet};
 
+use hew_hir::stdlib_catalog;
 use hew_hir::{
-    named_type_names, BindingId, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule,
-    HirStmtKind, IntentKind, ResolvedRef, ValueClass,
+    named_type_names, BindingId, HirActorDecl, HirBlock, HirExpr, HirExprKind, HirFn, HirItem,
+    HirLifecycleHookKind, HirLiteral, HirModule, HirSelect, HirSelectArmKind, HirStmtKind,
+    IntentKind, ResolvedRef, ValueClass,
 };
 use hew_parser::ast::BinaryOp;
-use hew_types::ResolvedTy;
+use hew_types::{ExecutionContextReader, ResolvedTy};
 
 use crate::dataflow;
 use crate::model::{
-    BasicBlock, BlockKind, CheckedMirFunction, CmpPred, DecisionFact, DropKind, DropPlan,
-    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, Instr,
-    IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MirCheck, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy, Terminator, ThirFunction,
-    TrapKind,
+    ActorHandlerLayout, ActorLayout, BasicBlock, BlockKind, CheckedMirFunction, CmpPred,
+    DecisionFact, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath,
+    FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MirCheck,
+    MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, SelectArm,
+    SelectArmKind, Strategy, Terminator, ThirFunction, TrapKind,
 };
+
+const HEW_CTX_OFFSET_ACTOR_ID: usize = 8;
+const HEW_CTX_OFFSET_PARENT_SUPERVISOR: usize = 16;
+const HEW_CTX_OFFSET_TRACE: usize = 56;
+const HEW_TRACE_OFFSET_SPAN_ID: usize = 16;
+const HEW_CTX_OFFSET_TRACE_SPAN: usize = HEW_CTX_OFFSET_TRACE + HEW_TRACE_OFFSET_SPAN_ID;
+
+#[derive(Debug, Clone)]
+struct ActorMethodInfo {
+    msg_type: i32,
+    param_tys: Vec<ResolvedTy>,
+    return_ty: ResolvedTy,
+}
+
+fn context_reader_offset(reader: ExecutionContextReader) -> usize {
+    match reader {
+        ExecutionContextReader::ActorId => HEW_CTX_OFFSET_ACTOR_ID,
+        ExecutionContextReader::Supervisor => HEW_CTX_OFFSET_PARENT_SUPERVISOR,
+        ExecutionContextReader::TraceSpan => HEW_CTX_OFFSET_TRACE_SPAN,
+    }
+}
 
 /// Classify a resolved integer type as signed or unsigned. Returns
 /// `None` for non-integer types — callers that demand an integer
@@ -98,6 +121,34 @@ fn signed_min_value(ty: &ResolvedTy) -> Option<i64> {
         // Unsigned types: no MIN check needed.
         _ => None,
     }
+}
+
+fn actor_name_from_handle_ty(ty: &ResolvedTy) -> Option<&str> {
+    match ty {
+        ResolvedTy::Named { name, args }
+            if matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor") && args.len() == 1 =>
+        {
+            match &args[0] {
+                ResolvedTy::Named { name, args } if args.is_empty() => Some(name.as_str()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn method_name_from_id(method_id: &str) -> &str {
+    method_id.rsplit("::").next().unwrap_or(method_id)
+}
+
+fn is_self_expr(expr: &HirExpr) -> bool {
+    matches!(
+        &expr.kind,
+        HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Unresolved | ResolvedRef::Binding(_) | ResolvedRef::Item(_)
+        } if name == "self"
+    )
 }
 
 /// Run Checked MIR's legality passes over a function's statement
@@ -186,6 +237,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     // StructInit, so they never appear here.
     let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
     let mut record_layouts: Vec<crate::model::RecordLayout> = Vec::new();
+    let mut actor_layouts: Vec<crate::model::ActorLayout> = Vec::new();
     for item in &module.items {
         match item {
             HirItem::Record(decl) => {
@@ -241,6 +293,71 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     record_field_orders.insert(decl.name.clone(), fields);
                 }
             }
+            HirItem::Actor(actor) => {
+                if !actor.state_fields.is_empty() {
+                    record_layouts.push(crate::model::RecordLayout {
+                        name: actor.name.clone(),
+                        field_tys: actor
+                            .state_fields
+                            .iter()
+                            .map(|field| field.ty.clone())
+                            .collect(),
+                    });
+                }
+                actor_layouts.push(crate::model::ActorLayout {
+                    name: actor.name.clone(),
+                    state_field_names: actor
+                        .state_fields
+                        .iter()
+                        .map(|field| field.name.clone())
+                        .collect(),
+                    state_field_tys: actor
+                        .state_fields
+                        .iter()
+                        .map(|field| field.ty.clone())
+                        .collect(),
+                    init_param_names: actor
+                        .init
+                        .as_ref()
+                        .map(|init| init.params.iter().map(|param| param.name.clone()).collect())
+                        .unwrap_or_default(),
+                    init_param_tys: actor
+                        .init
+                        .as_ref()
+                        .map(|init| init.params.iter().map(|param| param.ty.clone()).collect())
+                        .unwrap_or_default(),
+                    init_symbol: actor
+                        .init
+                        .as_ref()
+                        .map(|_| mangle_actor_init_handler(&actor.name)),
+                    on_start_symbol: actor
+                        .lifecycle_hooks
+                        .iter()
+                        .find(|hook| hook.kind == HirLifecycleHookKind::Start)
+                        .map(|_| mangle_actor_start_handler(&actor.name)),
+                    on_stop_symbol: actor
+                        .lifecycle_hooks
+                        .iter()
+                        .find(|hook| hook.kind == HirLifecycleHookKind::Stop)
+                        .map(|_| mangle_actor_stop_handler(&actor.name)),
+                    handlers: actor
+                        .receive_handlers
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, handler)| ActorHandlerLayout {
+                            name: handler.name.clone(),
+                            symbol: mangle_actor_receive_handler(&actor.name, &handler.name),
+                            msg_type: i32::try_from(idx).unwrap_or(i32::MAX),
+                            param_tys: handler
+                                .params
+                                .iter()
+                                .map(|param| param.ty.clone())
+                                .collect(),
+                            return_ty: handler.return_ty.clone(),
+                        })
+                        .collect(),
+                });
+            }
             _ => {}
         }
     }
@@ -260,6 +377,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         });
         record_field_orders.insert(layout.mangled_name.clone(), fields);
     }
+    let actor_layout_map: HashMap<String, ActorLayout> = actor_layouts
+        .iter()
+        .cloned()
+        .map(|layout| (layout.name.clone(), layout))
+        .collect();
 
     // Collect the names every user-defined function will use as its
     // emitted MIR symbol. For non-generic functions this is the
@@ -269,9 +391,17 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     // names through to LLVM and could not be linked).
     //
     // The Call lowering arm dispatches on this set: a callee name in
-    // this set → `Instr::CallDirect`; otherwise the runtime-ABI/indirect
+    // this set → `Terminator::Call`; otherwise the runtime-ABI/indirect
     // fail-closed paths apply.
     let mut module_fn_names: HashSet<String> = HashSet::new();
+    for entry in stdlib_catalog::entries() {
+        if !matches!(
+            entry.linkage,
+            stdlib_catalog::BuiltinLinkage::CompilerIntrinsic { .. }
+        ) {
+            module_fn_names.insert(entry.name.to_string());
+        }
+    }
     for item in &module.items {
         if let HirItem::Function(f) = item {
             if f.type_params.is_empty() {
@@ -282,6 +412,10 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     for mono in &module.monomorphisations {
         module_fn_names.insert(mono.mangled_name.clone());
     }
+    let mut emitted_actor_handler_symbols: HashMap<String, String> = module_fn_names
+        .iter()
+        .map(|name| (name.clone(), format!("function `{name}`")))
+        .collect();
 
     // Build origin lookup: ItemId → &HirFn. Each monomorphisation's
     // `key.origin` resolves to the generic origin fn whose body is
@@ -308,25 +442,63 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     HashMap::new(),
                     &module.type_classes,
                     &record_field_orders,
+                    &actor_layout_map,
+                    None,
                     &module_fn_names,
                     &module.call_site_type_args,
+                    crate::model::FunctionCallConv::Default,
                 );
                 thir.push(lowered.thir);
                 raw_mir.push(lowered.raw);
                 checked_mir.push(lowered.checked);
                 elaborated_mir.push(lowered.elaborated);
+                record_layouts.extend(lowered.record_layouts);
+                for generated in lowered.generated {
+                    thir.push(generated.thir);
+                    raw_mir.push(generated.raw);
+                    checked_mir.push(generated.checked);
+                    elaborated_mir.push(generated.elaborated);
+                    diagnostics.extend(generated.diagnostics);
+                    record_layouts.extend(generated.record_layouts);
+                }
                 diagnostics.extend(lowered.diagnostics);
+            }
+            HirItem::Actor(actor) => {
+                let lowered_handlers = lower_actor_body_handlers(
+                    actor,
+                    &module.type_classes,
+                    &record_field_orders,
+                    &actor_layout_map,
+                    &module_fn_names,
+                    &module.call_site_type_args,
+                    &mut emitted_actor_handler_symbols,
+                    &mut diagnostics,
+                );
+                for lowered in lowered_handlers {
+                    thir.push(lowered.thir);
+                    raw_mir.push(lowered.raw);
+                    checked_mir.push(lowered.checked);
+                    elaborated_mir.push(lowered.elaborated);
+                    record_layouts.extend(lowered.record_layouts);
+                    for generated in lowered.generated {
+                        thir.push(generated.thir);
+                        raw_mir.push(generated.raw);
+                        checked_mir.push(generated.checked);
+                        elaborated_mir.push(generated.elaborated);
+                        diagnostics.extend(generated.diagnostics);
+                        record_layouts.extend(generated.record_layouts);
+                    }
+                    diagnostics.extend(lowered.diagnostics);
+                }
             }
             HirItem::Record(_)
             | HirItem::TypeDecl(_)
             | HirItem::Machine(_)
-            | HirItem::Actor(_)
             | HirItem::Supervisor(_) => {
-                // Neither type declarations nor Lane A machine / actor /
-                // supervisor declarations have executable MIR bodies in S-A.
-                // TypeDecl markers are consumed via `HirModule.type_classes`;
-                // machine codegen is Lane B; actor body lowering is the next
-                // M6 slice; supervisor lowering is S-C (separate slice).
+                // Neither type declarations nor Lane A machine / supervisor
+                // declarations have executable MIR bodies in S-A. TypeDecl
+                // markers are consumed via `HirModule.type_classes`; machine
+                // codegen is Lane B; supervisor lowering is S-C.
             }
         }
     }
@@ -367,13 +539,25 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             subst,
             &module.type_classes,
             &record_field_orders,
+            &actor_layout_map,
+            None,
             &module_fn_names,
             &module.call_site_type_args,
+            crate::model::FunctionCallConv::Default,
         );
         thir.push(lowered.thir);
         raw_mir.push(lowered.raw);
         checked_mir.push(lowered.checked);
         elaborated_mir.push(lowered.elaborated);
+        record_layouts.extend(lowered.record_layouts);
+        for generated in lowered.generated {
+            thir.push(generated.thir);
+            raw_mir.push(generated.raw);
+            checked_mir.push(generated.checked);
+            elaborated_mir.push(generated.elaborated);
+            diagnostics.extend(generated.diagnostics);
+            record_layouts.extend(generated.record_layouts);
+        }
         diagnostics.extend(lowered.diagnostics);
     }
 
@@ -384,6 +568,540 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         elaborated_mir,
         diagnostics,
         record_layouts,
+        actor_layouts,
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "actor receive lowering threads the same module tables as regular function lowering"
+)]
+fn lower_actor_receive_handlers(
+    actor: &HirActorDecl,
+    type_classes: &hew_hir::TypeClassTable,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    module_fn_names: &HashSet<String>,
+    call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    emitted_symbols: &mut HashMap<String, String>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) -> Vec<LoweredFunction> {
+    let state_fields: HashSet<String> = actor
+        .state_fields
+        .iter()
+        .map(|field| field.name.clone())
+        .collect();
+    let mut lowered = Vec::new();
+
+    for handler in &actor.receive_handlers {
+        if handler.is_generator {
+            diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnsupportedNode {
+                    reason: "actor receive fn declared as generator; generator MIR lowering is a separate lane"
+                        .to_string(),
+                },
+                note: format!(
+                    "actor `{}` receive fn `{}` is a generator and is skipped by ActorHandler MIR lowering",
+                    actor.name, handler.name
+                ),
+            });
+            continue;
+        }
+
+        let self_field_errors = unknown_self_fields_in_block(&handler.body, &state_fields);
+        if !self_field_errors.is_empty() {
+            for field in self_field_errors {
+                diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UnknownActorStateField {
+                        actor: actor.name.clone(),
+                        field: field.clone(),
+                    },
+                    note: format!(
+                        "actor `{}` receive fn `{}` references unknown state field `self.{field}`",
+                        actor.name, handler.name
+                    ),
+                });
+            }
+            continue;
+        }
+
+        let emit_name = mangle_actor_receive_handler(&actor.name, &handler.name);
+        let duplicate_label = format!("actor `{}` receive fn `{}`", actor.name, handler.name);
+        if let Some(existing) = emitted_symbols.get(&emit_name) {
+            diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::ActorHandlerSymbolCollision {
+                    symbol: emit_name,
+                    existing: existing.clone(),
+                    duplicate: duplicate_label,
+                },
+                note:
+                    "actor receive handler symbol mangling must be one-to-one before MIR emission"
+                        .to_string(),
+            });
+            continue;
+        }
+        emitted_symbols.insert(emit_name.clone(), duplicate_label);
+
+        let synthetic_fn = HirFn {
+            id: actor.id,
+            node: actor.node,
+            name: format!("{}::{}", actor.name, handler.name),
+            type_params: Vec::new(),
+            params: handler.params.clone(),
+            return_ty: handler.return_ty.clone(),
+            body: handler.body.clone(),
+            span: handler.span.clone(),
+        };
+        lowered.push(lower_function(
+            &synthetic_fn,
+            emit_name,
+            HashMap::new(),
+            type_classes,
+            record_field_orders,
+            actor_layouts,
+            Some(&actor.name),
+            module_fn_names,
+            call_site_type_args,
+            crate::model::FunctionCallConv::ActorHandler,
+        ));
+    }
+
+    lowered
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "actor body lowering threads the same module tables as regular function lowering"
+)]
+fn lower_actor_body_handlers(
+    actor: &HirActorDecl,
+    type_classes: &hew_hir::TypeClassTable,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    module_fn_names: &HashSet<String>,
+    call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    emitted_symbols: &mut HashMap<String, String>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) -> Vec<LoweredFunction> {
+    let mut lowered = Vec::new();
+    if let Some(init) = &actor.init {
+        if let Some(func) = lower_actor_init_handler(
+            actor,
+            init,
+            type_classes,
+            record_field_orders,
+            actor_layouts,
+            module_fn_names,
+            call_site_type_args,
+            emitted_symbols,
+            diagnostics,
+        ) {
+            lowered.push(func);
+        }
+    }
+    lowered.extend(lower_actor_lifecycle_handlers(
+        actor,
+        type_classes,
+        record_field_orders,
+        actor_layouts,
+        module_fn_names,
+        call_site_type_args,
+        emitted_symbols,
+        diagnostics,
+    ));
+    lowered.extend(lower_actor_receive_handlers(
+        actor,
+        type_classes,
+        record_field_orders,
+        actor_layouts,
+        module_fn_names,
+        call_site_type_args,
+        emitted_symbols,
+        diagnostics,
+    ));
+    lowered
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "actor init lowering threads the same module tables as regular function lowering"
+)]
+fn lower_actor_init_handler(
+    actor: &HirActorDecl,
+    init: &hew_hir::HirActorInit,
+    type_classes: &hew_hir::TypeClassTable,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    module_fn_names: &HashSet<String>,
+    call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    emitted_symbols: &mut HashMap<String, String>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) -> Option<LoweredFunction> {
+    let emit_name = mangle_actor_init_handler(&actor.name);
+    let duplicate_label = format!("actor `{}` init", actor.name);
+    if let Some(existing) = emitted_symbols.get(&emit_name) {
+        diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::ActorHandlerSymbolCollision {
+                symbol: emit_name,
+                existing: existing.clone(),
+                duplicate: duplicate_label,
+            },
+            note: "actor init handler symbol mangling must be one-to-one before MIR emission"
+                .to_string(),
+        });
+        return None;
+    }
+    emitted_symbols.insert(emit_name.clone(), duplicate_label);
+
+    let synthetic_fn = HirFn {
+        id: actor.id,
+        node: actor.node,
+        name: format!("{}::init", actor.name),
+        type_params: Vec::new(),
+        params: init.params.clone(),
+        return_ty: ResolvedTy::Unit,
+        body: init.body.clone(),
+        span: actor.span.clone(),
+    };
+    Some(lower_function(
+        &synthetic_fn,
+        emit_name,
+        HashMap::new(),
+        type_classes,
+        record_field_orders,
+        actor_layouts,
+        Some(&actor.name),
+        module_fn_names,
+        call_site_type_args,
+        crate::model::FunctionCallConv::ActorHandler,
+    ))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "actor lifecycle lowering threads the same module tables as regular function lowering"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each lifecycle hook kind (Start, Stop, Crash, Upgrade) needs its own arm; extracting would not reduce conceptual complexity"
+)]
+fn lower_actor_lifecycle_handlers(
+    actor: &HirActorDecl,
+    type_classes: &hew_hir::TypeClassTable,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    module_fn_names: &HashSet<String>,
+    call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    emitted_symbols: &mut HashMap<String, String>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) -> Vec<LoweredFunction> {
+    let mut lowered = Vec::new();
+    for hook in &actor.lifecycle_hooks {
+        match hook.kind {
+            HirLifecycleHookKind::Start => {
+                let emit_name = mangle_actor_start_handler(&actor.name);
+                let duplicate_label =
+                    format!("actor `{}` #[on(start)] hook `{}`", actor.name, hook.name);
+                if let Some(existing) = emitted_symbols.get(&emit_name) {
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::ActorHandlerSymbolCollision {
+                            symbol: emit_name,
+                            existing: existing.clone(),
+                            duplicate: duplicate_label,
+                        },
+                        note: "actor #[on(start)] handler symbol mangling must be one-to-one before MIR emission"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                emitted_symbols.insert(emit_name.clone(), duplicate_label);
+
+                let synthetic_fn = HirFn {
+                    id: actor.id,
+                    node: actor.node,
+                    name: format!("{}::{}", actor.name, hook.name),
+                    type_params: Vec::new(),
+                    params: hook.params.clone(),
+                    return_ty: hook.return_ty.clone(),
+                    body: hook.body.clone(),
+                    span: hook.span.clone(),
+                };
+                lowered.push(lower_function(
+                    &synthetic_fn,
+                    emit_name,
+                    HashMap::new(),
+                    type_classes,
+                    record_field_orders,
+                    actor_layouts,
+                    Some(&actor.name),
+                    module_fn_names,
+                    call_site_type_args,
+                    crate::model::FunctionCallConv::ActorHandler,
+                ));
+            }
+            HirLifecycleHookKind::Stop => {
+                let emit_name = mangle_actor_stop_handler(&actor.name);
+                let duplicate_label =
+                    format!("actor `{}` #[on(stop)] hook `{}`", actor.name, hook.name);
+                if let Some(existing) = emitted_symbols.get(&emit_name) {
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::ActorHandlerSymbolCollision {
+                            symbol: emit_name,
+                            existing: existing.clone(),
+                            duplicate: duplicate_label,
+                        },
+                        note: "actor #[on(stop)] handler symbol mangling must be one-to-one before MIR emission"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                emitted_symbols.insert(emit_name.clone(), duplicate_label);
+
+                let synthetic_fn = HirFn {
+                    id: actor.id,
+                    node: actor.node,
+                    name: format!("{}::{}", actor.name, hook.name),
+                    type_params: Vec::new(),
+                    params: hook.params.clone(),
+                    return_ty: hook.return_ty.clone(),
+                    body: hook.body.clone(),
+                    span: hook.span.clone(),
+                };
+                lowered.push(lower_function(
+                    &synthetic_fn,
+                    emit_name,
+                    HashMap::new(),
+                    type_classes,
+                    record_field_orders,
+                    actor_layouts,
+                    Some(&actor.name),
+                    module_fn_names,
+                    call_site_type_args,
+                    crate::model::FunctionCallConv::ActorHandler,
+                ));
+            }
+            HirLifecycleHookKind::Crash => push_lifecycle_not_wired_diagnostic(
+                diagnostics,
+                &actor.name,
+                &hook.name,
+                "OnCrashNotYetWired",
+                "crash",
+                "supervisor crash lifecycle invocation is pending on S-C",
+            ),
+            HirLifecycleHookKind::Upgrade => push_lifecycle_not_wired_diagnostic(
+                diagnostics,
+                &actor.name,
+                &hook.name,
+                "OnUpgradeNotYetWired",
+                "upgrade",
+                "hot-upgrade lifecycle invocation is pending explicit ratification",
+            ),
+        }
+    }
+    lowered
+}
+
+fn push_lifecycle_not_wired_diagnostic(
+    diagnostics: &mut Vec<MirDiagnostic>,
+    actor_name: &str,
+    hook_name: &str,
+    diagnostic_name: &str,
+    hook_kind: &str,
+    reason: &str,
+) {
+    diagnostics.push(MirDiagnostic {
+        kind: MirDiagnosticKind::UnsupportedNode {
+            reason: format!("{diagnostic_name}: #[on({hook_kind})] is not wired"),
+        },
+        note: format!(
+            "`#[on({hook_kind})]` hook `{actor_name}::{hook_name}` would silently never run; {reason}"
+        ),
+    });
+}
+
+/// Deterministic actor receive-handler symbol mangling.
+///
+/// Scheme: `<Actor>__recv__<handler>`, with source identifiers preserved
+/// verbatim. The module-level actor lowering loop rejects collisions with
+/// existing function symbols and earlier handler symbols before body emission.
+fn mangle_actor_receive_handler(actor_name: &str, handler_name: &str) -> String {
+    format!("{actor_name}__recv__{handler_name}")
+}
+
+fn mangle_actor_init_handler(actor_name: &str) -> String {
+    format!("{actor_name}__init")
+}
+
+fn mangle_actor_start_handler(actor_name: &str) -> String {
+    format!("{actor_name}__on_start")
+}
+
+fn mangle_actor_stop_handler(actor_name: &str) -> String {
+    format!("{actor_name}__on_stop")
+}
+
+fn unknown_self_fields_in_block(block: &HirBlock, state_fields: &HashSet<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut unknown = Vec::new();
+    collect_unknown_self_fields_in_block(block, state_fields, &mut seen, &mut unknown);
+    unknown
+}
+
+fn collect_unknown_self_fields_in_block(
+    block: &HirBlock,
+    state_fields: &HashSet<String>,
+    seen: &mut HashSet<String>,
+    unknown: &mut Vec<String>,
+) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(_, Some(expr))
+            | HirStmtKind::Expr(expr)
+            | HirStmtKind::Return(Some(expr)) => {
+                collect_unknown_self_fields_in_expr(expr, state_fields, seen, unknown);
+            }
+            HirStmtKind::Assign { target, value } => {
+                collect_unknown_self_fields_in_expr(target, state_fields, seen, unknown);
+                collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
+            }
+            HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_unknown_self_fields_in_expr(tail, state_fields, seen, unknown);
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "visitor mirrors the sealed HirExprKind surface so self-field validation is exhaustive"
+)]
+fn collect_unknown_self_fields_in_expr(
+    expr: &HirExpr,
+    state_fields: &HashSet<String>,
+    seen: &mut HashSet<String>,
+    unknown: &mut Vec<String>,
+) {
+    match &expr.kind {
+        HirExprKind::Literal(_)
+        | HirExprKind::BindingRef { .. }
+        | HirExprKind::AwaitTask { .. }
+        | HirExprKind::ContextReader { .. }
+        | HirExprKind::Unsupported(_) => {}
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+            collect_unknown_self_fields_in_expr(left, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_expr(right, state_fields, seen, unknown);
+        }
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            collect_unknown_self_fields_in_expr(callee, state_fields, seen, unknown);
+            for arg in args {
+                collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
+            }
+        }
+        HirExprKind::Spawn { args, .. } => {
+            for (_, arg) in args {
+                collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
+            }
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+            collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
+            for arg in args {
+                collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
+            }
+        }
+        HirExprKind::Block(block)
+        | HirExprKind::Scope { body: block }
+        | HirExprKind::ForkBlock { body: block, .. } => {
+            collect_unknown_self_fields_in_block(block, state_fields, seen, unknown);
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_unknown_self_fields_in_expr(condition, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_expr(then_expr, state_fields, seen, unknown);
+            if let Some(else_expr) = else_expr {
+                collect_unknown_self_fields_in_expr(else_expr, state_fields, seen, unknown);
+            }
+        }
+        HirExprKind::StructInit { fields, base, .. } => {
+            for (_, field_expr) in fields {
+                collect_unknown_self_fields_in_expr(field_expr, state_fields, seen, unknown);
+            }
+            if let Some(base) = base {
+                collect_unknown_self_fields_in_expr(base, state_fields, seen, unknown);
+            }
+        }
+        HirExprKind::FieldAccess { object, field } => {
+            if matches!(
+                &object.kind,
+                HirExprKind::BindingRef {
+                    name,
+                    resolved: ResolvedRef::Unresolved | ResolvedRef::Binding(_) | ResolvedRef::Item(_)
+                } if name == "self"
+            ) && !state_fields.contains(field)
+                && seen.insert(field.clone())
+            {
+                unknown.push(field.clone());
+            }
+            collect_unknown_self_fields_in_expr(object, state_fields, seen, unknown);
+        }
+        HirExprKind::ScopeDeadline { duration, body } => {
+            collect_unknown_self_fields_in_expr(duration, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
+        }
+        HirExprKind::Select(select) => {
+            for arm in &select.arms {
+                match &arm.kind {
+                    hew_hir::HirSelectArmKind::StreamNext { stream } => {
+                        collect_unknown_self_fields_in_expr(stream, state_fields, seen, unknown);
+                    }
+                    hew_hir::HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                        collect_unknown_self_fields_in_expr(actor, state_fields, seen, unknown);
+                        for arg in args {
+                            collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
+                        }
+                    }
+                    hew_hir::HirSelectArmKind::TaskAwait { task } => {
+                        collect_unknown_self_fields_in_expr(task, state_fields, seen, unknown);
+                    }
+                    hew_hir::HirSelectArmKind::AfterTimer { duration } => {
+                        collect_unknown_self_fields_in_expr(duration, state_fields, seen, unknown);
+                    }
+                }
+                collect_unknown_self_fields_in_expr(&arm.body, state_fields, seen, unknown);
+            }
+        }
+        HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
+            collect_unknown_self_fields_in_expr(body, state_fields, seen, unknown);
+        }
+        HirExprKind::TupleIndex { tuple, .. } => {
+            collect_unknown_self_fields_in_expr(tuple, state_fields, seen, unknown);
+        }
+        HirExprKind::Index { container, index } => {
+            collect_unknown_self_fields_in_expr(container, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_expr(index, state_fields, seen, unknown);
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            ..
+        } => {
+            collect_unknown_self_fields_in_expr(container, state_fields, seen, unknown);
+            if let Some(start) = start {
+                collect_unknown_self_fields_in_expr(start, state_fields, seen, unknown);
+            }
+            if let Some(end) = end {
+                collect_unknown_self_fields_in_expr(end, state_fields, seen, unknown);
+            }
+        }
+        HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
+        }
     }
 }
 
@@ -394,23 +1112,83 @@ struct LoweredFunction {
     checked: CheckedMirFunction,
     elaborated: ElaboratedMirFunction,
     diagnostics: Vec<MirDiagnostic>,
+    generated: Vec<LoweredFunction>,
+    record_layouts: Vec<crate::model::RecordLayout>,
 }
 
+/// Insert execution-context carrier markers into a context-bearing CFG.
+///
+/// The entry block starts with `EnterContext`; every terminal block (`Return`
+/// and `Trap` in today's MIR) ends with `ExitContext` immediately before the
+/// terminator. The helper is idempotent so synthetic tests and future
+/// context-bearing producers can call it before validation without
+/// double-inserting markers.
+pub fn bracket_actor_handler_blocks(blocks: &mut [BasicBlock]) {
+    if let Some(entry) = blocks.first_mut() {
+        if !matches!(entry.instructions.first(), Some(Instr::EnterContext)) {
+            entry.instructions.insert(0, Instr::EnterContext);
+        }
+    }
+
+    for block in blocks {
+        if matches!(
+            block.terminator,
+            Terminator::Return | Terminator::Trap { .. }
+        ) && !matches!(block.instructions.last(), Some(Instr::ExitContext))
+        {
+            block.instructions.push(Instr::ExitContext);
+        }
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "lowering threads shared module tables plus the call-convention discriminator"
+)]
 fn lower_function(
     func: &HirFn,
     emit_name: String,
     subst: HashMap<String, ResolvedTy>,
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    current_actor_name: Option<&str>,
     module_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    call_conv: crate::model::FunctionCallConv,
 ) -> LoweredFunction {
     let mut builder = Builder {
         type_classes: type_classes.clone(),
         record_field_orders: record_field_orders.clone(),
+        actor_layouts: actor_layouts.clone(),
+        current_actor_state_fields: current_actor_name
+            .and_then(|name| actor_layouts.get(name))
+            .map(|layout| {
+                layout
+                    .state_field_names
+                    .iter()
+                    .cloned()
+                    .zip(layout.state_field_tys.iter().cloned())
+                    .enumerate()
+                    .map(|(idx, (name, ty))| {
+                        (
+                            name,
+                            (
+                                FieldOffset(
+                                    u32::try_from(idx).expect("actor field count exceeds u32::MAX"),
+                                ),
+                                ty,
+                            ),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         module_fn_names: module_fn_names.clone(),
         subst,
         call_site_type_args: call_site_type_args.clone(),
+        current_function_symbol: emit_name.clone(),
         ..Builder::default()
     };
     // Allocate parameter locals BEFORE lowering the function body so
@@ -433,7 +1211,10 @@ fn lower_function(
     // singleton blocks vector; Slice 2+ may surface multiple blocks
     // when `If` (and later `Match` / loops) split the CFG. The order is
     // monotone in block id.
-    let blocks = builder.finalize_blocks(Terminator::Return);
+    let mut blocks = builder.finalize_blocks(Terminator::Return);
+    if call_conv.carries_execution_context() {
+        bracket_actor_handler_blocks(&mut blocks);
+    }
     // THIR's `statements` is the union of every block's checker stream
     // in CFG-construction order — the THIR snapshot's job is preserving
     // the pre-CFG flat-stream shape for diagnostic readers that haven't
@@ -456,6 +1237,7 @@ fn lower_function(
     let raw = RawMirFunction {
         name: emit_name.clone(),
         return_ty: return_ty.clone(),
+        call_conv,
         params: func
             .params
             .iter()
@@ -470,7 +1252,10 @@ fn lower_function(
     // stream. The `MirDiagnostic` surface that the CLI rejects on is
     // projected from these checks — there is one source of truth for
     // move/borrow/init legality.
-    let dataflow_result = check_function(&builder, &raw.blocks, func);
+    let mut dataflow_result = check_function(&builder, &raw.blocks, func);
+    dataflow_result
+        .checks
+        .extend(crate::model::validate_context_markers(&raw));
     let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
         .checks
         .iter()
@@ -542,6 +1327,8 @@ fn lower_function(
         checked,
         elaborated,
         diagnostics,
+        generated: builder.generated_functions,
+        record_layouts: builder.closure_record_layouts,
     }
 }
 
@@ -553,22 +1340,12 @@ fn collect_unknown_type_diagnostics(
     let mut reported = HashSet::new();
 
     for param in &func.params {
-        push_unknown_type_diagnostics(&param.ty, &builder.type_classes, &mut reported, diagnostics);
+        push_unknown_type_diagnostics(&param.ty, builder, &mut reported, diagnostics);
     }
-    push_unknown_type_diagnostics(
-        &func.return_ty,
-        &builder.type_classes,
-        &mut reported,
-        diagnostics,
-    );
+    push_unknown_type_diagnostics(&func.return_ty, builder, &mut reported, diagnostics);
 
     for decision in &builder.decisions {
-        push_unknown_type_diagnostics(
-            &decision.ty,
-            &builder.type_classes,
-            &mut reported,
-            diagnostics,
-        );
+        push_unknown_type_diagnostics(&decision.ty, builder, &mut reported, diagnostics);
         if decision.strategy == Strategy::UnknownBlocked
             && named_type_names(&decision.ty).is_empty()
         {
@@ -583,12 +1360,7 @@ fn collect_unknown_type_diagnostics(
             | MirStatement::Use { ty, .. }
             | MirStatement::Return { ty, .. }
             | MirStatement::Drop { ty, .. } => {
-                push_unknown_type_diagnostics(
-                    ty,
-                    &builder.type_classes,
-                    &mut reported,
-                    diagnostics,
-                );
+                push_unknown_type_diagnostics(ty, builder, &mut reported, diagnostics);
             }
         }
     }
@@ -602,12 +1374,15 @@ fn collect_unknown_type_diagnostics(
 /// Named-type knownness independently.
 fn push_unknown_type_diagnostics(
     ty: &ResolvedTy,
-    type_classes: &hew_hir::TypeClassTable,
+    builder: &Builder,
     reported: &mut HashSet<String>,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) {
     for name in named_type_names(ty) {
-        if type_classes.contains_key(&name) {
+        if builder.type_classes.contains_key(&name)
+            || matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor")
+            || builder.actor_layouts.contains_key(&name)
+        {
             continue;
         }
         push_unknown_type_diagnostic(name, reported, diagnostics);
@@ -727,9 +1502,11 @@ struct Builder {
     /// is empty for tuple records — their constructor is a `Call`, not a
     /// `StructInit`). They will never be looked up here.
     record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: HashMap<String, ActorLayout>,
+    current_actor_state_fields: HashMap<String, (FieldOffset, ResolvedTy)>,
     /// Names of every user-defined function declared in the module. Used by
     /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
-    /// (→ `Instr::CallDirect`) from runtime-ABI callees (→
+    /// (→ `Terminator::Call`) from runtime-ABI callees (→
     /// `Instr::CallRuntimeAbi`) and from indirect/closure callees
     /// (→ `CutoverUnsupported`). Name-string matching is the reliable
     /// discriminator here because the HIR bridge does not yet emit
@@ -754,6 +1531,20 @@ struct Builder {
     /// substitutes these via `subst_ty` and dispatches to the
     /// per-monomorphisation mangled symbol.
     call_site_type_args: HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    current_task_scope: Option<Place>,
+    current_function_symbol: String,
+    next_closure_id: u32,
+    generated_functions: Vec<LoweredFunction>,
+    closure_record_layouts: Vec<crate::model::RecordLayout>,
+    capture_env_sources: HashMap<BindingId, CaptureEnvSource>,
+}
+
+#[derive(Debug, Clone)]
+struct CaptureEnvSource {
+    env: Place,
+    env_ty: ResolvedTy,
+    field_offset: FieldOffset,
+    ty: ResolvedTy,
 }
 
 impl Builder {
@@ -986,7 +1777,8 @@ impl Builder {
                         Place::DuplexHandle(_)
                         | Place::SendHalf(_)
                         | Place::RecvHalf(_)
-                        | Place::LambdaActorHandle(_) => {
+                        | Place::LambdaActorHandle(_)
+                        | Place::ActorHandle(_) => {
                             self.binding_locals.insert(binding.id, src);
                         }
                         Place::Local(n) if self.tuple_decomp.contains_key(&n) => {
@@ -1010,6 +1802,13 @@ impl Builder {
                 self.statements.push(MirStatement::Evaluate {
                     site: expr.site,
                     ty: self.subst_ty(&expr.ty),
+                });
+            }
+            HirStmtKind::Assign { target, value } => {
+                self.assign(target, value);
+                self.statements.push(MirStatement::Evaluate {
+                    site: value.site,
+                    ty: ResolvedTy::Unit,
                 });
             }
             HirStmtKind::Return(Some(expr)) => {
@@ -1036,6 +1835,57 @@ impl Builder {
         }
     }
 
+    fn assign(&mut self, target: &HirExpr, value: &HirExpr) {
+        let Some(src) = self.lower_value(value) else {
+            return;
+        };
+        if let Some((field_offset, _)) = self.actor_state_field_for_target(target) {
+            self.instructions
+                .push(Instr::ActorStateFieldStore { field_offset, src });
+            return;
+        }
+        match &target.kind {
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(binding),
+                name,
+                ..
+            } => {
+                if let Some(dest) = self.binding_locals.get(binding).copied() {
+                    self.instructions.push(Instr::Move { dest, src });
+                } else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnresolvedPlace {
+                            binding: *binding,
+                            name: name.clone(),
+                            site: target.site,
+                        },
+                        note: format!("assignment target binding {binding:?} has no MIR place"),
+                    });
+                }
+            }
+            _ => self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnsupportedNode {
+                    reason:
+                        "only local bindings and actor state fields are assignable in MIR slice 4"
+                            .to_string(),
+                },
+                note: "assignment target did not lower to a writable place".to_string(),
+            }),
+        }
+    }
+
+    fn actor_state_field_for_target(&self, expr: &HirExpr) -> Option<(FieldOffset, ResolvedTy)> {
+        match &expr.kind {
+            HirExprKind::BindingRef { name, .. } => {
+                self.current_actor_state_fields.get(name).cloned()
+            }
+            HirExprKind::FieldAccess { object, field } if is_self_expr(object) => {
+                self.current_actor_state_fields.get(field).cloned()
+            }
+            _ => None,
+        }
+    }
+
     /// Walk an expression, emit checker-stream `MirStatement`s plus
     /// backend-stream `Instr`s, and return the `Place` that holds the
     /// expression's value (or `None` if the construct is outside the
@@ -1049,10 +1899,28 @@ impl Builder {
         self.decide(expr);
         match &expr.kind {
             HirExprKind::Literal(lit) => self.lower_literal(lit, &expr.ty, expr.site),
+            HirExprKind::ContextReader { reader } => {
+                let dest = self.alloc_local(self.subst_ty(&expr.ty));
+                self.instructions.push(Instr::ContextField {
+                    dest,
+                    offset: context_reader_offset(*reader),
+                });
+                Some(dest)
+            }
             HirExprKind::BindingRef {
                 name,
                 resolved: ResolvedRef::Binding(id),
             } => {
+                if !self.binding_locals.contains_key(id) {
+                    if let Some((field_offset, ty)) =
+                        self.current_actor_state_fields.get(name).cloned()
+                    {
+                        let dest = self.alloc_local(ty);
+                        self.instructions
+                            .push(Instr::ActorStateFieldLoad { field_offset, dest });
+                        return Some(dest);
+                    }
+                }
                 let use_ty = self.subst_ty(&expr.ty);
                 self.statements.push(MirStatement::Use {
                     binding: *id,
@@ -1065,6 +1933,16 @@ impl Builder {
                     && ValueClass::of_ty(&use_ty, &self.type_classes) != ValueClass::BitCopy
                 {
                     self.mark_binding_moved(*id);
+                }
+                if let Some(source) = self.capture_env_sources.get(id).cloned() {
+                    let dest = self.alloc_local(source.ty.clone());
+                    self.instructions.push(Instr::ClosureEnvFieldLoad {
+                        env: source.env,
+                        env_ty: source.env_ty,
+                        field_offset: source.field_offset,
+                        dest,
+                    });
+                    return Some(dest);
                 }
                 let place = self.binding_locals.get(id).copied();
                 if place.is_none() {
@@ -1163,12 +2041,52 @@ impl Builder {
                             return self.lower_direct_call(&mangled, args, &ret_ty, expr.site);
                         }
                     }
-                    // User-defined function in the same module: emit CallDirect.
+                    // User-defined function in the same module: emit a call terminator.
                     // The callee symbol is the bare function name as declared;
                     // codegen resolves it against the module's fn_symbols table.
                     if self.module_fn_names.contains(name) {
                         return self.lower_direct_call(name, args, &expr.ty, expr.site);
                     }
+                }
+                if matches!(
+                    callee.kind,
+                    HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Item(_),
+                        ..
+                    }
+                ) {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::CutoverUnsupported {
+                            construct: "function call".to_string(),
+                            site: expr.site,
+                        },
+                        note: "resolved callee has no MIR body or runtime lowering in the current cutover spine"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                if matches!(
+                    callee.ty,
+                    ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+                ) {
+                    let callee_place = self.lower_value(callee)?;
+                    let mut arg_places = Vec::with_capacity(args.len());
+                    for arg in args {
+                        arg_places.push(self.lower_value(arg)?);
+                    }
+                    let ret_ty = self.subst_ty(&expr.ty);
+                    let dest = if matches!(ret_ty, ResolvedTy::Unit) {
+                        None
+                    } else {
+                        Some(self.alloc_local(ret_ty.clone()))
+                    };
+                    self.instructions.push(Instr::CallClosure {
+                        callee: callee_place,
+                        args: arg_places,
+                        ret_ty,
+                        dest,
+                    });
+                    return dest;
                 }
                 // Indirect calls (closures, higher-order function values,
                 // or unresolved bindings): not yet supported. Walk the children
@@ -1319,6 +2237,16 @@ impl Builder {
                 Some(dest)
             }
             HirExprKind::FieldAccess { object, field } => {
+                if is_self_expr(object) {
+                    if let Some((field_offset, ty)) =
+                        self.current_actor_state_fields.get(field).cloned()
+                    {
+                        let dest = self.alloc_local(ty);
+                        self.instructions
+                            .push(Instr::ActorStateFieldLoad { field_offset, dest });
+                        return Some(dest);
+                    }
+                }
                 // Resolve the record type key from the object's type so we
                 // can look up the field offset in the field-order table.
                 // For a generic record instantiation (`b: Box<int>` reading
@@ -1389,142 +2317,22 @@ impl Builder {
                 });
                 Some(dest)
             }
-            HirExprKind::Scope { body } => {
-                // TODO: MIR lowering for scope{} bodies. Required runtime contract:
-                // (a) For each SpawnedCall child: allocate a HewTask slot via
-                //     hew_task_new, bind the closure environment, call
-                //     hew_task_spawn_thread to start the child on the thread pool.
-                // (b) For each named ForkTaskHandle binding (fork name = call):
-                //     same spawn sequence; the task pointer is stored in the
-                //     binding's Place so that a later AwaitTask can load it.
-                // (c) At scope-block exit: iterate the set of anonymous child tasks
-                //     in declaration order; for each call hew_task_await_blocking
-                //     then hew_task_free (lifecycle-symmetry invariant: every
-                //     hew_task_new must be paired with hew_task_free on every
-                //     exit path including panic/cancel).
-                // (d) Named task handles that were explicitly awaited earlier are
-                //     already freed at the AwaitTask site; do NOT double-free.
-                //
-                // Until this is wired, walk the body so nested Unsupported nodes
-                // still surface via the checker stream (fail-closed).
-                for stmt in &body.statements {
-                    self.stmt(stmt);
-                }
-                let _ = body.tail.as_ref().map(|t| self.lower_value(t));
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
-                        construct: "scope block".to_string(),
-                        site: expr.site,
-                    },
-                    note: "scope{} MIR lowering is not yet implemented; \
-                           codegen will wire hew_task_new / hew_task_spawn_thread / \
-                           hew_task_await_blocking / hew_task_free"
-                        .to_string(),
-                });
-                None
+            HirExprKind::Scope { body } => Some(self.lower_task_scope(body)),
+            HirExprKind::SpawnedCall {
+                callee,
+                args,
+                task_ty,
+            } => self.lower_spawned_call_task(callee, args, task_ty, expr.site),
+            HirExprKind::ForkBlock { body, .. } => self.lower_fork_block_task(body, expr.site),
+            HirExprKind::ScopeDeadline { duration, body } => {
+                self.lower_scope_deadline(duration, body, expr.site)
             }
-            HirExprKind::SpawnedCall { callee, args, .. } => {
-                // TODO: MIR lowering for a spawned call (task-spawn ABI). Required
-                // runtime contract:
-                // (a) Allocate a HewTask via hew_task_new(parent_scope).
-                // (b) Capture the closure environment for the child function via
-                //     hew_task_set_env — all values the child body closes over must
-                //     be moved into the task's env slot (ownership transferred; the
-                //     parent must not access them after spawn).
-                // (c) Issue hew_task_spawn_thread(task, fn_ptr, stack_size) to
-                //     schedule the child on the thread pool.
-                // (d) Return the HewTask* as the value of this expression so the
-                //     containing fork-block can track it for the implicit join.
-                //
-                // Walk children for checker-stream coverage; fail closed (boundary-fail-closed).
-                let _ = self.lower_value(callee);
-                for arg in args {
-                    let _ = self.lower_value(arg);
-                }
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
-                        construct: "spawned call".to_string(),
-                        site: expr.site,
-                    },
-                    note: "SpawnedCall MIR lowering is not yet implemented; \
-                           codegen will emit hew_task_new + hew_task_spawn_thread"
-                        .to_string(),
-                });
-                None
-            }
-            HirExprKind::AwaitTask { .. } => {
-                // TODO: MIR lowering for await-task (task-join ABI). Required
-                // runtime contract:
-                // (a) Load the HewTask* from the binding's Place.
-                // (b) Call hew_task_await_blocking(task) — parks the current
-                //     coroutine until the child task finishes.
-                // (c) Extract the result via hew_task_get_result(task) → Place
-                //     of type T (the inner type of Task<T>).
-                // (d) Call hew_task_free(task) to release the HewTask allocation.
-                //     Null the binding's Place after free so any subsequent
-                //     reference is caught as UseAfterConsume.
-                // (e) Cancelled-task case: hew_task_get_error returns non-null;
-                //     propagate as Err(TaskError::Cancelled) through the Result<T>
-                //     if T is Result, or trap if T is not a Result type.
-                //
-                // Fail closed until the codegen slice implements this (boundary-fail-closed).
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
-                        construct: "await task".to_string(),
-                        site: expr.site,
-                    },
-                    note: "AwaitTask MIR lowering is not yet implemented; \
-                           codegen will emit hew_task_await_blocking + hew_task_get_result + \
-                           hew_task_free"
-                        .to_string(),
-                });
-                None
-            }
-            HirExprKind::Select(_select) => {
-                // Sealed `select{}` construct. The HIR shape is fixed
-                // (see `HirSelect`/`HirSelectArmKind`) and the MIR
-                // terminator + per-arm shape are declared in
-                // `model::Terminator::Select`, but the runtime
-                // substrate (`hew_select_wait` heterogeneous-arm
-                // dispatch, `hew_stream_poll` pending-read,
-                // `hew_task_scope_cancel_one`, and actor-call
-                // lowering for the ask arm) is not yet wired. MIR
-                // rejects the construct here with a clear diagnostic
-                // so the pipeline fails closed at the earliest seam
-                // that can name the missing substrate; codegen also
-                // fails closed if a `Terminator::Select` ever reaches
-                // it (defence-in-depth).
-                //
-                // TODO: when the runtime substrate lands, replace
-                // this diagnostic with the real construction:
-                //   1. Allocate per-arm setup blocks, winner blocks,
-                //      and a single join block.
-                //   2. Per-arm setup emits the form-specific
-                //      registration runtime call (stream-poll
-                //      registration, ask issue, task observer
-                //      register, timer schedule).
-                //   3. Terminate the select's current basic block
-                //      with `Terminator::Select { arms, next }` where
-                //      `next` is the join block.
-                //   4. The per-arm cleanup blocks consume the
-                //      cleanup-CFG substrate (`BlockKind::Cleanup`,
-                //      `ExitPath::Cancel`) introduced by the
-                //      CFG-construction work that already merged.
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::UnsupportedNode {
-                        reason: "select-construct: runtime substrate \
-                                 (hew_select_wait dispatch + per-arm \
-                                 cancellable primitives) not yet wired"
-                            .to_string(),
-                    },
-                    note: "select{} construct reached MIR lowering; \
-                           HIR-level Select recognition is in place but \
-                           MIR-to-codegen lowering awaits the runtime \
-                           substrate"
-                        .to_string(),
-                });
-                None
-            }
+            HirExprKind::AwaitTask {
+                binding_id,
+                output_ty,
+                ..
+            } => self.lower_await_task(*binding_id, output_ty, expr.site),
+            HirExprKind::Select(select) => self.lower_select(select, &expr.ty, expr.site),
             HirExprKind::SpawnLambdaActor { .. } => {
                 // The lambda-actor literal allocates a fresh local
                 // (typed as the actor's Duplex<Msg, Reply>) and
@@ -1539,6 +2347,26 @@ impl Builder {
                 // Place::LambdaActorHandle today).
                 Some(self.lower_spawn_lambda_actor(expr))
             }
+            HirExprKind::Spawn { actor_name, args } => {
+                self.lower_spawn_actor(actor_name, args, expr)
+            }
+            HirExprKind::ActorSend {
+                receiver,
+                method_id,
+                args,
+            } => self.lower_actor_send(receiver, method_id, args, expr.site),
+            HirExprKind::ActorAsk {
+                receiver,
+                method_id,
+                args,
+                reply_ty,
+            } => self.lower_actor_ask(receiver, method_id, args, reply_ty, expr.site),
+            HirExprKind::Closure {
+                params,
+                ret_ty,
+                body,
+                captures,
+            } => self.lower_closure_literal(expr, params, ret_ty, body, captures),
             HirExprKind::TupleIndex { tuple, index } => {
                 // Walk the inner tuple expression.  If the tuple sub-expression
                 // resolves to a proxy local from a multi-output runtime call
@@ -2936,17 +3764,353 @@ impl Builder {
     // WHY: MIR names semantics; address materialisation is a codegen-target concern.
     // WHEN obsolete: when E4's lower_instr arm is wired and tested for each of these conventions.
     // WHAT: replace with direct LLVMBuildCall emission for each symbol group.
-    /// Emit `Instr::CallDirect` for a static call to a user-defined function
+    fn task_scope_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "HewTaskScope".to_string(),
+            args: vec![],
+        }
+    }
+
+    fn push_runtime_call(&mut self, symbol: &str, args: Vec<Place>, dest: Option<Place>) {
+        self.instructions.push(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(symbol, args, dest)
+                .unwrap_or_else(|_| panic!("{symbol} is an allowlisted runtime symbol")),
+        ));
+    }
+
+    fn lower_task_scope(&mut self, body: &HirBlock) -> Place {
+        let scope_place = self.alloc_local(Self::task_scope_ty());
+        self.push_runtime_call("hew_task_scope_new", vec![], Some(scope_place));
+
+        let previous_scope_place = self.alloc_local(Self::task_scope_ty());
+        self.push_runtime_call(
+            "hew_task_scope_set_current",
+            vec![scope_place],
+            Some(previous_scope_place),
+        );
+
+        let saved_scope = self.current_task_scope.replace(scope_place);
+        for stmt in &body.statements {
+            self.stmt(stmt);
+        }
+        if let Some(tail) = &body.tail {
+            let _ = self.lower_value(tail);
+        }
+        self.current_task_scope = saved_scope;
+
+        self.push_runtime_call("hew_task_scope_join_all", vec![scope_place], None);
+        self.push_runtime_call("hew_task_scope_destroy", vec![scope_place], None);
+        let restored_scope_place = self.alloc_local(Self::task_scope_ty());
+        self.push_runtime_call(
+            "hew_task_scope_set_current",
+            vec![previous_scope_place],
+            Some(restored_scope_place),
+        );
+
+        let unit_place = self.alloc_local(ResolvedTy::Unit);
+        self.instructions.push(Instr::UnitLit { dest: unit_place });
+        unit_place
+    }
+
+    fn direct_no_arg_unit_callee(
+        &mut self,
+        callee: &HirExpr,
+        args: &[HirExpr],
+        ret_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+        construct: &str,
+    ) -> Option<String> {
+        if !args.is_empty() || !matches!(ret_ty, ResolvedTy::Unit) {
+            for arg in args {
+                let _ = self.lower_value(arg);
+            }
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: construct.to_string(),
+                    site,
+                },
+                note: "cancellation-token task lowering currently supports only \
+                       no-argument functions returning unit; value/result task \
+                       propagation remains fail-closed"
+                    .to_string(),
+            });
+            return None;
+        }
+        match &callee.kind {
+            HirExprKind::BindingRef { name, .. } if self.module_fn_names.contains(name) => {
+                Some(name.clone())
+            }
+            _ => {
+                let _ = self.lower_value(callee);
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: construct.to_string(),
+                        site,
+                    },
+                    note: "fork cancellation lowering requires a direct module function callee"
+                        .to_string(),
+                });
+                None
+            }
+        }
+    }
+
+    fn lower_spawned_call_task(
+        &mut self,
+        callee: &HirExpr,
+        args: &[HirExpr],
+        task_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let Some(scope_place) = self.current_task_scope else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "spawned call without current task scope".to_string(),
+                    site,
+                },
+                note: "task spawn reached MIR without a scope-owned cancellation token; \
+                       refusing to emit an unobservable cancellation edge"
+                    .to_string(),
+            });
+            return None;
+        };
+        let ResolvedTy::Task(inner) = task_ty else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "spawned call with non-Task type".to_string(),
+                    site,
+                },
+                note: "HIR SpawnedCall must carry Task<T>".to_string(),
+            });
+            return None;
+        };
+        if matches!(callee.kind, HirExprKind::Closure { .. }) {
+            return self.lower_spawned_closure_task(
+                callee,
+                args,
+                task_ty,
+                inner,
+                scope_place,
+                site,
+            );
+        }
+        let callee_symbol =
+            self.direct_no_arg_unit_callee(callee, args, inner, site, "spawned call")?;
+
+        let task_place = self.alloc_local(task_ty.clone());
+        self.push_runtime_call("hew_task_new", vec![], Some(task_place));
+        self.push_runtime_call("hew_task_scope_spawn", vec![scope_place, task_place], None);
+        self.instructions.push(Instr::SpawnTaskDirect {
+            task: task_place,
+            callee_symbol,
+        });
+        Some(task_place)
+    }
+
+    fn lower_spawned_closure_task(
+        &mut self,
+        callee: &HirExpr,
+        args: &[HirExpr],
+        task_ty: &ResolvedTy,
+        inner: &ResolvedTy,
+        scope_place: Place,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let HirExprKind::Closure {
+            params,
+            ret_ty,
+            body,
+            captures,
+        } = &callee.kind
+        else {
+            unreachable!("caller checked closure callee");
+        };
+        if !args.is_empty()
+            || !params.is_empty()
+            || !matches!(inner, ResolvedTy::Unit)
+            || !matches!(ret_ty, ResolvedTy::Unit)
+        {
+            for arg in args {
+                let _ = self.lower_value(arg);
+            }
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "spawned closure".to_string(),
+                    site,
+                },
+                note: "spawned-closure task lowering supports only zero-argument closures \
+                       returning unit; value/result task propagation remains fail-closed"
+                    .to_string(),
+            });
+            return None;
+        }
+        if let Some(capture) = captures.iter().find(|capture| !capture.is_send) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "spawned closure non-Send capture".to_string(),
+                    site,
+                },
+                note: format!(
+                    "closure capture `{}` is not Send; refusing to transfer its environment \
+                     across the spawned task boundary",
+                    capture.name
+                ),
+            });
+            return None;
+        }
+        let (fn_symbol, env_ty, env_place) =
+            self.materialize_closure_env(callee, params, ret_ty, body, captures)?;
+        let task_place = self.alloc_local(task_ty.clone());
+        self.push_runtime_call("hew_task_new", vec![], Some(task_place));
+        self.push_runtime_call("hew_task_scope_spawn", vec![scope_place, task_place], None);
+        self.instructions.push(Instr::SpawnTaskClosure {
+            task: task_place,
+            fn_symbol,
+            env: env_place,
+            env_ty,
+        });
+        Some(task_place)
+    }
+
+    fn lower_fork_block_task(&mut self, body: &HirBlock, site: hew_hir::SiteId) -> Option<Place> {
+        let expr = if body.statements.len() == 1 && body.tail.is_none() {
+            let HirStmtKind::Expr(expr) = &body.statements[0].kind else {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: "fork block cancellation child".to_string(),
+                        site,
+                    },
+                    note: "fork block task lowering currently supports expression-call statements only"
+                        .to_string(),
+                });
+                return None;
+            };
+            expr
+        } else if body.statements.is_empty() {
+            let Some(tail) = &body.tail else {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: "fork block cancellation child".to_string(),
+                        site,
+                    },
+                    note: "fork block task lowering requires a no-argument unit function call"
+                        .to_string(),
+                });
+                return None;
+            };
+            tail
+        } else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "fork block cancellation child".to_string(),
+                    site,
+                },
+                note: "fork block task lowering currently supports exactly one \
+                       statement: a no-argument unit function call"
+                    .to_string(),
+            });
+            return None;
+        };
+        let HirExprKind::Call { callee, args } = &expr.kind else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "fork block cancellation child".to_string(),
+                    site,
+                },
+                note: "fork block task lowering currently supports a direct function call body"
+                    .to_string(),
+            });
+            return None;
+        };
+        let task_ty = ResolvedTy::Task(Box::new(ResolvedTy::Unit));
+        self.lower_spawned_call_task(callee, args, &task_ty, site)
+    }
+
+    fn lower_scope_deadline(
+        &mut self,
+        duration: &HirExpr,
+        body: &HirBlock,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let Some(scope_place) = self.current_task_scope else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "scope deadline cancellation edge".to_string(),
+                    site,
+                },
+                note: "deadline reached MIR without an active task scope token".to_string(),
+            });
+            return None;
+        };
+        if !body.statements.is_empty() || body.tail.is_some() {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "scope deadline body".to_string(),
+                    site,
+                },
+                note: "deadline cancellation lowering supports empty after(...) bodies only; \
+                       non-empty timeout bodies remain fail-closed until select/arm dispatch lands"
+                    .to_string(),
+            });
+            return None;
+        }
+        let duration_place = self.lower_value(duration)?;
+        self.push_runtime_call(
+            "hew_task_scope_cancel_after_ns",
+            vec![scope_place, duration_place],
+            None,
+        );
+        let unit_place = self.alloc_local(ResolvedTy::Unit);
+        self.instructions.push(Instr::UnitLit { dest: unit_place });
+        Some(unit_place)
+    }
+
+    fn lower_await_task(
+        &mut self,
+        binding_id: BindingId,
+        output_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        if !matches!(output_ty, ResolvedTy::Unit) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "await task result".to_string(),
+                    site,
+                },
+                note: "await lowering currently supports unit tasks only; value task \
+                       cancellation/result propagation remains fail-closed"
+                    .to_string(),
+            });
+            return None;
+        }
+        let Some(task_place) = self.binding_locals.get(&binding_id).copied() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnresolvedPlace {
+                    binding: binding_id,
+                    name: "<await-task>".to_string(),
+                    site,
+                },
+                note: "await task binding has no backend task handle slot".to_string(),
+            });
+            return None;
+        };
+        self.push_runtime_call("hew_task_await_blocking", vec![task_place], None);
+        let unit_place = self.alloc_local(ResolvedTy::Unit);
+        self.instructions.push(Instr::UnitLit { dest: unit_place });
+        Some(unit_place)
+    }
+
+    /// Emit `Terminator::Call` for a static call to a user-defined function
     /// in the same module. Arguments are lowered left-to-right; if any
     /// argument fails to produce a Place (an unsupported construct in its
     /// own right), the whole call fails closed and returns `None` —
     /// diagnostics from the argument lowering already capture the root cause.
     ///
     /// The `dest` Place is allocated here and written by the emitted
-    /// `Instr::CallDirect`. For void-return functions (`ret_ty` is
-    /// `ResolvedTy::Unit`) the dest is `None`; the instruction emits
-    /// only the call with no result binding. For all other return types
-    /// a fresh local is allocated and returned so the caller can bind it.
+    /// call terminator. For unit-returning functions (`ret_ty` is
+    /// `ResolvedTy::Unit`) the dest is `None`; the terminator emits only
+    /// the call and branch. For all other return types a fresh local is
+    /// allocated and returned so the caller can bind it.
     fn lower_direct_call(
         &mut self,
         callee_symbol: &str,
@@ -2966,18 +4130,22 @@ impl Builder {
         }
 
         // Allocate a destination local for the return value, unless the
-        // callee is declared void (Unit return type).
-        let dest = if matches!(ret_ty, ResolvedTy::Unit) {
+        // callee is declared Unit-returning or divergent. Never-returning
+        // runtime shims such as exit()/panic() have no value to materialise.
+        let dest = if matches!(ret_ty, ResolvedTy::Unit | ResolvedTy::Never) {
             None
         } else {
             Some(self.alloc_local(ret_ty.clone()))
         };
 
-        self.instructions.push(Instr::CallDirect {
-            callee_symbol: callee_symbol.to_string(),
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: callee_symbol.to_string(),
             args: arg_places,
             dest,
+            next,
         });
+        self.start_block(next);
 
         dest
     }
@@ -3198,6 +4366,901 @@ impl Builder {
         None // send result (i32 error code) is discarded
     }
 
+    fn lower_actor_payload(
+        &mut self,
+        args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        match args {
+            [] => Some(self.alloc_local(ResolvedTy::Unit)),
+            [arg] => self.lower_value(arg),
+            _ => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: "actor receive call with more than one argument".to_string(),
+                        site,
+                    },
+                    note: "slice-4 actor payload packing supports unit or one scalar argument"
+                        .to_string(),
+                });
+                None
+            }
+        }
+    }
+
+    fn actor_method_info(
+        &mut self,
+        receiver_ty: &ResolvedTy,
+        method_id: &str,
+        site: hew_hir::SiteId,
+    ) -> Option<ActorMethodInfo> {
+        let actor_name = actor_name_from_handle_ty(receiver_ty)?;
+        let method_name = method_name_from_id(method_id);
+        let Some(layout) = self.actor_layouts.get(actor_name) else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("actor call on unknown actor `{actor_name}`"),
+                    site,
+                },
+                note: "receiver type named an actor with no MIR actor layout".to_string(),
+            });
+            return None;
+        };
+        let Some(handler) = layout
+            .handlers
+            .iter()
+            .find(|handler| handler.name == method_name)
+        else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("unknown actor handler `{method_id}` on `{actor_name}`"),
+                    site,
+                },
+                note:
+                    "actor method dispatch side table named a handler absent from the actor layout"
+                        .to_string(),
+            });
+            return None;
+        };
+        Some(ActorMethodInfo {
+            msg_type: handler.msg_type,
+            param_tys: handler.param_tys.clone(),
+            return_ty: handler.return_ty.clone(),
+        })
+    }
+
+    fn lower_actor_send(
+        &mut self,
+        receiver: &HirExpr,
+        method_id: &str,
+        args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let info = self.actor_method_info(&receiver.ty, method_id, site)?;
+        if info.return_ty != ResolvedTy::Unit {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!(
+                        "fire-and-forget actor send to non-unit handler `{method_id}`"
+                    ),
+                    site,
+                },
+                note: "ActorSend requires a unit-returning receive handler".to_string(),
+            });
+            return None;
+        }
+        if info.param_tys.len() != args.len() {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("actor send arity mismatch for `{method_id}`"),
+                    site,
+                },
+                note: format!(
+                    "handler expects {} argument(s), call supplied {}",
+                    info.param_tys.len(),
+                    args.len()
+                ),
+            });
+            return None;
+        }
+        let actor = self.lower_value(receiver)?;
+        let value = self.lower_actor_payload(args, site)?;
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Send {
+            actor,
+            msg_type: info.msg_type,
+            value,
+            next,
+        });
+        self.start_block(next);
+        None
+    }
+
+    /// Lower a sealed `select{}` expression to MIR.
+    ///
+    /// ## Shape produced
+    ///
+    /// ```text
+    /// originating_bb:
+    ///   <lower each arm's actor receiver + args / duration into Places>
+    ///   Terminator::Select { arms, next: join_bb }
+    ///
+    /// arm_body_bb[i]:                    // entered when arm i wins
+    ///   <body lowers; binding (if any) resolves through binding_locals
+    ///    to the per-arm reply slot codegen writes via hew_reply_wait>
+    ///   Move { dest: result_place, src: <arm body value> }
+    ///   Terminator::Goto { target: join_bb }
+    ///
+    /// join_bb:                           // single convergence point
+    ///   <subsequent function lowering continues here; the select's
+    ///    value is result_place, written by exactly one arm body>
+    /// ```
+    ///
+    /// ## Producer-bridge contract (consumed by codegen / slice 3)
+    ///
+    /// Codegen reads `Terminator::Select { arms, next }` and, for each
+    /// arm:
+    ///   * `SelectArmKind::ActorAsk { actor, method, args }` — emits
+    ///     `hew_reply_channel_new` + `hew_actor_ask_with_channel` per
+    ///     arm in the originating block; calls `hew_select_first` to
+    ///     pick a winner; on win, calls `hew_reply_wait` and writes the
+    ///     reply into `arm.binding` (the reply slot MIR allocated),
+    ///     then jumps to `arm.body_block`; on loss, calls
+    ///     `hew_reply_channel_cancel` + `hew_reply_channel_free`.
+    ///   * `SelectArmKind::AfterTimer { duration }` — wins when the
+    ///     deadline elapses; jumps to `arm.body_block` with no binding.
+    ///
+    /// ## Out-of-scope arm kinds (fail-closed)
+    ///
+    /// `StreamNext` and `TaskAwait` are rejected here with
+    /// `MirDiagnosticKind::SelectArmNotImplemented` naming the future
+    /// lane (`M3 select-widening`). The defence-in-depth fail-closed
+    /// at codegen's `Terminator::Select` arm-kind switch remains.
+    ///
+    /// ## Cleanup-CFG composition (D24-2 / `ExitPath::Select`)
+    ///
+    /// The select terminator emits a `Terminator::Select`; the
+    /// elaboration pass (`enumerate_exits` at lower.rs:6450) wires
+    /// `ExitPath::Select { block: originating_bb, next: join_bb }`
+    /// into `drop_plans` automatically — the function-wide LIFO drop
+    /// plan is empty for this exit (per-arm loser cleanup happens at
+    /// the codegen dispatch site, not at function exit).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "lower_select threads four phases — arm-kind rejection, \
+                  block allocation, per-arm Place lowering + binding \
+                  registration, and per-arm body emit — that don't \
+                  factor cleanly into helpers without re-threading \
+                  Builder state (binding_locals, statements buffer, \
+                  current block cursor)"
+    )]
+    fn lower_select(
+        &mut self,
+        select: &HirSelect,
+        expected_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // Reject out-of-scope arm kinds before allocating any blocks.
+        // The diagnostic names the arm kind and the future lane so a
+        // pipeline-rejection trace points the user (and future
+        // implementers) at the lane that closes the restriction.
+        for arm in &select.arms {
+            match &arm.kind {
+                HirSelectArmKind::ActorAsk { .. } | HirSelectArmKind::AfterTimer { .. } => {}
+                HirSelectArmKind::StreamNext { .. } => {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::SelectArmNotImplemented {
+                            arm_kind: "StreamNext".to_string(),
+                            lane_pointer: "M3 select-widening".to_string(),
+                            site,
+                        },
+                        note: "select{} stream-next arms are not yet lowered; \
+                               only ActorAsk and AfterTimer arms emit Terminator::Select \
+                               in this lane"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                HirSelectArmKind::TaskAwait { .. } => {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::SelectArmNotImplemented {
+                            arm_kind: "TaskAwait".to_string(),
+                            lane_pointer: "M3 select-widening".to_string(),
+                            site,
+                        },
+                        note: "select{} task-await arms are not yet lowered; \
+                               only ActorAsk and AfterTimer arms emit Terminator::Select \
+                               in this lane"
+                            .to_string(),
+                    });
+                    return None;
+                }
+            }
+        }
+
+        // Result local first so it dominates every arm-body's Move.
+        // For Unit-typed selects the placeholder write is benign — no
+        // load occurs in the join block. Mirrors the `lower_if` pattern.
+        let result_place = self.alloc_local(expected_ty.clone());
+
+        // Allocate body blocks for every arm and the single join block
+        // up front so each `SelectArm.body_block` is known before the
+        // originating block seals with `Terminator::Select`.
+        let body_bbs: Vec<u32> = (0..select.arms.len()).map(|_| self.alloc_block()).collect();
+        let join_bb = self.alloc_block();
+
+        // Lower per-arm operands (actor receiver + args, or duration)
+        // and allocate per-arm reply slots in the ORIGINATING block.
+        // Codegen consumes the SelectArm payload to emit the per-arm
+        // setup (channel alloc + ask issue) in the same originating
+        // block before the `hew_select_first` dispatch.
+        let mut mir_arms: Vec<SelectArm> = Vec::with_capacity(select.arms.len());
+        for (arm_index, arm) in select.arms.iter().enumerate() {
+            let (kind, binding_place) = match &arm.kind {
+                HirSelectArmKind::ActorAsk {
+                    actor,
+                    method,
+                    args,
+                } => {
+                    // Resolve the actor handler's reply type so the
+                    // reply slot is typed correctly. Mirrors the
+                    // single-arm `lower_actor_ask` path; differs only
+                    // in that the wait + bind happen across the
+                    // Terminator::Select boundary, not Terminator::Ask.
+                    let info = self.actor_method_info(&actor.ty, method, site)?;
+                    if info.param_tys.len() != args.len() {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::CutoverUnsupported {
+                                construct: format!(
+                                    "select actor-ask arm arity mismatch for `{method}`"
+                                ),
+                                site,
+                            },
+                            note: format!(
+                                "handler expects {} argument(s), arm supplied {}",
+                                info.param_tys.len(),
+                                args.len()
+                            ),
+                        });
+                        return None;
+                    }
+                    let actor_place = self.lower_value(actor)?;
+                    let arg_places: Option<Vec<Place>> =
+                        args.iter().map(|a| self.lower_value(a)).collect();
+                    let arg_places = arg_places?;
+                    // Pack args into a single payload Place using the
+                    // same helper single-shot ask lowering uses. This
+                    // is the codegen-side ABI shape: one payload ptr
+                    // + size threads through `hew_actor_ask_with_channel`.
+                    let payload_place = self.lower_actor_payload(args, site)?;
+                    // Per-arm reply slot. Codegen writes
+                    // `hew_reply_wait`'s result here on win before
+                    // jumping into the arm body. Register against the
+                    // HIR binding so the body's BindingRef resolves to
+                    // this slot.
+                    let reply_dest = self.alloc_local(info.return_ty.clone());
+                    if let Some(binding_id) = arm.binding_id {
+                        self.binding_locals.insert(binding_id, reply_dest);
+                    }
+                    (
+                        SelectArmKind::ActorAsk {
+                            actor: actor_place,
+                            method: method.clone(),
+                            args: arg_places,
+                            msg_type: info.msg_type,
+                            value: payload_place,
+                        },
+                        Some(reply_dest),
+                    )
+                }
+                HirSelectArmKind::AfterTimer { duration } => {
+                    let duration_place = self.lower_value(duration)?;
+                    // AfterTimer arms bind no value — `binding_id` is
+                    // None by construction (HIR forbids `<name> from
+                    // after ...` patterns). Defensive: even if a
+                    // future HIR shape attached a binding, we'd skip
+                    // registration since codegen has no value to write.
+                    debug_assert!(
+                        arm.binding_id.is_none(),
+                        "AfterTimer arms must not carry a binding_id"
+                    );
+                    (
+                        SelectArmKind::AfterTimer {
+                            duration: duration_place,
+                        },
+                        None,
+                    )
+                }
+                HirSelectArmKind::StreamNext { .. } | HirSelectArmKind::TaskAwait { .. } => {
+                    // Rejected above; defence-in-depth.
+                    unreachable!(
+                        "stream-next / task-await arms were rejected before \
+                         block allocation"
+                    );
+                }
+            };
+            mir_arms.push(SelectArm {
+                kind,
+                body_block: body_bbs[arm_index],
+                binding: binding_place,
+            });
+        }
+
+        // Seal the originating block with the select terminator.
+        self.finish_current_block(Terminator::Select {
+            arms: mir_arms,
+            next: join_bb,
+        });
+
+        // Per-arm body blocks. Each lowers the arm body; the body's
+        // BindingRef (for ActorAsk arms with a binding) resolves
+        // through `binding_locals` to the per-arm reply slot codegen
+        // populated. AfterTimer arms have no binding by construction.
+        // Every body block terminates with Goto join_bb so the join
+        // converges (single-predecessor-per-arm CFG; the converging
+        // result_place plays the role of an SSA phi for the join).
+        for (arm_index, arm) in select.arms.iter().enumerate() {
+            self.start_block(body_bbs[arm_index]);
+            // ActorAsk arms with a value-bearing binding: emit a
+            // `MirStatement::Bind` at the body-block entry so the
+            // dataflow pass sees the binding initialised before the
+            // body's `BindingRef` reads. Codegen writes
+            // `hew_reply_wait`'s result into `SelectArm.binding` on
+            // win, then jumps into this body block — the Bind here
+            // mirrors that runtime initialisation in the MIR
+            // statement stream.
+            if let (Some(binding_id), Some(binding_name)) =
+                (arm.binding_id, arm.binding_name.as_ref())
+            {
+                let binding_ty = self.subst_ty(&arm.body.ty);
+                // The arm body's HIR type matches the bound reply
+                // type (HIR's `select_arm_binding_ty` for ActorAsk
+                // arms reads the same `actor_method_dispatch` reply
+                // type the body's `BindingRef.ty` carries).
+                // Use the arm-binding's resolved type (not the body
+                // expression's) by consulting binding_locals' Place
+                // which we populated earlier.
+                let _ = binding_ty;
+                let binding_place = self
+                    .binding_locals
+                    .get(&binding_id)
+                    .copied()
+                    .expect("ActorAsk arm registered its reply slot before body lowering");
+                let ty_of_place: ResolvedTy = match binding_place {
+                    Place::Local(n) => self.locals[n as usize].clone(),
+                    _ => arm.body.ty.clone(),
+                };
+                self.statements.push(MirStatement::Bind {
+                    binding: binding_id,
+                    name: binding_name.clone(),
+                    site: arm.body.site,
+                    ty: ty_of_place,
+                });
+            }
+            let body_value = self.lower_value(&arm.body);
+            if let Some(src) = body_value {
+                self.instructions.push(Instr::Move {
+                    dest: result_place,
+                    src,
+                });
+            }
+            self.finish_current_block(Terminator::Goto { target: join_bb });
+        }
+
+        // Join block — subsequent lowering continues here.
+        self.start_block(join_bb);
+        Some(result_place)
+    }
+
+    fn lower_actor_ask(
+        &mut self,
+        receiver: &HirExpr,
+        method_id: &str,
+        args: &[hew_hir::HirExpr],
+        reply_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let info = self.actor_method_info(&receiver.ty, method_id, site)?;
+        if info.return_ty != *reply_ty {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("actor ask reply type mismatch for `{method_id}`"),
+                    site,
+                },
+                note: format!(
+                    "handler returns {}, ask expression expects {}",
+                    info.return_ty.user_facing(),
+                    reply_ty.user_facing()
+                ),
+            });
+            return None;
+        }
+        if info.param_tys.len() != args.len() {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("actor ask arity mismatch for `{method_id}`"),
+                    site,
+                },
+                note: format!(
+                    "handler expects {} argument(s), call supplied {}",
+                    info.param_tys.len(),
+                    args.len()
+                ),
+            });
+            return None;
+        }
+        let actor = self.lower_value(receiver)?;
+        let value = self.lower_actor_payload(args, site)?;
+        let reply_dest = self.alloc_local(reply_ty.clone());
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Ask {
+            actor,
+            msg_type: info.msg_type,
+            value,
+            reply_dest,
+            next,
+        });
+        self.start_block(next);
+        Some(reply_dest)
+    }
+
+    fn lower_spawn_actor(
+        &mut self,
+        actor_name: &str,
+        args: &[(String, HirExpr)],
+        expr: &HirExpr,
+    ) -> Option<Place> {
+        let Some(layout) = self.actor_layouts.get(actor_name).cloned() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("spawn of unknown actor `{actor_name}`"),
+                    site: expr.site,
+                },
+                note: "named actor spawn requires a MIR actor layout".to_string(),
+            });
+            return None;
+        };
+        let explicit_init = layout.init_symbol.is_some();
+        let expected_arg_names = if explicit_init {
+            &layout.init_param_names
+        } else {
+            &layout.state_field_names
+        };
+        if args.len() != expected_arg_names.len() {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!(
+                        "spawn `{actor_name}` {} arity mismatch",
+                        if explicit_init { "init" } else { "state" }
+                    ),
+                    site: expr.site,
+                },
+                note: format!(
+                    "actor expects {} {} argument(s), spawn supplied {} initializer(s)",
+                    expected_arg_names.len(),
+                    if explicit_init { "init" } else { "state" },
+                    args.len()
+                ),
+            });
+            return None;
+        }
+        let mut explicit: HashMap<&str, &HirExpr> = HashMap::new();
+        for (name, arg) in args {
+            explicit.insert(name.as_str(), arg);
+        }
+        let init_args =
+            self.lower_spawn_actor_init_args(actor_name, &layout, explicit_init, &explicit, expr)?;
+        let state = self
+            .lower_spawn_actor_state(actor_name, &layout, explicit_init, &explicit, expr)
+            .ok()?;
+        let slot = self.alloc_local(expr.ty.clone());
+        let Place::Local(local_id) = slot else {
+            unreachable!("alloc_local returns Place::Local");
+        };
+        let dest = Place::ActorHandle(local_id);
+        self.instructions.push(Instr::SpawnActor {
+            actor_name: actor_name.to_string(),
+            state,
+            init_args,
+            dest,
+        });
+        Some(dest)
+    }
+
+    fn lower_spawn_actor_init_args(
+        &mut self,
+        actor_name: &str,
+        layout: &ActorLayout,
+        explicit_init: bool,
+        explicit: &HashMap<&str, &HirExpr>,
+        expr: &HirExpr,
+    ) -> Option<Vec<Place>> {
+        let mut init_args = Vec::new();
+        if !explicit_init {
+            return Some(init_args);
+        }
+        for param_name in &layout.init_param_names {
+            let Some(arg) = explicit.get(param_name.as_str()) else {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!(
+                            "spawn `{actor_name}` missing init parameter `{param_name}`"
+                        ),
+                        site: expr.site,
+                    },
+                    note: "actor spawn with an explicit init block requires every init parameter by name"
+                        .to_string(),
+                });
+                return None;
+            };
+            init_args.push(self.lower_value(arg)?);
+        }
+        Some(init_args)
+    }
+
+    fn lower_spawn_actor_state(
+        &mut self,
+        actor_name: &str,
+        layout: &ActorLayout,
+        explicit_init: bool,
+        explicit: &HashMap<&str, &HirExpr>,
+        expr: &HirExpr,
+    ) -> Result<Option<Place>, ()> {
+        if layout.state_field_names.is_empty() {
+            return Ok(None);
+        }
+        let state_ty = ResolvedTy::Named {
+            name: actor_name.to_string(),
+            args: Vec::new(),
+        };
+        let dest = self.alloc_local(state_ty.clone());
+        let mut fields = Vec::new();
+        for (idx, field_name) in layout.state_field_names.iter().enumerate() {
+            let src = if explicit_init {
+                self.default_actor_state_field_value(
+                    actor_name,
+                    field_name,
+                    &layout.state_field_tys[idx],
+                    expr.site,
+                )
+                .ok_or(())?
+            } else {
+                self.lower_spawn_actor_state_arg(actor_name, field_name, explicit, expr)
+                    .ok_or(())?
+            };
+            fields.push((
+                FieldOffset(
+                    u32::try_from(idx)
+                        .expect("actor state field count exceeds u32::MAX — impossible"),
+                ),
+                src,
+            ));
+        }
+        self.instructions.push(Instr::RecordInit {
+            ty: state_ty,
+            fields,
+            dest,
+        });
+        Ok(Some(dest))
+    }
+
+    fn lower_spawn_actor_state_arg(
+        &mut self,
+        actor_name: &str,
+        field_name: &str,
+        explicit: &HashMap<&str, &HirExpr>,
+        expr: &HirExpr,
+    ) -> Option<Place> {
+        let Some(arg) = explicit.get(field_name) else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("spawn `{actor_name}` missing field `{field_name}`"),
+                    site: expr.site,
+                },
+                note: "actor spawn without an init block requires every state field by declaration name"
+                    .to_string(),
+            });
+            return None;
+        };
+        self.lower_value(arg)
+    }
+
+    fn default_actor_state_field_value(
+        &mut self,
+        actor_name: &str,
+        field_name: &str,
+        ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let dest = self.alloc_local(ty.clone());
+        match ty {
+            ResolvedTy::I8
+            | ResolvedTy::I16
+            | ResolvedTy::I32
+            | ResolvedTy::I64
+            | ResolvedTy::U8
+            | ResolvedTy::U16
+            | ResolvedTy::U32
+            | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
+            | ResolvedTy::Bool
+            | ResolvedTy::Char
+            | ResolvedTy::Duration => {
+                self.instructions.push(Instr::ConstI64 { dest, value: 0 });
+                Some(dest)
+            }
+            ResolvedTy::F32 => {
+                self.instructions.push(Instr::FloatLit {
+                    dest,
+                    value_bits: 0.0f32.to_bits().into(),
+                    width: FloatWidth::F32,
+                });
+                Some(dest)
+            }
+            ResolvedTy::F64 => {
+                self.instructions.push(Instr::FloatLit {
+                    dest,
+                    value_bits: 0.0f64.to_bits(),
+                    width: FloatWidth::F64,
+                });
+                Some(dest)
+            }
+            ResolvedTy::Unit => {
+                self.instructions.push(Instr::UnitLit { dest });
+                Some(dest)
+            }
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!(
+                            "actor init default state value for field `{actor_name}.{field_name}`"
+                        ),
+                        site,
+                    },
+                    note: format!(
+                        "state field `{field_name}` has type `{other:?}`; spawn-time init currently only zero-initializes scalar state before calling `__init`"
+                    ),
+                });
+                None
+            }
+        }
+    }
+
+    fn sanitize_symbol_component(input: &str) -> String {
+        input
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect()
+    }
+
+    fn closure_env_pointer_ty(env_ty: &ResolvedTy) -> ResolvedTy {
+        ResolvedTy::Pointer {
+            is_mutable: false,
+            pointee: Box::new(env_ty.clone()),
+        }
+    }
+
+    fn lower_closure_literal(
+        &mut self,
+        expr: &HirExpr,
+        params: &[hew_hir::HirBinding],
+        ret_ty: &ResolvedTy,
+        body: &HirExpr,
+        captures: &[hew_hir::HirClosureCapture],
+    ) -> Option<Place> {
+        let (shim_name, _env_ty, env_place) =
+            self.materialize_closure_env(expr, params, ret_ty, body, captures)?;
+        let closure_place = self.alloc_local(expr.ty.clone());
+        self.instructions.push(Instr::MakeClosure {
+            fn_symbol: shim_name,
+            env: env_place,
+            dest: closure_place,
+        });
+
+        Some(closure_place)
+    }
+
+    fn materialize_closure_env(
+        &mut self,
+        expr: &HirExpr,
+        params: &[hew_hir::HirBinding],
+        ret_ty: &ResolvedTy,
+        body: &HirExpr,
+        captures: &[hew_hir::HirClosureCapture],
+    ) -> Option<(String, ResolvedTy, Place)> {
+        let closure_id = self.next_closure_id;
+        self.next_closure_id = self
+            .next_closure_id
+            .checked_add(1)
+            .expect("closure id overflow");
+        let owner = Self::sanitize_symbol_component(&self.current_function_symbol);
+        let env_name = format!("__hew_closure_env_{owner}_{closure_id}");
+        let shim_name = format!("__hew_closure_invoke_{owner}_{closure_id}");
+        let env_ty = ResolvedTy::Named {
+            name: env_name.clone(),
+            args: vec![],
+        };
+
+        self.closure_record_layouts
+            .push(crate::model::RecordLayout {
+                name: env_name,
+                field_tys: captures.iter().map(|capture| capture.ty.clone()).collect(),
+            });
+
+        let mut field_pairs = Vec::with_capacity(captures.len());
+        let mut failed = false;
+        for (idx, capture) in captures.iter().enumerate() {
+            let offset =
+                FieldOffset(u32::try_from(idx).expect("closure capture count exceeds u32::MAX"));
+            let src = if let Some(place) = self.binding_locals.get(&capture.binding).copied() {
+                place
+            } else if let Some(source) = self.capture_env_sources.get(&capture.binding).cloned() {
+                let temp = self.alloc_local(source.ty.clone());
+                self.instructions.push(Instr::ClosureEnvFieldLoad {
+                    env: source.env,
+                    env_ty: source.env_ty,
+                    field_offset: source.field_offset,
+                    dest: temp,
+                });
+                temp
+            } else {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CannotMaterializeClosureCapture {
+                        binding: capture.binding,
+                        name: capture.name.clone(),
+                        site: expr.site,
+                    },
+                    note: format!(
+                        "closure capture `{}` has no MIR backend slot or enclosing closure env field",
+                        capture.name
+                    ),
+                });
+                failed = true;
+                continue;
+            };
+            field_pairs.push((offset, src));
+        }
+        if failed {
+            return None;
+        }
+
+        let env_place = self.alloc_local(env_ty.clone());
+        self.instructions.push(Instr::RecordInit {
+            ty: env_ty.clone(),
+            fields: field_pairs,
+            dest: env_place,
+        });
+
+        let lowered = self.lower_closure_shim(&shim_name, &env_ty, params, ret_ty, body, captures);
+        self.generated_functions.push(lowered);
+
+        Some((shim_name, env_ty, env_place))
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "closure shim construction keeps raw/checked/elaborated MIR snapshots aligned"
+    )]
+    fn lower_closure_shim(
+        &self,
+        shim_name: &str,
+        env_ty: &ResolvedTy,
+        params: &[hew_hir::HirBinding],
+        ret_ty: &ResolvedTy,
+        body: &HirExpr,
+        captures: &[hew_hir::HirClosureCapture],
+    ) -> LoweredFunction {
+        let env_ptr_ty = Self::closure_env_pointer_ty(env_ty);
+        let mut builder = Builder {
+            type_classes: self.type_classes.clone(),
+            record_field_orders: self.record_field_orders.clone(),
+            module_fn_names: self.module_fn_names.clone(),
+            subst: self.subst.clone(),
+            call_site_type_args: self.call_site_type_args.clone(),
+            current_function_symbol: shim_name.to_string(),
+            ..Builder::default()
+        };
+
+        let env_place = builder.alloc_local(env_ptr_ty.clone());
+        for (idx, capture) in captures.iter().enumerate() {
+            builder.capture_env_sources.insert(
+                capture.binding,
+                CaptureEnvSource {
+                    env: env_place,
+                    env_ty: env_ty.clone(),
+                    field_offset: FieldOffset(
+                        u32::try_from(idx).expect("closure capture count exceeds u32::MAX"),
+                    ),
+                    ty: capture.ty.clone(),
+                },
+            );
+        }
+        for param in params {
+            let place = builder.alloc_local(param.ty.clone());
+            builder.binding_locals.insert(param.id, place);
+        }
+
+        if let Some(src) = builder.lower_value(body) {
+            builder.instructions.push(Instr::Move {
+                dest: Place::ReturnSlot,
+                src,
+            });
+        }
+        builder.statements.push(MirStatement::Return {
+            site: Some(body.site),
+            ty: ret_ty.clone(),
+        });
+
+        let blocks = builder.finalize_blocks(Terminator::Return);
+        let thir_statements: Vec<MirStatement> = blocks
+            .iter()
+            .flat_map(|b| b.statements.iter().cloned())
+            .collect();
+        let thir = ThirFunction {
+            name: shim_name.to_string(),
+            return_ty: ret_ty.clone(),
+            statements: thir_statements,
+        };
+        let mut raw_params = Vec::with_capacity(params.len() + 1);
+        raw_params.push(env_ptr_ty);
+        raw_params.extend(params.iter().map(|param| param.ty.clone()));
+        let raw = RawMirFunction {
+            name: shim_name.to_string(),
+            return_ty: ret_ty.clone(),
+            call_conv: crate::model::FunctionCallConv::ClosureInvoke,
+            params: raw_params,
+            locals: builder.locals.clone(),
+            blocks,
+            decisions: builder.decisions.clone(),
+        };
+        let synthetic_func = HirFn {
+            id: hew_hir::ItemId(0),
+            node: hew_hir::HirNodeId(0),
+            name: shim_name.to_string(),
+            type_params: Vec::new(),
+            params: params.to_vec(),
+            return_ty: ret_ty.clone(),
+            body: hew_hir::HirBlock {
+                node: hew_hir::HirNodeId(0),
+                scope: hew_hir::ScopeId(0),
+                statements: Vec::new(),
+                tail: None,
+                ty: ret_ty.clone(),
+                span: body.span.clone(),
+            },
+            span: body.span.clone(),
+        };
+        let dataflow_result = check_function(&builder, &raw.blocks, &synthetic_func);
+        let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
+            .checks
+            .iter()
+            .filter_map(check_to_diagnostic)
+            .collect();
+        diagnostics.append(&mut builder.diagnostics);
+        collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
+        let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
+        let checked = CheckedMirFunction {
+            name: shim_name.to_string(),
+            return_ty: ret_ty.clone(),
+            blocks: raw.blocks.clone(),
+            decisions: builder.decisions.clone(),
+            checks: dataflow_result.checks.clone(),
+            cooperate_sites,
+        };
+        let elaborated = elaborate(&checked, &builder, &thir.statements, &dataflow_result);
+
+        LoweredFunction {
+            thir,
+            raw,
+            checked,
+            elaborated,
+            diagnostics,
+            generated: builder.generated_functions,
+            record_layouts: builder.closure_record_layouts,
+        }
+    }
+
     /// Lower an `HirExprKind::SpawnLambdaActor` literal to a MIR
     /// `Place::LambdaActorHandle`. The literal allocates a fresh
     /// local (typed as the actor's `Duplex<Msg, Reply>`) and emits a
@@ -3207,14 +5270,9 @@ impl Builder {
     /// (§5.9 ratification 2).
     ///
     /// Every HIR-resolved capture is forwarded into the function's
-    /// `lambda_captures` ledger with the source binding's MIR
-    /// `Place` looked up via `binding_locals`. A capture whose
-    /// source binding has no backend slot in the enclosing function
-    /// (typically a function parameter that hasn't been wired through
-    /// `binding_locals` yet) is skipped — the structural checker
-    /// never sees a missing entry as a violation, and a future
-    /// surface that populates parameter slots will populate this
-    /// ledger the same way.
+    /// `lambda_captures` ledger after proving that the source binding has a MIR
+    /// `Place` in `binding_locals`. A capture whose source binding has no backend
+    /// slot is a lowering error, never a silently smaller capture set.
     ///
     /// Body lowering (the actor's per-message dispatch) is a
     /// follow-up slice; the MIR shape only needs the handle Place plus
@@ -3243,16 +5301,23 @@ impl Builder {
             Place::LambdaActorHandle(local_id)
         };
         for capture in captures {
-            // Each captured binding must already have a backend slot
-            // in the enclosing function. The forward-bound recursive
-            // self capture is the let-binding itself, whose
-            // `binding_locals` entry was populated by the `stmt` Let
-            // arm before this producer ran. Captures from outer
-            // bindings with no `binding_locals` entry (typically
-            // function parameters, which the spine doesn't wire) are
-            // silently skipped — `validate_lambda_captures` treats a
-            // missing entry as no-finding rather than as a violation.
+            // Each captured binding must already have a backend slot in the
+            // enclosing function. The forward-bound recursive self capture is
+            // the let-binding itself, whose `binding_locals` entry was populated
+            // by the `stmt` Let arm before this producer ran.
             if !self.binding_locals.contains_key(&capture.binding) {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CannotMaterializeClosureCapture {
+                        binding: capture.binding,
+                        name: capture.name.clone(),
+                        site: expr.site,
+                    },
+                    note: format!(
+                        "closure capture `{}` was resolved by HIR but has no MIR backend slot; \
+                         refusing to drop the capture from the environment",
+                        capture.name
+                    ),
+                });
                 continue;
             }
             let capture_kind = match capture.kind {
@@ -3277,7 +5342,19 @@ impl Builder {
         {
             return;
         }
-        let strategy = match expr.value_class {
+        let value_class = if expr.value_class == ValueClass::Unknown {
+            let inferred = ValueClass::of_ty(&expr.ty, &self.type_classes);
+            if inferred != ValueClass::Unknown {
+                inferred
+            } else if self.is_known_actor_runtime_ty(&expr.ty) {
+                ValueClass::BitCopy
+            } else {
+                ValueClass::Unknown
+            }
+        } else {
+            expr.value_class
+        };
+        let strategy = match value_class {
             ValueClass::CowValue => Strategy::CowShare,
             // `@linear` and `@resource` (AffineResource) both move by default;
             // `MirCheck::MustConsume` rejects unconsumed `@linear` exits.
@@ -3287,7 +5364,7 @@ impl Builder {
                 Strategy::BorrowRead
             }
         };
-        let strategy = match (expr.value_class, expr.intent) {
+        let strategy = match (value_class, expr.intent) {
             (ValueClass::CowValue, IntentKind::Modify) => Strategy::EnsureUnique,
             (ValueClass::CowValue, IntentKind::Read | IntentKind::Capture) => Strategy::CowShare,
             (ValueClass::AffineResource, IntentKind::Read) => Strategy::BorrowRead,
@@ -3309,11 +5386,25 @@ impl Builder {
         self.decisions.push(DecisionFact {
             site: expr.site,
             ty: self.subst_ty(&expr.ty),
-            value_class: expr.value_class,
+            value_class,
             intent: expr.intent,
             strategy,
             why: "first vertical-slice classifier".to_string(),
         });
+    }
+
+    fn is_known_actor_runtime_ty(&self, ty: &ResolvedTy) -> bool {
+        match ty {
+            ResolvedTy::Named { name, .. }
+                if matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor") =>
+            {
+                true
+            }
+            ResolvedTy::Named { name, args } if args.is_empty() => {
+                self.actor_layouts.contains_key(name)
+            }
+            _ => actor_name_from_handle_ty(ty).is_some(),
+        }
     }
 
     fn mark_returned_binding_moved(&mut self, expr: &HirExpr) {
@@ -3402,6 +5493,27 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
                    half-handle); the elaborator aborts rather than emit a \
                    partial drop plan (LESSONS cleanup-all-exits)"
                 .to_string(),
+        }),
+        MirCheck::ContextBoundaryViolation {
+            function,
+            block,
+            kind,
+            reason,
+        } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::ContextBoundaryViolation {
+                function: function.clone(),
+                block: *block,
+                kind,
+                reason: reason.clone(),
+            },
+            note: "actor-handler execution context markers are structurally invalid".to_string(),
+        }),
+        MirCheck::ContextBindingEscapes { place, block } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::ContextBindingEscapes {
+                place: *place,
+                block: *block,
+            },
+            note: "context-derived MIR place escapes past ExitContext".to_string(),
         }),
         // No construction surface in the v0.5 integer spine. The
         // corresponding `MirDiagnosticKind` projections will land
@@ -3493,6 +5605,11 @@ fn elaborate(
         &lifo_drops,
         &dataflow_result.exit_states,
         &builder.binding_locals,
+        &checked
+            .cooperate_sites
+            .iter()
+            .map(|site| site.bb_id)
+            .collect::<HashSet<_>>(),
     );
 
     ElaboratedMirFunction {
@@ -3736,7 +5853,10 @@ fn validate_lambda_captures(captures: &[LambdaCapture], findings: &mut Vec<MirCh
 fn duplex_parent_local(place: Place) -> Option<u32> {
     match place {
         Place::DuplexHandle(n) | Place::SendHalf(n) | Place::RecvHalf(n) => Some(n),
-        Place::LambdaActorHandle(_) | Place::Local(_) | Place::ReturnSlot => None,
+        Place::LambdaActorHandle(_)
+        | Place::ActorHandle(_)
+        | Place::Local(_)
+        | Place::ReturnSlot => None,
     }
 }
 
@@ -4184,6 +6304,8 @@ fn transfer_block_split(
 )]
 fn instr_places(instr: &Instr) -> Vec<Place> {
     match instr {
+        Instr::EnterContext | Instr::ExitContext | Instr::CheckCancellation => Vec::new(),
+        Instr::ContextField { dest, .. } => vec![*dest],
         // ConstI64 and StringLit both produce only their dest place.
         Instr::ConstI64 { dest, .. } | Instr::StringLit { dest, .. } => vec![*dest],
         Instr::IntAdd { dest, lhs, rhs }
@@ -4225,6 +6347,8 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             places
         }
         Instr::RecordFieldLoad { record, dest, .. } => vec![*record, *dest],
+        Instr::ActorStateFieldLoad { dest, .. } => vec![*dest],
+        Instr::ActorStateFieldStore { src, .. } => vec![*src],
         Instr::TupleFieldLoad { tuple, dest, .. } => vec![*tuple, *dest],
         Instr::FloatLit { dest, .. } => vec![*dest],
         Instr::FloatAdd { dest, lhs, rhs, .. }
@@ -4240,21 +6364,35 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         Instr::CharLit { dest, .. } | Instr::UnitLit { dest } | Instr::DurationLit { dest, .. } => {
             vec![*dest]
         }
-        Instr::CallDirect {
-            callee_symbol: _,
+        Instr::MakeClosure { env, dest, .. } => vec![*env, *dest],
+        Instr::ClosureEnvFieldLoad { env, dest, .. } => vec![*env, *dest],
+        Instr::CallClosure {
+            callee,
             args,
+            ret_ty: _,
             dest,
         } => {
-            // All argument Places are live at the call site (read),
-            // and the dest Place (if present) is written. Surface all
-            // so the cross-block split-state seed pass and dataflow
-            // passes can observe value movement through user function
-            // calls. Field names are all destructured explicitly (no `..`)
-            // so a future field addition produces a compile error here.
-            let mut places: Vec<Place> = args.clone();
+            let mut places: Vec<Place> = vec![*callee];
+            places.extend(args.iter().copied());
             if let Some(d) = dest {
                 places.push(*d);
             }
+            places
+        }
+        Instr::SpawnTaskDirect { task, .. } => vec![*task],
+        Instr::SpawnTaskClosure { task, env, .. } => vec![*task, *env],
+        Instr::SpawnActor {
+            state,
+            init_args,
+            dest,
+            ..
+        } => {
+            let mut places = Vec::new();
+            if let Some(state) = state {
+                places.push(*state);
+            }
+            places.extend(init_args.iter().copied());
+            places.push(*dest);
             places
         }
         Instr::CoerceToDynTrait { value, dest, .. } => vec![*value, *dest],
@@ -4319,7 +6457,7 @@ fn drop_kind_for(place: Place, ty: &ResolvedTy) -> DropKind {
         Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::TraitObject { .. }) => {
             DropKind::TraitObject
         }
-        Place::Local(_) | Place::ReturnSlot => DropKind::Resource,
+        Place::ActorHandle(_) | Place::Local(_) | Place::ReturnSlot => DropKind::Resource,
     }
 }
 
@@ -4433,6 +6571,7 @@ fn enumerate_exits(
         std::collections::BTreeMap<hew_hir::BindingId, dataflow::BindingState>,
     >,
     binding_locals: &HashMap<BindingId, Place>,
+    cancellation_blocks: &HashSet<u32>,
 ) -> (Vec<ElabBlock>, Vec<(ExitPath, DropPlan)>) {
     // Track the highest block id observed so cleanup-block ids can
     // start past it. Slice 2 onwards may emit multiple non-trivial
@@ -4558,6 +6697,7 @@ fn enumerate_exits(
             ),
             Terminator::Send {
                 actor: _,
+                msg_type: _,
                 value: _,
                 next,
             } => (
@@ -4574,24 +6714,14 @@ fn enumerate_exits(
             ),
             Terminator::Ask {
                 actor,
+                msg_type: _,
                 value: _,
-                channel,
                 reply_dest: _,
                 next,
             } => (
-                // Declared-only. Spine has no Ask construction surface;
-                // HIR-to-MIR lowers select arms into `Terminator::Select`,
-                // and non-select actor calls remain rejected as
-                // `CutoverUnsupported`. The `ExitPath::Ask` slot carries
-                // the `channel` Place because the loser-cleanup sequence
-                // (`hew_reply_channel_cancel` + `hew_reply_channel_free`)
-                // is what the cleanup CFG needs when the construction
-                // surface lands. Empty drop plan is a placeholder until
-                // the cleanup CFG wires per-arm loser-cleanup blocks.
                 ExitPath::Ask {
                     block: block_id,
                     actor: *actor,
-                    channel: *channel,
                     next: *next,
                 },
                 DropPlan::default(),
@@ -4641,6 +6771,14 @@ fn enumerate_exits(
             ),
         };
         plans.push(plan);
+        if cancellation_blocks.contains(&block_id) {
+            plans.push((
+                ExitPath::Cancel { block: block_id },
+                DropPlan {
+                    drops: drops_for_exit(block_id),
+                },
+            ));
+        }
     }
     (elab_blocks, plans)
 }
@@ -4659,6 +6797,89 @@ fn enumerate_exits(
 mod slice3_invariants {
     use super::*;
     use crate::model::{CaptureKind, Direction};
+    use hew_hir::HirStmt;
+
+    fn reader_ty(reader: ExecutionContextReader) -> ResolvedTy {
+        ResolvedTy::from_ty(&reader.ty()).expect("context reader type resolves")
+    }
+
+    fn function_evaluating_context_reader(reader: ExecutionContextReader) -> HirFn {
+        let ty = reader_ty(reader);
+        HirFn {
+            id: hew_hir::ItemId(0),
+            node: hew_hir::HirNodeId(0),
+            name: "handler".to_string(),
+            type_params: vec![],
+            params: vec![],
+            return_ty: ResolvedTy::Unit,
+            body: HirBlock {
+                node: hew_hir::HirNodeId(1),
+                scope: hew_hir::ScopeId(0),
+                statements: vec![HirStmt {
+                    node: hew_hir::HirNodeId(2),
+                    kind: HirStmtKind::Expr(HirExpr {
+                        node: hew_hir::HirNodeId(3),
+                        site: hew_hir::SiteId(0),
+                        ty: ty.clone(),
+                        value_class: ValueClass::of_ty(&ty, &hew_hir::TypeClassTable::default()),
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::ContextReader { reader },
+                        span: 0..0,
+                    }),
+                    span: 0..0,
+                }],
+                tail: None,
+                ty: ResolvedTy::Unit,
+                span: 0..0,
+            },
+            span: 0..0,
+        }
+    }
+
+    #[test]
+    fn context_readers_lower_to_context_field_offsets() {
+        for (reader, expected_offset) in [
+            (ExecutionContextReader::ActorId, HEW_CTX_OFFSET_ACTOR_ID),
+            (
+                ExecutionContextReader::Supervisor,
+                HEW_CTX_OFFSET_PARENT_SUPERVISOR,
+            ),
+            (ExecutionContextReader::TraceSpan, HEW_CTX_OFFSET_TRACE_SPAN),
+        ] {
+            let func = function_evaluating_context_reader(reader);
+            let lowered = lower_function(
+                &func,
+                "handler".to_string(),
+                HashMap::new(),
+                &hew_hir::TypeClassTable::default(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &HashSet::new(),
+                &HashMap::new(),
+                crate::model::FunctionCallConv::ActorHandler,
+            );
+            let offsets: Vec<_> = lowered
+                .raw
+                .blocks
+                .iter()
+                .flat_map(|block| &block.instructions)
+                .filter_map(|instr| {
+                    if let Instr::ContextField { offset, .. } = instr {
+                        Some(*offset)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(offsets, vec![expected_offset], "{reader:?}");
+            assert!(
+                lowered.diagnostics.is_empty(),
+                "{reader:?} diagnostics: {:?}",
+                lowered.diagnostics
+            );
+        }
+    }
 
     /// A `Duplex<i64, i64>` `ResolvedTy` used as a stand-in payload
     /// for synthetic `ElabDrop` entries. The body of these tests
@@ -4670,17 +6891,27 @@ mod slice3_invariants {
         }
     }
 
-    fn make_elab_with_drops(drops: Vec<ElabDrop>) -> ElaboratedMirFunction {
+    fn make_elab(
+        drop_plans: Vec<(ExitPath, DropPlan)>,
+        lambda_captures: Vec<LambdaCapture>,
+    ) -> ElaboratedMirFunction {
         ElaboratedMirFunction {
             name: "synthetic".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
             decisions: vec![],
             blocks: vec![],
-            drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan { drops })],
+            drop_plans,
             coroutine: None,
-            lambda_captures: vec![],
+            lambda_captures,
         }
+    }
+
+    fn make_elab_with_drops(drops: Vec<ElabDrop>) -> ElaboratedMirFunction {
+        make_elab(
+            vec![(ExitPath::Return { block: 0 }, DropPlan { drops })],
+            vec![],
+        )
     }
 
     // ---------- drop_kind_for: Place -> DropKind mapping ----------
@@ -5043,16 +7274,7 @@ mod slice3_invariants {
         exit: ExitPath,
         drops: Vec<ElabDrop>,
     ) -> ElaboratedMirFunction {
-        ElaboratedMirFunction {
-            name: "synthetic".to_string(),
-            return_ty: ResolvedTy::Unit,
-            statements: vec![],
-            decisions: vec![],
-            blocks: vec![],
-            drop_plans: vec![(exit, DropPlan { drops })],
-            coroutine: None,
-            lambda_captures: vec![],
-        }
+        make_elab(vec![(exit, DropPlan { drops })], vec![])
     }
 
     #[test]
@@ -5314,16 +7536,7 @@ mod slice3_invariants {
     // ---------- weak-ref capture invariants ----------
 
     fn make_elab_with_captures(captures: Vec<LambdaCapture>) -> ElaboratedMirFunction {
-        ElaboratedMirFunction {
-            name: "synthetic".to_string(),
-            return_ty: ResolvedTy::Unit,
-            statements: vec![],
-            decisions: vec![],
-            blocks: vec![],
-            drop_plans: vec![],
-            coroutine: None,
-            lambda_captures: captures,
-        }
+        make_elab(vec![], captures)
     }
 
     #[test]
@@ -5446,6 +7659,57 @@ mod slice3_invariants {
         }];
         let elab = make_elab_with_captures(captures);
         assert!(validate_drop_plan(&elab).is_empty());
+    }
+
+    #[test]
+    fn lambda_actor_capture_without_backend_slot_is_diagnostic() {
+        let body = HirExpr {
+            node: hew_hir::HirNodeId(1),
+            site: hew_hir::SiteId(1),
+            value_class: ValueClass::BitCopy,
+            ty: ResolvedTy::Unit,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(HirLiteral::Unit),
+            span: 0..0,
+        };
+        let expr = HirExpr {
+            node: hew_hir::HirNodeId(2),
+            site: hew_hir::SiteId(42),
+            value_class: ValueClass::BitCopy,
+            ty: ResolvedTy::Unit,
+            intent: IntentKind::Read,
+            kind: HirExprKind::SpawnLambdaActor {
+                params: vec![],
+                reply_ty: ResolvedTy::Unit,
+                body: Box::new(body),
+                captures: vec![hew_hir::HirLambdaCapture {
+                    binding: BindingId(99),
+                    name: "missing".to_string(),
+                    kind: hew_hir::HirCaptureKind::Strong,
+                }],
+            },
+            span: 0..0,
+        };
+        let mut builder = Builder::default();
+
+        let _ = builder.lower_spawn_lambda_actor(&expr);
+
+        assert!(
+            builder.diagnostics.iter().any(|diag| matches!(
+                diag.kind,
+                MirDiagnosticKind::CannotMaterializeClosureCapture {
+                    binding: BindingId(99),
+                    site: hew_hir::SiteId(42),
+                    ..
+                }
+            )),
+            "missing backend slot must be diagnosed, got {:?}",
+            builder.diagnostics
+        );
+        assert!(
+            builder.lambda_captures.is_empty(),
+            "unmaterialized captures must not enter lambda_captures"
+        );
     }
 
     #[test]
@@ -5646,7 +7910,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals);
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new());
 
             // Exactly one Return plan for the single block.
             prop_assert_eq!(plans.len(), 1);
@@ -5701,7 +7965,7 @@ mod slice3_narrowing_proptests {
             let lifo = build_lifo(n);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals);
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new());
             let (_, plan) = &plans[0];
 
             // Expected: every binding NOT Consumed survives in the drop
@@ -5740,8 +8004,8 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals);
-            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals);
+            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new());
+            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new());
 
             prop_assert_eq!(b1.len(), b2.len());
             prop_assert_eq!(p1.len(), p2.len());
@@ -5767,7 +8031,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals);
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new());
             let (_, plan) = &plans[0];
 
             for d in &plan.drops {

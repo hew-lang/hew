@@ -1,9 +1,12 @@
 //! Internal type definitions shared across runtime modules.
 
-/// Actor dispatch function signature (4-param canonical).
+use crate::execution_context::HewExecutionContext;
+
+/// Actor dispatch function signature (context-leading canonical).
 ///
-/// `void (*dispatch)(void *state, int msg_type, void *data, size_t data_size)`
-pub type HewDispatchFn = unsafe extern "C" fn(
+/// `void (*dispatch)(HewExecutionContext *ctx, void *state, int msg_type, void *data, size_t data_size)`
+pub type HewDispatchFn = unsafe extern "C-unwind" fn(
+    ctx: *mut HewExecutionContext,
     state: *mut std::ffi::c_void,
     msg_type: i32,
     data: *mut std::ffi::c_void,

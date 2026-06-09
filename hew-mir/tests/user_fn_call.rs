@@ -1,15 +1,15 @@
-//! Contract tests for `Instr::CallDirect` — MIR shape produced for direct
+//! Contract tests for `Terminator::Call` — MIR shape produced for direct
 //! calls to user-defined functions in the same module.
 //!
 //! Tests exercise the full pipeline:
 //!   parse → typecheck → HIR lower → MIR lower
 //! to verify that `HirExprKind::Call` with a callee that resolves to a
-//! module function emits `Instr::CallDirect` with the correct callee symbol
+//! module function emits `Terminator::Call` with the correct callee symbol
 //! and argument Places, and that function parameters resolve to real
 //! `Place::Local` slots rather than emitting `UnresolvedPlace` diagnostics.
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, Instr, IrPipeline, MirDiagnosticKind};
+use hew_mir::{lower_hir_module, IrPipeline, MirDiagnosticKind, Terminator};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::{Checker, TypeCheckOutput};
 
@@ -26,11 +26,11 @@ fn pipeline_with_tc(source: &str) -> IrPipeline {
     lower_hir_module(&output.module)
 }
 
-/// `add(2, 3)` from `main` must produce `Instr::CallDirect` with callee
+/// `add(2, 3)` from `main` must produce `Terminator::Call` with callee
 /// `"add"` and two `Place::Local` arguments, with no `UnresolvedPlace` or
 /// `CutoverUnsupported` diagnostics.
 #[test]
-fn call_direct_emits_calldirect_instr_with_correct_callee_and_args() {
+fn direct_call_emits_call_terminator_with_correct_callee_and_args() {
     let src = r"
         fn add(a: int, b: int) -> int {
             a + b
@@ -66,42 +66,43 @@ fn call_direct_emits_calldirect_instr_with_correct_callee_and_args() {
         .find(|f| f.name == "main")
         .expect("main function must be in raw_mir");
 
-    // Collect all CallDirect instructions across main's blocks.
-    let call_directs: Vec<&Instr> = main_fn
+    // Collect all call terminators across main's blocks.
+    let calls: Vec<&Terminator> = main_fn
         .blocks
         .iter()
-        .flat_map(|b| &b.instructions)
-        .filter(|i| matches!(i, Instr::CallDirect { .. }))
+        .map(|b| &b.terminator)
+        .filter(|t| matches!(t, Terminator::Call { .. }))
         .collect();
 
     assert_eq!(
-        call_directs.len(),
+        calls.len(),
         1,
-        "main must contain exactly one CallDirect; got: {call_directs:#?}"
+        "main must contain exactly one call terminator; got: {calls:#?}"
     );
 
-    match call_directs[0] {
-        Instr::CallDirect {
-            callee_symbol,
+    match calls[0] {
+        Terminator::Call {
+            callee,
             args,
             dest,
+            next: _,
         } => {
             assert_eq!(
-                callee_symbol, "add",
-                "callee_symbol must be \"add\", got {callee_symbol:?}"
+                callee, "add",
+                "callee symbol must be \"add\", got {callee:?}"
             );
             assert_eq!(
                 args.len(),
                 2,
-                "add() takes 2 args; CallDirect has {} args: {args:?}",
+                "add() takes 2 args; call terminator has {} args: {args:?}",
                 args.len()
             );
             assert!(
                 dest.is_some(),
-                "add() returns int; CallDirect dest must be Some"
+                "add() returns int; call terminator dest must be Some"
             );
         }
-        other => panic!("expected CallDirect, got {other:?}"),
+        other => panic!("expected call terminator, got {other:?}"),
     }
 }
 
@@ -149,14 +150,14 @@ fn callee_params_resolve_to_local_slots_no_unresolved_place() {
 
 /// An unresolved call (a callee name that is neither a runtime-ABI symbol
 /// nor a declared module function) must produce `CutoverUnsupported`, not
-/// `CallDirect`. Guards the fail-closed boundary in `lower_value`.
+/// `Terminator::Call`. Guards the fail-closed boundary in `lower_value`.
 ///
 /// The test uses a bare identifier `unknown_fn(42)` that is not declared in
 /// the module — the HIR bridge emits `BindingRef { resolved: Unresolved }`.
 /// After the runtime-ABI and module-fn checks both fail, the fallthrough
 /// path must emit `CutoverUnsupported`.
 #[test]
-fn unresolved_call_emits_cutover_unsupported_not_call_direct() {
+fn unresolved_call_emits_cutover_unsupported_not_call_terminator() {
     // `unknown_fn` is not declared in this module and is not a runtime symbol.
     let src = r"
         fn main() -> int {
@@ -186,15 +187,14 @@ fn unresolved_call_emits_cutover_unsupported_not_call_direct() {
         pipeline.diagnostics
     );
 
-    // Must not produce CallDirect — the fail-closed path must fire.
-    let has_direct = pipeline
+    // Must not produce a call terminator — the fail-closed path must fire.
+    let has_call = pipeline
         .raw_mir
         .iter()
         .flat_map(|f| f.blocks.iter())
-        .flat_map(|b| &b.instructions)
-        .any(|i| matches!(i, Instr::CallDirect { .. }));
+        .any(|b| matches!(b.terminator, Terminator::Call { .. }));
     assert!(
-        !has_direct,
-        "unresolved call must not emit CallDirect; fail-closed path must fire"
+        !has_call,
+        "unresolved call must not emit a call terminator; fail-closed path must fire"
     );
 }

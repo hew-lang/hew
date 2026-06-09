@@ -397,6 +397,10 @@ pub struct Parser<'src> {
     /// True while parsing an impl-method parameter list that accepts bare
     /// `self` as sugar for a `Self` receiver parameter.
     allow_implicit_self_params: bool,
+    /// Number of enclosing `scope { ... }` expression bodies being parsed.
+    scope_expr_depth: usize,
+    /// Number of enclosing `fork { ... }` child-task block bodies being parsed.
+    fork_block_depth: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -435,6 +439,8 @@ pub enum ParseDiagnosticKind {
         /// The token (or `"end of file"`) that was encountered.
         got: String,
     },
+    /// Pipe-closure syntax is malformed or incomplete.
+    ClosurePipeSyntax,
     /// Every other error not yet assigned a structured variant.
     Other,
 }
@@ -449,6 +455,7 @@ impl ParseDiagnosticKind {
             Self::InvalidLiteral => "InvalidLiteral",
             Self::MissingExpression { .. } => "MissingExpression",
             Self::InvalidPattern { .. } => "InvalidPattern",
+            Self::ClosurePipeSyntax => "ClosurePipeSyntax",
             Self::Other => "Other",
         }
     }
@@ -498,6 +505,8 @@ impl<'src> Parser<'src> {
             depth: Cell::new(0),
             angle_mutations: Vec::new(),
             allow_implicit_self_params: false,
+            scope_expr_depth: 0,
+            fork_block_depth: 0,
         }
     }
 
@@ -672,6 +681,21 @@ impl<'src> Parser<'src> {
             hint: Some(hint.into()),
             severity: Severity::Error,
             kind: ParseDiagnosticKind::Other,
+        });
+    }
+
+    fn error_closure_pipe_syntax(
+        &mut self,
+        message: impl Into<String>,
+        span: Span,
+        hint: impl Into<String>,
+    ) {
+        self.errors.push(ParseError {
+            message: message.into(),
+            span,
+            hint: Some(hint.into()),
+            severity: Severity::Error,
+            kind: ParseDiagnosticKind::ClosurePipeSyntax,
         });
     }
 
@@ -863,6 +887,36 @@ impl<'src> Parser<'src> {
             Token::Emit => Some("emit"),
             _ => None,
         }
+    }
+
+    fn looks_like_scope_deadline(&self) -> bool {
+        if !matches!(self.peek(), Some(Token::After)) {
+            return false;
+        }
+        if !matches!(
+            self.tokens.get(self.pos + 1).map(|(token, _)| token),
+            Some(Token::LeftParen)
+        ) {
+            return false;
+        }
+
+        let mut paren_depth = 0usize;
+        for idx in (self.pos + 1)..self.tokens.len() {
+            match &self.tokens[idx].0 {
+                Token::LeftParen => paren_depth += 1,
+                Token::RightParen => {
+                    paren_depth = paren_depth.saturating_sub(1);
+                    if paren_depth == 0 {
+                        return matches!(
+                            self.tokens.get(idx + 1).map(|(token, _)| token),
+                            Some(Token::LeftBrace)
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     /// Returns true if the token can be used as an identifier (regular or contextual keyword).
@@ -4081,6 +4135,8 @@ impl<'src> Parser<'src> {
                 | Expr::IfLet { .. }
                 | Expr::Match { .. }
                 | Expr::Scope { .. }
+                | Expr::ForkBlock { .. }
+                | Expr::ScopeDeadline { .. }
                 | Expr::UnsafeBlock(_)
                 | Expr::Select { .. }
         )
@@ -4146,7 +4202,10 @@ impl<'src> Parser<'src> {
                     }
                     let span = expr.1.clone();
                     stmts.push((Stmt::Expression(expr), span));
-                } else if self.peek() != Some(&Token::RightBrace) && Self::is_block_expr(&expr.0) {
+                } else if Self::is_block_expr(&expr.0)
+                    && (self.peek() != Some(&Token::RightBrace)
+                        || matches!(expr.0, Expr::ForkBlock { .. } | Expr::ScopeDeadline { .. }))
+                {
                     // Block-like expressions (if, match, blocks, loops) don't need semicolons
                     let span = expr.1.clone();
                     stmts.push((Stmt::Expression(expr), span));
@@ -4178,8 +4237,11 @@ impl<'src> Parser<'src> {
         let _guard = self.enter_recursion()?;
         let start = self.peek_span().start;
 
-        // Check for labeled loop/while: 'label: loop/while
-        if let Some(Token::Label(_)) = self.peek() {
+        // Check for labeled loop/while: @label: loop/while. A bare @name in
+        // expression position is a context-reader candidate.
+        if matches!(self.peek(), Some(Token::Label(_)))
+            && self.peek_at(self.pos + 1) == Some(&Token::Colon)
+        {
             return self.parse_labeled_stmt(start);
         }
 
@@ -4940,6 +5002,11 @@ impl<'src> Parser<'src> {
                 self.advance();
                 Expr::Literal(Literal::Bool(false))
             }
+            Token::Label(label) => {
+                let name = (*label).to_string();
+                self.advance();
+                Expr::Identifier(name)
+            }
             Token::Identifier(name)
                 if *name == "bytes" && self.peek_at(self.pos + 1) == Some(&Token::LeftBracket) =>
             {
@@ -5230,6 +5297,7 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::RightBracket)?;
                 Expr::Array(elements)
             }
+            Token::Pipe | Token::PipePipe => self.parse_pipe_lambda(false, start)?,
             Token::LeftBrace => {
                 // Disambiguate: {"str": expr, ...} → MapLiteral, else → Block
                 // Note: bare {} remains a Block — empty HashMap coercion is
@@ -5414,7 +5482,9 @@ impl<'src> Parser<'src> {
             }
             Token::Move => {
                 self.advance();
-                if self.eat(&Token::LeftParen) {
+                if matches!(self.peek(), Some(Token::Pipe | Token::PipePipe)) {
+                    self.parse_pipe_lambda(true, start)?
+                } else if self.eat(&Token::LeftParen) {
                     // Move lambda
                     let params = self.try_parse_lambda_params()?;
                     self.expect(&Token::RightParen)?;
@@ -5432,7 +5502,12 @@ impl<'src> Parser<'src> {
                         body,
                     }
                 } else {
-                    self.error("expected '(' after 'move'".to_string());
+                    self.error_closure_pipe_syntax(
+                        "E_CLOSURE_PIPE_SYNTAX: expected `|` after `move` to begin a closure"
+                            .to_string(),
+                        self.peek_span(),
+                        "write `move |params| expr`",
+                    );
                     return None;
                 }
             }
@@ -5460,33 +5535,70 @@ impl<'src> Parser<'src> {
                     );
                     return None;
                 }
-                Expr::Scope {
-                    body: self.parse_block()?,
-                }
+                self.scope_expr_depth += 1;
+                let body = self.parse_block()?;
+                self.scope_expr_depth -= 1;
+                Expr::Scope { body }
             }
             Token::Fork => {
+                let fork_span = self.peek_span();
                 self.advance();
                 // `fork` is now exclusively the child-start verb inside a scope block:
                 // `fork name = call(...);` or bare `fork call(...);`.
-                // The legacy `fork { ... }` block form was removed; use `scope { ... }`.
                 if self.peek() == Some(&Token::LeftBrace) {
-                    self.error(
-                        "'fork { ... }' block syntax has been removed; use 'scope { ... }' for structured concurrency"
+                    if self.scope_expr_depth == 0 {
+                        self.error_at(
+                            "`fork { ... }` child-task blocks are only valid inside `scope { ... }`"
+                                .to_string(),
+                            fork_span,
+                        );
+                        return None;
+                    }
+                    if self.fork_block_depth > 0 {
+                        self.error_at(
+                            "nested `fork { ... }` blocks are not a CT-2 surface; use an inner `scope { ... }`"
+                                .to_string(),
+                            fork_span,
+                        );
+                        return None;
+                    }
+                    self.fork_block_depth += 1;
+                    let body = self.parse_block()?;
+                    self.fork_block_depth -= 1;
+                    Expr::ForkBlock { body }
+                } else {
+                    let binding = if self.fork_starts_child_binding() {
+                        let name = self.expect_ident()?;
+                        self.expect(&Token::Equal)?;
+                        Some(name)
+                    } else {
+                        None
+                    };
+                    let expr = self.parse_expr()?;
+                    Expr::ForkChild {
+                        binding,
+                        expr: Box::new(expr),
+                    }
+                }
+            }
+            Token::After if self.looks_like_scope_deadline() => {
+                let after_span = self.peek_span();
+                if self.scope_expr_depth == 0 {
+                    self.error_at(
+                        "`after(duration) { ... }` deadline clauses are only valid inside `scope { ... }`"
                             .to_string(),
+                        after_span,
                     );
                     return None;
                 }
-                let binding = if self.fork_starts_child_binding() {
-                    let name = self.expect_ident()?;
-                    self.expect(&Token::Equal)?;
-                    Some(name)
-                } else {
-                    None
-                };
-                let expr = self.parse_expr()?;
-                Expr::ForkChild {
-                    binding,
-                    expr: Box::new(expr),
+                self.advance();
+                self.expect(&Token::LeftParen)?;
+                let duration = self.parse_expr()?;
+                self.expect(&Token::RightParen)?;
+                let body = self.parse_block()?;
+                Expr::ScopeDeadline {
+                    duration: Box::new(duration),
+                    body,
                 }
             }
             Token::Try => {
@@ -5618,6 +5730,68 @@ impl<'src> Parser<'src> {
         Some((expr, start..end))
     }
 
+    fn parse_pipe_lambda(&mut self, is_move: bool, start: usize) -> Option<Expr> {
+        let params = if self.eat(&Token::PipePipe) {
+            Vec::new()
+        } else {
+            self.expect(&Token::Pipe)?;
+            let params = self.try_parse_pipe_lambda_params().or_else(|| {
+                self.error_closure_pipe_syntax(
+                    "E_CLOSURE_PIPE_SYNTAX: malformed closure parameter list".to_string(),
+                    start..self.peek_span().start,
+                    "write parameters as `|name|` or `|name: Type|`",
+                );
+                None
+            })?;
+            self.expect(&Token::Pipe).or_else(|| {
+                self.error_closure_pipe_syntax(
+                    "E_CLOSURE_PIPE_SYNTAX: expected `|` to close closure parameters".to_string(),
+                    start..self.peek_span().start,
+                    "write `|params| expr`",
+                );
+                None
+            })?;
+            params
+        };
+
+        let return_type = self.parse_opt_return_type()?;
+        let body = if return_type.is_some() {
+            if self.peek() != Some(&Token::LeftBrace) {
+                self.error_closure_pipe_syntax(
+                    "E_CLOSURE_PIPE_SYNTAX: typed pipe closures require a braced body".to_string(),
+                    self.peek_span(),
+                    "write `|params| -> Type { expr }`",
+                );
+                return None;
+            }
+            let body_start = self.peek_span().start;
+            let body_block = self.parse_block()?;
+            let body_end = self.peek_span().start;
+            Box::new((Expr::Block(body_block), body_start..body_end))
+        } else {
+            if matches!(
+                self.peek(),
+                Some(Token::Semicolon | Token::RightBrace) | None
+            ) {
+                self.error_closure_pipe_syntax(
+                    "E_CLOSURE_PIPE_SYNTAX: closure body is required".to_string(),
+                    self.peek_span(),
+                    "write `|| expr` or `|| { ... }`",
+                );
+                return None;
+            }
+            Box::new(self.parse_expr()?)
+        };
+
+        Some(Expr::Lambda {
+            is_move,
+            type_params: None,
+            params,
+            return_type,
+            body,
+        })
+    }
+
     /// Parse map literal entries after the opening `{` has already been consumed.
     /// Expects at least one `key: value` pair, followed by optional comma-separated pairs.
     fn parse_map_literal_entries(&mut self) -> Option<Expr> {
@@ -5637,6 +5811,28 @@ impl<'src> Parser<'src> {
         }
         self.expect(&Token::RightBrace)?;
         Some(Expr::MapLiteral { entries })
+    }
+
+    fn try_parse_pipe_lambda_params(&mut self) -> Option<Vec<LambdaParam>> {
+        let mut params = Vec::new();
+
+        while !self.at_end() && self.peek() != Some(&Token::Pipe) {
+            let name = self.expect_ident()?;
+
+            let ty = if self.eat(&Token::Colon) {
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+
+            params.push(LambdaParam { name, ty });
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+
+        Some(params)
     }
 
     fn try_parse_lambda_params(&mut self) -> Option<Vec<LambdaParam>> {
@@ -6404,7 +6600,7 @@ mod tests {
 
     #[test]
     fn parse_lambda() {
-        let source = "fn main() { let f = (x: i32) => x * 2; }";
+        let source = "fn main() { let f = |x: i32| x * 2; }";
         let result = parse(source);
         if !result.errors.is_empty() {
             for error in &result.errors {
@@ -6412,6 +6608,44 @@ mod tests {
             }
         }
         assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn parse_pipe_closure_forms() {
+        for source in [
+            "fn main() { let f = |x| x + 1; }",
+            "fn main() { let f = |x: i32| x + 1; }",
+            "fn main() { let f = |x: i32| -> i32 { x + 1 }; }",
+            "fn main() { let f = || 42; }",
+            "fn main() { let f = move |x| x; }",
+        ] {
+            let result = parse(source);
+            assert!(
+                result.errors.is_empty(),
+                "expected pipe closure to parse cleanly: {source}\nerrors: {:?}",
+                result.errors
+            );
+        }
+    }
+
+    #[test]
+    fn parse_pipe_closure_malformed_surfaces_are_explicit_errors() {
+        for source in [
+            "fn main() { let f = ||; }",
+            "fn main() { let f = |x| -> i32 x + 1; }",
+        ] {
+            let result = parse(source);
+            assert!(
+                result.errors.iter().any(|error| matches!(
+                    error.kind,
+                    ParseDiagnosticKind::ClosurePipeSyntax
+                ) && error
+                    .message
+                    .contains("E_CLOSURE_PIPE_SYNTAX")),
+                "expected typed E_CLOSURE_PIPE_SYNTAX for {source}, got {:?}",
+                result.errors
+            );
+        }
     }
 
     #[test]
@@ -6502,6 +6736,20 @@ mod tests {
         } else {
             panic!("expected Function item");
         }
+    }
+
+    #[test]
+    fn parse_context_reader_as_identifier_expression() {
+        let source = "fn main() -> u64 { @actor_id }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let Item::Function(function) = &result.program.items[0].0 else {
+            panic!("expected function item");
+        };
+        let Some((Expr::Identifier(name), _)) = function.body.trailing_expr.as_deref() else {
+            panic!("expected context reader identifier tail");
+        };
+        assert_eq!(name, "@actor_id");
     }
 
     #[test]
@@ -7912,6 +8160,41 @@ wire type Msg {
             body.trailing_expr.as_deref(),
             Some((Expr::Identifier(name), _)) if name == "child"
         ));
+    }
+
+    #[test]
+    fn parse_scope_fork_block_after_deadline() {
+        let expr = parse_let_expr("scope { fork { long_op(); } after(5s) { } }");
+        let Expr::Scope { body } = expr else {
+            panic!("expected scope block");
+        };
+        assert_eq!(body.stmts.len(), 2, "expected fork block and deadline");
+        let Stmt::Expression((Expr::ForkBlock { body: fork_body }, _)) = &body.stmts[0].0 else {
+            panic!("expected fork block: {:?}", body.stmts[0]);
+        };
+        assert_eq!(fork_body.stmts.len(), 1);
+        let Stmt::Expression((Expr::ScopeDeadline { duration, body }, _)) = &body.stmts[1].0 else {
+            panic!("expected scope deadline: {:?}", body.stmts[1]);
+        };
+        assert!(
+            matches!(duration.0, Expr::Literal(Literal::Duration(5_000_000_000))),
+            "deadline duration should be parsed as 5s duration literal: {:?}",
+            duration.0
+        );
+        assert!(body.stmts.is_empty(), "deadline body should be empty");
+    }
+
+    #[test]
+    fn parse_unscoped_fork_block_rejects() {
+        let result = parse("fn main() { fork { long_op(); } }");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|err| err.message.contains("only valid inside `scope")),
+            "unscoped fork block must be rejected: {:?}",
+            result.errors
+        );
     }
 
     #[test]

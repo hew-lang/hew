@@ -1752,6 +1752,77 @@ fn typecheck_actor_receive_fn_registered() {
     assert!(output.fn_sigs.contains_key("Greeter::greet"));
 }
 
+fn span_key_for(source: &str, needle: &str) -> SpanKey {
+    let start = source
+        .find(needle)
+        .unwrap_or_else(|| panic!("missing `{needle}` in source"));
+    SpanKey {
+        start,
+        end: start + needle.len(),
+    }
+}
+
+#[test]
+fn context_readers_typecheck_inside_receive_handler() {
+    let source = "\
+        actor Worker {
+            receive fn ping() {
+                let actor_value = @actor_id;
+                let supervisor_value = @supervisor;
+                let span_value = @trace_span;
+            }
+        }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_eq!(
+        output.expr_types.get(&span_key_for(source, "@actor_id")),
+        Some(&Ty::U64)
+    );
+    assert_eq!(
+        output.expr_types.get(&span_key_for(source, "@trace_span")),
+        Some(&Ty::U64)
+    );
+    assert_eq!(
+        output.expr_types.get(&span_key_for(source, "@supervisor")),
+        Some(&Ty::Pointer {
+            is_mutable: true,
+            pointee: Box::new(Ty::Unit),
+        })
+    );
+}
+
+#[test]
+fn context_reader_outside_handler_is_typed_diagnostic() {
+    let output = check_source("fn main() -> u64 { @actor_id }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ContextReaderOutsideHandler),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn context_reader_in_non_actor_lambda_is_typed_diagnostic() {
+    let source = "\
+        actor Worker {
+            receive fn ping() {
+                let f = () => @actor_id;
+            }
+        }";
+    let output = check_source(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ContextReaderOutsideHandler),
+        "{:?}",
+        output.errors
+    );
+}
+
 /// `#[max_heap(N)]` on an actor → `actor_max_heap` side-table entry for that actor.
 #[test]
 fn max_heap_attribute_populates_side_table() {
@@ -15571,6 +15642,78 @@ mod for_loop_iterable_fail_closed {
         assert!(
             !result.errors.is_empty(),
             "gen blocks are not expected to parse until the generator surface slice"
+        );
+    }
+
+    #[test]
+    fn closure_capture_facts_are_binding_accurate_and_deduplicated() {
+        let output = check_source(
+            r"
+            fn main() {
+                let k: i32 = 2;
+                let f = |n: i32| n + k + k;
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "copy capture should type-check cleanly: {:?}",
+            output.errors
+        );
+
+        let facts: Vec<_> = output
+            .closure_capture_facts
+            .values()
+            .flat_map(|facts| facts.iter())
+            .filter(|fact| fact.name == "k")
+            .collect();
+        assert_eq!(
+            facts.len(),
+            1,
+            "capture facts should deduplicate by binding id"
+        );
+        assert_eq!(facts[0].ty, Ty::I32);
+        assert_eq!(facts[0].mode, ClosureCaptureMode::Copy);
+    }
+
+    #[test]
+    fn closure_non_copy_capture_without_move_is_rejected() {
+        let output = check_source(
+            r#"
+            fn main() {
+                let s: string = "hew";
+                let f = || s;
+            }
+            "#,
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|err| matches!(err.kind, TypeErrorKind::ClosureExplicitMoveRequired { .. })),
+            "non-Copy capture without move should require explicit move: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn move_closure_capture_consumes_non_copy_binding() {
+        let output = check_source(
+            r#"
+            fn main() {
+                let s: string = "hew";
+                let f = move || s;
+                let again = s;
+            }
+            "#,
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|err| err.kind == TypeErrorKind::UseAfterMove),
+            "use after move capture should be rejected: {:?}",
+            output.errors
         );
     }
 

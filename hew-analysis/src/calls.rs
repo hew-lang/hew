@@ -310,6 +310,11 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         Expr::Scope { body } => {
             collect_calls_in_block(body, calls);
         }
+        Expr::ForkBlock { body } => collect_calls_in_block(body, calls),
+        Expr::ScopeDeadline { duration, body } => {
+            collect_calls_in_expr(duration.as_ref(), calls);
+            collect_calls_in_block(body, calls);
+        }
         Expr::ForkChild { expr, .. } => collect_calls_in_expr(expr, calls),
         Expr::Select { arms, timeout, .. } => {
             for arm in arms {

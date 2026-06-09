@@ -1917,6 +1917,7 @@ pub unsafe extern "C" fn hew_mailbox_free(mb: *mut HewMailbox) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_context::{HewExecutionContext, TestExecutionContext};
 
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -2719,16 +2720,12 @@ mod tests {
                 flags: 0x01, // sampled
             };
 
-            // Temporarily set the current context to our custom one
-            let original_context = crate::tracing::current_context();
+            let _ctx = TestExecutionContext::install(HewExecutionContext::default());
             crate::tracing::set_context(custom_trace);
 
             // Send a message (which should capture the current trace context)
             let rc = hew_mailbox_send(mb, 1, (&raw const val).cast_mut().cast(), size_of::<i32>());
             assert_eq!(rc, 0);
-
-            // Restore original context so the receive doesn't interfere
-            crate::tracing::set_context(original_context);
 
             // Receive the message
             let node = hew_mailbox_try_recv(mb);

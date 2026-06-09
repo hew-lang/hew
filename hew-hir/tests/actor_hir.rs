@@ -1,10 +1,12 @@
-//! Tests for HIR actor declaration lowering. Lane A: structural only —
-//! method, receive, and lifecycle-hook bodies are not lowered to `HirBlock`
-//! in this slice (see `HirActorDecl` doc comment).
+//! Tests for HIR actor declaration lowering: actor structure plus lowered
+//! init, receive, method, and lifecycle-hook bodies.
 
-use hew_hir::{lower_program, HirActorDecl, HirItem, HirLifecycleHookKind, ResolutionCtx};
+use hew_hir::{
+    dump_hir, lower_program, HirActorDecl, HirActorStateGuard, HirDiagnosticKind, HirItem,
+    HirLifecycleHookKind, ResolutionCtx,
+};
 use hew_parser::ast::OverflowPolicy;
-use hew_types::TypeCheckOutput;
+use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
@@ -13,7 +15,9 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
         "parse errors: {:?}",
         parsed.errors
     );
-    lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx)
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    lower_program(&parsed.program, &tc_output, &ResolutionCtx)
 }
 
 fn find_actor<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a HirActorDecl {
@@ -29,19 +33,78 @@ fn find_actor<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a HirActorD
 }
 
 #[test]
-fn actor_decl_lowering_happy_path() {
-    // Logger: one state field, one receive handler, no lifecycle hooks, no init.
-    let src = r#"
-actor Logger {
-    let label: string;
+fn hir_receive_handler_carries_state_guard() {
+    let src = r"
+actor Counter {
+    let count: i32;
 
-    receive fn log(msg: string) {
-        println(f"[{label}] {msg}");
+    receive fn inc(n: i32) {
+        let seen: i32 = n;
     }
 }
 
 fn main() {}
-"#;
+";
+    let output = lower(src);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        output.diagnostics
+    );
+    let actor = find_actor(&output, "Counter");
+    assert_eq!(
+        actor.receive_handlers[0].state_guard,
+        HirActorStateGuard::Exclusive
+    );
+
+    let dump = dump_hir(&output.module);
+    assert!(
+        dump.contains("receive inc params=1 -> () state_guard=Exclusive"),
+        "HIR dump must expose state guard fact, got:\n{dump}"
+    );
+}
+
+#[test]
+fn missing_checker_guard_fact_fails_closed() {
+    let parsed = hew_parser::parse(
+        r"
+actor Counter {
+    receive fn inc() {}
+}
+
+fn main() {}
+",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            HirDiagnosticKind::ActorStateGuardMissing { .. }
+        )),
+        "missing checker guard fact must be a HIR diagnostic: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn actor_decl_lowering_happy_path() {
+    // Logger: one state field, one receive handler, no lifecycle hooks, no init.
+    let src = r"
+actor Logger {
+    let label: string;
+
+    receive fn log(msg: string) {
+        let seen: string = msg;
+    }
+}
+
+fn main() {}
+";
     let output = lower(src);
     assert!(
         output.diagnostics.is_empty(),
@@ -54,6 +117,10 @@ fn main() {}
     assert_eq!(actor.receive_handlers.len(), 1);
     assert_eq!(actor.receive_handlers[0].name, "log");
     assert_eq!(actor.receive_handlers[0].params.len(), 1);
+    assert_eq!(
+        actor.receive_handlers[0].state_guard,
+        HirActorStateGuard::Exclusive
+    );
     assert_eq!(actor.receive_handlers[0].every_ns, None);
     assert!(actor.init.is_none());
     assert!(actor.methods.is_empty());
@@ -71,26 +138,26 @@ fn actor_lifecycle_hooks_attributed_separately() {
     let src = r"
 actor Service {
     receive fn handle() {
-        process();
+        let handled = true;
     }
 
     #[on(start)]
     fn boot() {
-        warm();
+        let ready = true;
     }
 
     #[on(stop)]
     fn cleanup() {
-        flush();
+        let cleaned = true;
     }
 
     #[on(stop)]
     fn drain() {
-        finish();
+        let drained = true;
     }
 
     fn helper() {
-        do_work();
+        let helped = true;
     }
 }
 
@@ -107,6 +174,10 @@ fn main() {}
     // One receive handler.
     assert_eq!(actor.receive_handlers.len(), 1);
     assert_eq!(actor.receive_handlers[0].name, "handle");
+    assert_eq!(
+        actor.receive_handlers[0].state_guard,
+        HirActorStateGuard::Exclusive
+    );
 
     // Only `helper` is a plain method; the three `#[on(...)]` fns are hooks.
     let method_names: Vec<&str> = actor.methods.iter().map(|m| m.name.as_str()).collect();
@@ -141,16 +212,16 @@ actor Worker {
     let counter: i64;
 
     init(start: i64) {
-        counter = start;
+        let seed: i64 = start;
     }
 
     #[every(50ms)]
     receive fn tick() {
-        work();
+        let ticked = true;
     }
 
     receive fn bump() {
-        counter = counter + 1;
+        let bumped = true;
     }
 }
 
@@ -181,12 +252,14 @@ fn main() {}
         Some(50_000_000),
         "#[every(50ms)] lowers to 50_000_000 ns"
     );
+    assert_eq!(tick.state_guard, HirActorStateGuard::Exclusive);
     let bump = actor
         .receive_handlers
         .iter()
         .find(|r| r.name == "bump")
         .expect("bump receive fn expected");
     assert_eq!(bump.every_ns, None);
+    assert_eq!(bump.state_guard, HirActorStateGuard::Exclusive);
 }
 
 #[test]
@@ -197,7 +270,7 @@ actor Bounded {
     overflow drop_old
 
     receive fn ping() {
-        ack();
+        let ok = true;
     }
 }
 
@@ -220,7 +293,7 @@ fn actor_max_heap_lower() {
 #[max_heap(64 kb)]
 actor Cache {
     receive fn get() {
-        lookup();
+        let ok = true;
     }
 }
 

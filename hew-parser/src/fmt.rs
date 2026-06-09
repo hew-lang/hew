@@ -2035,16 +2035,37 @@ impl<'a> Formatter<'a> {
                 if *is_move {
                     self.write("move ");
                 }
-                self.format_opt_type_params(type_params.as_ref());
-                self.write("(");
-                self.format_lambda_params(params);
-                self.write(")");
-                if let Some(ret) = return_type {
-                    self.write(" -> ");
-                    self.format_type_expr(&ret.0);
+                if type_params.is_some() {
+                    self.format_opt_type_params(type_params.as_ref());
+                    self.write("(");
+                    self.format_lambda_params(params);
+                    self.write(")");
+                    if let Some(ret) = return_type {
+                        self.write(" -> ");
+                        self.format_type_expr(&ret.0);
+                    }
+                    self.write(" => ");
+                    self.format_expr(&body.0);
+                } else {
+                    self.write("|");
+                    self.format_lambda_params(params);
+                    self.write("|");
+                    if let Some(ret) = return_type {
+                        self.write(" -> ");
+                        self.format_type_expr(&ret.0);
+                        self.write(" ");
+                        if matches!(body.0, Expr::Block(_)) {
+                            self.format_expr(&body.0);
+                        } else {
+                            self.write("{ ");
+                            self.format_expr(&body.0);
+                            self.write(" }");
+                        }
+                    } else {
+                        self.write(" ");
+                        self.format_expr(&body.0);
+                    }
                 }
-                self.write(" => ");
-                self.format_expr(&body.0);
             }
             Expr::Spawn { target, args } => {
                 self.write("spawn ");
@@ -2090,6 +2111,16 @@ impl<'a> Formatter<'a> {
                     self.write(" = ");
                 }
                 self.format_expr(&expr.0);
+            }
+            Expr::ForkBlock { body } => {
+                self.write("fork ");
+                self.format_block(body, self.source.len());
+            }
+            Expr::ScopeDeadline { duration, body } => {
+                self.write("after(");
+                self.format_expr(&duration.0);
+                self.write(") ");
+                self.format_block(body, self.source.len());
             }
             Expr::InterpolatedString(parts) => {
                 self.write("f\"");

@@ -86,6 +86,7 @@ fn check_and_lower(path: &str, source: &str) -> Vec<HirMachineDecl> {
                 &d.kind,
                 HirDiagnosticKind::CutoverUnsupported { .. }
                     | HirDiagnosticKind::UnresolvedSymbol { .. }
+                    | HirDiagnosticKind::ImportMissing { .. }
             )
         })
         .collect();

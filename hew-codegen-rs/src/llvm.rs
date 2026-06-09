@@ -11,8 +11,7 @@
 //! - Two-pass lowering per module: every non-coroutine function is declared
 //!   into the LLVM module before any body is lowered, populating
 //!   `FnSymbolMap` so `Terminator::Call` can resolve forward references
-//!   without ordering constraints in the source. Cluster 1 never constructs
-//!   `Call`, but the discipline survives intact for Cluster 2/3.
+//!   without ordering constraints in the source.
 //! - `place_pointer` resolves every `Place` (`Local(N)` / `ReturnSlot`) to
 //!   a stack slot allocated in the function's entry block; loads and stores
 //!   go through the slot. Fail-closed on unallocated locals — the emitter
@@ -59,10 +58,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
+use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy, PrintKind};
 use hew_mir::{
-    CheckedMirFunction, CmpPred, CooperateKind, CooperateSite, ElabDrop, ElaboratedMirFunction,
-    ExitPath, FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, Place,
-    RawMirFunction, RecordLayout, Terminator, TrapKind,
+    validate_context_markers, ActorLayout, CheckedMirFunction, CmpPred, CooperateKind,
+    CooperateSite, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth,
+    FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, Place, RawMirFunction,
+    RecordLayout, Terminator, TrapKind,
 };
 use hew_types::ResolvedTy;
 
@@ -71,10 +72,32 @@ use inkwell::context::Context;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
 use inkwell::targets::TargetMachine;
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, StructType};
-use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
+use inkwell::values::{
+    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+};
 use inkwell::AddressSpace;
 use inkwell::IntPredicate;
+
+// Mirrored from `hew-runtime/src/execution_context.rs`'s HEW_CTX_OFFSET_* ABI
+// constants. Runtime asserts those offsets with `offset_of!`; codegen keeps a
+// copy so the compiler backend does not depend on the runtime crate.
+const HEW_CTX_OFFSET_ACTOR: usize = 0;
+const HEW_CTX_OFFSET_ACTOR_ID: usize = 8;
+const HEW_CTX_OFFSET_PARENT_SUPERVISOR: usize = 16;
+const HEW_CTX_OFFSET_SUPERVISOR_CHILD_INDEX: usize = 24;
+const HEW_CTX_OFFSET_FLAGS: usize = 28;
+const HEW_CTX_OFFSET_CANCEL_TOKEN: usize = 32;
+const HEW_CTX_OFFSET_TASK_SCOPE: usize = 40;
+const HEW_CTX_OFFSET_ARENA: usize = 48;
+const HEW_CTX_OFFSET_TRACE: usize = 56;
+const HEW_TRACE_OFFSET_SPAN_ID: usize = 16;
+const HEW_CTX_OFFSET_TRACE_SPAN: usize = HEW_CTX_OFFSET_TRACE + HEW_TRACE_OFFSET_SPAN_ID;
+const HEW_ACTOR_OFFSET_ID: usize = 8;
+const HEW_ACTOR_OFFSET_STATE: usize = 24;
+const HEW_CTX_OFFSET_PARTITION_POLICY: usize = 96;
+const HEW_CTX_OFFSET_PREV_CONTEXT: usize = 104;
+const HEW_CTX_OFFSET_LOCK_SEAT: usize = 112;
 
 // ---------------------------------------------------------------------------
 // Error model
@@ -105,7 +128,7 @@ pub enum CodegenError {
     /// the wasm32 build (`hew-runtime/src/duplex.rs:54` gates the entire
     /// duplex module out via `#![cfg(not(target_arch = "wasm32"))]`).
     /// WASM-TODO(#1451): duplex WASM parity is tracked in issue #1451.
-    /// Pass `--no-wasm` to skip WASM emission and produce a native binary.
+    /// Omit the WASM target to produce a native binary instead.
     WasmUnsupportedSubstrate { symbol: String },
 }
 
@@ -121,8 +144,8 @@ impl std::fmt::Display for CodegenError {
             Self::WasmUnsupportedSubstrate { symbol } => write!(
                 f,
                 "WASM target does not support the duplex concurrency substrate \
-                 (symbol: {symbol}; WASM-TODO(#1451)); pass `--no-wasm` to skip \
-                 WASM emission and produce a native binary only"
+                 (symbol: {symbol}; WASM-TODO(#1451)); omit the WASM target to \
+                 produce a native binary instead"
             ),
         }
     }
@@ -211,7 +234,7 @@ pub fn emit_module(
         // the entire duplex module out of wasm32 builds via
         // `#![cfg(not(target_arch = "wasm32"))]`, so `wasm-ld` would fail
         // with `undefined symbol: hew_duplex_*`.  Surface a structured
-        // diagnostic with a `--no-wasm` pointer rather than a raw linker
+        // diagnostic with a WASM-target pointer rather than a raw linker
         // error.  WASM-TODO(#1451): duplex WASM parity is tracked there.
         // LESSONS: boundary-fail-closed (P0), user-surface-correctness (P0).
         if let Some(symbol) = uses_wasm_excluded_symbol(pipeline) {
@@ -359,9 +382,17 @@ struct FnCtx<'a, 'ctx> {
     builder: Builder<'ctx>,
     return_slot: PointerValue<'ctx>,
     return_ty: BasicTypeEnum<'ctx>,
+    return_resolved_ty: ResolvedTy,
+    execution_context: Option<PointerValue<'ctx>>,
+    execution_context_is_actor_handler: bool,
+    actor_state_ty: Option<StructType<'ctx>>,
     /// Local-register id → (stack slot, slot's LLVM type). Keyed by the
     /// `Place::Local(N)` index — an MIR identity, not a checker derivative.
     locals: HashMap<u32, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
+    /// Local-register id → resolved Hew type. Kept alongside `locals` for
+    /// ABI helpers that must encode a value from its source type, not only its
+    /// LLVM storage shape.
+    local_tys: HashMap<u32, ResolvedTy>,
     /// Block id → LLVM `BasicBlock`. Populated up front so terminators can
     /// name forward targets.
     blocks: HashMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
@@ -379,10 +410,8 @@ struct FnCtx<'a, 'ctx> {
     /// `StructType<'ctx>` values share the codegen context's lifetime.
     record_layouts: &'a RecordLayoutMap<'ctx>,
     /// Module-wide function symbol table. Populated before any body is
-    /// lowered by the `declare_function` pass in `build_module`. Carried
-    /// here so `Instr::CallDirect` arms in `lower_instruction` can resolve
-    /// the callee without being promoted to a terminator. The borrow is
-    /// shared (read-only) — no new declarations are added during body
+    /// lowered by the `declare_function` pass in `build_module`. The borrow
+    /// is shared (read-only) — no new declarations are added during body
     /// lowering.
     fn_symbols: &'a FnSymbolMap<'ctx>,
 }
@@ -391,7 +420,41 @@ struct FnCtx<'a, 'ctx> {
 /// function name (a normal module-level identity); the value carries the
 /// LLVM function value plus its return type so `Terminator::Call` can
 /// resolve forward without re-deriving anything from the MIR shape.
-type FnSymbolMap<'ctx> = HashMap<String, (FunctionValue<'ctx>, BasicTypeEnum<'ctx>)>;
+type FnSymbolMap<'ctx> = HashMap<String, FnSymbol<'ctx>>;
+
+#[derive(Clone, Copy)]
+enum FnSymbol<'ctx> {
+    Real {
+        value: FunctionValue<'ctx>,
+        return_ty: BasicTypeEnum<'ctx>,
+        returns_unit: bool,
+    },
+    PrintIntercept {
+        runtime_symbol: &'static str,
+        kind: PrintKind,
+        newline: bool,
+    },
+}
+
+impl<'ctx> FnSymbol<'ctx> {
+    fn real(
+        self,
+        callee: &str,
+        context: &str,
+    ) -> CodegenResult<(FunctionValue<'ctx>, BasicTypeEnum<'ctx>, bool)> {
+        match self {
+            Self::Real {
+                value,
+                return_ty,
+                returns_unit,
+            } => Ok((value, return_ty, returns_unit)),
+            Self::PrintIntercept { .. } => Err(CodegenError::FailClosed(format!(
+                "{context} expected `{callee}` to be a callable LLVM function, \
+                 but it is a stdlib print intercept"
+            ))),
+        }
+    }
+}
 
 /// Lazily-interned C-ABI extern function declarations for runtime symbols
 /// referenced by `Instr::CallRuntimeAbi` and `Instr::Drop`. Keyed by the
@@ -408,7 +471,7 @@ type RuntimeDeclMap<'ctx> = HashMap<String, FunctionValue<'ctx>>;
 /// E4 plan §D1-D3 (revised 2026-05-15). All three signatures use 64-bit
 /// integer widths for `usize`-typed args; the spine subset is 64-bit-only
 /// by design and wasm32 surfaces a width mismatch handled at the E5c
-/// `--no-wasm` seam, not here.
+/// CLI target-selection seam, not here.
 ///
 /// Unknown symbols return `FailClosed`. The `RuntimeCall::new` allowlist
 /// guard ensures construction-time rejection of unknown names, so reaching
@@ -442,6 +505,60 @@ fn intern_runtime_decl<'ctx>(
         // the current actor's reductions budget and yields when exhausted.
         // The return value is a scheduler signal; cooperate-site injection
         // discards it.
+        "hew_actor_ask" => ptr_ty.fn_type(
+            &[ptr_ty.into(), i32_ty.into(), ptr_ty.into(), i64_ty.into()],
+            false,
+        ),
+        // hew_actor_ask_with_channel(actor: *mut HewActor, msg_type: i32,
+        //                            data: *mut c_void, size: usize,
+        //                            ch: *mut HewReplyChannel) -> i32
+        // (`hew-runtime/src/actor.rs:3259`). Returns 0 (HewError::Ok) on
+        // success; non-zero indicates the ask could not be submitted (the
+        // caller-provided channel ref is consumed only on success; on
+        // failure the runtime releases the queued retain but the
+        // caller-provided creator ref remains live so the select caller
+        // can still free it via `hew_reply_channel_free`).
+        "hew_actor_ask_with_channel" => i32_ty.fn_type(
+            &[
+                ptr_ty.into(),
+                i32_ty.into(),
+                ptr_ty.into(),
+                i64_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        ),
+        // hew_reply_channel_new() -> *mut HewReplyChannel
+        // (`hew-runtime/src/reply_channel.rs:78`). Box-allocates a fresh
+        // single-shot reply channel with one caller-side reference.
+        // The caller must free with `hew_reply_channel_free` after
+        // `hew_reply_wait` returns (or after cancel on the loser path).
+        "hew_reply_channel_new" => ptr_ty.fn_type(&[], false),
+        // hew_reply_wait(ch: *mut HewReplyChannel) -> *mut c_void
+        // (`hew-runtime/src/reply_channel.rs:296`). Blocks until a reply
+        // is deposited; returns the malloc'd reply pointer (caller frees
+        // with `libc::free`) or null on orphaned-ask. The channel ref
+        // count is NOT consumed — the caller must still call
+        // `hew_reply_channel_free` exactly once.
+        "hew_reply_wait" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_reply_channel_cancel(ch: *mut HewReplyChannel) -> void
+        // (`hew-runtime/src/reply_channel.rs:440`). Marks the channel
+        // cancelled so a late replier observes the flag and releases
+        // its sender-side ref without UAF. MUST be called BEFORE
+        // `hew_reply_channel_free` on every loser arm (Risk R4 in the
+        // select-actor-ask-race plan; the cancel flag + ref count
+        // prevent UAF when a reply races our free).
+        "hew_reply_channel_cancel" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_reply_channel_free(ch: *mut HewReplyChannel) -> void
+        // (`hew-runtime/src/reply_channel.rs:409`). Releases one
+        // reference; frees the channel when the refcount reaches zero.
+        "hew_reply_channel_free" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_select_first(channels: *mut *mut HewReplyChannel, count: i32,
+        //                  timeout_ms: i32) -> i32
+        // (`hew-runtime/src/reply_channel.rs:484`). Returns the winning
+        // channel index, or -1 on timeout (-1 timeout means wait
+        // indefinitely; any non-negative value enforces a deadline).
+        "hew_select_first" => i32_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false),
         "hew_actor_cooperate" => i32_ty.fn_type(&[], false),
         // hew_actor_link(a: *mut HewActor, b: *mut HewActor) -> void
         // (`hew-runtime/src/link.rs:80`). Establishes a bidirectional link.
@@ -455,6 +572,18 @@ fn intern_runtime_decl<'ctx>(
         // null inputs. Actor handles are opaque ptrs. The u64 is wrapped into
         // MonitorRef { ref_id } in Cluster 2.
         "hew_actor_monitor" => i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_actor_send_by_id" => i32_ty.fn_type(
+            &[i64_ty.into(), i32_ty.into(), ptr_ty.into(), i64_ty.into()],
+            false,
+        ),
+        "hew_actor_state_lock_acquire" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_actor_state_lock_release" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_actor_spawn" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
+        "hew_get_reply_channel" => ptr_ty.fn_type(&[], false),
+        "hew_reply" => ctx
+            .bool_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false),
+        "hew_sched_init" => i32_ty.fn_type(&[], false),
         // hew_duplex_pair(s_cap: usize, r_cap: usize,
         //                 out_a: *mut *mut HewDuplexHandle,
         //                 out_b: *mut *mut HewDuplexHandle) -> i32
@@ -520,11 +649,29 @@ fn intern_runtime_decl<'ctx>(
         // actor list; returns 0 on success, -1 if full. i32 return is a
         // runtime-internal signal — MIR producers discard it (dest: None).
         "hew_scope_spawn" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_rc_new" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
         // hew_task_new() -> *mut HewTask
         // (`hew-runtime/src/task_scope.rs:214`). Box-allocates a HewTask
         // in the Ready state. Producer calls this to obtain a task handle
         // before calling hew_task_spawn_thread.
         "hew_task_new" => ptr_ty.fn_type(&[], false),
+        "hew_task_complete_threaded" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        "hew_task_get_error" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_task_get_env" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_task_scope_new" => ptr_ty.fn_type(&[], false),
+        "hew_task_scope_destroy" | "hew_task_scope_join_all" => {
+            ctx.void_type().fn_type(&[ptr_ty.into()], false)
+        }
+        "hew_task_scope_spawn" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_task_scope_set_current" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_task_set_env" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_task_scope_cancel_after_ns" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
         // hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void
         // (`hew-runtime/src/task_scope.rs:368`). Spawns task_fn(task) on
         // a new OS thread. TaskFn = unsafe extern "C" fn(*mut HewTask).
@@ -534,6 +681,17 @@ fn intern_runtime_decl<'ctx>(
         "hew_task_spawn_thread" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_task_spawn_thread_with_inherited_context(
+        //     parent_ctx: *mut HewExecutionContext,
+        //     task: *mut HewTask,
+        //     task_fn: ContextTaskFn,
+        // ) -> i32
+        // (`hew-runtime/src/task_scope.rs`). Spawns a codegen-synthesised
+        // `void (*)(HewExecutionContext*, HewTask*)` wrapper and installs a
+        // child context derived from parent_ctx on the worker thread.
+        "hew_task_spawn_thread_with_inherited_context" => {
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)
+        }
         // hew_task_await_blocking(task: *mut HewTask) -> *mut c_void
         // (`hew-runtime/src/task_scope.rs:411`). Blocks until the task
         // completes and returns its result pointer (null for void tasks).
@@ -550,6 +708,20 @@ fn intern_runtime_decl<'ctx>(
         // HewTask and its result buffer. Called by the scope teardown path
         // after all tasks have been awaited.
         "hew_task_free" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_require_execution_context() -> *mut HewExecutionContext
+        // (`hew-runtime/src/execution_context.rs`). Returns the current
+        // per-dispatch execution context. Used by codegen-emitted terminate
+        // trampolines to bridge the terminate-fn ABI (`fn(*mut c_void)`) to
+        // the ActorHandler ABI (`fn(*mut HewExecutionContext)`).
+        "hew_require_execution_context" => ptr_ty.fn_type(&[], false),
+        // hew_actor_set_terminate(actor: *mut HewActor,
+        //                         terminate_fn: unsafe extern "C" fn(*mut c_void)) -> void
+        // (`hew-runtime/src/actor.rs`). Registers the codegen-emitted
+        // terminate trampoline on the actor so the runtime calls it at normal
+        // actor teardown. Called once at spawn time, after hew_actor_spawn.
+        "hew_actor_set_terminate" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "intern_runtime_decl: codegen has no LLVM signature for runtime \
@@ -562,6 +734,124 @@ fn intern_runtime_decl<'ctx>(
     let fv = llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External));
     decls.insert(symbol.to_string(), fv);
     Ok(fv)
+}
+
+fn fn_type_for_return<'ctx>(
+    ctx: &'ctx Context,
+    return_ty: Option<BasicTypeEnum<'ctx>>,
+    params: &[BasicMetadataTypeEnum<'ctx>],
+) -> FunctionType<'ctx> {
+    match return_ty {
+        Some(BasicTypeEnum::IntType(t)) => t.fn_type(params, false),
+        Some(BasicTypeEnum::FloatType(t)) => t.fn_type(params, false),
+        Some(BasicTypeEnum::StructType(t)) => t.fn_type(params, false),
+        Some(BasicTypeEnum::PointerType(t)) => t.fn_type(params, false),
+        Some(BasicTypeEnum::ArrayType(t)) => t.fn_type(params, false),
+        Some(BasicTypeEnum::VectorType(t)) => t.fn_type(params, false),
+        Some(BasicTypeEnum::ScalableVectorType(t)) => t.fn_type(params, false),
+        None => ctx.void_type().fn_type(params, false),
+    }
+}
+
+fn builtin_type_to_llvm<'ctx>(
+    ctx: &'ctx Context,
+    ty: BuiltinTy,
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<BasicTypeEnum<'ctx>> {
+    resolve_ty(ctx, &ty.to_resolved(), record_layouts)
+}
+
+fn builtin_return_to_llvm<'ctx>(
+    ctx: &'ctx Context,
+    ty: BuiltinTy,
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<Option<BasicTypeEnum<'ctx>>> {
+    match ty {
+        BuiltinTy::Unit | BuiltinTy::Never => Ok(None),
+        other => Ok(Some(builtin_type_to_llvm(ctx, other, record_layouts)?)),
+    }
+}
+
+fn declare_print_runtime<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    symbol: &str,
+) -> FunctionValue<'ctx> {
+    if let Some(fv) = llvm_mod.get_function(symbol) {
+        return fv;
+    }
+    let fn_ty = ctx.void_type().fn_type(
+        &[
+            ctx.i8_type().into(),
+            ctx.i64_type().into(),
+            ctx.bool_type().into(),
+        ],
+        false,
+    );
+    llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External))
+}
+
+fn declare_catalog_ffi<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    entry: &BuiltinEntry,
+    symbol: &str,
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<FnSymbol<'ctx>> {
+    let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(entry.params.len());
+    for param in entry.params {
+        param_tys.push(metadata_type_from_basic(builtin_type_to_llvm(
+            ctx,
+            *param,
+            record_layouts,
+        )?));
+    }
+    let return_ty = builtin_return_to_llvm(ctx, entry.return_ty, record_layouts)?;
+    let fn_ty = fn_type_for_return(ctx, return_ty, &param_tys);
+    let value = llvm_mod
+        .get_function(symbol)
+        .unwrap_or_else(|| llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External)));
+    Ok(FnSymbol::Real {
+        value,
+        return_ty: return_ty.unwrap_or_else(|| ctx.i8_type().into()),
+        returns_unit: return_ty.is_none(),
+    })
+}
+
+fn predeclare_stdlib_catalog<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    fn_symbols: &mut FnSymbolMap<'ctx>,
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<()> {
+    for entry in stdlib_catalog::entries() {
+        match entry.linkage {
+            BuiltinLinkage::RuntimeFfiShim { symbol }
+            | BuiltinLinkage::ToStringShim { symbol }
+            | BuiltinLinkage::StringCloneShim { symbol } => {
+                let symbol_entry =
+                    declare_catalog_ffi(ctx, llvm_mod, entry, symbol, record_layouts)?;
+                fn_symbols.insert(entry.name.to_string(), symbol_entry);
+            }
+            BuiltinLinkage::PrintIntercept {
+                runtime_symbol,
+                kind,
+                newline,
+            } => {
+                declare_print_runtime(ctx, llvm_mod, runtime_symbol);
+                fn_symbols.insert(
+                    entry.name.to_string(),
+                    FnSymbol::PrintIntercept {
+                        runtime_symbol,
+                        kind,
+                        newline,
+                    },
+                );
+            }
+            BuiltinLinkage::CompilerIntrinsic { .. } => {}
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -733,7 +1023,9 @@ fn primitive_to_llvm<'ctx>(
         ResolvedTy::Slice(_) => Err(CodegenError::Unsupported(
             "Slice type — composite lowering is Cluster 2",
         )),
-        ResolvedTy::Named { name, .. } if name == "Duplex" => {
+        ResolvedTy::Named { name, .. }
+            if matches!(name.as_str(), "Duplex" | "LocalPid" | "ActorRef" | "Actor") =>
+        {
             // M2 substrate duplex handle. The producer (`hew-mir/src/lower.rs`
             // `lower_duplex_pair` + `lower_duplex_send`) allocates a
             // `ResolvedTy::Named { name: "Duplex", .. }` local for every
@@ -778,30 +1070,22 @@ fn primitive_to_llvm<'ctx>(
             // LESSONS: exhaustive-traversal-and-lowering.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
+        ResolvedTy::Named { name, .. } if name == "HewTaskScope" => {
+            Ok(ctx.ptr_type(AddressSpace::default()).into())
+        }
         ResolvedTy::Named { name, .. } => Err(CodegenError::FailClosed(format!(
             "D10 violation: Named/user type `{name}` reached the LLVM emitter; \
              the MIR D10 gate should have rejected this earlier"
         ))),
-        ResolvedTy::Function { .. } => Err(CodegenError::Unsupported(
-            "Function type — first-class fn values are Cluster 4 (closure cluster)",
-        )),
-        ResolvedTy::Closure { .. } => Err(CodegenError::Unsupported(
-            "Closure type — Cluster 4 lowering",
-        )),
-        ResolvedTy::Pointer { .. } => Err(CodegenError::Unsupported(
-            "Pointer type — explicit pointers are out of the spine subset",
-        )),
+        ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => {
+            let ptr = ctx.ptr_type(AddressSpace::default()).into();
+            Ok(ctx.struct_type(&[ptr, ptr], false).into())
+        }
+        ResolvedTy::Pointer { .. } => Ok(ctx.ptr_type(AddressSpace::default()).into()),
         ResolvedTy::TraitObject { .. } => Err(CodegenError::Unsupported(
             "TraitObject type — Cluster 4 lowering",
         )),
-        // Task<T> lowers to a `*mut HewTask` pointer (i64* on the spine).
-        // Full task-spawn ABI lowering lands in a later slice (MIR/codegen
-        // glue: hew_task_new + hew_task_spawn_thread + hew_task_free). Until
-        // that slice lands, reaching this arm is a codegen error — a
-        // Task<T>-typed value cannot be emitted by the spine subset.
-        ResolvedTy::Task(_) => Err(CodegenError::Unsupported(
-            "Task<T> type — task-spawn lowering lands in a later slice",
-        )),
+        ResolvedTy::Task(_) => Ok(ctx.ptr_type(AddressSpace::default()).into()),
     }
 }
 
@@ -829,13 +1113,15 @@ fn place_pointer<'ctx>(
         // second alloca. The alloca's LLVM type is `ptr` (opaque) per
         // `primitive_to_llvm`'s Duplex arm. LESSONS:
         // exhaustive-traversal-and-lowering, dedup-semantic-boundary.
-        Place::DuplexHandle(id) => fn_ctx.locals.get(&id).copied().ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "Place::DuplexHandle({id}) references local {id} which was not allocated; \
+        Place::DuplexHandle(id) | Place::ActorHandle(id) => {
+            fn_ctx.locals.get(&id).copied().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "Place::DuplexHandle({id}) references local {id} which was not allocated; \
                  the producer must allocate a ResolvedTy::Named{{name:\"Duplex\",..}} local before \
                  re-tagging it as a DuplexHandle"
-            ))
-        }),
+                ))
+            })
+        }
         // The remaining M2 substrate Place variants are declared in
         // the model but have no construction surface in this lane.
         // Wiring lands in follow-on slices (Duplex::recv vertebra for
@@ -853,7 +1139,619 @@ fn place_pointer<'ctx>(
     }
 }
 
-fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()> {
+fn place_resolved_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, place: Place) -> CodegenResult<&'a ResolvedTy> {
+    match place {
+        Place::Local(id)
+        | Place::DuplexHandle(id)
+        | Place::LambdaActorHandle(id)
+        | Place::ActorHandle(id)
+        | Place::SendHalf(id)
+        | Place::RecvHalf(id) => fn_ctx.local_tys.get(&id).ok_or_else(|| {
+            CodegenError::FailClosed(format!("local {id} has no resolved type before use"))
+        }),
+        Place::ReturnSlot => Ok(&fn_ctx.return_resolved_ty),
+    }
+}
+
+fn sanitize_symbol(s: &str) -> String {
+    s.chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
+}
+
+fn task_wrapper_name(callee_symbol: &str) -> String {
+    format!("__hew_task_wrapper_{}", sanitize_symbol(callee_symbol))
+}
+
+fn task_closure_wrapper_name(fn_symbol: &str) -> String {
+    format!("__hew_task_closure_wrapper_{}", sanitize_symbol(fn_symbol))
+}
+
+fn get_or_create_task_wrapper<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    callee_symbol: &str,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let wrapper_name = task_wrapper_name(callee_symbol);
+    if let Some(existing) = fn_ctx.llvm_mod.get_function(&wrapper_name) {
+        return Ok(existing);
+    }
+
+    let callee_symbol_entry = *fn_ctx.fn_symbols.get(callee_symbol).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "SpawnTaskDirect callee `{callee_symbol}` was not declared"
+        ))
+    })?;
+    let (callee_value, callee_return_ty, callee_returns_unit) =
+        callee_symbol_entry.real(callee_symbol, "SpawnTaskDirect")?;
+    if !callee_returns_unit || !matches!(callee_return_ty, BasicTypeEnum::IntType(_)) {
+        return Err(CodegenError::FailClosed(format!(
+            "SpawnTaskDirect callee `{callee_symbol}` must be unit-lowered to the i8 \
+             stand-in return type; got {:?}",
+            callee_return_ty
+        )));
+    }
+
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    if callee_value.get_nth_param(0).is_none() || callee_value.get_nth_param(1).is_some() {
+        return Err(CodegenError::FailClosed(format!(
+            "SpawnTaskDirect callee `{callee_symbol}` must take a leading \
+             HewExecutionContext* and no user parameters"
+        )));
+    }
+
+    let wrapper_ty = fn_ctx
+        .ctx
+        .void_type()
+        .fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+    let wrapper = fn_ctx
+        .llvm_mod
+        .add_function(&wrapper_name, wrapper_ty, Some(Linkage::Internal));
+    let bb = fn_ctx.ctx.append_basic_block(wrapper, "entry");
+    let builder = fn_ctx.ctx.create_builder();
+    builder.position_at_end(bb);
+    let ctx_param = wrapper.get_nth_param(0).ok_or_else(|| {
+        CodegenError::FailClosed("task wrapper missing HewExecutionContext* parameter".into())
+    })?;
+    let task_param = wrapper.get_nth_param(1).ok_or_else(|| {
+        CodegenError::FailClosed("task wrapper missing HewTask* parameter".into())
+    })?;
+    builder
+        .build_call(callee_value, &[ctx_param.into()], "task_body_call")
+        .map_err(|e| CodegenError::Llvm(format!("task wrapper body call: {e:?}")))?;
+
+    let complete = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_complete_threaded",
+    )?;
+    builder
+        .build_call(
+            complete,
+            &[task_param.into()],
+            "hew_task_complete_threaded_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_task_complete_threaded call: {e:?}")))?;
+    builder
+        .build_return(None)
+        .map_err(|e| CodegenError::Llvm(format!("task wrapper return: {e:?}")))?;
+    Ok(wrapper)
+}
+
+fn emit_spawn_task_direct(
+    fn_ctx: &FnCtx<'_, '_>,
+    task: Place,
+    callee_symbol: &str,
+) -> CodegenResult<()> {
+    let parent_ctx = fn_ctx.execution_context.ok_or_else(|| {
+        CodegenError::FailClosed("SpawnTaskDirect spawn site requires an execution context".into())
+    })?;
+    let task_ptr = load_duplex_handle(fn_ctx, task, "SpawnTaskDirect task")?;
+    let wrapper = get_or_create_task_wrapper(fn_ctx, callee_symbol)?;
+    let spawn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_spawn_thread_with_inherited_context",
+    )?;
+    let fn_ptr = wrapper.as_global_value().as_pointer_value();
+    fn_ctx
+        .builder
+        .build_call(
+            spawn,
+            &[parent_ctx.into(), task_ptr.into(), fn_ptr.into()],
+            "hew_task_spawn_thread_with_inherited_context_call",
+        )
+        .map_err(|e| {
+            CodegenError::Llvm(format!(
+                "hew_task_spawn_thread_with_inherited_context call: {e:?}"
+            ))
+        })?;
+    Ok(())
+}
+
+fn emit_spawn_actor(
+    fn_ctx: &FnCtx<'_, '_>,
+    actor_name: &str,
+    state: Option<Place>,
+    init_args: &[Place],
+    dest: Place,
+) -> CodegenResult<()> {
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let (state_ptr, state_size) = if let Some(state_place) = state {
+        let (slot, slot_ty) = place_pointer(fn_ctx, state_place)?;
+        let size = slot_ty.size_of().ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "spawn `{actor_name}` state type has no statically known size: {slot_ty:?}"
+            ))
+        })?;
+        let size = if size.get_type() == i64_ty {
+            size
+        } else {
+            fn_ctx
+                .builder
+                .build_int_z_extend(size, i64_ty, "actor_state_size")
+                .map_err(|e| CodegenError::Llvm(format!("actor state size zext: {e:?}")))?
+        };
+        (slot, size)
+    } else {
+        (ptr_ty.const_null(), i64_ty.const_zero())
+    };
+    let dispatch_name = format!("__hew_actor_dispatch_{actor_name}");
+    let dispatch = fn_ctx
+        .llvm_mod
+        .get_function(&dispatch_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "spawn `{actor_name}` requires dispatch trampoline `{dispatch_name}`"
+            ))
+        })?;
+    let sched_init = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_sched_init",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(sched_init, &[], "hew_sched_init_call")
+        .map_err(|e| CodegenError::Llvm(format!("hew_sched_init call: {e:?}")))?;
+    let spawn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_spawn",
+    )?;
+    let spawned = fn_ctx
+        .builder
+        .build_call(
+            spawn,
+            &[
+                state_ptr.into(),
+                state_size.into(),
+                dispatch.as_global_value().as_pointer_value().into(),
+            ],
+            "hew_actor_spawn_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_actor_spawn call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_actor_spawn returned void".into()))?
+        .into_pointer_value();
+    emit_actor_spawn_lifecycle(fn_ctx, actor_name, spawned, init_args)?;
+    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+    if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
+        return Err(CodegenError::FailClosed(format!(
+            "SpawnActor destination is not pointer-typed: {dest_ty:?}"
+        )));
+    }
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, spawned)
+        .map_err(|e| CodegenError::Llvm(format!("SpawnActor store: {e:?}")))?;
+    Ok(())
+}
+
+fn emit_actor_spawn_lifecycle<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    actor_name: &str,
+    spawned: PointerValue<'ctx>,
+    init_args: &[Place],
+) -> CodegenResult<()> {
+    let init_name = format!("{actor_name}__init");
+    let start_name = format!("{actor_name}__on_start");
+    let terminate_name = format!("__terminate_{actor_name}");
+    let init_fn = fn_ctx.llvm_mod.get_function(&init_name);
+    let start_fn = fn_ctx.llvm_mod.get_function(&start_name);
+    let terminate_fn = fn_ctx.llvm_mod.get_function(&terminate_name);
+    if init_fn.is_none() && !init_args.is_empty() {
+        return Err(CodegenError::FailClosed(format!(
+            "spawn `{actor_name}` carried init args but `{init_name}` was not declared"
+        )));
+    }
+    if init_fn.is_none() && start_fn.is_none() && terminate_fn.is_none() {
+        return Ok(());
+    }
+
+    let mut init_call_args = Vec::with_capacity(1 + init_args.len());
+    for (idx, place) in init_args.iter().enumerate() {
+        init_call_args.push(load_place_as_metadata(
+            fn_ctx,
+            *place,
+            &format!("actor_init_arg_{idx}"),
+        )?);
+    }
+    let ctx_arg = build_spawn_lifecycle_context(fn_ctx, spawned)?;
+    emit_actor_state_lock_call(fn_ctx, spawned, "hew_actor_state_lock_acquire")?;
+    if let Some(init_fn) = init_fn {
+        let mut args = Vec::with_capacity(1 + init_call_args.len());
+        args.push(ctx_arg.into());
+        args.extend(init_call_args);
+        fn_ctx
+            .builder
+            .build_call(init_fn, &args, &format!("call_{init_name}"))
+            .map_err(|e| CodegenError::Llvm(format!("actor init call: {e:?}")))?;
+    }
+    if let Some(start_fn) = start_fn {
+        fn_ctx
+            .builder
+            .build_call(start_fn, &[ctx_arg.into()], &format!("call_{start_name}"))
+            .map_err(|e| CodegenError::Llvm(format!("actor on(start) call: {e:?}")))?;
+    }
+    emit_actor_state_lock_call(fn_ctx, spawned, "hew_actor_state_lock_release")?;
+
+    // Register the terminate trampoline on the actor so the runtime fires it
+    // at normal teardown. Done after the init/on(start) block (outside the
+    // lock) so that the registration write is not ordered before any state
+    // initialisation performed by init.
+    if let Some(terminate_fn) = terminate_fn {
+        let mut runtime_decls = RuntimeDeclMap::new();
+        let set_terminate = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut runtime_decls,
+            "hew_actor_set_terminate",
+        )?;
+        let fn_ptr = terminate_fn.as_global_value().as_pointer_value();
+        fn_ctx
+            .builder
+            .build_call(
+                set_terminate,
+                &[spawned.into(), fn_ptr.into()],
+                "hew_actor_set_terminate_call",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("hew_actor_set_terminate call: {e:?}")))?;
+    }
+
+    Ok(())
+}
+
+fn build_spawn_lifecycle_context<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    actor: PointerValue<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let ctx_ty = fn_ctx.ctx.i8_type().array_type(128);
+    let ctx_slot = fn_ctx
+        .builder
+        .build_alloca(ctx_ty, "actor_spawn_lifecycle_ctx")
+        .map_err(|e| CodegenError::Llvm(format!("spawn lifecycle ctx alloca: {e:?}")))?;
+    store_context_ptr_field(fn_ctx, ctx_slot, HEW_CTX_OFFSET_ACTOR, actor, "ctx_actor")?;
+    let actor_id = load_actor_id(fn_ctx, actor)?;
+    store_context_i64_field(
+        fn_ctx,
+        ctx_slot,
+        HEW_CTX_OFFSET_ACTOR_ID,
+        actor_id,
+        "ctx_actor_id",
+    )?;
+    Ok(ctx_slot)
+}
+
+fn store_context_ptr_field<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    ctx_slot: PointerValue<'ctx>,
+    offset: usize,
+    value: PointerValue<'ctx>,
+    name: &str,
+) -> CodegenResult<()> {
+    let field_ptr = unsafe {
+        fn_ctx
+            .builder
+            .build_gep(
+                fn_ctx.ctx.i8_type(),
+                ctx_slot,
+                &[fn_ctx.ctx.i64_type().const_int(offset as u64, false)],
+                &format!("{name}_slot"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("{name} gep: {e:?}")))?
+    };
+    fn_ctx
+        .builder
+        .build_store(field_ptr, value)
+        .map_err(|e| CodegenError::Llvm(format!("{name} store: {e:?}")))?;
+    Ok(())
+}
+
+fn store_context_i64_field<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    ctx_slot: PointerValue<'ctx>,
+    offset: usize,
+    value: IntValue<'ctx>,
+    name: &str,
+) -> CodegenResult<()> {
+    let field_ptr = unsafe {
+        fn_ctx
+            .builder
+            .build_gep(
+                fn_ctx.ctx.i8_type(),
+                ctx_slot,
+                &[fn_ctx.ctx.i64_type().const_int(offset as u64, false)],
+                &format!("{name}_slot"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("{name} gep: {e:?}")))?
+    };
+    fn_ctx
+        .builder
+        .build_store(field_ptr, value)
+        .map_err(|e| CodegenError::Llvm(format!("{name} store: {e:?}")))?;
+    Ok(())
+}
+
+fn load_place_as_metadata<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    place: Place,
+    label: &str,
+) -> CodegenResult<BasicMetadataValueEnum<'ctx>> {
+    let (ptr, ty) = place_pointer(fn_ctx, place)?;
+    let loaded = fn_ctx
+        .builder
+        .build_load(ty, ptr, &format!("{label}_load"))
+        .map_err(|e| CodegenError::Llvm(format!("{label} load: {e:?}")))?;
+    Ok(metadata_value_from_basic(loaded))
+}
+
+fn emit_actor_state_lock_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    actor: PointerValue<'_>,
+    symbol: &str,
+) -> CodegenResult<()> {
+    let lock_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        symbol,
+    )?;
+    let rc = fn_ctx
+        .builder
+        .build_call(lock_fn, &[actor.into()], &format!("{symbol}_call"))
+        .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} returned void")))?
+        .into_int_value();
+    let ok = fn_ctx
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            rc,
+            fn_ctx.ctx.i32_type().const_zero(),
+            &format!("{symbol}_ok"),
+        )
+        .map_err(|e| CodegenError::Llvm(format!("{symbol} compare: {e:?}")))?;
+    let current = fn_ctx
+        .builder
+        .get_insert_block()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} has no insertion block")))?;
+    let parent = current
+        .get_parent()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} block has no parent")))?;
+    let ok_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{symbol}_ok_bb"));
+    let trap_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{symbol}_trap_bb"));
+    fn_ctx
+        .builder
+        .build_conditional_branch(ok, ok_bb, trap_bb)
+        .map_err(|e| CodegenError::Llvm(format!("{symbol} branch: {e:?}")))?;
+    fn_ctx.builder.position_at_end(trap_bb);
+    let trap = Intrinsic::find("llvm.trap")
+        .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    fn_ctx
+        .builder
+        .build_call(trap, &[], &format!("{symbol}_trap"))
+        .map_err(|e| CodegenError::Llvm(format!("{symbol} trap: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_unreachable()
+        .map_err(|e| CodegenError::Llvm(format!("{symbol} unreachable: {e:?}")))?;
+    fn_ctx.builder.position_at_end(ok_bb);
+    Ok(())
+}
+
+fn get_or_create_task_closure_wrapper<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    fn_symbol: &str,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let wrapper_name = task_closure_wrapper_name(fn_symbol);
+    if let Some(existing) = fn_ctx.llvm_mod.get_function(&wrapper_name) {
+        return Ok(existing);
+    }
+
+    let closure_symbol = *fn_ctx.fn_symbols.get(fn_symbol).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "SpawnTaskClosure closure invoke shim `{fn_symbol}` was not declared"
+        ))
+    })?;
+    let (closure_value, closure_return_ty, closure_returns_unit) =
+        closure_symbol.real(fn_symbol, "SpawnTaskClosure")?;
+    if !closure_returns_unit || !matches!(closure_return_ty, BasicTypeEnum::IntType(_)) {
+        return Err(CodegenError::FailClosed(format!(
+            "SpawnTaskClosure shim `{fn_symbol}` must be unit-lowered to the i8 \
+             stand-in return type; got {:?}",
+            closure_return_ty
+        )));
+    }
+
+    if closure_value.get_nth_param(0).is_none() || closure_value.get_nth_param(1).is_none() {
+        return Err(CodegenError::FailClosed(format!(
+            "SpawnTaskClosure shim `{fn_symbol}` must take leading \
+             HewExecutionContext* and closure environment parameters"
+        )));
+    }
+
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let wrapper_ty = fn_ctx
+        .ctx
+        .void_type()
+        .fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+    let wrapper = fn_ctx
+        .llvm_mod
+        .add_function(&wrapper_name, wrapper_ty, Some(Linkage::Internal));
+    let bb = fn_ctx.ctx.append_basic_block(wrapper, "entry");
+    let builder = fn_ctx.ctx.create_builder();
+    builder.position_at_end(bb);
+    let ctx_param = wrapper.get_nth_param(0).ok_or_else(|| {
+        CodegenError::FailClosed(
+            "closure task wrapper missing HewExecutionContext* parameter".into(),
+        )
+    })?;
+    let task_param = wrapper.get_nth_param(1).ok_or_else(|| {
+        CodegenError::FailClosed("closure task wrapper missing HewTask* parameter".into())
+    })?;
+    let get_env = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_get_env",
+    )?;
+    let env_ptr = builder
+        .build_call(get_env, &[task_param.into()], "hew_task_get_env_call")
+        .map_err(|e| CodegenError::Llvm(format!("hew_task_get_env call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_task_get_env returned void".into()))?
+        .into_pointer_value();
+    builder
+        .build_call(
+            closure_value,
+            &[ctx_param.into(), env_ptr.into()],
+            "closure_task_body_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("closure task body call: {e:?}")))?;
+
+    let complete = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_complete_threaded",
+    )?;
+    builder
+        .build_call(
+            complete,
+            &[task_param.into()],
+            "hew_task_complete_threaded_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_task_complete_threaded call: {e:?}")))?;
+    builder
+        .build_return(None)
+        .map_err(|e| CodegenError::Llvm(format!("closure task wrapper return: {e:?}")))?;
+    Ok(wrapper)
+}
+
+fn emit_spawn_task_closure(
+    fn_ctx: &FnCtx<'_, '_>,
+    task: Place,
+    fn_symbol: &str,
+    env: Place,
+    env_ty: &ResolvedTy,
+) -> CodegenResult<()> {
+    let parent_ctx = fn_ctx.execution_context.ok_or_else(|| {
+        CodegenError::FailClosed("SpawnTaskClosure spawn site requires an execution context".into())
+    })?;
+    let task_ptr = load_duplex_handle(fn_ctx, task, "SpawnTaskClosure task")?;
+    let env_struct = record_struct_for(fn_ctx, env_ty)?;
+    let (env_ptr, env_slot_ty) = place_pointer(fn_ctx, env)?;
+    if env_slot_ty != BasicTypeEnum::StructType(env_struct) {
+        return Err(CodegenError::FailClosed(format!(
+            "SpawnTaskClosure env place type {env_slot_ty:?} does not match registered env \
+             struct {env_struct:?}"
+        )));
+    }
+    let Some(env_size) = env_struct.size_of() else {
+        return Err(CodegenError::FailClosed(
+            "SpawnTaskClosure could not compute closure environment byte size".into(),
+        ));
+    };
+    let rc_new = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_rc_new",
+    )?;
+    let null_drop = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
+    let rc_env = fn_ctx
+        .builder
+        .build_call(
+            rc_new,
+            &[env_ptr.into(), env_size.into(), null_drop.into()],
+            "hew_closure_env_rc_new",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_rc_new call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_rc_new returned void".into()))?
+        .into_pointer_value();
+    let set_env = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_set_env",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            set_env,
+            &[task_ptr.into(), rc_env.into()],
+            "hew_task_set_env_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_task_set_env call: {e:?}")))?;
+
+    let wrapper = get_or_create_task_closure_wrapper(fn_ctx, fn_symbol)?;
+    let spawn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_spawn_thread_with_inherited_context",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            spawn,
+            &[
+                parent_ctx.into(),
+                task_ptr.into(),
+                wrapper.as_global_value().as_pointer_value().into(),
+            ],
+            "hew_task_spawn_thread_with_inherited_context_closure_call",
+        )
+        .map_err(|e| {
+            CodegenError::Llvm(format!(
+                "hew_task_spawn_thread_with_inherited_context call: {e:?}"
+            ))
+        })?;
+    Ok(())
+}
+
+fn lower_instruction(
+    fn_ctx: &FnCtx<'_, '_>,
+    instr: &Instr,
+    block_id: u32,
+    drop_plans: &[(ExitPath, hew_mir::DropPlan)],
+) -> CodegenResult<()> {
     let ctx = fn_ctx
         .builder
         .get_insert_block()
@@ -865,6 +1763,24 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
     })?;
 
     match instr {
+        Instr::EnterContext | Instr::ExitContext => {
+            if fn_ctx.execution_context.is_none() {
+                return Err(CodegenError::FailClosed(
+                    "context boundary marker requires an actor-handler execution context".into(),
+                ));
+            }
+        }
+        Instr::CheckCancellation => {
+            if fn_ctx.execution_context.is_none() {
+                return Err(CodegenError::FailClosed(
+                    "CheckCancellation requires an actor-handler execution context".into(),
+                ));
+            }
+            emit_cooperate_check(fn_ctx, block_id, drop_plans)?;
+        }
+        Instr::ContextField { dest, offset } => {
+            lower_context_field(fn_ctx, *dest, *offset)?;
+        }
         Instr::ConstI64 { dest, value } => {
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let int_ty = match dest_ty {
@@ -1502,6 +2418,14 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
             lower_record_field_load(fn_ctx, *record, *field_offset, *dest)?;
             let _ = ctx;
         }
+        Instr::ActorStateFieldLoad { field_offset, dest } => {
+            lower_actor_state_field_load(fn_ctx, *field_offset, *dest)?;
+            let _ = ctx;
+        }
+        Instr::ActorStateFieldStore { field_offset, src } => {
+            lower_actor_state_field_store(fn_ctx, *field_offset, *src)?;
+            let _ = ctx;
+        }
         Instr::TupleFieldLoad {
             tuple,
             field_index,
@@ -1661,70 +2585,55 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                 .map_err(|e| CodegenError::Llvm(format!("DurationLit store: {e:?}")))?;
             let _ = ctx;
         }
-        Instr::CallDirect {
-            callee_symbol,
-            args,
+        Instr::MakeClosure {
+            fn_symbol,
+            env,
             dest,
         } => {
-            // Direct call to a user-defined function in the same module.
-            // The callee is resolved from `fn_symbols` (populated up front
-            // by `declare_function` for every `raw_mir` function). Arguments
-            // are loaded from their local slots and passed as LLVM value
-            // arguments in declaration order; the return value (if any) is
-            // stored into the `dest` slot.
-            let (llvm_fn, callee_ret_ty) =
-                *fn_ctx.fn_symbols.get(callee_symbol).ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "Instr::CallDirect: callee `{callee_symbol}` was not found in fn_symbols; \
-                     the MIR producer must only emit CallDirect for functions declared in the \
-                     same module (module_fn_names gate). If the callee name is a mangled \
-                     monomorphisation (contains `$$`), the HIR/MIR registry did not emit a \
-                     specialised function for this (fn, type-args) pair — check that the call \
-                     site's concrete type arguments are recorded in HirModule.monomorphisations."
-                    ))
-                })?;
-            let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
-                Vec::with_capacity(args.len());
-            for arg in args {
-                let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
-                let loaded = fn_ctx
-                    .builder
-                    .build_load(arg_ty, arg_ptr, "direct_call_arg")
-                    .map_err(|e| CodegenError::Llvm(format!("CallDirect arg load: {e:?}")))?;
-                arg_vals.push(match loaded {
-                    BasicValueEnum::IntValue(v) => v.into(),
-                    BasicValueEnum::FloatValue(v) => v.into(),
-                    BasicValueEnum::PointerValue(v) => v.into(),
-                    BasicValueEnum::StructValue(v) => v.into(),
-                    BasicValueEnum::ArrayValue(v) => v.into(),
-                    BasicValueEnum::VectorValue(v) => v.into(),
-                    BasicValueEnum::ScalableVectorValue(v) => v.into(),
-                });
-            }
-            let call_site = fn_ctx
-                .builder
-                .build_call(llvm_fn, &arg_vals, "direct_call_result")
-                .map_err(|e| CodegenError::Llvm(format!("CallDirect build_call: {e:?}")))?;
-            if let Some(dest_place) = dest {
-                let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
-                if dest_ty != callee_ret_ty {
-                    return Err(CodegenError::FailClosed(format!(
-                        "Instr::CallDirect(`{callee_symbol}`): dest type {dest_ty:?} does not \
-                         match callee return type {callee_ret_ty:?}; type-checker invariant \
-                         violation"
-                    )));
-                }
-                let ret_val = call_site.try_as_basic_value().basic().ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "Instr::CallDirect(`{callee_symbol}`): callee returns void but dest \
-                         place is present; MIR producer must not emit a dest for void callees"
-                    ))
-                })?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, ret_val)
-                    .map_err(|e| CodegenError::Llvm(format!("CallDirect store result: {e:?}")))?;
-            }
+            lower_make_closure(fn_ctx, fn_symbol, *env, *dest)?;
+            let _ = ctx;
+        }
+        Instr::ClosureEnvFieldLoad {
+            env,
+            env_ty,
+            field_offset,
+            dest,
+        } => {
+            lower_closure_env_field_load(fn_ctx, *env, env_ty, *field_offset, *dest)?;
+            let _ = ctx;
+        }
+        Instr::CallClosure {
+            callee,
+            args,
+            ret_ty,
+            dest,
+        } => {
+            lower_call_closure(fn_ctx, *callee, args, ret_ty, *dest)?;
+            let _ = ctx;
+        }
+        Instr::SpawnTaskDirect {
+            task,
+            callee_symbol,
+        } => {
+            emit_spawn_task_direct(fn_ctx, *task, callee_symbol)?;
+            let _ = ctx;
+        }
+        Instr::SpawnTaskClosure {
+            task,
+            fn_symbol,
+            env,
+            env_ty,
+        } => {
+            emit_spawn_task_closure(fn_ctx, *task, fn_symbol, *env, env_ty)?;
+            let _ = ctx;
+        }
+        Instr::SpawnActor {
+            actor_name,
+            state,
+            init_args,
+            dest,
+        } => {
+            emit_spawn_actor(fn_ctx, actor_name, *state, init_args, *dest)?;
             let _ = ctx;
         }
         // TO-3 lands the MIR shape (`Instr::CoerceToDynTrait`,
@@ -1913,6 +2822,429 @@ fn lower_record_field_load(
         .builder
         .build_store(dest_ptr, field_val)
         .map_err(|e| CodegenError::Llvm(format!("RecordFieldLoad field {idx} store: {e:?}")))?;
+    Ok(())
+}
+
+fn current_actor_state_ptr<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<PointerValue<'ctx>> {
+    let ctx_ptr = fn_ctx.execution_context.ok_or_else(|| {
+        CodegenError::FailClosed("actor state access requires an execution context".into())
+    })?;
+    if !fn_ctx.execution_context_is_actor_handler {
+        return Err(CodegenError::FailClosed(
+            "actor state access is only legal in ActorHandler functions".into(),
+        ));
+    }
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let actor_ptr_slot = unsafe {
+        fn_ctx
+            .builder
+            .build_gep(
+                fn_ctx.ctx.i8_type(),
+                ctx_ptr,
+                &[i64_ty.const_int(HEW_CTX_OFFSET_ACTOR as u64, false)],
+                "ctx_actor_ptr_slot",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("actor state ctx actor gep: {e:?}")))?
+    };
+    let actor_ptr = fn_ctx
+        .builder
+        .build_load(ptr_ty, actor_ptr_slot, "ctx_actor_ptr")
+        .map_err(|e| CodegenError::Llvm(format!("actor state actor load: {e:?}")))?
+        .into_pointer_value();
+    let state_slot = unsafe {
+        fn_ctx
+            .builder
+            .build_gep(
+                fn_ctx.ctx.i8_type(),
+                actor_ptr,
+                &[i64_ty.const_int(HEW_ACTOR_OFFSET_STATE as u64, false)],
+                "actor_state_slot",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("actor state gep: {e:?}")))?
+    };
+    Ok(fn_ctx
+        .builder
+        .build_load(ptr_ty, state_slot, "actor_state_ptr")
+        .map_err(|e| CodegenError::Llvm(format!("actor state ptr load: {e:?}")))?
+        .into_pointer_value())
+}
+
+fn lower_actor_state_field_load(
+    fn_ctx: &FnCtx<'_, '_>,
+    field_offset: FieldOffset,
+    dest: Place,
+) -> CodegenResult<()> {
+    let state_ty = fn_ctx.actor_state_ty.ok_or_else(|| {
+        CodegenError::FailClosed("ActorStateFieldLoad has no registered actor state type".into())
+    })?;
+    let state_ptr = current_actor_state_ptr(fn_ctx)?;
+    let idx = field_offset.0;
+    let element_tys = state_ty.get_field_types();
+    let field_ty = *element_tys.get(idx as usize).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "ActorStateFieldLoad field offset {idx} is out of bounds for state with {} fields",
+            element_tys.len()
+        ))
+    })?;
+    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+    if dest_ty != field_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "ActorStateFieldLoad dest type mismatch: dest={dest_ty:?}, field={field_ty:?}"
+        )));
+    }
+    let field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(
+            state_ty,
+            state_ptr,
+            idx,
+            &format!("actor_state_field_{idx}_ptr"),
+        )
+        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldLoad gep: {e:?}")))?;
+    let field_val = fn_ctx
+        .builder
+        .build_load(field_ty, field_ptr, &format!("actor_state_field_{idx}"))
+        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldLoad load: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, field_val)
+        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldLoad store: {e:?}")))?;
+    Ok(())
+}
+
+fn lower_actor_state_field_store(
+    fn_ctx: &FnCtx<'_, '_>,
+    field_offset: FieldOffset,
+    src: Place,
+) -> CodegenResult<()> {
+    let state_ty = fn_ctx.actor_state_ty.ok_or_else(|| {
+        CodegenError::FailClosed("ActorStateFieldStore has no registered actor state type".into())
+    })?;
+    let state_ptr = current_actor_state_ptr(fn_ctx)?;
+    let idx = field_offset.0;
+    let element_tys = state_ty.get_field_types();
+    let field_ty = *element_tys.get(idx as usize).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "ActorStateFieldStore field offset {idx} is out of bounds for state with {} fields",
+            element_tys.len()
+        ))
+    })?;
+    let (src_ptr, src_ty) = place_pointer(fn_ctx, src)?;
+    if src_ty != field_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "ActorStateFieldStore src type mismatch: src={src_ty:?}, field={field_ty:?}"
+        )));
+    }
+    let field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(
+            state_ty,
+            state_ptr,
+            idx,
+            &format!("actor_state_field_{idx}_ptr"),
+        )
+        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldStore gep: {e:?}")))?;
+    let src_val = fn_ctx
+        .builder
+        .build_load(field_ty, src_ptr, &format!("actor_state_field_{idx}_src"))
+        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldStore load: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(field_ptr, src_val)
+        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldStore store: {e:?}")))?;
+    Ok(())
+}
+
+fn lower_make_closure(
+    fn_ctx: &FnCtx<'_, '_>,
+    fn_symbol: &str,
+    env: Place,
+    dest: Place,
+) -> CodegenResult<()> {
+    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+    let struct_ty = match dest_ty {
+        BasicTypeEnum::StructType(st) if st.count_fields() == 2 => st,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "MakeClosure dest must be the two-pointer closure pair, got {other:?}"
+            )))
+        }
+    };
+    let shim = fn_ctx
+        .fn_symbols
+        .get(fn_symbol)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "MakeClosure references missing closure invoke shim `{fn_symbol}`"
+            ))
+        })?
+        .real(fn_symbol, "MakeClosure")?
+        .0;
+    let (env_ptr, _) = place_pointer(fn_ctx, env)?;
+    let fn_field = fn_ctx
+        .builder
+        .build_struct_gep(struct_ty, dest_ptr, 0, "closure_fn_ptr")
+        .map_err(|e| CodegenError::Llvm(format!("MakeClosure fn gep: {e:?}")))?;
+    let env_field = fn_ctx
+        .builder
+        .build_struct_gep(struct_ty, dest_ptr, 1, "closure_env_ptr")
+        .map_err(|e| CodegenError::Llvm(format!("MakeClosure env gep: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(fn_field, shim.as_global_value().as_pointer_value())
+        .map_err(|e| CodegenError::Llvm(format!("MakeClosure fn store: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(env_field, env_ptr)
+        .map_err(|e| CodegenError::Llvm(format!("MakeClosure env store: {e:?}")))?;
+    Ok(())
+}
+
+fn context_field_matches_dest<'ctx>(
+    ctx: &'ctx Context,
+    offset: usize,
+    dest_ty: BasicTypeEnum<'ctx>,
+) -> bool {
+    let ptr_ok = matches!(dest_ty, BasicTypeEnum::PointerType(_));
+    let int_bits = match dest_ty {
+        BasicTypeEnum::IntType(int_ty) => Some(int_ty.get_bit_width()),
+        _ => None,
+    };
+    match offset {
+        HEW_CTX_OFFSET_ACTOR
+        | HEW_CTX_OFFSET_PARENT_SUPERVISOR
+        | HEW_CTX_OFFSET_CANCEL_TOKEN
+        | HEW_CTX_OFFSET_TASK_SCOPE
+        | HEW_CTX_OFFSET_ARENA
+        | HEW_CTX_OFFSET_PARTITION_POLICY
+        | HEW_CTX_OFFSET_PREV_CONTEXT
+        | HEW_CTX_OFFSET_LOCK_SEAT => ptr_ok,
+        HEW_CTX_OFFSET_ACTOR_ID | HEW_CTX_OFFSET_TRACE_SPAN => {
+            int_bits == Some(ctx.i64_type().get_bit_width())
+        }
+        HEW_CTX_OFFSET_SUPERVISOR_CHILD_INDEX | HEW_CTX_OFFSET_FLAGS => {
+            int_bits == Some(ctx.i32_type().get_bit_width())
+        }
+        _ => false,
+    }
+}
+
+fn lower_context_field(fn_ctx: &FnCtx<'_, '_>, dest: Place, offset: usize) -> CodegenResult<()> {
+    let ctx_ptr = fn_ctx.execution_context.ok_or_else(|| {
+        CodegenError::FailClosed("ContextField requires an actor-handler execution context".into())
+    })?;
+    if !fn_ctx.execution_context_is_actor_handler
+        && matches!(
+            offset,
+            HEW_CTX_OFFSET_ACTOR
+                | HEW_CTX_OFFSET_ACTOR_ID
+                | HEW_CTX_OFFSET_ARENA
+                | HEW_CTX_OFFSET_LOCK_SEAT
+        )
+    {
+        return Err(CodegenError::FailClosed(format!(
+            "ContextField offset {offset} requires an actor-owned execution context"
+        )));
+    }
+    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+    if !context_field_matches_dest(fn_ctx.ctx, offset, dest_ty) {
+        return Err(CodegenError::FailClosed(format!(
+            "ContextField offset {offset} is not valid for destination type {dest_ty:?}"
+        )));
+    }
+    let offset_u64 = u64::try_from(offset).map_err(|_| {
+        CodegenError::FailClosed(format!("ContextField offset {offset} exceeds u64::MAX"))
+    })?;
+    let offset_val = fn_ctx.ctx.i64_type().const_int(offset_u64, false);
+    let field_ptr = unsafe {
+        fn_ctx
+            .builder
+            .build_gep(
+                fn_ctx.ctx.i8_type(),
+                ctx_ptr,
+                &[offset_val],
+                &format!("ctx_field_{offset}_ptr"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("ContextField gep: {e:?}")))?
+    };
+    let field_val = fn_ctx
+        .builder
+        .build_load(dest_ty, field_ptr, &format!("ctx_field_{offset}_load"))
+        .map_err(|e| CodegenError::Llvm(format!("ContextField load: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, field_val)
+        .map_err(|e| CodegenError::Llvm(format!("ContextField store: {e:?}")))?;
+    Ok(())
+}
+
+fn lower_closure_env_field_load(
+    fn_ctx: &FnCtx<'_, '_>,
+    env: Place,
+    env_ty: &ResolvedTy,
+    field_offset: FieldOffset,
+    dest: Place,
+) -> CodegenResult<()> {
+    let env_struct = record_struct_for(fn_ctx, env_ty)?;
+    let (env_slot, env_slot_ty) = place_pointer(fn_ctx, env)?;
+    if !matches!(env_slot_ty, BasicTypeEnum::PointerType(_)) {
+        return Err(CodegenError::FailClosed(format!(
+            "ClosureEnvFieldLoad env slot must hold a pointer, got {env_slot_ty:?}"
+        )));
+    }
+    let env_ptr = fn_ctx
+        .builder
+        .build_load(env_slot_ty, env_slot, "closure_env_ptr_load")
+        .map_err(|e| CodegenError::Llvm(format!("ClosureEnvFieldLoad env load: {e:?}")))?
+        .into_pointer_value();
+    let idx = field_offset.0;
+    let idx_usize = usize::try_from(idx).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "ClosureEnvFieldLoad field offset {idx} exceeds usize::MAX — impossible"
+        ))
+    })?;
+    let field_ty = *env_struct.get_field_types().get(idx_usize).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "ClosureEnvFieldLoad field offset {idx} out of bounds"
+        ))
+    })?;
+    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+    if dest_ty != field_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "ClosureEnvFieldLoad dest type {dest_ty:?} does not match field type {field_ty:?}"
+        )));
+    }
+    let field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(env_struct, env_ptr, idx, "closure_capture_ptr")
+        .map_err(|e| CodegenError::Llvm(format!("ClosureEnvFieldLoad gep: {e:?}")))?;
+    let value = fn_ctx
+        .builder
+        .build_load(field_ty, field_ptr, "closure_capture_load")
+        .map_err(|e| CodegenError::Llvm(format!("ClosureEnvFieldLoad field load: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, value)
+        .map_err(|e| CodegenError::Llvm(format!("ClosureEnvFieldLoad store: {e:?}")))?;
+    Ok(())
+}
+
+fn metadata_type_from_basic<'ctx>(ty: BasicTypeEnum<'ctx>) -> BasicMetadataTypeEnum<'ctx> {
+    match ty {
+        BasicTypeEnum::ArrayType(t) => t.into(),
+        BasicTypeEnum::FloatType(t) => t.into(),
+        BasicTypeEnum::IntType(t) => t.into(),
+        BasicTypeEnum::PointerType(t) => t.into(),
+        BasicTypeEnum::StructType(t) => t.into(),
+        BasicTypeEnum::VectorType(t) => t.into(),
+        BasicTypeEnum::ScalableVectorType(t) => t.into(),
+    }
+}
+
+fn metadata_value_from_basic<'ctx>(
+    value: BasicValueEnum<'ctx>,
+) -> inkwell::values::BasicMetadataValueEnum<'ctx> {
+    match value {
+        BasicValueEnum::IntValue(v) => v.into(),
+        BasicValueEnum::FloatValue(v) => v.into(),
+        BasicValueEnum::PointerValue(v) => v.into(),
+        BasicValueEnum::StructValue(v) => v.into(),
+        BasicValueEnum::ArrayValue(v) => v.into(),
+        BasicValueEnum::VectorValue(v) => v.into(),
+        BasicValueEnum::ScalableVectorValue(v) => v.into(),
+    }
+}
+
+fn fn_type_from_return<'ctx>(
+    ret: BasicTypeEnum<'ctx>,
+    params: &[BasicMetadataTypeEnum<'ctx>],
+) -> inkwell::types::FunctionType<'ctx> {
+    match ret {
+        BasicTypeEnum::ArrayType(t) => t.fn_type(params, false),
+        BasicTypeEnum::FloatType(t) => t.fn_type(params, false),
+        BasicTypeEnum::IntType(t) => t.fn_type(params, false),
+        BasicTypeEnum::PointerType(t) => t.fn_type(params, false),
+        BasicTypeEnum::StructType(t) => t.fn_type(params, false),
+        BasicTypeEnum::VectorType(t) => t.fn_type(params, false),
+        BasicTypeEnum::ScalableVectorType(t) => t.fn_type(params, false),
+    }
+}
+
+fn lower_call_closure(
+    fn_ctx: &FnCtx<'_, '_>,
+    callee: Place,
+    args: &[Place],
+    ret_ty: &ResolvedTy,
+    dest: Option<Place>,
+) -> CodegenResult<()> {
+    let ctx_ptr = fn_ctx.execution_context.ok_or_else(|| {
+        CodegenError::FailClosed("CallClosure requires an execution context".into())
+    })?;
+    let (callee_ptr, callee_ty) = place_pointer(fn_ctx, callee)?;
+    let pair_ty = match callee_ty {
+        BasicTypeEnum::StructType(st) if st.count_fields() == 2 => st,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "CallClosure callee must be the two-pointer closure pair, got {other:?}"
+            )))
+        }
+    };
+    let pair = fn_ctx
+        .builder
+        .build_load(pair_ty, callee_ptr, "closure_pair_load")
+        .map_err(|e| CodegenError::Llvm(format!("CallClosure pair load: {e:?}")))?
+        .into_struct_value();
+    let fn_ptr = fn_ctx
+        .builder
+        .build_extract_value(pair, 0, "closure_fn_extract")
+        .map_err(|e| CodegenError::Llvm(format!("CallClosure fn extract: {e:?}")))?
+        .into_pointer_value();
+    let env_ptr = fn_ctx
+        .builder
+        .build_extract_value(pair, 1, "closure_env_extract")
+        .map_err(|e| CodegenError::Llvm(format!("CallClosure env extract: {e:?}")))?
+        .into_pointer_value();
+
+    let mut param_tys: Vec<BasicMetadataTypeEnum> =
+        Vec::with_capacity(args.len().saturating_add(2));
+    param_tys.push(fn_ctx.ctx.ptr_type(AddressSpace::default()).into());
+    param_tys.push(fn_ctx.ctx.ptr_type(AddressSpace::default()).into());
+    let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
+        Vec::with_capacity(args.len().saturating_add(2));
+    arg_vals.push(ctx_ptr.into());
+    arg_vals.push(env_ptr.into());
+    for arg in args {
+        let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
+        param_tys.push(metadata_type_from_basic(arg_ty));
+        let loaded = fn_ctx
+            .builder
+            .build_load(arg_ty, arg_ptr, "closure_call_arg")
+            .map_err(|e| CodegenError::Llvm(format!("CallClosure arg load: {e:?}")))?;
+        arg_vals.push(metadata_value_from_basic(loaded));
+    }
+
+    let ret_llvm = resolve_ty(fn_ctx.ctx, ret_ty, fn_ctx.record_layouts)?;
+    let fn_ty = fn_type_from_return(ret_llvm, &param_tys);
+    let call = fn_ctx
+        .builder
+        .build_indirect_call(fn_ty, fn_ptr, &arg_vals, "closure_call_result")
+        .map_err(|e| CodegenError::Llvm(format!("CallClosure indirect call: {e:?}")))?;
+    if let Some(dest_place) = dest {
+        let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
+        if dest_ty != ret_llvm {
+            return Err(CodegenError::FailClosed(format!(
+                "CallClosure dest type {dest_ty:?} does not match return type {ret_llvm:?}"
+            )));
+        }
+        let ret_val = call.try_as_basic_value().basic().ok_or_else(|| {
+            CodegenError::FailClosed("CallClosure produced void for value-return call".into())
+        })?;
+        fn_ctx
+            .builder
+            .build_store(dest_ptr, ret_val)
+            .map_err(|e| CodegenError::Llvm(format!("CallClosure result store: {e:?}")))?;
+    }
     Ok(())
 }
 
@@ -2417,6 +3749,150 @@ fn lower_call_runtime_abi(
                 .map_err(|e| CodegenError::Llvm(format!("hew_task_new store: {e:?}")))?;
             let _ = (i32_ty, ptr_ty);
         }
+        "hew_task_scope_new" => {
+            if !args.is_empty() {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_scope_new): expected 0 args, got {}",
+                    args.len()
+                )));
+            }
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[], "hew_task_scope_new_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_scope_new call: {e:?}")))?;
+            let scope_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_task_scope_new returned void".into())
+            })?;
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed("hew_task_scope_new requires a dest".into())
+            })?;
+            let (dest_ptr, _) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, scope_ptr)
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_scope_new store: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        "hew_task_scope_set_current" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_scope_set_current): expected 1 arg, got {}",
+                    args.len()
+                )));
+            }
+            let scope_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_scope_set_current arg0")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[scope_ptr.into()], "hew_task_scope_set_current_call")
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("hew_task_scope_set_current call: {e:?}"))
+                })?;
+            if let Some(dest_place) = dest {
+                let prev = call.try_as_basic_value().basic().ok_or_else(|| {
+                    CodegenError::FailClosed("hew_task_scope_set_current returned void".into())
+                })?;
+                let (dest_ptr, _) = place_pointer(fn_ctx, dest_place)?;
+                fn_ctx.builder.build_store(dest_ptr, prev).map_err(|e| {
+                    CodegenError::Llvm(format!("hew_task_scope_set_current store: {e:?}"))
+                })?;
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        "hew_task_scope_destroy" | "hew_task_scope_join_all" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected 1 arg, got {}",
+                    args.len()
+                )));
+            }
+            let scope_ptr = load_duplex_handle(fn_ctx, args[0], symbol)?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(fv, &[scope_ptr.into()], &format!("{symbol}_call"))
+                .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "{symbol} returns void; producer must not supply dest={d:?}"
+                )));
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        "hew_task_scope_spawn" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_scope_spawn): expected 2 args, got {}",
+                    args.len()
+                )));
+            }
+            let scope_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_scope_spawn arg0")?;
+            let task_ptr = load_duplex_handle(fn_ctx, args[1], "hew_task_scope_spawn arg1")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[scope_ptr.into(), task_ptr.into()],
+                    "hew_task_scope_spawn_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_scope_spawn call: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        "hew_task_scope_cancel_after_ns" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_scope_cancel_after_ns): expected 2 args, got {}",
+                    args.len()
+                )));
+            }
+            let scope_ptr =
+                load_duplex_handle(fn_ctx, args[0], "hew_task_scope_cancel_after_ns arg0")?;
+            let nanos = load_int_arg(
+                fn_ctx,
+                args[1],
+                i64_ty,
+                "hew_task_scope_cancel_after_ns duration",
+            )?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[scope_ptr.into(), nanos.into()],
+                    "hew_task_scope_cancel_after_ns_call",
+                )
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("hew_task_scope_cancel_after_ns call: {e:?}"))
+                })?;
+            let _ = (i32_ty, ptr_ty);
+        }
         // hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void
         // args[0]: task ptr. args[1]: function pointer (ptr-typed in opaque-ptr mode).
         //
@@ -2822,6 +4298,227 @@ fn duplex_handle_out_addr<'ctx>(
     }
 }
 
+fn print_kind_for_resolved_ty(ty: &ResolvedTy) -> Option<PrintKind> {
+    match ty {
+        ResolvedTy::I32 => Some(PrintKind::I32),
+        ResolvedTy::I64 => Some(PrintKind::I64),
+        ResolvedTy::U32 => Some(PrintKind::U32),
+        ResolvedTy::U64 => Some(PrintKind::U64),
+        ResolvedTy::F64 => Some(PrintKind::F64),
+        ResolvedTy::Bool => Some(PrintKind::Bool),
+        ResolvedTy::String => Some(PrintKind::Str),
+        _ => None,
+    }
+}
+
+fn print_kind_tag(kind: PrintKind) -> u64 {
+    match kind {
+        PrintKind::I32 => 0,
+        PrintKind::I64 => 1,
+        PrintKind::F64 => 2,
+        PrintKind::Bool => 3,
+        PrintKind::Str => 4,
+        PrintKind::U32 => 5,
+        PrintKind::U64 => 6,
+    }
+}
+
+fn expect_int_value<'ctx>(
+    value: BasicValueEnum<'ctx>,
+    label: &str,
+) -> CodegenResult<IntValue<'ctx>> {
+    match value {
+        BasicValueEnum::IntValue(v) => Ok(v),
+        other => Err(CodegenError::FailClosed(format!(
+            "{label}: expected integer value, got {other:?}"
+        ))),
+    }
+}
+
+fn emit_print_value_call<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    runtime_symbol: &str,
+    arg: Place,
+    kind: PrintKind,
+    newline: bool,
+    callee: &str,
+) -> CodegenResult<()> {
+    let arg_resolved_ty = place_resolved_ty(fn_ctx, arg)?;
+    let actual_kind = print_kind_for_resolved_ty(arg_resolved_ty).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "print intercept `{callee}` received unsupported argument type {arg_resolved_ty:?}"
+        ))
+    })?;
+    if actual_kind != kind {
+        return Err(CodegenError::FailClosed(format!(
+            "print intercept `{callee}` expected {kind:?}, got {actual_kind:?} \
+             from argument type {arg_resolved_ty:?}"
+        )));
+    }
+
+    let (arg_ptr, arg_ty) = place_pointer(fn_ctx, arg)?;
+    let loaded = fn_ctx
+        .builder
+        .build_load(arg_ty, arg_ptr, "print_arg")
+        .map_err(|e| CodegenError::Llvm(format!("print arg load: {e:?}")))?;
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let bits = match kind {
+        PrintKind::I32 | PrintKind::U32 | PrintKind::Bool => {
+            let int_value = expect_int_value(loaded, "print integer/bool payload")?;
+            fn_ctx
+                .builder
+                .build_int_z_extend(int_value, i64_ty, "print_narrow_bits")
+                .map_err(|e| CodegenError::Llvm(format!("print payload zext: {e:?}")))?
+        }
+        PrintKind::I64 | PrintKind::U64 => {
+            let int_value = expect_int_value(loaded, "print i64/u64 payload")?;
+            if int_value.get_type().get_bit_width() != 64 {
+                return Err(CodegenError::FailClosed(format!(
+                    "print intercept `{callee}` expected a 64-bit integer payload, \
+                     got {} bits",
+                    int_value.get_type().get_bit_width()
+                )));
+            }
+            int_value
+        }
+        PrintKind::F64 => match loaded {
+            BasicValueEnum::FloatValue(v) => fn_ctx
+                .builder
+                .build_bit_cast(v, i64_ty, "print_f64_bits")
+                .map_err(|e| CodegenError::Llvm(format!("print f64 bitcast: {e:?}")))?
+                .into_int_value(),
+            other => {
+                return Err(CodegenError::FailClosed(format!(
+                    "print f64 payload must be a float value, got {other:?}"
+                )))
+            }
+        },
+        PrintKind::Str => match loaded {
+            BasicValueEnum::PointerValue(v) => fn_ctx
+                .builder
+                .build_ptr_to_int(v, i64_ty, "print_str_bits")
+                .map_err(|e| CodegenError::Llvm(format!("print str ptrtoint: {e:?}")))?,
+            other => {
+                return Err(CodegenError::FailClosed(format!(
+                    "print string payload must be a pointer value, got {other:?}"
+                )))
+            }
+        },
+    };
+
+    let print_fn = declare_print_runtime(fn_ctx.ctx, fn_ctx.llvm_mod, runtime_symbol);
+    let kind_tag = fn_ctx.ctx.i8_type().const_int(print_kind_tag(kind), false);
+    let newline_flag = fn_ctx
+        .ctx
+        .bool_type()
+        .const_int(if newline { 1 } else { 0 }, false);
+    fn_ctx
+        .builder
+        .build_call(
+            print_fn,
+            &[kind_tag.into(), bits.into(), newline_flag.into()],
+            "hew_print_value_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_print_value call: {e:?}")))?;
+    Ok(())
+}
+
+fn actor_payload_ptr_size<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: Place,
+    label: &str,
+) -> CodegenResult<(PointerValue<'ctx>, IntValue<'ctx>)> {
+    if matches!(place_resolved_ty(fn_ctx, value)?, ResolvedTy::Unit) {
+        return Ok((
+            fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null(),
+            fn_ctx.ctx.i64_type().const_zero(),
+        ));
+    }
+    let (ptr, ty) = place_pointer(fn_ctx, value)?;
+    let size = ty.size_of().ok_or_else(|| {
+        CodegenError::FailClosed(format!("{label}: payload type has no static size: {ty:?}"))
+    })?;
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let size = if size.get_type() == i64_ty {
+        size
+    } else {
+        fn_ctx
+            .builder
+            .build_int_z_extend(size, i64_ty, &format!("{label}_size"))
+            .map_err(|e| CodegenError::Llvm(format!("{label} size zext: {e:?}")))?
+    };
+    Ok((ptr, size))
+}
+
+fn load_actor_id<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    actor_ptr: PointerValue<'ctx>,
+) -> CodegenResult<IntValue<'ctx>> {
+    let id_slot = unsafe {
+        fn_ctx
+            .builder
+            .build_gep(
+                fn_ctx.ctx.i8_type(),
+                actor_ptr,
+                &[fn_ctx
+                    .ctx
+                    .i64_type()
+                    .const_int(HEW_ACTOR_OFFSET_ID as u64, false)],
+                "actor_id_slot",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("actor id gep: {e:?}")))?
+    };
+    Ok(fn_ctx
+        .builder
+        .build_load(fn_ctx.ctx.i64_type(), id_slot, "actor_id")
+        .map_err(|e| CodegenError::Llvm(format!("actor id load: {e:?}")))?
+        .into_int_value())
+}
+
+fn get_or_declare_free<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> FunctionValue<'ctx> {
+    if let Some(fv) = fn_ctx.llvm_mod.get_function("free") {
+        return fv;
+    }
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    fn_ctx.llvm_mod.add_function(
+        "free",
+        fn_ctx.ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::External),
+    )
+}
+
+fn emit_trap_with_code(fn_ctx: &FnCtx<'_, '_>, code: u64, label: &str) -> CodegenResult<()> {
+    let trap_with_code_fn = match fn_ctx.llvm_mod.get_function("hew_trap_with_code") {
+        Some(fv) => fv,
+        None => {
+            let i32_ty = fn_ctx.ctx.i32_type();
+            let fn_ty = fn_ctx.ctx.void_type().fn_type(&[i32_ty.into()], false);
+            fn_ctx
+                .llvm_mod
+                .add_function("hew_trap_with_code", fn_ty, Some(Linkage::External))
+        }
+    };
+    let code_val = fn_ctx.ctx.i32_type().const_int(code, false);
+    fn_ctx
+        .builder
+        .build_call(trap_with_code_fn, &[code_val.into()], label)
+        .map_err(|e| CodegenError::Llvm(format!("hew_trap_with_code call: {e:?}")))?;
+    let trap_intrinsic = Intrinsic::find("llvm.trap")
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into()))?;
+    let trap_fn = trap_intrinsic
+        .get_declaration(fn_ctx.llvm_mod, &[])
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    fn_ctx
+        .builder
+        .build_call(trap_fn, &[], &format!("{label}_llvm_trap"))
+        .map_err(|e| CodegenError::Llvm(format!("llvm.trap call: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_unreachable()
+        .map_err(|e| CodegenError::Llvm(format!("unreachable: {e:?}")))?;
+    Ok(())
+}
+
 fn lower_terminator<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbols: &FnSymbolMap<'ctx>,
@@ -2890,48 +4587,79 @@ fn lower_terminator<'ctx>(
             dest,
             next,
         } => {
-            let (llvm_fn, callee_ret_ty) = *fn_symbols.get(callee).ok_or_else(|| {
+            let callee_symbol_entry = *fn_symbols.get(callee).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "Call to `{callee}` with no declared symbol (coroutine targets are not callable yet)"
                 ))
             })?;
-            let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
-                Vec::with_capacity(args.len());
-            for arg in args {
-                let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
-                let loaded = fn_ctx
-                    .builder
-                    .build_load(arg_ty, arg_ptr, "call_arg")
-                    .map_err(|e| CodegenError::Llvm(format!("call arg load: {e:?}")))?;
-                arg_vals.push(match loaded {
-                    BasicValueEnum::IntValue(v) => v.into(),
-                    BasicValueEnum::FloatValue(v) => v.into(),
-                    BasicValueEnum::PointerValue(v) => v.into(),
-                    BasicValueEnum::StructValue(v) => v.into(),
-                    BasicValueEnum::ArrayValue(v) => v.into(),
-                    BasicValueEnum::VectorValue(v) => v.into(),
-                    BasicValueEnum::ScalableVectorValue(v) => v.into(),
-                });
+            match callee_symbol_entry {
+                FnSymbol::PrintIntercept {
+                    runtime_symbol,
+                    kind,
+                    newline,
+                } => {
+                    if dest.is_some() {
+                        return Err(CodegenError::FailClosed(format!(
+                            "print intercept `{callee}` must not carry a Terminator::Call dest"
+                        )));
+                    }
+                    let [arg] = args.as_slice() else {
+                        return Err(CodegenError::FailClosed(format!(
+                            "print intercept `{callee}` expects exactly one argument, got {}",
+                            args.len()
+                        )));
+                    };
+                    emit_print_value_call(fn_ctx, runtime_symbol, *arg, kind, newline, callee)?;
+                }
+                FnSymbol::Real {
+                    value,
+                    return_ty,
+                    returns_unit,
+                } => {
+                    let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
+                        Vec::with_capacity(args.len());
+                    for arg in args {
+                        let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
+                        let loaded = fn_ctx
+                            .builder
+                            .build_load(arg_ty, arg_ptr, "call_arg")
+                            .map_err(|e| CodegenError::Llvm(format!("call arg load: {e:?}")))?;
+                        arg_vals.push(metadata_value_from_basic(loaded));
+                    }
+                    let call_site = fn_ctx
+                        .builder
+                        .build_call(value, &arg_vals, "call_result")
+                        .map_err(|e| CodegenError::Llvm(format!("build_call: {e:?}")))?;
+                    if let Some(dest_place) = dest {
+                        if returns_unit {
+                            return Err(CodegenError::FailClosed(format!(
+                                "Call to unit-returning fn `{callee}` must not carry a Terminator::Call dest"
+                            )));
+                        }
+                        let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+                        if dest_ty != return_ty {
+                            return Err(CodegenError::FailClosed(format!(
+                                "Call dest type {dest_ty:?} does not match callee return {:?}",
+                                return_ty
+                            )));
+                        }
+                        let ret_val = call_site.try_as_basic_value().basic().ok_or_else(|| {
+                            CodegenError::FailClosed(
+                                "Call to void-returning fn is not usable with Terminator::Call dest"
+                                    .into(),
+                            )
+                        })?;
+                        fn_ctx
+                            .builder
+                            .build_store(dest_ptr, ret_val)
+                            .map_err(|e| CodegenError::Llvm(format!("call store: {e:?}")))?;
+                    } else if !returns_unit {
+                        return Err(CodegenError::FailClosed(format!(
+                            "Call to value-returning fn `{callee}` must carry a Terminator::Call dest"
+                        )));
+                    }
+                }
             }
-            let call_site = fn_ctx
-                .builder
-                .build_call(llvm_fn, &arg_vals, "call_result")
-                .map_err(|e| CodegenError::Llvm(format!("build_call: {e:?}")))?;
-            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
-            if dest_ty != callee_ret_ty {
-                return Err(CodegenError::FailClosed(format!(
-                    "Call dest type {dest_ty:?} does not match callee return {callee_ret_ty:?}"
-                )));
-            }
-            let ret_val = call_site.try_as_basic_value().basic().ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "Call to void-returning fn is not usable as Terminator::Call dest".into(),
-                )
-            })?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, ret_val)
-                .map_err(|e| CodegenError::Llvm(format!("call store: {e:?}")))?;
             let next_bb = *fn_ctx
                 .blocks
                 .get(next)
@@ -2942,33 +4670,6 @@ fn lower_terminator<'ctx>(
                 .map_err(|e| CodegenError::Llvm(format!("call br: {e:?}")))?;
         }
         Terminator::Trap { kind } => {
-            // Per-kind trap lowering. Each `TrapKind` is mapped to a
-            // stable i32 exit code (mirrors `HEW_TRAP_HEAP_EXCEEDED` =
-            // 200 in `hew-runtime/src/supervisor.rs`); we emit a call
-            // to the runtime entry-point `hew_trap_with_code(code)`
-            // and then fall through to `llvm.trap` + `unreachable`.
-            //
-            // Inside an actor-dispatch context, `hew_trap_with_code`
-            // longjmps back to the scheduler with `code` stored as
-            // the actor's `error_code`, so the supervisor sees
-            // `ExitReason::IntegerOverflow` (etc.) instead of a
-            // generic `Signal(4)`. Outside a dispatch context (top-
-            // level `main`, `hew eval`, JIT preview) the runtime
-            // function returns and the following `llvm.trap` aborts
-            // the process with SIGILL — matching today's behaviour
-            // for non-actor crashes.
-            //
-            // The trailing `llvm.trap` + `unreachable` is mandatory:
-            // (1) it terminates the LLVM basic block when the
-            //     longjmp path is inactive, satisfying the verifier;
-            // (2) regression tests that assert `ll.contains("@llvm.trap")`
-            //     for the trap path still hold.
-            //
-            // WASM: `hew_trap_with_code` resolves to a stub that
-            // returns without longjmping (signal.rs WASM module);
-            // `llvm.trap` is the actual terminator on WASM. No
-            // codegen branch is needed.
-            //
             // The exit-code constants here MUST stay in lock-step
             // with `HEW_TRAP_*` in `hew-runtime/src/supervisor.rs`.
             const HEW_TRAP_INTEGER_OVERFLOW: u64 = 201;
@@ -2983,48 +4684,7 @@ fn lower_terminator<'ctx>(
                 TrapKind::ShiftOutOfRange => HEW_TRAP_SHIFT_OUT_OF_RANGE,
                 TrapKind::IndexOutOfBounds => HEW_TRAP_INDEX_OUT_OF_BOUNDS,
             };
-
-            // Look up (or declare on first use) the runtime trap
-            // entry-point. Declared directly on the LLVM module —
-            // this is a fixed runtime FFI seam, not an
-            // `Instr::CallRuntimeAbi` (no `M2_RUNTIME_SYMBOLS`
-            // allowlist participation; the codegen-side declaration
-            // is the source of truth).
-            let trap_with_code_fn = match fn_ctx.llvm_mod.get_function("hew_trap_with_code") {
-                Some(fv) => fv,
-                None => {
-                    let i32_ty = fn_ctx.ctx.i32_type();
-                    let fn_ty = fn_ctx.ctx.void_type().fn_type(&[i32_ty.into()], false);
-                    fn_ctx.llvm_mod.add_function(
-                        "hew_trap_with_code",
-                        fn_ty,
-                        Some(Linkage::External),
-                    )
-                }
-            };
-            let code_val = fn_ctx.ctx.i32_type().const_int(code, false);
-            fn_ctx
-                .builder
-                .build_call(trap_with_code_fn, &[code_val.into()], "trap_with_code")
-                .map_err(|e| CodegenError::Llvm(format!("hew_trap_with_code call: {e:?}")))?;
-
-            // Fallback / verifier-required terminator: `llvm.trap`
-            // is a non-overloaded void intrinsic so `get_declaration`
-            // takes an empty type slice.
-            let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
-                CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into())
-            })?;
-            let trap_fn = trap_intrinsic
-                .get_declaration(fn_ctx.llvm_mod, &[])
-                .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-            fn_ctx
-                .builder
-                .build_call(trap_fn, &[], "trap")
-                .map_err(|e| CodegenError::Llvm(format!("llvm.trap call: {e:?}")))?;
-            fn_ctx
-                .builder
-                .build_unreachable()
-                .map_err(|e| CodegenError::Llvm(format!("trap unreachable: {e:?}")))?;
+            emit_trap_with_code(fn_ctx, code, "trap")?;
         }
         Terminator::Yield { .. } => {
             // The variant is declared so Checked MIR's borrow-liveness
@@ -3035,163 +4695,1002 @@ fn lower_terminator<'ctx>(
                 "Terminator::Yield — generator lowering not yet implemented",
             ));
         }
-        Terminator::Send { .. } => {
-            // Same shape as Yield: declared for the legality check, no
-            // construction surface in the v0.5 spine.
-            return Err(CodegenError::Unsupported(
-                "Terminator::Send — actor lowering not yet implemented",
-            ));
+        Terminator::Send {
+            actor,
+            msg_type,
+            value,
+            next,
+        } => {
+            let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_send receiver")?;
+            let actor_id = load_actor_id(fn_ctx, actor_ptr)?;
+            let (payload_ptr, payload_size) =
+                actor_payload_ptr_size(fn_ctx, *value, "actor_send_payload")?;
+            let send = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_actor_send_by_id",
+            )?;
+            let msg_type = fn_ctx.ctx.i32_type().const_int(*msg_type as u64, false);
+            // Bind the i32 return value. A nonzero status means the recipient
+            // was gone, the mailbox was full, or the remote partition rejected
+            // the message. We must not silently proceed — that could leave the
+            // caller operating on stale state or attempting a follow-up ask
+            // on a dead actor.
+            let send_status = fn_ctx
+                .builder
+                .build_call(
+                    send,
+                    &[
+                        actor_id.into(),
+                        msg_type.into(),
+                        payload_ptr.into(),
+                        payload_size.into(),
+                    ],
+                    "hew_actor_send_by_id_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_actor_send_by_id call: {e:?}")))?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_actor_send_by_id returned void".into())
+                })?
+                .into_int_value();
+
+            // Branch: status == 0 → next_bb; status != 0 → send_fail_bb.
+            let send_fail_bb = fn_ctx
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .map(|f| fn_ctx.ctx.append_basic_block(f, "actor_send_fail"))
+                .ok_or_else(|| CodegenError::Llvm("send block has no parent function".into()))?;
+            let zero = fn_ctx.ctx.i32_type().const_zero();
+            let send_failed = fn_ctx
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    send_status,
+                    zero,
+                    "actor_send_failed",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("send status cmp: {e:?}")))?;
+
+            let next_bb = *fn_ctx
+                .blocks
+                .get(next)
+                .ok_or_else(|| CodegenError::FailClosed(format!("Send next bb{next} missing")))?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(send_failed, send_fail_bb, next_bb)
+                .map_err(|e| CodegenError::Llvm(format!("send status branch: {e:?}")))?;
+
+            fn_ctx.builder.position_at_end(send_fail_bb);
+            emit_trap_with_code(fn_ctx, 206, "actor_send_fail")?;
         }
-        Terminator::Ask { .. } => {
-            // Reserved for the non-select actor-ask path. HIR-to-MIR
-            // lowers `select{}` ask arms into `Terminator::Select` with
-            // `SelectArmKind::ActorAsk`, so this arm is currently
-            // unreachable (non-select `actor.method()` is rejected
-            // upstream as `CutoverUnsupported`). When the construction
-            // surface lands, this arm emits the runtime ABI sequence:
-            //   hew_reply_channel_new → hew_actor_ask_with_channel
-            //   → hew_reply_wait
-            // On the loser / cancel leg:
-            //   hew_reply_channel_cancel + hew_reply_channel_free
-            // Late replies to a cancelled channel are silently dropped
-            // by the receiver.
-            return Err(CodegenError::Unsupported(
-                "Terminator::Ask — actor-ask lowering not yet implemented",
-            ));
+        Terminator::Ask {
+            actor,
+            msg_type,
+            value,
+            reply_dest,
+            next,
+        } => {
+            let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_ask receiver")?;
+            let (payload_ptr, payload_size) =
+                actor_payload_ptr_size(fn_ctx, *value, "actor_ask_payload")?;
+            let ask = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_actor_ask",
+            )?;
+            let msg_type = fn_ctx.ctx.i32_type().const_int(*msg_type as u64, false);
+            let reply_ptr = fn_ctx
+                .builder
+                .build_call(
+                    ask,
+                    &[
+                        actor_ptr.into(),
+                        msg_type.into(),
+                        payload_ptr.into(),
+                        payload_size.into(),
+                    ],
+                    "hew_actor_ask_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_actor_ask call: {e:?}")))?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_actor_ask returned void".into()))?
+                .into_pointer_value();
+            let ok_bb = fn_ctx.ctx.append_basic_block(
+                fn_ctx
+                    .builder
+                    .get_insert_block()
+                    .and_then(|bb| bb.get_parent())
+                    .ok_or_else(|| CodegenError::Llvm("ask block has no parent function".into()))?,
+                "actor_ask_reply_ok",
+            );
+            let null_bb = fn_ctx.ctx.append_basic_block(
+                ok_bb
+                    .get_parent()
+                    .ok_or_else(|| CodegenError::Llvm("ask ok block has no parent".into()))?,
+                "actor_ask_reply_null",
+            );
+            let is_null = fn_ctx
+                .builder
+                .build_is_null(reply_ptr, "actor_ask_reply_is_null")
+                .map_err(|e| CodegenError::Llvm(format!("ask null compare: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(is_null, null_bb, ok_bb)
+                .map_err(|e| CodegenError::Llvm(format!("ask null branch: {e:?}")))?;
+
+            fn_ctx.builder.position_at_end(null_bb);
+            let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
+                CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into())
+            })?;
+            let trap_fn = trap_intrinsic
+                .get_declaration(fn_ctx.llvm_mod, &[])
+                .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+            fn_ctx
+                .builder
+                .build_call(trap_fn, &[], "actor_ask_null_trap")
+                .map_err(|e| CodegenError::Llvm(format!("ask null trap: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::Llvm(format!("ask null unreachable: {e:?}")))?;
+
+            fn_ctx.builder.position_at_end(ok_bb);
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *reply_dest)?;
+            let reply_val = fn_ctx
+                .builder
+                .build_load(dest_ty, reply_ptr, "actor_ask_reply_value")
+                .map_err(|e| CodegenError::Llvm(format!("ask reply load: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, reply_val)
+                .map_err(|e| CodegenError::Llvm(format!("ask reply store: {e:?}")))?;
+            let free = get_or_declare_free(fn_ctx);
+            fn_ctx
+                .builder
+                .build_call(free, &[reply_ptr.into()], "actor_ask_reply_free")
+                .map_err(|e| CodegenError::Llvm(format!("free ask reply: {e:?}")))?;
+            let next_bb = *fn_ctx
+                .blocks
+                .get(next)
+                .ok_or_else(|| CodegenError::FailClosed(format!("Ask next bb{next} missing")))?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(next_bb)
+                .map_err(|e| CodegenError::Llvm(format!("ask br: {e:?}")))?;
         }
         Terminator::Select { arms, .. } => {
-            // Sealed `select{}` construct. The MIR terminator's shape is
-            // fixed (see hew-mir::model::Terminator::Select) and HIR
-            // recognises the four sealed arm forms; the runtime
-            // substrate (`hew_select_wait` heterogeneous-arm dispatch,
-            // `hew_stream_poll` pending-read, multiplex-await primitive
-            // for task-await win-path, and actor-call lowering for the
-            // ask arm) is not yet wired. `hew_task_scope_cancel_one`
-            // (task-await loss-path) is available. Codegen fails closed
-            // per arm kind with a message naming the remaining substrate
-            // the future implementation must satisfy.
-            //
-            // Each arm kind's TODO marker below records the semantic
-            // invariants the runtime substrate must observe (lifted
-            // from HEW-SPEC-2026 §4.11.1's per-form table). The
-            // markers are intentionally semantic — they tell a future
-            // implementer the contract, not which lane will land it.
-            let first_kind = arms.first().map(|arm| &arm.kind);
-            let msg: String = match first_kind {
-                Some(hew_mir::SelectArmKind::StreamNext { .. }) => {
-                    // The cancellable pending-read primitive on
-                    // Stream<T> now exists in hew-runtime
-                    // (`hew_stream_poll` + `hew_stream_cancel_pending_read`).
-                    // Lowering still fails closed because the
-                    // heterogeneous-arm dispatch glue
-                    // (`hew_select_wait`) that picks a winner across
-                    // arm kinds is not yet wired. When that glue
-                    // lands, this arm emits:
-                    //   - `hew_stream_poll(stream, callback, userdata)`
-                    //     on the winning side, returning a
-                    //     PendingReadId stored per-arm.
-                    //   - `hew_stream_cancel_pending_read(stream, id)`
-                    //     on every losing side, using the stored id.
-                    //   - Binding for the winning arm receives the
-                    //     malloc'd item pointer (null → None on EOF).
-                    "select{} stream-next arm awaits runtime substrate: \
-                     hew_select_wait heterogeneous-arm dispatch glue \
-                     (the cancellable pending-read primitive on Stream<T> \
-                     is wired via hew_stream_poll / \
-                     hew_stream_cancel_pending_read; the loser-cleanup \
-                     path withdraws the pending read without consuming \
-                     the stream)"
-                        .to_string()
-                }
-                Some(hew_mir::SelectArmKind::ActorAsk { .. }) => {
-                    // TODO: emit actor-ask lowering for this select arm.
-                    // The MIR shape is complete: `Terminator::Ask`
-                    // (with distinct `channel` and `reply_dest` Places),
-                    // `ExitPath::Ask` (carrying the `channel` Place for
-                    // loser-cleanup), and `MirCheck::ActorAskEscape`.
-                    // The runtime ABI is present; what remains is
-                    // lowering each select arm into a per-arm body block
-                    // terminated by `Terminator::Ask`.
-                    //
-                    // Runtime ABI invariants:
-                    // - Win path: hew_reply_channel_new →
-                    //     hew_actor_ask_with_channel → hew_reply_wait.
-                    // - Lose / cancel path: hew_reply_channel_cancel +
-                    //     hew_reply_channel_free against the channel
-                    //     slot. The pending ask is withdrawn; the actor
-                    //     handler may still deliver a reply after cancel.
-                    // - Late replies to a cancelled channel are silently
-                    //     dropped by the receiver (OrphanedAsk path);
-                    //     the caller must not interpret a false return
-                    //     from hew_reply as an error.
-                    // - Loser cleanup is best-effort: hew_reply may race
-                    //     cancel; the ref-count prevents use-after-free.
-                    "select{} actor-ask arm: per-arm body-block lowering \
-                     terminated by Terminator::Ask \
-                     (win: hew_reply_channel_new → hew_actor_ask_with_channel \
-                     → hew_reply_wait; lose: cancel + free the channel)"
-                        .to_string()
-                }
-                Some(hew_mir::SelectArmKind::TaskAwait { .. }) => {
-                    // TODO: emit task-await observer registration for
-                    // the await arm. The runtime must (a) register a
-                    // completion observer on the existing task
-                    // handle, (b) park the current coroutine, (c)
-                    // resume with the task result on win (only
-                    // `Ok(T)` is a winning value; cancellation and
-                    // trap outcomes propagate through the select
-                    // site), (d) on loss cancel the task at its next
-                    // safepoint via `hew_task_scope_cancel_one`
-                    // (available; cancel-after-done is a no-op).
-                    // The remaining gap is the completion-observer /
-                    // park / resume primitive for the win-path.
-                    "select{} task-await arm awaits multiplex-await \
-                     substrate: hew_task_scope_cancel_one available; \
-                     missing completion-observer/park/resume primitive \
-                     for winner path"
-                        .to_string()
-                }
-                Some(hew_mir::SelectArmKind::AfterTimer { .. }) => {
-                    // TODO: emit timer-arm registration. The runtime
-                    // must (a) schedule a one-shot timer on the
-                    // current task scope's timer list with the
-                    // absolute deadline, (b) park the current
-                    // coroutine, (c) resume the after-arm body on
-                    // expiry. Loser cleanup: hew_timer_cancel
-                    // unregisters the timer from the wheel (the
-                    // timer wheel substrate is complete; only the
-                    // heterogeneous-arm dispatch glue is missing).
-                    "select{} after-timer arm awaits runtime substrate: \
-                     heterogeneous-arm dispatch wiring \
-                     (hew_select_wait) to the existing timer wheel"
-                        .to_string()
-                }
-                None => {
-                    // HIR rejects empty selects with SelectNoArms; a
-                    // zero-arm Terminator::Select is structurally
-                    // unreachable. Fail closed defensively.
-                    "select{} terminator carries zero arms (HIR should \
-                     have rejected with SelectNoArms)"
-                        .to_string()
-                }
-            };
-            return Err(CodegenError::FailClosed(msg));
+            emit_select_terminator(fn_ctx, arms)?;
         }
     }
     Ok(())
 }
 
-fn emit_cooperate_call<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<()> {
+/// Emit the LLVM IR for `Terminator::Select` with `ActorAsk` +
+/// optional `AfterTimer` arms.
+///
+/// Producer contract (`Terminator::Select { arms, next }`):
+/// - Every arm carries `body_block` (the block reached on win) and
+///   `binding` (the per-arm reply slot for `ActorAsk` arms; `None`
+///   for `AfterTimer`).
+/// - At most one `AfterTimer` arm is present (HIR enforces).
+/// - `StreamNext` / `TaskAwait` arms are not in scope for this lane
+///   and remain fail-closed below (defence-in-depth — the MIR
+///   producer rejects them before this codegen runs).
+///
+/// Emitted shape (per slice 3 plan §6 + runtime ABI). For each
+/// `ActorAsk` arm: allocate `ch = hew_reply_channel_new()`, store
+/// into a stack array slot, then call `hew_actor_ask_with_channel`.
+/// If that call returns non-zero, branch to a mid-setup error
+/// recovery block that frees every channel allocated so far and
+/// traps (Risk R3). Read the AfterTimer arm's duration if present,
+/// convert ns → ms, saturate to `i32::MAX`; otherwise use -1
+/// (wait indefinitely). Call `hew_select_first(arr, n_asks, timeout_ms)`
+/// to get the winner index. Dispatch via switch: an ActorAsk arm
+/// index routes to that arm's winner block; the default routes to
+/// the AfterTimer winner block (when present) or a trap. In each
+/// winner block, `hew_reply_wait(ch[winner])` reads the reply, the
+/// value is stored into `arm.binding`'s slot, `libc::free(reply_ptr)`
+/// releases the buffer, and `hew_reply_channel_free(ch[winner])`
+/// releases the channel. For every loser j, `hew_reply_channel_cancel(ch[j])`
+/// runs BEFORE `hew_reply_channel_free(ch[j])` — Risk R4: cancel
+/// before free prevents UAF when a reply races our free.
+/// Finally each winner block branches to the arm's MIR-allocated
+/// `body_block`.
+fn emit_select_terminator<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    arms: &[hew_mir::SelectArm],
+) -> CodegenResult<()> {
+    use hew_mir::SelectArmKind;
+
+    if arms.is_empty() {
+        // HIR rejects empty selects with SelectNoArms; defence-in-depth.
+        return Err(CodegenError::FailClosed(
+            "select{} terminator carries zero arms (HIR should have rejected with SelectNoArms)"
+                .to_string(),
+        ));
+    }
+
+    // Partition arms by kind, preserving original arm indices for the
+    // body-block dispatch. ActorAsk arms feed the `hew_select_first`
+    // channel array; the AfterTimer arm (at most one — HIR enforces)
+    // supplies the deadline.
+    let mut ask_arm_indices: Vec<usize> = Vec::with_capacity(arms.len());
+    let mut after_arm_index: Option<usize> = None;
+    for (i, arm) in arms.iter().enumerate() {
+        match &arm.kind {
+            SelectArmKind::ActorAsk { .. } => ask_arm_indices.push(i),
+            SelectArmKind::AfterTimer { .. } => {
+                if after_arm_index.is_some() {
+                    return Err(CodegenError::FailClosed(
+                        "select{} carries more than one AfterTimer arm \
+                         (HIR should have rejected)"
+                            .to_string(),
+                    ));
+                }
+                after_arm_index = Some(i);
+            }
+            SelectArmKind::StreamNext { .. } => {
+                // Defence-in-depth: MIR producer rejects these before
+                // reaching codegen (see hew-mir lower_select); this
+                // lane does not wire stream-next.
+                return Err(CodegenError::FailClosed(
+                    "select{} stream-next arm is out of scope for this lane: \
+                     MIR producer should have rejected with \
+                     SelectArmNotImplemented; future lane: M3 select-widening"
+                        .to_string(),
+                ));
+            }
+            SelectArmKind::TaskAwait { .. } => {
+                return Err(CodegenError::FailClosed(
+                    "select{} task-await arm is out of scope for this lane: \
+                     MIR producer should have rejected with \
+                     SelectArmNotImplemented; future lane: M3 select-widening"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+
+    if ask_arm_indices.is_empty() {
+        // A select with only an `after` arm is structurally valid but
+        // has no race to dispatch: we'd reduce to "wait then run the
+        // after-arm body". The HIR forbids select{} composed only of
+        // an `after` arm (a sealed-shape invariant); fail closed.
+        return Err(CodegenError::FailClosed(
+            "select{} carries no ActorAsk arms (only AfterTimer): \
+             HIR should have rejected as a sealed-shape violation"
+                .to_string(),
+        ));
+    }
+
+    let n_asks: usize = ask_arm_indices.len();
+    let n_asks_i32 = i32::try_from(n_asks).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "select{{}} arm count {n_asks} exceeds i32::MAX — runtime ABI is i32-bound"
+        ))
+    })?;
+
+    let ctx = fn_ctx.ctx;
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+
+    // Allocate the channel array on the stack: [N x ptr]. Per-ActorAsk
+    // arm index i stores the freshly-allocated `*mut HewReplyChannel`
+    // at `channel_array[i]`. The array is referenced by the winner
+    // dispatch (free/cancel) and by `hew_select_first`.
+    let arr_ty = ptr_ty.array_type(n_asks_i32 as u32);
+    let arr_ptr = fn_ctx
+        .builder
+        .build_alloca(arr_ty, "select_channels")
+        .map_err(|e| CodegenError::Llvm(format!("select channel array alloca: {e:?}")))?;
+
+    // Resolve the parent function once for block allocation.
+    let parent_fn = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("select block has no parent function".into()))?;
+
+    let channel_new = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_new",
+    )?;
+    let ask_with_channel = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_ask_with_channel",
+    )?;
+    let channel_cancel = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_cancel",
+    )?;
+    let channel_free = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_free",
+    )?;
+    let reply_wait = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_wait",
+    )?;
+    let select_first = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_select_first",
+    )?;
+    let libc_free = get_or_declare_free(fn_ctx);
+
+    // Per-ActorAsk arm: allocate channel, store into array, issue ask.
+    // On any ask-issue failure, branch to a recovery block that frees
+    // every channel allocated up to that point and traps. (Risk R3.)
+    //
+    // Channel-array-slot GEP helper: `&channel_array[i]`.
+    let slot_ptr = |i: usize| -> CodegenResult<PointerValue<'ctx>> {
+        let i_u32 = u32::try_from(i).map_err(|_| {
+            CodegenError::FailClosed(format!("select arm index {i} exceeds u32::MAX"))
+        })?;
+        let idx0 = i32_ty.const_zero();
+        let idx1 = i32_ty.const_int(u64::from(i_u32), false);
+        let gep = unsafe {
+            fn_ctx
+                .builder
+                .build_gep(arr_ty, arr_ptr, &[idx0, idx1], &format!("ch_slot_{i}"))
+                .map_err(|e| CodegenError::Llvm(format!("ch slot gep: {e:?}")))?
+        };
+        Ok(gep)
+    };
+
+    for (slot_idx, &arm_idx) in ask_arm_indices.iter().enumerate() {
+        let (msg_type_i32, actor_place, value_place) = match &arms[arm_idx].kind {
+            SelectArmKind::ActorAsk {
+                actor,
+                msg_type,
+                value,
+                ..
+            } => (*msg_type, *actor, *value),
+            _ => unreachable!("ask_arm_indices only carries ActorAsk indices"),
+        };
+
+        // Allocate the channel.
+        let ch_val = fn_ctx
+            .builder
+            .build_call(channel_new, &[], &format!("select_ch_new_{slot_idx}"))
+            .map_err(|e| CodegenError::Llvm(format!("hew_reply_channel_new call: {e:?}")))?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_reply_channel_new returned void".into()))?
+            .into_pointer_value();
+
+        // Store into channel_array[slot_idx]. We perform the store
+        // BEFORE issuing the ask so the recovery block sees a
+        // consistent array view if the ask issue fails.
+        let slot = slot_ptr(slot_idx)?;
+        fn_ctx
+            .builder
+            .build_store(slot, ch_val)
+            .map_err(|e| CodegenError::Llvm(format!("ch slot store: {e:?}")))?;
+
+        // Issue the ask with the caller-provided channel.
+        let actor_ptr = load_duplex_handle(fn_ctx, actor_place, "select_actor_handle")?;
+        let (payload_ptr, payload_size) =
+            actor_payload_ptr_size(fn_ctx, value_place, "select_ask_payload")?;
+        let msg_type_val = i32_ty.const_int(msg_type_i32 as u64, false);
+        let status = fn_ctx
+            .builder
+            .build_call(
+                ask_with_channel,
+                &[
+                    actor_ptr.into(),
+                    msg_type_val.into(),
+                    payload_ptr.into(),
+                    payload_size.into(),
+                    ch_val.into(),
+                ],
+                &format!("select_ask_issue_{slot_idx}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("hew_actor_ask_with_channel call: {e:?}")))?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("hew_actor_ask_with_channel returned void".into())
+            })?
+            .into_int_value();
+
+        // Branch on status: 0 → next ask setup or select_first; non-zero
+        // → mid-setup recovery (free every channel allocated through
+        // `slot_idx` inclusive, then trap).
+        let zero = i32_ty.const_zero();
+        let failed = fn_ctx
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                status,
+                zero,
+                &format!("select_ask_failed_{slot_idx}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select ask cmp: {e:?}")))?;
+        let setup_ok_bb = ctx.append_basic_block(parent_fn, &format!("select_setup_ok_{slot_idx}"));
+        let setup_fail_bb =
+            ctx.append_basic_block(parent_fn, &format!("select_setup_fail_{slot_idx}"));
+        fn_ctx
+            .builder
+            .build_conditional_branch(failed, setup_fail_bb, setup_ok_bb)
+            .map_err(|e| CodegenError::Llvm(format!("select setup br: {e:?}")))?;
+
+        // Recovery block: free channels [0..=slot_idx] (each was
+        // allocated and stored; the ask-issue failure also released
+        // the queued sender ref on the failing channel inside the
+        // runtime, but the caller-side ref is still live — see
+        // `submit_ask_with_reply_channel`'s KeepCreatorRef behaviour).
+        // Cancel before free for any channel where an ask was
+        // successfully submitted (i < slot_idx); the failing channel
+        // (slot_idx) only needs `free`.
+        fn_ctx.builder.position_at_end(setup_fail_bb);
+        for j in 0..slot_idx {
+            let cleanup_slot = slot_ptr(j)?;
+            let cleanup_ch = fn_ctx
+                .builder
+                .build_load(ptr_ty, cleanup_slot, &format!("select_cleanup_load_{j}"))
+                .map_err(|e| CodegenError::Llvm(format!("setup-fail load: {e:?}")))?
+                .into_pointer_value();
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_cancel,
+                    &[cleanup_ch.into()],
+                    &format!("select_cleanup_cancel_{j}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("setup-fail cancel: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_free,
+                    &[cleanup_ch.into()],
+                    &format!("select_cleanup_free_{j}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("setup-fail free: {e:?}")))?;
+        }
+        // Failing channel: free the caller-side ref (no cancel — no
+        // ask was successfully submitted, so no late replier exists).
+        fn_ctx
+            .builder
+            .build_call(
+                channel_free,
+                &[ch_val.into()],
+                &format!("select_setup_fail_free_self_{slot_idx}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("setup-fail self free: {e:?}")))?;
+
+        // Trap with HEW_TRAP_ACTOR_SEND_FAILED (the same diagnostic
+        // code `Terminator::Send` uses on send-status failure — the
+        // ask submission failed because the receiver mailbox was
+        // unreachable, which is the same supervisor-visible failure).
+        emit_select_setup_failure_trap(fn_ctx)?;
+
+        fn_ctx.builder.position_at_end(setup_ok_bb);
+    }
+
+    // Determine the deadline. If the select carries an AfterTimer arm,
+    // load its duration (i64 ns), convert to i32 ms (saturating). With
+    // no AfterTimer arm, use -1 (wait indefinitely).
+    let timeout_ms_val = if let Some(idx) = after_arm_index {
+        let duration_place = match &arms[idx].kind {
+            SelectArmKind::AfterTimer { duration } => *duration,
+            _ => unreachable!("after_arm_index only set for AfterTimer arms"),
+        };
+        let (dur_ptr, dur_ty) = place_pointer(fn_ctx, duration_place)?;
+        let dur_ns = fn_ctx
+            .builder
+            .build_load(dur_ty, dur_ptr, "select_after_dur_ns")
+            .map_err(|e| CodegenError::Llvm(format!("select after dur load: {e:?}")))?
+            .into_int_value();
+        // ns → ms = dur_ns / 1_000_000.
+        let ms_per_ns = i64_ty.const_int(1_000_000, false);
+        let dur_ms_i64 = fn_ctx
+            .builder
+            .build_int_signed_div(dur_ns, ms_per_ns, "select_after_dur_ms_i64")
+            .map_err(|e| CodegenError::Llvm(format!("select after dur sdiv: {e:?}")))?;
+        // Saturate to i32::MAX (the runtime ABI is i32; a duration
+        // > ~24.8 days clamps to "effectively wait forever" but stays
+        // non-negative so `hew_select_first` doesn't interpret it as
+        // -1 = infinite).
+        let i32_max_as_i64 = i64_ty.const_int(i64::from(i32::MAX) as u64, true);
+        let too_big = fn_ctx
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGT,
+                dur_ms_i64,
+                i32_max_as_i64,
+                "select_after_dur_too_big",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select after dur cmp: {e:?}")))?;
+        let clamped = fn_ctx
+            .builder
+            .build_select(
+                too_big,
+                i32_max_as_i64,
+                dur_ms_i64,
+                "select_after_dur_clamped",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select after dur select: {e:?}")))?
+            .into_int_value();
+        // Negative durations clamp to 0 (immediate timeout) so we
+        // never accidentally collide with the -1 wait-forever
+        // sentinel.
+        let zero_i64 = i64_ty.const_zero();
+        let neg = fn_ctx
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                clamped,
+                zero_i64,
+                "select_after_dur_neg",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select after dur neg cmp: {e:?}")))?;
+        let clamped_nonneg = fn_ctx
+            .builder
+            .build_select(neg, zero_i64, clamped, "select_after_dur_nonneg")
+            .map_err(|e| CodegenError::Llvm(format!("select after dur nonneg select: {e:?}")))?
+            .into_int_value();
+        fn_ctx
+            .builder
+            .build_int_truncate(clamped_nonneg, i32_ty, "select_after_dur_ms")
+            .map_err(|e| CodegenError::Llvm(format!("select after dur trunc: {e:?}")))?
+    } else {
+        // No AfterTimer arm: wait indefinitely.
+        i32_ty.const_int(u64::from(u32::MAX), true) // -1 in two's complement
+    };
+
+    // GEP the array down to a `*mut *mut HewReplyChannel` for the call.
+    let idx0 = i32_ty.const_zero();
+    let arr_first_ptr = unsafe {
+        fn_ctx
+            .builder
+            .build_gep(arr_ty, arr_ptr, &[idx0, idx0], "select_channels_first")
+            .map_err(|e| CodegenError::Llvm(format!("select arr first gep: {e:?}")))?
+    };
+    let count_val = i32_ty.const_int(n_asks_i32 as u64, true);
+    let winner = fn_ctx
+        .builder
+        .build_call(
+            select_first,
+            &[
+                arr_first_ptr.into(),
+                count_val.into(),
+                timeout_ms_val.into(),
+            ],
+            "select_winner_idx",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_select_first call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_select_first returned void".into()))?
+        .into_int_value();
+
+    // Allocate per-arm winner blocks and an AfterTimer-winner block
+    // (if applicable). Each winner block handles its own loser
+    // cleanup, reply read, and branch to the MIR-allocated body block.
+    let mut winner_bbs: Vec<inkwell::basic_block::BasicBlock<'_>> =
+        Vec::with_capacity(ask_arm_indices.len());
+    for slot_idx in 0..ask_arm_indices.len() {
+        winner_bbs.push(ctx.append_basic_block(parent_fn, &format!("select_win_ask_{slot_idx}")));
+    }
+    let after_winner_bb =
+        after_arm_index.map(|_| ctx.append_basic_block(parent_fn, "select_win_after"));
+    // Fallback "unreachable" block: -1 with no AfterTimer arm should
+    // never happen because we passed -1 timeout, but defence-in-depth.
+    let no_winner_bb = ctx.append_basic_block(parent_fn, "select_no_winner_trap");
+
+    // Build the switch on `winner`:
+    //   case 0 → winner_bbs[0]
+    //   case 1 → winner_bbs[1]
+    //   ...
+    //   default → after_winner_bb (if present) else no_winner_bb
+    let default_bb = after_winner_bb.unwrap_or(no_winner_bb);
+    let cases: Vec<(IntValue<'_>, inkwell::basic_block::BasicBlock<'_>)> = winner_bbs
+        .iter()
+        .enumerate()
+        .map(|(slot_idx, bb)| (i32_ty.const_int(slot_idx as u64, true), *bb))
+        .collect();
+    fn_ctx
+        .builder
+        .build_switch(winner, default_bb, &cases)
+        .map_err(|e| CodegenError::Llvm(format!("select winner switch: {e:?}")))?;
+
+    // No-winner fallback: trap. (Reachable only if the runtime
+    // contract is violated — `hew_select_first` returned a value
+    // outside `0..n_asks` and there was no AfterTimer arm.)
+    fn_ctx.builder.position_at_end(no_winner_bb);
+    emit_select_no_winner_trap(fn_ctx)?;
+
+    // For each ActorAsk winner block: read the reply, cancel+free
+    // every loser, branch to the arm body block.
+    for (winner_slot, &arm_idx) in ask_arm_indices.iter().enumerate() {
+        let arm = &arms[arm_idx];
+        let binding_place = arm.binding.ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "select{{}} ActorAsk arm {arm_idx} carries no binding Place (the producer must \
+                 populate `SelectArm.binding` with the per-arm reply slot)"
+            ))
+        })?;
+        let body_block_id = arm.body_block;
+
+        fn_ctx.builder.position_at_end(winner_bbs[winner_slot]);
+
+        // Load the winning channel from the array.
+        let win_slot_ptr = slot_ptr(winner_slot)?;
+        let win_ch = fn_ctx
+            .builder
+            .build_load(
+                ptr_ty,
+                win_slot_ptr,
+                &format!("select_win_ch_load_{winner_slot}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select winner load: {e:?}")))?
+            .into_pointer_value();
+
+        // Read reply via hew_reply_wait. Returns *mut c_void; the
+        // caller owns the buffer and must `libc::free` it after
+        // loading the value.
+        let reply_ptr = fn_ctx
+            .builder
+            .build_call(
+                reply_wait,
+                &[win_ch.into()],
+                &format!("select_reply_wait_{winner_slot}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("hew_reply_wait call: {e:?}")))?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_reply_wait returned void".into()))?
+            .into_pointer_value();
+
+        // Defensive null check on the reply pointer. `hew_reply_wait`
+        // returns null when the published value pointer was null —
+        // which happens on the allocation-failure-during-publish path
+        // (`take_ready_reply` at `hew-runtime/src/reply_channel.rs:164`
+        // returns null after `hew_reply_channel_mark_allocation_failed`
+        // toggled the flag). `hew_select_first` will route us here
+        // because the channel reached `ready=true` with a null value;
+        // dereferencing would SIGSEGV. Mirrors `Terminator::Ask`'s
+        // null-trap shape (`llvm.rs:4831-4854`).
+        let null_bb =
+            ctx.append_basic_block(parent_fn, &format!("select_reply_null_trap_{winner_slot}"));
+        let ok_bb = ctx.append_basic_block(parent_fn, &format!("select_reply_ok_{winner_slot}"));
+        let is_null = fn_ctx
+            .builder
+            .build_is_null(reply_ptr, &format!("select_reply_is_null_{winner_slot}"))
+            .map_err(|e| CodegenError::Llvm(format!("select reply null cmp: {e:?}")))?;
+        fn_ctx
+            .builder
+            .build_conditional_branch(is_null, null_bb, ok_bb)
+            .map_err(|e| CodegenError::Llvm(format!("select reply null branch: {e:?}")))?;
+        // Null-reply trap branch.
+        fn_ctx.builder.position_at_end(null_bb);
+        let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
+            CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into())
+        })?;
+        let trap_fn = trap_intrinsic
+            .get_declaration(fn_ctx.llvm_mod, &[])
+            .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+        fn_ctx
+            .builder
+            .build_call(
+                trap_fn,
+                &[],
+                &format!("select_reply_null_trap_call_{winner_slot}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select reply null trap: {e:?}")))?;
+        fn_ctx
+            .builder
+            .build_unreachable()
+            .map_err(|e| CodegenError::Llvm(format!("select reply null unreachable: {e:?}")))?;
+        // Ok branch: load + store + frees.
+        fn_ctx.builder.position_at_end(ok_bb);
+        let (dest_ptr, dest_ty) = place_pointer(fn_ctx, binding_place)?;
+        let reply_val = fn_ctx
+            .builder
+            .build_load(
+                dest_ty,
+                reply_ptr,
+                &format!("select_reply_value_{winner_slot}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select reply load: {e:?}")))?;
+        fn_ctx
+            .builder
+            .build_store(dest_ptr, reply_val)
+            .map_err(|e| CodegenError::Llvm(format!("select reply store: {e:?}")))?;
+
+        // Free the reply buffer.
+        fn_ctx
+            .builder
+            .build_call(
+                libc_free,
+                &[reply_ptr.into()],
+                &format!("select_reply_free_{winner_slot}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select reply free: {e:?}")))?;
+
+        // Free the winning channel's caller-side ref (no cancel — we
+        // consumed its reply, the channel is not abandoned).
+        fn_ctx
+            .builder
+            .build_call(
+                channel_free,
+                &[win_ch.into()],
+                &format!("select_win_ch_free_{winner_slot}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("select winner ch free: {e:?}")))?;
+
+        // Loser cleanup: every OTHER ActorAsk arm gets cancel + free,
+        // in that order (Risk R4 — cancel BEFORE free is the UAF
+        // mitigation for late-reply races on cancelled channels).
+        for (loser_slot, _) in ask_arm_indices.iter().enumerate() {
+            if loser_slot == winner_slot {
+                continue;
+            }
+            let loser_slot_ptr = slot_ptr(loser_slot)?;
+            let loser_ch = fn_ctx
+                .builder
+                .build_load(
+                    ptr_ty,
+                    loser_slot_ptr,
+                    &format!("select_loser_load_w{winner_slot}_l{loser_slot}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("select loser load: {e:?}")))?
+                .into_pointer_value();
+            // CANCEL FIRST. Then FREE. Order is load-bearing.
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_cancel,
+                    &[loser_ch.into()],
+                    &format!("select_loser_cancel_w{winner_slot}_l{loser_slot}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("select loser cancel: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_free,
+                    &[loser_ch.into()],
+                    &format!("select_loser_free_w{winner_slot}_l{loser_slot}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("select loser free: {e:?}")))?;
+        }
+
+        // Branch into the arm body block.
+        let body_bb = *fn_ctx.blocks.get(&body_block_id).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "select{{}} ActorAsk arm {arm_idx} body block {body_block_id} \
+                 missing from FnCtx.blocks"
+            ))
+        })?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(body_bb)
+            .map_err(|e| CodegenError::Llvm(format!("select win br: {e:?}")))?;
+    }
+
+    // AfterTimer winner: every ActorAsk arm is a loser; cancel + free
+    // each, then branch to the AfterTimer arm's body block.
+    if let (Some(after_idx), Some(after_bb)) = (after_arm_index, after_winner_bb) {
+        let after_arm = &arms[after_idx];
+        let body_block_id = after_arm.body_block;
+        fn_ctx.builder.position_at_end(after_bb);
+        for (loser_slot, _) in ask_arm_indices.iter().enumerate() {
+            let loser_slot_ptr = slot_ptr(loser_slot)?;
+            let loser_ch = fn_ctx
+                .builder
+                .build_load(
+                    ptr_ty,
+                    loser_slot_ptr,
+                    &format!("select_after_loser_load_{loser_slot}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("select after loser load: {e:?}")))?
+                .into_pointer_value();
+            // CANCEL FIRST, THEN FREE.
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_cancel,
+                    &[loser_ch.into()],
+                    &format!("select_after_loser_cancel_{loser_slot}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("select after loser cancel: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_free,
+                    &[loser_ch.into()],
+                    &format!("select_after_loser_free_{loser_slot}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("select after loser free: {e:?}")))?;
+        }
+        let body_bb = *fn_ctx.blocks.get(&body_block_id).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "select{{}} AfterTimer arm {after_idx} body block {body_block_id} \
+                 missing from FnCtx.blocks"
+            ))
+        })?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(body_bb)
+            .map_err(|e| CodegenError::Llvm(format!("select after br: {e:?}")))?;
+    }
+
+    Ok(())
+}
+
+/// Emit a fail-closed trap for a `Terminator::Select` mid-setup
+/// failure (an ask-issue returned non-zero, leaving partially-allocated
+/// channels which the recovery path frees before reaching here). Uses
+/// `hew_trap_with_code(HEW_TRAP_ACTOR_SEND_FAILED=206)` so the
+/// supervisor sees the same diagnostic as `Terminator::Send` failures;
+/// follows with `llvm.trap` + `unreachable` as the non-actor fallback
+/// (mirrors the `Terminator::Send` send-fail trap shape).
+fn emit_select_setup_failure_trap<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<()> {
+    const HEW_TRAP_ACTOR_SEND_FAILED: u64 = 206;
+    let trap_with_code_fn = match fn_ctx.llvm_mod.get_function("hew_trap_with_code") {
+        Some(fv) => fv,
+        None => {
+            let i32_ty = fn_ctx.ctx.i32_type();
+            let fn_ty = fn_ctx.ctx.void_type().fn_type(&[i32_ty.into()], false);
+            fn_ctx
+                .llvm_mod
+                .add_function("hew_trap_with_code", fn_ty, Some(Linkage::External))
+        }
+    };
+    let code = fn_ctx
+        .ctx
+        .i32_type()
+        .const_int(HEW_TRAP_ACTOR_SEND_FAILED, false);
+    fn_ctx
+        .builder
+        .build_call(trap_with_code_fn, &[code.into()], "select_setup_fail_trap")
+        .map_err(|e| CodegenError::Llvm(format!("select setup fail trap: {e:?}")))?;
+    let trap_intrinsic = Intrinsic::find("llvm.trap")
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into()))?;
+    let trap_fn = trap_intrinsic
+        .get_declaration(fn_ctx.llvm_mod, &[])
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    fn_ctx
+        .builder
+        .build_call(trap_fn, &[], "select_setup_fail_llvm_trap")
+        .map_err(|e| CodegenError::Llvm(format!("select setup fail llvm.trap: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_unreachable()
+        .map_err(|e| CodegenError::Llvm(format!("select setup fail unreachable: {e:?}")))?;
+    Ok(())
+}
+
+/// Emit a fail-closed trap for the unreachable "no winner" arm of the
+/// select winner-dispatch switch. Reachable only if the runtime
+/// contract is violated (e.g. `hew_select_first` returned -1 even
+/// though we passed `-1` as the timeout and provided non-empty
+/// channels).
+fn emit_select_no_winner_trap<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<()> {
+    let trap_intrinsic = Intrinsic::find("llvm.trap")
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into()))?;
+    let trap_fn = trap_intrinsic
+        .get_declaration(fn_ctx.llvm_mod, &[])
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    fn_ctx
+        .builder
+        .build_call(trap_fn, &[], "select_no_winner_trap")
+        .map_err(|e| CodegenError::Llvm(format!("select no winner trap: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_unreachable()
+        .map_err(|e| CodegenError::Llvm(format!("select no winner unreachable: {e:?}")))?;
+    Ok(())
+}
+
+fn emit_cancel_trap_or_return(fn_ctx: &FnCtx<'_, '_>) -> CodegenResult<()> {
+    match fn_ctx.return_ty {
+        BasicTypeEnum::IntType(i) => {
+            let ret = i.const_zero();
+            fn_ctx
+                .builder
+                .build_return(Some(&ret))
+                .map_err(|e| CodegenError::Llvm(format!("cancel return: {e:?}")))?;
+        }
+        BasicTypeEnum::PointerType(p) => {
+            let ret = p.const_null();
+            fn_ctx
+                .builder
+                .build_return(Some(&ret))
+                .map_err(|e| CodegenError::Llvm(format!("cancel return: {e:?}")))?;
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "cancel exit cannot synthesize return for {other:?}"
+            )))
+        }
+    }
+    Ok(())
+}
+
+fn emit_cancel_drops(
+    fn_ctx: &FnCtx<'_, '_>,
+    block_id: u32,
+    drop_plans: &[(ExitPath, hew_mir::DropPlan)],
+) -> CodegenResult<()> {
+    if let Some((_, plan)) = drop_plans
+        .iter()
+        .find(|(exit, _)| matches!(exit, ExitPath::Cancel { block } if *block == block_id))
+    {
+        for drop in &plan.drops {
+            emit_one_elab_drop(fn_ctx, drop)?;
+        }
+    }
+    Ok(())
+}
+
+fn emit_cooperate_check<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    block_id: u32,
+    drop_plans: &[(ExitPath, hew_mir::DropPlan)],
+) -> CodegenResult<()> {
     let cooperate_fn = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
         &mut fn_ctx.runtime_decls.borrow_mut(),
         "hew_actor_cooperate",
     )?;
+    let call = fn_ctx
+        .builder
+        .build_call(cooperate_fn, &[], "hew_actor_cooperate")
+        .map_err(|e| CodegenError::Llvm(format!("hew_actor_cooperate call: {e:?}")))?;
+    let signal = call
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_actor_cooperate returned void".into()))?
+        .into_int_value();
+    let cancel_code = fn_ctx.ctx.i32_type().const_int(2, false);
+    let is_cancel = fn_ctx
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            signal,
+            cancel_code,
+            "hew_cooperate_is_cancel",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("cooperate cancel compare: {e:?}")))?;
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("cooperate check outside function".into()))?;
+    let cancel_bb = fn_ctx.ctx.append_basic_block(parent, "cancel_exit");
+    let continue_bb = fn_ctx.ctx.append_basic_block(parent, "after_cooperate");
     fn_ctx
         .builder
-        .build_call(cooperate_fn, &[], "")
-        .map_err(|e| CodegenError::Llvm(format!("hew_actor_cooperate call: {e:?}")))?;
+        .build_conditional_branch(is_cancel, cancel_bb, continue_bb)
+        .map_err(|e| CodegenError::Llvm(format!("cooperate cancel branch: {e:?}")))?;
+
+    fn_ctx.builder.position_at_end(cancel_bb);
+    emit_cancel_drops(fn_ctx, block_id, drop_plans)?;
+    emit_cancel_trap_or_return(fn_ctx)?;
+
+    fn_ctx.builder.position_at_end(continue_bb);
     Ok(())
 }
 
@@ -3208,7 +5707,7 @@ fn declare_function<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     func: &RawMirFunction,
     record_layouts: &RecordLayoutMap<'ctx>,
-) -> CodegenResult<(FunctionValue<'ctx>, BasicTypeEnum<'ctx>)> {
+) -> CodegenResult<FnSymbol<'ctx>> {
     let linkage = if func.name == "main" {
         Some(Linkage::External)
     } else {
@@ -3237,18 +5736,16 @@ fn declare_function<'ctx>(
     // are both legal LLVM value-param types for the current spine subset).
     // The parameter-prologue in `lower_function` stores each LLVM function
     // argument into the corresponding `locals[i]` alloca slot.
-    let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(func.params.len());
+    let ctx_ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(
+        func.params.len() + usize::from(func.call_conv.carries_execution_context()),
+    );
+    if func.call_conv.carries_execution_context() {
+        param_tys.push(ctx_ptr_ty.into());
+    }
     for param_ty in &func.params {
         let llvm_ty = resolve_ty(ctx, param_ty, record_layouts)?;
-        param_tys.push(match llvm_ty {
-            BasicTypeEnum::IntType(t) => t.into(),
-            BasicTypeEnum::PointerType(t) => t.into(),
-            BasicTypeEnum::FloatType(t) => t.into(),
-            BasicTypeEnum::StructType(t) => t.into(),
-            BasicTypeEnum::ArrayType(t) => t.into(),
-            BasicTypeEnum::VectorType(t) => t.into(),
-            BasicTypeEnum::ScalableVectorType(t) => t.into(),
-        });
+        param_tys.push(metadata_type_from_basic(llvm_ty));
     }
     let fn_ty = match return_ty_llvm {
         BasicTypeEnum::IntType(i) => i.fn_type(&param_tys, false),
@@ -3263,7 +5760,11 @@ fn declare_function<'ctx>(
         BasicTypeEnum::ScalableVectorType(v) => v.fn_type(&param_tys, false),
     };
     let llvm_fn = llvm_mod.add_function(&func.name, fn_ty, linkage);
-    Ok((llvm_fn, return_ty_llvm))
+    Ok(FnSymbol::Real {
+        value: llvm_fn,
+        return_ty: return_ty_llvm,
+        returns_unit: matches!(func.return_ty, ResolvedTy::Unit),
+    })
 }
 
 /// Lower one function from `raw_mir`, consuming `elaborated_mir.drop_plans`
@@ -3289,12 +5790,20 @@ fn lower_function<'ctx>(
     checked: Option<&CheckedMirFunction>,
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<()> {
-    let (llvm_fn, return_ty_llvm) = *fn_symbols.get(&func.name).ok_or_else(|| {
+    let symbol = *fn_symbols.get(&func.name).ok_or_else(|| {
         CodegenError::FailClosed(format!(
             "function `{}` was not declared before body lowering",
             func.name
         ))
     })?;
+    let (llvm_fn, return_ty_llvm, _returns_unit) = symbol.real(&func.name, "lower_function")?;
+    let context_marker_findings = validate_context_markers(func);
+    if !context_marker_findings.is_empty() {
+        return Err(CodegenError::FailClosed(format!(
+            "function `{}` has invalid execution-context markers: {context_marker_findings:?}",
+            func.name
+        )));
+    }
     let builder = ctx.create_builder();
 
     let entry_block = func.blocks.first().ok_or_else(|| {
@@ -3320,7 +5829,20 @@ fn lower_function<'ctx>(
         .build_alloca(return_ty_llvm, "return_slot")
         .map_err(|e| CodegenError::Llvm(format!("alloca return_slot: {e:?}")))?;
 
+    let execution_context = if func.call_conv.carries_execution_context() {
+        let param = llvm_fn.get_nth_param(0).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "context-bearing function `{}` has no leading execution-context LLVM parameter",
+                func.name
+            ))
+        })?;
+        Some(param.into_pointer_value())
+    } else {
+        None
+    };
+
     let mut locals: HashMap<u32, (PointerValue, BasicTypeEnum)> = HashMap::new();
+    let mut local_tys: HashMap<u32, ResolvedTy> = HashMap::new();
     for (idx, ty) in func.locals.iter().enumerate() {
         // Use `resolve_ty` (not bare `primitive_to_llvm`) so record-typed
         // locals materialise as struct allocas rather than tripping the
@@ -3335,6 +5857,7 @@ fn lower_function<'ctx>(
             .build_alloca(llvm_ty, &format!("local_{idx}"))
             .map_err(|e| CodegenError::Llvm(format!("alloca local {idx}: {e:?}")))?;
         locals.insert(idx_u32, (slot, llvm_ty));
+        local_tys.insert(idx_u32, ty.clone());
     }
 
     // Parameter prologue: store each LLVM function argument into the
@@ -3347,13 +5870,16 @@ fn lower_function<'ctx>(
         let param_idx_u32 = u32::try_from(param_idx).map_err(|_| {
             CodegenError::FailClosed("function exceeds u32::MAX params — impossible".into())
         })?;
-        let llvm_param = llvm_fn.get_nth_param(param_idx as u32).ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "function `{}` has no LLVM param at index {param_idx}; \
+        let llvm_param_idx = param_idx + usize::from(func.call_conv.carries_execution_context());
+        let llvm_param = llvm_fn
+            .get_nth_param(llvm_param_idx as u32)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "function `{}` has no LLVM param at index {llvm_param_idx}; \
                      declare_function and lower_function param counts disagree",
-                func.name
-            ))
-        })?;
+                    func.name
+                ))
+            })?;
         let (slot, _slot_ty) = *locals.get(&param_idx_u32).ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "function `{}` has no local slot for param index {param_idx}",
@@ -3365,13 +5891,25 @@ fn lower_function<'ctx>(
             .map_err(|e| CodegenError::Llvm(format!("param store {param_idx}: {e:?}")))?;
     }
 
+    let actor_state_ty = if func.call_conv == FunctionCallConv::ActorHandler {
+        actor_name_from_handler_symbol(&func.name)
+            .and_then(|actor_name| record_layouts.get(actor_name).copied())
+    } else {
+        None
+    };
+
     let fn_ctx = FnCtx {
         ctx,
         llvm_mod,
         builder,
         return_slot,
         return_ty: return_ty_llvm,
+        return_resolved_ty: func.return_ty.clone(),
+        execution_context,
+        execution_context_is_actor_handler: func.call_conv == FunctionCallConv::ActorHandler,
+        actor_state_ty,
         locals,
+        local_tys,
         blocks: blocks.clone(),
         runtime_decls: RefCell::new(HashMap::new()),
         record_layouts,
@@ -3410,7 +5948,7 @@ fn lower_function<'ctx>(
         .iter()
         .any(|site| cooperate_site_matches(site, entry_block.id, CooperateKind::FunctionEntry))
     {
-        emit_cooperate_call(&fn_ctx)?;
+        emit_cooperate_check(&fn_ctx, entry_block.id, drop_plans)?;
     }
     fn_ctx
         .builder
@@ -3421,22 +5959,301 @@ fn lower_function<'ctx>(
         let bb = *blocks.get(&block.id).expect("block in map");
         fn_ctx.builder.position_at_end(bb);
         for instr in &block.instructions {
-            lower_instruction(&fn_ctx, instr)?;
+            lower_instruction(&fn_ctx, instr, block.id, drop_plans)?;
+        }
+        if cooperate_sites
+            .iter()
+            .any(|site| cooperate_site_matches(site, block.id, CooperateKind::LoopBackEdge))
+        {
+            emit_cooperate_check(&fn_ctx, block.id, drop_plans)?;
         }
         // Emit LIFO drops from the elaborated drop plan BEFORE the
         // terminator so the alloca null-stores precede the ret/br.
         // LESSONS: cleanup-all-exits (P0), lifecycle-symmetry (P0).
         emit_elab_drops(&fn_ctx, block.id, drop_plans)?;
-        if cooperate_sites
-            .iter()
-            .any(|site| cooperate_site_matches(site, block.id, CooperateKind::LoopBackEdge))
-        {
-            emit_cooperate_call(&fn_ctx)?;
-        }
         lower_terminator(&fn_ctx, fn_symbols, &block.terminator)?;
     }
 
     Ok(())
+}
+
+/// Emit a C-ABI terminate trampoline for an actor's `#[on(stop)]` hook.
+///
+/// The runtime's `terminate_fn` slot has ABI `fn(*mut c_void state) -> void`.
+/// The ActorHandler-lowered `__on_stop` function has ABI
+/// `fn(*mut HewExecutionContext) -> void`. This trampoline bridges the two:
+///
+/// 1. Acquire the actor-state lock via `hew_actor_state_lock_acquire` (using
+///    the actor pointer from the installed execution context, offset 0).
+/// 2. Call `hew_require_execution_context()` to get the context already
+///    installed by `call_terminate_fn` before this trampoline is entered.
+/// 3. Call `<Actor>__on_stop(ctx)` with the ActorHandler ABI.
+/// 4. Release the lock via `hew_actor_state_lock_release`.
+///
+/// The `state` parameter is unused — the execution context carries the actor
+/// pointer (offset 0) and all other dispatch-substrate state. `state` is
+/// present only to satisfy the `terminate_fn: fn(*mut c_void) -> void` ABI.
+///
+/// Panic safety: if the on(stop) body panics, `call_terminate_fn`'s
+/// `catch_unwind` catches it and releases the lock via
+/// `hew_actor_state_lock_release_after_panic` (LESSONS: cleanup-all-exits P0).
+fn emit_actor_terminate_trampoline<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    layout: &ActorLayout,
+    fn_symbols: &FnSymbolMap<'ctx>,
+) -> CodegenResult<()> {
+    let on_stop_symbol = layout.on_stop_symbol.as_deref().ok_or_else(|| {
+        CodegenError::FailClosed("emit_actor_terminate_trampoline: no on_stop_symbol".into())
+    })?;
+    let on_stop_fn = fn_symbols.get(on_stop_symbol).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "terminate trampoline for `{}` references undeclared on_stop handler `{on_stop_symbol}`",
+            layout.name
+        ))
+    })?;
+    let (on_stop_fn, _, _) = on_stop_fn.real(on_stop_symbol, "terminate trampoline")?;
+
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let trampoline_name = format!("__terminate_{}", layout.name);
+    let fn_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
+    let trampoline_fn = llvm_mod.add_function(&trampoline_name, fn_ty, Some(Linkage::Internal));
+    let builder = ctx.create_builder();
+    let entry = ctx.append_basic_block(trampoline_fn, "entry");
+    builder.position_at_end(entry);
+
+    // Declare required runtime functions inline (the trampoline has no FnCtx).
+    let require_ctx_ty = ptr_ty.fn_type(&[], false);
+    let require_ctx_fn = llvm_mod
+        .get_function("hew_require_execution_context")
+        .unwrap_or_else(|| {
+            llvm_mod.add_function("hew_require_execution_context", require_ctx_ty, None)
+        });
+    let lock_acquire_ty = ctx.i32_type().fn_type(&[ptr_ty.into()], false);
+    let lock_acquire_fn = llvm_mod
+        .get_function("hew_actor_state_lock_acquire")
+        .unwrap_or_else(|| {
+            llvm_mod.add_function("hew_actor_state_lock_acquire", lock_acquire_ty, None)
+        });
+    let lock_release_ty = ctx.i32_type().fn_type(&[ptr_ty.into()], false);
+    let lock_release_fn = llvm_mod
+        .get_function("hew_actor_state_lock_release")
+        .unwrap_or_else(|| {
+            llvm_mod.add_function("hew_actor_state_lock_release", lock_release_ty, None)
+        });
+
+    // Get the current execution context (installed by call_terminate_fn).
+    let ctx_ptr = builder
+        .build_call(require_ctx_fn, &[], "terminate_ctx")
+        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: require_ctx call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_require_execution_context returned void".into())
+        })?
+        .into_pointer_value();
+
+    // Load the actor pointer from context offset 0 (HEW_CTX_OFFSET_ACTOR).
+    let actor_ptr = unsafe {
+        builder
+            .build_gep(
+                ctx.i8_type(),
+                ctx_ptr,
+                &[ctx.i64_type().const_int(HEW_CTX_OFFSET_ACTOR as u64, false)],
+                "terminate_actor_slot",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: actor gep: {e:?}")))?
+    };
+    let actor_val = builder
+        .build_load(ptr_ty, actor_ptr, "terminate_actor")
+        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: actor load: {e:?}")))?
+        .into_pointer_value();
+
+    // Acquire the actor-state lock (same protocol as dispatch trampolines).
+    builder
+        .build_call(
+            lock_acquire_fn,
+            &[actor_val.into()],
+            "terminate_lock_acquire",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: lock acquire: {e:?}")))?;
+
+    // Call the on(stop) handler with the ActorHandler ABI (ctx as first arg).
+    builder
+        .build_call(on_stop_fn, &[ctx_ptr.into()], "terminate_on_stop_call")
+        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: on_stop call: {e:?}")))?;
+
+    // Release the actor-state lock.
+    builder
+        .build_call(
+            lock_release_fn,
+            &[actor_val.into()],
+            "terminate_lock_release",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: lock release: {e:?}")))?;
+
+    builder
+        .build_return(None)
+        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: return: {e:?}")))?;
+
+    Ok(())
+}
+
+fn emit_actor_dispatch_trampoline<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    layout: &ActorLayout,
+    fn_symbols: &FnSymbolMap<'ctx>,
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let dispatch_name = format!("__hew_actor_dispatch_{}", layout.name);
+    let fn_ty = ctx.void_type().fn_type(
+        &[
+            ptr_ty.into(),
+            ptr_ty.into(),
+            i32_ty.into(),
+            ptr_ty.into(),
+            i64_ty.into(),
+        ],
+        false,
+    );
+    let dispatch_fn = llvm_mod.add_function(&dispatch_name, fn_ty, Some(Linkage::Internal));
+    let builder = ctx.create_builder();
+    let entry = ctx.append_basic_block(dispatch_fn, "entry");
+    let default_bb = ctx.append_basic_block(dispatch_fn, "unknown_msg_type");
+    let after_bb = ctx.append_basic_block(dispatch_fn, "dispatch_done");
+    builder.position_at_end(entry);
+    let msg_type = dispatch_fn
+        .get_nth_param(2)
+        .ok_or_else(|| {
+            CodegenError::FailClosed("dispatch trampoline missing msg_type param".into())
+        })?
+        .into_int_value();
+    let mut cases = Vec::with_capacity(layout.handlers.len());
+    for handler in &layout.handlers {
+        let bb = ctx.append_basic_block(dispatch_fn, &format!("msg_{}", handler.msg_type));
+        cases.push((i32_ty.const_int(handler.msg_type as u64, false), bb));
+    }
+    builder
+        .build_switch(msg_type, default_bb, &cases)
+        .map_err(|e| CodegenError::Llvm(format!("actor dispatch switch: {e:?}")))?;
+
+    for (handler, (_, bb)) in layout.handlers.iter().zip(cases.iter()) {
+        builder.position_at_end(*bb);
+        let symbol = fn_symbols.get(&handler.symbol).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "actor dispatch `{dispatch_name}` references undeclared handler `{}`",
+                handler.symbol
+            ))
+        })?;
+        let (handler_fn, return_ty, returns_unit) =
+            symbol.real(&handler.symbol, "actor dispatch handler")?;
+        let ctx_arg = dispatch_fn
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::FailClosed("dispatch missing ctx param".into()))?;
+        let data_ptr = dispatch_fn
+            .get_nth_param(3)
+            .ok_or_else(|| CodegenError::FailClosed("dispatch missing data param".into()))?
+            .into_pointer_value();
+        let mut args: Vec<BasicMetadataValueEnum> = Vec::with_capacity(1 + handler.param_tys.len());
+        args.push(ctx_arg.into());
+        for (idx, param_ty) in handler.param_tys.iter().enumerate() {
+            let llvm_ty = resolve_ty(ctx, param_ty, record_layouts)?;
+            let loaded = builder
+                .build_load(llvm_ty, data_ptr, &format!("msg_arg_{idx}"))
+                .map_err(|e| CodegenError::Llvm(format!("actor dispatch arg load: {e:?}")))?;
+            args.push(metadata_value_from_basic(loaded));
+        }
+        let call = builder
+            .build_call(handler_fn, &args, &format!("call_{}", handler.name))
+            .map_err(|e| CodegenError::Llvm(format!("actor dispatch handler call: {e:?}")))?;
+        if !returns_unit {
+            let ret_val = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "actor handler `{}` has non-unit MIR return but LLVM call returned void",
+                    handler.symbol
+                ))
+            })?;
+            if ret_val.get_type() != return_ty {
+                return Err(CodegenError::FailClosed(format!(
+                    "actor handler `{}` return type mismatch: call={:?}, declared={return_ty:?}",
+                    handler.symbol,
+                    ret_val.get_type()
+                )));
+            }
+            let mut runtime_decls = RuntimeDeclMap::new();
+            let reply_channel =
+                intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_get_reply_channel")?;
+            let reply = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_reply")?;
+            let ch = builder
+                .build_call(reply_channel, &[], "hew_get_reply_channel_call")
+                .map_err(|e| CodegenError::Llvm(format!("get reply channel call: {e:?}")))?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_get_reply_channel returned void".into())
+                })?
+                .into_pointer_value();
+            let ret_slot = builder
+                .build_alloca(return_ty, "actor_reply_slot")
+                .map_err(|e| CodegenError::Llvm(format!("actor reply alloca: {e:?}")))?;
+            builder
+                .build_store(ret_slot, ret_val)
+                .map_err(|e| CodegenError::Llvm(format!("actor reply store: {e:?}")))?;
+            let size = return_ty.size_of().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "actor handler `{}` reply type has no static size: {return_ty:?}",
+                    handler.symbol
+                ))
+            })?;
+            let size = if size.get_type() == i64_ty {
+                size
+            } else {
+                builder
+                    .build_int_z_extend(size, i64_ty, "actor_reply_size")
+                    .map_err(|e| CodegenError::Llvm(format!("reply size zext: {e:?}")))?
+            };
+            builder
+                .build_call(
+                    reply,
+                    &[ch.into(), ret_slot.into(), size.into()],
+                    "hew_reply_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_reply call: {e:?}")))?;
+        }
+        builder
+            .build_unconditional_branch(after_bb)
+            .map_err(|e| CodegenError::Llvm(format!("actor dispatch branch: {e:?}")))?;
+    }
+
+    builder.position_at_end(default_bb);
+    let trap = Intrinsic::find("llvm.trap")
+        .and_then(|intrinsic| intrinsic.get_declaration(llvm_mod, &[]))
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    builder
+        .build_call(trap, &[], "actor_dispatch_unknown_msg_trap")
+        .map_err(|e| CodegenError::Llvm(format!("actor dispatch trap: {e:?}")))?;
+    builder
+        .build_unreachable()
+        .map_err(|e| CodegenError::Llvm(format!("actor dispatch unreachable: {e:?}")))?;
+
+    builder.position_at_end(after_bb);
+    builder
+        .build_return(None)
+        .map_err(|e| CodegenError::Llvm(format!("actor dispatch return: {e:?}")))?;
+    Ok(())
+}
+
+fn actor_name_from_handler_symbol(symbol: &str) -> Option<&str> {
+    symbol
+        .split_once("__recv__")
+        .map(|(actor_name, _)| actor_name)
+        .or_else(|| symbol.strip_suffix("__init"))
+        .or_else(|| symbol.strip_suffix("__on_start"))
+        .or_else(|| symbol.strip_suffix("__on_stop"))
 }
 
 // ---------------------------------------------------------------------------
@@ -3462,9 +6279,16 @@ fn build_module<'ctx>(
     // produces an empty map and changes no behaviour for record-free code.
     let record_layouts = register_record_layouts(ctx, &pipeline.record_layouts)?;
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
+    predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;
     for func in &pipeline.raw_mir {
         let sym = declare_function(ctx, &llvm_mod, func, &record_layouts)?;
         fn_symbols.insert(func.name.clone(), sym);
+    }
+    for actor in &pipeline.actor_layouts {
+        emit_actor_dispatch_trampoline(ctx, &llvm_mod, actor, &fn_symbols, &record_layouts)?;
+        if actor.on_stop_symbol.is_some() {
+            emit_actor_terminate_trampoline(ctx, &llvm_mod, actor, &fn_symbols)?;
+        }
     }
     for func in &pipeline.raw_mir {
         // Match by name: elaborated_mir is parallel to raw_mir when the
@@ -3578,6 +6402,7 @@ mod tests {
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: return_ty.clone(),
+            call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![return_ty.clone()],
             blocks: vec![BasicBlock {
@@ -3604,6 +6429,7 @@ mod tests {
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
         }
     }
 
@@ -3613,6 +6439,112 @@ mod tests {
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "const42_test").expect("const-42 module must build");
         assert!(m.verify().is_ok(), "const-42 module must pass LLVM verify");
+    }
+
+    #[test]
+    fn actor_handler_signature_leads_with_execution_context_pointer() {
+        let handler = RawMirFunction {
+            name: "handler".to_string(),
+            return_ty: ResolvedTy::I64,
+            call_conv: FunctionCallConv::ActorHandler,
+            params: vec![ResolvedTy::I64],
+            locals: vec![ResolvedTy::I64],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![
+                    Instr::EnterContext,
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(0),
+                    },
+                    Instr::ExitContext,
+                ],
+                terminator: Terminator::Return,
+            }],
+            decisions: Vec::new(),
+        };
+        let pipeline = IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![handler],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+        };
+        let ctx = Context::create();
+        let m = build_module(&ctx, &pipeline, "handler_ctx_test")
+            .expect("actor-handler module must build");
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("define internal i64 @handler(ptr %0, i64 %1)"),
+            "handler ABI must lead with opaque HewExecutionContext* before user params:\n{ir}"
+        );
+        assert!(
+            !ir.contains("hew_actor_state_lock_acquire"),
+            "actor-state locking belongs in the scheduler wrapper, not emitted handler IR:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn context_field_actor_offset_emits_gep_and_load() {
+        let handler = RawMirFunction {
+            name: "handler_ctx_field".to_string(),
+            return_ty: ResolvedTy::I64,
+            call_conv: FunctionCallConv::ActorHandler,
+            params: vec![],
+            locals: vec![
+                ResolvedTy::Pointer {
+                    is_mutable: true,
+                    pointee: Box::new(ResolvedTy::Never),
+                },
+                ResolvedTy::I64,
+            ],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![
+                    Instr::EnterContext,
+                    Instr::ContextField {
+                        dest: Place::Local(0),
+                        offset: HEW_CTX_OFFSET_ACTOR,
+                    },
+                    Instr::ConstI64 {
+                        dest: Place::Local(1),
+                        value: 0,
+                    },
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(1),
+                    },
+                    Instr::ExitContext,
+                ],
+                terminator: Terminator::Return,
+            }],
+            decisions: Vec::new(),
+        };
+        let pipeline = IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![handler],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+        };
+        let ctx = Context::create();
+        let m = build_module(&ctx, &pipeline, "ctx_field_test")
+            .expect("ContextField actor load must build");
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("getelementptr i8, ptr %0, i64 0"),
+            "ContextField must lower to byte-offset GEP from ctx arg:\n{ir}"
+        );
+        assert!(
+            ir.contains("load ptr, ptr %ctx_field_0_ptr"),
+            "ContextField actor offset must load a pointer from the GEP:\n{ir}"
+        );
     }
 
     // `String` is now a lowerable return type (maps to opaque `ptr`).
@@ -3626,6 +6558,7 @@ mod tests {
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: return_ty.clone(),
+            call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![return_ty.clone()],
             blocks: vec![BasicBlock {
@@ -3652,6 +6585,7 @@ mod tests {
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m =
@@ -3672,6 +6606,7 @@ mod tests {
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: return_ty.clone(),
+            call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: Vec::new(),
             blocks: vec![BasicBlock {
@@ -3689,6 +6624,7 @@ mod tests {
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let err =
@@ -3699,18 +6635,26 @@ mod tests {
         );
     }
 
-    // ── Terminator::Select fail-closed per arm kind ──────────────────
+    // ── Terminator::Select codegen ──────────────────────────────────
     //
-    // The four sealed select arm forms each lower through a distinct
-    // codegen match arm that fails closed with a message naming the
-    // runtime substrate the future implementation must wire. These
-    // tests pin the per-arm-kind diagnostic so a regression that
-    // silently swallows a Select terminator is caught immediately.
+    // ActorAsk and AfterTimer arms emit real IR (slice 3); StreamNext
+    // and TaskAwait remain fail-closed as defence-in-depth (the MIR
+    // producer rejects them with SelectArmNotImplemented before reaching
+    // codegen — but the codegen branch still guards against any future
+    // shape change that lets one slip through).
 
+    /// Construct an `IrPipeline` carrying a single function whose only
+    /// block is a `Terminator::Select` with the given single arm. Used
+    /// for the defence-in-depth fail-closed tests (StreamNext / TaskAwait
+    /// kinds; an `ActorAsk` arm without surrounding setup would fail at
+    /// `actor_payload_ptr_size` / `load_duplex_handle` for missing
+    /// locals — those positive paths are covered by the
+    /// `pipeline_with_select_*_arms` builders below).
     fn pipeline_with_select_terminator(arm_kind: hew_mir::SelectArmKind) -> IrPipeline {
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
+            call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64],
             blocks: vec![BasicBlock {
@@ -3735,89 +6679,705 @@ mod tests {
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
         }
     }
 
+    /// Stream-next arms remain fail-closed at codegen as
+    /// defence-in-depth — the MIR producer rejects them earlier but
+    /// the codegen branch must also refuse.
     #[test]
-    fn select_stream_next_arm_fails_closed_with_named_substrate() {
+    fn select_stream_next_arm_fails_closed_as_defence_in_depth() {
         let pipeline = pipeline_with_select_terminator(hew_mir::SelectArmKind::StreamNext {
             stream: Place::Local(0),
         });
         let ctx = Context::create();
         let err = build_module(&ctx, &pipeline, "select_stream_next")
-            .expect_err("Terminator::Select stream-next must fail closed");
+            .expect_err("Terminator::Select stream-next must fail closed at codegen");
         let msg = match err {
             CodegenError::FailClosed(s) => s,
             other => panic!("expected FailClosed, got {other:?}"),
         };
         assert!(
-            msg.contains("stream-next")
-                && msg.contains("hew_select_wait")
-                && msg.contains("hew_stream_poll")
-                && msg.contains("hew_stream_cancel_pending_read"),
-            "stream-next FailClosed must name the dispatch glue still \
-             missing and the substrate primitives that now exist: {msg}"
+            msg.contains("stream-next") && msg.contains("out of scope"),
+            "stream-next FailClosed must mark the arm as out-of-lane: {msg}"
         );
     }
 
+    /// Task-await arms remain fail-closed at codegen as
+    /// defence-in-depth.
     #[test]
-    fn select_actor_ask_arm_fails_closed_with_named_substrate() {
-        let pipeline = pipeline_with_select_terminator(hew_mir::SelectArmKind::ActorAsk {
-            actor: Place::Local(0),
-            method: "process".to_string(),
-            args: Vec::new(),
-        });
-        let ctx = Context::create();
-        let err = build_module(&ctx, &pipeline, "select_actor_ask")
-            .expect_err("Terminator::Select actor-ask must fail closed");
-        let msg = match err {
-            CodegenError::FailClosed(s) => s,
-            other => panic!("expected FailClosed, got {other:?}"),
-        };
-        assert!(
-            msg.contains("actor-ask") && msg.contains("Terminator::Ask"),
-            "actor-ask FailClosed must name the missing substrate \
-             (per-arm body-block construction terminated by \
-             Terminator::Ask): {msg}"
-        );
-    }
-
-    #[test]
-    fn select_task_await_arm_fails_closed_with_named_substrate() {
+    fn select_task_await_arm_fails_closed_as_defence_in_depth() {
         let pipeline = pipeline_with_select_terminator(hew_mir::SelectArmKind::TaskAwait {
             task: Place::Local(0),
         });
         let ctx = Context::create();
         let err = build_module(&ctx, &pipeline, "select_task_await")
-            .expect_err("Terminator::Select task-await must fail closed");
+            .expect_err("Terminator::Select task-await must fail closed at codegen");
         let msg = match err {
             CodegenError::FailClosed(s) => s,
             other => panic!("expected FailClosed, got {other:?}"),
         };
         assert!(
-            msg.contains("task-await")
-                && msg.contains("hew_task_scope_cancel_one")
-                && msg.contains("multiplex-await"),
-            "task-await FailClosed must name the available cancel ABI \
-             and the missing multiplex-await substrate: {msg}"
+            msg.contains("task-await") && msg.contains("out of scope"),
+            "task-await FailClosed must mark the arm as out-of-lane: {msg}"
         );
     }
 
+    /// A select carrying only an `AfterTimer` arm has no race; the
+    /// HIR should have rejected the shape, but codegen must refuse
+    /// defensively (no ActorAsk arms means nothing to race).
     #[test]
-    fn select_after_timer_arm_fails_closed_with_named_substrate() {
+    fn select_no_actor_ask_arms_fails_closed() {
         let pipeline = pipeline_with_select_terminator(hew_mir::SelectArmKind::AfterTimer {
             duration: Place::Local(0),
         });
         let ctx = Context::create();
-        let err = build_module(&ctx, &pipeline, "select_after_timer")
-            .expect_err("Terminator::Select after-timer must fail closed");
+        let err = build_module(&ctx, &pipeline, "select_after_only")
+            .expect_err("Terminator::Select with only AfterTimer must fail closed");
         let msg = match err {
             CodegenError::FailClosed(s) => s,
             other => panic!("expected FailClosed, got {other:?}"),
         };
         assert!(
-            msg.contains("after-timer") && msg.contains("hew_select_wait"),
-            "after-timer FailClosed must name the dispatch wiring: {msg}"
+            msg.contains("no ActorAsk arms"),
+            "after-only FailClosed must explain the sealed-shape violation: {msg}"
         );
+    }
+
+    // ── Terminator::Select positive-path emit (ActorAsk + AfterTimer) ─
+
+    /// Build an `IrPipeline` whose `main` issues a `Terminator::Select`
+    /// with the given arm vector. Local 0 is a `Duplex` (the actor
+    /// handle source for each ActorAsk arm); locals 1.. are per-arm
+    /// reply slots (one per ActorAsk arm) plus a single i64 reply
+    /// payload slot (unit-arg variant uses `ResolvedTy::Unit` to skip
+    /// payload pointer load). Local for after-arm duration is
+    /// allocated as `ResolvedTy::Duration` (i64 ns).
+    ///
+    /// The resulting function has one originating block (id 0) sealed
+    /// by `Terminator::Select` and per-arm body blocks (each just
+    /// `Terminator::Return`) plus a join block (also `Return`).
+    fn pipeline_with_select_arms(
+        arms: Vec<hew_mir::SelectArm>,
+        locals: Vec<ResolvedTy>,
+        body_block_ids: &[u32],
+        join_block_id: u32,
+    ) -> IrPipeline {
+        // Build the originating block + per-arm body blocks + join block.
+        let mut blocks: Vec<BasicBlock> = Vec::new();
+        blocks.push(BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Select {
+                arms,
+                next: join_block_id,
+            },
+        });
+        for &bb_id in body_block_ids {
+            blocks.push(BasicBlock {
+                id: bb_id,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Goto {
+                    target: join_block_id,
+                },
+            });
+        }
+        blocks.push(BasicBlock {
+            id: join_block_id,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Return,
+        });
+
+        let main = RawMirFunction {
+            name: "main".to_string(),
+            return_ty: ResolvedTy::I64,
+            call_conv: hew_mir::FunctionCallConv::Default,
+            params: vec![],
+            locals,
+            blocks,
+            decisions: Vec::new(),
+        };
+        IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![main],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+        }
+    }
+
+    /// Helper: a `ResolvedTy::Named { name: "Duplex", .. }` so the
+    /// codegen treats local 0 as an actor handle (the same shape
+    /// `Place::DuplexHandle` references via `load_duplex_handle`).
+    fn duplex_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "Duplex".to_string(),
+            args: Vec::new(),
+        }
+    }
+
+    /// Render the LLVM IR of the emitted module so test bodies can
+    /// inspect the call-site ordering, channel-array shape, and per-arm
+    /// dispatch (the "ground-truth" the runtime ABI demands).
+    fn emit_select_ir(name: &str, pipeline: &IrPipeline) -> String {
+        let ctx = Context::create();
+        let llvm_mod = build_module(&ctx, pipeline, name).expect("select pipeline must compile");
+        llvm_mod.print_to_string().to_string()
+    }
+
+    /// Two ActorAsk arms (no AfterTimer): emit shows exactly 2 channel
+    /// allocations, 2 ask-issues, 1 `hew_select_first` call with
+    /// timeout=-1, a switch on the winner index, per-winner reply
+    /// wait, and 1 cancel + 1 free for the losing arm in each winner
+    /// branch.
+    #[test]
+    fn select_two_actor_ask_arms_emit_full_dispatch() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "ping".to_string(),
+                    args: Vec::new(),
+                    msg_type: 7,
+                    value: Place::Local(3), // unit payload slot
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "pong".to_string(),
+                    args: Vec::new(),
+                    msg_type: 8,
+                    value: Place::Local(3),
+                },
+                body_block: 11,
+                binding: Some(Place::Local(2)),
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),      // 0: actor handle
+            ResolvedTy::I64,  // 1: arm 0 reply slot
+            ResolvedTy::I64,  // 2: arm 1 reply slot
+            ResolvedTy::Unit, // 3: payload (unit)
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_two_asks", &pipeline);
+
+        assert_eq!(
+            ir.matches("call ptr @hew_reply_channel_new(").count(),
+            2,
+            "expected 2 channel allocations; ir:\n{ir}"
+        );
+        assert_eq!(
+            ir.matches("call i32 @hew_actor_ask_with_channel(").count(),
+            2,
+            "expected 2 ask-issues; ir:\n{ir}"
+        );
+        assert_eq!(
+            ir.matches("call i32 @hew_select_first(").count(),
+            1,
+            "expected 1 hew_select_first call; ir:\n{ir}"
+        );
+        // No after arm → timeout_ms = -1.
+        assert!(
+            ir.contains("@hew_select_first(ptr %select_channels_first, i32 2, i32 -1)"),
+            "hew_select_first must be called with count=2, timeout=-1; ir:\n{ir}"
+        );
+        // One reply-wait per winner branch (two branches, one wait each).
+        assert_eq!(
+            ir.matches("call ptr @hew_reply_wait(").count(),
+            2,
+            "expected 2 reply-wait calls (one per winner branch); ir:\n{ir}"
+        );
+        // Cancel/free counts across the whole module:
+        //   - winner branches: 2 (each cancels 1 loser, frees winner-self + loser).
+        //   - setup_fail_0: 0 cancels (arm 0 failed first), 1 self-free.
+        //   - setup_fail_1: 1 cancel (arm 0 was successfully submitted),
+        //     2 frees (arm 0 + self).
+        // Totals: 2 (win) + 1 (setup_fail_1) = 3 cancels;
+        //         (1+1)*2 (winners) + 1 (setup_fail_0) + 2 (setup_fail_1) = 7 frees.
+        assert_eq!(
+            ir.matches("call void @hew_reply_channel_cancel(").count(),
+            3,
+            "expected 3 cancels (1 loser per winner branch + 1 recovery on \
+             arm-1 ask-issue failure); ir:\n{ir}"
+        );
+        assert_eq!(
+            ir.matches("call void @hew_reply_channel_free(").count(),
+            7,
+            "expected 7 channel frees across winner + setup-fail paths; ir:\n{ir}"
+        );
+    }
+
+    /// One ActorAsk + one AfterTimer arm: the AfterTimer's duration
+    /// drives the `hew_select_first` deadline (ns→ms / 1_000_000).
+    #[test]
+    fn select_actor_ask_plus_after_timer_emits_deadline() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "ping".to_string(),
+                    args: Vec::new(),
+                    msg_type: 7,
+                    value: Place::Local(3),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::AfterTimer {
+                    duration: Place::Local(2),
+                },
+                body_block: 11,
+                binding: None,
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),          // 0: actor handle
+            ResolvedTy::I64,      // 1: reply slot
+            ResolvedTy::Duration, // 2: after-arm duration (ns, i64)
+            ResolvedTy::Unit,     // 3: payload
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_ask_and_after", &pipeline);
+
+        // 1 channel allocation, 1 ask-issue, 1 hew_select_first call.
+        assert_eq!(ir.matches("call ptr @hew_reply_channel_new(").count(), 1);
+        assert_eq!(
+            ir.matches("call i32 @hew_actor_ask_with_channel(").count(),
+            1
+        );
+        assert_eq!(ir.matches("call i32 @hew_select_first(").count(), 1);
+        // Deadline derived from i64 ns: should show sdiv by 1_000_000.
+        assert!(
+            ir.contains("sdiv i64") && ir.contains("1000000"),
+            "expected ns→ms sdiv by 1_000_000; ir:\n{ir}"
+        );
+        // Two winner branches: ActorAsk winner + AfterTimer winner.
+        // Each branch cancels + frees the loser(s); the AfterTimer
+        // branch cancels + frees the single ActorAsk channel.
+        assert!(
+            ir.contains("select_win_ask_0:") && ir.contains("select_win_after:"),
+            "expected both winner branch labels; ir:\n{ir}"
+        );
+    }
+
+    /// Loser-cleanup order invariant (Risk R4): cancel BEFORE free on
+    /// every loser channel — the cancel flag + ref count are what
+    /// prevent UAF on a late-reply race.
+    #[test]
+    fn select_loser_cleanup_cancels_before_freeing() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "a".to_string(),
+                    args: Vec::new(),
+                    msg_type: 1,
+                    value: Place::Local(3),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "b".to_string(),
+                    args: Vec::new(),
+                    msg_type: 2,
+                    value: Place::Local(3),
+                },
+                body_block: 11,
+                binding: Some(Place::Local(2)),
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),
+            ResolvedTy::I64,
+            ResolvedTy::I64,
+            ResolvedTy::Unit,
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_loser_order", &pipeline);
+
+        // The loser cleanup lives in the per-winner "ok" block
+        // (`select_reply_ok_N`) following the defensive null-reply
+        // check on `hew_reply_wait`. We anchor on the named loser-load
+        // SSA value emitted by the codegen (`select_loser_load_wN_lM`)
+        // so we test the SAME channel's cleanup ordering, not arbitrary
+        // `hew_reply_channel_*` calls that may interleave the
+        // winner-self free.
+        //
+        // The two winners produce distinct SSA names
+        // (`select_loser_load_w0_l1` vs `select_loser_load_w1_l0`),
+        // so anchoring on the SSA name uniquely identifies each
+        // winner's loser cleanup regardless of block-label
+        // intervening text. We do not need to bound the search
+        // region — the SSA name is globally unique in this module.
+        let cancel0_idx = ir
+            .find("call void @hew_reply_channel_cancel(ptr %select_loser_load_w0_l1)")
+            .expect("loser cancel for arm-1 in win-0 region");
+        let free0_idx = ir
+            .find("call void @hew_reply_channel_free(ptr %select_loser_load_w0_l1)")
+            .expect("loser free for arm-1 in win-0 region");
+        assert!(
+            cancel0_idx < free0_idx,
+            "Risk R4: cancel must precede free in win-0 loser cleanup"
+        );
+
+        let cancel1_idx = ir
+            .find("call void @hew_reply_channel_cancel(ptr %select_loser_load_w1_l0)")
+            .expect("loser cancel for arm-0 in win-1 region");
+        let free1_idx = ir
+            .find("call void @hew_reply_channel_free(ptr %select_loser_load_w1_l0)")
+            .expect("loser free for arm-0 in win-1 region");
+        assert!(
+            cancel1_idx < free1_idx,
+            "Risk R4: cancel must precede free in win-1 loser cleanup"
+        );
+    }
+
+    /// Mid-setup error recovery (Risk R3): if any `hew_actor_ask_with_channel`
+    /// returns non-zero, every channel allocated through that point is
+    /// freed and the path traps. We assert the IR contains a
+    /// `select_setup_fail_N` block per arm with the recovery sequence.
+    #[test]
+    fn select_setup_failure_branches_free_allocated_channels_and_trap() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "a".to_string(),
+                    args: Vec::new(),
+                    msg_type: 1,
+                    value: Place::Local(3),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "b".to_string(),
+                    args: Vec::new(),
+                    msg_type: 2,
+                    value: Place::Local(3),
+                },
+                body_block: 11,
+                binding: Some(Place::Local(2)),
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),
+            ResolvedTy::I64,
+            ResolvedTy::I64,
+            ResolvedTy::Unit,
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_setup_recovery", &pipeline);
+
+        // Per-arm setup-failure blocks must exist.
+        assert!(
+            ir.contains("select_setup_fail_0:") && ir.contains("select_setup_fail_1:"),
+            "expected per-arm setup-failure blocks; ir:\n{ir}"
+        );
+        // The recovery path must call hew_trap_with_code(206) and
+        // llvm.trap then unreachable (matching the Send-fail shape).
+        assert!(
+            ir.contains("@hew_trap_with_code") && ir.contains("call void @llvm.trap"),
+            "expected hew_trap_with_code + llvm.trap on setup-fail path; ir:\n{ir}"
+        );
+    }
+
+    /// Setup-fail-1 (arm 1's ask fails) must cancel-then-free arm 0's
+    /// channel (an ask was successfully submitted on arm 0, so a late
+    /// reply is possible) before freeing arm 1's own channel.
+    #[test]
+    fn select_setup_failure_in_second_arm_cleans_up_first_arm_with_cancel_first() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "a".to_string(),
+                    args: Vec::new(),
+                    msg_type: 1,
+                    value: Place::Local(3),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "b".to_string(),
+                    args: Vec::new(),
+                    msg_type: 2,
+                    value: Place::Local(3),
+                },
+                body_block: 11,
+                binding: Some(Place::Local(2)),
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),
+            ResolvedTy::I64,
+            ResolvedTy::I64,
+            ResolvedTy::Unit,
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_setup_recovery_late", &pipeline);
+
+        let fail1_idx = ir
+            .find("select_setup_fail_1:")
+            .expect("setup-fail-1 block must exist");
+        // Bound the region by the next block label after fail-1; for
+        // simplicity, search the rest of the IR for the cancel before
+        // any free.
+        let fail1_region = &ir[fail1_idx..];
+        let cancel_idx = fail1_region
+            .find("call void @hew_reply_channel_cancel(")
+            .expect("setup-fail-1 must cancel arm-0's channel");
+        let free_idx = fail1_region
+            .find("call void @hew_reply_channel_free(")
+            .expect("setup-fail-1 must free at least one channel");
+        assert!(
+            cancel_idx < free_idx,
+            "setup-fail-1 must cancel arm-0 BEFORE any free (UAF mitigation); region:\n{fail1_region}"
+        );
+    }
+
+    /// The winner-switch dispatches on the i32 returned by
+    /// `hew_select_first`. Each ActorAsk arm slot index is a case;
+    /// the default lands on the AfterTimer winner block when present.
+    #[test]
+    fn select_winner_switch_uses_arm_slot_index() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "a".to_string(),
+                    args: Vec::new(),
+                    msg_type: 1,
+                    value: Place::Local(3),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::AfterTimer {
+                    duration: Place::Local(2),
+                },
+                body_block: 11,
+                binding: None,
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),
+            ResolvedTy::I64,
+            ResolvedTy::Duration,
+            ResolvedTy::Unit,
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_switch_shape", &pipeline);
+
+        // An LLVM `switch i32 %winner_idx, label %<default> [ ...
+        // i32 0, label %select_win_ask_0 ... ]` pattern must appear.
+        assert!(
+            ir.contains("switch i32 %select_winner_idx") && ir.contains("select_win_ask_0"),
+            "expected switch on winner index with per-arm case; ir:\n{ir}"
+        );
+        assert!(
+            ir.contains("select_win_after"),
+            "default arm of the switch must route to the AfterTimer winner block; ir:\n{ir}"
+        );
+    }
+
+    /// Channel-array allocation: a fixed-size `[N x ptr]` alloca with
+    /// N = number of ActorAsk arms; the `hew_select_first` call site
+    /// receives the array-first GEP, not the alloca handle directly.
+    #[test]
+    fn select_channel_array_layout_matches_runtime_abi() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "a".to_string(),
+                    args: Vec::new(),
+                    msg_type: 1,
+                    value: Place::Local(3),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "b".to_string(),
+                    args: Vec::new(),
+                    msg_type: 2,
+                    value: Place::Local(3),
+                },
+                body_block: 11,
+                binding: Some(Place::Local(2)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "c".to_string(),
+                    args: Vec::new(),
+                    msg_type: 3,
+                    value: Place::Local(5),
+                },
+                body_block: 12,
+                binding: Some(Place::Local(4)),
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),
+            ResolvedTy::I64,
+            ResolvedTy::I64,
+            ResolvedTy::Unit,
+            ResolvedTy::I64,
+            ResolvedTy::Unit,
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11, 12], 99);
+        let ir = emit_select_ir("select_three_asks", &pipeline);
+
+        // [3 x ptr] alloca for the channel array.
+        assert!(
+            ir.contains("alloca [3 x ptr]"),
+            "expected [3 x ptr] channel-array alloca; ir:\n{ir}"
+        );
+        // Three ask-issues + one select_first call.
+        assert_eq!(
+            ir.matches("call i32 @hew_actor_ask_with_channel(").count(),
+            3
+        );
+        assert!(ir.contains("@hew_select_first(ptr %select_channels_first, i32 3, i32 -1)"));
+    }
+
+    /// Producer-bridge: the SelectArm.binding Place is the slot codegen
+    /// writes the reply into on win. We verify the winner block emits
+    /// a load from the reply pointer + a store into the binding
+    /// alloca, then frees the reply buffer.
+    #[test]
+    fn select_winner_writes_reply_into_binding_place_and_frees_buffer() {
+        let arms = vec![hew_mir::SelectArm {
+            kind: hew_mir::SelectArmKind::ActorAsk {
+                actor: Place::DuplexHandle(0),
+                method: "ping".to_string(),
+                args: Vec::new(),
+                msg_type: 1,
+                value: Place::Local(2),
+            },
+            body_block: 10,
+            binding: Some(Place::Local(1)),
+        }];
+        let locals = vec![duplex_ty(), ResolvedTy::I64, ResolvedTy::Unit];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10], 99);
+        let ir = emit_select_ir("select_one_ask_binding", &pipeline);
+
+        // The reply-wait result is loaded, stored into the binding,
+        // and then `free`d (libc free, not channel_free).
+        assert!(
+            ir.contains("@hew_reply_wait("),
+            "winner must wait on its channel; ir:\n{ir}"
+        );
+        assert!(
+            ir.contains("call void @free("),
+            "winner must free the reply buffer via libc free; ir:\n{ir}"
+        );
+        // The binding's alloca (local_1) must receive a store of the
+        // loaded reply value.
+        assert!(
+            ir.contains("%local_1") && ir.contains("store i64"),
+            "binding slot (local_1) must receive the reply value; ir:\n{ir}"
+        );
+    }
+
+    /// Each winner branch defensively traps if `hew_reply_wait` returns
+    /// null (the allocation-failure-during-publish path documented at
+    /// `hew-runtime/src/reply_channel.rs:164`). Mirrors the null-trap
+    /// shape of `Terminator::Ask`'s lowering.
+    #[test]
+    fn select_winner_traps_on_null_reply_pointer() {
+        let arms = vec![hew_mir::SelectArm {
+            kind: hew_mir::SelectArmKind::ActorAsk {
+                actor: Place::DuplexHandle(0),
+                method: "ping".to_string(),
+                args: Vec::new(),
+                msg_type: 1,
+                value: Place::Local(2),
+            },
+            body_block: 10,
+            binding: Some(Place::Local(1)),
+        }];
+        let locals = vec![duplex_ty(), ResolvedTy::I64, ResolvedTy::Unit];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10], 99);
+        let ir = emit_select_ir("select_null_reply_trap", &pipeline);
+
+        assert!(
+            ir.contains("select_reply_null_trap_0:") && ir.contains("select_reply_ok_0:"),
+            "expected null-trap + ok blocks per winner; ir:\n{ir}"
+        );
+        // The conditional branch must route null to the trap block.
+        assert!(
+            ir.contains("br i1 %select_reply_is_null_0, label %select_reply_null_trap_0"),
+            "expected conditional branch on null reply; ir:\n{ir}"
+        );
+    }
+
+    /// Module-verification: the emitted module passes `Module::verify`.
+    /// This is the floor invariant — any structural error in the
+    /// channel-array, switch, or per-arm CFG composition is caught
+    /// here even if the per-feature tests above pass.
+    #[test]
+    fn select_emitted_module_verifies() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "ping".to_string(),
+                    args: Vec::new(),
+                    msg_type: 7,
+                    value: Place::Local(3),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::AfterTimer {
+                    duration: Place::Local(2),
+                },
+                body_block: 11,
+                binding: None,
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),
+            ResolvedTy::I64,
+            ResolvedTy::Duration,
+            ResolvedTy::Unit,
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ctx = Context::create();
+        let llvm_mod =
+            build_module(&ctx, &pipeline, "select_verify").expect("pipeline must compile");
+        if let Err(e) = llvm_mod.verify() {
+            panic!(
+                "emitted Select module failed verification: {}\nIR:\n{}",
+                e.to_string(),
+                llvm_mod.print_to_string().to_string()
+            );
+        }
     }
 }

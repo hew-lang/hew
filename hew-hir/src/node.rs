@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{BinaryOp, OverflowPolicy, ResourceMarker, Span};
-use hew_types::ResolvedTy;
+use hew_types::{ExecutionContextReader, ResolvedTy};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::monomorph::{MonomorphizedFn, RecordLayout};
@@ -90,16 +90,9 @@ pub enum HirItem {
 ///
 /// Carries the structural shape of an `actor` item — state fields, optional
 /// `init { ... }` block, receive handlers (`receive fn`), regular methods, and
-/// `#[on(start|stop|crash|upgrade)]` lifecycle hooks — together with the
-/// runtime-configuration metadata lifted from the parser surface and the
-/// checker side-tables (`#[max_heap(N)]` arena cap).
-///
-/// Method, receive-handler, and init bodies are **not** lowered to `HirBlock`
-/// in this slice (Lane A). Mirrors `HirMachineDecl`: bodies stay on the parser
-/// AST and are consumed by the C++ MLIR pipeline today; the next M6 slice
-/// (HIR-MIR actor-body lowering) will populate them. The Rust MIR producer
-/// treats `HirItem::Actor` as a no-op tier alongside `Record`/`TypeDecl`/
-/// `Machine` for now.
+/// `#[on(start|stop|crash|upgrade)]` lifecycle hooks — together with lowered
+/// bodies, parameter bindings, runtime-configuration metadata lifted from the
+/// parser surface, and checker side-tables (`#[max_heap(N)]` arena cap).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorDecl {
     pub id: ItemId,
@@ -117,9 +110,8 @@ pub struct HirActorDecl {
     /// periodic scheduling (validated by the checker; recorded here as a
     /// structural flag plus the duration in nanoseconds).
     pub receive_handlers: Vec<HirActorReceiveFn>,
-    /// Plain methods on the actor (not lifecycle hooks). Methods are
-    /// dispatched through the actor's mailbox at the codegen layer; their
-    /// bodies are not lowered to HIR in Lane A.
+    /// Plain methods on the actor (not lifecycle hooks), with lowered HIR
+    /// bodies ready for MIR/codegen consumers.
     pub methods: Vec<HirActorMethod>,
     /// `#[on(start|stop|crash|upgrade)]` lifecycle hooks, exhaustively
     /// bucketed by `kind`. The checker (`check_actor_methods`) enforces
@@ -151,31 +143,26 @@ pub struct HirActorDecl {
     pub span: Span,
 }
 
-/// One parameter on an actor `init` / `receive fn` / `method`. Carries the
-/// resolved parameter type but not a `BindingId` — Lane A does not lower
-/// actor bodies, so no scope is opened over these parameters yet. The
-/// next slice (body lowering) will replace this with full `HirBinding`s.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirActorParam {
-    pub name: String,
-    pub ty: ResolvedTy,
-    pub mutable: bool,
-    pub span: Span,
-}
-
-/// Lowered `init` block on an actor. The body is not lowered to `HirBlock`
-/// in Lane A; the next slice will populate it.
+/// Lowered `init` block on an actor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorInit {
-    pub params: Vec<HirActorParam>,
+    pub params: Vec<HirBinding>,
+    pub body: HirBlock,
 }
 
 /// Lowered `receive fn` on an actor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorReceiveFn {
     pub name: String,
-    pub params: Vec<HirActorParam>,
+    pub is_generator: bool,
+    pub params: Vec<HirBinding>,
+    /// For ordinary receive handlers this is the handler return type. For
+    /// generator receive handlers this remains the declared yield element type;
+    /// the body itself lowers with unit expectation.
     pub return_ty: ResolvedTy,
+    pub body: HirBlock,
+    /// Compiler-inserted actor-state guard required around this receive body.
+    pub state_guard: HirActorStateGuard,
     /// `#[every(<duration>)]` periodic scheduling annotation. `None` if the
     /// receiver is purely message-driven; `Some(ns)` with the duration in
     /// nanoseconds when the checker has validated the attribute.
@@ -185,12 +172,20 @@ pub struct HirActorReceiveFn {
     pub span: Span,
 }
 
+/// Actor-state guard policy carried by dispatchable actor HIR nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirActorStateGuard {
+    /// Generated dispatch acquires exclusive actor-state access for the body.
+    Exclusive,
+}
+
 /// Lowered plain method on an actor (not a lifecycle hook).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorMethod {
     pub name: String,
-    pub params: Vec<HirActorParam>,
+    pub params: Vec<HirBinding>,
     pub return_ty: ResolvedTy,
+    pub body: HirBlock,
     /// Source span of the `fn` declaration (from the parser's
     /// `FnDecl.fn_span`).
     pub span: Span,
@@ -203,8 +198,9 @@ pub struct HirActorMethod {
 pub struct HirLifecycleHook {
     pub kind: HirLifecycleHookKind,
     pub name: String,
-    pub params: Vec<HirActorParam>,
+    pub params: Vec<HirBinding>,
     pub return_ty: ResolvedTy,
+    pub body: HirBlock,
     /// Source span of the `fn` declaration (from the parser's
     /// `FnDecl.fn_span`).
     pub span: Span,
@@ -449,6 +445,7 @@ pub struct HirStmt {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirStmtKind {
     Let(HirBinding, Option<HirExpr>),
+    Assign { target: HirExpr, value: HirExpr },
     Expr(HirExpr),
     Return(Option<HirExpr>),
 }
@@ -471,6 +468,9 @@ pub enum HirExprKind {
         name: String,
         resolved: ResolvedRef,
     },
+    ContextReader {
+        reader: ExecutionContextReader,
+    },
     Binary {
         op: BinaryOp,
         left: Box<HirExpr>,
@@ -479,6 +479,31 @@ pub enum HirExprKind {
     Call {
         callee: Box<HirExpr>,
         args: Vec<HirExpr>,
+    },
+    /// `spawn Actor(field: value, ...)` — named-actor spawn. The checker owns
+    /// the result type (`LocalPid<Actor>`); HIR carries only the structural spawn
+    /// surface and lowered init arguments for MIR/codegen.
+    Spawn {
+        actor_name: String,
+        args: Vec<(String, HirExpr)>,
+    },
+    /// Fire-and-forget actor receive dispatch, selected from the checker's
+    /// `actor_method_dispatch` side table. HIR does not reclassify receiver
+    /// types; absence of a checker discriminator for an actor receiver is a
+    /// boundary diagnostic.
+    ActorSend {
+        receiver: Box<HirExpr>,
+        method_id: String,
+        args: Vec<HirExpr>,
+    },
+    /// Request/reply actor receive dispatch, selected from the checker's
+    /// `actor_method_dispatch` side table. `reply_ty` is checker-resolved and
+    /// crosses the boundary as `ResolvedTy`.
+    ActorAsk {
+        receiver: Box<HirExpr>,
+        method_id: String,
+        args: Vec<HirExpr>,
+        reply_ty: ResolvedTy,
     },
     Block(HirBlock),
     If {
@@ -534,6 +559,18 @@ pub enum HirExprKind {
         args: Vec<HirExpr>,
         task_ty: ResolvedTy,
     },
+    /// `fork { ... }` inside a scope. The block is an anonymous child task
+    /// body; later MIR slices attach a derived cancellation token and spawn it.
+    ForkBlock {
+        body: HirBlock,
+        task_ty: ResolvedTy,
+    },
+    /// `after(duration) { ... }` inside a scope. The clause is the lexical
+    /// deadline edge that later MIR slices lower to scope-token cancellation.
+    ScopeDeadline {
+        duration: Box<HirExpr>,
+        body: HirBlock,
+    },
     /// `await name` consumes a `Task<T>` binding and produces `T`. Legal
     /// positions in v0.5: statement-position inside a `scope{}` body. Future
     /// versions extend this to select-arm source expressions (cluster-5).
@@ -582,6 +619,19 @@ pub enum HirExprKind {
         reply_ty: ResolvedTy,
         body: Box<HirExpr>,
         captures: Vec<HirLambdaCapture>,
+    },
+    /// General closure literal (`|...| ...` / `move |...| ...`).
+    ///
+    /// The checker owns capture legality and records binding-accurate capture
+    /// facts keyed by the closure literal span. HIR lowers those facts into a
+    /// resolved capture ledger with HIR binding ids and fully-resolved field
+    /// types so MIR can materialise a concrete environment record rather than
+    /// rediscovering captures from expression shape.
+    Closure {
+        params: Vec<HirBinding>,
+        ret_ty: ResolvedTy,
+        body: Box<HirExpr>,
+        captures: Vec<HirClosureCapture>,
     },
     /// Project one element out of a tuple value: `expr.<index>`.
     ///
@@ -709,6 +759,21 @@ pub struct HirLambdaCapture {
     pub kind: HirCaptureKind,
 }
 
+/// One captured binding inside a general closure environment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirClosureCapture {
+    /// The captured binding's id in the enclosing HIR scope.
+    pub binding: BindingId,
+    /// Surface name used at the capture site.
+    pub name: String,
+    /// Fully-resolved field type stored in the generated environment record.
+    pub ty: ResolvedTy,
+    /// Checker-selected by-value capture mode.
+    pub mode: hew_types::ClosureCaptureMode,
+    /// Whether the captured type satisfies the checker-owned Send contract.
+    pub is_send: bool,
+}
+
 /// Capture-strength selector for an `HirLambdaCapture`. Mirrors
 /// the MIR-layer `CaptureKind` shape — kept HIR-local so the HIR
 /// crate doesn't depend on `hew-mir`.
@@ -734,10 +799,19 @@ pub struct HirSelect {
 /// for `AfterTimer` arms (timer arms produce no value) and `Some` for
 /// the three value-bearing forms. The `body` runs only when this arm
 /// wins.
+///
+/// `binding_id` is the [`BindingId`] HIR allocated for `binding_name`
+/// when it pushed the arm-body's scope (see slice 1 — `lower_select` at
+/// `lower.rs:3262`). MIR's `Terminator::Select` producer reads this id
+/// to register `binding_locals[id] = <reply_dest>` before lowering the
+/// arm body so the body's `BindingRef` to `binding_name` resolves to
+/// the per-arm reply slot. `None` whenever `binding_name` is `None`
+/// (e.g. `AfterTimer` arms; arms without an `<name> from` pattern).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirSelectArm {
     pub kind: HirSelectArmKind,
     pub binding_name: Option<String>,
+    pub binding_id: Option<BindingId>,
     pub body: HirExpr,
 }
 

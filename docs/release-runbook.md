@@ -7,7 +7,7 @@ This is the concrete expansion of the `ci-full-run-pre-tag` todo.
 
 - [ ] All release-lane PRs merged to `main`
 - [ ] `main` CI is green (check [Actions → CI](../../actions/workflows/ci.yml))
-- [ ] Nightly sanitizers are clean (check [Actions → Nightly Sanitizers](../../actions/workflows/nightly-sanitizers.yml)) — TSan is advisory, see Known gaps
+- [ ] The release branch `gate-sanitizers` job is green: ASan passed on the release commit, and TSan/Miri are either green in their recurring lanes or covered by commit-pinned waivers in `release-sanitizer-waiver.toml` (see Known gaps)
 - [ ] FreeBSD nightly is green or has a known-issue note (check [Actions → FreeBSD CI](../../actions/workflows/freebsd.yml))
 - [ ] CHANGELOG.md `[Unreleased]` section is populated
 - [ ] Curated GitHub release notes are drafted at `docs/releases/vX.Y.Z.md`
@@ -91,7 +91,9 @@ This triggers `.github/workflows/release-gate.yml`, which runs:
 | macOS arm64    | hew-cli, adze-cli, hew-lsp, hew-lib     | Rust workspace, codegen E2E (native) |
 | Windows x86_64 | adze-cli, hew-lsp (hew-cli: check only) | Rust workspace (no codegen)         |
 
-**Wait for all four gate jobs to go green.**
+**Wait for all release gate jobs to go green, including `gate-sanitizers`.**
+The sanitizer job runs ASan on the release branch commit and rejects missing,
+ambiguous, expired, or non-commit-scoped TSan/Miri waivers.
 
 ## Phase 4 — Local cross-platform validation (optional but recommended)
 
@@ -167,6 +169,10 @@ Expected `otool -L` output is limited to system paths under `/usr/lib/` and
 release blocker.
 
 ## Phase 5 — Tag and release
+
+Do not tag until `.github/workflows/release-gate.yml` is green on the release
+branch. In particular, `gate-sanitizers` must have validated ASan on the exact
+release commit and accepted any TSan/Miri waivers for that same commit.
 
 ```bash
 git tag v0.4.0
@@ -263,12 +269,54 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 | macOS build + tests          | ci.yml + release-gate.yml    | Yes       |
 | Windows build + tests        | ci.yml + release-gate.yml    | Yes       |
 | FreeBSD build + tests        | freebsd.yml (nightly)        | Advisory  |
-| ASan + UBSan                 | nightly-sanitizers.yml       | Advisory  |
-| TSan (Rust runtime)          | nightly-sanitizers.yml       | Advisory (waived — see Known gaps) |
+| ASan                         | release-gate.yml (`gate-sanitizers`) + nightly-sanitizers.yml | Yes for release branches |
+| TSan (Rust runtime)          | nightly-sanitizers.yml + `release-sanitizer-waiver.toml` | Waiver-carried for releases |
+| Miri                         | `release-sanitizer-waiver.toml` | Waiver-carried for releases |
 | Codegen silent-failure lint  | codegen-lint.yml (PR)        | Advisory  |
 | Local cross-platform build   | `make pre-release`           | Recommended |
 
 ## Known gaps (tracked)
+
+### Sanitizer trust contract
+
+The release branch gate is the release-time authority for sanitizer evidence:
+
+- **ASan is a hard pre-tag gate on the exact release commit.** The
+  `gate-sanitizers` job in `.github/workflows/release-gate.yml` runs
+  `make asan`, records the result, and then invokes
+  `scripts/check-sanitizer-gate.sh "${GITHUB_SHA}" ...`. The validator fails
+  closed when the ASan result is absent, red, skipped, or ambiguous.
+- **TSan is waiver-carried for releases while the upstream nightly
+  `build-std`/TSan link failure remains unresolved.** The nightly sanitizer
+  lane still provides signal, but a release commit needs an explicit
+  `axis = "tsan"` waiver row in `release-sanitizer-waiver.toml` unless a
+  future lane promotes TSan to a recurring green release input.
+- **Miri is not yet a recurring gate.** It is reserved in the same waiver
+  contract because Miri has caught real Stacked-Borrows issues, but standing up
+  the recurring subset and skip policy is tracked separately.
+- **ASan coverage is only as broad as `make asan`.** Today that command runs
+  the `hew-runtime --lib` ASan suite. It does not prove integration-only free
+  sites, thread-reachable handle leaks, or every packaged binary path are
+  covered. Expanding ASan to integration binaries is a tracked follow-on; once
+  `make asan` grows, the release gate inherits that coverage automatically.
+
+To add a waiver, edit `release-sanitizer-waiver.toml` on the release branch and
+add one `[[waiver]]` row per non-green axis:
+
+```toml
+[[waiver]]
+axis = "tsan"
+reason = "upstream nightly build-std + TSan link failure"
+tracking = "https://github.com/hew-lang/hew/issues/<issue>"
+commit = "<40-hex release commit SHA>"
+expires = "YYYY-MM-DD"
+```
+
+The `commit` must match the release branch HEAD exactly. Keep `expires` short
+enough to force re-evaluation on the next release candidate, and remove expired
+rows instead of extending them without new evidence. Blanket waivers
+(`axis = "*"`, `axis = "all"`), missing fields, duplicate rows, and expired
+rows fail the gate.
 
 - **Windows codegen**: hew-cli is `cargo check` only on Windows CI (no LLVM provisioned).
   The release.yml Windows job builds from source (~90 min). If the Windows build
@@ -286,9 +334,10 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
   publish the LLVM 22 packages the release build uses. Validate linux-aarch64
   on Ubuntu 24.04 arm64 instead (CI `ubuntu-24.04-arm`, or an Ubuntu 24.04
   arm VM/container / remote host).
-- **TSan (Rust runtime)**: `continue-on-error: true` — upstream Rust/Cargo build-std +
-  TSan link failures (duplicate lang items, panic-strategy mismatch) have no clean
-  repo-side fix as of 2026-04.  Kept for signal; re-evaluate when upstream resolves.
+- **TSan (Rust runtime)**: upstream Rust/Cargo build-std + TSan link failures
+  (duplicate lang items, panic-strategy mismatch) have no clean repo-side fix
+  as of 2026-04. Keep the nightly signal and carry release exceptions only via
+  `release-sanitizer-waiver.toml`; re-evaluate when upstream resolves.
 - **WASM capability gaps**: Channels and I/O streams are rejected at compile
   time when targeting wasm32-wasi.  Timers (`sleep_ms`/`sleep`) now have
   cooperative semantics on WASM (actor parks at message boundary) and emit a

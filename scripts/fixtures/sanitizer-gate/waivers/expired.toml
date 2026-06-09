@@ -1,0 +1,13 @@
+[[waiver]]
+axis = "tsan"
+reason = "upstream nightly build-std + TSan link failure"
+tracking = "https://github.com/hew-lang/hew/issues/0000"
+commit = "0123456789abcdef0123456789abcdef01234567"
+expires = "2000-01-01"
+
+[[waiver]]
+axis = "miri"
+reason = "recurring Miri release gate is tracked separately"
+tracking = "https://github.com/hew-lang/hew/issues/0001"
+commit = "0123456789abcdef0123456789abcdef01234567"
+expires = "2999-12-31"

@@ -1,0 +1,5 @@
+[[waiver]]
+axis = "tsan"
+reason = "upstream nightly build-std + TSan link failure"
+commit = "0123456789abcdef0123456789abcdef01234567"
+expires = "2999-12-31"

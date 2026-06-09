@@ -55,7 +55,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-runtime-net test-runtime-unit test-stdlib test-hew test-ux-examples test-surface-examples test-release-binary asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-runtime-net test-runtime-unit test-stdlib test-hew test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined
@@ -590,6 +590,41 @@ test-surface-examples: hew runtime stdlib
 	  echo "ERROR: $$fail surface example(s) failed — run \`hew run <file>\` to reproduce"; \
 	  exit 1; \
 	fi
+
+# Release sanitizer gate validator self-test.
+check-sanitizer-gate:
+	@set -e; \
+	commit=0123456789abcdef0123456789abcdef01234567; \
+	fixture=scripts/fixtures/sanitizer-gate; \
+	pass=0; \
+	fail=0; \
+	expect_reject() { \
+	  name="$$1"; asan_file="$$2"; waiver_file="$$3"; \
+	  if scripts/check-sanitizer-gate.sh "$$commit" "$$asan_file" "$$waiver_file"; then \
+	    echo "FAIL $$name: expected reject"; fail=$$((fail + 1)); \
+	  else \
+	    echo "ok $$name: rejected"; pass=$$((pass + 1)); \
+	  fi; \
+	}; \
+	expect_accept() { \
+	  name="$$1"; asan_file="$$2"; waiver_file="$$3"; \
+	  if scripts/check-sanitizer-gate.sh "$$commit" "$$asan_file" "$$waiver_file"; then \
+	    echo "ok $$name: accepted"; pass=$$((pass + 1)); \
+	  else \
+	    echo "FAIL $$name: expected accept"; fail=$$((fail + 1)); \
+	  fi; \
+	}; \
+	expect_reject "1 no ASan result" "$$fixture/missing.result" "$$fixture/waivers/valid.toml"; \
+	expect_reject "2 ASan red" "$$fixture/asan-fail.result" "$$fixture/waivers/valid.toml"; \
+	expect_reject "3 ASan ambiguous/skipped" "$$fixture/asan-ambiguous.result" "$$fixture/waivers/valid.toml"; \
+	expect_reject "4 missing TSan/Miri waivers" "$$fixture/asan-pass.result" "$$fixture/waivers/none.toml"; \
+	expect_reject "5 waiver for different commit" "$$fixture/asan-pass.result" "$$fixture/waivers/different-commit.toml"; \
+	expect_reject "6 expired waiver" "$$fixture/asan-pass.result" "$$fixture/waivers/expired.toml"; \
+	expect_reject "7 blanket waiver" "$$fixture/asan-pass.result" "$$fixture/waivers/blanket.toml"; \
+	expect_reject "8 missing required field" "$$fixture/asan-pass.result" "$$fixture/waivers/missing-field.toml"; \
+	expect_accept "9 ASan green with valid commit-scoped waivers" "$$fixture/asan-pass.result" "$$fixture/waivers/valid.toml"; \
+	echo "$$pass sanitizer gate cases passed, $$fail failed"; \
+	if [ "$$fail" -ne 0 ]; then exit 1; fi
 
 # Nightly rust-runtime ASan command (Linux/nightly toolchain required).
 asan:

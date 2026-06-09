@@ -15,7 +15,6 @@
 #
 # NOT covered here (run separately before tagging):
 #   - FreeBSD (nightly via freebsd.yml or local `make pre-release PLATFORMS=freebsd`)
-#   - Sanitizers (nightly via nightly-sanitizers.yml)
 #   - Native↔sandbox-VM parity: PR CI enforces this on Linux with a provisioned
 #     `make sandbox-parity` step; release authors can rerun it locally without
 #     triplicating the Node + LLVM build across release-gate platforms.
@@ -37,6 +36,60 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Sanitizers — ASan hard gate + commit-pinned TSan/Miri waivers
+  # ─────────────────────────────────────────────────────────────────────────
+  gate-sanitizers:
+    name: Release Gate — Sanitizers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            llvm-${{ env.LLVM_VERSION }} \
+            llvm-${{ env.LLVM_VERSION }}-dev \
+            clang-${{ env.LLVM_VERSION }} \
+            lld-${{ env.LLVM_VERSION }} \
+            libssl-dev pkg-config \
+            zlib1g-dev libzstd-dev
+
+      - name: Configure sanitizer toolchain
+        run: |
+          {
+            echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}"
+            echo "CC=clang-${{ env.LLVM_VERSION }}"
+            echo "CXX=clang++-${{ env.LLVM_VERSION }}"
+          } >> "$GITHUB_ENV"
+          echo "/usr/lib/llvm-${{ env.LLVM_VERSION }}/bin" >> "$GITHUB_PATH"
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: actions/cache@v4
+        with:
+          path: target/sanitizer-runtime-asan/
+          key: release-gate-asan-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: release-gate-asan-
+
+      - name: Run ASan hard gate and validate waiver contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          if make asan; then
+            printf 'asan=pass\n' > .sanitizer-asan-result
+          else
+            printf 'asan=fail\n' > .sanitizer-asan-result
+          fi
+          scripts/check-sanitizer-gate.sh "${GITHUB_SHA}" .sanitizer-asan-result
+
   # ─────────────────────────────────────────────────────────────────────────
   # Linux x86_64 — full build + codegen E2E + WASM (matches ci.yml)
   # ─────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,22 @@
+# Release sanitizer waiver ledger.
+#
+# Schema:
+#   [[waiver]]
+#   axis = "tsan" | "miri"
+#   reason = "<why this axis cannot be green for this exact release commit>"
+#   tracking = "<GitHub issue or upstream URL>"
+#   commit = "<40-hex release commit SHA>"
+#   expires = "YYYY-MM-DD"
+#
+# The release gate rejects blanket waivers (`axis = "*"`, `axis = "all"`),
+# missing fields, non-40-hex commits, expired rows, unsupported axes, and
+# duplicate rows for the same axis/commit.
+#
+# Worked example (leave commented until a release candidate needs it):
+#
+# [[waiver]]
+# axis = "tsan"
+# reason = "upstream nightly build-std + TSan link failure"
+# tracking = "https://github.com/hew-lang/hew/issues/0000"
+# commit = "0123456789abcdef0123456789abcdef01234567"
+# expires = "2026-12-31"

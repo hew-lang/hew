@@ -6,4 +6,5 @@
 extern crate hew_runtime;
 
 pub mod client;
+pub mod headers_vec;
 pub mod server;

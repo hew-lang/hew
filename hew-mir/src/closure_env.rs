@@ -408,7 +408,8 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
             walk_expr_for_suspend(receiver, found);
             walk_expr_for_suspend(arg, found);
         }
-        HirExprKind::CancellationTokenIsCancelled { receiver } => {
+        HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. } => {
             walk_expr_for_suspend(receiver, found);
         }
         HirExprKind::MachineEmit { fields, .. } => {

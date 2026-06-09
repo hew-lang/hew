@@ -17,7 +17,7 @@ actor SlowWorker {
 
 fn main() {
     println("=== Backpressure Test ===");
-    let worker = spawn SlowWorker;
+    let worker = spawn SlowWorker(id: 1);
     // Send multiple messages - bounded mailbox (capacity 4) will apply backpressure
     for i in 0 .. 8 {
         worker.process(i);

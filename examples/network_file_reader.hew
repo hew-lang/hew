@@ -17,11 +17,13 @@ fn fibonacci(n: i64) -> i64 {
     }
 }
 
+import std::fs;
+
 fn main() {
     println("=== File Reader + Actor Pipeline ===");
 
-    // Read file contents directly 
-    let contents = read_file("examples/test_input.txt");
+    // Read file contents directly
+    let contents = fs.read("examples/test_input.txt");
     print(contents);
     println("---");
 
@@ -31,6 +33,6 @@ fn main() {
     let fib10 = fibonacci(10);
     printer.print_message(fib5);
     printer.print_message(fib10);
-    await close(printer);
+    sleep_ms(50);
     println("=== Done ===");
 }

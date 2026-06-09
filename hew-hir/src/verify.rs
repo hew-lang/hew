@@ -557,6 +557,7 @@ impl Verifier {
                 self.expr(event);
             }
             HirExprKind::CancellationTokenIsCancelled { receiver }
+            | HirExprKind::GeneratorNext { receiver, .. }
             | HirExprKind::MachineStateName { receiver, .. } => {
                 self.expr(receiver);
             }

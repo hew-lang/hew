@@ -1,0 +1,45 @@
+//! Regression tests: Vec<(string, string)> from resp.headers() / req.headers()
+//! must drop cleanly without a for-in consume.
+//!
+//! Before the fix: `hew_http_response_headers` / `hew_http_request_headers`
+//! built the returned Vec with `hew_vec_new_generic` (Plain kind, null
+//! `elem_layout`).  When the Hew drop spine called `hew_vec_free_owned`, it
+//! read the null descriptor and aborted with:
+//!   PANIC: Vec owned operation requires an element layout descriptor
+//!
+//! After the fix: both functions use `hew_vec_new_with_elem_layout` carrying
+//! `string_pair_drop_thunk`, so the drop spine frees both C-string fields of
+//! every element correctly — no abort, no leak, no double-free.
+
+import std::net::http::http_client;
+
+import std::testing;
+
+/// P0 regression: binding resp.headers() to a local and letting it go out of
+/// scope (without a for-in consume) must not abort.
+#[test]
+fn test_headers_drop_without_consume_does_not_abort() {
+    http_client.set_timeout(100);
+    // A failed request (nothing listening on 19999) returns an empty headers vec.
+    let resp = http_client.get("http://127.0.0.1:19999");
+    // Bind to a local — this is the P0 path.
+    // Pre-fix: drops here via hew_vec_free_owned → null elem_layout → abort.
+    // Post-fix: string_pair_drop_thunk is called on each (zero) element, no abort.
+    let _h = resp.headers();
+    // _h drops here.
+    resp.free();
+    testing.assert_true(true);
+}
+
+/// Complementary: bind headers and read its length, then let it drop.
+/// If the drop aborts (pre-fix), this test never reaches assert_true.
+#[test]
+fn test_headers_len_bind_does_not_abort() {
+    http_client.set_timeout(100);
+    let resp = http_client.get("http://127.0.0.1:19999");
+    let h = resp.headers();
+    let _n = h.len();
+    // h drops here.
+    resp.free();
+    testing.assert_true(true);
+}

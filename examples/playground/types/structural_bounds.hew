@@ -17,14 +17,14 @@ type Product {
     price: i64;
 }
 
-// Bare impl blocks provide the method, satisfying Named structurally.
-impl User {
+// Explicit impl Trait for Type — required for trait-bound dispatch.
+impl Named for User {
     fn name(u: User) -> string {
         u.name
     }
 }
 
-impl Product {
+impl Named for Product {
     fn name(p: Product) -> string {
         p.name
     }

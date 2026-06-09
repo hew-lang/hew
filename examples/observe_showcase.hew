@@ -27,9 +27,8 @@
 actor Counter {
     let name: i32;
     let value: i32;
-    receive fn increment(amount: i32) -> i32 {
+    receive fn increment(amount: i32) {
         value = value + amount;
-        value
     }
     receive fn get() -> i32 {
         value
@@ -139,7 +138,19 @@ fn main() {
         round = round + 1;
     }
     // Print final stats.
-    let total = await c1.get() + await c2.get() + await c3.get();
+    let r1 = await c1.get();
+    let r2 = await c2.get();
+    let r3 = await c3.get();
+    let total = match r1 {
+        Ok(v) => v,
+        Err(_) => 0,
+    } + match r2 {
+        Ok(v) => v,
+        Err(_) => 0,
+    } + match r3 {
+        Ok(v) => v,
+        Err(_) => 0,
+    };
     println("");
     println(f"Counter total: {total}");
     Node::shutdown();

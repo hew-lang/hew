@@ -767,7 +767,7 @@ jobs:
             fi
 
             # ── Rust builds (release) ──────────────────────────────────────
-            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize --release
+            cargo build -p hew-cli -p adze-cli -p hew-lsp --release
             cargo build -p hew-lib --release
 
             # ── Package archive ────────────────────────────────────────────

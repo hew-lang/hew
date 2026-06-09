@@ -1,3 +1,5 @@
+// live on not(wasm32) — lambda_actor (native-only); dead on wasm32 (debug_assertions still gate items)
+#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 //! Runtime-wide allocator-pairing tracker (debug builds only).
 //!
 //! Maintains a set of pointers allocated via `libc::malloc` so that:

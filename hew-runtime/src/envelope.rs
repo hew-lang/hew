@@ -582,6 +582,8 @@ pub fn encode_envelope_frame(frame: &EnvelopeFrame) -> Result<Vec<u8>, EncodeErr
 ///
 /// `payload` must be valid for `payload_len` readable bytes, or null when
 /// `payload_len` is zero.
+// live on not(wasm32) — transport/connection/hew_node; dead on wasm32; callers in native-only modules
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) unsafe fn encode_envelope_frame_from_raw_parts(
     target_actor_id: u64,
     source_actor_id: u64,

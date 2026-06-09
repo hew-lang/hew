@@ -269,6 +269,7 @@ const BOOL: &[BuiltinTy] = &[BuiltinTy::Bool];
 const CHAR: &[BuiltinTy] = &[BuiltinTy::Char];
 const STRING: &[BuiltinTy] = &[BuiltinTy::String];
 const BYTES_I32: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::I32];
+const BYTES_I64: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::I64];
 const BYTES: &[BuiltinTy] = &[BuiltinTy::Bytes];
 const VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny];
 const VEC_ANY_BOOL: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::Bool];
@@ -965,6 +966,21 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinClass::ClassA,
         BYTES_I32,
         BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // `bytes.get(index)` — element load over the `BytesTriple` representation.
+    // A `bytes` value is a `{ptr, offset, len}` triple, NOT a `*mut HewVec`, so
+    // it routes to the dedicated `hew_bytes_index(ptr, offset, len, index) -> u8`
+    // runtime entry (the same getter the `b[i]` indexing sugar uses) rather than
+    // the Vec element getter `hew_vec_get_i32`. `CalleeNameDispatchOnly`: the MIR
+    // producer arm (`lower_bytes_get_i32`) and the codegen `hew_bytes_index` arm
+    // unpack the single triple operand into the runtime's (ptr, offset, len) args
+    // and widen the u8 result to the method's declared `i32` return.
+    direct(
+        "hew_bytes_index",
+        BuiltinClass::ClassA,
+        BYTES_I64,
+        BuiltinTy::I32,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     direct(

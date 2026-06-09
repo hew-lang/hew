@@ -1,0 +1,25 @@
+// Accept (I4 FFI allocator fix): stream.from_file on a missing path surfaces
+// the OS error via hew_stream_last_error() as an Err(string). Before the fix,
+// hew_stream_last_error allocated via raw libc::malloc; the Hew drop spine then
+// calls hew_string_drop → free_cstring, which reads the header-sentinel and
+// calls libc::abort on a non-header allocation.
+//
+// With the fix, hew_stream_last_error allocates via alloc_cstring_from_str
+// (header-aware), so the drop spine round-trips cleanly. A clean exit is the
+// behavioural proof.
+import std::stream;
+
+fn main() {
+    // Open a path that cannot exist — this exercises the Err(string) branch of
+    // stream.from_file, which calls hew_stream_last_error() and returns the
+    // allocated string as the Err payload.
+    match stream.from_file("/no/such/path/that/could/exist") {
+        Ok(_) => println("unexpected success"),
+        Err(e) => {
+            // `e` is the hew_stream_last_error() result.  When this match arm
+            // exits, `e` is dropped via hew_string_drop → free_cstring.
+            // The old raw-malloc path caused libc::abort here.
+            println("error surfaced and dropped cleanly")
+        },
+    }
+}

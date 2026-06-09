@@ -1710,3 +1710,505 @@ fn run_imports_json_fluent_builders_round_trip() {
         "{\"name\":\"Hew\",\"version\":1}\nversion=1\nlen=3\n",
     );
 }
+
+/// W5.021 — a function returning a `(Sink<string>, Stream<string>)` tuple of
+/// owned handles compiles, links, and runs with exactly-once teardown. This is
+/// the exact `std::stream::pipe` / `Connection::into_stream_sink` shape that was
+/// fail-closed before the tuple/record-of-owned-handles drop spine.
+///
+/// Exercises the full spine end-to-end through link + exec:
+/// - the callee (`make_pair` and `pipe`) returns a tuple literal of handle
+///   bindings, which must NOT be dropped at the callee's function exit
+///   (move-out, defect #1);
+/// - the caller destructures the tuple — the `__tuple_N` temp must NOT be
+///   dropped once its elements are moved out (defect #3);
+/// - the explicit `.close()` on `sink` consumes the receiver so its scope-exit
+///   drop does not fire again (consume-intent, defect #2);
+/// - `input` is closed implicitly by the per-element handle drop at scope exit.
+///
+/// A double-close would `Box::from_raw` twice and SIGSEGV; a missed drop would
+/// leak. Asserting clean exit + stdout is the value oracle (`pr_test_plans`).
+#[test]
+fn run_tuple_of_owned_handles_returns_and_drops_exactly_once() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("tuple_handle_drop.hew");
+    std::fs::write(
+        &hew_src,
+        "import std::stream;\n\
+         \n\
+         fn make_pair() -> (Sink<string>, Stream<string>) {\n\
+         \x20   stream.pipe(8)\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let (sink, input) = make_pair();\n\
+         \x20   sink.send(\"alpha\");\n\
+         \x20   sink.close();\n\
+         \x20   input.close();\n\
+         \x20   println(\"pair-ok\");\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&hew_src, repo_root());
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed (no double-free / leak); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "pair-ok\n");
+}
+
+/// W5.021 — a `(Sink<string>, Stream<string>)` tuple bound WHOLE (not
+/// destructured) and dropped at scope exit exercises the `DropKind::TupleInPlace`
+/// per-element drop helper (`__hew_tuple_drop_inplace_<key>`), the genuine
+/// tuple-in-place path the destructure case bypasses. The helper must close both
+/// halves exactly once; a double-free SIGSEGVs, a missed drop leaks.
+#[test]
+fn run_whole_tuple_of_handles_drops_each_member_once() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("whole_tuple_handle_drop.hew");
+    std::fs::write(
+        &hew_src,
+        "import std::stream;\n\
+         \n\
+         fn main() {\n\
+         \x20   let pair = stream.pipe(8);\n\
+         \x20   println(\"whole-ok\");\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&hew_src, repo_root());
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed (tuple-in-place drop, exactly once); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "whole-ok\n");
+}
+
+// ---------------------------------------------------------------------------
+// W5.021 defect #1 — returned-aggregate member drop spine.
+//
+// The exactly-once ORACLE these tests use is the cheap authoritative one the
+// cross-ecosystem review used: a callee that RETURNS an aggregate of owned
+// handles must elaborate an EMPTY drop-plan for that return — no
+// `Stream::close` / `Sink::close` — because the caller (who received the
+// byte-copied aggregate) now owns the members. A non-empty plan IS the
+// double-free: two `Box::from_raw` of one allocation (the runtime close is an
+// unguarded free; see the codegen Stream/Sink drop comment). `leaks --atExit`
+// does NOT flag an un-closed handle Box and exit-success does not prove
+// no-double-free, so this dump-mir assertion is the real oracle; the paired
+// `hew run` success is the runtime negative-control. These shapes (let-bound
+// return, if/match tails, nested) all SIGSEGV'd before the value-flow
+// `derive_returned_aggregate_member_bindings` fix.
+// ---------------------------------------------------------------------------
+
+/// Compile `source` with `--dump-mir elab` and return the number of
+/// `Stream::close` / `Sink::close` drops in `callee`'s elaborated body. The
+/// oracle: a callee returning an owned-handle aggregate must report ZERO.
+fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("oracle.hew");
+    std::fs::write(&hew_src, source).unwrap();
+    let out = support::run_hew_in(
+        dir.path(),
+        &["compile", "--dump-mir", "elab", hew_src.to_str().unwrap()],
+    );
+    assert!(
+        out.status.success(),
+        "dump-mir elab must succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let dump = String::from_utf8_lossy(&out.stdout);
+    // Slice the dump to the named callee function (from its `name:` header to
+    // the next function header) so closes belonging to `main` (which legitimately
+    // closes its own destructured handles) are not counted.
+    let header = format!("name: \"{callee}\"");
+    let start = dump
+        .find(&header)
+        .unwrap_or_else(|| panic!("callee `{callee}` not found in MIR dump:\n{dump}"));
+    let rest = &dump[start + header.len()..];
+    let end = rest.find("\n    name: \"").map_or(rest.len(), |i| i);
+    let body = &rest[..end];
+    body.matches("Stream::close").count() + body.matches("Sink::close").count()
+}
+
+/// Compile `source` with `--dump-mir elab` and return the number of owned
+/// HANDLE-place releases (`Duplex::close` `drop_fn` / `LambdaActorRelease` drop
+/// kind) in `callee`'s elaborated body. The oracle: a callee returning an
+/// aggregate of owned handle-place members (`Duplex`/lambda-actor handles) must
+/// report ZERO — the members are handed to the caller.
+///
+/// A separate counter from `callee_handle_close_drops` because handle-place
+/// members register in `binding_locals` as their handle Place (not a `Local`),
+/// elaborate a `LambdaActorRelease`/`Duplex::close` drop (not `Stream::close`),
+/// AND fail closed at codegen-front (the `SendHalf`/`RecvHalf`/`LambdaActorHandle`
+/// Place lowering is unwired), so the runtime negative-control the Stream/Sink
+/// shapes use is impossible — this dump-mir assertion is the only oracle.
+fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("oracle.hew");
+    std::fs::write(&hew_src, source).unwrap();
+    let out = support::run_hew_in(
+        dir.path(),
+        &["compile", "--dump-mir", "elab", hew_src.to_str().unwrap()],
+    );
+    assert!(
+        out.status.success(),
+        "dump-mir elab must succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let dump = String::from_utf8_lossy(&out.stdout);
+    let header = format!("name: \"{callee}\"");
+    let start = dump
+        .find(&header)
+        .unwrap_or_else(|| panic!("callee `{callee}` not found in MIR dump:\n{dump}"));
+    let rest = &dump[start + header.len()..];
+    let end = rest.find("\n    name: \"").map_or(rest.len(), |i| i);
+    let body = &rest[..end];
+    body.matches("LambdaActorRelease").count()
+}
+
+/// Oracle: a `(Sink, Stream)` tuple let-bound then returned BY NAME
+/// (`let pair = (s, r); pair`) — the most ordinary form — must leave the callee
+/// with an empty return drop-plan. The syntactic move-out missed this (it only
+/// saw the tail `BindingRef(pair)`), so `s`/`r` stayed drop-eligible and the
+/// callee double-freed. Value-flow follows the constructed tuple into `ReturnSlot`.
+#[test]
+fn returned_let_bound_tuple_callee_does_not_drop_members() {
+    require_codegen();
+    let closes = callee_handle_close_drops(
+        "import std::stream;\n\
+         fn make_pair() -> (Sink<string>, Stream<string>) {\n\
+         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let pair = (s, r);\n\
+         \x20   pair\n\
+         }\n\
+         fn main() {\n\
+         \x20   let (sink, input) = make_pair();\n\
+         \x20   sink.close();\n\
+         \x20   input.close();\n\
+         }\n",
+        "make_pair",
+    );
+    assert_eq!(
+        closes, 0,
+        "callee returning a let-bound tuple of handles must not drop its members \
+         (double-free); got {closes} handle closes in its drop-plan"
+    );
+}
+
+/// Oracle: a `(Sink, Stream)` returned from an `if`-expression tail. `If` is a
+/// distinct `HirExprKind` the syntactic walk never matched → double-free.
+#[test]
+fn returned_if_tail_tuple_callee_does_not_drop_members() {
+    require_codegen();
+    let closes = callee_handle_close_drops(
+        "import std::stream;\n\
+         fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
+         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   if c { (s, r) } else { (s, r) }\n\
+         }\n\
+         fn main() {\n\
+         \x20   let (sink, input) = make_pair(true);\n\
+         \x20   sink.close();\n\
+         \x20   input.close();\n\
+         }\n",
+        "make_pair",
+    );
+    assert_eq!(
+        closes, 0,
+        "callee returning a tuple from an if-tail must not drop its members; \
+         got {closes} handle closes"
+    );
+}
+
+/// Oracle: a `(Sink, Stream)` returned from a `match`-expression tail.
+#[test]
+fn returned_match_tail_tuple_callee_does_not_drop_members() {
+    require_codegen();
+    let closes = callee_handle_close_drops(
+        "import std::stream;\n\
+         fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
+         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   match c {\n\
+         \x20       true => (s, r),\n\
+         \x20       false => (s, r),\n\
+         \x20   }\n\
+         }\n\
+         fn main() {\n\
+         \x20   let (sink, input) = make_pair(true);\n\
+         \x20   sink.close();\n\
+         \x20   input.close();\n\
+         }\n",
+        "make_pair",
+    );
+    assert_eq!(
+        closes, 0,
+        "callee returning a tuple from a match-tail must not drop its members; \
+         got {closes} handle closes"
+    );
+}
+
+/// Oracle: a NESTED owned aggregate `((Sink,), Stream)` returned by name. The
+/// value-flow decomposition must recurse through the inner `TupleConstruct`.
+#[test]
+fn returned_nested_tuple_callee_does_not_drop_members() {
+    require_codegen();
+    let closes = callee_handle_close_drops(
+        "import std::stream;\n\
+         fn make_nested() -> ((Sink<string>,), Stream<string>) {\n\
+         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let inner = (s,);\n\
+         \x20   let pair = (inner, r);\n\
+         \x20   pair\n\
+         }\n\
+         fn main() {\n\
+         \x20   let ((sink,), input) = make_nested();\n\
+         \x20   sink.close();\n\
+         \x20   input.close();\n\
+         }\n",
+        "make_nested",
+    );
+    assert_eq!(
+        closes, 0,
+        "callee returning a nested tuple of handles must not drop any member \
+         (the value-flow walk recurses into the inner tuple); got {closes} closes"
+    );
+}
+
+/// Oracle: a RECORD of owned handles let-bound then returned by name — the
+/// record analogue of the let-bound-tuple double-free. `RecordInit` element
+/// sources must be followed into the return.
+#[test]
+fn returned_record_of_handles_callee_does_not_drop_fields() {
+    require_codegen();
+    let closes = callee_handle_close_drops(
+        "import std::stream;\n\
+         type Pipe { sink: Sink<string>, input: Stream<string> }\n\
+         fn make_pipe() -> Pipe {\n\
+         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let p = Pipe { sink: s, input: r };\n\
+         \x20   p\n\
+         }\n\
+         fn main() {\n\
+         \x20   let p = make_pipe();\n\
+         \x20   p.sink.close();\n\
+         \x20   p.input.close();\n\
+         }\n",
+        "make_pipe",
+    );
+    assert_eq!(
+        closes, 0,
+        "callee returning a record of handles must not drop its fields; \
+         got {closes} handle closes"
+    );
+}
+
+/// Oracle: a tuple of owned HANDLE-place members (lambda-actor `Duplex` handles)
+/// returned by a direct tail. Handle members register in `binding_locals` as
+/// their handle Place, so they surface as `TupleConstruct` elements as that
+/// handle Place; the value-flow pass originally gated member sources on
+/// `Place::Local(_)` and dropped the handle members on the floor, leaving the
+/// callee to double-release them after the caller received the tuple. The pass
+/// must now admit owned handle places — callee Return drop-plan empty.
+///
+/// No `require_codegen` / runtime control: handle-place lowering fails closed at
+/// codegen-front (`SendHalf`/`RecvHalf`/`LambdaActorHandle` Place lowering is
+/// unwired), so the native binary cannot be produced. The dump-mir Return-plan
+/// assertion is the only oracle. Non-tautological: the pre-fix binary emits
+/// `LambdaActorRelease` drops here.
+#[test]
+fn returned_handle_tuple_callee_does_not_drop_members() {
+    let releases = callee_handle_release_drops(
+        "fn make_pair() -> (Duplex<i64, ()>, Duplex<i64, ()>) {\n\
+         \x20   let a = actor |x: i64| { println(f\"a {x}\"); };\n\
+         \x20   let b = actor |x: i64| { println(f\"b {x}\"); };\n\
+         \x20   (a, b)\n\
+         }\n\
+         fn main() {\n\
+         \x20   let (a, b) = make_pair();\n\
+         \x20   a.send(1);\n\
+         \x20   println(\"done\");\n\
+         }\n",
+        "make_pair",
+    );
+    assert_eq!(
+        releases, 0,
+        "callee returning a tuple of owned handle members must not release them \
+         (double-free); got {releases} LambdaActorRelease drops in its drop-plan"
+    );
+}
+
+/// Oracle: a tuple of owned handle members returned through a let-bound rebind
+/// tail (`let pair = (a, b); pair`). The value-flow pass must follow the
+/// whole-value rebind into `ReturnSlot` and decompose the `TupleConstruct`'s
+/// handle-place elements. Callee Return drop-plan empty.
+#[test]
+fn returned_let_bound_handle_tuple_callee_does_not_drop_members() {
+    let releases = callee_handle_release_drops(
+        "fn make_pair() -> (Duplex<i64, ()>, Duplex<i64, ()>) {\n\
+         \x20   let a = actor |x: i64| { println(f\"a {x}\"); };\n\
+         \x20   let b = actor |x: i64| { println(f\"b {x}\"); };\n\
+         \x20   let pair = (a, b);\n\
+         \x20   pair\n\
+         }\n\
+         fn main() {\n\
+         \x20   let (a, b) = make_pair();\n\
+         \x20   a.send(1);\n\
+         \x20   println(\"done\");\n\
+         }\n",
+        "make_pair",
+    );
+    assert_eq!(
+        releases, 0,
+        "callee returning a let-bound tuple of owned handle members must not \
+         release them; got {releases} LambdaActorRelease drops"
+    );
+}
+
+/// Oracle: a tuple of owned handle members returned from a `match`-expression
+/// tail (two `TupleConstruct`s flowing to one `ReturnSlot`). The pass must admit
+/// the handle-place members of every flowing construct. Callee Return drop-plan
+/// empty.
+#[test]
+fn returned_match_tail_handle_tuple_callee_does_not_drop_members() {
+    let releases = callee_handle_release_drops(
+        "fn make_pair(c: bool) -> (Duplex<i64, ()>, Duplex<i64, ()>) {\n\
+         \x20   let a = actor |x: i64| { println(f\"a {x}\"); };\n\
+         \x20   let b = actor |x: i64| { println(f\"b {x}\"); };\n\
+         \x20   match c {\n\
+         \x20       true => (a, b),\n\
+         \x20       false => (a, b),\n\
+         \x20   }\n\
+         }\n\
+         fn main() {\n\
+         \x20   let (a, b) = make_pair(true);\n\
+         \x20   a.send(1);\n\
+         \x20   println(\"done\");\n\
+         }\n",
+        "make_pair",
+    );
+    assert_eq!(
+        releases, 0,
+        "callee returning a tuple of owned handle members from a match-tail must \
+         not release them; got {releases} LambdaActorRelease drops"
+    );
+}
+
+/// Runtime negative-control: the let-bound-return shape (p7) must RUN to a clean
+/// exit. Before the fix this SIGSEGV'd (exit 139) on the callee's double-free.
+/// The caller destructures and explicitly closes both handles (the success
+/// path), so there is no leak either.
+#[test]
+fn run_let_bound_tuple_return_no_double_free() {
+    require_codegen();
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("let_bound_return.hew");
+    std::fs::write(
+        &hew_src,
+        "import std::stream;\n\
+         fn make_pair() -> (Sink<string>, Stream<string>) {\n\
+         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let pair = (s, r);\n\
+         \x20   pair\n\
+         }\n\
+         fn main() {\n\
+         \x20   let (sink, input) = make_pair();\n\
+         \x20   sink.send(\"alpha\");\n\
+         \x20   sink.close();\n\
+         \x20   input.close();\n\
+         \x20   println(\"bound-ok\");\n\
+         }\n",
+    )
+    .unwrap();
+    let output = run_bounded_hew_run(&hew_src, repo_root());
+    assert!(
+        output.status.success(),
+        "let-bound tuple return must not double-free; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "bound-ok\n");
+}
+
+/// Runtime negative-control for the `if`-tail return shape (p7b). Before the fix
+/// this SIGSEGV'd; the `If` arm was never walked by the syntactic move-out.
+#[test]
+fn run_if_tail_tuple_return_no_double_free() {
+    require_codegen();
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("if_tail_return.hew");
+    std::fs::write(
+        &hew_src,
+        "import std::stream;\n\
+         fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
+         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   if c { (s, r) } else { (s, r) }\n\
+         }\n\
+         fn main() {\n\
+         \x20   let (sink, input) = make_pair(true);\n\
+         \x20   sink.send(\"alpha\");\n\
+         \x20   sink.close();\n\
+         \x20   input.close();\n\
+         \x20   println(\"if-ok\");\n\
+         }\n",
+    )
+    .unwrap();
+    let output = run_bounded_hew_run(&hew_src, repo_root());
+    assert!(
+        output.status.success(),
+        "if-tail tuple return must not double-free; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "if-ok\n");
+}
+
+/// Runtime: a RECORD of owned handles returned and run end-to-end, with the
+/// caller explicitly closing both fields (the record success path). Confirms the
+/// `RecordInit` return spine closes each handle exactly once — no double-free,
+/// no leak. (The `is_heap_owning_record_composite_return` + `RecordInPlace` path
+/// that the boundary admits but the lane never executed.)
+#[test]
+fn run_record_of_handles_return_drops_each_field_once() {
+    require_codegen();
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("record_handle_return.hew");
+    std::fs::write(
+        &hew_src,
+        "import std::stream;\n\
+         type Pipe { sink: Sink<string>, input: Stream<string> }\n\
+         fn make_pipe() -> Pipe {\n\
+         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let p = Pipe { sink: s, input: r };\n\
+         \x20   p\n\
+         }\n\
+         fn main() {\n\
+         \x20   let p = make_pipe();\n\
+         \x20   p.sink.send(\"alpha\");\n\
+         \x20   p.sink.close();\n\
+         \x20   p.input.close();\n\
+         \x20   println(\"record-ok\");\n\
+         }\n",
+    )
+    .unwrap();
+    let output = run_bounded_hew_run(&hew_src, repo_root());
+    assert!(
+        output.status.success(),
+        "record of handles return + explicit close must run cleanly; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "record-ok\n");
+}

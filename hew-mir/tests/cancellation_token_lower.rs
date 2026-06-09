@@ -78,3 +78,62 @@ fn cancellation_token_intrinsic_and_release_drop_reach_mir() {
         "CancellationToken locals must release a ref on drop; drops={drops:#?}"
     );
 }
+
+/// Defect 1 (hard double-free), CancellationToken-in-tuple variant: a token
+/// extracted out of a live tuple via `let tok = pair.0` must release its ref
+/// EXACTLY ONCE. The extracted binding's standalone `hew_cancel_token_release`
+/// is the sole owner; the tuple's `TupleInPlace` member-drop MUST be excluded so
+/// it does not release the same aliased token a second time (a refcount
+/// underflow / premature free). `CancellationToken` is the same non-refcounted-
+/// at-the-drop-spine heap-owning class as `Generator`, so it is covered by the
+/// same tuple sole-owner exclusion.
+#[test]
+fn cancellation_token_extracted_from_tuple_releases_exactly_once() {
+    let pipeline = pipeline_with_tc(
+        r"
+        fn make(token: CancellationToken) -> (CancellationToken, i64) {
+            return (token, 0);
+        }
+        fn run(token: CancellationToken) -> bool {
+            let pair = make(token);
+            let tok: CancellationToken = pair.0;
+            return tok.is_cancelled();
+        }
+        ",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    let run = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|func| func.name == "run")
+        .expect("run elaborated MIR should exist");
+    let all_drops: Vec<_> = run
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .collect();
+    // The tuple must NOT earn a TupleInPlace member-drop: the extracted `tok`
+    // owns the token now, so a tuple member-drop would double-release it.
+    assert!(
+        all_drops
+            .iter()
+            .all(|drop| drop.kind != DropKind::TupleInPlace),
+        "the (CancellationToken, i64) tuple must be EXCLUDED from the \
+         TupleInPlace spine once its token element is extracted into a \
+         standalone owned binding; drops={all_drops:#?}"
+    );
+    // Exactly one token release fires (the extracted `tok`'s standalone drop).
+    let releases = all_drops
+        .iter()
+        .filter(|drop| drop.drop_fn.as_deref() == Some("hew_cancel_token_release"))
+        .count();
+    assert_eq!(
+        releases, 1,
+        "the extracted token must be released exactly once (no tuple \
+         member-drop double-release); drops={all_drops:#?}"
+    );
+}

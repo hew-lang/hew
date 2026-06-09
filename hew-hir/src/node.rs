@@ -826,9 +826,19 @@ pub struct HirFn {
     pub name: String,
     pub type_params: Vec<String>,
     pub params: Vec<HirBinding>,
+    /// For ordinary functions this is the declared return type. For generator
+    /// functions (`is_generator`) this remains the declared `-> T` yield element
+    /// type; the body itself lowers with unit expectation and produces a
+    /// `Generator<Yield, Return>` value (mirrors `HirActorReceiveFn`).
     pub return_ty: ResolvedTy,
     pub body: HirBlock,
     pub span: Span,
+    /// `true` when this function was declared `gen fn`. The body falls off the
+    /// end (unit-expectation) and `yield` expressions inside it bind to the
+    /// `return_ty` yield element type. Threaded HIR → MIR → codegen so the
+    /// generator construction seam (`hew_gen_ctx_create`) materializes a
+    /// generator value at the call site (mirrors `HirActorReceiveFn`).
+    pub is_generator: bool,
     /// When `Some(catalog_key)`, this function is a `#[intrinsic("key")]`
     /// floor declaration (W5.005 / F1b) whose source body is a bodyless
     /// placeholder. The lowered `body` (and the MIR derived from it) is NOT
@@ -1425,6 +1435,19 @@ pub enum HirExprKind {
     /// the borrowing `hew_cancel_token_is_requested` runtime call.
     CancellationTokenIsCancelled {
         receiver: Box<HirExpr>,
+    },
+    /// `Generator<Y, R>.next() -> Option<Y>`.
+    ///
+    /// The checker records this as a structured rewrite so frontend lowering
+    /// carries the borrowed generator handle and the yield element type; MIR
+    /// lowers it to `Instr::GeneratorNext` and codegen emits
+    /// `hew_gen_next(ctx, &out_size)` and unboxes the returned heap pointer into
+    /// `Option<yield_ty>` (null → `None`, else load + `Some` + free the
+    /// payload). The receiver is borrowed; the handle is freed by
+    /// `hew_gen_free` on its own scope-exit drop.
+    GeneratorNext {
+        receiver: Box<HirExpr>,
+        yield_ty: ResolvedTy,
     },
     /// `emit EventName { field: value, ... }` inside a machine transition body,
     /// entry block, or exit block.

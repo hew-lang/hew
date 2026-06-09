@@ -8,7 +8,7 @@
 // Checked MIR rejects with `E_MIR_CHECK ... UseAfterConsume` and
 // emits no artefact.
 fn main() -> i64 {
-    let _r = if 1 + 1 {
+    let _r = if 1 + 1 > 0 {
         let s = "hello";
         let t = s;
         let _u = s;

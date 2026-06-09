@@ -1910,6 +1910,65 @@ pub unsafe extern "C" fn hew_mailbox_try_send(
     }
 }
 
+/// Non-blocking send that **bypasses the bounded-capacity overflow policy** and
+/// appends to the tail of the *user* queue, so a terminal/out-of-band event is
+/// delivered even when the mailbox is at capacity — without dropping, blocking,
+/// or evicting any queued message.
+///
+/// This is the guaranteed-delivery channel for events that must never be lost
+/// under data backpressure (the active-mode reactor's one-shot `on_close`). It
+/// enqueues into the **user** queue (not the priority system queue) precisely so
+/// per-mailbox FIFO is preserved: the terminal event is ordered *after* every
+/// already-queued `on_data`, never ahead of it. At most one extra node is
+/// admitted past capacity per call, and the connection it belongs to is
+/// unregistered immediately afterward, so the overshoot is bounded by one slot
+/// per terminating connection and the queue drains back under capacity as the
+/// actor consumes it (the consumer's `not_full.notify_one` on each recv still
+/// applies).
+///
+/// A *closed* mailbox is still refused: a closed mailbox means the actor is
+/// already terminating, so the terminal event is moot and the caller may treat
+/// `ErrClosed` as "no delivery needed" (no leak — the actor is going away).
+///
+/// Returns `0` ([`HewError::Ok`]) once the node is enqueued, `-4`
+/// ([`HewError::ErrClosed`]) if the mailbox is closed, or `-5`
+/// ([`HewError::ErrOom`]) if node allocation fails.
+///
+/// # Safety
+///
+/// Same requirements as [`hew_mailbox_send`].
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn hew_mailbox_send_guaranteed(
+    mb: *mut HewMailbox,
+    msg_type: i32,
+    data: *const c_void,
+    size: usize,
+) -> i32 {
+    if mb.is_null() {
+        return HewError::ErrClosed as i32;
+    }
+    // SAFETY: Caller guarantees `mb` is valid when non-null.
+    let mb = unsafe { &*mb };
+
+    if mb.closed.load(Ordering::Acquire) {
+        return HewError::ErrClosed as i32;
+    }
+
+    // SAFETY: `data` validity guaranteed by caller (or null when size == 0).
+    let node = unsafe { msg_node_alloc(msg_type, data, size, ptr::null_mut()) };
+    if node.is_null() {
+        return HewError::ErrOom as i32;
+    }
+
+    // Append to the user queue unconditionally, skipping the bounded-capacity
+    // check in `send_with_overflow`. `enqueue_user_node` routes to the slow or
+    // fast queue exactly as the policy-aware path does, so the consumer dequeues
+    // it in FIFO order behind any already-queued message.
+    // SAFETY: `node` was just allocated with next == null and is owned here.
+    unsafe { enqueue_user_node(mb, node) };
+    HewError::Ok as i32
+}
+
 /// Send a system message, bypassing capacity limits.
 ///
 /// # Safety
@@ -2528,6 +2587,88 @@ mod tests {
                 "try_send with Block must fail immediately, not block"
             );
 
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn guaranteed_send_admits_terminal_event_past_full_capacity() {
+        // The dropped-close bug shape at the mailbox layer: a bounded mailbox at
+        // capacity (Fail policy) rejects `try_send` — the path that lost the
+        // active-mode `on_close`. `hew_mailbox_send_guaranteed` must admit the
+        // terminal event anyway, appended AFTER the buffered message (FIFO), so
+        // the actor still observes it.
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            const DATA_TYPE: i32 = 7;
+            const CLOSE_TYPE: i32 = 9;
+            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Fail);
+            let val: i32 = 1;
+            let p = (&raw const val).cast_mut().cast();
+
+            // Fill the single slot with a buffered "on_data".
+            assert_eq!(
+                hew_mailbox_try_send(mb, DATA_TYPE, p, size_of::<i32>()),
+                HewError::Ok as i32
+            );
+
+            // Reproduce the bug: a plain try_send for the terminal event is
+            // rejected on the full mailbox — this is the silent drop.
+            assert_eq!(
+                hew_mailbox_try_send(mb, CLOSE_TYPE, ptr::null_mut(), 0),
+                HewError::ErrMailboxFull as i32,
+                "try_send must drop the terminal event on a full mailbox (the bug)"
+            );
+
+            // The fix: guaranteed-send admits it past capacity.
+            assert_eq!(
+                hew_mailbox_send_guaranteed(mb, CLOSE_TYPE, ptr::null_mut(), 0),
+                HewError::Ok as i32,
+                "guaranteed-send must admit the terminal event past a full mailbox"
+            );
+
+            // FIFO: the buffered on_data drains FIRST, the terminal event SECOND.
+            let first = hew_mailbox_try_recv(mb);
+            assert!(!first.is_null());
+            assert_eq!(
+                (*first).msg_type,
+                DATA_TYPE,
+                "buffered on_data must drain before the terminal close (FIFO)"
+            );
+            hew_msg_node_free(first);
+
+            let second = hew_mailbox_try_recv(mb);
+            assert!(!second.is_null());
+            assert_eq!(
+                (*second).msg_type,
+                CLOSE_TYPE,
+                "the guaranteed terminal close must drain after the buffered data"
+            );
+            hew_msg_node_free(second);
+
+            assert!(
+                hew_mailbox_try_recv(mb).is_null(),
+                "exactly one buffered + one terminal node; no extras"
+            );
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn guaranteed_send_refused_on_closed_mailbox() {
+        // A closed mailbox means the actor is already terminating; the terminal
+        // event is moot, so guaranteed-send reports ErrClosed (no enqueue, no
+        // leak) rather than admitting a node into a dead mailbox.
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Fail);
+            mailbox_close(mb);
+            assert_eq!(
+                hew_mailbox_send_guaranteed(mb, 9, ptr::null_mut(), 0),
+                HewError::ErrClosed as i32,
+                "guaranteed-send must refuse a closed mailbox"
+            );
             hew_mailbox_free(mb);
         }
     }

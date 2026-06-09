@@ -1,0 +1,24 @@
+// Accept fixture: trait default method body calling another default method.
+// A chain: describe -> label -> kind. Only `kind` is provided by the impl.
+trait Describable {
+    fn kind(self) -> string;
+    fn label(self) -> string {
+        "[" + self.kind() + "]"
+    }
+    fn describe(self) -> string {
+        "Type: " + self.label()
+    }
+}
+
+type Widget { id: i64 }
+
+impl Describable for Widget {
+    fn kind(w: Widget) -> string {
+        "widget"
+    }
+}
+
+fn main() {
+    let w = Widget { id: 1 };
+    println(w.describe());
+}

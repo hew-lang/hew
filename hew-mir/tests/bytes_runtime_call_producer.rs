@@ -2,10 +2,14 @@
 //!
 //! `bytes.len()` and `bytes.get(i)` are declared in `std/io.hew`'s
 //! `impl bytes` extern block with `#[extern_symbol(hew_vec_len)]` and
-//! `#[extern_symbol(hew_vec_get_i32)]`. After HIR lowers the method call
-//! the callee becomes `BindingRef { name: "hew_vec_len" | "hew_vec_get_i32",
+//! `#[extern_symbol(hew_bytes_index)]`. After HIR lowers the method call
+//! the callee becomes `BindingRef { name: "hew_vec_len" | "hew_bytes_index",
 //! resolved: Unresolved }`, which `runtime_symbol_for_call_expr` recognises
 //! as an allowlisted symbol and routes to `lower_runtime_call`.
+//!
+//! `bytes.get` uses `hew_bytes_index` (not `hew_vec_get_i32`): a `bytes` value
+//! is a `BytesTriple { ptr, offset, len }`, so element loads route to the
+//! dedicated bytes getter rather than the heap-Vec element getter.
 //!
 //! Before the fix these both fell into the `_ =>` NYI arm and produced
 //! `MirDiagnosticKind::NotYetImplemented`. These tests assert the producer
@@ -130,6 +134,7 @@ fn module_with_stmt(ids: &mut IdGen, stmt_expr: HirExpr) -> HirModule {
         return_ty: ResolvedTy::Unit,
         body,
         span: 0..0,
+        is_generator: false,
         intrinsic_id: None,
     })])
 }
@@ -250,6 +255,7 @@ fn bytes_len_value_needed_emits_i64_dest() {
         return_ty: ResolvedTy::Unit,
         body,
         span: 0..0,
+        is_generator: false,
         intrinsic_id: None,
     })]);
 
@@ -287,15 +293,20 @@ fn bytes_len_value_needed_emits_i64_dest() {
 }
 
 // ---------------------------------------------------------------------------
-// bytes.get(i) — hew_vec_get_i32 producer
+// bytes.get(i) — hew_bytes_index producer
 // ---------------------------------------------------------------------------
 
 /// `bytes.get(index)` in statement position must emit
-/// `CallRuntimeAbi { symbol: "hew_vec_get_i32", args: [buf, idx], dest: None }`.
+/// `CallRuntimeAbi { symbol: "hew_bytes_index", args: [buf, idx], dest: None }`.
+///
+/// A `bytes` value is a `BytesTriple { ptr, offset, len }`, NOT a `*mut HewVec`,
+/// so `bytes.get` routes to the dedicated `hew_bytes_index` getter (the same
+/// runtime entry the `b[i]` indexing sugar uses) rather than the Vec element
+/// getter `hew_vec_get_i32` (whose arg0 ABI is a heap-Vec `ptr`).
 #[test]
 fn bytes_get_discarded_emits_call_runtime_abi() {
     let mut ids = IdGen::default();
-    let callee = runtime_callee(&mut ids, "hew_vec_get_i32", ResolvedTy::I32);
+    let callee = runtime_callee(&mut ids, "hew_bytes_index", ResolvedTy::I32);
     let buf = bytes_lit(&mut ids);
     let idx = i64_lit(&mut ids);
     let call = call_expr(&mut ids, callee, vec![buf, idx], ResolvedTy::I32);
@@ -307,20 +318,20 @@ fn bytes_get_discarded_emits_call_runtime_abi() {
         pipeline.diagnostics.iter().all(|d| !matches!(
             &d.kind,
             hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
-                if construct.contains("hew_vec_get_i32")
+                if construct.contains("hew_bytes_index")
         )),
         "bytes.get() in discarded position must not produce NYI; diagnostics: {:#?}",
         pipeline.diagnostics
     );
 
     let func = find_probe(&pipeline);
-    let call = find_abi_call(func, "hew_vec_get_i32")
-        .expect("bytes.get() must emit Instr::CallRuntimeAbi(hew_vec_get_i32)");
+    let call = find_abi_call(func, "hew_bytes_index")
+        .expect("bytes.get() must emit Instr::CallRuntimeAbi(hew_bytes_index)");
 
     assert_eq!(
         call.args().len(),
         2,
-        "hew_vec_get_i32 takes 2 args (bytes receiver, index); got {:?}",
+        "hew_bytes_index takes 2 producer args (bytes receiver, index); got {:?}",
         call.args()
     );
     assert!(
@@ -334,7 +345,7 @@ fn bytes_get_discarded_emits_call_runtime_abi() {
 #[test]
 fn bytes_get_value_needed_emits_i32_dest() {
     let mut ids = IdGen::default();
-    let callee = runtime_callee(&mut ids, "hew_vec_get_i32", ResolvedTy::I32);
+    let callee = runtime_callee(&mut ids, "hew_bytes_index", ResolvedTy::I32);
     let buf = bytes_lit(&mut ids);
     let idx = i64_lit(&mut ids);
     let rhs = call_expr(&mut ids, callee, vec![buf, idx], ResolvedTy::I32);
@@ -376,6 +387,7 @@ fn bytes_get_value_needed_emits_i32_dest() {
         return_ty: ResolvedTy::Unit,
         body,
         span: 0..0,
+        is_generator: false,
         intrinsic_id: None,
     })]);
 
@@ -385,15 +397,15 @@ fn bytes_get_value_needed_emits_i32_dest() {
         pipeline.diagnostics.iter().all(|d| !matches!(
             &d.kind,
             hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
-                if construct.contains("hew_vec_get_i32")
+                if construct.contains("hew_bytes_index")
         )),
         "bytes.get() in value-needed position must not produce NYI; diagnostics: {:#?}",
         pipeline.diagnostics
     );
 
     let func = find_probe(&pipeline);
-    let call = find_abi_call(func, "hew_vec_get_i32")
-        .expect("bytes.get() in value-needed context must emit hew_vec_get_i32 CallRuntimeAbi");
+    let call = find_abi_call(func, "hew_bytes_index")
+        .expect("bytes.get() in value-needed context must emit hew_bytes_index CallRuntimeAbi");
 
     let dest = call
         .dest()

@@ -169,8 +169,8 @@ build_tarball() {
     step "Building from source"
     cd "${REPO_DIR}"
 
-    info "cargo" "hew-cli adze-cli hew-lsp hew-serialize hew-lib (release)..."
-    cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-lib --release
+    info "cargo" "hew-cli adze-cli hew-lsp hew-lib (release)..."
+    cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-lib --release
 
     step "Assembling tarball"
     local staging_root="${DIST_DIR}/.staging-$$"
@@ -440,7 +440,7 @@ build_alpine() {
         info "cargo" "Building Rust binaries + stdlib for ${musl_target}..."
         (cd "${REPO_DIR}" &&
             cargo build --release --target "${musl_target}" \
-                -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-lib)
+                -p hew-cli -p adze-cli -p hew-lsp -p hew-lib)
 
         # Assemble Alpine tarball
         local staging_root="${DIST_DIR}/.alpine-staging-$$"

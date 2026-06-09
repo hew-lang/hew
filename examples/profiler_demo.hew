@@ -25,7 +25,7 @@ fn main() {
     println("Open http://localhost:6060/ to see the dashboard");
     println("(run with HEW_PPROF=:6060)");
     println("");
-    let counter = spawn Counter;
+    let counter = spawn Counter(count: 0);
     // Send 3000 messages.
     for i in 0 .. 3000 {
         counter.tick();

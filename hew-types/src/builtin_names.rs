@@ -511,6 +511,39 @@ pub fn resolve_builtin_method_symbol(
         .and_then(|info| info.runtime.resolve(element_ty, element_name))
 }
 
+/// True when the runtime symbol a `.method()` call rewrites to TAKES OWNERSHIP
+/// of (consumes) its receiver handle.
+///
+/// These are the `@resource` handle-release builtins: dropping the last handle
+/// closes the underlying resource (`Stream`/`Sink`/channel `Sender`/`Receiver`/
+/// `Duplex` and its half-handles). A consuming call moves the receiver out, so
+/// the receiver's scope-exit drop must NOT fire again — a second `close` is a
+/// double `Box::from_raw` / double-free. HIR lowers a consuming receiver with
+/// `IntentKind::Consume` so the MIR move-checker excludes the handle from the
+/// function-exit drop set (`raii-null-after-move`, `cleanup-all-exits`).
+///
+/// Keyed on the resolved runtime SYMBOL (the dispatch discriminant), never a
+/// receiver type name, so a new handle family that routes through one of these
+/// symbols is covered without a separate type-name allow-list, and a borrowing
+/// method (`send`/`recv`/`try_send`/`try_recv`) is never mis-marked
+/// (LESSONS: drop-allowset-from-value-flow). Any symbol the allow-set does not
+/// name is treated as borrowing — fail-closed toward leak-not-double-free: a
+/// missed consume-mark leaks the handle (drop fires once, on a still-live
+/// handle), it never double-frees.
+#[must_use]
+pub fn runtime_symbol_consumes_receiver(c_symbol: &str) -> bool {
+    matches!(
+        c_symbol,
+        "hew_stream_close"
+            | "hew_sink_close"
+            | "hew_channel_sender_close"
+            | "hew_channel_receiver_close"
+            | "hew_duplex_close"
+            | "hew_duplex_close_half"
+            | "hew_lambda_actor_release"
+    )
+}
+
 static BUILTIN_METHOD_SIGS: OnceLock<HashMap<BuiltinNamedType, HashMap<String, FnSig>>> =
     OnceLock::new();
 static BUILTIN_TYPE_DEFS: OnceLock<HashMap<BuiltinNamedType, TypeDef>> = OnceLock::new();

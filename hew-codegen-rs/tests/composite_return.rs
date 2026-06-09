@@ -12,7 +12,7 @@
 use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_mir::{
     BasicBlock, EnumLayout, FunctionCallConv, Instr, IrPipeline, MachineVariantLayout, Place,
-    RawMirFunction, Terminator,
+    RawMirFunction, RecordLayout, Terminator,
 };
 use hew_types::ResolvedTy;
 
@@ -412,8 +412,11 @@ fn plain_bytes_return_lowers() {
 }
 
 /// Build a pipeline with `fn make() -> (bytes,)` — a tuple carrying a
-/// heap-owning leaf. Unlike a bare `bytes`, a tuple is a multi-owner composite
-/// with no per-field tag-aware drop, so the boundary must STILL fail closed.
+/// heap-owning leaf. W5.021 admits this through the tuple drop spine: the MIR
+/// elaborator's `derive_tuple_composite_drop_allowed` proves single ownership
+/// and codegen emits the per-element `__hew_tuple_drop_inplace` helper, so the
+/// composite-return boundary lowers it to an aggregate struct return instead of
+/// failing closed.
 fn tuple_of_bytes_return_pipeline() -> IrPipeline {
     let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::Bytes]);
     let make_fn = RawMirFunction {
@@ -458,26 +461,104 @@ fn tuple_of_bytes_return_pipeline() -> IrPipeline {
     }
 }
 
-/// A `(bytes,)` tuple return is a multi-owner composite and must STILL fail
-/// closed — the narrowing only admits a single bare heap leaf, never a tuple or
-/// record carrying one.
+/// A `(bytes,)` tuple return is admitted via the W5.021 tuple drop spine: the
+/// composite-return boundary recognises it as a heap-owning tuple composite
+/// (`is_heap_owning_tuple_composite_return`) whose per-element drop the spine
+/// emits, so it lowers to an aggregate struct return rather than failing closed.
 #[test]
-fn tuple_of_bytes_return_still_fails_closed() {
-    let pipeline = tuple_of_bytes_return_pipeline();
-    let tmp = std::env::temp_dir().join("hew-composite-return-tuple-bytes");
+fn tuple_of_bytes_return_admits_with_spine() {
+    let ll = emit_ll(&tuple_of_bytes_return_pipeline(), "tuple_bytes_ret");
+    assert!(
+        ll.contains("ret { { ptr, i32, i32 } }"),
+        "a `(bytes,)` tuple return must admit and lower to an aggregate struct \
+         return through the tuple drop spine; got:\n{ll}"
+    );
+}
+
+/// Build a pipeline with `fn make() -> Pair<string>` where `Pair<T>` is a
+/// GENERIC user record carrying a heap-owning `string` field. The record drop
+/// spine (`is_heap_owning_record_composite_return` + `record_inplace_drop_name`)
+/// covers only a MONOMORPHIC user record (the consumer keys on the bare name); a
+/// generic instantiation needs the mangled-key drop path that is a follow-on, so
+/// the boundary must STILL fail closed. This is the residual fail-closed witness
+/// that keeps the composite-return gate non-tautological after the W5.021
+/// tuple/record lift: the type reaches the `StructType` arm (a registered struct
+/// layout) and `ty_contains_heap_owning` is true, but neither admit predicate
+/// matches it.
+fn generic_record_of_string_return_pipeline() -> IrPipeline {
+    let pair_ty = ResolvedTy::Named {
+        name: "Pair".to_string(),
+        args: vec![ResolvedTy::String],
+        builtin: None,
+    };
+    let record_layout = RecordLayout {
+        name: "Pair$$string".to_string(),
+        field_tys: vec![ResolvedTy::String, ResolvedTy::String],
+    };
+    let make_fn = RawMirFunction {
+        name: "main".to_string(),
+        return_ty: pair_ty.clone(),
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![pair_ty],
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: vec![Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(0),
+            }],
+            terminator: Terminator::Return,
+        }],
+        decisions: Vec::new(),
+        intrinsic_id: None,
+    };
+    IrPipeline {
+        thir: Vec::new(),
+        raw_mir: vec![make_fn],
+        checked_mir: Vec::new(),
+        elaborated_mir: Vec::new(),
+        diagnostics: Vec::new(),
+        opaque_handle_names: vec![],
+        record_layouts: vec![record_layout],
+        actor_layouts: Vec::new(),
+        supervisor_layouts: Vec::new(),
+        machine_layouts: Vec::new(),
+        enum_layouts: Vec::new(),
+        regex_literals: vec![],
+        user_consts: Vec::new(),
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
+    }
+}
+
+/// A generic record instantiation (`Pair<string>`) carrying owned heap reaches
+/// the `StructType` boundary arm but is NOT covered by either admit predicate
+/// (the record predicate is monomorphic-only), so it must STILL fail closed —
+/// the residual fail-closed witness after the W5.021 tuple/record lift. Keeps
+/// the composite-return boundary non-tautological (`boundary-fail-closed`).
+#[test]
+fn generic_record_of_string_return_still_fails_closed() {
+    let pipeline = generic_record_of_string_return_pipeline();
+    let tmp = std::env::temp_dir().join("hew-composite-return-generic-record");
     std::fs::create_dir_all(&tmp).expect("create scratch dir");
     let options = EmitOptions {
-        module_name: "tuple_bytes_ret",
+        module_name: "generic_record_ret",
         out_dir: &tmp,
         native: false,
         wasm: false,
     };
     let err = emit_module(&pipeline, &options)
-        .expect_err("a tuple carrying a heap-owning leaf must still fail closed");
+        .expect_err("a generic record instantiation carrying owned heap must still fail closed");
     let msg = format!("{err}");
     assert!(
         msg.contains("requires tag-aware") && msg.contains("drop"),
-        "tuple-of-bytes return must fail closed with the tag-aware-drop \
+        "generic-record return must fail closed with the tag-aware-drop \
          diagnostic; got: {msg}"
     );
 }

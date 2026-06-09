@@ -29,6 +29,8 @@
 use std::sync::{Mutex, PoisonError, RwLock, TryLockError};
 
 /// Error returned by fail-closed lock accessors when the inner lock is poisoned.
+// live on not(wasm32) — PoisonSafeRw::read/write; dead on wasm32; callers in native-only modules
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PoisonedLock;
 
@@ -89,8 +91,12 @@ impl<T> PoisonSafe<T> {
 /// Use [`PoisonSafeRw::read_access`] for shared-read access,
 /// [`PoisonSafeRw::access`] for exclusive-write access, and
 /// [`PoisonSafeRw::try_access`] for non-blocking write attempts.
+// live on not(wasm32) — env/link/monitor/transport/hew_node; dead on wasm32; callers in native-only modules
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) struct PoisonSafeRw<T>(RwLock<T>);
 
+// Methods live on not(wasm32); dead on wasm32; impl suppressed here so lint stays armed on native.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl<T> PoisonSafeRw<T> {
     /// Construct a new `PoisonSafeRw<T>` wrapping `value`.
     pub(crate) const fn new(value: T) -> Self {

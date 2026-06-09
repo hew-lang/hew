@@ -2102,6 +2102,7 @@ fn lower_actor_receive_handlers(
             return_ty: handler.return_ty.clone(),
             body: handler.body.clone(),
             span: handler.span.clone(),
+            is_generator: false,
             intrinsic_id: None,
         };
         lowered.push(lower_function(
@@ -2252,6 +2253,7 @@ fn lower_actor_init_handler(
         return_ty: ResolvedTy::Unit,
         body: init.body.clone(),
         span: actor.span.clone(),
+        is_generator: false,
         intrinsic_id: None,
     };
     Some(lower_function(
@@ -2330,6 +2332,7 @@ fn lower_actor_lifecycle_handlers(
                     return_ty: hook.return_ty.clone(),
                     body: hook.body.clone(),
                     span: hook.span.clone(),
+                    is_generator: false,
                     intrinsic_id: None,
                 };
                 lowered.push(lower_function(
@@ -2373,6 +2376,7 @@ fn lower_actor_lifecycle_handlers(
                     return_ty: hook.return_ty.clone(),
                     body: hook.body.clone(),
                     span: hook.span.clone(),
+                    is_generator: false,
                     intrinsic_id: None,
                 };
                 lowered.push(lower_function(
@@ -2555,6 +2559,7 @@ fn lower_actor_lifecycle_handlers(
                     return_ty: ResolvedTy::I32,
                     body,
                     span: hook.span.clone(),
+                    is_generator: false,
                     intrinsic_id: None,
                 };
                 lowered.push(lower_function(
@@ -3717,6 +3722,7 @@ fn lower_supervisor_bootstrap(
         return_ty: local_pid_of(&sup.name),
         body,
         span: sup.span.clone(),
+        is_generator: false,
         intrinsic_id: None,
     };
 
@@ -4023,6 +4029,7 @@ fn collect_unknown_self_fields_in_expr(
             collect_unknown_self_fields_in_expr(event, state_fields, seen, unknown);
         }
         HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. } => {
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
         }
@@ -4384,6 +4391,63 @@ fn lower_function(
             diagnostics.push(diag);
         }
     }
+    // W3.053 catch-all fail-closed gate: refuse any owned handle that would
+    // reach codegen with more than one live free path for the same runtime
+    // context (the combinatorial aggregate-extraction double-free class). The
+    // gate reconstructs the per-context free-site count the elaborator + codegen
+    // will emit from the same drop-eligibility derivations `elaborate` uses:
+    //   - `source_excluded` = the source-binding drops `elaborate` REMOVES
+    //     (returned-aggregate handoff + consumed-local extraction); a source
+    //     binding NOT in this set still fires its own standalone LIFO drop.
+    //   - `composite_drop_allowed` = the owned-aggregate bindings whose in-place
+    //     member drop `elaborate` KEEPS (tuple + owned-record). When such a
+    //     member drop AND the source's own drop both free one context, that is
+    //     the double-free this gate refuses.
+    let returned_aggregate_members = derive_returned_aggregate_member_bindings(
+        &raw.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+    );
+    let consumed_local_aggregate_members = derive_consumed_local_aggregate_member_bindings(
+        &raw.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+        &builder.locals,
+        &builder.enum_layouts,
+    );
+    let mut source_excluded = returned_aggregate_members;
+    source_excluded.extend(consumed_local_aggregate_members);
+    let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
+        &raw.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+        &builder.locals,
+        &builder.enum_layouts,
+    );
+    let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
+    let owned_record_drop_allowed = derive_owned_record_drop_allowed(
+        &raw.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+        &builder.locals,
+        &is_owned_record,
+        &builder.enum_layouts,
+    );
+    let mut composite_drop_allowed = tuple_composite_drop_allowed;
+    composite_drop_allowed.extend(owned_record_drop_allowed);
+    for check in detect_unproven_aggregate_handle_double_free(
+        &raw.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+        &builder.locals,
+        &builder.enum_layouts,
+        &source_excluded,
+        &composite_drop_allowed,
+    ) {
+        if let Some(diag) = check_to_diagnostic(&check) {
+            diagnostics.push(diag);
+        }
+    }
 
     LoweredFunction {
         thir,
@@ -4652,6 +4716,37 @@ struct Builder {
     binding_locals: HashMap<BindingId, Place>,
     decisions: Vec<DecisionFact>,
     owned_locals: Vec<(hew_hir::BindingId, String, ResolvedTy)>,
+    /// Generator/`AsyncGenerator` owned bindings tagged with the HIR scope they
+    /// were declared in, recorded so a per-scope-exit `hew_gen_free` fires when
+    /// that scope closes — INCLUDING when the scope is re-executed by an
+    /// enclosing loop. The function-exit LIFO drop only releases the final
+    /// content of each binding's slot, so a generator declared inside a loop
+    /// body (e.g. the `__hew_for_iter_*` binding of a `for x in gen()` nested in
+    /// a `while`) leaks one context + one OS thread per outer iteration without
+    /// this per-scope-exit release. Entries are removed from `owned_locals` once
+    /// the scope-exit drop is emitted so the function-exit pass cannot
+    /// double-free (the drop also null-stores the slot as defence-in-depth).
+    scope_generator_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
+    /// Active per-iteration generator-yielded heap value bindings, recorded
+    /// while lowering a `for v in gen()` (or `match g.next()`) consuming body so
+    /// a `break`/`continue` inside that body frees the current iteration's
+    /// yielded value before the back/exit edge — symmetric to
+    /// `emit_generator_drops_for_break_continue` freeing the generator HANDLE.
+    /// Without this, the break/continue ITERATION's yielded `Vec`/`string`/map
+    /// leaks: the body-end drop (`emit_generator_yield_binding_drop`) is emitted
+    /// AFTER the body lowers, so a `break`/`continue` jumps past it.
+    ///
+    /// Each entry is `(active_scopes_len_at_registration, Place, ResolvedTy,
+    /// drop_symbol)`. The `active_scopes` length captured when the value is
+    /// bound is compared against a break/continue site's `loop_scope_depth`: an
+    /// entry registered at depth >= the breaking loop's depth is in-loop and is
+    /// freed on that edge. Entries are CLONE-freed on the break/continue edge
+    /// (not removed) — the normal fall-through path's body-end drop still frees
+    /// the value for that mutually-exclusive CFG path, and the inline drop's
+    /// null-after-free makes a structurally-reachable second free a no-op
+    /// (`raii-null-after-move`; the runtime also null-guards). Drained when the
+    /// consuming body finishes lowering.
+    active_generator_yield_values: Vec<(usize, Place, ResolvedTy, &'static str)>,
     /// Diagnostics collected during MIR building (e.g., Unsupported HIR nodes).
     diagnostics: Vec<MirDiagnostic>,
     /// Per-function de-duplication for W3.029 user-aggregate value-class
@@ -5141,6 +5236,45 @@ impl Builder {
         }
     }
 
+    /// Emit a `hew_gen_free` release for every generator/`AsyncGenerator`
+    /// handle binding declared in `scope_id`, at the point this scope closes.
+    /// This runs on the NORMAL scope-exit path of a block; because a block
+    /// nested inside a loop re-executes (and its scope re-closes) once per
+    /// outer iteration, the generator's context + OS thread are released every
+    /// iteration instead of accumulating until function exit.
+    ///
+    /// Each released binding is removed from `owned_locals` and
+    /// `scope_generator_bindings` so the function-exit LIFO drop never fires a
+    /// second `hew_gen_free` on the same slot — and the inline `Instr::Drop`
+    /// null-stores the slot afterwards, so even a structurally-reachable second
+    /// drop observes null (`raii-null-after-move`; the runtime also null-guards).
+    /// A binding whose slot was already consumed (moved out) earlier on the path
+    /// is still safe: `hew_gen_free(null)` is a no-op.
+    fn emit_scope_generator_drops(&mut self, scope_id: ScopeId) {
+        // Collect this scope's generator bindings (LIFO: reverse declaration
+        // order) and drop them, leaving other scopes' entries in place.
+        let mut to_drop: Vec<(hew_hir::BindingId, ResolvedTy)> = Vec::new();
+        self.scope_generator_bindings.retain(|(s, binding, ty)| {
+            if *s == scope_id {
+                to_drop.push((*binding, ty.clone()));
+                false
+            } else {
+                true
+            }
+        });
+        for (binding, ty) in to_drop.into_iter().rev() {
+            let Some(place) = self.binding_locals.get(&binding).copied() else {
+                continue;
+            };
+            self.owned_locals.retain(|(b, _, _)| *b != binding);
+            self.instructions.push(Instr::Drop {
+                place,
+                ty,
+                drop_fn: Some("hew_gen_free".to_string()),
+            });
+        }
+    }
+
     /// Emit defers for an early-return path. Walks `active_scopes` from
     /// innermost to outermost, cloning and lowering each scope's pending
     /// defers in LIFO order. Uses clone (not remove) because the normal
@@ -5199,6 +5333,77 @@ impl Builder {
             for body in defers.into_iter().rev() {
                 let _ = self.lower_value(&body);
             }
+        }
+    }
+
+    /// Emit `hew_gen_free` for every generator binding declared in the in-loop
+    /// window (`active_scopes[loop_scope_depth..]`) on a `break`/`continue`
+    /// edge. Without this, a generator declared in a loop body and then skipped
+    /// past by `continue` (or escaped by `break`) leaks its context + thread for
+    /// that iteration, because the back-edge `emit_scope_generator_drops` on the
+    /// normal fall-through path is never reached on the break/continue path.
+    ///
+    /// CLONE discipline (mirrors `emit_defers_for_break_continue`): the entries
+    /// are NOT removed from `scope_generator_bindings` here, because the normal
+    /// scope-exit close still drains them for the fall-through path. The two
+    /// paths are mutually exclusive in the CFG, so each runtime path frees once;
+    /// the inline drop's null-after-free makes any structurally-reachable second
+    /// drop a no-op (`raii-null-after-move`; the runtime also null-guards).
+    fn emit_generator_drops_for_break_continue(&mut self, loop_scope_depth: usize) {
+        let window: HashSet<ScopeId> = self.active_scopes[loop_scope_depth..]
+            .iter()
+            .copied()
+            .collect();
+        let to_drop: Vec<(Place, ResolvedTy)> = self
+            .scope_generator_bindings
+            .iter()
+            .rev()
+            .filter(|(s, _, _)| window.contains(s))
+            .filter_map(|(_, binding, ty)| {
+                self.binding_locals
+                    .get(binding)
+                    .copied()
+                    .map(|place| (place, ty.clone()))
+            })
+            .collect();
+        for (place, ty) in to_drop {
+            self.instructions.push(Instr::Drop {
+                place,
+                ty,
+                drop_fn: Some("hew_gen_free".to_string()),
+            });
+        }
+    }
+
+    /// Emit a per-iteration drop for every active generator-yielded heap value
+    /// that is lexically inside the loop a `break`/`continue` is leaving, so the
+    /// break/continue ITERATION's yielded value (`Vec`/`string`/map) is freed on
+    /// that edge instead of leaking. This is the value-side companion to
+    /// `emit_generator_drops_for_break_continue` (which frees the generator
+    /// HANDLE): the body-end drop (`emit_generator_yield_binding_drop`) is
+    /// emitted AFTER the body lowers, so a `break`/`continue` jumps past it and
+    /// the iteration that breaks/continues would otherwise leak its value.
+    ///
+    /// CLONE discipline (mirrors the handle release): entries are NOT removed —
+    /// the mutually-exclusive fall-through path still frees via the body-end
+    /// drop, and the inline drop's null-after-free makes a structurally-
+    /// reachable second free a no-op (`raii-null-after-move`; the runtime also
+    /// null-guards). An entry registered at `active_scopes` depth >=
+    /// `loop_scope_depth` is inside the breaking loop's body window.
+    fn emit_generator_yield_value_drops_for_break_continue(&mut self, loop_scope_depth: usize) {
+        let to_drop: Vec<(Place, ResolvedTy, &'static str)> = self
+            .active_generator_yield_values
+            .iter()
+            .rev()
+            .filter(|(depth, _, _, _)| *depth >= loop_scope_depth)
+            .map(|(_, place, ty, symbol)| (*place, ty.clone(), *symbol))
+            .collect();
+        for (place, ty, symbol) in to_drop {
+            self.instructions.push(Instr::Drop {
+                place,
+                ty,
+                drop_fn: Some(symbol.to_string()),
+            });
         }
     }
 
@@ -5889,6 +6094,19 @@ impl Builder {
                     // boundary-fail-closed, raii-null-after-move.
                     self.owned_locals
                         .push((binding.id, binding.name.clone(), binding_ty.clone()));
+                    // Tag generator/`AsyncGenerator` handle bindings with their
+                    // declaring scope so a per-scope-exit `hew_gen_free` fires
+                    // when the scope closes — covering the loop-re-entry case the
+                    // function-exit drop misses (see `scope_generator_bindings`).
+                    if ty_is_generator_handle(&binding_ty) {
+                        if let Some(scope) = self.active_scopes.last().copied() {
+                            self.scope_generator_bindings.push((
+                                scope,
+                                binding.id,
+                                binding_ty.clone(),
+                            ));
+                        }
+                    }
                 }
                 if owned_string_record_key.is_some() && value_place.is_some() {
                     self.owned_string_record_bindings.insert(binding.id);
@@ -6493,6 +6711,19 @@ impl Builder {
                     .push(Instr::CancellationTokenIsCancelled { dest, token });
                 Some(dest)
             }
+            HirExprKind::GeneratorNext { receiver, yield_ty } => {
+                let ctx = self.lower_value(receiver)?;
+                // `expr.ty` is the checker-authoritative `Option<yield_ty>`; the
+                // dest enum slot is allocated with that exact type so codegen
+                // resolves the registered Option layout for the unbox.
+                let dest = self.alloc_local(expr.ty.clone());
+                self.instructions.push(Instr::GeneratorNext {
+                    dest,
+                    ctx,
+                    yield_ty: yield_ty.clone(),
+                });
+                Some(dest)
+            }
             HirExprKind::Call { callee, args } => {
                 if let Some((symbol, args, site)) = runtime_symbol_for_call_expr(expr) {
                     return self.lower_runtime_call(
@@ -6645,6 +6876,11 @@ impl Builder {
                 // into a fresh local so cleanup cannot corrupt the block's
                 // observable result.
                 self.emit_pending_defers(block.scope);
+                // Release any generator handle declared in this block's scope
+                // before it closes — so a `for x in gen()` block nested in an
+                // enclosing loop frees its `__hew_for_iter_*` context + thread
+                // every outer iteration instead of leaking one per iteration.
+                self.emit_scope_generator_drops(block.scope);
                 self.active_scopes.pop();
                 result
             }
@@ -6715,6 +6951,23 @@ impl Builder {
                 // Build the (offset, source) pairs in declaration order.
                 // For each field: use the explicit value if present; otherwise
                 // emit a RecordFieldLoad from the base and use that intermediate.
+                //
+                // SHIM / FAIL-CLOSED (W5.021 Finding 3): for an OVERRIDDEN owned
+                // field, the base's old value is never loaded here (the explicit
+                // value replaces it), so it is not moved into the new record. The
+                // `base` binding itself is then excluded from drop by
+                // `derive_owned_record_drop_allowed` (its kept fields escape into
+                // the new record via these RecordFieldLoads), so the overridden
+                // field's OLD heap value is never released -> it LEAKS. This is
+                // fail-closed (leak, never double-free): the new record owns the
+                // replacement; nothing double-frees the old value.
+                // WHEN OBSOLETE: when functional update over owned records gets a
+                // precise per-field drop (drop the overridden base field at the
+                // RecordInit site). REAL SOLUTION: emit a targeted drop of
+                // `base.<overridden_offset>` for each owned overridden field
+                // before/at construction. Only string-literal overrides are
+                // common today (no heap leak), so the cost is bounded; tracked as
+                // a v0.5.1 follow-on.
                 let mut field_pairs: Vec<(FieldOffset, Place)> = Vec::new();
                 for (idx, (fname, fty)) in field_order.iter().enumerate() {
                     let offset = FieldOffset(
@@ -7888,6 +8141,14 @@ impl Builder {
                     .expect("break outside loop — rejected by type checker");
                 // Flush in-loop defers before leaving the loop (cleanup-all-exits).
                 self.emit_defers_for_break_continue(loop_scope_depth);
+                // Free the break-iteration's yielded heap value(s) on the break
+                // edge (the body-end drop is past the break — would leak it).
+                // Value before handle: the yielded buffer is inner heap, the
+                // handle owns the thread (LIFO inner-first).
+                self.emit_generator_yield_value_drops_for_break_continue(loop_scope_depth);
+                // Release in-loop generators on the break edge so the
+                // break-iteration's context + thread are not leaked.
+                self.emit_generator_drops_for_break_continue(loop_scope_depth);
                 self.finish_current_block(Terminator::Goto { target: exit_bb });
                 // Source following `break` lexically is dead; give it a home.
                 let dead = self.alloc_block();
@@ -7903,6 +8164,13 @@ impl Builder {
                     .expect("continue outside loop — rejected by type checker");
                 // Flush in-loop defers before the back-edge (cleanup-all-exits).
                 self.emit_defers_for_break_continue(loop_scope_depth);
+                // Free the continued iteration's yielded heap value(s) on the
+                // continue edge (the body-end drop is past the continue — would
+                // leak it). Value before handle (LIFO inner-first).
+                self.emit_generator_yield_value_drops_for_break_continue(loop_scope_depth);
+                // Release in-loop generators on the continue edge so the
+                // skipped iteration's context + thread are not leaked.
+                self.emit_generator_drops_for_break_continue(loop_scope_depth);
                 self.finish_current_block(Terminator::Goto {
                     target: continue_target,
                 });
@@ -8904,6 +9172,24 @@ impl Builder {
         arms: &[hew_hir::HirMatchArm],
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
+        // A `match` whose checker-assigned type is `Never` produces no usable
+        // value: either every arm diverges (e.g. all arms `panic(...)`/`return`)
+        // or the match sits in a discarded statement position alongside a
+        // diverging arm. Each diverging arm's body lowers to `None` (no Move
+        // into the result place), so the result alloca is never read — but it
+        // must still be *allocated* because the sub-lowerings build their CFG
+        // around a concrete `result_place`. Allocating it as `Never` trips the
+        // codegen-front `primitive_to_llvm` fail-closed arm (Never has no value
+        // representation). Substitute `Unit` — the canonical zero-sized
+        // stand-in (an i8 alloca) — so the dead result place has a valid LLVM
+        // type. Idiomatic Hew uses `panic(...)` directly as a match-arm body
+        // (`Some(v) => panic(...), None => {}`); this keeps that form compiling.
+        let result_ty = if matches!(result_ty, ResolvedTy::Never) {
+            &ResolvedTy::Unit
+        } else {
+            result_ty
+        };
+
         // Payload predicates (literal comparisons against constructor payload
         // fields) are now lowered inside `lower_match_enum_tag`. No early
         // exit here — the dispatcher routes to the correct sub-function which
@@ -8997,120 +9283,57 @@ impl Builder {
         ) && hir_expr_contains_synthetic_vec_string_index(scrutinee)
     }
 
-    fn retained_string_iter_binding_drop_safe(
-        &self,
-        start_block_id: u32,
-        start_instr_len: usize,
-        local: u32,
-    ) -> bool {
-        let mut visiting = HashSet::new();
-        let mut memo = HashMap::new();
-        self.retained_string_block_paths_drop_safe(
-            start_block_id,
-            start_block_id,
-            start_instr_len,
-            local,
-            &mut visiting,
-            &mut memo,
-        )
+    /// True when the match scrutinee is a generator `.next()` consumption node
+    /// (`HirExprKind::GeneratorNext`) — either a source-level `g.next()` or the
+    /// `for x in gen()` desugar's synthetic next-call. The yielded value bound by
+    /// the `Some` arm is a FRESH, solely-owned heap value the runtime handed to
+    /// the consumer (`hew_gen_next` returns an owned payload), so — like a
+    /// `Vec<String>` iterator's retained string — it must be released at the end
+    /// of the consuming body. Without that release every yielded heap value
+    /// (a `Vec` yield, an `f"…"` string yield) leaks.
+    fn is_generator_next_scrutinee(scrutinee: &HirExpr) -> bool {
+        matches!(&scrutinee.kind, HirExprKind::GeneratorNext { .. })
     }
 
-    fn retained_string_block_paths_drop_safe(
-        &self,
-        block_id: u32,
-        start_block_id: u32,
-        start_instr_len: usize,
-        local: u32,
-        visiting: &mut HashSet<u32>,
-        memo: &mut HashMap<u32, bool>,
-    ) -> bool {
-        if let Some(ok) = memo.get(&block_id) {
-            return *ok;
-        }
-        if block_id == self.current_block_id {
-            let start = if block_id == start_block_id {
-                start_instr_len
-            } else {
-                0
-            };
-            return self.instructions[start..]
-                .iter()
-                .all(|instr| retained_string_instr_drop_safe(instr, local));
-        }
-        if !visiting.insert(block_id) {
-            return false;
-        }
-        let ok = self
-            .pending_blocks
-            .iter()
-            .find(|block| block.id == block_id)
-            .is_some_and(|block| {
-                let start = if block_id == start_block_id {
-                    start_instr_len
-                } else {
-                    0
-                };
-                if !block.instructions[start..]
-                    .iter()
-                    .all(|instr| retained_string_instr_drop_safe(instr, local))
-                {
-                    return false;
-                }
-                if !retained_string_terminator_drop_safe(&block.terminator, local) {
-                    return false;
-                }
-                match &block.terminator {
-                    Terminator::Goto { target } => self.retained_string_block_paths_drop_safe(
-                        *target,
-                        start_block_id,
-                        start_instr_len,
-                        local,
-                        visiting,
-                        memo,
-                    ),
-                    Terminator::Call { next, .. } => self.retained_string_block_paths_drop_safe(
-                        *next,
-                        start_block_id,
-                        start_instr_len,
-                        local,
-                        visiting,
-                        memo,
-                    ),
-                    Terminator::Branch {
-                        then_target,
-                        else_target,
-                        ..
-                    } => {
-                        self.retained_string_block_paths_drop_safe(
-                            *then_target,
-                            start_block_id,
-                            start_instr_len,
-                            local,
-                            visiting,
-                            memo,
-                        ) && self.retained_string_block_paths_drop_safe(
-                            *else_target,
-                            start_block_id,
-                            start_instr_len,
-                            local,
-                            visiting,
-                            memo,
-                        )
-                    }
-                    Terminator::Trap { .. } => true,
-                    Terminator::Return
-                    | Terminator::Yield { .. }
-                    | Terminator::Send { .. }
-                    | Terminator::Ask { .. }
-                    | Terminator::RemoteAsk { .. }
-                    | Terminator::Select { .. } => false,
-                }
-            });
-        visiting.remove(&block_id);
-        memo.insert(block_id, ok);
-        ok
-    }
-
+    /// Emit the per-iteration release for a `for line in vec_of_strings` binding.
+    ///
+    /// `hew_vec_get_str` returns a FRESH, solely-owned retained owner of the
+    /// element (`hew_string_clone` — a header-aware refcount bump that returns
+    /// the caller its OWN reference; NOT a borrow of the Vec's live buffer slot,
+    /// which is what the owned-element getter `hew_vec_get_owned` does). The Vec
+    /// keeps its own reference and releases every element through its `destroy`
+    /// descriptor independently. So the iteration binding owns exactly one
+    /// reference that must be released with `hew_string_drop` on EVERY path out of
+    /// the body — exactly the ownership shape of a generator-yielded `string`.
+    ///
+    /// The drop is placed per-path, not at a single post-body point:
+    ///   - the fall-through (loop back-edge) path gets the body-end `Drop` emitted
+    ///     here (this instruction lands at the end of the body's current block);
+    ///   - `break`/`continue` edges free the current iteration's binding via
+    ///     `emit_generator_yield_value_drops_for_break_continue` (the binding is
+    ///     registered on `active_generator_yield_values` before the body lowers),
+    ///     so an iteration that breaks/continues releases before jumping past the
+    ///     body-end drop;
+    ///   - an early `return` inside the body moves the element to the caller (an
+    ///     ownership escape — see below), so no extra drop is owed on that path.
+    ///
+    /// Every structurally-reachable second free is a no-op: the inline drop
+    /// null-stores the slot (codegen `emit_cow_heap_drop`) and the runtime
+    /// `hew_string_drop` header-guards (`raii-null-after-move`).
+    ///
+    /// Ownership-escape handling: a body that genuinely transfers the binding's
+    /// single retained reference out — a `Move`/`WitnessMove` into a surviving
+    /// local, a store into a record/tuple/closure-env/actor-state aggregate, a
+    /// spawn capture, or a consuming terminator (`return`/re-yield/send/ask) —
+    /// hands ownership to a longer-lived owner that will release it. On those
+    /// paths the body-end drop is SUPPRESSED (leak-not-double-free; the move
+    /// checker / function-scope drop machinery owns the escaped reference). A
+    /// borrowing read — string concat (`out + line`), `line.len()`,
+    /// `print(line)`, any runtime-ABI/arithmetic operand — does NOT transfer the
+    /// reference, so the per-iteration drop is still owed and is emitted. This is
+    /// the SAME escape classification the generator-yield path uses
+    /// (`generator_yield_binding_drop_safe`), reused here because the ownership
+    /// shapes are identical.
     fn emit_vec_string_iter_binding_drop(
         &mut self,
         binding: BindingId,
@@ -9137,30 +9360,284 @@ impl Builder {
             });
             return;
         };
-        if self.retained_string_iter_binding_drop_safe(
-            body_start_block_id,
-            body_start_instr_len,
-            local,
-        ) {
+        // Per-path escape scan: emit the body-end drop unless the binding's single
+        // retained reference escapes the body on every reachable path. Borrowing
+        // reads (concat, getters, print) are non-escaping; only an
+        // ownership-transferring use suppresses the drop. Shared with the
+        // generator-yield path — identical fresh-solely-owned-reference shape.
+        if self.generator_yield_binding_drop_safe(body_start_block_id, body_start_instr_len, local)
+        {
             self.instructions.push(Instr::Drop {
                 place,
                 ty: ty.clone(),
                 drop_fn: Some("hew_string_drop".to_string()),
             });
-        } else {
+        }
+        // else: the retained element escapes the body (moved/stored/returned).
+        // Leak-not-double-free — the consumer that received the reference owns it;
+        // emitting another `hew_string_drop` here would over-release. No
+        // diagnostic: an escaping element is a legitimate program shape, and the
+        // function-scope drop machinery / move checker releases the escaped
+        // reference where it lands.
+    }
+
+    /// True when a generator-yielded `Some(x)` payload of type `ty` has a known
+    /// scope-exit release symbol the consumer-body drop can emit. Restricted to
+    /// the proven leak shapes: a heap-owning `string` and any builtin `Vec<T>`
+    /// (whose buffer — plus, for an owned-element Vec, its elements — must be
+    /// freed). HashMap/HashSet/Bytes yields are NOT covered here (no validated
+    /// consumer-drop path yet); they leak as before rather than risk a
+    /// double-free, matching the conservative posture of the function-scope
+    /// `CoW` drop allow-set.
+    fn ty_has_generator_yield_drop_symbol(&self, ty: &ResolvedTy) -> bool {
+        self.generator_yield_drop_symbol(ty).is_some()
+    }
+
+    /// The C-ABI release symbol for a generator-yielded value of type `ty`, or
+    /// `None` if the shape has no consumer-body drop path (see
+    /// `ty_has_generator_yield_drop_symbol`). The selection MUST mirror codegen's
+    /// `cow_heap_release_symbol` so the inline-drop validator
+    /// (`lower_inline_drop` → congruence check) accepts the emitted symbol
+    /// (`dedup-semantic-boundary`).
+    fn generator_yield_drop_symbol(&self, ty: &ResolvedTy) -> Option<&'static str> {
+        match ty {
+            ResolvedTy::String => Some("hew_string_drop"),
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::Vec),
+                args,
+                ..
+            } => {
+                // Owned-element Vec (element owns heap) releases via
+                // `hew_vec_free_owned` (per-element descriptor drop then buffer
+                // free); a plain (BitCopy / string) element Vec uses
+                // `hew_vec_free`. The owned-element predicate routes through the
+                // SAME `is_owned_vec_element` authority codegen's
+                // `resolved_ty_element_owns_heap_for_owned_vec` agrees with
+                // (`dedup-semantic-boundary`).
+                if args.first().is_some_and(|e| self.is_owned_vec_element(e)) {
+                    Some("hew_vec_free_owned")
+                } else {
+                    Some("hew_vec_free")
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Emit a body-end release for a generator-yielded `Some(x)` binding. The
+    /// yielded value is a fresh, solely-owned heap value `hew_gen_next` handed
+    /// the consumer; releasing it here (per-iteration for a `for`-in loop) is
+    /// what frees the otherwise-leaked yield. Gated on the same body-shape
+    /// drop-safety scan the `Vec<String>` iterator path uses: if the binding's
+    /// pointer escapes the consuming body (read as a non-print source operand,
+    /// returned, re-yielded), MIR refuses to emit the drop and the value leaks
+    /// rather than risking a use-after-free against the escaped alias.
+    fn emit_generator_yield_binding_drop(
+        &mut self,
+        binding: BindingId,
+        place: Place,
+        ty: &ResolvedTy,
+        body_start_block_id: u32,
+        body_start_instr_len: usize,
+        site: hew_hir::SiteId,
+    ) {
+        let Some(symbol) = self.generator_yield_drop_symbol(ty) else {
+            return;
+        };
+        let Some(local) = base_local(place) else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "Vec<String> for-in retained binding drop".to_string(),
+                    construct: "generator-yield binding drop".to_string(),
                     site,
                 },
-                note: "for-in over Vec<String> lowered hew_vec_get_str, which returns a \
-                       retained/header-aware owner. This body shape does not yet have a \
-                       proven single post-body drop point or contains an ownership-escaping \
-                       use of the iteration binding, so MIR refuses to emit the getter \
-                       without a balancing hew_string_drop."
-                    .to_string(),
+                note: format!(
+                    "generator-yielded binding {binding:?} must lower to a Place::Local-backed \
+                     owner so the yielded heap value can be balanced with {symbol}; got {place:?}"
+                ),
+            });
+            return;
+        };
+        if self.generator_yield_binding_drop_safe(body_start_block_id, body_start_instr_len, local)
+        {
+            self.instructions.push(Instr::Drop {
+                place,
+                ty: ty.clone(),
+                drop_fn: Some(symbol.to_string()),
             });
         }
+        // else: the value escapes the consuming body — leak-not-double-free.
+        // No diagnostic: an escaping yield is a legitimate (if leaky) program,
+        // not a lowering defect, unlike the Vec<String> getter which has no
+        // other release path.
+    }
+
+    /// Body-shape drop-safety scan for a generator-yielded binding. Unlike the
+    /// `Vec<String>` retained-string scan (which rejects ANY source read because
+    /// the string is a projection alias of a still-live Vec), the yielded value
+    /// is a FRESH, solely-owned heap value: a borrowing read (a `.len()`-style
+    /// getter call, an arithmetic operand, a `print`) does not transfer
+    /// ownership, so it is safe. Only an OWNERSHIP-TRANSFERRING use makes the
+    /// body-end drop wrong: a `Move` out of the binding's slot into another
+    /// local, a store into a surviving aggregate, a spawn capture, or a
+    /// consuming terminator (return / re-yield / actor send/ask). Those escape
+    /// the body, so the body-end drop is skipped (leak-not-double-free; the
+    /// move-checker / function-scope drop machinery owns the escaped value).
+    fn generator_yield_binding_drop_safe(
+        &self,
+        start_block_id: u32,
+        start_instr_len: usize,
+        local: u32,
+    ) -> bool {
+        let mut visiting = HashSet::new();
+        let mut memo = HashMap::new();
+        self.generator_yield_block_paths_drop_safe(
+            start_block_id,
+            start_block_id,
+            start_instr_len,
+            local,
+            &mut visiting,
+            &mut memo,
+        )
+    }
+
+    fn generator_yield_block_paths_drop_safe(
+        &self,
+        block_id: u32,
+        start_block_id: u32,
+        start_instr_len: usize,
+        local: u32,
+        visiting: &mut HashSet<u32>,
+        memo: &mut HashMap<u32, bool>,
+    ) -> bool {
+        if let Some(ok) = memo.get(&block_id) {
+            return *ok;
+        }
+        if block_id == self.current_block_id {
+            let start = if block_id == start_block_id {
+                start_instr_len
+            } else {
+                0
+            };
+            return self.instructions[start..]
+                .iter()
+                .all(|instr| !generator_yield_instr_escapes(instr, local));
+        }
+        if !visiting.insert(block_id) {
+            // A block already on the `visiting` stack is a loop back-edge: the
+            // walk re-entered a block whose instructions + terminator were
+            // already verified escape-free on the in-progress path before we
+            // recursed into its successors. A back-edge is the loop's own
+            // continuation, NOT a new escape site, so the path loops without
+            // transferring ownership of the yielded value out of the body —
+            // drop-safe. (See the not-yet-built note below for why fail-closed
+            // here means LEAK, never double-free, so `true` is the safe answer
+            // only because the first-visit escape scan already cleared the
+            // body.)
+            return true;
+        }
+        let Some(block) = self
+            .pending_blocks
+            .iter()
+            .find(|block| block.id == block_id)
+        else {
+            // The walk reached a block that is neither the in-progress block
+            // (`current_block_id`, handled above) nor yet in `pending_blocks`.
+            // This is a FORWARD edge to a not-yet-lowered block — the consuming
+            // body is still being built, and a `break`/`continue` restructures
+            // the CFG so the body reaches loop-exit / loop-continuation targets
+            // that the loop lowering will emit AFTER this drop scan runs.
+            //
+            // Such a forward target is never an escape site for the yielded
+            // value: an ownership-transferring use (`Move` out, store into a
+            // surviving aggregate, spawn capture, consuming terminator) is
+            // emitted INLINE in the body, which is already built and was checked
+            // by the first-visit escape scan on every block reached so far. A
+            // not-yet-built continuation block carries only loop-structural
+            // control flow. Treating it as drop-safe (`true`) preserves the
+            // per-iteration body-end drop; the old conservative `false` here —
+            // together with the back-edge `false` above — was the break/continue
+            // leak: any `for v in gen()` body containing `break`/`continue`
+            // suppressed the body-end drop for the WHOLE binding, leaking every
+            // yielded heap value (verified 50 iters -> 100 leaks).
+            //
+            // Fail-closed direction check: the generator-yield drop's wrong
+            // answer is a LEAK if over-suppressed, but a DOUBLE-FREE if
+            // over-emitted. `true` here is safe ONLY because every real escape
+            // is inline in an already-built block the scan visited first; the
+            // forward block cannot introduce a new escape of a value bound in
+            // this body.
+            visiting.remove(&block_id);
+            memo.insert(block_id, true);
+            return true;
+        };
+        let ok = {
+            let start = if block_id == start_block_id {
+                start_instr_len
+            } else {
+                0
+            };
+            // An escape in this block's instructions OR its terminator makes the
+            // body-end drop unsound (the value left the body) — return false
+            // immediately. Otherwise recurse into the successor(s).
+            let escapes_here = block.instructions[start..]
+                .iter()
+                .any(|instr| generator_yield_instr_escapes(instr, local))
+                || generator_yield_terminator_escapes(&block.terminator, local);
+            if escapes_here {
+                false
+            } else {
+                match &block.terminator {
+                    Terminator::Goto { target } => self.generator_yield_block_paths_drop_safe(
+                        *target,
+                        start_block_id,
+                        start_instr_len,
+                        local,
+                        visiting,
+                        memo,
+                    ),
+                    Terminator::Call { next, .. } | Terminator::MakeGenerator { next, .. } => self
+                        .generator_yield_block_paths_drop_safe(
+                            *next,
+                            start_block_id,
+                            start_instr_len,
+                            local,
+                            visiting,
+                            memo,
+                        ),
+                    Terminator::Branch {
+                        then_target,
+                        else_target,
+                        ..
+                    } => {
+                        self.generator_yield_block_paths_drop_safe(
+                            *then_target,
+                            start_block_id,
+                            start_instr_len,
+                            local,
+                            visiting,
+                            memo,
+                        ) && self.generator_yield_block_paths_drop_safe(
+                            *else_target,
+                            start_block_id,
+                            start_instr_len,
+                            local,
+                            visiting,
+                            memo,
+                        )
+                    }
+                    Terminator::Trap { .. } => true,
+                    Terminator::Return
+                    | Terminator::Yield { .. }
+                    | Terminator::Send { .. }
+                    | Terminator::Ask { .. }
+                    | Terminator::RemoteAsk { .. }
+                    | Terminator::Select { .. } => false,
+                }
+            }
+        };
+        visiting.remove(&block_id);
+        memo.insert(block_id, ok);
+        ok
     }
 
     fn project_match_scrutinee_is_bitcopy(&self, ty: &ResolvedTy) -> bool {
@@ -10283,6 +10760,7 @@ impl Builder {
             }
         }
         let vec_string_iter_next_scrutinee = self.is_vec_string_iter_next_scrutinee(scrutinee);
+        let generator_next_scrutinee = Self::is_generator_next_scrutinee(scrutinee);
 
         // Lower the scrutinee in the entry block. A failure propagates
         // via `?`; the half-built match leaves no dangling block.
@@ -10468,17 +10946,25 @@ impl Builder {
                 self.start_block(pass_bb);
             }
 
-            let arm_is_vec_iter_some = vec_string_iter_next_scrutinee
-                && matches!(
-                    &arm.predicate,
-                    hew_hir::HirMatchArmPredicate::EnumVariant {
-                        variant_match,
-                        variant_idx: 0,
-                    } if variant_match.type_name == "Option"
-                        && variant_match.variant_name == "Some"
-                );
+            let arm_is_some = matches!(
+                &arm.predicate,
+                hew_hir::HirMatchArmPredicate::EnumVariant {
+                    variant_match,
+                    variant_idx: 0,
+                } if variant_match.type_name == "Option"
+                    && variant_match.variant_name == "Some"
+            );
+            let arm_is_vec_iter_some = vec_string_iter_next_scrutinee && arm_is_some;
+            let arm_is_generator_some = generator_next_scrutinee && arm_is_some;
             let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
             let mut retained_vec_string_iter_bindings = Vec::new();
+            // Generator-yielded `Some(x)` bindings whose payload owns heap. The
+            // yielded value is a fresh, solely-owned heap value `hew_gen_next`
+            // handed the consumer; it is released at the end of the consuming
+            // body (per-iteration for a `for`-in loop). Removed from
+            // `owned_locals` below so the function-scope drop pass does not also
+            // fire (which would double-free).
+            let mut generator_yield_drop_bindings = Vec::new();
             for binding in &arm.bindings {
                 let binding_ty = self.subst_ty(&binding.ty);
                 self.statements.push(MirStatement::Bind {
@@ -10508,7 +10994,44 @@ impl Builder {
                 let previous = self.binding_locals.insert(binding.binding, dest);
                 overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
                 if arm_is_vec_iter_some && matches!(binding_ty, ResolvedTy::String) {
+                    // `hew_vec_get_str` returns a FRESH, solely-owned retained
+                    // owner (refcount bump via `hew_string_clone` — NOT a borrow
+                    // of the Vec's buffer slot, unlike the owned-element getter).
+                    // Its ownership shape is therefore identical to a
+                    // generator-yielded `string`: a per-iteration heap reference
+                    // the body must release with `hew_string_drop` on every exit
+                    // edge. Take it out of `owned_locals` so the function-scope
+                    // LIFO drop pass cannot ALSO fire on the binding's final slot
+                    // value (double-free guard) — the per-iteration body-end drop
+                    // and the break/continue edge drops (registered below) own the
+                    // release. The body-shape escape scan in
+                    // `emit_vec_string_iter_binding_drop` suppresses the body-end
+                    // drop only when the binding's single retained reference
+                    // genuinely escapes the body (a `Move`/store/return that hands
+                    // the reference to a longer-lived owner), matching the
+                    // generator-yield posture.
+                    if keep_for_drop_elab {
+                        self.owned_locals.retain(|(b, _, _)| *b != binding.binding);
+                    }
                     retained_vec_string_iter_bindings.push((
+                        binding.binding,
+                        dest,
+                        binding_ty,
+                        arm.body.site,
+                    ));
+                } else if arm_is_generator_some
+                    && self.ty_has_generator_yield_drop_symbol(&binding_ty)
+                {
+                    // The yielded payload owns heap (a `string`, a `Vec`, a
+                    // `HashMap`/`HashSet`). Schedule a body-end release and take
+                    // it back out of `owned_locals` so the function-scope drop
+                    // pass cannot also fire (double-free guard). The body-shape
+                    // drop-safety scan in `emit_generator_yield_binding_drop`
+                    // refuses to emit if the value escapes the body.
+                    if keep_for_drop_elab {
+                        self.owned_locals.retain(|(b, _, _)| *b != binding.binding);
+                    }
+                    generator_yield_drop_bindings.push((
                         binding.binding,
                         dest,
                         binding_ty,
@@ -10536,7 +11059,50 @@ impl Builder {
 
             let body_start_block_id = self.current_block_id;
             let body_start_instr_len = self.instructions.len();
+
+            // Register the iteration's yielded heap values as active so a
+            // `break`/`continue` inside the body frees them on its edge
+            // (symmetric to the generator-handle release). The depth marker is
+            // the current `active_scopes` length: a break/continue at
+            // `loop_scope_depth <= marker` is leaving/looping a loop this value
+            // is lexically inside, so it must free it. Drained after the body
+            // lowers (the fall-through path uses the body-end drop instead).
+            let active_yield_mark = self.active_generator_yield_values.len();
+            for (_binding, place, ty, _site) in &generator_yield_drop_bindings {
+                if let Some(symbol) = self.generator_yield_drop_symbol(ty) {
+                    let depth = self.active_scopes.len();
+                    self.active_generator_yield_values
+                        .push((depth, *place, ty.clone(), symbol));
+                }
+            }
+            // The retained `Vec<String>` iteration binding is a per-iteration
+            // heap reference with the same lifecycle as a yielded value: register
+            // it on the same active-value stack so a `break`/`continue` inside the
+            // body frees THIS iteration's retained string on its edge (the
+            // body-end drop is emitted after the body lowers, so a break/continue
+            // jumps past it and would otherwise leak the breaking iteration's
+            // element). `hew_string_drop` is the release symbol; the inline drop's
+            // null-after-free (codegen `emit_cow_heap_drop` + runtime header
+            // guard) makes the mutually-exclusive fall-through body-end drop a
+            // no-op on the break/continue path.
+            for (_binding, place, ty, _site) in &retained_vec_string_iter_bindings {
+                if matches!(ty, ResolvedTy::String) {
+                    let depth = self.active_scopes.len();
+                    self.active_generator_yield_values.push((
+                        depth,
+                        *place,
+                        ty.clone(),
+                        "hew_string_drop",
+                    ));
+                }
+            }
+
             let value = self.lower_value(&arm.body);
+
+            // Drain the entries this arm registered; break/continue inside the
+            // body has already cloned-freed them on its edges.
+            self.active_generator_yield_values
+                .truncate(active_yield_mark);
 
             for (binding, previous, keep_for_drop_elab) in overwritten_bindings.into_iter().rev() {
                 // Owned arm payloads stay addressable for function-wide drop elaboration;
@@ -10559,6 +11125,16 @@ impl Builder {
             }
             for (binding, place, ty, site) in retained_vec_string_iter_bindings {
                 self.emit_vec_string_iter_binding_drop(
+                    binding,
+                    place,
+                    &ty,
+                    body_start_block_id,
+                    body_start_instr_len,
+                    site,
+                );
+            }
+            for (binding, place, ty, site) in generator_yield_drop_bindings {
+                self.emit_generator_yield_binding_drop(
                     binding,
                     place,
                     &ty,
@@ -10661,6 +11237,11 @@ impl Builder {
             let _ = self.lower_value(tail);
         }
         self.emit_pending_defers(body.scope);
+        // Release generators declared in the loop body before the back-edge so
+        // a `let g = gen()` (consumed or not) frees its context + thread every
+        // iteration rather than accumulating one per pass (see
+        // `emit_scope_generator_drops`).
+        self.emit_scope_generator_drops(body.scope);
         self.active_scopes.pop();
         self.loop_stack.pop();
         self.finish_current_block(Terminator::Goto { target: header_bb });
@@ -10818,6 +11399,9 @@ impl Builder {
             let _ = self.lower_value(tail);
         }
         self.emit_pending_defers(body.scope);
+        // Release generators declared in the loop body before the back-edge
+        // (per-iteration `hew_gen_free`; see `emit_scope_generator_drops`).
+        self.emit_scope_generator_drops(body.scope);
         self.active_scopes.pop();
         self.loop_stack.pop();
         // Restore the prior `binding_locals` entries so the binding scope
@@ -11187,6 +11771,10 @@ impl Builder {
             let _ = self.lower_value(tail);
         }
         self.emit_pending_defers(body.scope);
+        // Release generators declared in the loop body before the increment +
+        // back-edge (per-iteration `hew_gen_free`; see
+        // `emit_scope_generator_drops`).
+        self.emit_scope_generator_drops(body.scope);
         self.active_scopes.pop();
         self.loop_stack.pop();
         // Body fall-through → increment block.
@@ -11273,6 +11861,9 @@ impl Builder {
             let _ = self.lower_value(tail);
         }
         self.emit_pending_defers(body.scope);
+        // Release generators declared in the loop body before the back-edge
+        // (per-iteration `hew_gen_free`; see `emit_scope_generator_drops`).
+        self.emit_scope_generator_drops(body.scope);
         self.active_scopes.pop();
         self.loop_stack.pop();
         self.finish_current_block(Terminator::Goto { target: body_bb });
@@ -12957,7 +13548,7 @@ impl Builder {
             }
             "hew_bytes_push" => self.lower_bytes_push(hir_args, site, context),
             "hew_vec_len" => self.lower_bytes_len(hir_args, site, context),
-            "hew_vec_get_i32" => self.lower_bytes_get_i32(hir_args, site, context),
+            "hew_bytes_index" => self.lower_bytes_get_i32(hir_args, site, context),
             "hew_option_is_none"
             | "hew_option_is_some"
             | "hew_option_unwrap_f64"
@@ -13066,11 +13657,17 @@ impl Builder {
         dest
     }
 
-    /// Emit `hew_vec_get_i32(buf, index) -> i32` for `bytes.get(index)` calls.
+    /// Emit `hew_bytes_index(buf, index) -> u8` for `bytes.get(index)` calls.
     ///
     /// The `impl bytes` extern block in `std/io.hew` declares `get` with
-    /// `#[extern_symbol(hew_vec_get_i32)]`. Returns the byte at `index` as
-    /// `i32` (ABI mirrors the `Vec<i32>` element getter).
+    /// `#[extern_symbol(hew_bytes_index)]`. A `bytes` value is a
+    /// `BytesTriple { ptr, offset, len }`, NOT a `*mut HewVec`, so it routes to
+    /// the dedicated `hew_bytes_index(ptr, offset, len, index) -> u8` runtime
+    /// entry (the same getter the `b[i]` indexing sugar uses) rather than the
+    /// Vec element getter `hew_vec_get_i32(*mut HewVec, i64)`. Codegen unpacks
+    /// the single triple Place into the runtime's `(ptr, offset, len)` args and
+    /// widens the u8 result to the method's declared `i32` return. The runtime
+    /// bounds-checks and aborts on OOB (boundary-fail-closed).
     fn lower_bytes_get_i32(
         &mut self,
         hir_args: &[hew_hir::HirExpr],
@@ -13080,11 +13677,11 @@ impl Builder {
         if hir_args.len() != 2 {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "runtime call `hew_vec_get_i32` arity".to_string(),
+                    construct: "runtime call `hew_bytes_index` arity".to_string(),
                     site,
                 },
                 note: format!(
-                    "`hew_vec_get_i32` (bytes.get) expects 2 arguments (receiver, index), got {}",
+                    "`hew_bytes_index` (bytes.get) expects 2 arguments (receiver, index), got {}",
                     hir_args.len()
                 ),
             });
@@ -13094,7 +13691,7 @@ impl Builder {
         let idx = self.lower_value(&hir_args[1])?;
         let dest =
             (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(ResolvedTy::I32));
-        self.push_runtime_call("hew_vec_get_i32", vec![buf, idx], dest);
+        self.push_runtime_call("hew_bytes_index", vec![buf, idx], dest);
         dest
     }
 
@@ -14658,6 +15255,7 @@ impl Builder {
             node: hew_hir::HirNodeId(0),
             name: shim_name.to_string(),
             type_params: Vec::new(),
+            is_generator: false,
             intrinsic_id: None,
             params: params.to_vec(),
             return_ty: ret_ty.clone(),
@@ -14798,6 +15396,7 @@ impl Builder {
             node: hew_hir::HirNodeId(0),
             name: shim_name.to_string(),
             type_params: Vec::new(),
+            is_generator: false,
             intrinsic_id: None,
             params: Vec::new(),
             return_ty: ret_ty.clone(),
@@ -15127,6 +15726,7 @@ impl Builder {
             node: hew_hir::HirNodeId(0),
             name: body_name.clone(),
             type_params: Vec::new(),
+            is_generator: false,
             intrinsic_id: None,
             params: Vec::new(),
             return_ty: return_ty.clone(),
@@ -15179,9 +15779,18 @@ impl Builder {
         };
         self.generated_functions.push(body_lowered);
 
-        // The gen-block expression evaluates to the generator-shell place in
-        // the enclosing function.  S3b replaces this with a real constructor
-        // call that allocates the state record.
+        // Materialize the generator value at the construction site: emit
+        // `Terminator::MakeGenerator` so codegen calls
+        // `hew_gen_ctx_create(<&body_fn>, null, 0)` and stores the returned
+        // `*mut HewGenCtx` handle into `gen_place`. The gen-block expression
+        // then evaluates to that handle place in the enclosing function.
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::MakeGenerator {
+            dest: gen_place,
+            body_fn: body_name.clone(),
+            next,
+        });
+        self.start_block(next);
         gen_place
     }
 
@@ -15444,6 +16053,29 @@ impl Builder {
         }
     }
 
+    /// Exclude a bare returned binding (`return x` / tail `x`) from the
+    /// function-exit drop set: handing `x`'s owner to the caller means the
+    /// callee must not also drop it.
+    ///
+    /// This handles ONLY the syntactically-direct single-binding return. The
+    /// harder member-exclusion problem — a composite return
+    /// (`(a, b)` / `R { f: a, .. }`) reached directly, by name, or through any
+    /// control-flow tail, whose constituent OWNED members are byte-copied into
+    /// the returned aggregate with no retain (the M-COW spine emits no retain on
+    /// share) — is solved by the value-flow authority
+    /// [`derive_returned_aggregate_member_bindings`] in `elaborate`, NOT here.
+    /// A prior revision tried to enumerate composite return shapes syntactically
+    /// in this walk; that was fail-OPEN (it missed `let pair = (s, r); pair`,
+    /// `if`/`match`/`scope`/`loop` tails, …) and the missed members
+    /// double-freed. The value-flow pass tracks what actually flows into the
+    /// `ReturnSlot` aggregate, so a return grammar this walk does not recognise
+    /// can no longer leave a member drop-eligible.
+    ///
+    /// Removing `x` from `owned_locals` here for the aggregate-binding case
+    /// (`let pair = (s, r); pair`) is still correct and complementary: it
+    /// suppresses the aggregate's own in-place drop, while the value-flow pass
+    /// independently suppresses the member handles' drops (they remain in
+    /// `owned_locals`, which the pass reads from). LESSONS: raii-null-after-move.
     fn mark_returned_binding_moved(&mut self, expr: &HirExpr) {
         let HirExprKind::BindingRef {
             resolved: ResolvedRef::Binding(id),
@@ -15467,6 +16099,11 @@ impl Builder {
 /// driver already consumes. Variants whose construction surface
 /// isn't yet wired (`Aliasing`, `GeneratorBorrowAcrossYield`,
 /// `ActorSendEscape`) cannot appear today; they yield `None` defensively.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive MirCheck -> MirDiagnostic projection; each arm is a \
+              single distinct mapping and splitting scatters the projection table"
+)]
 fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
     match check {
         MirCheck::UseAfterConsume {
@@ -15552,6 +16189,20 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
             },
             note: "context-derived MIR place escapes past ExitContext".to_string(),
         }),
+        MirCheck::OwnedHandleAggregateDoubleFree {
+            name, handle_ty, ..
+        } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported {
+                name: name.clone(),
+                handle_ty: handle_ty.clone(),
+            },
+            note: "the drop analysis could not prove this owned handle is freed \
+                   exactly once after aggregate extraction; the compiler refuses \
+                   rather than emit a double-free (LESSONS boundary-fail-closed, \
+                   raii-null-after-move) — full aggregate-extraction support is \
+                   tracked for v0.5.1"
+                .to_string(),
+        }),
         // No construction surface in the v0.5 integer spine. The
         // corresponding `MirDiagnosticKind` projections will land
         // alongside the construction surface for borrows, generators,
@@ -15613,6 +16264,13 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
 ///   - All other classes -> no drop emitted (`BitCopy`, `CowValue`, `View`,
 ///     `PersistentShare`, `Unknown` — `Unknown` is itself an upstream
 ///     rejection).
+#[allow(
+    clippy::too_many_lines,
+    reason = "elaborate threads each per-class drop-allow derivation (cow / enum \
+              / owned-Vec / owned-record / tuple-composite / returned-aggregate \
+              members) into one ordered pass; each is a distinct fail-closed \
+              authority and splitting them scatters the ordering contract"
+)]
 fn elaborate(
     checked: &CheckedMirFunction,
     builder: &Builder,
@@ -15757,6 +16415,45 @@ fn elaborate(
         &builder.enum_layouts,
     );
 
+    // W5.021 — fail-closed sole-owner allow-set for heap-owning **tuple**
+    // bindings (the tuple/record-of-owned-handles drop spine). A by-value owned
+    // tuple `(Sink, Stream)` / `(string, string)` earns the
+    // `DropKind::TupleInPlace` per-element drop ONLY when the escape-scan proves
+    // it still solely owns its members at scope exit. The canonical exclusion is
+    // the `__tuple_N` destructure temp whose elements are loaded out into their
+    // own owning bindings (DEFECT #3): the element binders own the handles, so
+    // the temp must not drop. A returned tuple is excluded too (the ReturnSlot
+    // owns it). Everything the prover does not clear leaks rather than
+    // double-frees.
+    let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
+        &checked.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+        &builder.locals,
+        &builder.enum_layouts,
+    );
+
+    // W5.021 (defect #1) — owned members the caller now owns via a returned
+    // aggregate; excluded from every drop class below (see the function doc).
+    let returned_aggregate_members = derive_returned_aggregate_member_bindings(
+        &checked.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+    );
+
+    // W3.053 — owned-handle members moved into a LOCAL aggregate and then
+    // extracted-and-consumed back out (for-in / `let` extraction) by a downstream
+    // release-consumer; the consumer owns the single free, so the source binding
+    // must not also drop. The local-aggregate analogue of
+    // `returned_aggregate_members` (see the function doc).
+    let consumed_local_aggregate_members = derive_consumed_local_aggregate_member_bindings(
+        &checked.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+        &builder.locals,
+        &builder.enum_layouts,
+    );
+
     let lifo_drops = build_lifo_drops(
         &builder.owned_locals,
         &builder.binding_locals,
@@ -15767,6 +16464,9 @@ fn elaborate(
         &builder.enum_layouts,
         &enum_composite_drop_allowed,
         &owned_vec_drop_allowed,
+        &tuple_composite_drop_allowed,
+        &returned_aggregate_members,
+        &consumed_local_aggregate_members,
     );
     let (elab_blocks, drop_plans) = enumerate_exits(
         &checked.blocks,
@@ -15973,6 +16673,19 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
         } if matches!(drop.place, Place::Local(_)) && ty_is_vec(&drop.ty) => DropKind::CowHeap {
             drop_fn: "hew_vec_free_owned",
         },
+        // W5.021 — heap-owning tuple drops are keyed by both kind and
+        // `ElabDrop::ty` (the structural tuple shape selects the synthesized
+        // in-place helper), while the place is an ordinary stack `Local`
+        // holding the tuple struct. Accept the dedicated kind on a local tuple
+        // place; any other shape re-derives via the Place-driven dispatcher and
+        // so cannot silently carry a `TupleInPlace` kind on a non-tuple place.
+        DropKind::TupleInPlace => {
+            if matches!(drop.place, Place::Local(_)) && matches!(&drop.ty, ResolvedTy::Tuple(_)) {
+                DropKind::TupleInPlace
+            } else {
+                drop_kind_for(drop.place, &drop.ty, None)
+            }
+        }
         // Extract the storage discriminator from the elaborated drop kind
         // itself so the dispatcher can re-derive the same
         // `DropKind::TraitObject { storage }` for the expected-vs-actual
@@ -16335,6 +17048,7 @@ fn validate_cross_block_split_consume(
             }
             Terminator::Call { next, .. }
             | Terminator::Yield { next, .. }
+            | Terminator::MakeGenerator { next, .. }
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
@@ -16353,6 +17067,7 @@ fn validate_cross_block_split_consume(
             } => vec![*then_target, *else_target],
             Terminator::Call { next, .. }
             | Terminator::Yield { next, .. }
+            | Terminator::MakeGenerator { next, .. }
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
@@ -16561,6 +17276,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         | Instr::FloatCmp { dest, lhs, rhs, .. }
         | Instr::IdentityCompare { dest, lhs, rhs } => vec![*dest, *lhs, *rhs],
         Instr::CancellationTokenIsCancelled { dest, token } => vec![*dest, *token],
+        Instr::GeneratorNext { dest, ctx, .. } => vec![*dest, *ctx],
         Instr::IntArithChecked {
             dest,
             lhs,
@@ -16834,6 +17550,12 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         | Instr::FloatDiv { lhs, rhs, .. }
         | Instr::FloatRem { lhs, rhs, .. } => vec![*lhs, *rhs],
         Instr::CancellationTokenIsCancelled { token, .. } => vec![*token],
+        // `.next()` borrows the generator handle — it does NOT alias it out.
+        // The handle stays the sole owner of its `*mut HewGenCtx` so its
+        // scope-exit drop fires `hew_gen_free` exactly once. Excluding `ctx`
+        // here (classifying it as a source) would suppress that drop and leak
+        // the generator context + thread.
+        Instr::GeneratorNext { .. } => vec![],
         Instr::BoolNot { operand, .. }
         | Instr::FloatNeg { operand, .. }
         | Instr::IntBitNot { operand, .. }
@@ -16920,6 +17642,9 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
         Terminator::Branch { cond, .. } => vec![*cond],
         Terminator::Call { args, .. } => args.clone(),
         Terminator::Yield { value, .. } => vec![*value],
+        // `dest` is the handle slot the generator is written into (a write);
+        // `body_fn` is a static symbol, not a Place — no source operands.
+        Terminator::MakeGenerator { .. } => Vec::new(),
         Terminator::Send { actor, value, .. } => vec![*actor, *value],
         // `reply_dest` is the slot the reply is written into — a write, not
         // a source.
@@ -16995,10 +17720,161 @@ fn place_refs_local(place: Place, local: u32) -> bool {
     base_local(place) == Some(local)
 }
 
-fn retained_string_instr_drop_safe(instr: &Instr, local: u32) -> bool {
-    !instr_source_places(instr)
-        .into_iter()
-        .any(|place| place_refs_local(place, local))
+/// True when an instruction transfers ownership of `local` out of its slot
+/// (so a body-end drop of the binding would be unsound). A fresh, solely-owned
+/// generator-yielded value escapes only via:
+///
+///   - a `Move` out of its slot into another local (ownership transfer / rebind),
+///   - a store into a surviving aggregate (`RecordInit`, `RecordFieldStore`,
+///     `TupleConstruct`, `ActorStateFieldStore`, `MakeClosure`,
+///     `CoerceToDynTrait`),
+///   - a spawn capture (`SpawnActor`, `SpawnTaskDirect`, `SpawnTaskClosure`),
+///   - a re-`Drop` (the binding already has a release scheduled).
+///
+/// A borrowing read — a `.len()`-style getter call, a runtime-ABI argument, an
+/// arithmetic/comparison operand — does NOT transfer ownership, so it does not
+/// escape. The match is exhaustive (no wildcard) so a future `Instr` variant
+/// forces an explicit escape/borrow classification rather than silently
+/// defaulting to "safe to drop" (which could re-open a double-free).
+#[allow(
+    clippy::match_same_arms,
+    reason = "exhaustive match over every Instr variant; several ownership-transfer \
+              shapes (Move/WitnessMove, the aggregate stores) and every borrow shape \
+              share a body, but are kept as separate arms so a future Instr cannot be \
+              folded into an existing classification by accident — the exhaustiveness \
+              is the fail-closed guarantee against re-opening a double-free"
+)]
+fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
+    let refs = |p: Place| place_refs_local(p, local);
+    match instr {
+        // Ownership-transferring shapes: the binding's pointer ends up in a
+        // location that outlives the body (another local / an aggregate / a
+        // spawned entity), or it is re-dropped.
+        Instr::Move { src, .. } => refs(*src),
+        Instr::WitnessMove { src, .. } => refs(*src),
+        // A `Drop` of the binding is a RELEASE, not an ownership escape — and a
+        // `Drop` carrying a `drop_fn` is one the consuming-body lowering itself
+        // emitted: the break/continue-edge yield-value free
+        // (`emit_generator_yield_value_drops_for_break_continue`). That edge and
+        // the body-end fall-through drop are mutually exclusive in the CFG, so
+        // counting our own break/continue free as an "escape" here would wrongly
+        // suppress the fall-through body-end drop and leak the non-break
+        // iterations (verified regression: j_unbounded 0 -> 100). The
+        // null-after-free on every inline drop keeps a structurally-reachable
+        // double drop a no-op. A `Drop` with NO `drop_fn` is a move-checker /
+        // generic release whose double-fire is not guarded, so it still counts
+        // as a re-drop escape (fail-closed).
+        Instr::Drop {
+            place,
+            drop_fn: None,
+            ..
+        } => refs(*place),
+        Instr::Drop {
+            drop_fn: Some(_), ..
+        } => false,
+        Instr::RecordInit { fields, .. } => fields.iter().any(|(_, p)| refs(*p)),
+        Instr::TupleConstruct { elements, .. } => elements.iter().any(|p| refs(*p)),
+        Instr::RecordFieldStore { src, .. } => refs(*src),
+        Instr::ActorStateFieldStore { src, .. } => refs(*src),
+        Instr::MakeClosure { env, .. } => refs(*env),
+        Instr::CoerceToDynTrait { value, .. } => refs(*value),
+        Instr::SpawnActor {
+            state, init_args, ..
+        } => state.is_some_and(&refs) || init_args.iter().any(|p| refs(*p)),
+        Instr::SpawnTaskDirect { task, .. } => refs(*task),
+        Instr::SpawnTaskClosure { task, env, .. } => refs(*task) || refs(*env),
+        // Borrowing reads — a getter / runtime-ABI / arithmetic operand does
+        // not retain the yielded value. These do NOT escape it.
+        Instr::CallRuntimeAbi(_)
+        | Instr::CallClosure { .. }
+        | Instr::CallTraitMethod { .. }
+        | Instr::EnterContext
+        | Instr::ExitContext
+        | Instr::CheckCancellation
+        | Instr::ContextField { .. }
+        | Instr::ConstI64 { .. }
+        | Instr::IntAdd { .. }
+        | Instr::IntSub { .. }
+        | Instr::IntMul { .. }
+        | Instr::IntDiv { .. }
+        | Instr::IntRem { .. }
+        | Instr::IntBitAnd { .. }
+        | Instr::IntBitOr { .. }
+        | Instr::IntBitXor { .. }
+        | Instr::BoolNot { .. }
+        | Instr::IntNegChecked { .. }
+        | Instr::FloatNeg { .. }
+        | Instr::IntBitNot { .. }
+        | Instr::IntShl { .. }
+        | Instr::IntShr { .. }
+        | Instr::IntArithChecked { .. }
+        | Instr::IntArithCheckedOption { .. }
+        | Instr::IntArithSaturating { .. }
+        | Instr::IntCmp { .. }
+        | Instr::IdentityCompare { .. }
+        | Instr::CancellationTokenIsCancelled { .. }
+        | Instr::GeneratorNext { .. }
+        | Instr::NumericCast { .. }
+        | Instr::AutoLockAcquire { .. }
+        | Instr::AutoLockRelease { .. }
+        | Instr::WitnessSizeOf { .. }
+        | Instr::WitnessAlignOf { .. }
+        | Instr::WitnessDropGlue { .. }
+        | Instr::StringLit { .. }
+        | Instr::ConstGlobalLoad { .. }
+        | Instr::RecordFieldLoad { .. }
+        | Instr::TupleFieldLoad { .. }
+        | Instr::ClosureEnvFieldLoad { .. }
+        | Instr::ActorStateFieldLoad { .. }
+        | Instr::FloatLit { .. }
+        | Instr::CharLit { .. }
+        | Instr::UnitLit { .. }
+        | Instr::DurationLit { .. }
+        | Instr::FloatAdd { .. }
+        | Instr::FloatSub { .. }
+        | Instr::FloatMul { .. }
+        | Instr::FloatDiv { .. }
+        | Instr::FloatRem { .. }
+        | Instr::FloatCmp { .. }
+        | Instr::MachineEmitPlaceholder { .. }
+        | Instr::EnumTagLoad { .. }
+        | Instr::MachineStateName { .. } => false,
+    }
+}
+
+/// True when a terminator transfers ownership of `local` out of the body: a
+/// return moves it to the caller, a re-yield hands it back to a consumer, an
+/// actor send/ask/select transfers it into the message. A `Call` argument is a
+/// borrow (the callee does not retain a fresh yielded value), so a `Call`
+/// terminator does not escape it.
+#[allow(
+    clippy::match_same_arms,
+    reason = "exhaustive match over every Terminator variant; the non-escaping \
+              control-flow terminators and `Return` share a `false` body but are kept \
+              separate so a future terminator forces an explicit classification — the \
+              exhaustiveness is the fail-closed guarantee"
+)]
+fn generator_yield_terminator_escapes(term: &Terminator, local: u32) -> bool {
+    match term {
+        // A `Call`'s args are borrows (same posture as `Instr::Call*`).
+        Terminator::Call { .. }
+        | Terminator::Goto { .. }
+        | Terminator::Branch { .. }
+        | Terminator::Trap { .. }
+        | Terminator::MakeGenerator { .. } => false,
+        // A bare `Return` moves the function's ReturnSlot (already written by an
+        // earlier `Move`, caught by the instr scan); `Return` itself carries no
+        // operand. Re-yield / send / ask / select transfer the value out.
+        Terminator::Return => false,
+        Terminator::Yield { value, .. } => place_refs_local(*value, local),
+        Terminator::Send { value, .. } | Terminator::Ask { value, .. } => {
+            place_refs_local(*value, local)
+        }
+        Terminator::RemoteAsk { value, .. } => place_refs_local(*value, local),
+        Terminator::Select { .. } => terminator_source_places(term)
+            .into_iter()
+            .any(|p| place_refs_local(p, local)),
+    }
 }
 
 fn retained_string_terminator_drop_safe(term: &Terminator, local: u32) -> bool {
@@ -17070,6 +17946,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::IntCmp { .. }
         | Instr::IdentityCompare { .. }
         | Instr::CancellationTokenIsCancelled { .. }
+        | Instr::GeneratorNext { .. }
         | Instr::Move { .. }
         | Instr::NumericCast { .. }
         | Instr::CallRuntimeAbi(_)
@@ -17702,12 +18579,53 @@ fn derive_owned_record_drop_allowed(
         }
     }
 
+    let mut excluded_roots: HashSet<u32> = HashSet::new();
+
+    // Defect 1 (hard double-free), record analogue of the tuple seed: an owned
+    // field extracted out of the record into a binding with its OWN release path
+    // (`let g = rec.gen`, where `g` is dropped standalone via `owned_locals`, or
+    // `for n in rec.gen` where a loop-scope generator binding consumes it). The
+    // extracted handle is released exactly once through that binder; the record's
+    // `RecordInPlace` member-drop must NOT free the same aliased pointer a second
+    // time. The escape scan below exempts a `Drop` of the binder and the for-in
+    // consuming `Move`, so without this seed the record stays admitted and the
+    // ctx is double-freed. Over-exclude the WHOLE record (fail-closed: leak a
+    // sibling, never double-free). `release_owner_bases` = base locals of every
+    // `owned_locals` binding PLUS every local that is the place of an inline
+    // `Instr::Drop { drop_fn: Some(_) }` already emitted into the finalized MIR
+    // (the for-in iterator / loop-scope / break-continue release).
+    let mut release_owner_bases: HashSet<u32> = owned_locals
+        .iter()
+        .filter_map(|(binding, _, _)| binding_locals.get(binding).and_then(|p| base_local(*p)))
+        .collect();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::Drop {
+                place,
+                drop_fn: Some(_),
+                ..
+            } = instr
+            {
+                if let Some(l) = base_local(*place) {
+                    release_owner_bases.insert(l);
+                }
+            }
+        }
+    }
+    for &binder in &field_binders {
+        if release_owner_bases.contains(&binder) {
+            for &root in alias_of.values() {
+                excluded_roots.insert(root);
+            }
+            break;
+        }
+    }
+
     // Escape scan. Exclude a record root if any whole-value alias member, or any
     // owned-field binder derived from it, is read into an owning sink. A
     // `RecordFieldLoad` reading the record is an INTERIOR read (it feeds the
     // field-binder pass, never escapes the whole record), so it is exempt from
     // the whole-value escape check below.
-    let mut excluded_roots: HashSet<u32> = HashSet::new();
     let note_alias_escape = |local: u32, excluded: &mut HashSet<u32>| {
         if let Some(&root) = alias_of.get(&local) {
             excluded.insert(root);
@@ -17797,6 +18715,1425 @@ fn derive_owned_record_drop_allowed(
         }
     }
     allowed
+}
+
+/// W5.021 — fail-closed sole-owner derivation for owned-aggregate **tuple**
+/// bindings (the tuple/record-of-owned-handles drop spine). Returns the subset
+/// of `owned_locals` whose tuple binding still owns its heap members at scope
+/// exit and therefore earns a `DropKind::TupleInPlace` drop.
+///
+/// This is the tuple analogue of [`derive_owned_record_drop_allowed`]: a tuple
+/// is an inline struct in its binding's alloca; its owned members (pointer
+/// handles like `Stream`/`Sink`, or heap leaves `string`/`bytes`/`Vec`/nested
+/// owned record/enum/tuple) are the heap owners. The escape model is identical
+/// — the tuple is the *owner* and the question is whether it (or one of its
+/// owned members) escapes:
+/// - A whole-value `Move` of the tuple (`let b = a` rebind, or a tail/if-arm
+///   that flows to the return) byte-copies the struct with no retain; that
+///   alias never independently drops, so dropping the original owner exactly
+///   once is correct — UNLESS the alias is what escapes (returned), in which
+///   case the escapee owns the members now.
+/// - A `TupleFieldLoad` reads one element out. Reading a `BitCopy` element is
+///   harmless. Reading an OWNED element (a pointer handle or a heap leaf)
+///   shares its owner with no retain; if that loaded element then escapes into
+///   an owning sink (e.g. a `let sink = __tuple_N.0` destructure binder that
+///   itself owns and drops the handle), the tuple must NOT drop it. This is the
+///   canonical `__tuple_N` destructure-temp case (DEFECT #3): the element
+///   binders own the handles, so the whole-tuple temp is excluded.
+///
+/// Fail-closed: a tuple binding is admitted IFF its whole-value alias set is
+/// never read into an owning sink (except the benign `Move` hand-off) AND no
+/// owned element loaded from it escapes. Anything the prover cannot positively
+/// clear is excluded — it leaks, never double-frees. A `TupleFieldLoad` reading
+/// the tuple is an INTERIOR read (it seeds an element binder for the escape
+/// rule, it does not escape the whole tuple). LESSONS:
+/// drop-allowset-from-value-flow, raii-null-after-move, cleanup-all-exits.
+#[allow(
+    clippy::too_many_lines,
+    reason = "four sequential single-purpose passes (candidate collection, \
+              whole-value alias propagation, owned-element-binder seeding, \
+              escape scan) sharing fixpoint state, mirroring derive_owned_\
+              record_drop_allowed; splitting scatters the fail-closed ordering"
+)]
+fn derive_tuple_composite_drop_allowed(
+    blocks: &[BasicBlock],
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+    local_tys: &[ResolvedTy],
+    enum_layouts: &[crate::model::EnumLayout],
+) -> HashSet<BindingId> {
+    // A local carries a heap-owning value iff its registered type says so. Used
+    // to decide whether a `TupleFieldLoad` dest is an owned-element binder (a
+    // BitCopy element load is harmless to alias out).
+    let local_is_heap_owning = |local: u32| -> bool {
+        local_tys
+            .get(local as usize)
+            .is_some_and(|ty| crate::model::ty_contains_heap_owning(ty, enum_layouts))
+    };
+
+    // Candidate tuple locals: base locals of owned-tuple bindings (a `Tuple`
+    // type carrying at least one heap-owning element).
+    let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
+    for (binding, _name, ty) in owned_locals {
+        if !ty_is_heap_owning_tuple(ty, enum_layouts) {
+            continue;
+        }
+        let Some(place) = binding_locals.get(binding) else {
+            continue;
+        };
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        candidate_local_to_binding.insert(local, *binding);
+    }
+    if candidate_local_to_binding.is_empty() {
+        return HashSet::new();
+    }
+
+    // Whole-value alias set: each candidate plus every local reachable through
+    // forward-propagated whole-value `Move { dest: Local, src: Local }` copies.
+    let mut alias_of: HashMap<u32, u32> = HashMap::new();
+    for &local in candidate_local_to_binding.keys() {
+        alias_of.insert(local, local);
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if matches!(src, Place::Local(_) | Place::ReturnSlot)
+                            && matches!(dest, Place::Local(_))
+                        {
+                            if let Some(&root) = alias_of.get(&sl) {
+                                if alias_of.insert(dl, root) != Some(root) {
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Owned-element-binder set: destinations of `TupleFieldLoad { tuple: alias-
+    // set member }` whose loaded element is itself heap-owning. Propagate
+    // forward through whole-value Move so a binder copied onward is still
+    // tracked.
+    let mut elem_binders: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::TupleFieldLoad { tuple, dest, .. } = instr {
+                if let Some(sl) = base_local(*tuple) {
+                    if alias_of.contains_key(&sl) {
+                        if let Some(dl) = base_local(*dest) {
+                            if local_is_heap_owning(dl) {
+                                elem_binders.insert(dl);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if elem_binders.contains(&sl) && elem_binders.insert(dl) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let mut excluded_roots: HashSet<u32> = HashSet::new();
+
+    // Defect 1 (hard double-free): an owned element extracted out of the tuple
+    // into a binding that carries its OWN release path. `let g = pair.0` (g a
+    // `Generator`/`CancellationToken`/owned handle) loads element 0 into `g`'s
+    // slot. The extracted handle is then released exactly once through `g`'s own
+    // path — EITHER its standalone scope-exit drop (`g` lands in `owned_locals`,
+    // so the AffineResource arm in `build_lifo_drops` fires `hew_gen_free(g)`),
+    // OR a for-in consume (`for n in g` moves `g` into the loop iterator binding,
+    // whose per-loop-exit `hew_gen_free` releases it; that iterator binding is in
+    // `extracted_consumer_bases`). If the tuple is ALSO admitted to
+    // `TupleInPlace`, its member-drop thunk frees the SAME aliased ctx pointer a
+    // second time — the codegen null-store nulls the consuming binding's slot but
+    // never the tuple's field-0 slot, so the runtime sees a non-null (dangling)
+    // pointer and double-frees (verified: two `hew_gen_free` call sites on one
+    // ctx). The extracted binder is the sole owner now, so the tuple must NOT
+    // drop that element. Over-exclude the WHOLE tuple (fail-closed: leak a
+    // sibling, never double-free) — symmetric to the `__tuple_N` destructure-temp
+    // exclusion. The `Vec` path is immune because a for-in consume removes the
+    // Vec from the spine via `owned_vec_drop_allowed`; an owned handle's
+    // equivalent is this consumer-binder seed. The escape scan below already
+    // excludes the tuple when an extracted binder is read into an owning sink
+    // (returned / sent / `close()`d); this seed adds the two
+    // exempt-from-that-scan release paths (standalone `Drop`, for-in consume).
+    let mut release_owner_bases: HashSet<u32> = owned_locals
+        .iter()
+        .filter_map(|(binding, _, _)| binding_locals.get(binding).and_then(|p| base_local(*p)))
+        .collect();
+    // Plus any local that is the place of an inline generator/owned-handle
+    // release `Drop` already emitted into the finalized MIR — the for-in iterator
+    // binding (`for n in t.0`) is released by an inline `Instr::Drop { drop_fn:
+    // Some("hew_gen_free") }` from `emit_scope_generator_drops` at loop-scope
+    // close. That binding is drained out of `scope_generator_bindings` once its
+    // scope drop is emitted, so an `owned_locals` snapshot misses it; reading the
+    // emitted Drop places recovers every consumer regardless of which mechanism
+    // (owned_locals standalone drop, loop-scope drop, or break/continue edge)
+    // released it.
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::Drop {
+                place,
+                drop_fn: Some(_),
+                ..
+            } = instr
+            {
+                if let Some(l) = base_local(*place) {
+                    release_owner_bases.insert(l);
+                }
+            }
+        }
+    }
+    for &binder in &elem_binders {
+        if release_owner_bases.contains(&binder) {
+            for &root in alias_of.values() {
+                excluded_roots.insert(root);
+            }
+            break;
+        }
+    }
+
+    // Escape scan. Exclude a tuple root if any whole-value alias member, or any
+    // owned-element binder derived from it, is read into an owning sink. A
+    // `TupleFieldLoad` reading the tuple is an INTERIOR read (it feeds the
+    // element-binder pass, never escapes the whole tuple), so it is exempt from
+    // the whole-value escape check.
+    let note_alias_escape = |local: u32, excluded: &mut HashSet<u32>| {
+        if let Some(&root) = alias_of.get(&local) {
+            excluded.insert(root);
+        }
+    };
+    // An element binder escaping means the tuple no longer solely owns that
+    // element. We cannot cheaply attribute a binder to one tuple root, so —
+    // fail-closed — exclude every tuple root when any element binder escapes
+    // (over-exclusion leaks; never double-frees), mirroring `note_field_escape`.
+    //
+    // W5.021 Finding 4: this is also the safety net for a projection-receiver
+    // consume — `pair.0.close()` loads element 0 out of an OWNED tuple via a
+    // `TupleFieldLoad` and consumes it. The projection is not a binding, so the
+    // consume-intent move-mark (`mark_binding_moved`) cannot fire on it; instead
+    // the loaded element becomes an element binder and its escape into the close
+    // call excludes the WHOLE tuple here. That leaks the un-closed sibling rather
+    // than double-freeing the closed one — the fail-closed outcome. (For the
+    // `stream.pipe` pair specifically the shared backing is reclaimed when one
+    // half closes, so `leaks` observes none; the invariant proven is no
+    // double-free.) Precise per-element attribution is a v0.5.1 follow-on.
+    let note_elem_escape = |excluded: &mut HashSet<u32>| {
+        for &root in alias_of.values() {
+            excluded.insert(root);
+        }
+    };
+    for block in blocks {
+        for instr in &block.instructions {
+            // A `Move` discriminates a benign whole-value hand-off (dest is
+            // another alias member) from a real whole-tuple escape.
+            if let Instr::Move { dest, src } = instr {
+                let src_local = base_local(*src);
+                let dest_local = base_local(*dest);
+                if let Some(sl) = src_local {
+                    let src_is_member = alias_of.contains_key(&sl)
+                        && matches!(src, Place::Local(_) | Place::ReturnSlot);
+                    let dest_is_member = dest_local.is_some_and(|dl| {
+                        alias_of.contains_key(&dl) && matches!(dest, Place::Local(_))
+                    });
+                    // ReturnSlot dest is never an alias member, so a
+                    // Move { dest: ReturnSlot, src: member } excludes the root.
+                    if src_is_member && !dest_is_member {
+                        note_alias_escape(sl, &mut excluded_roots);
+                    }
+                    if elem_binders.contains(&sl) {
+                        let benign = dest_local.is_some_and(|dl| elem_binders.contains(&dl))
+                            && matches!(dest, Place::Local(_));
+                        if !benign {
+                            note_elem_escape(&mut excluded_roots);
+                        }
+                    }
+                }
+            }
+            // Non-Move owning-sink reads. A `TupleFieldLoad` reading the tuple
+            // base is interior (exempt); every other instruction reading a
+            // whole alias member or an element binder is an escape. Fail-closed.
+            if !matches!(
+                instr,
+                Instr::Move { .. } | Instr::Drop { .. } | Instr::TupleFieldLoad { .. }
+            ) {
+                for p in instr_source_places(instr) {
+                    if let Some(l) = base_local(p) {
+                        if alias_of.contains_key(&l)
+                            && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                        {
+                            note_alias_escape(l, &mut excluded_roots);
+                        }
+                        if elem_binders.contains(&l) {
+                            note_elem_escape(&mut excluded_roots);
+                        }
+                    }
+                }
+            }
+        }
+        // Terminator reads. A return / send / ask of a whole tuple or an owned
+        // element binder escapes. `print`/`println` borrows its string arg, so
+        // an element binder passed there is a transient read, not an escape.
+        for p in terminator_source_places(&block.terminator) {
+            if let Some(l) = base_local(p) {
+                if alias_of.contains_key(&l)
+                    && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                    && !retained_string_terminator_drop_safe(&block.terminator, l)
+                {
+                    note_alias_escape(l, &mut excluded_roots);
+                }
+                if elem_binders.contains(&l)
+                    && !retained_string_terminator_drop_safe(&block.terminator, l)
+                {
+                    note_elem_escape(&mut excluded_roots);
+                }
+            }
+        }
+    }
+
+    let mut allowed = HashSet::new();
+    for (&local, &binding) in &candidate_local_to_binding {
+        if !excluded_roots.contains(&local) {
+            allowed.insert(binding);
+        }
+    }
+    allowed
+}
+
+/// True if reading this `Place` as an aggregate member source (a construct
+/// element, a rebind src, a return-slot move src) is an ownership hand-off the
+/// value-flow pass should follow — i.e. it names a standalone owning slot whose
+/// value flows into the returned aggregate, not an interior alias of a still-live
+/// parent.
+///
+/// W5.021 (defect #1, revision 2) — the seed / `add_member` / construct
+/// decomposition originally gated on `matches!(place, Place::Local(_))`, which is
+/// an asymmetry with the map-back step: the map-back resolves a member's local
+/// via [`base_local`], which accepts the owned handle places
+/// (`DuplexHandle`/`SendHalf`/`RecvHalf`/`LambdaActorHandle`/`ActorHandle`).
+/// Those handle members are registered in `binding_locals` directly as their
+/// handle Place (`lower.rs` Bind arm: handle-typed `value_place` IS the binding's
+/// slot, no second `Local`), so they surface as `TupleConstruct` / `RecordInit`
+/// elements as their handle Place — and the `Place::Local(_)` gate silently
+/// dropped them on the floor, leaving a returned handle tuple double-dropped by
+/// the callee.
+///
+/// This predicate restores symmetry with `base_local`: accept `Local` *and* the
+/// five owned handle places (each a standalone, resource-owning slot whose `Move`
+/// hands off ownership), while CONTINUING TO REJECT the interior-projection
+/// places (`EnumVariant`/`MachineVariant`/`GenState`/`MachineTag`/`EnumTag`),
+/// which alias a still-live parent aggregate's storage — adding one of those to
+/// `flows_to_return` would exclude a parent-owned payload from drop and LEAK the
+/// parent's buffer. `ReturnSlot` is the aggregate's destination, never a member
+/// source, so it is rejected here too.
+///
+/// Mirrors the [`place_is_interior_projection`] classifier's hand-off-vs-interior
+/// split, inverted: that one over-taints handle places (fail-closed for ITS
+/// purpose — over-tainting only over-excludes); this one accepts handle places
+/// (fail-closed for OUR purpose — accepting an owned hand-off slot is exactly what
+/// keeps a returned handle from being double-dropped, and the worst case of
+/// accepting too much is over-exclusion → leak, never double-free). Exhaustive
+/// with no wildcard so a future `Place` variant must be classified deliberately.
+#[must_use]
+fn place_is_owned_handoff_member(place: Place) -> bool {
+    match place {
+        // Standalone owning slots: a `Move`/construct-element read here is an
+        // ownership hand-off into the returned aggregate.
+        Place::Local(_)
+        | Place::DuplexHandle(_)
+        | Place::LambdaActorHandle(_)
+        | Place::ActorHandle(_)
+        | Place::SendHalf(_)
+        | Place::RecvHalf(_) => true,
+        // Interior-projection places alias a still-live parent's storage; the
+        // return-slot is the destination, not a member source. Following these
+        // would over-exclude a parent-owned value and leak it.
+        Place::ReturnSlot
+        | Place::EnumVariant { .. }
+        | Place::MachineVariant { .. }
+        | Place::GenState { .. }
+        | Place::MachineTag(_)
+        | Place::EnumTag(_) => false,
+    }
+}
+
+/// W5.021 (defect #1) — fail-closed value-flow derivation of the owned member
+/// bindings that a function HANDS to its caller through a returned aggregate,
+/// and therefore must NOT also drop at its own scope exit.
+///
+/// A composite return — `(a, b)` / `R { f: a, g: b }`, reached directly, by
+/// name, or through any control-flow tail — byte-copies each constituent into
+/// the returned aggregate struct with no retain (the M-COW spine emits no
+/// retain on share), then moves the whole aggregate to the `ReturnSlot`. The
+/// caller now owns those members; if the callee also dropped them at scope exit
+/// it would `close` / free a buffer the caller still holds (the Finding-1 hard
+/// double-free: an unguarded `Box::from_raw` twice — see the codegen
+/// Stream/Sink drop arm).
+///
+/// The previous revision excluded these members by walking the SYNTACTIC return
+/// expression (`mark_returned_binding_moved`): it matched only `BindingRef` /
+/// `TupleLiteral` / `StructInit` / `Block`, so any aggregate reached through a
+/// `let pair = (s, r); pair` rebind or an `if` / `match` / `scope` / `loop`
+/// tail fell through and the members stayed drop-eligible → double-free. That is
+/// structurally fail-OPEN: every return grammar the enumeration does not list
+/// re-opens the hole.
+///
+/// This derivation inverts to value-flow, the same alias/construct basis
+/// [`derive_tuple_composite_drop_allowed`] and [`derive_owned_record_drop_allowed`]
+/// already use, so a syntactic shape cannot fall behind the grammar:
+///   1. Seed the `flows_to_return` set with every owned hand-off slot moved
+///      whole-value into the `ReturnSlot` (`Move { dest: ReturnSlot, src }`,
+///      where `src` is a `Local` or one of the owned handle places — see
+///      [`place_is_owned_handoff_member`]).
+///   2. Fixpoint two monotone rules that add SOURCE locals to the set:
+///      - whole-value back-prop: `Move { dest: Local(d in set), src }` adds
+///        `src`'s local (the aggregate flowed onward through a rebind/temp);
+///      - construct decomposition: a `TupleConstruct` / `RecordInit` whose dest
+///        is in the set adds each element/field source local — including owned
+///        handle-place members — (so a returned aggregate's members, and
+///        recursively a nested aggregate's members, enter the set).
+///   3. Map back: every `owned_locals` binding whose backing local (resolved by
+///      [`base_local`], which also resolves the handle places) is in
+///      `flows_to_return` is a returned member and is excluded from drop.
+///
+/// Owned handle members (`DuplexHandle`/`SendHalf`/`RecvHalf`/`LambdaActorHandle`/
+/// `ActorHandle`) are registered in `binding_locals` directly as their handle
+/// Place, so they appear as construct elements as that handle Place; the seed,
+/// `add_member`, and decomposition all admit them via
+/// [`place_is_owned_handoff_member`] so a returned handle tuple is not
+/// double-dropped by the callee. Interior-projection places
+/// (`EnumVariant`/`MachineVariant`/`GenState`/`MachineTag`/`EnumTag`) are still
+/// rejected — they alias a live parent and following them would leak the parent.
+///
+/// Fail-closed: the set only grows, so the worst case is over-exclusion of a
+/// member that did not actually escape — that LEAKS, it never double-frees. The
+/// intermediate temps the fixpoint also collects (a construct dest, a rebind
+/// alias) are not `owned_locals` bindings, so excluding them is a no-op. The
+/// aggregate binding ITSELF (the `pair` local) is governed by the per-aggregate
+/// `derive_*_drop_allowed` escape scans, which already exclude a returned
+/// aggregate; this pass is the complementary half that reaches the scalar member
+/// handles those scans do not own.
+///
+/// KNOWN over-exclusion (branch-divergent member sets): the value-flow set is
+/// flow-INSENSITIVE, so when distinct control-flow tails construct the returned
+/// aggregate from DIFFERENT members — e.g. `if c { (s1, r2) } else { (s2, r1) }`,
+/// both `TupleConstruct`s flowing to the same `ReturnSlot` — every member of
+/// every tail (`s1`, `r2`, `s2`, `r1`) enters `flows_to_return` and is excluded
+/// from drop in BOTH bodies. On either branch only two of the four actually
+/// escape; the other two are excluded anyway and LEAK. This is the deliberate
+/// fail-closed direction (over-exclusion → leak, never double-free); precise
+/// per-branch member attribution is a follow-on slice if a fixture ever needs it.
+/// LESSONS: drop-allowset-from-value-flow, raii-null-after-move, cleanup-all-exits.
+fn derive_returned_aggregate_member_bindings(
+    blocks: &[BasicBlock],
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+) -> HashSet<BindingId> {
+    // Seed: every owned hand-off slot (Local or handle place) whole-value
+    // moved into the ReturnSlot.
+    let mut flows_to_return: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::Move { dest, src } = instr {
+                if matches!(dest, Place::ReturnSlot) {
+                    if let Some(sl) = base_local(*src) {
+                        if place_is_owned_handoff_member(*src) {
+                            flows_to_return.insert(sl);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if flows_to_return.is_empty() {
+        return HashSet::new();
+    }
+
+    // Fixpoint: grow the set backward along whole-value Moves and downward
+    // through aggregate constructors whose dest already flows to the return.
+    // Add an owned hand-off source (Local or handle place) to the set,
+    // reporting whether it grew. Interior-projection places are rejected.
+    let add_member = |place: &Place, set: &mut HashSet<u32>| -> bool {
+        match base_local(*place) {
+            Some(local) if place_is_owned_handoff_member(*place) => set.insert(local),
+            _ => false,
+        }
+    };
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                match instr {
+                    // Whole-value rebind/temp: `Move { dest: in-set, src }`
+                    // means `src` flowed onward into a local that reaches the
+                    // ReturnSlot, so `src` reaches it too.
+                    Instr::Move { dest, src }
+                        if matches!(dest, Place::Local(_))
+                            && base_local(*dest)
+                                .is_some_and(|dl| flows_to_return.contains(&dl)) =>
+                    {
+                        changed |= add_member(src, &mut flows_to_return);
+                    }
+                    // Aggregate construction whose dest reaches the return: each
+                    // element source is a member handed to the caller.
+                    Instr::TupleConstruct { elements, dest }
+                        if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
+                    {
+                        for elem in elements {
+                            changed |= add_member(elem, &mut flows_to_return);
+                        }
+                    }
+                    // Record construction whose dest reaches the return: each
+                    // field source is a member handed to the caller.
+                    Instr::RecordInit { fields, dest, .. }
+                        if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
+                    {
+                        for (_offset, field) in fields {
+                            changed |= add_member(field, &mut flows_to_return);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Map member locals back to their owned bindings.
+    let mut returned_members = HashSet::new();
+    for (binding, _name, _ty) in owned_locals {
+        if let Some(place) = binding_locals.get(binding) {
+            if let Some(local) = base_local(*place) {
+                if flows_to_return.contains(&local) {
+                    returned_members.insert(*binding);
+                }
+            }
+        }
+    }
+    returned_members
+}
+
+/// Fail-closed value-flow derivation of the owned-handle member bindings whose
+/// handle is moved into a LOCALLY-constructed aggregate and then extracted-and-
+/// consumed back out of that aggregate by a downstream release-consumer — and
+/// which therefore must NOT also drop at their own scope exit (they would
+/// double-free the ctx the consumer already releases).
+///
+/// This is the local-aggregate analogue of
+/// [`derive_returned_aggregate_member_bindings`]. That one excludes a member
+/// handed to the CALLER through the `ReturnSlot`; this one excludes a member
+/// handed to a downstream CONSUMER through a field of an in-scope aggregate.
+///
+/// The defect this closes (W3.053): a `Generator`/owned-handle binding `g` is
+/// moved (`BitCopy`, no retain — the M-COW spine emits no retain on aggregate
+/// construction) into a local tuple/record, e.g. `let packed = (g, 99)`. The
+/// generator field is then consumed out of the aggregate by a for-in iterator
+/// binding (`for n in packed.0`) or a `let` extraction binding (`let x =
+/// packed.0; for n in x`). That consumer takes ownership of the SAME ctx pointer
+/// and releases it exactly once via its own inline `hew_gen_free` (loop-scope or
+/// break/continue-edge drop). `g`'s standalone scope-exit drop then frees the
+/// SAME ctx a second time → use-after-free. The aggregate's own in-place member
+/// spine is already excluded by [`derive_tuple_composite_drop_allowed`] /
+/// [`derive_owned_record_drop_allowed`] (the extracted-binder ∩ release-owner
+/// seed); this pass is the complementary half that reaches the SOURCE binding
+/// the aggregate-spine scans do not own.
+///
+/// The discriminator that keeps this from over-excluding the no-consume shape
+/// (`let repacked = (g, 99); println(repacked.1)`, where `g`'s standalone drop
+/// IS the correct sole free) is FIELD PRECISION: a source binding is excluded
+/// only when the SPECIFIC field its handle was placed into is later extracted
+/// into a release-consumer DISTINCT from the source binding itself. A field that
+/// is never extracted (or a sibling field extracted instead) leaves the source
+/// binding's own drop as the sole owner.
+///
+/// Algorithm (three monotone forward passes over an immutable instruction
+/// stream, sharing fixpoint state):
+///   1. `agg_field_source[(agg_local, field)] = src_local`: every heap-owning
+///      element/field placed into an aggregate by `TupleConstruct` / `RecordInit`.
+///      Propagated forward through whole-value `Move` so a constructed aggregate
+///      copied into its binding slot (and onward) carries its field sources.
+///   2. `extracted_carrier[carrier_local] = src_local`: every `TupleFieldLoad` /
+///      `RecordFieldLoad` whose `(aggregate, field)` has a recorded source —
+///      the loaded local now carries that source's ctx. Propagated forward
+///      through whole-value `Move` so the for-in iterator binding (one `Move`
+///      past the field load) and any rebind still carry it.
+///   3. A source binding is excluded when one of its extracted carriers is in
+///      `release_owner_bases` (a local released by an inline `Drop { drop_fn:
+///      Some(_) }` — the for-in / extraction consumer) AND that carrier local is
+///      not the source local itself (so `g`'s own standalone drop never
+///      self-excludes).
+///
+/// Fail-closed: the sets only grow and the field-precise match never admits a
+/// binding the value flow does not positively connect to a distinct consumer, so
+/// the worst direction is failing to exclude (a genuine double-free stays — but
+/// every such shape is what this pass is built to catch and the probe suite
+/// pins) rather than over-excluding a live owner. Where field precision cannot
+/// attribute a carrier to one source (it cannot here — each carrier records its
+/// single originating source), no coarsening is needed.
+/// LESSONS: drop-allowset-from-value-flow, raii-null-after-move, cleanup-all-exits.
+#[allow(
+    clippy::too_many_lines,
+    reason = "three sequential single-purpose forward passes (aggregate field \
+              sources, extracted carriers, consumer match) sharing fixpoint \
+              state, mirroring derive_tuple_composite_drop_allowed; splitting \
+              scatters the fail-closed ordering"
+)]
+fn derive_consumed_local_aggregate_member_bindings(
+    blocks: &[BasicBlock],
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+    local_tys: &[ResolvedTy],
+    enum_layouts: &[crate::model::EnumLayout],
+) -> HashSet<BindingId> {
+    let local_is_heap_owning = |local: u32| -> bool {
+        local_tys
+            .get(local as usize)
+            .is_some_and(|ty| crate::model::ty_contains_heap_owning(ty, enum_layouts))
+    };
+
+    // Release-consumer locals: the base local of every inline release `Drop`
+    // already emitted into the finalized MIR (`drop_fn: Some(_)` — the for-in
+    // iterator binding's loop-scope/break/continue `hew_gen_free`, the standalone
+    // owned-handle drop, etc.). This mirrors the `release_owner_bases` seed in
+    // `derive_tuple_composite_drop_allowed`.
+    let mut release_owner_bases: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::Drop {
+                place,
+                drop_fn: Some(_),
+                ..
+            } = instr
+            {
+                if let Some(l) = base_local(*place) {
+                    release_owner_bases.insert(l);
+                }
+            }
+        }
+    }
+    if release_owner_bases.is_empty() {
+        return HashSet::new();
+    }
+
+    // Pass 1: aggregate field sources, propagated through whole-value Move.
+    let mut agg_field_source: HashMap<(u32, u32), u32> = HashMap::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            match instr {
+                Instr::TupleConstruct { elements, dest } => {
+                    let Some(dl) = base_local(*dest) else {
+                        continue;
+                    };
+                    for (i, elem) in elements.iter().enumerate() {
+                        if let Some(el) = base_local(*elem) {
+                            if place_is_owned_handoff_member(*elem) && local_is_heap_owning(el) {
+                                let field =
+                                    u32::try_from(i).expect("tuple element index exceeds u32::MAX");
+                                agg_field_source.insert((dl, field), el);
+                            }
+                        }
+                    }
+                }
+                Instr::RecordInit { fields, dest, .. } => {
+                    let Some(dl) = base_local(*dest) else {
+                        continue;
+                    };
+                    for (offset, field) in fields {
+                        if let Some(fl) = base_local(*field) {
+                            if place_is_owned_handoff_member(*field) && local_is_heap_owning(fl) {
+                                agg_field_source.insert((dl, offset.0), fl);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if agg_field_source.is_empty() {
+        return HashSet::new();
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if matches!(src, Place::Local(_)) && matches!(dest, Place::Local(_)) {
+                        if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                            let carried: Vec<(u32, u32)> = agg_field_source
+                                .iter()
+                                .filter(|((al, _), _)| *al == sl)
+                                .map(|((_, f), s)| (*f, *s))
+                                .collect();
+                            for (f, s) in carried {
+                                if agg_field_source.insert((dl, f), s).is_none() {
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Pass 2: extracted carriers — field loads whose (aggregate, field) has a
+    // recorded source — propagated forward through whole-value Move.
+    let mut extracted_carrier: HashMap<u32, u32> = HashMap::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            match instr {
+                Instr::TupleFieldLoad {
+                    tuple,
+                    field_index,
+                    dest,
+                } => {
+                    if let (Some(tl), Some(dl)) = (base_local(*tuple), base_local(*dest)) {
+                        if let Some(&src) = agg_field_source.get(&(tl, *field_index)) {
+                            extracted_carrier.insert(dl, src);
+                        }
+                    }
+                }
+                Instr::RecordFieldLoad {
+                    record,
+                    field_offset,
+                    dest,
+                } => {
+                    if let (Some(rl), Some(dl)) = (base_local(*record), base_local(*dest)) {
+                        if let Some(&src) = agg_field_source.get(&(rl, field_offset.0)) {
+                            extracted_carrier.insert(dl, src);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if matches!(src, Place::Local(_)) && matches!(dest, Place::Local(_)) {
+                        if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                            if let Some(&s) = extracted_carrier.get(&sl) {
+                                if extracted_carrier.insert(dl, s).is_none() {
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Pass 3: a source local is excluded when one of its extracted carriers is a
+    // distinct release-consumer.
+    let mut consumed_source_locals: HashSet<u32> = HashSet::new();
+    for (&carrier, &src) in &extracted_carrier {
+        if carrier != src && release_owner_bases.contains(&carrier) {
+            consumed_source_locals.insert(src);
+        }
+    }
+
+    let mut consumed_members = HashSet::new();
+    for (binding, _name, _ty) in owned_locals {
+        if let Some(place) = binding_locals.get(binding) {
+            if let Some(local) = base_local(*place) {
+                if consumed_source_locals.contains(&local) {
+                    consumed_members.insert(*binding);
+                }
+            }
+        }
+    }
+    consumed_members
+}
+
+/// W3.053 catch-all FAIL-CLOSED gate for the combinatorial owned-handle
+/// aggregate-extraction double-free class.
+///
+/// Invariant enforced: **no owned handle may reach codegen with more than one
+/// live free path for the same runtime context.** The M-COW spine emits NO
+/// retain when a handle is placed into an aggregate (`TupleConstruct` /
+/// `RecordInit` byte-copy the ctx pointer), so the moment an owned-handle source
+/// binding's handle is moved into a tuple/record there are TWO aliases of the
+/// one runtime context: the source binding's own slot and the aggregate field.
+/// That is only safe if EXACTLY ONE of them frees the context. The precise
+/// value-flow analyses prove the safe cases and remove one side's drop:
+///   - the aggregate's in-place member drop is removed by
+///     [`derive_tuple_composite_drop_allowed`] / [`derive_owned_record_drop_allowed`]
+///     when the field is extracted into a release-consumer;
+///   - the SOURCE binding's standalone drop is removed by
+///     [`derive_consumed_local_aggregate_member_bindings`] (extracted into a
+///     downstream consumer) or [`derive_returned_aggregate_member_bindings`]
+///     (handed to the caller through the `ReturnSlot`).
+///
+/// The combinatorial hole is everything those proofs do NOT cover —
+/// re-aggregation (`let b = (a.0, 2); for n in b.0`), nested aggregates
+/// (`((g, 1), 2)`), multi-hop chains, tuple→record re-wraps, and the
+/// never-extracted-but-still-double-freed shape (`let r = (g, 99);
+/// println(r.1)`, where the tuple's member drop AND the source drop both fire).
+/// Each of those leaves the source binding STILL drop-eligible while the
+/// aggregate side also frees the context → use-after-free (exit 139 under
+/// `MallocScribble`). Rather than chase each sibling shape with another exclusion
+/// hop, this gate refuses every such binding.
+///
+/// Why this is a finite catch-all (not shape-by-shape): the detector does not
+/// enumerate shapes. Its seed is the structural fact "this owned-handle source
+/// binding's handle was placed into an aggregate field" — and it propagates that
+/// taint transitively through whole-value `Move` so a handle that flows into a
+/// tuple via any number of rebinds is still seen. A tainted binding is REFUSED
+/// unless the precise exclusion analysis already PROVED it freed exactly once
+/// (`binding ∈ excluded`). The safe set is finite and proven; everything else is
+/// refused. A new aggregate-extraction grammar cannot evade the gate: if it ends
+/// up aliasing a handle into an aggregate, the seed fires; if a future exact-once
+/// proof clears it, it joins `excluded` and the gate goes silent for it.
+///
+/// Over-refusal direction (fail-closed): the worst case is refusing a shape a
+/// future exact-once proof would accept — a compile error, never a UAF. The
+/// proven KEEP cases stay green because their source binding is in `excluded`:
+///   - single-hop `let packed = (g, 99); for n in packed.0` →
+///     `derive_consumed_local_aggregate_member_bindings`;
+///   - return-tuple `let g = pair.0` / `pipe()`-style `(Sink, Stream)` →
+///     `derive_returned_aggregate_member_bindings`.
+///
+/// LESSONS: boundary-fail-closed, raii-null-after-move, drop-allowset-from-value-flow,
+/// cleanup-all-exits.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one IR-grounded free-count model: ctx-origin propagation + the three \
+              drop-source tallies (inline consumer drops, source LIFO drops, \
+              aggregate member drops) must share the same origin map; splitting \
+              them scatters the exactly-once accounting"
+)]
+#[must_use]
+fn detect_unproven_aggregate_handle_double_free(
+    blocks: &[BasicBlock],
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+    local_tys: &[ResolvedTy],
+    enum_layouts: &[crate::model::EnumLayout],
+    source_excluded: &HashSet<BindingId>,
+    composite_drop_allowed: &HashSet<BindingId>,
+) -> Vec<MirCheck> {
+    let local_is_heap_owning = |local: u32| -> bool {
+        local_tys
+            .get(local as usize)
+            .is_some_and(|ty| crate::model::ty_contains_heap_owning(ty, enum_layouts))
+    };
+
+    // ── ctx-origin propagation ────────────────────────────────────────────
+    // `carries[local]` = the set of owned-handle source-origin locals whose
+    // runtime context is (transitively) reachable from `local` — whether `local`
+    // IS a handle slot or an aggregate that contains handles, at any nesting
+    // depth. Seeded at each owned-handle source binding (carries itself) and
+    // grown by a monotone fixpoint:
+    //   - `Move { dest, src }`            : dest carries src's origins.
+    //   - `TupleConstruct`/`RecordInit`   : dest carries the union of its
+    //                                       element/field locals' origins (so a
+    //                                       nested aggregate carries the inner
+    //                                       handle's origin).
+    //   - `TupleFieldLoad`/`RecordFieldLoad`: dest carries the aggregate's
+    //                                       origins (over-approx: a field load
+    //                                       may extract any contained handle —
+    //                                       fail-closed, refuses rather than
+    //                                       under-counts).
+    // Over-approximation only ever ADDS origins to a carrier, which can only
+    // raise a free count → refuse. It never hides a real double-free.
+    //
+    // An ORIGIN is an owned-HANDLE LEAF only — a `Generator`/`AsyncGenerator`,
+    // a `CancellationToken`, or a `Resource`-marker builtin handle
+    // (Stream/Sink/Duplex/SendHalf/RecvHalf/LambdaActorHandle). Each owns a
+    // single runtime context whose ONLY release path is its handle drop;
+    // aliasing it into an aggregate with no retain creates the two-free hazard
+    // this gate guards. The NON-OWNING actor-pid leaves
+    // (`Pid`/`LocalPid`/`RemotePid`) are deliberately EXCLUDED by
+    // `ty_is_owned_handle_leaf`: a pid has no drop glue (its drop is a codegen
+    // no-op) and is a copyable reference, so it can never double-free and is
+    // never an origin. Plain CoW VALUE leaves (`String`/`Bytes`/`Vec`/`HashMap`/
+    // `HashSet`) are deliberately EXCLUDED — their exactly-once is already proven
+    // by `derive_cow_sole_owner` / `owned_vec_drop_allowed` (refcount / sole-
+    // owner), and a string aliased into a tuple (`let _t = (s, i)`) is a correct,
+    // common pattern those analyses admit. An aggregate binding (`(Gen, i64)` /
+    // `Holder { gen, .. }`) is never an origin: its handle members are the
+    // origins, accounted via the member-drop tally below.
+    let mut carries: HashMap<u32, HashSet<u32>> = HashMap::new();
+    // SEED from `binding_locals`, the COMPLETE binding→local map — not the
+    // `owned_locals` ledger, which the elaborator prunes at loop scope. Every
+    // binding whose slot is an owned-handle handoff member (a `let g = gen()`
+    // source, a `for n in …` iterator, a consuming param) is a potential
+    // double-free origin and seeds itself. Recovering the pruned loop-body
+    // bindings is what closes the loop-carried-aggregate edge: their inline
+    // back-edge + consumer drops then tally against a seeded origin instead of
+    // silently early-returning. `handle_bindings` (deduped by local) is the set
+    // the findings loop reports over.
+    let mut handle_bindings: Vec<(BindingId, u32)> = Vec::new();
+    let mut seeded_locals: HashSet<u32> = HashSet::new();
+    for (binding, place) in binding_locals {
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        let is_handle_leaf = local_tys
+            .get(local as usize)
+            .is_some_and(ty_is_owned_handle_leaf);
+        if is_handle_leaf && place_is_owned_handoff_member(*place) {
+            carries.entry(local).or_default().insert(local);
+            if seeded_locals.insert(local) {
+                handle_bindings.push((*binding, local));
+            }
+        }
+    }
+    if carries.is_empty() {
+        return Vec::new();
+    }
+    let merge = |from: &HashSet<u32>, into: &mut HashSet<u32>| -> bool {
+        let mut changed = false;
+        for &o in from {
+            changed |= into.insert(o);
+        }
+        changed
+    };
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                match instr {
+                    Instr::Move { dest, src } => {
+                        if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                            if let Some(src_origins) = carries.get(&sl).cloned() {
+                                changed |= merge(&src_origins, carries.entry(dl).or_default());
+                            }
+                        }
+                    }
+                    Instr::TupleConstruct { elements, dest } => {
+                        if let Some(dl) = base_local(*dest) {
+                            let mut acc: HashSet<u32> = HashSet::new();
+                            for elem in elements {
+                                if let Some(el) = base_local(*elem) {
+                                    if let Some(o) = carries.get(&el) {
+                                        for &x in o {
+                                            acc.insert(x);
+                                        }
+                                    }
+                                }
+                            }
+                            changed |= merge(&acc, carries.entry(dl).or_default());
+                        }
+                    }
+                    Instr::RecordInit { fields, dest, .. } => {
+                        if let Some(dl) = base_local(*dest) {
+                            let mut acc: HashSet<u32> = HashSet::new();
+                            for (_offset, field) in fields {
+                                if let Some(fl) = base_local(*field) {
+                                    if let Some(o) = carries.get(&fl) {
+                                        for &x in o {
+                                            acc.insert(x);
+                                        }
+                                    }
+                                }
+                            }
+                            changed |= merge(&acc, carries.entry(dl).or_default());
+                        }
+                    }
+                    Instr::TupleFieldLoad { tuple, dest, .. } => {
+                        if let (Some(tl), Some(dl)) = (base_local(*tuple), base_local(*dest)) {
+                            if let Some(o) = carries.get(&tl).cloned() {
+                                changed |= merge(&o, carries.entry(dl).or_default());
+                            }
+                        }
+                    }
+                    Instr::RecordFieldLoad { record, dest, .. } => {
+                        if let (Some(rl), Some(dl)) = (base_local(*record), base_local(*dest)) {
+                            if let Some(o) = carries.get(&rl).cloned() {
+                                changed |= merge(&o, carries.entry(dl).or_default());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // ── returned-origin set (clean move-out, caller-owned) ────────────────
+    // An origin whose carrier is written into `Place::ReturnSlot` is handed to
+    // the caller by value — the caller's frame now owns its single drop, so it
+    // is NOT a double-free in THIS function. Computed from the SAME `carries`
+    // fixpoint that drives the tally, so an origin is "returned" only when a
+    // TRACKED ownership-transfer path (a `Move`, a `Tuple`/`Record` construct,
+    // a field load) carries it to the return slot — e.g. `Ok(g)` / `(s, r)`
+    // returned by value. Crucially, the `hew_vec_push_ptr`-style container
+    // aliasing the fixpoint deliberately does NOT model is therefore never
+    // marked returned: a handle pushed into a vec that is itself returned keeps
+    // its escape poison and is still refused, so this exemption can only ever
+    // rescue a genuine by-value move-out, never mask the collection-push hazard.
+    let mut returned_origins: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::Move {
+                dest: Place::ReturnSlot,
+                src,
+            } = instr
+            {
+                if let Some(sl) = base_local(*src) {
+                    if let Some(o) = carries.get(&sl) {
+                        returned_origins.extend(o.iter().copied());
+                    }
+                }
+            }
+        }
+    }
+    // Three drop sources free a context; counting them per origin reconstructs
+    // the LLVM `hew_gen_free` (etc.) site count the elaborator + codegen emit:
+    //
+    //   1. inline release `Drop { drop_fn: Some(_) }` already in the stream
+    //      (the for-in / extraction consumer's free) — frees every origin the
+    //      dropped local carries.
+    //   2. the SOURCE binding's standalone LIFO drop — emitted iff the binding is
+    //      NOT in `source_excluded` (the elaborator's exclusion sets) — frees its
+    //      own origin once.
+    //   3. each owned-AGGREGATE binding's in-place member drop — emitted iff the
+    //      aggregate IS in `composite_drop_allowed` — frees every origin its
+    //      handle members carry.
+    //
+    // An origin freed by ≥2 of these reaches codegen with more than one live free
+    // path → refuse. (`source_excluded` ∩ `composite_drop_allowed` is exactly the
+    // proven exactly-once bookkeeping: the proven KEEP cases land on a count of 1.)
+    let mut free_count: HashMap<u32, u32> = HashMap::new();
+    let bump = |origins: &HashSet<u32>, fc: &mut HashMap<u32, u32>| {
+        for &o in origins {
+            *fc.entry(o).or_insert(0) += 1;
+        }
+    };
+
+    // Source 1: inline consumer drops.
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::Drop {
+                place,
+                drop_fn: Some(_),
+                ..
+            } = instr
+            {
+                if let Some(l) = base_local(*place) {
+                    if let Some(o) = carries.get(&l).cloned() {
+                        bump(&o, &mut free_count);
+                    }
+                }
+            }
+        }
+    }
+
+    // Sources 2 + 3: source LIFO drops and aggregate member drops.
+    for (binding, _name, ty) in owned_locals {
+        let Some(place) = binding_locals.get(binding) else {
+            continue;
+        };
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        let Some(origins) = carries.get(&local).cloned() else {
+            continue;
+        };
+        // A handle leaf is an origin (its own standalone drop frees its ctx); an
+        // aggregate is anything heap-owning that is NOT a handle leaf (a tuple or
+        // record carrying handle members — its in-place member drop frees those
+        // members' ctx). CoW value leaves (String/Vec/Bytes) never carry a handle
+        // origin, so `carries.get(&local)` is empty for them and they fall out
+        // above — the gate ignores them entirely.
+        let is_handle = ty_is_owned_handle_leaf(ty) && place_is_owned_handoff_member(*place);
+        let is_aggregate = !is_handle && local_is_heap_owning(local);
+        if is_handle && !source_excluded.contains(binding) {
+            // Source's own standalone drop frees its origin once.
+            let mut self_origin = HashSet::new();
+            self_origin.insert(local);
+            bump(&self_origin, &mut free_count);
+        }
+        if is_aggregate && composite_drop_allowed.contains(binding) {
+            // Aggregate member drop frees every origin its handle members carry.
+            bump(&origins, &mut free_count);
+        }
+    }
+
+    // ── escape poisoning ──────────────────────────────────────────────────
+    // The per-origin tally above models the drops the elaborator emits or
+    // reconstructs, but it only sees drops. A carrier read by an operation that
+    // ALIASES THE HANDLE OUT of this function's tracked dataflow — moved into a
+    // `Vec`/`HashMap`/aggregate field, captured by a closure, spawned into a
+    // task/actor, erased into a `dyn` box, sent as an actor-message payload, or
+    // passed by value to a call (a user fn, or a runtime collection-push helper
+    // such as `hew_vec_push_ptr`, both lowered as `Terminator::Call`) — reaches
+    // a second, untracked free path (the container's / callee's drop) on top of
+    // its own source drop. That is precisely the collection-push and
+    // cross-call re-aggregation hazard the instruction fixpoint cannot model,
+    // so we fail closed: every origin such an escape carries is poisoned and
+    // refused. Borrowing reads (`.next()`, identity compare, cancellation
+    // check, lock acquire/release, field LOADs, the actor-pid of a send/ask)
+    // keep the handle's sole-owner drop intact and are NOT escapes.
+    let mut poisoned: HashSet<u32> = HashSet::new();
+    let poison = |place: Place, poisoned: &mut HashSet<u32>| {
+        let Some(local) = base_local(place) else {
+            return;
+        };
+        // Only an escaped place whose STATIC TYPE can actually carry a handle
+        // can alias one out. A copy-on-write sibling extracted from a mixed
+        // aggregate (e.g. the `Vec<i64>` field of a `(Generator, Vec<i64>, …)`
+        // tuple, whose origin set the fail-closed field-load over-approximates
+        // to include the generator) is provably handle-free, so reading it must
+        // NOT poison the generator origin. This refinement only ever removes
+        // false-positive poisons — it never adds one — so it cannot mask a real
+        // double-free.
+        let may_carry = local_tys
+            .get(local as usize)
+            .is_some_and(|t| crate::model::ty_may_carry_owned_handle(t, enum_layouts));
+        if !may_carry {
+            return;
+        }
+        if let Some(origins) = carries.get(&local) {
+            poisoned.extend(origins.iter().copied());
+        }
+    };
+    for block in blocks {
+        for instr in &block.instructions {
+            for place in instr_escape_places(instr) {
+                poison(place, &mut poisoned);
+            }
+        }
+        for place in terminator_escape_places(&block.terminator, local_tys) {
+            poison(place, &mut poisoned);
+        }
+    }
+
+    // Name/type metadata for the diagnostic, recovered from the `Bind`
+    // statement stream (which retains the loop-scoped bindings the
+    // `owned_locals` ledger prunes), with `owned_locals` as a fallback.
+    let mut bind_info: HashMap<BindingId, (String, ResolvedTy)> = HashMap::new();
+    for block in blocks {
+        for stmt in &block.statements {
+            if let MirStatement::Bind {
+                binding, name, ty, ..
+            } = stmt
+            {
+                bind_info
+                    .entry(*binding)
+                    .or_insert_with(|| (name.clone(), ty.clone()));
+            }
+        }
+    }
+    for (binding, name, ty) in owned_locals {
+        bind_info
+            .entry(*binding)
+            .or_insert_with(|| (name.clone(), ty.clone()));
+    }
+
+    // Refuse every owned-HANDLE-leaf binding whose origin is freed more than
+    // once OR aliased out past the tracked dataflow. Report against the
+    // user-named handle binding.
+    let mut findings = Vec::new();
+    let mut refused: HashSet<BindingId> = HashSet::new();
+    for (binding, local) in &handle_bindings {
+        let fc = free_count.get(local).copied().unwrap_or(0);
+        let over_freed = fc > 1;
+        let escaped = poisoned.contains(local);
+        let returned = returned_origins.contains(local);
+        // Refuse when the origin is freed more than once on tracked paths, OR
+        // when it is aliased OUT of tracked dataflow (`escaped`) while ALSO
+        // retaining an independent in-frame free (`fc >= 1`) and NOT being
+        // cleanly moved out to the caller (`!returned`). A pure consuming move
+        // with no residual in-frame drop (`fc == 0`: `handle.close()`,
+        // `hew_stream_pipe(s, d)`) and a borrow-then-return (`is_valid(s)`
+        // followed by `Ok(s)`) are both the proven exactly-once shapes the gate
+        // must preserve.
+        if !(over_freed || (escaped && fc >= 1 && !returned)) {
+            continue;
+        }
+        if !refused.insert(*binding) {
+            continue;
+        }
+        let (name, ty) = bind_info.get(binding).cloned().unwrap_or_else(|| {
+            (
+                format!("local{local}"),
+                local_tys
+                    .get(*local as usize)
+                    .cloned()
+                    .unwrap_or(ResolvedTy::Unit),
+            )
+        });
+        findings.push(MirCheck::OwnedHandleAggregateDoubleFree {
+            binding: *binding,
+            name,
+            handle_ty: render_owned_handle_ty(&ty),
+        });
+    }
+    findings
+}
+
+/// The *escape* operands of an instruction — the source reads that alias an
+/// owned handle OUT of the [`detect_unproven_aggregate_handle_double_free`]
+/// gate's tracked dataflow (into untracked heap storage, a closure env, a
+/// spawned execution context, or a `dyn` box). A carrier surfacing here is
+/// freed on a path the per-origin drop tally cannot model, so its origins are
+/// poisoned and refused. Returns the empty set for the propagation / free /
+/// borrow reads the fixpoint and tally already account for — including
+/// `CallRuntimeAbi`, whose operands are the *container* being read (`hew_vec_len`
+/// / `hew_vec_get_ptr`), never an owned-handle leaf aliased out.
+fn instr_escape_places(instr: &Instr) -> Vec<Place> {
+    match instr {
+        // A value stored into a still-live aggregate / actor state is aliased
+        // into storage that will drop it independently of its source.
+        Instr::RecordFieldStore { src, .. } | Instr::ActorStateFieldStore { src, .. } => {
+            vec![*src]
+        }
+        // Captured / spawned / erased: the handle moves into a context whose
+        // drop this function cannot see.
+        Instr::MakeClosure { env, .. } => vec![*env],
+        Instr::SpawnTaskDirect { task, .. } => vec![*task],
+        Instr::SpawnTaskClosure { task, env, .. } => vec![*task, *env],
+        Instr::SpawnActor {
+            state, init_args, ..
+        } => {
+            let mut places = Vec::new();
+            if let Some(state) = state {
+                places.push(*state);
+            }
+            places.extend(init_args.iter().copied());
+            places
+        }
+        Instr::CoerceToDynTrait { value, .. } => vec![*value],
+        // Dispatched calls take their arguments (and the receiver) by value.
+        Instr::CallClosure { args, .. } => args.clone(),
+        Instr::CallTraitMethod {
+            fat_pointer, args, ..
+        } => {
+            let mut places = vec![*fat_pointer];
+            places.extend(args.iter().copied());
+            places
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The *escape* operands of a terminator — the source reads that alias an owned
+/// handle out of the gate's tracked dataflow. A `Call` (a user function OR a
+/// runtime collection-push helper like `hew_vec_push_ptr`) takes every argument
+/// by value; a `Yield` hands its value to the resumer; an actor `Send`/`Ask`
+/// transfers its message *payload* to the receiver. The actor-pid and
+/// timeout operands of a send/ask are borrowed, not aliased out, so they are
+/// deliberately excluded — poisoning them would over-refuse all actor code.
+///
+/// Two narrow `Call` exemptions keep this from over-refusing borrows that
+/// provably cannot double-free (`local_tys` supplies the per-arg static type):
+///
+///   1. A by-value arg whose static type is a NON-OWNING, no-`close` actor-pid
+///      leaf (`Pid`/`LocalPid`/`RemotePid`) — its drop frees nothing (the
+///      actor lifecycle is owned by the runtime scheduler; the pid is a
+///      by-value reference snapshot), so passing it by value can never alias a
+///      second free. This admits any `fn f(p: LocalPid<_>)` by-value call.
+///   2. The known-borrowing runtime ABIs in [`is_borrowing_call_abi`] — the
+///      callee snapshots/reads its handle args without retaining or
+///      transferring them. The ratified active-mode `conn.attach(handler)`
+///      lowers to `hew_tcp_attach_local(conn, handler)`, whose `LocalPid`
+///      handler the runtime registers as a non-owning `HewActorRef::Local`
+///      by-value snapshot; the borrowed args are exempted per-arg (not
+///      blanket) so an owning handle arg is never silently let through.
+///
+/// Every OTHER arg — owning handle leaves (Generator/Stream/Sink/Duplex/halves/
+/// LambdaActorHandle/CancellationToken) and any aggregate that may carry one —
+/// stays poisoned: the container-push / aggregate-store / storing cross-call
+/// double-free shapes the fixpoint cannot model must keep failing closed.
+#[allow(
+    clippy::match_same_arms,
+    reason = "Yield and the actor Send/Ask/RemoteAsk payloads share an escape \
+              shape but are kept as separate arms so the deliberate exclusion \
+              of the borrowed actor-pid / timeout operands stays explicit"
+)]
+fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<Place> {
+    let arg_is_borrowed = |callee: &str, place: &Place| -> bool {
+        let arg_ty = base_local(*place).and_then(|l| local_tys.get(l as usize));
+        // A no-close actor-pid leaf is a borrow under ANY callee; an
+        // allowlisted borrowing ABI additionally borrows its handle args
+        // by value without retaining/transferring them.
+        arg_ty.is_some_and(ty_is_nonowning_handle_leaf)
+            || (is_borrowing_call_abi(callee)
+                && arg_ty.is_some_and(|t| !ty_is_owned_handle_leaf(t)))
+    };
+    match term {
+        Terminator::Call { callee, args, .. } => args
+            .iter()
+            .copied()
+            .filter(|place| !arg_is_borrowed(callee, place))
+            .collect(),
+        Terminator::Yield { value, .. } => vec![*value],
+        Terminator::Send { value, .. }
+        | Terminator::Ask { value, .. }
+        | Terminator::RemoteAsk { value, .. } => vec![*value],
+        Terminator::Select { arms, .. } => {
+            let mut places = Vec::new();
+            for arm in arms {
+                if let SelectArmKind::ActorAsk { value, .. } = &arm.kind {
+                    places.push(*value);
+                }
+            }
+            places
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Runtime ABIs that BORROW their owned-handle arguments by value rather than
+/// taking ownership: the callee snapshots/reads the handle without retaining or
+/// transferring it, so a borrowed arg does not alias a second free. The
+/// active-mode `conn.attach(handler)` surface lowers to
+/// `hew_tcp_attach_local(conn, handler)`, whose `LocalPid` handler the runtime
+/// registers as a non-owning `HewActorRef::Local` by-value snapshot (real
+/// free-count 1, via the caller's source drop alone). Kept as an explicit,
+/// narrow allowlist so the escape gate does not invent a phantom second free
+/// for a ratified borrowing surface while every non-listed call still fails
+/// closed by default.
+fn is_borrowing_call_abi(callee: &str) -> bool {
+    matches!(callee, "hew_tcp_attach_local")
+}
+
+/// True when `ty` is a NON-OWNING owned-handle leaf: an actor pid
+/// (`Pid`/`LocalPid`/`RemotePid`, `handle_family() == ActorPid`) with NO
+/// `close`/release ABI (`close_method().is_none()`). Its drop frees nothing —
+/// the actor lifecycle is owned by the runtime scheduler and the pid is a
+/// by-value reference snapshot — so passing it by value to a call can never
+/// alias a second free. The `close_method().is_none()` guard makes the
+/// no-release safety property executable: a future pid-like builtin that gains
+/// a release ABI would no longer be exempted. Distinguished from the OWNING
+/// handle leaves (Generator/Stream/Sink/Duplex/.../CancellationToken), each of
+/// which owns a runtime context released by its handle drop and so DOES
+/// double-free when aliased into a container, an aggregate, or a storing call.
+fn ty_is_nonowning_handle_leaf(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named { builtin: Some(b), .. }
+            if matches!(
+                b.handle_family(),
+                Some(hew_types::builtin_type::BuiltinHandleFamily::ActorPid)
+            ) && b.close_method().is_none()
+    )
+}
+
+/// True when `ty` is an owned-HANDLE LEAF the W3.053 gate guards: a
+/// `Generator`/`AsyncGenerator` context, a `CancellationToken`, or a
+/// `Resource`-marker builtin handle (Stream/Sink/Duplex/SendHalf/RecvHalf/
+/// `LambdaActorHandle`). Each owns a single runtime context released only by its
+/// handle drop, so aliasing it into an aggregate / container / storing call
+/// creates the two-free hazard this gate guards.
+///
+/// Deliberately EXCLUDES the NON-OWNING actor-pid leaves
+/// (`Pid`/`LocalPid`/`RemotePid`). Although they carry the `Resource` marker
+/// (for affine move-tracking), a pid has NO drop glue: its `close_method()` is
+/// `None`, `resource_drop_fn` yields `None`, and codegen lowers a `None`
+/// `drop_fn` to a no-op (`hew-codegen-rs/src/llvm.rs` `DropKind::Resource` arm) —
+/// there is no `hew_pid_*` free symbol. A pid is a copyable by-value reference
+/// to a runtime-supervised actor whose lifetime is independent of the
+/// pid-holder, so it can NEVER alias a second free in ANY context (call-arg,
+/// actor-state field, tuple, return, re-aggregation). Gating it over-refuses
+/// the stored-pid idiom (`spawn Conn(fetcher: f)`); excluding it here un-gates
+/// the pid in every context and subsumes the per-call-arg borrow carve in
+/// `terminator_escape_places`. The `close_method().is_none()` guard inside
+/// `ty_is_nonowning_handle_leaf` keeps this executable: a future pid-like
+/// builtin that gains a release ABI would fall through and stay gated.
+///
+/// Also EXCLUDES the copy-on-write value leaves (`String`/`Bytes`) and the
+/// collection leaves (`Vec`/`HashMap`/`HashSet`, which are `Named` without a
+/// handle builtin marker): their exactly-once is proven by `derive_cow_sole_owner`
+/// / `owned_vec_drop_allowed` (refcount / sole-owner), and a string or vec
+/// aliased into a tuple is a correct, common pattern those analyses admit — the
+/// gate must not over-refuse it.
+fn ty_is_owned_handle_leaf(ty: &ResolvedTy) -> bool {
+    // A non-owning actor-pid leaf has no drop glue (no close ABI; its drop is a
+    // codegen no-op) and can never double-free, so it is never an origin the
+    // gate tracks. Exclude it before the `Resource`-marker test below would
+    // otherwise capture it.
+    if ty_is_nonowning_handle_leaf(ty) {
+        return false;
+    }
+    match ty {
+        ResolvedTy::CancellationToken => true,
+        ResolvedTy::Named {
+            builtin: Some(b), ..
+        } => {
+            matches!(
+                b,
+                hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator
+            ) || matches!(
+                b.marker(),
+                hew_types::builtin_type::BuiltinTypeMarker::Resource
+            )
+        }
+        _ => false,
+    }
+}
+
+/// Render an owned-handle type for the W3.053 fail-closed diagnostic in
+/// user-facing form (`Generator<i64, ()>`, `Stream<i64>`, `CancellationToken`)
+/// rather than the `{:?}` `ResolvedTy` debug shape. Falls back to the type's
+/// builtin / named identity for the handle kinds the gate covers.
+fn render_owned_handle_ty(ty: &ResolvedTy) -> String {
+    match ty {
+        ResolvedTy::Named { name, args, .. } if args.is_empty() => name.clone(),
+        ResolvedTy::Named { name, args, .. } => {
+            let rendered: Vec<String> = args.iter().map(render_owned_handle_ty).collect();
+            format!("{name}<{}>", rendered.join(", "))
+        }
+        ResolvedTy::CancellationToken => "CancellationToken".to_string(),
+        ResolvedTy::Unit => "()".to_string(),
+        ResolvedTy::I64 => "i64".to_string(),
+        ResolvedTy::Tuple(elems) => {
+            let rendered: Vec<String> = elems.iter().map(render_owned_handle_ty).collect();
+            format!("({})", rendered.join(", "))
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+/// True when `ty` is a tuple type carrying at least one heap-owning element
+/// (pointer handle or heap leaf). The single `ty_contains_heap_owning`
+/// authority decides heap-ownership so MIR and codegen agree; a tuple whose
+/// elements are all `BitCopy` is excluded (no scope-exit drop needed).
+fn ty_is_heap_owning_tuple(ty: &ResolvedTy, enum_layouts: &[crate::model::EnumLayout]) -> bool {
+    matches!(ty, ResolvedTy::Tuple(_)) && crate::model::ty_contains_heap_owning(ty, enum_layouts)
 }
 
 /// A payload binder read into an owning sink means the active payload escaped
@@ -17950,6 +20287,27 @@ fn drop_kind_for(
         Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::String) => {
             DropKind::CowHeap {
                 drop_fn: "hew_string_drop",
+            }
+        }
+        // A `Generator<Y, R>` / `AsyncGenerator<Y>` owned local holds a
+        // `*mut HewGenCtx` handle (shared `Place::Local` storage, discriminated
+        // by the builtin type). Its sole release is `hew_gen_free`, which
+        // cancels-if-running, joins the generator thread, drains unconsumed
+        // yields, and frees the context. CowHeap is the self-describing
+        // load-pointer / call-symbol / null-store release the codegen drop arm
+        // uses — null-after-free guards a double `hew_gen_free`
+        // (raii-null-after-move), and the runtime null-guards as defence.
+        Place::Local(_) | Place::ReturnSlot
+            if matches!(
+                ty,
+                ResolvedTy::Named {
+                    builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
+                    ..
+                }
+            ) =>
+        {
+            DropKind::CowHeap {
+                drop_fn: "hew_gen_free",
             }
         }
         // Machine tag and variant fields are sub-structure of a machine value,
@@ -18134,9 +20492,30 @@ fn build_lifo_drops(
     enum_layouts: &[crate::model::EnumLayout],
     enum_composite_drop_allowed: &HashSet<BindingId>,
     owned_vec_drop_allowed: &HashSet<BindingId>,
+    tuple_composite_drop_allowed: &HashSet<BindingId>,
+    returned_aggregate_members: &HashSet<BindingId>,
+    consumed_local_aggregate_members: &HashSet<BindingId>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
     for (binding, _name, ty) in owned_locals.iter().rev() {
+        // W5.021 (defect #1) — a member handed to the caller through a returned
+        // aggregate is owned by the caller now; the callee must NOT drop it or
+        // it double-frees (the value-flow `derive_returned_aggregate_member_
+        // bindings` authority covers every return shape, syntactic or not).
+        // Skip BEFORE any drop-class arm so no class can re-admit it.
+        if returned_aggregate_members.contains(binding) {
+            continue;
+        }
+        // W3.053 — an owned handle moved into a LOCAL aggregate and then
+        // extracted-and-consumed back out (for-in / `let` extraction) is owned by
+        // the downstream consumer now; the source binding must NOT also drop it or
+        // it double-frees the ctx the consumer's inline `hew_gen_free` already
+        // releases (the value-flow `derive_consumed_local_aggregate_member_
+        // bindings` authority). Field-precise, so a no-consume sibling field keeps
+        // the source binding's own sole drop. Skip BEFORE any drop-class arm.
+        if consumed_local_aggregate_members.contains(binding) {
+            continue;
+        }
         // W5.016 — owned-element `Vec<T>` local (an element that owns heap:
         // record/enum/tuple with a string field, etc.). Its scope-exit release
         // is `hew_vec_free_owned`, which drops every live element exactly once
@@ -18220,6 +20599,36 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::RecordInPlace,
+            });
+            continue;
+        }
+        // W5.021 — heap-owning tuple by value (the tuple-of-owned-handles drop
+        // spine). A tuple is `ValueClass::CowValue` but `cow_value_leaf_drop_
+        // symbol` only handles the leaf `string` case, so an owned tuple would
+        // otherwise fall through to the no-op CowValue arm and leak its members.
+        // Intercept BEFORE the value-class match (mirroring the owned-Vec /
+        // enum-composite / owned-record arms) and emit the per-element
+        // `DropKind::TupleInPlace` drop ONLY when the fail-closed sole-owner
+        // derivation proved this tuple still owns its members at scope exit
+        // (`tuple_composite_drop_allowed`). The `__tuple_N` destructure temp
+        // (elements moved out) and a returned tuple are both excluded, so the
+        // helper frees each member exactly once. A binding the prover did not
+        // clear leaks (as before); it never double-frees.
+        if tuple_composite_drop_allowed.contains(binding)
+            && ty_is_heap_owning_tuple(ty, enum_layouts)
+        {
+            let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                panic!(
+                    "build_lifo_drops invariant: heap-owning tuple binding {binding:?} is in \
+                     owned_locals but missing from binding_locals; lowering must wire a \
+                     Place before the drop-elaboration pass observes the binding"
+                )
+            });
+            drops.push(ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: DropKind::TupleInPlace,
             });
             continue;
         }
@@ -18373,6 +20782,21 @@ fn cow_value_leaf_drop_symbol(ty: &ResolvedTy) -> Option<&'static str> {
         ResolvedTy::String => Some("hew_string_drop"),
         _ => None,
     }
+}
+
+/// True when `ty` is a builtin `Generator<Y, R>` / `AsyncGenerator<Y>` handle.
+/// Dispatches on the `builtin` discriminant (not the name string) so a user
+/// `type Generator { ... }` is never mistaken for the runtime handle.
+fn ty_is_generator_handle(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(
+                hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator
+            ),
+            ..
+        }
+    )
 }
 
 /// True when `ty` is the builtin `Vec<T>`. The owned-element decision lives in
@@ -18540,6 +20964,23 @@ fn enumerate_exits(
                 },
                 DropPlan::default(),
             ),
+            // Generator construction is a synchronous call into the runtime
+            // (`hew_gen_ctx_create`) with a single `next` continuation. Model it
+            // as an `ExitPath::Call` so the call-exit handling applies; the
+            // constructed handle's own drop is scheduled at scope exit by the
+            // enclosing function's LIFO drop plan, not here.
+            Terminator::MakeGenerator {
+                dest: _,
+                body_fn: _,
+                next,
+            } => (
+                ExitPath::Call {
+                    block: block_id,
+                    callee: "hew_gen_ctx_create".to_string(),
+                    next: *next,
+                },
+                DropPlan::default(),
+            ),
             Terminator::Send {
                 actor: _,
                 msg_type: _,
@@ -18658,6 +21099,7 @@ mod slice3_invariants {
             node: hew_hir::HirNodeId(0),
             name: "handler".to_string(),
             type_params: vec![],
+            is_generator: false,
             intrinsic_id: None,
             params: vec![],
             return_ty: ResolvedTy::Unit,
@@ -19116,6 +21558,7 @@ mod slice3_invariants {
                     | DropKind::RecordInPlace
                     | DropKind::AggregateRecursive
                     | DropKind::EnumInPlace
+                    | DropKind::TupleInPlace
                     | DropKind::TraitObject { .. } => {}
                 }
             }
@@ -20970,6 +23413,7 @@ mod witness_verifier_composite_traversal {
             node: hew_hir::HirNodeId(0),
             name: "origin".to_string(),
             type_params: declared.iter().map(|s| (*s).to_string()).collect(),
+            is_generator: false,
             intrinsic_id: None,
             params: Vec::new(),
             return_ty: ResolvedTy::Unit,
@@ -21064,6 +23508,366 @@ mod witness_verifier_composite_traversal {
         assert!(
             !has_witness_unresolved(&checks),
             "a declared TypeParam under a borrow must be admitted; got: {checks:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod w3053_aggregate_handle_double_free_gate {
+    //! Direct structural tests for `detect_unproven_aggregate_handle_double_free`
+    //! — the W3.053 catch-all fail-closed gate. These poke the detector with
+    //! synthetic MIR because the owned-handle aggregate-extraction shapes (and
+    //! the cross-handle-type `CancellationToken` / record forms) either cannot be
+    //! built through the minimal test pipeline or have no buildable surface
+    //! syntax that reaches MIR. Asserting on the gate's findings directly is the
+    //! authoritative cross-handle-type proof.
+    use super::*;
+
+    fn generator_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "Generator".to_string(),
+            args: vec![ResolvedTy::I64, ResolvedTy::Unit],
+            builtin: Some(BuiltinType::Generator),
+        }
+    }
+
+    fn block(instructions: Vec<Instr>) -> BasicBlock {
+        BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions,
+            terminator: Terminator::Return,
+        }
+    }
+
+    fn is_refused(findings: &[MirCheck], binding: BindingId) -> bool {
+        findings.iter().any(|c| {
+            matches!(
+                c,
+                MirCheck::OwnedHandleAggregateDoubleFree { binding: b, .. } if *b == binding
+            )
+        })
+    }
+
+    /// Shape A (re-aggregation): a generator handle aliased into tuple `a`, the
+    /// field extracted and re-aggregated into tuple `b`, then `b.0` consumed by an
+    /// inline release `Drop`. The handle's standalone source drop is NOT excluded
+    /// (the single-hop exclusion misses the re-aggregation), so the context is
+    /// freed twice → must be REFUSED.
+    #[test]
+    fn reaggregated_generator_handle_is_refused() {
+        // locals: 1=g(handle) 3=a-tuple 4=a-binding 5=a.0 7=b-tuple 8=b-binding
+        //         9=b.0 10=for-iter
+        let g = BindingId(1);
+        let a_bind = BindingId(2);
+        let b_bind = BindingId(3);
+        let tuple_ty = ResolvedTy::Tuple(vec![generator_ty(), ResolvedTy::I64]);
+        let instrs = vec![
+            Instr::TupleConstruct {
+                elements: vec![Place::Local(1), Place::Local(2)],
+                dest: Place::Local(3),
+            },
+            Instr::Move {
+                dest: Place::Local(4),
+                src: Place::Local(3),
+            },
+            Instr::TupleFieldLoad {
+                tuple: Place::Local(4),
+                field_index: 0,
+                dest: Place::Local(5),
+            },
+            Instr::TupleConstruct {
+                elements: vec![Place::Local(5), Place::Local(6)],
+                dest: Place::Local(7),
+            },
+            Instr::Move {
+                dest: Place::Local(8),
+                src: Place::Local(7),
+            },
+            Instr::TupleFieldLoad {
+                tuple: Place::Local(8),
+                field_index: 0,
+                dest: Place::Local(9),
+            },
+            Instr::Move {
+                dest: Place::Local(10),
+                src: Place::Local(9),
+            },
+            // The for-iter consumer's inline release.
+            Instr::Drop {
+                place: Place::Local(10),
+                ty: generator_ty(),
+                drop_fn: Some("hew_gen_free".to_string()),
+            },
+        ];
+        let owned = vec![
+            (g, "g".to_string(), generator_ty()),
+            (a_bind, "a".to_string(), tuple_ty.clone()),
+            (b_bind, "b".to_string(), tuple_ty),
+        ];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(g, Place::Local(1));
+        binding_locals.insert(a_bind, Place::Local(4));
+        binding_locals.insert(b_bind, Place::Local(8));
+        // local types: index = local id.
+        let mut local_tys = vec![ResolvedTy::I64; 11];
+        local_tys[1] = generator_ty();
+        local_tys[3] = ResolvedTy::Tuple(vec![generator_ty(), ResolvedTy::I64]);
+        local_tys[4] = ResolvedTy::Tuple(vec![generator_ty(), ResolvedTy::I64]);
+        local_tys[5] = generator_ty();
+        local_tys[7] = ResolvedTy::Tuple(vec![generator_ty(), ResolvedTy::I64]);
+        local_tys[8] = ResolvedTy::Tuple(vec![generator_ty(), ResolvedTy::I64]);
+        local_tys[9] = generator_ty();
+        local_tys[10] = generator_ty();
+
+        // The exclusion analysis does NOT cover the re-aggregation, so `g` is not
+        // in `source_excluded`; the consumer drops the handle once, the source
+        // drops it again.
+        let source_excluded = HashSet::new();
+        let composite_drop_allowed = HashSet::new();
+        let findings = detect_unproven_aggregate_handle_double_free(
+            &[block(instrs)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+            &[],
+            &source_excluded,
+            &composite_drop_allowed,
+        );
+        assert!(
+            is_refused(&findings, g),
+            "re-aggregated generator handle freed twice must be refused; got {findings:?}"
+        );
+    }
+
+    /// Cross-handle-type coverage: a `CancellationToken` (distinct `ResolvedTy`
+    /// variant, not a `Named` builtin) aliased into a tuple and freed by both the
+    /// tuple member drop AND its own source drop is the same double-free class —
+    /// the gate is type-agnostic via `ty_contains_heap_owning`, so it must REFUSE.
+    #[test]
+    fn cancellation_token_double_freed_via_aggregate_is_refused() {
+        let tok = BindingId(1);
+        let pair = BindingId(2);
+        let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::CancellationToken, ResolvedTy::I64]);
+        // tok(local 1) into tuple(local 3) bound to `pair`(local 4); no extraction.
+        let instrs = vec![
+            Instr::TupleConstruct {
+                elements: vec![Place::Local(1), Place::Local(2)],
+                dest: Place::Local(3),
+            },
+            Instr::Move {
+                dest: Place::Local(4),
+                src: Place::Local(3),
+            },
+        ];
+        let owned = vec![
+            (tok, "tok".to_string(), ResolvedTy::CancellationToken),
+            (pair, "pair".to_string(), tuple_ty.clone()),
+        ];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(tok, Place::Local(1));
+        binding_locals.insert(pair, Place::Local(4));
+        let mut local_tys = vec![ResolvedTy::I64; 5];
+        local_tys[1] = ResolvedTy::CancellationToken;
+        local_tys[3] = tuple_ty.clone();
+        local_tys[4] = tuple_ty;
+        // No extraction consumer: `tok`'s own source drop fires (not excluded) AND
+        // the `pair` tuple's member drop fires (admitted in composite_drop_allowed)
+        // — two frees of the one token context.
+        let source_excluded = HashSet::new();
+        let mut composite_drop_allowed = HashSet::new();
+        composite_drop_allowed.insert(pair);
+        let findings = detect_unproven_aggregate_handle_double_free(
+            &[block(instrs)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+            &[],
+            &source_excluded,
+            &composite_drop_allowed,
+        );
+        assert!(
+            is_refused(&findings, tok),
+            "a CancellationToken freed by both the tuple member drop and its own \
+             source drop must be refused; got {findings:?}"
+        );
+    }
+
+    /// Proven KEEP (single-hop extraction): a generator extracted out of a tuple
+    /// into a consumer, where the SOURCE binding's drop is excluded
+    /// (`source_excluded`) and the tuple member drop is suppressed (NOT in
+    /// `composite_drop_allowed`) — exactly one free. The gate must NOT refuse it.
+    #[test]
+    fn single_hop_extraction_proven_exact_once_is_not_refused() {
+        let g = BindingId(1);
+        let packed = BindingId(2);
+        let tuple_ty = ResolvedTy::Tuple(vec![generator_ty(), ResolvedTy::I64]);
+        let instrs = vec![
+            Instr::TupleConstruct {
+                elements: vec![Place::Local(1), Place::Local(2)],
+                dest: Place::Local(3),
+            },
+            Instr::Move {
+                dest: Place::Local(4),
+                src: Place::Local(3),
+            },
+            Instr::TupleFieldLoad {
+                tuple: Place::Local(4),
+                field_index: 0,
+                dest: Place::Local(5),
+            },
+            Instr::Move {
+                dest: Place::Local(6),
+                src: Place::Local(5),
+            },
+            Instr::Drop {
+                place: Place::Local(6),
+                ty: generator_ty(),
+                drop_fn: Some("hew_gen_free".to_string()),
+            },
+        ];
+        let owned = vec![
+            (g, "g".to_string(), generator_ty()),
+            (packed, "packed".to_string(), tuple_ty.clone()),
+        ];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(g, Place::Local(1));
+        binding_locals.insert(packed, Place::Local(4));
+        let mut local_tys = vec![ResolvedTy::I64; 7];
+        local_tys[1] = generator_ty();
+        local_tys[3] = tuple_ty.clone();
+        local_tys[4] = tuple_ty;
+        local_tys[5] = generator_ty();
+        local_tys[6] = generator_ty();
+        // Proven exactly-once: `g`'s source drop excluded; `packed` member drop
+        // suppressed. Only the consumer (local 6) frees.
+        let mut source_excluded = HashSet::new();
+        source_excluded.insert(g);
+        let composite_drop_allowed = HashSet::new();
+        let findings = detect_unproven_aggregate_handle_double_free(
+            &[block(instrs)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+            &[],
+            &source_excluded,
+            &composite_drop_allowed,
+        );
+        assert!(
+            !is_refused(&findings, g),
+            "single-hop extraction proven freed exactly once must NOT be refused; \
+             got {findings:?}"
+        );
+    }
+
+    fn localpid_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "LocalPid".to_string(),
+            args: vec![ResolvedTy::I64],
+            builtin: Some(BuiltinType::LocalPid),
+        }
+    }
+
+    /// A block whose terminator is a `Terminator::Call` passing `args` by value
+    /// to `callee` — the by-value-call escape shape the borrow-arg gate fix
+    /// narrows.
+    fn call_block(callee: &str, args: Vec<Place>) -> BasicBlock {
+        BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Call {
+                callee: callee.to_string(),
+                args,
+                dest: None,
+                next: 0,
+            },
+        }
+    }
+
+    /// REFUSE (regression guard): an OWNING handle leaf (a generator) passed by
+    /// value to an ordinary user-function call still escapes — the callee can
+    /// alias it into a second, untracked free path on top of the source drop, so
+    /// the gate must keep failing closed. The borrow-arg fix must NOT relax this.
+    #[test]
+    fn owning_handle_arg_to_user_call_is_refused() {
+        let g = BindingId(1);
+        let owned = vec![(g, "g".to_string(), generator_ty())];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(g, Place::Local(1));
+        let mut local_tys = vec![ResolvedTy::I64; 2];
+        local_tys[1] = generator_ty();
+        let findings = detect_unproven_aggregate_handle_double_free(
+            &[call_block("use_gen", vec![Place::Local(1)])],
+            &owned,
+            &binding_locals,
+            &local_tys,
+            &[],
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert!(
+            is_refused(&findings, g),
+            "an owning generator handle passed by value to a user call must stay \
+             refused (the escape gate's default); got {findings:?}"
+        );
+    }
+
+    /// KEEP (borrow-arg fix): a NON-OWNING actor-pid leaf (`LocalPid`, no `close`
+    /// ABI — its drop frees nothing) passed by value to an ordinary call is a
+    /// borrow/consume that can never alias a second free, so it must NOT be
+    /// refused. This is the `fn use_pid(p: LocalPid<_>)` over-rejection the fix
+    /// removes.
+    #[test]
+    fn nonowning_pid_arg_to_user_call_is_not_refused() {
+        let p = BindingId(1);
+        let owned = vec![(p, "p".to_string(), localpid_ty())];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(p, Place::Local(1));
+        let mut local_tys = vec![ResolvedTy::I64; 2];
+        local_tys[1] = localpid_ty();
+        let findings = detect_unproven_aggregate_handle_double_free(
+            &[call_block("use_pid", vec![Place::Local(1)])],
+            &owned,
+            &binding_locals,
+            &local_tys,
+            &[],
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert!(
+            !is_refused(&findings, p),
+            "a non-owning LocalPid passed by value to a call frees nothing and \
+             must NOT be refused; got {findings:?}"
+        );
+    }
+
+    /// KEEP (borrow-arg fix, allowlist): the ratified active-mode
+    /// `conn.attach(handler)` lowers to a `hew_tcp_attach_local(conn, handler)`
+    /// call whose `LocalPid` handler the runtime registers as a non-owning
+    /// by-value snapshot. The borrowing-ABI allowlist plus the non-owning-leaf
+    /// rule both exempt the handler arg, so the pid handle must NOT be refused.
+    #[test]
+    fn attach_local_pid_handler_arg_is_not_refused() {
+        let h = BindingId(1);
+        let owned = vec![(h, "handler".to_string(), localpid_ty())];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(h, Place::Local(1));
+        let mut local_tys = vec![ResolvedTy::I64; 2];
+        local_tys[1] = localpid_ty();
+        let findings = detect_unproven_aggregate_handle_double_free(
+            &[call_block("hew_tcp_attach_local", vec![Place::Local(1)])],
+            &owned,
+            &binding_locals,
+            &local_tys,
+            &[],
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert!(
+            !is_refused(&findings, h),
+            "the borrowed LocalPid handler of `conn.attach` must NOT be refused; \
+             got {findings:?}"
         );
     }
 }

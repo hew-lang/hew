@@ -677,7 +677,16 @@ fn activate_actor(actor: *mut HewActor) {
     if actor.is_null() {
         return;
     }
-    // SAFETY: Only valid actor pointers are ever enqueued by the runtime.
+    // SAFETY: the dequeued pointer references a live actor box. `hew_actor_free`
+    // latches the actor out of `Idle` into the `Stopped` terminal state *before*
+    // `untrack_actor` (after detaching the reactor and scrubbing links/monitors).
+    // Once `Stopped`, every waker's `CAS Idle->Runnable` fails, so no reactor,
+    // link/monitor, or direct-send wake can enqueue the actor in the window
+    // between that latch and untrack+free — closing the use-after-free class. (A
+    // consumer-side LIVE_ACTORS membership check was considered but rejected: it
+    // cannot defeat the untrack-before-free ABA window — a reused address can
+    // pass a bare membership check — and it would add a registry-lock acquisition
+    // to every activation. The producer-side latch is the cheaper, complete fix.)
     let a = unsafe { &*actor };
 
     // Skip terminal states.
@@ -1313,6 +1322,101 @@ pub(crate) fn activate_actor_for_test(actor: *mut HewActor) {
     activate_actor(actor);
 }
 
+/// Serialises every test that reads or writes the module-level `SCHEDULER`
+/// pointer or the `ACTIVE_WORKERS` counter. When `cargo test` runs these in
+/// parallel those globals race, producing intermittent SIGSEGV / SIGABRT.
+/// Both the in-module scheduler tests and the cross-module
+/// [`NoWorkerSchedulerForTest`] guard acquire this single lock, so any test
+/// (in any module) that installs a scheduler is mutually serialized.
+#[cfg(test)]
+pub(crate) static SCHED_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Guard that installs a worker-less scheduler for the duration of a test and
+/// removes + frees it on drop.
+///
+/// A worker-less scheduler lets a test call [`sched_enqueue`] (which requires an
+/// initialized scheduler) while guaranteeing that **nothing drains the queue** —
+/// so an enqueued actor pointer stays observable for assertions. Used by the
+/// free-path UAF tests (both the reactor-detach and non-reactor link/monitor
+/// wake windows) to prove a freed actor is never left queued.
+#[cfg(test)]
+pub(crate) struct NoWorkerSchedulerForTest {
+    previous: *mut Scheduler,
+    // Held for the guard's lifetime so the installed scheduler cannot race the
+    // module-level scheduler tests (or another worker-less install) on the
+    // global `SCHEDULER` pointer. Dropped after the scheduler is restored.
+    _sched_lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl NoWorkerSchedulerForTest {
+    /// Install a scheduler with a single global queue and no worker threads.
+    pub(crate) fn install() -> Self {
+        let sched_lock = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: single-threaded test setup; the scheduler owns its queue state
+        // and lives until this guard is dropped.
+        let sched = Scheduler {
+            worker_count: 1,
+            parkers: vec![Parker {
+                mutex: Mutex::new(()),
+                cond: Condvar::new(),
+            }],
+            stealers: Vec::new(),
+            worker_handles: PoisonSafe::new(Vec::new()),
+            // SAFETY: single-threaded test setup with scheduler-owned queue state.
+            global_queue: unsafe { crate::deque::GlobalQueue::new() },
+            shutdown: AtomicBool::new(false),
+        };
+        let sched_ptr = Box::into_raw(Box::new(sched));
+        let previous = SCHEDULER.swap(sched_ptr, Ordering::AcqRel);
+        Self {
+            previous,
+            _sched_lock: sched_lock,
+        }
+    }
+
+    /// Pop one actor pointer from the global queue, or `None` if empty.
+    ///
+    /// Takes `&self` so it can only be called while the guard (and thus the
+    /// installed scheduler) is alive; the queue itself is the process-global one.
+    #[allow(
+        clippy::unused_self,
+        reason = "receiver ties the call to the installed-scheduler guard lifetime"
+    )]
+    pub(crate) fn pop_global(&self) -> Option<*mut HewActor> {
+        let sched = get_scheduler()?;
+        // SAFETY: single-threaded test deque used only to receive the pop.
+        let (local, _stealer) = unsafe { crate::deque::WorkDeque::new() };
+        let popped = sched.global_queue.steal_batch_and_pop(&local);
+        let first = popped.map(<*mut ()>::cast::<HewActor>);
+        // The batch-and-pop may have moved extra items into `local`; push them
+        // back so a follow-up pop still sees them. The test only enqueues one
+        // item, so this is defensive.
+        let mut extra = Vec::new();
+        while let Some(p) = local.pop() {
+            extra.push(p);
+        }
+        for p in extra {
+            sched.global_queue.push(p);
+        }
+        first
+    }
+}
+
+#[cfg(test)]
+impl Drop for NoWorkerSchedulerForTest {
+    fn drop(&mut self) {
+        let ptr = SCHEDULER.swap(self.previous, Ordering::AcqRel);
+        if !ptr.is_null() {
+            // SAFETY: `ptr` was allocated by `install` via Box::into_raw and no
+            // worker threads ever referenced it (worker-less scheduler).
+            drop(unsafe { Box::from_raw(ptr) });
+        }
+    }
+}
+
 // ── Cooperative yielding ────────────────────────────────────────────────
 
 /// Cooperatively yield if the actor's reduction budget is exhausted.
@@ -1497,12 +1601,9 @@ mod tests {
     use std::ptr;
     use std::sync::atomic::AtomicI32;
 
-    /// Serialises all tests that read or write the module-level `SCHEDULER`
-    /// pointer or the `ACTIVE_WORKERS` counter.  When `-- scheduler` runs
-    /// tests in parallel those globals race, producing intermittent SIGSEGV /
-    /// SIGABRT.  Holding this lock for the duration of each such test is the
-    /// same pattern already used by `TICKER_TEST_MUTEX` in `timer_periodic.rs`.
-    static SCHED_TEST_MUTEX: Mutex<()> = Mutex::new(());
+    // `SCHED_TEST_MUTEX` is defined at module scope (see above) so the
+    // cross-module `NoWorkerSchedulerForTest` guard serializes against these
+    // tests too; `use super::*` brings it into scope here.
 
     struct ActivatePreReenqueueHookGuard;
 

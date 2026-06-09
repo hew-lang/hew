@@ -1101,9 +1101,27 @@ pub enum MethodCallRewrite {
     /// element type. A later slice will collapse those per-suffix symbols
     /// to a single generic symbol (`hew_vec_get_generic`) and route the
     /// element type through this field instead.
+    ///
+    /// `consumes_receiver` is `true` when the rewritten runtime call takes
+    /// ownership of (consumes) its receiver — the `.close()`-family handle
+    /// release builtins plus the lambda-actor handle release. The single
+    /// authority for which symbols consume is
+    /// [`crate::builtin_names::runtime_symbol_consumes_receiver`] (currently
+    /// `hew_stream_close`, `hew_sink_close`, `hew_channel_sender_close`,
+    /// `hew_channel_receiver_close`, `hew_duplex_close`, `hew_duplex_close_half`,
+    /// `hew_lambda_actor_release`); consult that function rather than this list,
+    /// which is illustrative and must not drift from it. HIR lowers a consuming
+    /// receiver with `IntentKind::Consume` so the MIR move-checker marks the
+    /// handle moved-out — its scope-exit drop must NOT fire again
+    /// (double-`close`/double-free). Borrowing methods (`send`/`recv`) leave
+    /// this `false`. The verdict is derived from the resolved `c_symbol` in
+    /// the single rewrite-recording authority, keyed on the runtime
+    /// discriminant rather than a receiver type name
+    /// (LESSONS: drop-allowset-from-value-flow, raii-null-after-move).
     RewriteToFunction {
         c_symbol: String,
         elem_ty: Option<crate::resolved_ty::ResolvedTy>,
+        consumes_receiver: bool,
     },
     /// Rewrite a module-qualified stdlib call directly to a runtime function
     /// without injecting the receiver/module identifier as an argument.
@@ -1136,6 +1154,16 @@ pub enum MethodCallRewrite {
     /// cursor update.
     BuiltinVecIterNext {
         elem_ty: crate::resolved_ty::ResolvedTy,
+    },
+    /// Builtin `Generator<Y, R>::next()` consumption. HIR emits a dedicated
+    /// `HirExprKind::GeneratorNext`; MIR lowers it to `Instr::GeneratorNext`,
+    /// which codegen turns into a `hew_gen_next(ctx, &out_size)` runtime call
+    /// whose returned heap pointer is unboxed into `Option<yield_ty>` (null →
+    /// `None`; else load the payload, build `Some`, free the heap pointer).
+    /// The receiver is borrowed — the generator handle stays live and is freed
+    /// by `hew_gen_free` on its own scope-exit drop, not by this call.
+    GeneratorNext {
+        yield_ty: crate::resolved_ty::ResolvedTy,
     },
     /// Remote `RemotePid<T>::ask(msg, timeout_ms)` request/reply dispatch.
     ///

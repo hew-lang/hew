@@ -19,11 +19,13 @@ actor Messenger {
 fn main() {
     // Actor call with return value.
     let calculator = spawn Calculator;
-    let result = calculator.simple_calculation(21);
-    println(result);
-
+    let r = await calculator.simple_calculation(21);
+    match r {
+        Ok(result) => println(result),
+        Err(_) => println(-1),
+    }
     // Actor call-and-await with discarded return value.
     let messenger = spawn Messenger;
-    await messenger.print_message(123);
+    let _ = await messenger.print_message(123);
     println(999);
 }

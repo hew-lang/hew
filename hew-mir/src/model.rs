@@ -1038,8 +1038,31 @@ fn ty_contains_heap_owning_inner(
     visited_enum_layouts: &mut HashSet<String>,
 ) -> bool {
     match ty {
-        ResolvedTy::String | ResolvedTy::Bytes => true,
+        // `string` / `Bytes` own a refcounted buffer. A `CancellationToken` is
+        // an owned, ref-counted runtime handle whose sole release is
+        // `hew_cancel_token_release`. A `Generator<Y, R>` / `AsyncGenerator<Y>`
+        // is an owned, affine `*mut HewGenCtx` handle whose sole release is
+        // `hew_gen_free` (cancel-if-running, join the generator thread, drain
+        // unconsumed yields, free the context). The generator handles are
+        // heap-owning leaves regardless of their generic arguments: a
+        // `Generator<i64, ()>` owns its context + OS thread even though `i64` is
+        // bit-copy. Without these arms a composite carrying such a handle (e.g.
+        // `(Generator<i64, ()>, i64)`) is mis-classified non-heap-owning, its
+        // member-drop never fires, and the context + thread leak. The
+        // value-class authority (`value_class::of_ty`) already treats all of
+        // these as heap-owning (`CowValue` / `AffineResource`); this is the
+        // matching composite-recursion leaf so the two cannot disagree
+        // (`dedup-semantic-boundary`).
+        ResolvedTy::String
+        | ResolvedTy::Bytes
+        | ResolvedTy::CancellationToken
+        | ResolvedTy::Named {
+            builtin:
+                Some(hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator),
+            ..
+        } => true,
         ResolvedTy::Named { name, args, .. } => {
+            let short = short_name(name);
             // 1. Check type arguments first (fast path: Option<string>, etc.)
             if args
                 .iter()
@@ -1054,7 +1077,6 @@ fn ty_contains_heap_owning_inner(
             //    monomorphisation scheme registered by `register_enum_layouts`:
             //    - args empty:     bare name or short_name match
             //    - args non-empty: mangle(short_name, args) → "Envelope$$i64"
-            let short = short_name(name);
             let found = if args.is_empty() {
                 enum_layouts
                     .iter()
@@ -1089,6 +1111,153 @@ fn ty_contains_heap_owning_inner(
         }
         _ => false,
     }
+}
+
+/// True when `ty` may own — transitively — an affine HANDLE leaf the owned-handle
+/// aggregate double-free gate (`detect_unproven_aggregate_handle_double_free`)
+/// guards: a `Generator`/`AsyncGenerator` context, a `CancellationToken`, or a
+/// `Resource`-marker builtin handle (Stream/Sink/Duplex/SendHalf/RecvHalf/…).
+///
+/// Unlike [`ty_contains_heap_owning`], the copy-on-write VALUE leaves
+/// (`String`/`Bytes`/`Vec`/`HashMap`/`HashSet`) are NOT handles and answer
+/// `false` — their exactly-once is proven elsewhere and they cannot trigger the
+/// handle double-free this gate guards. The escape gate uses this to decide
+/// whether a value aliased out of tracked dataflow could actually carry a
+/// handle: a `Vec<i64>` sibling field extracted from a `(Generator, Vec, …)`
+/// tuple is provably handle-free, so reading it must NOT poison the tuple's
+/// generator origin.
+///
+/// Fail-closed: an opaque user record/enum whose fields are not visible here (a
+/// `Named { builtin: None, .. }` with no resolvable `EnumLayout`), a `dyn` trait
+/// object, or a bare type parameter answers `true` — it may hide a handle field,
+/// so the gate never skips poisoning a carrier that could alias a handle out.
+#[must_use]
+pub fn ty_may_carry_owned_handle(ty: &ResolvedTy, enum_layouts: &[EnumLayout]) -> bool {
+    ty_may_carry_owned_handle_inner(ty, enum_layouts, &mut HashSet::new())
+}
+
+fn ty_may_carry_owned_handle_inner(
+    ty: &ResolvedTy,
+    enum_layouts: &[EnumLayout],
+    visited_enum_layouts: &mut HashSet<String>,
+) -> bool {
+    let recurse = |t: &ResolvedTy, v: &mut HashSet<String>| {
+        ty_may_carry_owned_handle_inner(t, enum_layouts, v)
+    };
+    #[allow(
+        clippy::match_same_arms,
+        reason = "the handle-leaf, dyn/type-param, and catch-all arms are kept \
+                  distinct for readability and exhaustiveness even where their \
+                  boolean answer coincides"
+    )]
+    match ty {
+        // Affine handle leaves — the contexts this gate guards.
+        ResolvedTy::CancellationToken => true,
+        ResolvedTy::Named {
+            builtin: Some(b),
+            args,
+            name,
+            ..
+        } => {
+            // A NON-OWNING actor-pid leaf (`Pid`/`LocalPid`/`RemotePid`) carries
+            // no drop glue (no `close` ABI; its drop is a codegen no-op) and is a
+            // copyable by-value reference — it is never an owned-handle origin
+            // and can never alias one OUT of this frame. Exclude it before the
+            // `Resource`-marker test below so a pid sibling extracted from a
+            // MIXED aggregate (e.g. `t.1` of a `(Generator, LocalPid)` tuple,
+            // whose origin set the fail-closed field-load over-approximates to
+            // include the generator) is treated as provably handle-free and does
+            // NOT poison the real generator origin. Mirror of the pid carve in
+            // `ty_is_owned_handle_leaf`. The pid's actor-type argument is the
+            // referent's identity, not a by-value carried field, so we must not
+            // recurse into it — return `false` directly.
+            if matches!(
+                b.handle_family(),
+                Some(hew_types::builtin_type::BuiltinHandleFamily::ActorPid)
+            ) && b.close_method().is_none()
+            {
+                return false;
+            }
+            if matches!(
+                b,
+                hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator
+            ) || matches!(
+                b.marker(),
+                hew_types::builtin_type::BuiltinTypeMarker::Resource
+            ) {
+                return true;
+            }
+            // A non-handle builtin (`Vec`/`HashMap`/`Option`/`Result`/…): the
+            // handle, if any, rides on a type argument or an enum-layout field.
+            if args.iter().any(|arg| recurse(arg, visited_enum_layouts)) {
+                return true;
+            }
+            ty_layout_carries_owned_handle(name, args, enum_layouts, visited_enum_layouts, false)
+        }
+        ResolvedTy::Named {
+            builtin: None,
+            args,
+            name,
+            ..
+        } => {
+            // User record / enum / type-name: check type args and the
+            // monomorphised layout; if neither resolves the fields, FAIL CLOSED.
+            if args.iter().any(|arg| recurse(arg, visited_enum_layouts)) {
+                return true;
+            }
+            ty_layout_carries_owned_handle(name, args, enum_layouts, visited_enum_layouts, true)
+        }
+        ResolvedTy::Tuple(elems) => elems.iter().any(|e| recurse(e, visited_enum_layouts)),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) | ResolvedTy::Task(inner) => {
+            recurse(inner, visited_enum_layouts)
+        }
+        ResolvedTy::Closure { captures, .. } => {
+            captures.iter().any(|c| recurse(c, visited_enum_layouts))
+        }
+        // `dyn Trait` and a bare type parameter could erase any owning type.
+        ResolvedTy::TraitObject { .. } | ResolvedTy::TypeParam { .. } => true,
+        // Scalars, `String`/`Bytes`, `Borrow`/`Pointer` (non-owning),
+        // `Function`, `Duration`, `Unit`, `Never`: never an owned handle.
+        _ => false,
+    }
+}
+
+/// Resolve a `Named` type's monomorphised `EnumLayout` and report whether any
+/// variant field may carry an owned handle. `unresolved_default` is returned
+/// when no layout matches: `true` (fail-closed) for opaque user types,
+/// `false` for known handle-free builtins whose args were already cleared.
+fn ty_layout_carries_owned_handle(
+    name: &str,
+    args: &[ResolvedTy],
+    enum_layouts: &[EnumLayout],
+    visited_enum_layouts: &mut HashSet<String>,
+    unresolved_default: bool,
+) -> bool {
+    let short = short_name(name);
+    let found = if args.is_empty() {
+        enum_layouts
+            .iter()
+            .find(|el| el.name == *name || short_name(&el.name) == short)
+    } else {
+        let mangled = mangle(short, args);
+        enum_layouts
+            .iter()
+            .find(|el| el.name == mangled || el.name == *name)
+    };
+    let Some(layout) = found else {
+        return unresolved_default;
+    };
+    if !visited_enum_layouts.insert(layout.name.clone()) {
+        // Recursive value type — fail closed.
+        return true;
+    }
+    let carries = layout.variants.iter().any(|v| {
+        v.field_tys
+            .iter()
+            .any(|ft| ty_may_carry_owned_handle_inner(ft, enum_layouts, visited_enum_layouts))
+    });
+    visited_enum_layouts.remove(&layout.name);
+    carries
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1498,6 +1667,7 @@ impl BasicBlock {
             } => vec![*then_target, *else_target],
             Terminator::Call { next, .. }
             | Terminator::Yield { next, .. }
+            | Terminator::MakeGenerator { next, .. }
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
@@ -1600,6 +1770,19 @@ pub enum Terminator {
     /// interesting; the v0.5 integer spine never constructs it.
     /// Declared here so the borrow-liveness check has a place to look.
     Yield { value: Place, next: u32 },
+    /// Generator construction at a `gen fn` / `gen { }` call site. Codegen
+    /// emits `hew_gen_ctx_create(<&body_fn>, null, 0)` and stores the returned
+    /// `*mut HewGenCtx` handle into `dest` (a `Generator<Y, R>`-typed place),
+    /// then branches to `next`. `body_fn` is the deterministic
+    /// `__hew_gen_body_<owner>_<id>` name minted by `lower_gen_block`; codegen
+    /// resolves its address via `get_function`. Carried explicitly (rather than
+    /// through `Terminator::Call`) because the body-fn pointer is not a `Place`
+    /// and the construction is self-describing without a call-site side table.
+    MakeGenerator {
+        dest: Place,
+        body_fn: String,
+        next: u32,
+    },
     /// Actor message send. The sent value at `value` crosses the
     /// actor boundary; `MirCheck::ActorSendEscape` checks the value's
     /// transitive references satisfy the `Send` constraint. Declared
@@ -2274,6 +2457,19 @@ pub enum Instr {
     /// `hew_cancel_token_is_requested` runtime call. Stage 5a owns the codegen
     /// emission site; until then this instruction is frontend-visible only.
     CancellationTokenIsCancelled { dest: Place, token: Place },
+    /// `dest = ctx.next()` — generator consumption.
+    ///
+    /// `ctx` holds the `*mut HewGenCtx` handle; `dest` is the `Option<yield_ty>`
+    /// enum slot. Codegen emits `hew_gen_next(ctx, &out_size)` and unboxes the
+    /// returned heap pointer into `dest`: null → `None` (tag 1); else load the
+    /// payload, write `Some` (tag 0) + value, and free the heap pointer. The
+    /// `ctx` handle is borrowed — its own scope-exit drop frees it via
+    /// `hew_gen_free`.
+    GeneratorNext {
+        dest: Place,
+        ctx: Place,
+        yield_ty: ResolvedTy,
+    },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
     /// Explicit checker-admitted numeric `as` cast.
@@ -3195,6 +3391,30 @@ pub enum MirCheck {
     /// `reason` carries a short human-readable cause for diagnostic
     /// anchoring; `ty` is the rejected operand rendered for display.
     WitnessOperandUnresolved { ty: String, reason: String },
+    /// W3.053 fail-closed gate: an owned handle (Generator / Stream / Sink /
+    /// Duplex / Cancellation token / actor handle — any `AffineResource` /
+    /// `CowHeap`-drop handle) was moved into a local tuple/record and then
+    /// extracted-and-consumed back out of that aggregate by a downstream
+    /// release-consumer, BUT the value-flow exclusion analysis
+    /// ([`super::lower::derive_consumed_local_aggregate_member_bindings`])
+    /// could not prove the source binding's standalone scope-exit drop and the
+    /// consumer's release free the same context exactly once. The source
+    /// binding therefore reaches codegen with more than one live free path for
+    /// the same runtime context — a guaranteed double-free / use-after-free.
+    ///
+    /// Rather than emit the double-free, the elaborator refuses. This is the
+    /// catch-all gate for the combinatorial aggregate-extraction shapes (re-
+    /// aggregation, nested aggregates, multi-hop extraction) whose precise
+    /// exact-once proof is deferred to v0.5.1: the invariant is "no owned handle
+    /// reaches codegen with more than one live free path; unprovable → refuse".
+    ///
+    /// `name` is the source binding's name; `handle_ty` is its rendered type for
+    /// the diagnostic.
+    OwnedHandleAggregateDoubleFree {
+        binding: BindingId,
+        name: String,
+        handle_ty: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3525,6 +3745,26 @@ pub enum DropKind {
     /// the buffer. A binding the prover does not positively clear leaks (as
     /// before W5.020); it never double-frees.
     EnumInPlace,
+    /// W5.021 — function-scope per-element drop of a heap-owning **tuple**
+    /// local carried by value (the tuple/record-of-owned-handles drop spine).
+    /// The tuple is an inline struct in its binding's alloca; its owned
+    /// elements (pointer handles like `Stream`/`Sink`, or heap leaves
+    /// `string`/`bytes`/`Vec`/nested owned record/enum) are the heap owners,
+    /// transferred to whichever binding owns the tuple at scope exit. Codegen
+    /// resolves the structural tuple key from the paired [`ElabDrop::ty`] and
+    /// calls the synthesised `__hew_tuple_drop_inplace_<key>(*mut)` helper —
+    /// the same per-field GEP-and-drop authority the record drop path uses
+    /// (`emit_aggregate_drop_inplace_body`) — which drops each owned element in
+    /// reverse declaration order and frees no wrapper (the tuple is embedded).
+    ///
+    /// `ElabDrop::drop_fn` must be `None`; the helper symbol is derived from
+    /// `ElabDrop::ty`. The MIR elaborator emits this kind ONLY for a tuple the
+    /// fail-closed sole-owner derivation (`derive_tuple_composite_drop_allowed`)
+    /// proves still owns its members at scope exit: a tuple whose elements were
+    /// moved out (the `__tuple_N` destructure temp) or whose whole value escaped
+    /// (returned) is excluded so exactly one owner drops each member. A binding
+    /// the prover does not positively clear leaks; it never double-frees.
+    TupleInPlace,
 }
 
 /// Storage discriminator for `DropKind::TraitObject`. Distinguishes the
@@ -3825,6 +4065,14 @@ pub enum MirDiagnosticKind {
         site: SiteId,
         reason: String,
     },
+    /// W3.053 fail-closed gate (projected from
+    /// [`MirCheck::OwnedHandleAggregateDoubleFree`]): extracting an owned handle
+    /// (Generator / Stream / Sink / Duplex / Cancellation token / actor handle)
+    /// out of a local aggregate in a shape whose exactly-once free the drop
+    /// analysis cannot prove. The compiler refuses rather than emitting a
+    /// double-free; full aggregate-extraction support lands in v0.5.1. `name` is
+    /// the source binding; `handle_ty` is its rendered type.
+    OwnedHandleAggregateExtractionUnsupported { name: String, handle_ty: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3848,4 +4096,63 @@ pub enum Strategy {
     ConsumeCall,
     Freeze,
     UnknownBlocked,
+}
+
+#[cfg(test)]
+mod heap_owning_tests {
+    use super::*;
+    use hew_types::BuiltinType;
+
+    fn generator_ty() -> ResolvedTy {
+        // `Generator<i64, ()>` — bit-copy generic args, but the handle itself
+        // owns a runtime context + OS thread.
+        ResolvedTy::Named {
+            name: "Generator".to_string(),
+            args: vec![ResolvedTy::I64, ResolvedTy::Unit],
+            builtin: Some(BuiltinType::Generator),
+        }
+    }
+
+    fn async_generator_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "AsyncGenerator".to_string(),
+            args: vec![ResolvedTy::I64],
+            builtin: Some(BuiltinType::AsyncGenerator),
+        }
+    }
+
+    #[test]
+    fn generator_handle_is_heap_owning_despite_bitcopy_args() {
+        // Regression: before this arm a `Generator<i64, ()>` was classified
+        // non-heap-owning, so a composite carrying it never dropped — leaking
+        // the context + thread.
+        assert!(ty_contains_heap_owning(&generator_ty(), &[]));
+    }
+
+    #[test]
+    fn async_generator_handle_is_heap_owning() {
+        assert!(ty_contains_heap_owning(&async_generator_ty(), &[]));
+    }
+
+    #[test]
+    fn cancellation_token_is_heap_owning() {
+        assert!(ty_contains_heap_owning(&ResolvedTy::CancellationToken, &[]));
+    }
+
+    #[test]
+    fn tuple_with_generator_member_is_heap_owning() {
+        // The exact Leak 2 shape: `(Generator<i64, ()>, i64)`. The tuple-recursion
+        // arm must see the generator member as a heap-owning leaf so the caller's
+        // tuple member-drop fires `hew_gen_free`.
+        let tuple = ResolvedTy::Tuple(vec![generator_ty(), ResolvedTy::I64]);
+        assert!(ty_contains_heap_owning(&tuple, &[]));
+    }
+
+    #[test]
+    fn tuple_of_bitcopy_only_is_not_heap_owning() {
+        // Guard against over-broad classification: a plain `(i64, bool)` must
+        // still be non-heap-owning.
+        let tuple = ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]);
+        assert!(!ty_contains_heap_owning(&tuple, &[]));
+    }
 }

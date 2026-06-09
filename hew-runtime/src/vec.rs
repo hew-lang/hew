@@ -2574,6 +2574,8 @@ pub(crate) unsafe fn hwvec_to_u8(v: *mut HewVec) -> Vec<u8> {
 /// # Safety
 ///
 /// None — all memory is managed by the runtime allocator.
+// live on not(wasm32) — file_io.rs; dead on wasm32; caller file_io.rs:260 (native-only module)
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) unsafe fn u8_to_hwvec(data: &[u8]) -> *mut HewVec {
     // SAFETY: hew_vec_new allocates a valid HewVec.
     let v = unsafe { hew_vec_new() };

@@ -120,9 +120,11 @@ fn main() {
     c.increment();
     c.increment();
     c.increment();
-    let count = await c.get_count();
-    println(f"  Counter after 3 increments: {count}");
-
+    let r = await c.get_count();
+    match r {
+        Ok(count) => println(f"  Counter after 3 increments: {count}"),
+        Err(_) => println("  Counter: ask failed"),
+    }
     // 10. Boolean operators
     println("10. Boolean operators:");
     let a = true;

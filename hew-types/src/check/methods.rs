@@ -1012,11 +1012,18 @@ impl Checker {
                 &entry.method,
                 Some(&resolved),
             ) {
+                // Deferred channel-method resolution bypasses
+                // `record_runtime_method_call_rewrite`, so derive the same
+                // consume verdict from the resolved symbol here (channel
+                // `Sender`/`Receiver` `close` are consuming releases).
+                let consumes_receiver =
+                    crate::builtin_names::runtime_symbol_consumes_receiver(c_symbol);
                 self.method_call_rewrites.insert(
                     span_key,
                     MethodCallRewrite::RewriteToFunction {
                         c_symbol: c_symbol.to_string(),
                         elem_ty: None,
+                        consumes_receiver,
                     },
                 );
             } else {
@@ -1134,11 +1141,20 @@ impl Checker {
     }
 
     fn record_runtime_method_call_rewrite(&mut self, span: &Span, c_symbol: impl Into<String>) {
+        let c_symbol = c_symbol.into();
+        // The consume verdict is derived once, here, from the resolved runtime
+        // symbol — the single rewrite-recording authority for runtime-symbol
+        // method calls (close-family handle releases route through this helper).
+        // Keying on the symbol (the dispatch discriminant) rather than a
+        // receiver type name keeps `.send()`/`.recv()` borrowing and only the
+        // `.close()`-family consuming (LESSONS: drop-allowset-from-value-flow).
+        let consumes_receiver = crate::builtin_names::runtime_symbol_consumes_receiver(&c_symbol);
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteToFunction {
-                c_symbol: c_symbol.into(),
+                c_symbol,
                 elem_ty: None,
+                consumes_receiver,
             },
         );
     }
@@ -3818,6 +3834,9 @@ impl Checker {
                 MethodCallRewrite::RewriteToFunction {
                     c_symbol: method_key,
                     elem_ty: None,
+                    // Primitive trait-impl dispatch is a user-fn call; it never
+                    // consumes the receiver as a handle release.
+                    consumes_receiver: false,
                 },
             );
         }
@@ -4716,6 +4735,9 @@ impl Checker {
                                 MethodCallRewrite::RewriteToFunction {
                                     c_symbol: "hew_remote_pid_tell".to_string(),
                                     elem_ty: None,
+                                    // Fire-and-forget send; borrows the pid
+                                    // handle, does not release it.
+                                    consumes_receiver: false,
                                 },
                             );
                         }
@@ -4879,12 +4901,33 @@ impl Checker {
                     ..
                 },
                 "next",
-            ) => Ty::option(
-                type_args
+            ) => {
+                let yield_ty = type_args
                     .first()
                     .cloned()
-                    .unwrap_or(Ty::Var(TypeVar::fresh())),
-            ),
+                    .unwrap_or(Ty::Var(TypeVar::fresh()));
+                // Record the consumption rewrite so HIR lowering emits the
+                // dedicated `GeneratorNext` node (codegen drives `hew_gen_next`
+                // and unboxes the result into `Option<yield_ty>`). Without this
+                // entry, HIR rejects the call with `MethodCallNoRewrite`.
+                //
+                // `materialize_literal_defaults` collapses any residual
+                // `IntLiteral`/`FloatLiteral` yield type to its concrete default
+                // (i64/f64): a `gen { yield 7; 0 }` yields an unconstrained
+                // integer literal, and `ResolvedTy::from_ty` rejects an
+                // unmaterialized literal — so without the default the rewrite
+                // would be silently skipped and HIR would reject the call.
+                let resolved_yield = self.subst.resolve(&yield_ty).materialize_literal_defaults();
+                if let Ok(yield_resolved) = ResolvedTy::from_ty(&resolved_yield) {
+                    self.record_method_call_rewrite(
+                        span,
+                        MethodCallRewrite::GeneratorNext {
+                            yield_ty: yield_resolved,
+                        },
+                    );
+                }
+                Ty::option(yield_ty)
+            }
             // Stream<T> methods
             //
             // LIMITATION: Stream element-type validation only triggers here (on
@@ -5483,6 +5526,9 @@ impl Checker {
                                 MethodCallRewrite::RewriteToFunction {
                                     c_symbol: method_key,
                                     elem_ty: None,
+                                    // User inherent-impl / trait-method dispatch;
+                                    // not a handle-release consume.
+                                    consumes_receiver: false,
                                 },
                             );
                         }

@@ -18,6 +18,9 @@ fn fib(n: i64) -> i64 {
 
 fn main() {
     let calculator = spawn Calculator;
-    let result = calculator.compute(10);
-    println(result);
+    let r = await calculator.compute(10);
+    match r {
+        Ok(result) => println(result),
+        Err(_) => println(-1),
+    }
 }

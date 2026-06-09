@@ -670,7 +670,39 @@ impl Checker {
                         intrinsic: None,
                     };
                     let qualified = format!("{}::{}", td.name, method.name);
+
+                    // Bind the trait's own method-set to the abstract `Self`
+                    // receiver for the duration of this default-body check.
+                    //
+                    // Without this, `val.other_method()` inside a default body
+                    // resolves `val: Self` against an empty type-param-bounds map
+                    // and reports "no method `other_method` on `Self`".  The
+                    // fix mirrors the generic-bound dispatch path
+                    // (methods.rs: "Type-parameter method dispatch"): that path
+                    // reads `fn_sigs[current_function].type_param_bounds["T"]`
+                    // to find which traits bound `T`, then looks up the method
+                    // in those traits.  We inject `Self → [TraitName]` into the
+                    // registered sig for `Trait::method` so the same path
+                    // resolves sibling trait-method calls on the `Self` receiver.
+                    let prev_sig = self.fn_sigs.get(&qualified).cloned();
+                    if let Some(sig) = self.fn_sigs.get_mut(&qualified) {
+                        if !sig.type_params.contains(&"Self".to_string()) {
+                            sig.type_params.push("Self".to_string());
+                        }
+                        sig.type_param_bounds
+                            .entry("Self".to_string())
+                            .or_insert_with(Vec::new)
+                            .push(td.name.clone());
+                    }
+
                     self.check_function_as(&fn_decl, &qualified);
+
+                    // Restore the original sig — the `Self` type-param is an
+                    // internal default-body-check artefact and must not persist
+                    // into the signature visible to call sites.
+                    if let Some(original) = prev_sig {
+                        self.fn_sigs.insert(qualified, original);
+                    }
                 }
             }
         }

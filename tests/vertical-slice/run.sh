@@ -1002,6 +1002,13 @@ run_accept_expect_stdout "try_op_heap_result"
 # header.) (raii-null-after-move, cleanup-all-exits, boundary-fail-closed.)
 run_accept_expect_stdout "result_heap_drop_loop"
 
+# I4 FFI allocator fix: stream.from_file on a missing path returns Err(string)
+# where the string came from hew_stream_last_error(). The Hew drop spine frees
+# it via hew_string_drop → free_cstring. Before the fix the raw libc::malloc
+# allocation lacked the header sentinel and free_cstring called libc::abort.
+# A clean exit (no SIGABRT) proves the alloc_cstring_from_str path is correct.
+run_accept_expect_stdout "stream_last_error_drops_cleanly"
+
 # Reject: heap-owning composite returns with NO tag-aware drop coverage stay
 # fail-closed (boundary-fail-closed). A tuple carrying an owned string is not an
 # enum composite, so the move-out + in-place drop spine does not cover it.

@@ -371,6 +371,14 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
     // Phase 2: Drain — let workers process remaining messages.
     SHUTDOWN_PHASE.store(PHASE_DRAIN, Ordering::Release);
 
+    // Track whether the drain loop reached idle before the deadline.
+    // WHY: Phase 3 join safety depends on this.  If the drain converged
+    // (all workers parked), joining is instant and safe.  If it timed out,
+    // a worker thread is still executing a handler; joining would block
+    // forever.  The timed-out path skips join and all post-join cleanup,
+    // letting process exit reap the stuck thread.
+    let mut drain_converged = drain_timeout.is_zero(); // zero-timeout ⇒ skip drain ⇒ treat as converged
+
     if !drain_timeout.is_zero() {
         let deadline = Instant::now() + drain_timeout;
         let mut idle_polls = 0;
@@ -378,6 +386,7 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
             if scheduler::drain_is_idle() {
                 idle_polls += 1;
                 if idle_polls >= 2 {
+                    drain_converged = true;
                     break;
                 }
             } else {
@@ -390,10 +399,32 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
             }
             std::thread::sleep(DRAIN_POLL_INTERVAL.min(remaining));
         }
+        // Final idle check after the loop: covers the case where the deadline
+        // expired while sleeping but the runtime is actually idle now.
+        if !drain_converged && scheduler::drain_is_idle() {
+            drain_converged = true;
+        }
     }
 
-    // Phase 3: Terminate — stop supervisors bottom-up, then scheduler.
+    // Phase 3: Terminate.
     SHUTDOWN_PHASE.store(PHASE_TERMINATE, Ordering::Release);
+
+    if !drain_converged {
+        // A worker is still executing a handler and will not return to its
+        // loop top to observe the shutdown flag before the process exits.
+        // Joining it would block forever; any post-join cleanup (supervisor
+        // stop, session_reset, cleanup_all_actors) would race the live
+        // worker and risk a UAF.
+        //
+        // Safe exit: mark shutdown complete and return.  main() unblocks
+        // from hew_shutdown_wait(), returns, and the OS reaps the stuck
+        // worker thread.  No heap memory is freed on this path — the process
+        // is exiting so the OS reclaims it all.
+        SHUTDOWN_PHASE.store(PHASE_DONE, Ordering::Release);
+        return;
+    }
+
+    // Drain converged — all workers are parked.  The join below is instant.
 
     // Stop registered supervisors in reverse order (bottom-up).
     // Extract the supervisor list to avoid holding the mutex while stopping them.
@@ -407,12 +438,14 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
     // Stop supervisors without holding the mutex.
     for s in &supervisors_to_stop {
         if !s.0.is_null() {
-            // SAFETY: supervisor was registered and is still valid.
+            // SAFETY: supervisor was registered, drain converged so no worker
+            // is actively dispatching into supervisor-owned actors, and the
+            // pointer remains valid until this call frees it.
             unsafe { crate::supervisor::hew_supervisor_stop(s.0) };
         }
     }
 
-    // Shut down the scheduler (joins worker threads).
+    // Shut down the scheduler (joins worker threads — instant since drain converged).
     scheduler::hew_sched_shutdown();
 
     SHUTDOWN_PHASE.store(PHASE_DONE, Ordering::Release);
@@ -948,6 +981,45 @@ mod tests {
         assert!(
             elapsed < Duration::from_millis(150),
             "shutdown should exit early once the runtime is already drained; elapsed={elapsed:?}"
+        );
+
+        reset_shutdown_state();
+    }
+
+    /// When the drain window expires with a worker still active,
+    /// `shutdown_orchestrate` must set `PHASE_DONE` promptly (skipping the
+    /// join) rather than blocking indefinitely.
+    ///
+    /// We simulate an un-drainable runtime by holding `ACTIVE_WORKERS` at 1
+    /// for the duration of the drain window, then releasing it after
+    /// `shutdown_orchestrate` returns so that `reset_shutdown_state` can
+    /// complete cleanly.
+    #[test]
+    fn shutdown_orchestrate_sets_done_on_drain_timeout() {
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
+        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+
+        // Keep the drain loop from ever converging.
+        scheduler::ACTIVE_WORKERS.fetch_add(1, Ordering::Release);
+
+        let drain_ms = 50u64;
+        let started = Instant::now();
+        shutdown_orchestrate(Duration::from_millis(drain_ms));
+        let elapsed = started.elapsed();
+
+        // Release the artificial worker count so later teardown is clean.
+        scheduler::ACTIVE_WORKERS.fetch_sub(1, Ordering::Release);
+
+        assert_eq!(
+            SHUTDOWN_PHASE.load(Ordering::Acquire),
+            PHASE_DONE,
+            "shutdown_orchestrate must reach DONE even when drain times out"
+        );
+        // Must complete within ~2× the drain window (drain + small grace).
+        assert!(
+            elapsed < Duration::from_millis(drain_ms * 4),
+            "timed-out drain must not block; elapsed={elapsed:?}"
         );
 
         reset_shutdown_state();

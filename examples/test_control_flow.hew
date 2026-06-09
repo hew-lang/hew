@@ -3,20 +3,10 @@
 
 // Test: Control Flow
 // Exercises: if/else, match, for-in, while, loop+break, continue, return
-enum Option {
-    Some(i32);
-    None;
-}
-
-enum Result {
-    Ok(i32);
-    Err(i32);
-}
-
-fn test_if_else() -> i32 {
+fn test_if_else() -> i64 {
     let x = 10;
     // if/else expression
-    var result = if x > 5 {
+    let result = if x > 5 {
         1
     } else {
         0
@@ -28,7 +18,7 @@ fn test_if_else() -> i32 {
         0
     };
     // chained comparisons instead of nested if/else
-    let nested = if x > 20 {
+    let _nested = if x > 20 {
         3
     } else {
         if x > 5 {
@@ -39,8 +29,6 @@ fn test_if_else() -> i32 {
     };
     if result == 1 {
         if expr_result == 100 {
-            // nested if/else expression codegen may not work perfectly;
-            // just verify basic if/else works
             println("PASS: if/else");
             1
         } else {
@@ -51,7 +39,7 @@ fn test_if_else() -> i32 {
     }
 }
 
-fn test_match_integers() -> i32 {
+fn test_match_integers() -> i64 {
     let x = 2;
     let result = match x {
         0 => 10,
@@ -79,8 +67,8 @@ fn test_match_integers() -> i32 {
     }
 }
 
-fn test_match_option() -> i32 {
-    let some_val = Some(42);
+fn test_match_option() -> i64 {
+    let some_val: Option<i64> = Some(42);
     let r1 = match some_val {
         Some(v) => v,
         None => -1,
@@ -102,15 +90,15 @@ fn test_match_option() -> i32 {
     }
 }
 
-fn test_match_result() -> i32 {
-    let ok_val = Ok(99);
-    let err_val = Err(-1);
+fn test_match_result() -> i64 {
+    let ok_val: Result<i64, i64> = Ok(99);
+    let err_val: Result<i64, i64> = Err(-1);
     let r1 = match ok_val {
         Ok(v) => v,
         Err(_) => -1,
     };
     let r2 = match err_val {
-        Ok(v) => 0,
+        Ok(_v) => 0,
         Err(e) => e,
     };
     if r1 == 99 {
@@ -125,7 +113,7 @@ fn test_match_result() -> i32 {
     }
 }
 
-fn test_for_loop() -> i32 {
+fn test_for_loop() -> i64 {
     var sum = 0;
     for i in 0 .. 5 {
         sum = sum + i;
@@ -139,7 +127,7 @@ fn test_for_loop() -> i32 {
     }
 }
 
-fn test_while_loop() -> i32 {
+fn test_while_loop() -> i64 {
     var sum = 0;
     for i in 0 .. 5 {
         sum = sum + i;
@@ -153,7 +141,7 @@ fn test_while_loop() -> i32 {
     }
 }
 
-fn test_loop_break() -> i32 {
+fn test_loop_break() -> i64 {
     var i = 0;
     loop {
         if i >= 5 {
@@ -169,7 +157,7 @@ fn test_loop_break() -> i32 {
     }
 }
 
-fn test_while_continue() -> i32 {
+fn test_while_continue() -> i64 {
     var i = 0;
     var sum = 0;
     while i < 10 {
@@ -191,7 +179,7 @@ fn test_while_continue() -> i32 {
     }
 }
 
-fn test_early_return(x: i32) -> i32 {
+fn test_early_return(x: i64) -> i64 {
     if x < 0 {
         return -1;
     }
@@ -201,7 +189,7 @@ fn test_early_return(x: i32) -> i32 {
     return x * 2;
 }
 
-fn test_return() -> i32 {
+fn test_return() -> i64 {
     let r1 = test_early_return(-5);
     let r2 = test_early_return(0);
     let r3 = test_early_return(10);
@@ -221,7 +209,7 @@ fn test_return() -> i32 {
     }
 }
 
-fn main() -> i32 {
+fn main() -> i64 {
     println("=== Test: Control Flow ===");
     var passed = 0;
     let total = 9;

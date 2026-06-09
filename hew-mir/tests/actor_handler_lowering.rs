@@ -224,6 +224,7 @@ fn actor_cycle_capable_threads_to_layout_and_spawn_instr() {
         return_ty: pid_ty,
         body: block(&mut ids, vec![], Some(spawn), local_pid_of("Counter")),
         span: 0..0,
+        is_generator: false,
         intrinsic_id: None,
     };
 
@@ -285,6 +286,7 @@ fn non_cycle_actor_keeps_false_layout_and_spawn_default() {
         return_ty: pid_ty,
         body: block(&mut ids, vec![], Some(spawn), local_pid_of("Counter")),
         span: 0..0,
+        is_generator: false,
         intrinsic_id: None,
     };
 
@@ -700,6 +702,7 @@ fn actor_handler_symbol_collision_emits_typed_diagnostic_and_skips_handler() {
         return_ty: ResolvedTy::Unit,
         body: top_level_body,
         span: 0..0,
+        is_generator: false,
         intrinsic_id: None,
     };
     let ping_return = return_none_stmt(&mut ids);

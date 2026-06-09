@@ -440,13 +440,9 @@ unsafe extern "C-unwind" fn echo_dispatch(
     let triple = unsafe { ptr::read(data.cast::<BytesTriple>()) };
     if !triple.ptr.is_null() && triple.len > 0 {
         let conn = ECHO_CONN.load(Ordering::Acquire);
-        let vec = unsafe {
-            hew_runtime::vec::hew_vec_from_u8_data(
-                triple.ptr.add(triple.offset as usize),
-                triple.len,
-            )
-        };
-        unsafe { hew_runtime::transport::hew_tcp_write(conn, vec) };
+        // hew_tcp_write now takes the triple BY POINTER (borrowing the active
+        // region); pass the on_data triple's address — no HewVec bridge.
+        unsafe { hew_runtime::transport::hew_tcp_write(conn, std::ptr::addr_of!(triple)) };
     }
     unsafe { hew_runtime::bytes::hew_bytes_drop(triple.ptr) };
 }

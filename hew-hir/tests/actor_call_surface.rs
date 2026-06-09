@@ -151,6 +151,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(event, out);
         }
         HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. } => {
             visit_expr(receiver, out);
         }

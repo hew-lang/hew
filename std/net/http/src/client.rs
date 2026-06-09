@@ -7,6 +7,7 @@
 // WASM-TODO(#1451): std::net::http outbound client requests remain native-only until
 // Hew has a browser/WASM networking bridge.
 
+use crate::headers_vec::string_pair_elem_layout;
 use hew_cabi::{
     cabi::{alloc_cstring, cstr_to_str, free_cstring, str_to_malloc},
     vec::{ElemKind, HewVec},
@@ -524,21 +525,13 @@ unsafe fn free_hew_string_pair_vec(vec: *mut HewVec) {
     if vec.is_null() {
         return;
     }
-    // SAFETY: `vec` is a valid HewVec allocated by `hew_vec_new_generic`.
-    let len = unsafe { hew_cabi::vec::hew_vec_len(vec) };
-    for index in 0..len {
-        // SAFETY: `index` is in-bounds for `vec`.
-        let elem_ptr = unsafe { hew_cabi::vec::hew_vec_get_generic(vec.cast_const(), index) };
-        if elem_ptr.is_null() {
-            continue;
-        }
-        // SAFETY: every stored element is a `HewStringPair`.
-        let pair = unsafe { &mut *(elem_ptr.cast_mut().cast::<HewStringPair>()) };
-        // SAFETY: embedded strings are individually malloc-owned.
-        unsafe { free_hew_string_pair(pair) };
-    }
-    // SAFETY: the string fields have been freed above; release the buffer itself.
-    unsafe { hew_cabi::vec::hew_vec_free(vec) };
+    // The vec was constructed with `hew_vec_new_with_elem_layout` carrying a
+    // `string_pair_drop_thunk`.  `hew_vec_free_owned` calls that thunk on every
+    // live element (freeing both strings via `free_cstring`) then frees the
+    // buffer.  This replaces the manual loop + `hew_vec_free` that was needed
+    // when the vec was Plain-kind with no drop thunk.
+    // SAFETY: `vec` was allocated by `hew_vec_new_with_elem_layout`.
+    unsafe { hew_cabi::vec::hew_vec_free_owned(vec) };
 }
 
 // ── Response accessor functions ───────────────────────────────────────
@@ -688,29 +681,29 @@ struct HewStringPair {
 
 /// Return a new `Vec<(String, String)>` containing all captured response headers.
 ///
-/// Each element is a `(name, value)` pair of `malloc`-allocated C strings.
-/// The caller owns the returned vector and its element strings. Hew's compiled
-/// destructor frees the string fields when the `Vec<(String, String)>` goes
-/// out of scope. Returns an empty vector if `resp` is null or no headers were
-/// captured. Returns null when copying the header list runs out of memory; call
+/// Each element is a `(name, value)` pair of header-aware heap strings.  The
+/// returned `HewVec` is backed by an owned-element descriptor
+/// (`string_pair_elem_layout`) so that Hew's compiled destructor can call
+/// `hew_vec_free_owned` when the binding goes out of scope — freeing both
+/// strings in every pair via `string_pair_drop_thunk`.
+///
+/// Returns an empty vector if `resp` is null or no headers were captured.
+/// Returns null when copying the header list runs out of memory; call
 /// [`hew_http_last_error`] for details.
 ///
 /// # Safety
 ///
 /// `resp` must be a valid [`HewHttpResponse`] pointer, or null.
-///
-/// # Panics
-///
-/// In practice never panics. The internal conversion of
-/// `size_of::<*mut c_char>() * 2` to `i64` is infallible on any supported
-/// platform (pointer sizes are always a small fraction of `i64::MAX`).
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_response_headers(resp: *const HewHttpResponse) -> *mut HewVec {
     clear_http_last_error();
-    let elem_size = i64::try_from(2 * std::mem::size_of::<*mut c_char>())
-        .expect("pointer-pair elem_size always fits i64");
-    // SAFETY: allocates a new HewVec with elem_size=16 (two pointers), Plain kind.
-    let vec = unsafe { hew_cabi::vec::hew_vec_new_generic(elem_size, 0) };
+    // Build an owned-element Vec backed by the string-pair descriptor.  The
+    // Hew drop spine calls `hew_vec_free_owned` on this binding, which invokes
+    // `string_pair_drop_thunk` on every live element.
+    let layout = string_pair_elem_layout();
+    // SAFETY: `layout` is a fully-populated descriptor on the caller's stack;
+    // `hew_vec_new_with_elem_layout` copies it into the vec's inline storage.
+    let vec = unsafe { hew_cabi::vec::hew_vec_new_with_elem_layout(&raw const layout) };
     if vec.is_null() {
         http_allocation_failed(
             "hew_http_response_headers",
@@ -734,16 +727,25 @@ pub unsafe extern "C" fn hew_http_response_headers(resp: *const HewHttpResponse)
             value: raw_http_str_to_malloc(value),
         };
         if pair.name.is_null() || pair.value.is_null() {
-            // SAFETY: any strings already allocated for this pair must be released.
+            // SAFETY: pair.name / pair.value are header-aware strings (or null).
             unsafe { free_hew_string_pair(&mut pair) };
             http_allocation_failed("hew_http_response_headers", "copying response header list");
-            // SAFETY: previously pushed pairs remain owned by `vec`.
+            // SAFETY: vec was allocated by `hew_vec_new_with_elem_layout`; every
+            // already-pushed element is dropped via the drop thunk.
             unsafe { free_hew_string_pair_vec(vec) };
             return std::ptr::null_mut();
         }
-        // SAFETY: vec is a valid HewVec; &pair is a valid elem_size-byte region.
+        // push_owned: memcpy the pair into the slot, then `string_pair_clone_thunk`
+        // bumps the refcount on both strings (rc: 1→2).
+        // SAFETY: vec is a valid owned-layout HewVec; &pair is a HewStringPair.
         unsafe {
-            hew_cabi::vec::hew_vec_push_generic(vec, std::ptr::addr_of!(pair).cast::<c_void>());
+            hew_cabi::vec::hew_vec_push_owned(vec, std::ptr::addr_of!(pair).cast::<c_void>());
+        }
+        // Release the source copy (rc: 2→1).  The vec slot is now the sole owner.
+        // SAFETY: pair.name and pair.value are header-aware heap strings.
+        unsafe {
+            free_cstring(pair.name); // CSTRING-FREE: str-open (header name — release source after push_owned)
+            free_cstring(pair.value); // CSTRING-FREE: str-open (header value — release source after push_owned)
         }
     }
     vec

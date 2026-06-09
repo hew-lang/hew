@@ -2,7 +2,7 @@
 fn main() {
     let n = 3;
     let total = n * n;
-    let mat: Vec<i32> = Vec::new();
+    let mat: Vec<i64> = Vec::new();
     for i in 0 .. total {
         mat.push(0);
     }
@@ -10,7 +10,7 @@ fn main() {
     var bottom = n - 1;
     var left = 0;
     var right = n - 1;
-    var num: i32 = 1;
+    var num: i64 = 1;
     while num <= total {
         // Fill top row left to right
         var col = left;
@@ -55,7 +55,7 @@ fn main() {
     // 1 2 3
     // 8 9 4
     // 7 6 5
-    let expected: Vec<i32> = Vec::new();
+    let expected: Vec<i64> = Vec::new();
     expected.push(1);
     expected.push(2);
     expected.push(3);

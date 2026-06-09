@@ -110,7 +110,9 @@ fn bytes_methods_resolve_through_std_io_extern_symbols() {
         "hew_bytes_push",
         "hew_vec_pop_i32",
         "hew_vec_len",
-        "hew_vec_get_i32",
+        // `bytes.get` routes to the dedicated `hew_bytes_index` getter (the
+        // BytesTriple element load), NOT the heap-Vec getter `hew_vec_get_i32`.
+        "hew_bytes_index",
         "hew_vec_set_i32",
         "hew_vec_is_empty",
         "hew_vec_clear",

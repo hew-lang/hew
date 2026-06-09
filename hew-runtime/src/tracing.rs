@@ -194,6 +194,8 @@ static IO_SPAN_TABLE: LazyLock<Mutex<HashMap<c_int, HewTraceContext>>> =
 ///
 /// Only called when `TRACING_ENABLED` is true.  No-op if tracing is later
 /// disabled — the entry will be evicted on connection close.
+// live on not(wasm32) — connection.rs; dead on wasm32; caller connection.rs:1953
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn io_span_stash(conn_id: c_int, ctx: HewTraceContext) {
     IO_SPAN_TABLE.lock_or_recover().insert(conn_id, ctx);
 }
@@ -201,10 +203,14 @@ pub(crate) fn io_span_stash(conn_id: c_int, ctx: HewTraceContext) {
 /// Evict any stashed context for `conn_id` on connection close.
 ///
 /// Safe to call even when no entry exists (eviction is idempotent).
+// live on not(wasm32) — connection.rs; dead on wasm32; caller connection.rs:1400
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn io_span_evict(conn_id: c_int) {
     IO_SPAN_TABLE.lock_or_recover().remove(&conn_id);
 }
 
+// live on not(wasm32) — io_recv_span_begin/end; dead on wasm32; callers tracing.rs:631, 666
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const TRACE_OWNS_EXECUTION_CONTEXT: u32 = 1 << 31;
 
 fn trace_context() -> Option<HewTraceContext> {
@@ -500,6 +506,8 @@ pub unsafe extern "C" fn hew_trace_get_context(out: *mut HewTraceContext) {
     unsafe { *out = ctx };
 }
 
+// live on not(wasm32) — mailbox.rs:msg_node_alloc (active on native; wasm path is mailbox_wasm.rs); caller mailbox.rs:517,589
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn current_context() -> HewTraceContext {
     trace_context().unwrap_or_default()
 }
@@ -509,6 +517,8 @@ pub(crate) fn set_context(ctx: HewTraceContext) {
     let _ = write_trace_context(ctx);
 }
 
+// live on not(wasm32) — schedule_actor_after_enqueue; dead on wasm32; caller actor.rs:3439
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn record_send(actor_id: u64, msg_type: i32) {
     if !TRACING_ENABLED.load(Ordering::Relaxed) {
         return;
@@ -523,6 +533,8 @@ pub(crate) fn record_send(actor_id: u64, msg_type: i32) {
 ///
 /// This is the emission point for `SPAN_DUPLEX_*`, `SPAN_SINK_CLOSED`,
 /// `SPAN_STREAM_CLOSED`, `SPAN_LAMBDA_SPAWNED`, and `SPAN_LAMBDA_RELEASED`.
+// live on not(wasm32) — stream/lambda_actor/duplex (native-only modules); dead on wasm32
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn record_channel_event(handle_addr: u64, event_type: i32) {
     if !TRACING_ENABLED.load(Ordering::Relaxed) {
         return;
@@ -543,6 +555,8 @@ pub(crate) fn record_channel_event(handle_addr: u64, event_type: i32) {
 ///
 /// Used for `SPAN_IO_ACCEPT` and `SPAN_IO_RECV` which are not bound to any
 /// actor ID (`actor_id` = 0) and carry their own freshly generated span context.
+// live on not(wasm32) — io_accept_span_begin / io_recv_span_begin; dead on wasm32
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn record_io_event(ctx: &HewTraceContext, event_type: i32) {
     record_event(HewTraceEvent {
         trace_id_hi: ctx.trace_id_hi,
@@ -564,6 +578,8 @@ fn record_io_event(ctx: &HewTraceContext, event_type: i32) {
 /// `SPAN_IO_RECV` spans under this accept span.
 ///
 /// Fast path: returns immediately (no allocation) when tracing is disabled.
+// live on not(wasm32) — connection.rs; dead on wasm32; caller connection.rs:1953
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn io_accept_span_begin(conn_id: c_int) {
     if !TRACING_ENABLED.load(Ordering::Relaxed) {
         return;
@@ -592,6 +608,8 @@ pub(crate) fn io_accept_span_begin(conn_id: c_int) {
 /// Returns the prior trace context so the caller can restore it after
 /// `router_fn` returns.  If tracing is disabled, returns `None` (caller
 /// skips tracing entirely).
+// live on not(wasm32) — connection.rs; dead on wasm32; caller connection.rs:1546
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn io_recv_span_begin(conn_id: c_int) -> Option<HewTraceContext> {
     if !TRACING_ENABLED.load(Ordering::Relaxed) {
         return None;
@@ -653,6 +671,8 @@ pub(crate) fn io_recv_span_begin(conn_id: c_int) -> Option<HewTraceContext> {
 /// Emits `SPAN_END` for the current `io_recv` span and restores `saved_ctx`.
 ///
 /// `saved_ctx` must be the value returned by the matching `io_recv_span_begin`.
+// live on not(wasm32) — connection.rs; dead on wasm32; caller connection.rs:1567
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn io_recv_span_end(saved_ctx: HewTraceContext) {
     // Emit SPAN_END using the current (recv) context that was installed in begin.
     let current = crate::execution_context::require_current_context();

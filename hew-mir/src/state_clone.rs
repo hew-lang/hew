@@ -189,6 +189,35 @@ pub enum IoHandleKind {
     /// move-semantic (byte-copy at spawn). Supervisor-restart clone path
     /// must `FailClosed` at codegen time per plan §4.5 B.
     Connection,
+    /// `Stream<T>` read handle. Its scope-exit release is `hew_stream_close`
+    /// (the same symbol `Stream.close()` and the single-handle drop path use).
+    /// No `hew_stream_dup` runtime helper exists, so the clone/restart path
+    /// fails closed; only the drop direction is wired (W5.021 — owned-tuple
+    /// drop spine). Pointer-backed handle: a byte-copy aliases the pointer with
+    /// no refcount, so exactly one owner must close it.
+    Stream,
+    /// `Sink<T>` write handle. Scope-exit release is `hew_sink_close` (the same
+    /// symbol `Sink.close()` and the single-handle drop path use). No dup
+    /// helper; clone/restart fails closed, drop is wired (W5.021).
+    Sink,
+    /// `Generator<Y, R>` / `AsyncGenerator<Y>` runtime handle (`*mut HewGenCtx`).
+    /// Scope-exit release is `hew_gen_free` (cancel-if-running, join the
+    /// generator thread, drain unconsumed yields, free the context) — the same
+    /// symbol the standalone-binding drop (`drop_kind_for`) uses. No dup helper
+    /// exists, so the clone/restart direction fails closed, exactly like
+    /// `Stream`/`Sink`. A composite carrying this handle (e.g. a returned
+    /// `(Generator<i64, ()>, i64)`) must free it exactly once at the owner's
+    /// scope exit; the exactly-once discipline rests on the move-checker plus the
+    /// MIR drop-allow derivations, with the runtime's `hew_gen_free` null-guard
+    /// as a backstop.
+    Generator,
+    /// `CancellationToken` runtime handle (`*mut HewCancellationToken`).
+    /// Scope-exit release is `hew_cancel_token_release` (ref-count decrement,
+    /// free at zero — null-tolerant) — the same symbol the standalone-binding
+    /// drop uses. Ref-counted, so a clone could in principle retain, but no
+    /// composite clone path is wired today; the clone direction fails closed
+    /// alongside `Generator` for symmetry until a retain-on-clone seam exists.
+    CancellationToken,
 }
 
 /// Errors the classifier returns when the field shape exceeds the closed
@@ -443,8 +472,15 @@ fn classify_state_field_impl(
         // concrete clone strategy until monomorphisation substitutes it,
         // so an actor-state field typed by an unsubstituted parameter is
         // a producer bug that must fail closed here.
-        ResolvedTy::CancellationToken
-        | ResolvedTy::Pointer { .. }
+        // `CancellationToken` is a ref-counted runtime handle whose scope-exit
+        // release is `hew_cancel_token_release`. Classify it as a drop-only
+        // IO-handle so a composite carrying one (e.g. a returned tuple) frees it
+        // exactly once at the owner's scope exit instead of leaking it.
+        ResolvedTy::CancellationToken => Ok(StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::CancellationToken,
+        }),
+
+        ResolvedTy::Pointer { .. }
         | ResolvedTy::Borrow { .. }
         | ResolvedTy::Function { .. }
         | ResolvedTy::Closure { .. }
@@ -511,6 +547,39 @@ fn classify_named(
     if name == "Connection" {
         return Ok(StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Connection,
+        });
+    }
+
+    // `Stream<T>` / `Sink<T>` pointer-backed IO handles (W5.021 — owned-tuple
+    // drop spine). A tuple/record carrying these handles must close each one
+    // exactly once at the owner's scope exit; the drop step routes to
+    // `hew_stream_close` / `hew_sink_close` (the same symbols the single-handle
+    // `.close()` and standalone-binding drop paths use). No dup helper exists,
+    // so the clone/restart direction fails closed (handled in the codegen clone
+    // step), matching the `Connection` posture.
+    if name == "Stream" {
+        return Ok(StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Stream,
+        });
+    }
+    if name == "Sink" {
+        return Ok(StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Sink,
+        });
+    }
+
+    // `Generator<Y, R>` / `AsyncGenerator<Y>` pointer-backed runtime handle.
+    // Same posture as Stream/Sink: drop routes to `hew_gen_free` (the standalone
+    // generator-binding release symbol), no dup helper, clone/restart fails
+    // closed. Without this arm a tuple/record/enum carrying a generator handle
+    // falls through to `classify_user_record` and fails as `MissingRecordLayout`,
+    // and (before this lane) the composite was mis-classified non-heap-owning so
+    // its member-drop never ran — leaking the context + OS thread. A generator's
+    // generic args (`i64`, `()`) never make the handle itself non-heap-owning, so
+    // classification is by name alone, independent of `args`.
+    if matches!(name, "Generator" | "AsyncGenerator") {
+        return Ok(StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Generator,
         });
     }
 

@@ -171,3 +171,204 @@ fn vec_string_for_in_emits_retained_getter_with_iteration_drop() {
         pl.diagnostics,
     );
 }
+
+/// Count every `hew_string_drop` `Instr::Drop` across the pipeline's raw MIR.
+fn string_drop_count(pl: &IrPipeline) -> usize {
+    let mut n = 0;
+    for f in &pl.raw_mir {
+        for b in &f.blocks {
+            for instr in &b.instructions {
+                if let Instr::Drop {
+                    ty: hew_types::ResolvedTy::String,
+                    drop_fn: Some(drop_fn),
+                    ..
+                } = instr
+                {
+                    if drop_fn == "hew_string_drop" {
+                        n += 1;
+                    }
+                }
+            }
+        }
+    }
+    n
+}
+
+fn has_nyi(pl: &IrPipeline) -> bool {
+    pl.diagnostics
+        .iter()
+        .any(|d| matches!(&d.kind, MirDiagnosticKind::NotYetImplemented { .. }))
+}
+
+/// `hew_vec_get_str` must be the element fetch (proves the real retained-getter
+/// for-in path lowered, not a fake-green workaround).
+fn emits_vec_get_str(pl: &IrPipeline) -> bool {
+    emitted_runtime_symbols(pl)
+        .iter()
+        .any(|s| s == "hew_vec_get_str")
+}
+
+/// A BRANCHED body (`if/else`, both arms reading the binding by-value via string
+/// concat) lowers without an NYI and places exactly ONE `hew_string_drop` — at
+/// the post-body branch-join block reached once per iteration regardless of which
+/// arm ran. Concat is a borrowing read, so the retained element is still owned by
+/// the loop and released at the join. This is the demo `transform_body` shape the
+/// over-conservative single-post-body-drop analysis used to reject.
+#[test]
+fn vec_string_for_in_branched_body_drops_once_at_join() {
+    let pl = pipeline_with_tc(
+        r#"fn transform(lines: Vec<string>) -> string {
+            var out = "";
+            for line in lines {
+                if line.len() > 0 { out = out + "P:" + line; }
+                else { out = out + "."; }
+            }
+            out
+        }
+        fn main() {
+            let v: Vec<string> = Vec::new();
+            println(transform(v));
+        }"#,
+    );
+    assert!(!has_nyi(&pl), "branched body NYI: {:?}", pl.diagnostics);
+    assert!(
+        emits_vec_get_str(&pl),
+        "branched body must use the retained getter"
+    );
+    assert_eq!(
+        string_drop_count(&pl),
+        1,
+        "branched body must drop the retained element exactly once at the \
+         branch-join (both arms borrow `line` via concat, so a single \
+         post-body drop balances every fall-through path)",
+    );
+}
+
+/// A `continue` inside the body must free the current iteration's retained
+/// element on the continue edge AND on the fall-through edge — two distinct,
+/// mutually-exclusive CFG drop sites (the back-edge drop is a no-op via
+/// null-after-free on whichever path did not execute). Without the edge drop the
+/// continued iteration's element would leak; without the fall-through drop the
+/// non-continued iterations would leak.
+#[test]
+fn vec_string_for_in_continue_drops_on_edge_and_fallthrough() {
+    let pl = pipeline_with_tc(
+        r#"fn keep(lines: Vec<string>) -> string {
+            var out = "";
+            for line in lines {
+                if line.len() == 0 { continue; }
+                out = out + line;
+            }
+            out
+        }
+        fn main() {
+            let v: Vec<string> = Vec::new();
+            println(keep(v));
+        }"#,
+    );
+    assert!(!has_nyi(&pl), "continue body NYI: {:?}", pl.diagnostics);
+    assert!(emits_vec_get_str(&pl));
+    assert_eq!(
+        string_drop_count(&pl),
+        2,
+        "continue body must emit the continue-edge drop and the fall-through \
+         body-end drop (one per mutually-exclusive iteration-exit path)",
+    );
+}
+
+/// A `break` inside the body must free the current iteration's retained element
+/// on the break edge (before the loop-exit goto) AND on the fall-through edge.
+#[test]
+fn vec_string_for_in_break_drops_on_edge_and_fallthrough() {
+    let pl = pipeline_with_tc(
+        r#"fn until(lines: Vec<string>) -> string {
+            var out = "";
+            for line in lines {
+                if line == "STOP" { break; }
+                out = out + line;
+            }
+            out
+        }
+        fn main() {
+            let v: Vec<string> = Vec::new();
+            println(until(v));
+        }"#,
+    );
+    assert!(!has_nyi(&pl), "break body NYI: {:?}", pl.diagnostics);
+    assert!(emits_vec_get_str(&pl));
+    assert_eq!(
+        string_drop_count(&pl),
+        2,
+        "break body must emit the break-edge drop and the fall-through \
+         body-end drop (one per mutually-exclusive iteration-exit path)",
+    );
+}
+
+/// An empty-effect body (the binding is bound but never read) still lowers
+/// without an NYI and drops the retained element exactly once — the element is
+/// retained by the getter on every iteration, so it must be released even when
+/// unused. Regression for the already-passing unused-binding shape.
+#[test]
+fn vec_string_for_in_unused_binding_drops_once() {
+    let pl = pipeline_with_tc(
+        r#"fn count(lines: Vec<string>) -> i64 {
+            var n = 0;
+            for line in lines {
+                n = n + 1;
+            }
+            n
+        }
+        fn main() {
+            let v: Vec<string> = Vec::new();
+            println(f"{count(v)}");
+        }"#,
+    );
+    assert!(
+        !has_nyi(&pl),
+        "unused-binding body NYI: {:?}",
+        pl.diagnostics
+    );
+    assert!(emits_vec_get_str(&pl));
+    assert_eq!(
+        string_drop_count(&pl),
+        1,
+        "unused-binding body must still drop the retained element once \
+         (the getter retains on every iteration regardless of use)",
+    );
+}
+
+/// NEGATIVE / ownership-escape: a body that `return`s the binding genuinely
+/// moves the single retained reference to the caller. The body-end drop is
+/// SUPPRESSED on every path (leak-not-double-free), so NO `hew_string_drop` is
+/// emitted for the iteration binding — emitting one would over-release a
+/// reference the caller now owns. This proves the escape suppression fires
+/// rather than blindly dropping. (It does NOT trip an NYI — an escaping element
+/// is a legitimate program shape, matching the generator-yield posture.)
+#[test]
+fn vec_string_for_in_returned_binding_suppresses_drop() {
+    let pl = pipeline_with_tc(
+        r#"fn first_match(lines: Vec<string>, needle: string) -> string {
+            for line in lines {
+                if line == needle { return line; }
+            }
+            "none"
+        }
+        fn main() {
+            let v: Vec<string> = Vec::new();
+            println(first_match(v, "x"));
+        }"#,
+    );
+    assert!(
+        !has_nyi(&pl),
+        "an escaping (returned) element is a legitimate shape, not an NYI: {:?}",
+        pl.diagnostics,
+    );
+    assert!(emits_vec_get_str(&pl), "the getter still lowers");
+    assert_eq!(
+        string_drop_count(&pl),
+        0,
+        "the returned binding's single retained reference escapes to the caller; \
+         the body-end drop must be suppressed (leak-not-double-free), so no \
+         hew_string_drop is emitted for the iteration binding",
+    );
+}

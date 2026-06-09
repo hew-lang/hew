@@ -34,7 +34,10 @@
 #[cfg(test)]
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::{c_char, CString};
+// live on not(wasm32) — hew_wasm_register_actor_meta stub; dead here; caller lib.rs:84
+#[cfg(not(target_arch = "wasm32"))]
+use std::ffi::c_void;
 use std::io::Write;
 
 thread_local! {

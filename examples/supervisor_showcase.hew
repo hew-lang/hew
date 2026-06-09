@@ -9,7 +9,23 @@
 // - panic() for actor crash + automatic supervisor restart
 // - Children run init blocks on startup
 actor Counter {
-    let value: i32;
+
+    // ── Supervisor with one_for_one strategy ──
+    // If any child crashes, only that child restarts.
+
+    // ── Supervisor with one_for_all strategy ──
+    // If any child crashes, ALL children restart.
+
+    // ── Part 1: ServiceTree with one_for_one ──
+
+    // Get supervised children and send messages
+
+    // ── Part 2: Crash and restart ──
+
+    // After restart, the counter has fresh state (value=100 from init → 110)
+
+    // ── Part 3: StrictPool with one_for_all ──
+    let value: i32 = 100;
     init() {
         print("Counter started at ");
         println(value);
@@ -28,7 +44,7 @@ actor Counter {
 }
 
 actor Logger {
-    let level: i32;
+    let level: i32 = 1;
     init() {
         print("Logger level=");
         println(level);
@@ -40,38 +56,30 @@ actor Logger {
     }
 }
 
-// ── Supervisor with one_for_one strategy ──
-// If any child crashes, only that child restarts.
 supervisor ServiceTree {
     strategy: one_for_one;
     intensity: 5 within 60s;
 
-    child counter: Counter(value: 100);
-    child debug_log: Logger(level: 1);
-    child error_log: Logger(level: 3);
+    child counter: Counter;
+    child debug_log: Logger;
+    child error_log: Logger;
 }
 
-// ── Supervisor with one_for_all strategy ──
-// If any child crashes, ALL children restart.
 supervisor StrictPool {
     strategy: one_for_all;
     intensity: 3 within 30s;
 
-    child a: Counter(value: 0);
-    child b: Counter(value: 0);
+    child a: Counter;
+    child b: Counter;
 }
 
 fn main() {
     println("=== Supervisor Showcase ===");
     println("");
-
-    // ── Part 1: ServiceTree with one_for_one ──
     println("--- ServiceTree (one_for_one) ---");
     let svc = spawn ServiceTree;
     sleep_ms(50);
     println("");
-
-    // Get supervised children and send messages
     let c = svc.counter;
     c.tick();
     sleep_ms(10);
@@ -82,19 +90,13 @@ fn main() {
     elog.log();
     sleep_ms(50);
     println("");
-
-    // ── Part 2: Crash and restart ──
     println("--- Crash and Restart ---");
     c.crash_me();
     sleep_ms(200);
-
-    // After restart, the counter has fresh state (value=100 from init → 110)
     let c2 = svc.counter;
     c2.tick();
     sleep_ms(50);
     println("");
-
-    // ── Part 3: StrictPool with one_for_all ──
     println("--- StrictPool (one_for_all) ---");
     let sup = spawn StrictPool;
     sleep_ms(50);

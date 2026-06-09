@@ -1978,60 +1978,105 @@ pub unsafe extern "C" fn hew_stream_take(stream: *mut HewStream, n: i64) -> *mut
 
 /// Read the next item from a stream and return it as a `bytes` value.
 ///
-/// Returns a `*mut HewVec` (i32-element vec, one byte per slot) on success —
-/// including for zero-length items — or **null** on EOF.  The caller owns the
-/// returned vec and must eventually free it.
+/// Returns the canonical by-value [`crate::bytes::BytesTriple`] codegen
+/// materialises for a `bytes`-typed return. On a present item the triple OWNS
+/// a freshly allocated, refcount-1 buffer (mirroring `hew_bytes_from_static`);
+/// on EOF an empty triple (`null` ptr, len 0) is returned. The recv→`Option`
+/// codegen treats a null-ptr triple as `None` and a non-null triple as
+/// `Some(bytes)`.
+///
+/// EOF/empty-item NARROWING (shim): a present zero-length item collapses to the
+/// same empty (`null`/0) triple as EOF, so the recv codegen maps it to `None`.
+/// WHY: `BytesTriple` has no spare field to carry an out-of-band "present but
+/// empty" flag, and the recv→`Option` discriminator is "ptr is null". WHEN
+/// OBSOLETE: when stream recv gains a dedicated EOF out-param (matching
+/// `GeneratorNext`'s `out_size`) so present-empty and EOF are distinguishable.
+/// WHAT: until then, callers that must distinguish a deliberately-empty item
+/// from EOF should frame a length prefix. The previous Vec-backed path
+/// preserved the distinction; this is a deliberate, documented narrowing
+/// scoped to the `bytes` ABI migration.
 ///
 /// # Safety
 ///
 /// `stream` must be a valid stream pointer.
 #[no_mangle]
-pub unsafe extern "C" fn hew_stream_next_bytes(stream: *mut HewStream) -> *mut HewVec {
+pub unsafe extern "C" fn hew_stream_next_bytes(
+    stream: *mut HewStream,
+) -> crate::bytes::BytesTriple {
+    let eof = crate::bytes::BytesTriple {
+        ptr: std::ptr::null_mut(),
+        offset: 0,
+        len: 0,
+    };
     if stream.is_null() {
-        return std::ptr::null_mut();
+        return eof;
     }
     let mut size: usize = 0;
     // SAFETY: stream is valid per caller contract; size is a valid local.
     let raw_ptr = unsafe { hew_stream_next_sized(stream, std::ptr::addr_of_mut!(size)) };
     if raw_ptr.is_null() {
-        return std::ptr::null_mut(); // EOF
+        return eof; // EOF
     }
-    // SAFETY: raw_ptr is valid for `size` bytes (from hew_stream_next_sized contract).
-    let raw = unsafe { std::slice::from_raw_parts(raw_ptr.cast::<u8>(), size) };
-    // SAFETY: u8_to_hwvec allocates a new HewVec; raw slice is valid.
-    let vec = unsafe { hew_cabi::vec::u8_to_hwvec(raw) };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "stream item lengths are bounded by available memory; the bytes ABI carries u32 lengths"
+    )]
+    let len = size as u32;
+    // SAFETY: raw_ptr is valid for `size` bytes; `hew_bytes_from_static` copies
+    // them into a fresh refcount-1 buffer the caller owns. A zero-length item
+    // yields the empty triple (collapsing to None per the narrowing above).
+    let triple = unsafe { crate::bytes::hew_bytes_from_static(raw_ptr.cast::<u8>(), len) };
     // SAFETY: raw_ptr was allocated by libc::malloc inside hew_stream_next_sized.
     unsafe { libc::free(raw_ptr) }; // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (hew_stream_next_sized raw byte buffer)
-    vec
+    triple
 }
 
 /// Write a `bytes` value to a sink.
 ///
-/// Extracts the raw byte content from the `HewVec` and writes it as a single
-/// stream item.  Zero-length writes are forwarded — they are valid data, not
-/// no-ops.  Does nothing only if `sink` or `data` is null.
+/// Takes a POINTER to the caller's [`crate::bytes::BytesTriple`] and writes the
+/// active region `data.ptr[data.offset .. data.offset + data.len]` as a single
+/// stream item. Zero-length writes are forwarded — they are valid data, not
+/// no-ops. Does nothing only if `sink` or `data` is null. The buffer is
+/// BORROWED — ownership stays with the caller, whose drop spine releases it via
+/// `hew_bytes_drop`.
+///
+/// By-pointer (not by-value): a 16-byte triple passed by value as a non-first
+/// argument loses its offset/len eightbyte at the current codegen C-ABI
+/// boundary; passing the address is ABI-portable (mirrors `hew_bytes_push`).
+/// Codegen passes the triple alloca's address for the `data: bytes` parameter
+/// (`is_bytes_by_pointer_consumer`).
 ///
 /// # Safety
 ///
-/// `sink` must be a valid sink pointer.  `data` must be a valid `HewVec`
-/// pointer (or null).
+/// `sink` must be a valid sink pointer. `data` must point to a valid
+/// `BytesTriple` (either its `ptr` null with `len == 0`, or `ptr` pointing to a
+/// `hew_bytes_*` allocation whose active region `[offset, offset + len)` is in
+/// bounds).
 #[no_mangle]
-pub unsafe extern "C" fn hew_sink_write_bytes(sink: *mut HewSink, data: *mut HewVec) {
+pub unsafe extern "C" fn hew_sink_write_bytes(
+    sink: *mut HewSink,
+    data: *const crate::bytes::BytesTriple,
+) {
     if sink.is_null() || data.is_null() {
         return;
     }
-    // SAFETY: data is a valid HewVec per caller contract.
-    let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(data) };
-    if bytes.is_empty() {
-        // hew_sink_write short-circuits on size=0, but empty bytes are valid
-        // data items that must be delivered.  Write directly to the backing.
+    // SAFETY: `data` points to the caller's valid BytesTriple slot.
+    let data = unsafe { &*data };
+    if data.len == 0 || data.ptr.is_null() {
+        // hew_sink_write short-circuits on size=0, but an empty item is valid
+        // data that must be delivered.  Write directly to the backing.
         // SAFETY: sink is valid per caller contract.
         unsafe { (*sink).write_item(&[]) };
-    } else {
-        // SAFETY: sink is valid; bytes slice is valid for its length.
-        unsafe {
-            hew_sink_write(sink, bytes.as_ptr().cast::<c_void>(), bytes.len());
-        }
+        return;
+    }
+    // SAFETY: `data.ptr + data.offset` is valid for `data.len` bytes per the
+    // BytesTriple contract; read-only borrow (no mutation, no free).
+    let bytes = unsafe {
+        std::slice::from_raw_parts(data.ptr.add(data.offset as usize), data.len as usize)
+    };
+    // SAFETY: sink is valid; bytes slice is valid for its length.
+    unsafe {
+        hew_sink_write(sink, bytes.as_ptr().cast::<c_void>(), bytes.len());
     }
 }
 
@@ -2121,9 +2166,14 @@ pub unsafe extern "C" fn hew_stream_try_next(stream: *mut HewStream) -> *mut c_v
 
 /// Non-blocking variant of [`hew_stream_next_bytes`].
 ///
-/// Returns a `*mut HewVec` if an item is immediately available, or **null**
-/// if the stream is empty or at EOF without blocking. The caller owns the
-/// returned `HewVec` and must free it.
+/// Returns the canonical by-value [`crate::bytes::BytesTriple`] if an item is
+/// immediately available (owning a fresh refcount-1 buffer), or an empty triple
+/// (`null` ptr, len 0) if the stream is empty or at EOF without blocking. The
+/// caller owns a present triple; the Hew drop spine releases it via
+/// `hew_bytes_drop`.
+///
+/// The same EOF/empty-item narrowing as [`hew_stream_next_bytes`] applies: a
+/// present zero-length item is indistinguishable from "no item ready".
 ///
 /// # Safety
 ///
@@ -2135,18 +2185,22 @@ pub unsafe extern "C" fn hew_stream_try_next(stream: *mut HewStream) -> *mut c_v
 /// No other thread may concurrently read from `stream` during this call.
 ///
 /// ## Lifetime
-/// The returned `HewVec` is caller-owned and must be freed exactly once.
+/// A present triple is caller-owned and must be dropped exactly once.
 ///
-/// ## Null return
-/// Null indicates "no item ready" — not a permanent EOF. The stream may
-/// yield items on a future call.
-///
-/// ## Caller responsibility
-/// Free the returned `HewVec` with the appropriate hew-runtime free function.
+/// ## Empty-triple return
+/// An empty triple indicates "no item ready" — not a permanent EOF. The stream
+/// may yield items on a future call.
 #[no_mangle]
-pub unsafe extern "C" fn hew_stream_try_next_bytes(stream: *mut HewStream) -> *mut HewVec {
+pub unsafe extern "C" fn hew_stream_try_next_bytes(
+    stream: *mut HewStream,
+) -> crate::bytes::BytesTriple {
+    let empty = crate::bytes::BytesTriple {
+        ptr: std::ptr::null_mut(),
+        offset: 0,
+        len: 0,
+    };
     if stream.is_null() {
-        return std::ptr::null_mut();
+        return empty;
     }
     // SAFETY:
     //   Provenance: `stream` came from a `hew_stream_*` constructor; non-null by guard above.
@@ -2157,16 +2211,16 @@ pub unsafe extern "C" fn hew_stream_try_next_bytes(stream: *mut HewStream) -> *m
     //   Failure mode: violations are UAF / data race; documented at fn level.
     let s = unsafe { &mut *stream };
     match s.inner.try_next() {
-        None => std::ptr::null_mut(),
+        None => empty,
         Some(item) => {
-            // SAFETY:
-            //   Provenance: `item` is an owned `Vec<u8>` returned from try_next; alive for this arm.
-            //   Type tag: u8 byte slice → HewVec (the canonical bytes carrier).
-            //   Lifetime owner: u8_to_hwvec allocates a fresh HewVec; caller will free it.
-            //   Aliasing: item is moved into the call; no concurrent reader.
-            //   Bounds: u8_to_hwvec copies all bytes; no out-of-range access.
-            //   Failure mode: OOM in u8_to_hwvec returns NULL HewVec; caller-visible.
-            unsafe { hew_cabi::vec::u8_to_hwvec(&item) }
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "stream item lengths are bounded by memory; the bytes ABI carries u32 lengths"
+            )]
+            let len = item.len() as u32;
+            // SAFETY: `item` is a live `Vec<u8>` for this arm; `hew_bytes_from_static`
+            // copies its bytes into a fresh refcount-1 buffer the caller owns.
+            unsafe { crate::bytes::hew_bytes_from_static(item.as_ptr(), len) }
         }
     }
 }
@@ -2239,39 +2293,48 @@ pub unsafe extern "C" fn hew_sink_try_write_string(sink: *mut HewSink, data: *co
 ///
 /// Returns `1` (`SendError::Closed`) if `sink` or `data` is null.
 ///
+/// Takes a POINTER to the caller's [`crate::bytes::BytesTriple`]; the active
+/// region is BORROWED for the duration of the call and the caller retains
+/// ownership (the Hew drop spine releases it via `hew_bytes_drop`). By-pointer
+/// (not by-value) for the same ABI reason as [`hew_sink_write_bytes`]
+/// (`is_bytes_by_pointer_consumer`).
+///
 /// # Safety
 ///
 /// ## Pointer validity
 /// `sink` must be a non-null pointer obtained from a `hew_stream_*` or
 /// `hew_sink_*` constructor and must not have been freed.
-/// `data` must be a non-null `HewVec` pointer.
+/// `data` must point to a valid `BytesTriple` (its ptr null with len 0, or ptr
+/// pointing to a `hew_bytes_*` allocation whose active region is in bounds).
 ///
 /// ## Aliasing
 /// No other thread may concurrently write to `sink` during this call.
 ///
 /// ## Lifetime
-/// `data` must remain valid for the duration of this call; the runtime
-/// copies the bytes before returning.
+/// `data`'s buffer must remain valid for the duration of this call; the
+/// runtime copies the bytes before returning.
 ///
 /// ## Return value
-/// `0` = item accepted; `1` = null argument (closed); `2` = channel full.
-///
-/// ## Caller responsibility
-/// The caller retains ownership of `data`; the runtime copies the bytes.
+/// `0` = item accepted; `1` = null sink/data (closed); `2` = channel full.
 #[no_mangle]
-pub unsafe extern "C" fn hew_sink_try_write_bytes(sink: *mut HewSink, data: *mut HewVec) -> i32 {
+pub unsafe extern "C" fn hew_sink_try_write_bytes(
+    sink: *mut HewSink,
+    data: *const crate::bytes::BytesTriple,
+) -> i32 {
     // SendError::Closed = 1
     if sink.is_null() || data.is_null() {
         return 1;
     }
-    // SAFETY:
-    //   Provenance: `data` is a `*mut HewVec` from a `hew_*` constructor; non-null by guard.
-    //   Type tag: HewVec layout known; hwvec_to_u8 reads the canonical len/ptr fields.
-    //   Lifetime owner: caller retains `data`; hwvec_to_u8 returns a borrowed view (slice).
-    //   Aliasing/concurrency: read-only borrow of `data`'s buffer; safe under caller's no-concurrent-modify contract.
-    //   Bounds: hwvec_to_u8 honours the HewVec's len field; no out-of-range read.
-    //   Failure mode: violation of provenance is UAF; documented at fn level.
-    let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(data) };
+    // SAFETY: `data` points to the caller's valid BytesTriple slot.
+    let data = unsafe { &*data };
+    // Borrow the active region (empty for a null/0 triple).
+    let bytes: &[u8] = if data.len == 0 || data.ptr.is_null() {
+        &[]
+    } else {
+        // SAFETY: `data.ptr + data.offset` is valid for `data.len` bytes per
+        // the BytesTriple contract; read-only borrow (no mutation, no free).
+        unsafe { std::slice::from_raw_parts(data.ptr.add(data.offset as usize), data.len as usize) }
+    };
     // SAFETY:
     //   Provenance: `sink` came from a `hew_*_sink_*` constructor; non-null by guard above.
     //   Type tag: cast to `*mut HewSink` matches declared type.
@@ -2279,7 +2342,7 @@ pub unsafe extern "C" fn hew_sink_try_write_bytes(sink: *mut HewSink, data: *mut
     //   Aliasing/concurrency: caller contract bans concurrent writes; backing's try_write is internally synchronised.
     //   Bounds: method dispatch with the bytes slice borrowed above.
     //   Failure mode: violations are UAF / data race. Non-channel sinks fall back to blocking write.
-    let accepted = unsafe { (*sink).try_write_item(&bytes) };
+    let accepted = unsafe { (*sink).try_write_item(bytes) };
     if accepted {
         0
     } else {

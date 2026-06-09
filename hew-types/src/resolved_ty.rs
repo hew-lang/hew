@@ -3,7 +3,7 @@
 //! `ResolvedTy` is the concrete, fully-resolved form of a type after the
 //! checker has finished inference, defaulted numeric literals, and rejected
 //! any leaked inference or error nodes. It is the wire-level form that
-//! crosses from `hew-types` into `hew-serialize`, `hew-codegen`, and
+//! crosses from `hew-types` into `hew-mir`, `hew-codegen-rs`, and
 //! `hew-lsp` — none of those downstream consumers should ever observe
 //! `Ty::Var`, `Ty::Error`, `Ty::IntLiteral`, or `Ty::FloatLiteral`.
 //!

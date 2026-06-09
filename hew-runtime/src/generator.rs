@@ -77,6 +77,16 @@ pub struct HewGenCtx {
     handle: Option<thread::JoinHandle<()>>,
     /// Set to `true` once the done sentinel has been received.
     done: AtomicBool,
+    /// Defence-in-depth idempotency guard for [`hew_gen_free`] (Defect 3).
+    /// `hew_gen_free` swaps this to `true` before touching any other field; if
+    /// it was already `true` the call is a no-op (the context was already
+    /// cancelled/joined/freed). With the MIR drop-spine fixes (Defects 1+2) the
+    /// context frees exactly once, so this flag never fires in correct programs;
+    /// it exists so that a FUTURE drop-edge miss degrades to a benign LEAK
+    /// rather than heap corruption (a double `Box::from_raw`). It lives in the
+    /// allocation, so the swap-and-check MUST happen before the `Box::from_raw`
+    /// that deallocates it.
+    released: AtomicBool,
     /// Borrowed reference (ref-counted) to the enclosing
     /// `HewExecutionContext::cancel_token` of the consumer thread at the
     /// moment of generator creation. May be null when no execution context
@@ -157,6 +167,7 @@ pub unsafe extern "C" fn hew_gen_ctx_create(
         resume_rx,
         handle: None,
         done: AtomicBool::new(false),
+        released: AtomicBool::new(false),
         // Capture the consumer thread's enclosing cancel token (if any) so
         // the generator body's cancel-observation seam can reach the
         // parent scope's token through `hew_gen_ctx_parent_cancel_token`.
@@ -416,6 +427,19 @@ pub unsafe extern "C" fn hew_gen_free(ctx: *mut HewGenCtx) {
 
     // SAFETY: ctx was Box-allocated and is exclusively owned by caller.
     unsafe {
+        // Defect 3 — idempotency guard. Swap the `released` flag to `true`
+        // BEFORE touching any other field; if it was already `true` the context
+        // has already been cancelled/joined/freed, so a second `hew_gen_free` is
+        // a no-op. This MUST precede the `Box::from_raw` below (which frees the
+        // allocation the flag lives in). The flag never fires in correct
+        // programs — the MIR drop spine (Defects 1+2) frees the context exactly
+        // once — but with it a future drop-edge miss degrades to a benign LEAK
+        // instead of a double `Box::from_raw` heap corruption. `AcqRel` so the
+        // winning thread's prior writes are visible and a loser observes them.
+        if (*ctx).released.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
         // Signal cancel — ignore errors (thread may have already exited).
         let _ = (*ctx).resume_tx.send(false);
 
@@ -590,6 +614,59 @@ mod tests {
         // SAFETY: null is a documented no-op.
         unsafe {
             hew_gen_free(ptr::null_mut());
+        }
+    }
+
+    // ── Defect 3: idempotent free ──────────────────────────────────────
+
+    #[test]
+    fn gen_free_is_idempotent_via_released_flag() {
+        // Defect 3 (defence-in-depth): `hew_gen_free` swaps the `released` flag
+        // to `true` before any teardown, so a second call is a no-op. With the
+        // MIR drop-spine fixes (Defects 1+2) the context frees exactly once;
+        // this proves the runtime backstop so a FUTURE drop-edge miss degrades
+        // to a benign LEAK rather than a double `Box::from_raw`.
+        //
+        // Reading `released` after the real `hew_gen_free` would be a
+        // use-after-free (it deallocates the box), so this test exercises the
+        // swap-guard semantics in isolation on a ctx we KEEP alive: pre-set
+        // `released = true` and assert `hew_gen_free` early-returns WITHOUT
+        // joining the thread or freeing the box (the thread + box are then
+        // reclaimed by a manual teardown that clears the flag).
+        //
+        // SAFETY: ctx is a live box from hew_gen_ctx_create; we never let
+        // hew_gen_free deallocate it while we still observe it.
+        unsafe {
+            let mut count: u32 = 3;
+            let ctx = hew_gen_ctx_create(
+                yielding_body,
+                (&raw mut count).cast::<c_void>(),
+                std::mem::size_of::<u32>(),
+            );
+
+            // Simulate "already released": the swap returns the prior value.
+            let prior = (*ctx).released.swap(true, Ordering::AcqRel);
+            assert!(!prior, "a fresh ctx must start un-released");
+
+            // The thread handle must still be present (no teardown happened).
+            assert!(
+                (*ctx).handle.is_some(),
+                "pre-teardown ctx must still own its join handle"
+            );
+
+            // hew_gen_free now observes released == true and is a no-op: it
+            // must NOT take the join handle nor free the box.
+            hew_gen_free(ctx);
+            assert!(
+                (*ctx).handle.is_some(),
+                "second free (released already true) must be a no-op: the join \
+                 handle must be untouched and the box must not be freed"
+            );
+
+            // Manual teardown: clear the flag and free for real so the thread
+            // joins and the box is reclaimed (no leak from this test).
+            (*ctx).released.store(false, Ordering::Release);
+            hew_gen_free(ctx);
         }
     }
 

@@ -6,6 +6,6 @@
 // `hew compile` exits non-zero without producing a binary. The
 // diagnostic payload carries the binding name and the use site.
 fn main() {
-    let x;
+    let x: i64;
     let _y = x;
 }

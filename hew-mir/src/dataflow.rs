@@ -316,6 +316,7 @@ fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
             }
             Terminator::Call { next, .. }
             | Terminator::Yield { next, .. }
+            | Terminator::MakeGenerator { next, .. }
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
@@ -336,6 +337,7 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
         } => vec![*then_target, *else_target],
         Terminator::Call { next, .. }
         | Terminator::Yield { next, .. }
+        | Terminator::MakeGenerator { next, .. }
         | Terminator::Send { next, .. }
         | Terminator::Ask { next, .. }
         | Terminator::RemoteAsk { next, .. }
@@ -482,6 +484,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         | Instr::FloatDiv { dest, lhs, rhs, .. }
         | Instr::FloatRem { dest, lhs, rhs, .. } => (vec![*lhs, *rhs], vec![*dest]),
         Instr::CancellationTokenIsCancelled { dest, token } => (vec![*token], vec![*dest]),
+        Instr::GeneratorNext { dest, ctx, .. } => (vec![*ctx], vec![*dest]),
         Instr::BoolNot { dest, operand }
         | Instr::FloatNeg { dest, operand, .. }
         | Instr::IntBitNot { dest, operand } => (vec![*operand], vec![*dest]),

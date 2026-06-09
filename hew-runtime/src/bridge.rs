@@ -176,6 +176,8 @@ struct HandlerMetaEntry {
     return_size: u32,
 }
 
+// live on wasm32 + test; dead on native non-test; caller tracing.rs:854 (cfg(any(wasm32,test)))
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
 #[derive(Clone)]
 struct ActorTraceAttribution {
     actor_type_id: u64,
@@ -243,6 +245,8 @@ pub(crate) fn register_bridge_reset_hook() {
 /// NOTE: last-registered wins on `msg_type` collision across actor types.
 /// This is a pre-existing ambiguity in the AOT model — see the `handler_names`
 /// field documentation on [`MetaState`] for details.
+// live on wasm32 + test; dead on native non-test; caller tracing.rs:857 (cfg(any(wasm32,test)))
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
 pub(crate) fn resolve_handler_name(msg_type: i32) -> Option<String> {
     meta_state().handler_names.get(&msg_type).cloned()
 }
@@ -271,6 +275,8 @@ fn wasm_actor_type_id(actor_name: &str) -> u64 {
 ///
 /// NOTE: last-registered wins on flat `msg_type` collisions, matching
 /// [`resolve_handler_name`] and the current AOT bridge model.
+// live on wasm32 + test; dead on native non-test; caller tracing.rs:856 (cfg(any(wasm32,test)))
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
 pub(crate) fn resolve_actor_trace_attribution(
     msg_type: i32,
 ) -> Option<(u64, String, Option<String>)> {

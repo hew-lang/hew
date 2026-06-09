@@ -122,6 +122,7 @@ stable = [
   "hew_bytes_from_static",
   "hew_bytes_from_str",
   "hew_bytes_index",
+  "hew_bytes_len",
   "hew_bytes_new",
   "hew_bytes_push",
   "hew_bytes_slice",

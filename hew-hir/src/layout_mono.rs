@@ -65,7 +65,7 @@ use crate::monomorph::{
 };
 use crate::node::{
     HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirSelectArmKind, HirStmt, HirStmtKind,
-    HirVariant,
+    HirVariant, HirVariantKind,
 };
 
 /// A generic record declaration's structural shape, indexed by name.
@@ -138,6 +138,10 @@ struct Discovery<'a> {
 /// already produced during lowering; they seed the dedup set so this pass
 /// never re-emits an entry the concrete-site path already produced.
 #[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "single layout-mono discovery pass — mirrors walk_expr in complexity; splitting would need shared Discovery state across fns"
+)]
 pub fn run_layout_mono_pass(
     items: &[HirItem],
     monomorphisations: &[MonomorphizedFn],
@@ -224,6 +228,87 @@ pub fn run_layout_mono_pass(
             | HirItem::Supervisor(_)
             | HirItem::ExternFn(_)
             | HirItem::Const(_) => {}
+        }
+    }
+
+    // Seed the generic builtin enums (`Option<T>` and `Result<T, E>`) into
+    // `enum_decls` so `visit_ty` can register concrete instantiations when
+    // it encounters them in monomorphic function bodies.
+    //
+    // These are NOT emitted as `HirItem::TypeDecl` items (they are seeded
+    // directly into context by `lower.rs::builtin_enum_specs`), so the
+    // item-loop above never adds them.  Without this seeding,
+    // `visit_ty(Result<Listener, IoError>)` silently drops the registration
+    // because `enum_decls.get("Result")` returns `None`.
+    //
+    // Sentinel `ItemId` values mirror `SYNTHETIC_RESULT_ITEM` /
+    // `SYNTHETIC_OPTION_ITEM` in `lower.rs` (which are `u32::MAX - 2` /
+    // `u32::MAX - 1`).  The `id` appears only in the dedup `seen_enums`
+    // key; duplicate entries are harmless (both `predeclare_named_layouts`
+    // and `register_enum_layouts` are idempotent for same-name entries).
+    let ty_t = ResolvedTy::Named {
+        name: "T".to_string(),
+        args: vec![],
+        builtin: None,
+    };
+    let ty_e = ResolvedTy::Named {
+        name: "E".to_string(),
+        args: vec![],
+        builtin: None,
+    };
+    for (type_name, type_params, variants) in [
+        (
+            "Option",
+            vec!["T".to_string()],
+            vec![
+                HirVariant {
+                    name: "Some".to_string(),
+                    kind: HirVariantKind::Tuple(vec![ty_t.clone()]),
+                },
+                HirVariant {
+                    name: "None".to_string(),
+                    kind: HirVariantKind::Unit,
+                },
+            ],
+        ),
+        (
+            "Result",
+            vec!["T".to_string(), "E".to_string()],
+            vec![
+                HirVariant {
+                    name: "Ok".to_string(),
+                    kind: HirVariantKind::Tuple(vec![ty_t.clone()]),
+                },
+                HirVariant {
+                    name: "Err".to_string(),
+                    kind: HirVariantKind::Tuple(vec![ty_e.clone()]),
+                },
+            ],
+        ),
+    ] {
+        // Only seed if not already present (a user-declared enum named
+        // "Option" or "Result" would shadow the builtin; honour that).
+        enum_decls.entry(type_name.to_string()).or_insert_with(|| {
+            // Sentinel ItemId: u32::MAX - 1 for Option, u32::MAX - 2 for
+            // Result.  These match the constants in lower.rs and let the
+            // dedup `seen_enums` set coalesce with origin-site registrations.
+            let id_val: u32 = if type_name == "Option" {
+                u32::MAX - 1
+            } else {
+                u32::MAX - 2
+            };
+            EnumDecl {
+                id: ItemId(id_val),
+                type_params,
+                variants,
+            }
+        });
+        // Register the type-param names in the program-wide abstract domain
+        // so `classify_args` correctly skips bare-param references like
+        // `Result<T, E>` (from a generic function's signature) rather than
+        // treating them as concrete instantiation sites.
+        for p in enum_decls[type_name].type_params.clone() {
+            all_type_params.insert(p);
         }
     }
 
@@ -514,6 +599,7 @@ fn walk_expr(
             walk_expr(event, subst, residual_domain, disc);
         }
         HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. } => {
             walk_expr(receiver, subst, residual_domain, disc);
         }

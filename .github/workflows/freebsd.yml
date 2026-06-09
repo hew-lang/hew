@@ -99,7 +99,7 @@ jobs:
             cargo build -p hew-runtime
 
             # Build frontend and tools (release)
-            cargo build -p hew-cli -p hew-serialize --release
+            cargo build -p hew-cli --release
 
             # Build frontend (debug — needed by some tests)
             cargo build -p hew-cli

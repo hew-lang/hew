@@ -79,6 +79,8 @@ pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
 }
 
 /// Remove and return the actor tracked under `actor_id` if it still matches `expected`.
+// live on not(wasm32) — drain_quiesced_actor; dead on wasm32; caller actor.rs:2716
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn take_actor_by_id(actor_id: u64, expected: *mut HewActor) -> Option<*mut HewActor> {
     LIVE_ACTORS.access(|map| {
         let tracked = map.as_mut()?.remove(&actor_id)?;
@@ -121,6 +123,8 @@ pub(crate) fn with_live_actor<R>(
 ///
 /// Returns `Some(f(..))` if `actor_id` maps to `expected`; `None` otherwise.
 /// The `LIVE_ACTORS` lock is held across `f`.
+// live on not(wasm32) — monitor.rs + link.rs; dead on wasm32; callers monitor.rs:98, link.rs:201
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn with_live_actor_by_id<R>(
     actor_id: u64,
     expected: *mut HewActor,
@@ -152,6 +156,8 @@ pub(crate) fn with_live_actor_by_id<R>(
 /// avoid serialising mailbox sends under a single registry mutex. When sharded
 /// `LIVE_ACTORS` lands (see module-level doc), this can be replaced with a
 /// handle-per-shard approach.
+// live on not(wasm32) — hew_actor_send_by_id / hew_actor_ask_by_id / hew_node; dead on wasm32
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
     LIVE_ACTORS.access(|map| {
         map.as_ref()

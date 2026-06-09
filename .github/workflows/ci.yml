@@ -219,7 +219,7 @@ jobs:
 
       - name: Build Rust runtime and frontend (release)
         if: env.RUN_CODE_PATH == 'true'
-        run: cargo build -p hew-runtime -p hew-serialize -p hew-lsp --release
+        run: cargo build -p hew-runtime -p hew-lsp --release
 
       - name: Smoke test hew-lsp
         if: env.RUN_CODE_PATH == 'true'
@@ -505,7 +505,7 @@ jobs:
 
       - name: Build frontend (release)
         if: env.RUN_CODE_PATH == 'true'
-        run: cargo build -p hew-serialize -p hew-cli --release
+        run: cargo build -p hew-cli --release
 
       - name: Install WASI runner prerequisites
         if: env.RUN_CODE_PATH == 'true'

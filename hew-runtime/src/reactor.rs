@@ -52,7 +52,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 
-use crate::actor::{hew_actor_try_send, HewActor};
+use crate::actor::{hew_actor_send_guaranteed, hew_actor_try_send, HewActor};
 use crate::bytes::{hew_bytes_from_static, BytesTriple};
 use crate::io_time::{
     hew_io_poller_new, hew_io_poller_poll_ready, hew_io_poller_register, hew_io_poller_stop,
@@ -528,10 +528,20 @@ fn deliver_close_once(
     already_closed: bool,
 ) {
     if !already_closed && !actor_local.is_null() {
+        // The terminal close event is GUARANTEED-DELIVERED: it must reach the
+        // actor even when the mailbox is full under data backpressure, or the
+        // actor never runs teardown and the connection leaks forever. A plain
+        // `hew_actor_try_send` drops on a full mailbox; `hew_actor_send_guaranteed`
+        // appends past the bounded-capacity policy (FIFO-after buffered on_data,
+        // never the priority system queue) without ever blocking — so the single
+        // reactor thread is not stalled and cannot deadlock with the synchronous
+        // `reactor_detach_actor` spin-wait on `DELIVERING_ACTOR`. The Dekker
+        // in-flight guard published by `handle_ready_fd` still bounds this send:
+        // it is a bounded enqueue + atomic wake, so the guard clears promptly.
         // SAFETY: actor_local is a live local actor pointer (liveness checked
         // by the caller); on_close carries no payload.
         unsafe {
-            hew_actor_try_send(actor_local, on_close_type, std::ptr::null_mut(), 0);
+            hew_actor_send_guaranteed(actor_local, on_close_type, std::ptr::null_mut(), 0);
         }
     }
     // Mark closed (in case the remove is deferred) then unregister.
@@ -873,6 +883,22 @@ pub(crate) fn inject_registration_for_test(
 #[cfg(test)]
 pub(crate) fn handle_ready_fd_for_test(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     handle_ready_fd(poller, fd, events);
+}
+
+/// Drive `deliver_close_once` against a given poller/fd/actor (test-only) so the
+/// terminal-close delivery can be exercised against a real (live) actor mailbox
+/// without standing up a TCP socket + scheduler. The fd need not be registered;
+/// `deliver_close_once` tolerates a missing registry entry (it only marks
+/// `closed` if present) and still unregisters the fd from the poller.
+#[cfg(test)]
+pub(crate) fn deliver_close_once_for_test(
+    poller: *mut HewIoPoller,
+    fd: c_int,
+    actor_local: *mut HewActor,
+    on_close_type: i32,
+    already_closed: bool,
+) {
+    deliver_close_once(poller, fd, actor_local, on_close_type, already_closed);
 }
 
 /// Publish the in-flight-delivery guard for a given actor key (test-only),
@@ -1651,6 +1677,238 @@ mod tests {
             );
         }
 
+        reset_reactor();
+    }
+
+    // ---- terminal close is non-droppable under mailbox backpressure --------
+    //
+    // The active-mode reactor's one-shot `on_close` MUST reach the actor even
+    // when the mailbox is full under data backpressure. Before the fix
+    // `deliver_close_once` used the non-blocking `hew_actor_try_send`, which
+    // silently dropped the close on a full mailbox — the actor then never ran
+    // teardown and the connection leaked forever. These tests force the bug
+    // ordering (mailbox filled to capacity BEFORE close fires) against a real,
+    // live actor and assert the close is delivered exactly once, FIFO-after the
+    // buffered data.
+
+    /// Spawn a live local actor with a capacity-1 `Fail`-policy mailbox so a
+    /// second `try_send` is hard-rejected — the exact policy under which the old
+    /// reactor dropped the close. Returns the actor pointer (free with
+    /// `hew_actor_free`).
+    fn spawn_full_reject_actor() -> *mut HewActor {
+        // No-op dispatch: the scheduler is not running in this unit test, so the
+        // actor stays Idle and we inspect its mailbox directly.
+        unsafe extern "C-unwind" fn noop_dispatch(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
+            _state: *mut c_void,
+            _msg_type: i32,
+            _data: *mut c_void,
+            _size: usize,
+            _borrow_mode: i32,
+        ) {
+        }
+        let opts = crate::actor::HewActorOpts {
+            init_state: std::ptr::null_mut(),
+            state_size: 0,
+            dispatch: Some(noop_dispatch),
+            mailbox_capacity: 1,
+            overflow: crate::internal::types::HewOverflowPolicy::Fail as i32,
+            coalesce_key_fn: None,
+            coalesce_fallback: 0,
+            budget: 0,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+        };
+        // SAFETY: opts is a fully-initialised local; spawn copies what it needs.
+        let actor = unsafe { crate::actor::hew_actor_spawn_opts(&raw const opts) };
+        assert!(!actor.is_null(), "actor spawn must succeed");
+        // Park the actor in Running so the wake-path CAS (Idle → Runnable) fails
+        // and never calls `sched_enqueue` — there is no scheduler in this unit
+        // test. The mailbox enqueue (the behaviour under test) is unaffected; we
+        // inspect the mailbox queue directly rather than via dispatch.
+        // SAFETY: spawn returned a non-null, live actor we own exclusively.
+        unsafe {
+            (*actor).actor_state.store(
+                crate::internal::types::HewActorState::Running as i32,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+        }
+        actor
+    }
+
+    /// Free an actor that was parked in `Running` by `spawn_full_reject_actor`:
+    /// drop it back to a quiescent state first so `hew_actor_free`'s wait-for-
+    /// quiescence loop does not time out.
+    fn free_parked_actor(actor: *mut HewActor) {
+        // SAFETY: `actor` is the live, test-owned actor from `spawn_full_reject_actor`;
+        // we drop it to a quiescent state and free it exactly once.
+        unsafe {
+            (*actor).actor_state.store(
+                crate::internal::types::HewActorState::Stopped as i32,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            crate::actor::hew_actor_free(actor);
+        }
+    }
+
+    /// Recv one message from a test-owned mailbox.
+    /// SAFETY wrapper: the test is the sole consumer of `mb`.
+    fn recv_one(mb: *mut crate::mailbox::HewMailbox) -> *mut crate::mailbox::HewMsgNode {
+        // SAFETY: `mb` is the live mailbox of a test-owned actor; the test is the
+        // single consumer (single-consumer invariant upheld).
+        unsafe { crate::mailbox::hew_mailbox_try_recv(mb) }
+    }
+
+    /// Read a node's `msg_type` and free it.
+    /// SAFETY wrapper: `node` came from `recv_one` and is owned here.
+    fn drain_msg_type(node: *mut crate::mailbox::HewMsgNode) -> i32 {
+        // SAFETY: `node` is a non-null node returned by `hew_mailbox_try_recv`,
+        // owned here and freed exactly once.
+        unsafe {
+            let ty = (*node).msg_type;
+            crate::mailbox::hew_msg_node_free(node);
+            ty
+        }
+    }
+
+    const ON_DATA_TYPE: i32 = 11;
+    const ON_CLOSE_TYPE: i32 = 12;
+
+    /// Fill the actor's capacity-1 mailbox with a buffered `on_data`, then prove
+    /// a plain `try_send` of the close is rejected (the bug) while
+    /// `deliver_close_once` (now using the guaranteed channel) still delivers it.
+    #[test]
+    fn close_delivered_to_full_mailbox_under_backpressure() {
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // SAFETY: no preconditions for new.
+        let poller = unsafe { hew_io_poller_new() };
+        assert!(!poller.is_null());
+
+        let actor = spawn_full_reject_actor();
+        // SAFETY: `actor` is the live, test-owned actor; its mailbox pointer is
+        // valid for the actor's lifetime.
+        let mb = unsafe { (*actor).mailbox }.cast::<crate::mailbox::HewMailbox>();
+
+        // FORCE THE ORDERING: fill the single mailbox slot with on_data BEFORE
+        // the close fires. The mailbox is now at capacity.
+        let datum: i32 = 0x5151;
+        // SAFETY: `actor` is live; `datum` is a valid i32 readable for its size.
+        let rc = unsafe {
+            hew_actor_try_send(
+                actor,
+                ON_DATA_TYPE,
+                (&raw const datum).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+            )
+        };
+        assert_eq!(rc, 0, "buffered on_data must enqueue into the empty slot");
+
+        // Reproduce the bug: a plain try_send for the close is REJECTED now that
+        // the mailbox is full — this is the silent drop the fix removes.
+        // SAFETY: `actor` is live; the close carries no payload (null/0).
+        let bug_rc = unsafe { hew_actor_try_send(actor, ON_CLOSE_TYPE, std::ptr::null_mut(), 0) };
+        assert_ne!(
+            bug_rc, 0,
+            "try_send must drop the close on a full mailbox (the bug being fixed)"
+        );
+
+        // The fix: deliver_close_once admits the terminal event past capacity.
+        deliver_close_once_for_test(poller, 9001, actor, ON_CLOSE_TYPE, false);
+
+        // The actor observes the buffered on_data FIRST, then the close — exactly
+        // once, FIFO-preserved.
+        let first = recv_one(mb);
+        assert!(!first.is_null(), "buffered on_data must still be present");
+        assert_eq!(
+            drain_msg_type(first),
+            ON_DATA_TYPE,
+            "buffered on_data drains before the close (per-connection FIFO)"
+        );
+
+        let second = recv_one(mb);
+        assert!(
+            !second.is_null(),
+            "the terminal close MUST be delivered even though the mailbox was full \
+             (non-droppable terminal event)"
+        );
+        assert_eq!(
+            drain_msg_type(second),
+            ON_CLOSE_TYPE,
+            "the delivered terminal event must be on_close"
+        );
+
+        // Exactly-once: no third message.
+        assert!(
+            recv_one(mb).is_null(),
+            "exactly one on_data + one on_close; no duplicate close"
+        );
+
+        free_parked_actor(actor);
+        // SAFETY: the reactor never started in this test, so we own the poller;
+        // surrender it.
+        unsafe { hew_io_poller_stop(poller) };
+        reset_reactor();
+    }
+
+    /// Exactly-once still holds under backpressure: a second close (e.g.
+    /// readiness fires again before the unregister applies) with
+    /// `already_closed == true` must NOT enqueue a duplicate, even though the
+    /// guaranteed channel could physically admit one.
+    #[test]
+    fn close_is_exactly_once_even_when_guaranteed_under_backpressure() {
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // SAFETY: no preconditions for new.
+        let poller = unsafe { hew_io_poller_new() };
+        assert!(!poller.is_null());
+
+        let actor = spawn_full_reject_actor();
+        // SAFETY: `actor` is the live, test-owned actor; its mailbox pointer is
+        // valid for the actor's lifetime.
+        let mb = unsafe { (*actor).mailbox }.cast::<crate::mailbox::HewMailbox>();
+
+        // Fill the slot, then deliver the first close (guaranteed, past capacity).
+        let datum: i32 = 1;
+        // SAFETY: `actor` is live; `datum` is a valid i32 readable for its size.
+        let _ = unsafe {
+            hew_actor_try_send(
+                actor,
+                ON_DATA_TYPE,
+                (&raw const datum).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+            )
+        };
+        deliver_close_once_for_test(poller, 9002, actor, ON_CLOSE_TYPE, false);
+
+        // A SECOND close attempt with already_closed = true must be suppressed by
+        // the dedupe guard — no duplicate enqueue.
+        deliver_close_once_for_test(poller, 9002, actor, ON_CLOSE_TYPE, true);
+
+        // Drain: on_data, then exactly one on_close.
+        let first = recv_one(mb);
+        assert!(!first.is_null(), "buffered on_data must be present");
+        assert_eq!(drain_msg_type(first), ON_DATA_TYPE);
+
+        let second = recv_one(mb);
+        assert!(!second.is_null(), "the one terminal close must be present");
+        assert_eq!(drain_msg_type(second), ON_CLOSE_TYPE);
+
+        assert!(
+            recv_one(mb).is_null(),
+            "the already_closed guard must suppress the duplicate close"
+        );
+
+        free_parked_actor(actor);
+        // SAFETY: the reactor never started in this test, so we own the poller;
+        // surrender it.
+        unsafe { hew_io_poller_stop(poller) };
         reset_reactor();
     }
 }

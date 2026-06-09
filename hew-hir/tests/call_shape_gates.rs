@@ -238,6 +238,7 @@ fn synth_fn_with_tail(name: &str, item_id: u32, tail: HirExpr) -> HirItem {
         return_ty: ResolvedTy::Unit,
         body: unit_block_with_tail(tail),
         span: dummy_span(),
+        is_generator: false,
         intrinsic_id: None,
     })
 }
@@ -274,6 +275,7 @@ fn item_callee_referencing_module_fn_does_not_emit_diagnostic() {
         type_params: Vec::new(),
         params: Vec::new(),
         return_ty: ResolvedTy::Unit,
+        is_generator: false,
         intrinsic_id: None,
         body: unit_block_with_tail(HirExpr {
             node: HirNodeId(0),
@@ -361,6 +363,7 @@ fn binding_callee_does_not_emit_indirect_call_unsupported() {
         return_ty: ResolvedTy::Unit,
         body: unit_block_with_tail(call),
         span: dummy_span(),
+        is_generator: false,
         intrinsic_id: None,
     });
 
@@ -426,6 +429,7 @@ fn walker_recurses_into_let_stmt_initializer() {
         return_ty: ResolvedTy::Unit,
         body,
         span: dummy_span(),
+        is_generator: false,
         intrinsic_id: None,
     });
 

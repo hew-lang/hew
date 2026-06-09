@@ -1,0 +1,22 @@
+// Accept fixture: trait default method body calling a required (non-default) method.
+// The default `greet` body calls `self.name()` which is provided by the impl.
+// Passes when the program compiles and runs to completion without error.
+trait Greeter {
+    fn name(self) -> string;
+    fn greet(self) -> string {
+        "Hi " + self.name()
+    }
+}
+
+type Person { name: string }
+
+impl Greeter for Person {
+    fn name(p: Person) -> string {
+        p.name
+    }
+}
+
+fn main() {
+    let p = Person { name: "Alice" };
+    println(p.greet());
+}

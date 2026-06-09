@@ -2881,42 +2881,47 @@ mod utf8_string_tests {
 
     // --- hew_string_to_bytes ---
 
+    /// Read the active region of a `BytesTriple` as a byte slice for assertions.
+    ///
+    /// # Safety
+    /// `t.ptr + t.offset` must be valid for `t.len` bytes (or `t.ptr` null with
+    /// `t.len == 0`).
+    unsafe fn triple_slice(t: &hew_runtime::bytes::BytesTriple) -> &[u8] {
+        if t.len == 0 || t.ptr.is_null() {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(t.ptr.add(t.offset as usize), t.len as usize) }
+        }
+    }
+
     #[test]
     fn to_bytes_ascii() {
         let s = CString::new("hi").unwrap();
-        let v = unsafe { hew_string_to_bytes(s.as_ptr()) };
-        assert!(!v.is_null());
-        let vec = unsafe { &*v };
-        assert_eq!(vec.len, 2);
-        let b0 = unsafe { hew_runtime::vec::hew_vec_get_i32(v, 0) };
-        let b1 = unsafe { hew_runtime::vec::hew_vec_get_i32(v, 1) };
-        assert_eq!(b0, i32::from(b'h'));
-        assert_eq!(b1, i32::from(b'i'));
-        unsafe { hew_runtime::vec::hew_vec_free(v) };
+        let t = unsafe { hew_string_to_bytes(s.as_ptr()) };
+        assert!(!t.ptr.is_null());
+        assert_eq!(t.len, 2);
+        assert_eq!(unsafe { triple_slice(&t) }, b"hi");
+        unsafe { hew_runtime::bytes::hew_bytes_drop(t.ptr) };
     }
 
     #[test]
     fn to_bytes_multibyte() {
         // "é" is 2 bytes: 0xC3 0xA9
         let s = CString::new("é").unwrap();
-        let v = unsafe { hew_string_to_bytes(s.as_ptr()) };
-        assert!(!v.is_null());
-        let vec = unsafe { &*v };
-        assert_eq!(vec.len, 2);
-        let b0 = unsafe { hew_runtime::vec::hew_vec_get_i32(v, 0) };
-        let b1 = unsafe { hew_runtime::vec::hew_vec_get_i32(v, 1) };
-        assert_eq!(b0, 0xC3);
-        assert_eq!(b1, 0xA9);
-        unsafe { hew_runtime::vec::hew_vec_free(v) };
+        let t = unsafe { hew_string_to_bytes(s.as_ptr()) };
+        assert!(!t.ptr.is_null());
+        assert_eq!(t.len, 2);
+        assert_eq!(unsafe { triple_slice(&t) }, &[0xC3, 0xA9]);
+        unsafe { hew_runtime::bytes::hew_bytes_drop(t.ptr) };
     }
 
     #[test]
     fn to_bytes_null() {
-        let v = unsafe { hew_string_to_bytes(ptr::null()) };
-        assert!(!v.is_null());
-        let vec = unsafe { &*v };
-        assert_eq!(vec.len, 0);
-        unsafe { hew_runtime::vec::hew_vec_free(v) };
+        // Null input yields an empty triple (null ptr, len 0); drop is a no-op.
+        let t = unsafe { hew_string_to_bytes(ptr::null()) };
+        assert!(t.ptr.is_null());
+        assert_eq!(t.len, 0);
+        unsafe { hew_runtime::bytes::hew_bytes_drop(t.ptr) };
     }
 }
 

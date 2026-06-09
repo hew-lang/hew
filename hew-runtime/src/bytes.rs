@@ -556,10 +556,12 @@ pub unsafe extern "C" fn hew_bytes_eq(
 
 /// Convert a `Bytes` value to a NUL-terminated UTF-8 C string (lossy).
 ///
-/// This is the canonical `Bytes -> String` runtime conversion. It consumes
-/// the triple representation directly (single `BytesTriple` struct argument,
-/// `#[repr(C)]` — passes ABI-equivalently to the LLVM `{ptr, i32, i32}`
-/// struct that codegen materialises for a `bytes`-typed argument).
+/// This is the canonical `Bytes -> String` runtime conversion. It takes a
+/// POINTER to the caller's `BytesTriple` (the address of the `bytes` value's
+/// stack slot). By-pointer (not by-value): a `{ptr,i32,i32}` passed by value is
+/// not reliably ABI-portable at the LLVM↔Rust C boundary (LLVM's three-register
+/// small-struct classification vs Rust's repr(C) two-register pair), so codegen
+/// passes the triple's address (`is_bytes_by_pointer_consumer`).
 ///
 /// Invalid UTF-8 sequences are replaced with U+FFFD. The returned pointer is
 /// allocated via `libc::malloc`; the caller (typically the Hew string GC)
@@ -567,10 +569,22 @@ pub unsafe extern "C" fn hew_bytes_eq(
 ///
 /// # Safety
 ///
-/// If `triple.len > 0`, `triple.ptr + triple.offset` must be valid for
-/// `triple.len` bytes. A null `ptr` is treated as the empty byte region.
+/// `triple` must point to a valid `BytesTriple`. If its `len > 0`,
+/// `ptr + offset` must be valid for `len` bytes. A null `ptr` (or a null
+/// `triple` pointer) is treated as the empty byte region.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_to_string(triple: BytesTriple) -> *mut std::ffi::c_char {
+pub unsafe extern "C" fn hew_bytes_to_string(triple: *const BytesTriple) -> *mut std::ffi::c_char {
+    let triple = if triple.is_null() {
+        BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        }
+    } else {
+        // SAFETY: `triple` is non-null and points to the caller's valid
+        // BytesTriple slot per the fn contract; BytesTriple is Copy.
+        unsafe { *triple }
+    };
     if triple.len == 0 || triple.ptr.is_null() {
         // Return an empty NUL-terminated, header-aware string.
         let out = crate::cabi::alloc_cstring_from_str(""); // CSTRING-ALLOC: str-open (hew_bytes_to_string empty path — header-aware String result; reaches hew_string_drop)
@@ -645,6 +659,29 @@ pub unsafe extern "C" fn hew_bytes_from_str(str_ptr: *const u8) -> BytesTriple {
         offset: 0,
         len: len32,
     }
+}
+
+/// Return the active length of a `bytes` value.
+///
+/// This is the canonical `bytes.len()` runtime entry. It takes a POINTER to the
+/// caller's `BytesTriple` (the address of the `bytes` value's stack slot) and
+/// reads the `len` field. By-pointer (not by-value): a `{ptr,i32,i32}` passed by
+/// value is not reliably ABI-portable at the LLVM↔Rust C boundary (LLVM's
+/// three-register small-struct classification vs Rust's repr(C) two-register
+/// pair), so codegen passes the triple's address (`is_bytes_by_pointer_consumer`).
+///
+/// # Safety
+///
+/// `triple` must point to a valid `BytesTriple` (either its `ptr` null with
+/// `len == 0`, or `ptr` pointing to a `hew_bytes_*` allocation). The buffer
+/// itself is not dereferenced — only the `len` field is read.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_len(triple: *const BytesTriple) -> i64 {
+    if triple.is_null() {
+        return 0;
+    }
+    // SAFETY: `triple` points to the caller's valid BytesTriple slot.
+    i64::from(unsafe { (*triple).len })
 }
 
 // W4.039 — the wasm-gated Vec-backed `hew_bytes_to_string` was deleted
@@ -919,6 +956,41 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: every unsafe call is a direct FFI invocation with arguments \
+                  explicitly visible inline"
+    )]
+    fn bytes_len_reads_active_length() {
+        // Non-empty triple: len is the active byte count. The runtime entry
+        // takes the triple by pointer.
+        let data = b"hello bytes";
+        let triple = unsafe { hew_bytes_from_static(data.as_ptr(), data.len() as u32) };
+        assert_eq!(
+            unsafe { hew_bytes_len(std::ptr::addr_of!(triple)) },
+            i64::try_from(data.len()).expect("len fits in i64")
+        );
+        unsafe { hew_bytes_drop(triple.ptr) };
+
+        // A slice reports its sliced length, not the underlying buffer length.
+        let base = unsafe { hew_bytes_from_static(b"abcdefgh".as_ptr(), 8) };
+        let slice = unsafe { hew_bytes_slice(base.ptr, base.offset, base.len, 2, 5) };
+        assert_eq!(unsafe { hew_bytes_len(std::ptr::addr_of!(slice)) }, 3);
+        unsafe {
+            hew_bytes_drop(slice.ptr);
+            hew_bytes_drop(base.ptr);
+        }
+
+        // Empty triple (null ptr, len 0) reports 0.
+        let empty = BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+        assert_eq!(unsafe { hew_bytes_len(std::ptr::addr_of!(empty)) }, 0);
+    }
+
+    #[test]
     fn concat() {
         let a = b"foo";
         let b_data = b"bar";
@@ -1025,11 +1097,12 @@ mod tests {
             let result = hew_bytes_from_str(std::ptr::null());
             assert!(result.ptr.is_null());
 
-            let s = hew_bytes_to_string(BytesTriple {
+            let empty_triple = BytesTriple {
                 ptr: std::ptr::null_mut(),
                 offset: 0,
                 len: 0,
-            });
+            };
+            let s = hew_bytes_to_string(std::ptr::addr_of!(empty_triple));
             assert!(!s.is_null());
             assert_eq!(*s, 0);
             crate::cabi::free_cstring(s); // CSTRING-FREE: str-open (test frees hew_bytes_to_string output)
@@ -1091,7 +1164,7 @@ mod tests {
         let triple = unsafe { hew_bytes_from_static(data.as_ptr(), data.len() as u32) };
 
         // SAFETY: triple.ptr + offset is valid for triple.len bytes.
-        let cstr = unsafe { hew_bytes_to_string(triple) };
+        let cstr = unsafe { hew_bytes_to_string(std::ptr::addr_of!(triple)) };
         assert!(!cstr.is_null());
 
         // SAFETY: cstr is a valid NUL-terminated C string.

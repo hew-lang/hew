@@ -146,7 +146,17 @@ impl ValueClass {
             | ResolvedTy::Bytes
             | ResolvedTy::Array(_, _)
             | ResolvedTy::Tuple(_) => Self::CowValue,
-            ResolvedTy::CancellationToken => Self::AffineResource,
+            // A `Generator<Y, R>` / `AsyncGenerator<Y>` value is an owned, affine
+            // runtime handle (`*mut HewGenCtx`), same as CancellationToken: it
+            // has exactly one owner, must be released exactly once on scope exit
+            // (via `hew_gen_free`), and is never bit-copied. Classifying it as
+            // `AffineResource` makes the construction binding enter `owned_locals`
+            // and get a scope-exit drop.
+            ResolvedTy::CancellationToken
+            | ResolvedTy::Named {
+                builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
+                ..
+            } => Self::AffineResource,
             // `&T` immutable borrow is a non-owning view (F3): reuse `View` so
             // it shares the no-retain / no-drop drop-elaboration arm. A borrow
             // binding emits no drop (`build_lifo_drops` View no-op).

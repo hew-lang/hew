@@ -30,14 +30,21 @@ actor Cache {
 }
 
 actor Database {
-    let connections: i32;
-    init() {
+
+    // rest_for_one: if a child crashes, it and all children started AFTER it
+    // restart. This models dependency order:
+    //   cache → database → api_handler
+    // If database crashes, api_handler also restarts (it depends on the DB).
+    // If cache crashes, only cache restarts (DB and API are independent of it).
+
+    // Normal operation
+
+    // Cache crashes — only cache restarts (DB and API unaffected)
+    let connections: i32 = 4;
+    receive fn query(id: i32) {
         print("[db] connected (pool=");
         print(connections);
-        println(")");
-    }
-    receive fn query(id: i32) {
-        print("[db] SELECT * FROM users WHERE id=");
+        print(") SELECT * FROM users WHERE id=");
         println(id);
     }
     receive fn disconnect() {
@@ -47,29 +54,22 @@ actor Database {
 }
 
 actor ApiHandler {
-    let port: i32;
-    init() {
-        print("[api] listening on port ");
-        println(port);
-    }
+    let port: i32 = 8080;
     receive fn request(user_id: i32) {
-        print("[api] GET /users/");
+        print("[api] listening on port ");
+        print(port);
+        print(", GET /users/");
         println(user_id);
     }
 }
 
-// rest_for_one: if a child crashes, it and all children started AFTER it
-// restart. This models dependency order:
-//   cache → database → api_handler
-// If database crashes, api_handler also restarts (it depends on the DB).
-// If cache crashes, only cache restarts (DB and API are independent of it).
 supervisor ServiceStack {
     strategy: rest_for_one;
     intensity: 5 within 60s;
 
     child cache: Cache(capacity: 1000, entries: 0);
-    child db: Database(connections: 4);
-    child api: ApiHandler(port: 8080);
+    child db: Database;
+    child api: ApiHandler;
 }
 
 fn main() {
@@ -79,15 +79,12 @@ fn main() {
     let cache = svc.cache;
     let db = svc.db;
     let api = svc.api;
-    // Normal operation
     cache.store(42);
     sleep_ms(10);
     db.query(42);
     sleep_ms(10);
     api.request(42);
     sleep_ms(30);
-
-    // Cache crashes — only cache restarts (DB and API unaffected)
     println("");
     println("--- cache crashes ---");
     cache.corrupt();

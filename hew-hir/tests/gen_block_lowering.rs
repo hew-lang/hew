@@ -149,6 +149,90 @@ fn gen_block_with_string_yield_and_i64_return_lowers_types() {
     );
 }
 
+fn function_named<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a hew_hir::HirFn {
+    output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Function(function) if function.name == name => Some(function),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected lowered function named {name}"))
+}
+
+#[test]
+fn gen_fn_lowers_to_generator_returning_fn_with_genblock_body() {
+    // Slice 0: a `gen fn` threads its `-> T` declaration as the Yield element
+    // type, marks the HirFn `is_generator`, and routes the body through the
+    // same GenBlock path the `gen { ... }` block expression uses — so MIR and
+    // codegen construction is shared between both surfaces.
+    let output = typecheck_and_lower(
+        r"
+        gen fn count() -> i64 { yield 1; yield 2; yield 3 }
+        ",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+    let verify = verify_hir(&output.module);
+    assert!(verify.is_empty(), "verify diagnostics: {verify:?}");
+
+    let function = function_named(&output, "count");
+    assert!(
+        function.is_generator,
+        "gen fn must carry is_generator on its HirFn"
+    );
+    // The function value is Generator<Yield = i64, Return = Unit>, matching the
+    // checker's registered signature (Ty::generator(declared, Unit)).
+    assert_generator_type(&function.return_ty, &ResolvedTy::I64, &ResolvedTy::Unit);
+
+    let tail = function
+        .body
+        .tail
+        .as_ref()
+        .expect("gen fn body must have a GenBlock tail expression");
+    let HirExprKind::GenBlock {
+        body,
+        yield_ty,
+        return_ty,
+    } = &tail.kind
+    else {
+        panic!("expected GenBlock tail, got {:?}", tail.kind);
+    };
+    assert_eq!(yield_ty, &ResolvedTy::I64);
+    assert_eq!(return_ty, &ResolvedTy::Unit);
+    assert_generator_type(&tail.ty, &ResolvedTy::I64, &ResolvedTy::Unit);
+
+    // The two semicolon-terminated yields are statements; the final
+    // `yield 3` (no trailing semicolon) is the block tail expression.
+    let stmt_yields = yield_values(body);
+    assert_eq!(stmt_yields.len(), 2, "expected two statement yields");
+    for (value, yield_ty) in stmt_yields {
+        assert_eq!(yield_ty, &ResolvedTy::I64);
+        let value = value.as_ref().expect("yield must carry value");
+        assert_eq!(value.ty, ResolvedTy::I64);
+    }
+    let tail_yield = body
+        .tail
+        .as_ref()
+        .expect("final yield with no trailing semicolon is the body tail");
+    let HirExprKind::Yield {
+        value,
+        yield_ty: tail_yield_ty,
+    } = &tail_yield.kind
+    else {
+        panic!("expected tail yield, got {:?}", tail_yield.kind);
+    };
+    assert_eq!(tail_yield_ty, &ResolvedTy::I64);
+    assert_eq!(
+        value.as_ref().expect("tail yield must carry value").ty,
+        ResolvedTy::I64
+    );
+}
+
 #[test]
 fn gen_block_as_value_is_binding_initializer() {
     let output = typecheck_and_lower(

@@ -10,7 +10,10 @@
 
 use crate::lifetime::live_actors;
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+// live on not(wasm32) — drain_actors; dead here; caller actor.rs:2729
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::HashSet;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
@@ -63,6 +66,76 @@ fn run_crash_teardown_order_hook(event: c_int) {
     };
     if let Some(hook) = hook {
         hook(event);
+    }
+}
+
+// ── Free-path pre-detach rendezvous hook (test-only) ─────────────────────
+//
+// Lets a test deterministically force the reactor-detach UAF window: the hook
+// fires inside `hew_actor_free_inner` *after* the actor first looks quiescent
+// and *before* `prepare_quiescent_actor_for_cleanup` (which runs
+// `reactor_detach_actor`). A test installs a hook that releases a "reactor
+// delivery" thread to publish a wake (`CAS Idle->Runnable` + `sched_enqueue`)
+// during the detach window, so the producer-side re-check is exercised every
+// run rather than by timing luck.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static FREE_PRE_DETACH_HOOK: Mutex<Option<fn(*mut HewActor)>> = Mutex::new(None);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn set_free_pre_detach_hook_for_test(hook: Option<fn(*mut HewActor)>) {
+    let mut guard = FREE_PRE_DETACH_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = hook;
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn run_free_pre_detach_hook(actor: *mut HewActor) {
+    let hook = {
+        let guard = FREE_PRE_DETACH_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard
+    };
+    if let Some(hook) = hook {
+        hook(actor);
+    }
+}
+
+// ── Free-path post-latch rendezvous hook (test-only) ─────────────────────
+//
+// Lets a test deterministically force the *non-reactor* wake UAF window: the
+// hook fires inside `hew_actor_free_inner` *after* free has latched the actor
+// out of `Idle` into the `Stopped` terminal state (step 3) and *before*
+// `untrack_actor`. A test installs a hook that performs the exact link/monitor
+// side effect (`with_live_actor_by_id` → `CAS Idle->Runnable` + `sched_enqueue`)
+// that `send_exit_signal` / `send_down_notification` run for a crashing peer.
+// Because free has already CAS'd the actor to `Stopped`, that producer-side
+// `CAS Idle->Runnable` must fail and no enqueue can happen — proving the
+// non-reactor wake is closed. Reverting the latch (breaking with the bare
+// post-detach `Idle` observation) lets the hook's CAS succeed and leaves a
+// freed actor queued (the UAF the verdict reproduced).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static FREE_POST_LATCH_HOOK: Mutex<Option<fn(*mut HewActor)>> = Mutex::new(None);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn set_free_post_latch_hook_for_test(hook: Option<fn(*mut HewActor)>) {
+    let mut guard = FREE_POST_LATCH_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = hook;
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn run_free_post_latch_hook(actor: *mut HewActor) {
+    let hook = {
+        let guard = FREE_POST_LATCH_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard
+    };
+    if let Some(hook) = hook {
+        hook(actor);
     }
 }
 
@@ -903,6 +976,8 @@ fn record_terminate_wait_poll_tick() {
     TERMINATE_WAIT_POLL_TICKS.fetch_add(1, Ordering::Relaxed);
 }
 
+// live on not(wasm32) — actor_stop/drain wait-loop; dead on wasm32; caller actor.rs:1194
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[cfg(not(test))]
 #[inline]
 fn record_terminate_wait_poll_tick() {}
@@ -910,6 +985,8 @@ fn record_terminate_wait_poll_tick() {}
 /// Check whether an actor ID still maps to the expected live actor pointer.
 ///
 /// Delegates to [`live_actors::with_live_actor_by_id`].
+// live on not(wasm32) — monitor.rs + link.rs; dead on wasm32; callers monitor.rs:98, link.rs:201
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn with_live_actor_by_id<R>(
     actor_id: u64,
     expected: *mut HewActor,
@@ -1313,6 +1390,8 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
 ///
 /// `actor` must be a valid pointer to a live `HewActor` that is not
 /// currently being dispatched.
+// live on test — scheduler_wasm tests; dead on non-test wasm build; caller scheduler_wasm.rs:4154
+#[cfg_attr(not(test), allow(dead_code))]
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
     // SAFETY: caller forwards the same invariants the inner requires.
@@ -2478,6 +2557,65 @@ pub unsafe extern "C" fn hew_actor_try_send(
     0
 }
 
+/// Guaranteed (non-blocking, non-dropping) send for a terminal/out-of-band
+/// event that must survive a full mailbox under data backpressure.
+///
+/// Unlike [`hew_actor_try_send`], the enqueue **bypasses the bounded-capacity
+/// overflow policy** ([`mailbox::hew_mailbox_send_guaranteed`]): the message is
+/// appended to the tail of the user queue even when the mailbox is at capacity,
+/// so it is never silently dropped. It is still **non-blocking** — it never
+/// waits on the mailbox condvar — so the calling thread (the single active-mode
+/// reactor thread) is never stalled and can never deadlock with the synchronous
+/// actor-teardown path that spin-waits on the in-flight-delivery guard.
+///
+/// FIFO is preserved: the event lands behind every already-queued message
+/// (the user queue, not the priority system queue), so a terminal `on_close`
+/// never overtakes buffered `on_data`.
+///
+/// Returns `0` on success. A non-zero return means the mailbox is closed or
+/// allocation failed — for a terminal event both mean the actor is already
+/// gone, so there is nothing left to deliver.
+///
+/// # Safety
+///
+/// Same requirements as [`hew_actor_try_send`].
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn hew_actor_send_guaranteed(
+    actor: *mut HewActor,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> i32 {
+    if actor.is_null() {
+        return HewError::ErrActorStopped as i32;
+    }
+    // SAFETY: Caller guarantees `actor` is valid.
+    let a = unsafe { &*actor };
+    let mb = a.mailbox.cast::<HewMailbox>();
+
+    // SAFETY: Mailbox is valid for the actor's lifetime.
+    let result = unsafe { mailbox::hew_mailbox_send_guaranteed(mb, msg_type, data, size) };
+    if result != 0 {
+        return result;
+    }
+
+    // CAS IDLE → RUNNABLE; on success, schedule the actor so it drains the
+    // terminal event (and the buffered messages ahead of it).
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Idle as i32,
+            HewActorState::Runnable as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        scheduler::sched_enqueue(actor);
+    }
+
+    0
+}
+
 // ── Close / Stop / Free ─────────────────────────────────────────────────
 
 /// Close an actor, rejecting new messages.
@@ -2627,30 +2765,135 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
         return -2;
     }
 
-    // Wait until actor reaches a terminal or idle state (with timeout).
+    // Drive the actor to a *wake-proof* terminal state, then free. There are two
+    // independent wake sources that can re-enqueue a freshly-Idle actor while we
+    // tear it down, and both gate on the wake CAS `Idle->Runnable`:
+    //
+    //   - The reactor: a delivery that published `DELIVERING_ACTOR` before its
+    //     registry scrub can run `hew_actor_try_send` (CAS Idle->Runnable +
+    //     sched_enqueue) *during* `reactor_detach_actor`.
+    //   - Non-reactor wakers: in-flight link/monitor exit/down propagation
+    //     (`send_exit_signal` / `send_down_notification`) and direct
+    //     actor-to-actor sends. Each snapshots the target under its own shard
+    //     lock, then later reaches `with_live_actor_by_id` and, if the target is
+    //     still tracked and `Idle`, does CAS Idle->Runnable + sched_enqueue
+    //     *inside* the `LIVE_ACTORS` lock. `remove_all_links_for_actor` /
+    //     `remove_all_monitors_for_actor` only scrub the tables; they do not
+    //     drain an already-snapshotted propagation, so scrubbing alone cannot
+    //     close this window.
+    //
+    // Detaching/scrubbing closes the reactor's ability to *start* a new wake, but
+    // an actor merely observed `Idle` after detach can still be enqueued by a
+    // non-reactor waker in the window before `untrack_actor`. Freeing under that
+    // leaves a dangling pointer in a worker/stealer queue → use-after-free in
+    // `activate_actor`.
+    //
+    // The fix mirrors why `hew_actor_stop` / `drain_actors` are immune: before
+    // untracking, latch the actor OUT of `Idle` into the `Stopped` terminal
+    // state. After that CAS succeeds, *every* waker's `CAS Idle->Runnable` fails
+    // and `activate_actor` early-returns on `Stopped`, so no wake — reactor or
+    // not — can enqueue the actor. Only then is untrack+free safe.
+    //
+    //   1. Wait (bounded) until `actor_state` is quiescent (Idle/Stopped/Crashed).
+    //   2. Run the pre-untrack cleanup, including `reactor_detach_actor` and the
+    //      link/monitor scrub. `reactor_detach_actor` waits out an in-flight
+    //      reactor delivery; the link/monitor scrub stops *new* propagation but
+    //      not an already-snapshotted one.
+    //   3. Re-load `actor_state` after cleanup, then *latch*:
+    //        - `Idle`    → `CAS Idle->Stopped`. Success ⇒ wake-proof; free under
+    //                      `Stopped`. Loss ⇒ a waker won the race (now
+    //                      Runnable/Running and queued); do NOT free, loop back so
+    //                      the queued activation drains it to `Idle`.
+    //        - `Stopped`/`Crashed` → already wake-proof (no CAS needed; preserves
+    //                      the `Crashed` => skip-terminate path in finalize).
+    //      A continuously-woken actor returns `-2` at the shared deadline
+    //      (fail-closed; the caller leaks rather than frees a queued actor).
+    //
+    // `state` carried out of the loop is the post-latch terminal state passed to
+    // `finalize_quiescent_actor_cleanup_with_options`, which runs the terminate
+    // callback exactly once for `Stopped` (== the old `Idle` behaviour) and skips
+    // it for `Crashed`.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        let state = a.actor_state.load(Ordering::Acquire);
-        if actor_free_state_is_quiescent(state) {
-            break;
+    let state = loop {
+        // Step 1: wait until the actor first looks quiescent (bounded).
+        loop {
+            let state = a.actor_state.load(Ordering::Acquire);
+            if actor_free_state_is_quiescent(state) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                crate::set_last_error("actor still running after timeout");
+                return -2;
+            }
+            std::thread::yield_now();
         }
+
+        // Test-only rendezvous: the actor just looked quiescent, but detach has
+        // not run yet. A test uses this point to force a reactor delivery to wake
+        // + enqueue the actor during the detach window below.
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        run_free_pre_detach_hook(actor);
+
+        // Step 2: cancel periodic timers, detach reactor registrations, and
+        // remove links/monitors BEFORE untracking, so any in-flight timer
+        // callback or propagation that checks LIVE_ACTORS still sees this actor
+        // as live and bails out cooperatively. `reactor_detach_actor` may wait
+        // out an in-flight delivery that re-wakes the actor (see above); this
+        // call is idempotent across retries (cancel/remove-all + empty-registry
+        // scrub).
+        // SAFETY: the wait loop proved the actor was quiescent and still tracked.
+        unsafe { prepare_quiescent_actor_for_cleanup(actor) };
+
+        // Step 3: re-load after cleanup, then latch the actor out of `Idle`.
+        let state = a.actor_state.load(Ordering::Acquire);
+        if state == HewActorState::Idle as i32 {
+            // Latch Idle->Stopped. This is the wake-proofing step: after it
+            // succeeds, every waker (reactor `hew_actor_try_send`, link/monitor
+            // `send_exit_signal`/`send_down_notification`, direct send) finds the
+            // actor non-Idle and its `CAS Idle->Runnable` fails, so nothing can
+            // enqueue the actor between here and `untrack_actor`. We do NOT emit a
+            // SPAN_STOP lifecycle event (unlike `hew_actor_stop`): this is a free,
+            // not a user-visible stop, and finalize already runs terminate.
+            if a.actor_state
+                .compare_exchange(
+                    HewActorState::Idle as i32,
+                    HewActorState::Stopped as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                break HewActorState::Stopped as i32;
+            }
+            // Lost the latch to a concurrent wake: the actor is now
+            // Runnable/Running and queued in the scheduler. Do NOT free under it.
+            // Loop back; the queued activation drains it to Idle and the next pass
+            // latches+frees cleanly.
+        } else if state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32 {
+            // Already wake-proof: a prior stop/close (`Stopped`) or trap
+            // (`Crashed`) drove the actor out of `Idle`, so no waker's
+            // `CAS Idle->Runnable` can succeed. Free under the observed state
+            // (preserves the `Crashed` => skip-terminate path in finalize). No CAS
+            // needed.
+            break state;
+        }
+
+        // Either the post-detach reload was non-quiescent (a wake landed during
+        // cleanup) or the Idle->Stopped latch lost to a wake. Do NOT free; loop
+        // back so the queued activation drains the actor to Idle, then retry.
         if std::time::Instant::now() >= deadline {
-            break;
+            crate::set_last_error("actor still running after timeout");
+            return -2;
         }
         std::thread::yield_now();
-    }
+    };
 
-    let state = a.actor_state.load(Ordering::Acquire);
-    if !actor_free_state_is_quiescent(state) {
-        crate::set_last_error("actor still running after timeout");
-        return -2;
-    }
-
-    // Cancel periodic timers, links, and monitors BEFORE untracking so
-    // that any in-flight timer callback or propagation that checks
-    // LIVE_ACTORS still sees this actor as live and can safely bail out.
-    // SAFETY: the wait loop above proved the actor is quiescent and still tracked.
-    unsafe { prepare_quiescent_actor_for_cleanup(actor) };
+    // Test-only rendezvous: the actor is latched out of `Idle` (Stopped/Crashed)
+    // but not yet untracked. A test fires a non-reactor wake here to prove the
+    // producer-side `CAS Idle->Runnable` now fails (no enqueue) — the window the
+    // verdict reproduced as a UAF is closed.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    run_free_post_latch_hook(actor);
 
     // Remove from live tracking. If the actor was already consumed by
     // cleanup_all_actors (returns false), skip freeing to avoid
@@ -2660,7 +2903,8 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
         return -1;
     }
 
-    // SAFETY: actor is quiescent, no longer tracked, and not being dispatched.
+    // SAFETY: actor is quiescent (re-verified after detach), no longer tracked,
+    // and not being dispatched.
     unsafe { finalize_quiescent_actor_cleanup_with_options(actor, state, suppress_state_drop) };
     0
 }
@@ -3790,6 +4034,8 @@ std::thread_local! {
 
 /// Retrieve the size of the reply data from the most recent
 /// `hew_actor_ask_by_id` call on the current thread.
+// live on not(wasm32) — hew_node.rs ask path; dead on wasm32; caller hew_node.rs:1009
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) unsafe fn hew_reply_data_size(_ptr: *mut c_void) -> usize {
     LAST_REPLY_SIZE.get()
 }
@@ -5345,6 +5591,290 @@ mod tests {
             crate::task_scope::hew_task_scope_destroy(scope);
             assert_eq!(hew_actor_free(actor), 0);
         }
+    }
+
+    static REACTOR_WAKE_HOOK_FIRED: AtomicBool = AtomicBool::new(false);
+
+    /// Pre-detach hook that models a reactor delivery waking the actor during
+    /// the `hew_actor_free` detach window. Runs after free observed the actor
+    /// quiescent (`Idle`) but before `reactor_detach_actor`, and performs the
+    /// exact wake side-effect a real delivery's `hew_actor_try_send` does:
+    /// `CAS Idle->Runnable` + `sched_enqueue`. This is the side effect detach
+    /// does not undo and that the buggy free path freed under. Self-contained
+    /// (uses only the `actor` argument) so it can be a plain `fn` pointer, and
+    /// it deliberately does NOT touch the process-global `DELIVERING_ACTOR`
+    /// guard, so it needs no cross-test serialization with the reactor tests.
+    fn reactor_wake_during_detach_hook(actor: *mut HewActor) {
+        // SAFETY: the free path holds the actor live across the hook; it is the
+        // same pointer free is about to detach.
+        let a = unsafe { &*actor };
+        // The wake side-effect: a reactor `on_data` delivery's
+        // `hew_actor_try_send` CASes Idle->Runnable and enqueues the actor.
+        if a.actor_state
+            .compare_exchange(
+                HewActorState::Idle as i32,
+                HewActorState::Runnable as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            scheduler::sched_enqueue(actor);
+        }
+        REACTOR_WAKE_HOOK_FIRED.store(true, Ordering::Release);
+    }
+
+    /// A reactor delivery that wakes + enqueues an actor *during* the
+    /// `hew_actor_free` reactor-detach window must never let that actor be
+    /// freed while a live pointer to it remains in a scheduler queue
+    /// (use-after-free in `activate_actor`).
+    ///
+    /// Forced ordering (deterministic, no timing luck): a worker-less scheduler
+    /// guarantees nothing drains the queue, and the pre-detach hook performs the
+    /// wake inline in the exact window between free's pre-detach quiescence read
+    /// and `reactor_detach_actor`. So every run reproduces the race. The hook
+    /// performs only the actor-local wake (no global `DELIVERING_ACTOR` write),
+    /// so the test is self-contained and does not race the reactor tests.
+    ///
+    /// With the producer-side post-detach re-check, free observes the actor is
+    /// `Runnable` (woken during detach) and refuses to free it: it returns -2
+    /// ("still running") and the actor stays tracked + queued + intact.
+    ///
+    /// WITHOUT the fix (free using only the pre-detach quiescence read), free
+    /// would untrack + free the actor and return 0, leaving a dangling pointer
+    /// in the global queue — the bug. The assertions below (`rc == -2`, actor
+    /// still live in `LIVE_ACTORS`, still Runnable, identity intact, pointer still
+    /// queued) all flip in that case: `rc` would be 0 and the queued pointer
+    /// would reference freed memory (a genuine UAF when later activated, caught
+    /// under a sanitizer). Verified: reverting the producer-side re-check makes
+    /// this test fail at the `rc == -2` assertion with the observed `rc == 0`.
+    #[test]
+    fn free_refuses_actor_woken_by_reactor_during_detach() {
+        let _guard = crate::runtime_test_guard();
+        // Worker-less scheduler: sched_enqueue works, nothing drains the queue.
+        // The guard holds SCHED_TEST_MUTEX, serializing against scheduler tests.
+        let sched = scheduler::NoWorkerSchedulerForTest::install();
+        // Also hold the tracing lock (consistent lock order: SCHED then tracing):
+        // this test's `hew_actor_close`/free emits SPAN_STOP lifecycle events into
+        // the process-global trace ring whenever tracing is enabled, which would
+        // otherwise race a concurrent tracing/span test's ring assertions.
+        let _tracing = crate::tracing::tracing_test_guard();
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: actor is valid and owned by this test.
+        let actor_id = unsafe { (*actor).id };
+
+        // Freshly spawned actors are Idle (quiescent) — free's pre-detach check
+        // will pass, then the hook wakes the actor during detach.
+        // SAFETY: actor is valid (just spawned, owned by this test).
+        let spawned_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        assert_eq!(spawned_state, HewActorState::Idle as i32);
+
+        REACTOR_WAKE_HOOK_FIRED.store(false, Ordering::Release);
+        set_free_pre_detach_hook_for_test(Some(reactor_wake_during_detach_hook));
+
+        // SAFETY: actor is valid; free is the operation under test.
+        let rc = unsafe { hew_actor_free(actor) };
+
+        // Always clear the hook so it cannot affect teardown or other tests.
+        set_free_pre_detach_hook_for_test(None);
+
+        assert!(
+            REACTOR_WAKE_HOOK_FIRED.load(Ordering::Acquire),
+            "pre-detach hook must have fired — the test did not exercise the race"
+        );
+        assert_eq!(
+            rc, -2,
+            "hew_actor_free must REFUSE to free an actor woken+enqueued during \
+             reactor detach (got {rc}; rc==0 means the queued actor was freed — UAF)"
+        );
+        // The actor must still be tracked and intact (not freed).
+        assert!(
+            live_actors::is_actor_live(actor),
+            "refused-free actor must remain tracked in LIVE_ACTORS"
+        );
+        // SAFETY: assertion above proves the actor is still live (not freed).
+        let queued_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        assert_eq!(
+            queued_state,
+            HewActorState::Runnable as i32,
+            "refused-free actor must remain Runnable (woken by the delivery)"
+        );
+        // SAFETY: actor still live; reading its stable id is sound.
+        assert_eq!(unsafe { (*actor).id }, actor_id, "actor identity intact");
+
+        // The wake left a live pointer in the global queue. It must be the
+        // (still-valid) actor — not a dangling pointer to freed memory.
+        let queued = sched.pop_global();
+        assert_eq!(
+            queued,
+            Some(actor),
+            "the woken actor's pointer must still be queued and valid"
+        );
+
+        // Teardown: return the actor to Idle so the final free succeeds. The
+        // mailbox is empty, so a real activation would simply CAS Runnable->Idle;
+        // do that directly here to avoid emitting tracing span events into the
+        // process-global trace ring (which a concurrent tracing test asserts on).
+        // SAFETY: actor is still live; this test exclusively owns it now.
+        unsafe {
+            (*actor)
+                .actor_state
+                .store(HewActorState::Idle as i32, Ordering::Release);
+        }
+        // Drain the stale pointer the wake left in the global queue before the
+        // box is freed, so nothing dequeues it after free.
+        assert_eq!(
+            sched.pop_global(),
+            None,
+            "the single queued pointer was already consumed above"
+        );
+        // SAFETY: actor is valid and back to Idle.
+        unsafe {
+            hew_actor_close(actor);
+            assert_eq!(hew_actor_free(actor), 0);
+        }
+        drop(sched);
+    }
+
+    static POST_LATCH_WAKE_HOOK_FIRED: AtomicBool = AtomicBool::new(false);
+    static POST_LATCH_WAKE_SUCCEEDED: AtomicBool = AtomicBool::new(false);
+
+    /// Post-latch hook that models a non-reactor wake — the exact link/monitor
+    /// exit/down propagation side effect (`send_exit_signal` /
+    /// `send_down_notification`) — firing in the window between free latching the
+    /// actor out of `Idle` and `untrack_actor`. It routes through the *real*
+    /// `with_live_actor_by_id` guard (holding the `LIVE_ACTORS` lock, exactly as
+    /// the production link/monitor paths do) and performs the producer-side
+    /// `CAS Idle->Runnable` + `sched_enqueue`. Self-contained (uses only the
+    /// `actor` argument), so it can be a plain `fn` pointer. Whether that CAS
+    /// succeeds is the load-bearing observation:
+    ///   - WITH the latch: free has already CAS'd the actor to `Stopped`, so this
+    ///     CAS fails — no enqueue, no queued-after-free, no UAF.
+    ///   - WITHOUT the latch (free breaking on the bare post-detach `Idle`): the
+    ///     actor is still `Idle`, this CAS succeeds and enqueues a pointer that
+    ///     free then untracks + frees → dangling queue entry (the verdict's UAF).
+    fn nonreactor_wake_post_latch_hook(actor: *mut HewActor) {
+        // SAFETY: free holds the actor live across this hook; it is the same
+        // pointer free is about to untrack.
+        let id = unsafe { (*actor).id };
+        let woke = with_live_actor_by_id(id, actor, |a_ref| {
+            if a_ref
+                .actor_state
+                .compare_exchange(
+                    HewActorState::Idle as i32,
+                    HewActorState::Runnable as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                scheduler::sched_enqueue(actor);
+                true
+            } else {
+                false
+            }
+        });
+        if woke == Some(true) {
+            POST_LATCH_WAKE_SUCCEEDED.store(true, Ordering::Release);
+        }
+        POST_LATCH_WAKE_HOOK_FIRED.store(true, Ordering::Release);
+    }
+
+    /// A non-reactor wake — in-flight link/monitor exit/down propagation (or a
+    /// direct actor-to-actor send) for a crashing peer — must never enqueue an
+    /// actor that `hew_actor_free` is about to untrack + free. This is the defect
+    /// the cross-ecosystem review reproduced and BLOCKED on: the reactor fix
+    /// closed only the reactor wake; a non-reactor waker could still
+    /// `CAS Idle->Runnable` + `sched_enqueue` in the window between free's
+    /// post-detach `Idle` observation and `untrack_actor`, after which free freed
+    /// a still-queued actor → UAF in `activate_actor`.
+    ///
+    /// Forced ordering (deterministic, no timing luck): a worker-less scheduler
+    /// guarantees nothing drains the queue, and the post-latch hook performs the
+    /// real link/monitor wake inline in the exact window between free latching the
+    /// actor out of `Idle` and `untrack_actor`. The wake routes through the same
+    /// `with_live_actor_by_id` guard the production link/monitor paths use, so the
+    /// test exercises the production reachability, not a synthetic shortcut.
+    ///
+    /// WITH the producer-side Idle->Stopped latch: by the time the hook runs the
+    /// actor is `Stopped`, so the waker's `CAS Idle->Runnable` FAILS — nothing is
+    /// enqueued, free completes cleanly (`rc == 0`), and the global queue is empty
+    /// (no queued-after-free). The assertions below encode exactly that.
+    ///
+    /// WITHOUT the latch (revert step 3 to break on the bare post-detach `Idle`):
+    /// the hook's CAS succeeds, `sched_enqueue` leaves a live pointer in the
+    /// queue, and free untracks + frees it → `POST_LATCH_WAKE_SUCCEEDED == true`
+    /// and a dangling pointer is observable via `sched.pop_global()` after the box
+    /// is freed (the UAF; would trip ASAN on a later `activate_actor`). Verified:
+    /// reverting the latch flips this test to fail at the
+    /// `!POST_LATCH_WAKE_SUCCEEDED` assertion (observed `rc=0 queued_after_free=true`).
+    #[test]
+    fn free_latches_actor_against_nonreactor_wake_before_untrack() {
+        let _guard = crate::runtime_test_guard();
+        // Worker-less scheduler: sched_enqueue works, nothing drains the queue, so
+        // any wake-enqueued pointer stays observable. The guard holds
+        // SCHED_TEST_MUTEX, serializing against scheduler tests.
+        let sched = scheduler::NoWorkerSchedulerForTest::install();
+        // Hold the tracing lock too (consistent lock order: SCHED then tracing):
+        // free's terminate/finalize path emits lifecycle events into the
+        // process-global trace ring when tracing is enabled, which would otherwise
+        // race a concurrent tracing/span test's ring assertions.
+        let _tracing = crate::tracing::tracing_test_guard();
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+
+        // Freshly spawned actors are Idle (quiescent) — free's wait + post-detach
+        // reload both observe Idle, then free latches Idle->Stopped before the
+        // post-latch hook fires the non-reactor wake.
+        // SAFETY: actor is valid (just spawned, owned by this test).
+        let spawned_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        assert_eq!(spawned_state, HewActorState::Idle as i32);
+
+        POST_LATCH_WAKE_HOOK_FIRED.store(false, Ordering::Release);
+        POST_LATCH_WAKE_SUCCEEDED.store(false, Ordering::Release);
+        set_free_post_latch_hook_for_test(Some(nonreactor_wake_post_latch_hook));
+
+        // SAFETY: actor is valid; free is the operation under test.
+        let rc = unsafe { hew_actor_free(actor) };
+
+        // Always clear the hook so it cannot affect teardown or other tests.
+        set_free_post_latch_hook_for_test(None);
+
+        assert!(
+            POST_LATCH_WAKE_HOOK_FIRED.load(Ordering::Acquire),
+            "post-latch hook must have fired — the test did not exercise the window"
+        );
+        // The load-bearing assertion: the non-reactor waker's CAS Idle->Runnable
+        // must FAIL because free latched the actor to Stopped first. If it
+        // succeeds, the producer-side latch did not close the window (the UAF).
+        assert!(
+            !POST_LATCH_WAKE_SUCCEEDED.load(Ordering::Acquire),
+            "a non-reactor wake CAS'd Idle->Runnable in the free window — free \
+             latched the actor too late (this is the use-after-free the latch must close)"
+        );
+        // With the wake blocked, free completes cleanly.
+        assert_eq!(
+            rc, 0,
+            "hew_actor_free must succeed once the actor is wake-proof (got {rc})"
+        );
+        // The actor is freed and no longer tracked.
+        assert!(
+            !live_actors::is_actor_live(actor),
+            "freed actor must no longer be tracked in LIVE_ACTORS"
+        );
+        // No pointer was left in the global queue — nothing dangles after free.
+        let queued_after_free = sched.pop_global();
+        assert_eq!(
+            queued_after_free, None,
+            "no actor pointer may remain queued after free (a queued pointer here \
+             would dangle — the use-after-free)"
+        );
+        drop(sched);
     }
 
     #[test]

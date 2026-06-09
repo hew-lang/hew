@@ -116,7 +116,10 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. } => "E_MIR_CHECK",
-        hew_mir::MirDiagnosticKind::NotYetImplemented { .. } => "E_NOT_YET_IMPLEMENTED",
+        hew_mir::MirDiagnosticKind::NotYetImplemented { .. }
+        | hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. } => {
+            "E_NOT_YET_IMPLEMENTED"
+        }
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
@@ -473,6 +476,9 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { .. } => {
             "CallTraitMethodSignatureUnresolved"
         }
+        hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. } => {
+            "OwnedHandleAggregateExtractionUnsupported"
+        }
     }
 }
 
@@ -530,7 +536,8 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
         | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
         | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
-        | hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { .. } => None,
+        | hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { .. }
+        | hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. } => None,
     }
 }
 
@@ -647,6 +654,14 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             "dyn-trait method dispatch `{trait_name}::{method_name}` reached MIR with an \
              unresolved caller-side signature ({reason})"
         ),
+        hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported {
+            name,
+            handle_ty,
+        } => format!(
+            "extracting an owned handle (`{name}`: {handle_ty}) out of an aggregate in this \
+             shape is not yet supported in v0.5 — iterate or consume the handle directly, or \
+             return it without re-aggregating (full support lands in v0.5.1)"
+        ),
     };
     format!("{}: {message}", mir_diagnostic_prefix(&diagnostic.kind))
 }
@@ -711,6 +726,11 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
         | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
         | hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { .. }
         | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { .. } => {}
+        hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported {
+            handle_ty, ..
+        } => {
+            notes.push(format!("handle type: {handle_ty}"));
+        }
     }
     if !diagnostic.note.is_empty() {
         notes.push(diagnostic.note.clone());

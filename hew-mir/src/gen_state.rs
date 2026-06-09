@@ -130,7 +130,14 @@ const MAX_LIVE_LOCALS_FOR_MASK: usize = 64;
 /// must include the places its terminator reads.
 fn terminator_reads(term: &Terminator) -> Vec<Place> {
     match term {
-        Terminator::Return | Terminator::Trap { .. } | Terminator::Goto { .. } => Vec::new(),
+        // `MakeGenerator` reads no places — its body-fn is a static symbol, not
+        // a Place, and it writes `dest`. It never appears inside a gen-body (only
+        // in the enclosing function), so it is read-free here, like the other
+        // no-operand terminators.
+        Terminator::Return
+        | Terminator::Trap { .. }
+        | Terminator::Goto { .. }
+        | Terminator::MakeGenerator { .. } => Vec::new(),
         Terminator::Branch { cond, .. } => vec![*cond],
         Terminator::Call { args, .. } => args.clone(),
         Terminator::Yield { value, .. } => vec![*value],

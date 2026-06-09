@@ -172,9 +172,18 @@ impl std::fmt::Display for CodegenError {
                     )
                 } else if symbol == "hew_tcp_stream_from_conn" {
                     ("the TCP transport substrate", "WASM-TODO(#1451)")
-                } else if symbol == "hew_gen_yield" {
+                } else if symbol == "hew_gen_yield"
+                    || symbol == "hew_gen_ctx_create"
+                    || symbol == "hew_gen_next"
+                    || symbol == "hew_gen_free"
+                {
+                    // Construction (`hew_gen_ctx_create`), suspension
+                    // (`hew_gen_yield`), consumption (`hew_gen_next`), and
+                    // release (`hew_gen_free`) all belong to the native-only
+                    // generator substrate; whichever the WASM gate reports first
+                    // surfaces the same "generator" category.
                     (
-                        "the generator yield substrate",
+                        "the generator substrate",
                         "WASM-TODO(#1451): generator wasm parity not yet designed",
                     )
                 } else {
@@ -559,6 +568,14 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
             if let Terminator::Yield { .. } = &block.terminator {
                 return Some("hew_gen_yield".to_string());
             }
+            // Generator construction emits `hew_gen_ctx_create`, also gated
+            // `#[cfg(not(target_arch = "wasm32"))]` in the runtime. A `gen fn` /
+            // `gen { }` construction site in a WASM build would otherwise emit a
+            // dangling reference; surface the same structured native-only
+            // diagnostic the Yield gate above produces.
+            if let Terminator::MakeGenerator { .. } = &block.terminator {
+                return Some("hew_gen_ctx_create".to_string());
+            }
         }
     }
     // Also scan elaborated_mir drop_plans: the real close path goes through
@@ -708,6 +725,27 @@ fn initialise_llvm_targets() {
 struct FnCtx<'a, 'ctx> {
     ctx: &'ctx Context,
     llvm_mod: &'a LlvmModule<'ctx>,
+    /// Emit `hew_shutdown_initiate(0)` + `hew_shutdown_wait()` before the
+    /// `Terminator::Return` in the native program entry point of an
+    /// actor-using program — the implicit actor-drain floor.
+    ///
+    /// `true` ONLY when ALL of: `func.name == "main"`, the module has at
+    /// least one actor layout (`!actor_layouts.is_empty()`), and the target
+    /// is native (`!emit_wasm_entry_alias`). `false` for all other functions,
+    /// non-actor programs, and WASM targets (cooperative scheduler; host
+    /// manages lifecycle).
+    ///
+    /// WHY this is a codegen special-case: it is the implicit safe floor for
+    /// fire-and-forget actor message delivery. Without it, `main` returning
+    /// races the OS killing scheduler worker threads before they drain.
+    /// WHEN obsolete: when the companion lane lands the explicit `drain {}` /
+    /// `join {}` language surface and MIR lower emits `Terminator::Drain` at
+    /// program exit; this flag and its emit block become dead and can be
+    /// removed then.
+    /// WHAT the real solution is: a MIR-level `Terminator::Drain` emitted by
+    /// the lowerer, so the drain is part of the program's control-flow graph
+    /// rather than a codegen epilogue injection.
+    emit_drain_epilogue: bool,
     /// ABI layout authority for the module target. Native textual emission
     /// carries host data; cross-target emission carries the target machine data.
     target_data: &'a TargetData,
@@ -1074,8 +1112,14 @@ fn intern_runtime_decl<'ctx>(
         // (`hew-runtime/src/transport.rs`). The active-mode `conn.attach(handler)`
         // surface lowers here: codegen synthesises the two msg_id args from the
         // concrete actor's protocol descriptor (`emit_tcp_attach_local_call`).
+        // `conn` is declared pointer-shaped — `Connection` is an `#[opaque]`
+        // handle that lowers to a bare `ptr` (W3.020), and every other TCP ABI
+        // (`hew_tcp_accept`/`hew_tcp_write`/…) likewise hands the `c_int` fd to
+        // the runtime in a pointer-shaped register; the runtime reads it back as
+        // `c_int`. Declaring it `i32` here (the lone outlier) made codegen pass a
+        // `ptr` value to an `i32` parameter and fail LLVM verification.
         "hew_tcp_attach_local" => i32_ty.fn_type(
-            &[i32_ty.into(), ptr_ty.into(), i32_ty.into(), i32_ty.into()],
+            &[ptr_ty.into(), ptr_ty.into(), i32_ty.into(), i32_ty.into()],
             false,
         ),
         "hew_node_api_ask" => ptr_ty.fn_type(
@@ -1132,6 +1176,24 @@ fn intern_runtime_decl<'ctx>(
             .bool_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false),
         "hew_sched_init" => i32_ty.fn_type(&[], false),
+        // hew_shutdown_initiate(drain_timeout_ms: i64) -> void
+        // (`hew-runtime/src/shutdown.rs:183`). Non-blocking — sets the
+        // shutdown phase to QUIESCE and spawns an orchestrator thread that
+        // drains remaining actor messages then calls `hew_sched_shutdown`.
+        // Pass 0 to use the default 5-second drain timeout.
+        // Pass negative to skip the drain (immediate terminate).
+        // Safe to call on an uninitialized scheduler: `drain_is_idle()`
+        // returns `true` immediately when no scheduler is present, so the
+        // orchestrator completes in ~20 ms (two idle polls at 10 ms each).
+        // Used by the implicit main-exit drain epilogue (codegen-emitted).
+        "hew_shutdown_initiate" => ctx.void_type().fn_type(&[i64_ty.into()], false),
+        // hew_shutdown_wait() -> i32
+        // (`hew-runtime/src/shutdown.rs:231`). Blocks until `PHASE_DONE`
+        // (returns 0). Returns -1 if shutdown was never initiated and -2
+        // if the shutdown worker panicked. Paired with
+        // `hew_shutdown_initiate`; emitted by the implicit main-exit drain
+        // epilogue immediately after the initiate call (codegen-emitted).
+        "hew_shutdown_wait" => i32_ty.fn_type(&[], false),
         // hew_duplex_pair(s_cap: usize, r_cap: usize,
         //                 out_a: *mut *mut HewDuplexHandle,
         //                 out_b: *mut *mut HewDuplexHandle) -> i32
@@ -1169,15 +1231,42 @@ fn intern_runtime_decl<'ctx>(
         // reference. Observation paths do not call this; elaborated drop plans
         // call it at normal resource cleanup points.
         "hew_cancel_token_release" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_stream_close(stream: *mut HewStream) -> void
+        // (`hew-runtime/src/stream.rs:1576`). Drops the owned stream handle;
+        // null-safe. Emitted by elaborated drop plans for `Stream<T>` locals.
+        "hew_stream_close" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_sink_close(sink: *mut HewSink) -> void
+        // (`hew-runtime/src/stream.rs:1623`). Drops the owned sink handle;
+        // null-safe. Emitted by elaborated drop plans for `Sink<T>` locals.
+        "hew_sink_close" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         // hew_vec_len(v: *mut HewVec) -> i64
         // (`hew-runtime/src/vec.rs:649`). Returns the element count as i64.
         "hew_vec_len" => i64_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_bytes_len(triple: *const BytesTriple) -> i64
+        // (`hew-runtime/src/bytes.rs`). The canonical `bytes.len()` entry: a
+        // `bytes` value is a `BytesTriple`, not a `*mut HewVec`. Passed BY
+        // POINTER (the caller's triple alloca address) — the by-pointer bytes-
+        // consumer convention (`is_bytes_by_pointer_consumer`); by value the
+        // `{ptr,i32,i32}` arg is not reliably ABI-portable. Returns `len` as i64.
+        "hew_bytes_len" => i64_ty.fn_type(&[ptr_ty.into()], false),
         // hew_bytes_push(triple: &mut BytesTriple, byte: u8) -> void.
         // The receiver is the address of the stack-resident BytesTriple, not a
         // loaded heap Vec pointer.
         "hew_bytes_push" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), i8_ty.into()], false),
+        // hew_bytes_index(ptr: *mut u8, offset: u32, len: u32, index: i64) -> u8
+        // (`hew-runtime/src/bytes.rs:773`). The dedicated `bytes` element getter:
+        // a `bytes` value is a `BytesTriple { ptr, offset, len }`, NOT a
+        // `*mut HewVec`, so the `hew_vec_get_i32(*mut HewVec, i64)` ABI cannot
+        // apply. The triple fields are passed BY VALUE (the runtime takes the
+        // unpacked `ptr`/`offset`/`len`, not a triple pointer) so the small-struct
+        // ABI classification ambiguity never arises. The runtime bounds-checks
+        // `index` and aborts on OOB (boundary-fail-closed). Returns the byte as u8.
+        "hew_bytes_index" => i8_ty.fn_type(
+            &[ptr_ty.into(), i32_ty.into(), i32_ty.into(), i64_ty.into()],
+            false,
+        ),
         // hew_vec_get_bool(v: *mut HewVec, index: i64) -> bool
         // Rust/C bool crosses the ABI as i1; Hew bool locals are stored as i8.
         "hew_vec_get_bool" => ctx
@@ -1492,6 +1581,31 @@ fn intern_runtime_decl<'ctx>(
         // load-bearing swap that promotes the generators substrate always-emit seam
         // from a const-null observer to a live parent-scope observer.
         "hew_gen_ctx_parent_cancel_token" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_gen_ctx_create(body_fn: extern "C" fn(*mut c_void, *mut HewGenCtx),
+        //                    body_arg: *mut c_void, arg_size: usize) -> *mut HewGenCtx
+        // (`hew-runtime/src/generator.rs:132`). Spawns the generator thread and
+        // returns the context handle stored in the `Generator<Y,R>` value slot.
+        // Codegen emits this at the gen-block / gen-fn construction site, passing
+        // the address of the synthesised `__hew_gen_body_*` function and a null /
+        // zero-size body arg (capture-free generators today). The returned handle
+        // is released by `hew_gen_free` on the generator value's drop path.
+        "hew_gen_ctx_create" => {
+            ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false)
+        }
+        // hew_gen_next(ctx: *mut HewGenCtx, out_size: *mut usize) -> *mut c_void
+        // (`hew-runtime/src/generator.rs:341`). Resumes the generator and returns
+        // an owned heap pointer to the next yielded value (caller frees with
+        // `hew_free`/`libc::free`), writing the byte length through `out_size`;
+        // null = generator done. Codegen emits this from the `.next()` consumption
+        // path, unboxing the result into `Option<Yield>`.
+        "hew_gen_next" => ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_gen_free(ctx: *mut HewGenCtx) -> void
+        // (`hew-runtime/src/generator.rs:414`). Cancels (if running), joins the
+        // generator thread, drains unconsumed yields, and frees the context. The
+        // sole release path for the `Generator<Y,R>` handle; codegen emits it on
+        // every scope-exit / drop path of the generator value, null-after-free so
+        // a double drop is a no-op (the runtime also null-guards).
+        "hew_gen_free" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         // ── W5.005 (F1b): memory-intrinsic floor allocator (hew-runtime/src/mem.rs) ──
         // hew_alloc(size: u64, align: u64) -> *mut u8 (`mem.rs:113`). Returns
         // null on an invalid `(size, align)` layout; aborts on genuine OOM.
@@ -1695,8 +1809,16 @@ fn declare_catalog_ffi<'ctx>(
             returns_unit: matches!(entry.return_ty, BuiltinTy::Unit | BuiltinTy::Never),
         });
     }
+    let bytes_by_pointer = is_bytes_by_pointer_consumer(symbol);
     let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(entry.params.len());
     for (idx, param) in entry.params.iter().enumerate() {
+        // A `bytes` parameter of a by-pointer consumer lowers to a plain `ptr`
+        // (the address of the caller's BytesTriple alloca). See
+        // `is_bytes_by_pointer_consumer`.
+        if bytes_by_pointer && matches!(param, BuiltinTy::Bytes) {
+            param_tys.push(ctx.ptr_type(AddressSpace::default()).into());
+            continue;
+        }
         let llvm_param = match runtime_ffi_param_abi_bits(symbol, idx) {
             Some(32) => ctx.i32_type().into(),
             Some(bits) => {
@@ -1712,15 +1834,25 @@ fn declare_catalog_ffi<'ctx>(
     // narrower than the Hew-facing catalog type. The call boundary
     // (`Terminator::Call` → `FnSymbol::Real`) reconciles the narrow result up to
     // the Hew dest width with sign-extension. See `runtime_ffi_return_abi_bits`.
-    let return_ty = match runtime_ffi_return_abi_bits(symbol) {
-        Some(32) => Some(ctx.i32_type().into()),
-        Some(bits) => {
-            return Err(CodegenError::FailClosed(format!(
-                "runtime FFI ABI width {bits} for `{symbol}` is unsupported"
-            )));
-        }
-        None => builtin_return_to_llvm(ctx, entry.return_ty, record_layouts)?,
-    };
+    let return_ty =
+        if matches!(entry.return_ty, BuiltinTy::Bytes) && is_bytes_triple_return_producer(symbol) {
+            // A migrated `bytes` producer returns the AAPCS/SysV two-eightbyte
+            // `[2 x i64]` boundary type, reconstructed into the `{ptr,i32,i32}` dest
+            // at the call return-store (see `predeclare_extern_decls`). Scoped to the
+            // migrated producers — legacy HewVec-returning bytes catalog entries keep
+            // their existing (mismatched, fail-closed) declaration.
+            Some(ctx.i64_type().array_type(2).into())
+        } else {
+            match runtime_ffi_return_abi_bits(symbol) {
+                Some(32) => Some(ctx.i32_type().into()),
+                Some(bits) => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "runtime FFI ABI width {bits} for `{symbol}` is unsupported"
+                    )));
+                }
+                None => builtin_return_to_llvm(ctx, entry.return_ty, record_layouts)?,
+            }
+        };
     let fn_ty = fn_type_for_return(ctx, return_ty, &param_tys);
     let value = llvm_mod
         .get_function(symbol)
@@ -1866,16 +1998,44 @@ fn predeclare_extern_decls<'ctx>(
             );
             continue;
         }
+        let bytes_by_pointer = is_bytes_by_pointer_consumer(&decl.name);
         let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(decl.param_tys.len());
         for ty in &decl.param_tys {
+            // A `bytes` parameter of a by-pointer consumer is lowered to a plain
+            // `ptr` (the address of the caller's BytesTriple alloca); the generic
+            // Call path passes the alloca address rather than the loaded struct.
+            // See `is_bytes_by_pointer_consumer` for why.
+            if bytes_by_pointer && matches!(ty, ResolvedTy::Bytes) {
+                param_tys.push(ctx.ptr_type(AddressSpace::default()).into());
+                continue;
+            }
             param_tys.push(metadata_type_from_basic(resolve_ty(
                 ctx,
                 ty,
                 record_layouts,
             )?));
         }
+        // A `bytes`-returning Rust extern returns a `#[repr(C)] BytesTriple`
+        // (16 bytes, two eightbytes) in the AAPCS/SysV register pair (x0:x1 /
+        // rax:rdx). LLVM's `{ptr, i32, i32}` return type, by contrast, is
+        // classified as THREE return registers (x0, w1, w2) on AArch64, so the
+        // caller reads `len` from the wrong register and stores garbage when the
+        // result is spilled to memory. Declare the boundary return as
+        // `[2 x i64]` — which LLVM returns in the same two-register pair Rust
+        // uses — and reconstruct the `{ptr, i32, i32}` triple at the call's
+        // return-store site (a raw 16-byte store; byte layouts match). See the
+        // `[2 x i64]`/bytes branch in the `FnSymbol::Real` return handling.
+        // SCOPED to the migrated producers (`is_bytes_triple_return_producer`):
+        // only externs whose Rust impl actually returns `#[repr(C)] BytesTriple`
+        // get the `[2 x i64]` boundary return. Legacy HewVec-returning bytes
+        // externs (crypto/encoding/fs/quic/tls) must NOT — declaring them
+        // `[2 x i64]` would reinterpret a HewVec pointer as a triple and silently
+        // produce garbage instead of failing closed.
+        let bytes_return = is_bytes_triple_return_producer(&decl.name);
         let return_ty = if matches!(decl.return_ty, ResolvedTy::Unit) {
             None
+        } else if bytes_return {
+            Some(ctx.i64_type().array_type(2).into())
         } else {
             Some(resolve_ty(ctx, &decl.return_ty, record_layouts)?)
         };
@@ -2771,7 +2931,24 @@ fn machine_layout_for_local<'a, 'ctx>(
     // WHEN-OBSOLETE: if the layout map is ever re-keyed by a richer
     //   identifier (e.g. a `(origin_id, mono_args)` pair), this branch goes away.
     let lookup_key: String = if args.is_empty() {
-        name.clone()
+        // Monomorphic enums/machines register under their bare declaration
+        // name (`register_enum_layouts` / `register_machine_layouts` key by
+        // `EnumLayout.name` = the HIR `decl.name`, which is unqualified). A
+        // Place at an IMPORTER carries the module-qualified name (`fs.IoError`)
+        // because the local's `ResolvedTy::Named` was resolved against the
+        // importing scope. Strip the `module.` prefix when the qualified key
+        // is absent but the bare name is registered, mirroring the generic-enum
+        // branch's `short_name` fallback below.
+        // WHY: without this, constructing/matching an imported enum-with-data
+        //   (e.g. `IoError` from `std::fs`/`std::net`) fails closed at codegen
+        //   even though MIR registered the layout under the bare name.
+        // WHEN-OBSOLETE: if layouts are re-keyed by `(module, name)` so the
+        //   importer's qualified lookup matches directly.
+        if fn_ctx.machine_layouts.contains_key(name) {
+            name.clone()
+        } else {
+            short_name(name).to_string()
+        }
     } else {
         let key = mangle(name, args);
         if !fn_ctx.machine_layouts.contains_key(&key) {
@@ -2803,6 +2980,46 @@ fn machine_layout_for_local<'a, 'ctx>(
 
 fn short_name(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(_, short)| short)
+}
+
+/// Recursively replace every `Named { name, .. }` in `ty` with its
+/// short (unqualified) name, stripping any leading `"module."` prefix.
+///
+/// This normalises the type-arg spine of a generic instantiation so
+/// `Result<I64, fs.IoError>` and `Result<I64, IoError>` produce the same
+/// mangle key.  The layout-registration path uses the bare name (from
+/// inside the declaring module), but the MIR at import-use sites carries
+/// the qualified form. Without normalisation the mangled lookup key
+/// diverges and `resolve_ty` falls through to D10 for the generic type.
+///
+/// Only `Named` variants are touched; all other `ResolvedTy` leaf variants
+/// are returned unchanged.
+fn shorten_named_args(ty: ResolvedTy) -> ResolvedTy {
+    match ty {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+        } => ResolvedTy::Named {
+            name: short_name(&name).to_string(),
+            args: args.into_iter().map(shorten_named_args).collect(),
+            builtin,
+        },
+        other => other,
+    }
+}
+
+/// Returns `true` when `ty` or any nested `Named` contains a module-qualified
+/// name (i.e. `short_name(name) != name`).  Used as a fast pre-check before
+/// the allocation in `shorten_named_args` so the common unqualified path stays
+/// alloc-free.
+fn needs_normalization(ty: &ResolvedTy) -> bool {
+    match ty {
+        ResolvedTy::Named { name, args, .. } => {
+            short_name(name) != name.as_str() || args.iter().any(needs_normalization)
+        }
+        _ => false,
+    }
 }
 
 /// Resolve the mangled `enum_layouts` registration key for a `ResolvedTy::Named`
@@ -2891,12 +3108,80 @@ fn is_heap_owning_enum_composite_return(ty: &ResolvedTy, enum_layouts: &[EnumLay
 /// posture, and can never double-free). Admitting it here restores parity with
 /// `string`: a plain top-level heap-owning leaf return compiles.
 ///
-/// Deliberately NOT extended to tuples/records/arrays carrying heap — those are
-/// multi-owner composites whose interior owners genuinely need the tag-aware
-/// per-field drop the boundary still fails closed on (LESSONS:
-/// boundary-fail-closed, migration-completeness).
+/// Deliberately NOT extended to arrays carrying heap — those still fail closed.
+/// Tuples and records carrying owned heap are admitted via the dedicated
+/// `is_heap_owning_tuple_composite_return` / `is_heap_owning_record_composite_
+/// return` predicates (W5.021), which pair with the per-field
+/// `DropKind::TupleInPlace` / `DropKind::RecordInPlace` spine.
 fn is_single_heap_owning_leaf_return(ty: &ResolvedTy) -> bool {
     matches!(ty, ResolvedTy::Bytes)
+}
+
+/// True when a function return type is a heap-owning **tuple** composite whose
+/// per-element drop the W5.021 spine emits (`DropKind::TupleInPlace` +
+/// `__hew_tuple_drop_inplace_<key>`). The caller's tuple binding (or the
+/// `__tuple_N` destructure temp's element bindings) assumes the per-element drop
+/// obligation, so the composite-return boundary admits exactly this shape.
+///
+/// Keyed on the SEMANTIC property — a `ResolvedTy::Tuple` carrying at least one
+/// heap-owning element via the single `ty_contains_heap_owning` authority — not
+/// an incidental LLVM-shape proxy, so MIR (`ty_is_heap_owning_tuple`) and
+/// codegen agree on exactly which returns own heap (LESSONS:
+/// dedup-semantic-boundary, boundary-fail-closed). A tuple whose elements are
+/// all BitCopy never reaches here (`ty_contains_heap_owning` is false), and the
+/// gate's `StructType` arm only fires for heap-owning shapes anyway.
+fn is_heap_owning_tuple_composite_return(ty: &ResolvedTy, enum_layouts: &[EnumLayout]) -> bool {
+    matches!(ty, ResolvedTy::Tuple(_)) && ty_contains_heap_owning(ty, enum_layouts)
+}
+
+/// True when a function return type is a heap-owning **record** composite whose
+/// per-field drop the existing spine emits (`DropKind::RecordInPlace` +
+/// `__hew_record_drop_inplace_<R>`). The caller's record binding assumes the
+/// per-field drop obligation, so the composite-return boundary admits this
+/// shape (W5.021 — the record half of the tuple/record-of-owned-handles spine;
+/// the `RecordInPlace` machinery already exists, this predicate lifts the gate
+/// for it).
+///
+/// Restricted to a monomorphic user record (a `ResolvedTy::Named` with no
+/// generic args and no builtin discriminator) carrying heap, matching the
+/// `record_inplace_drop_name` consumer's key resolution. A generic record
+/// instantiation, an opaque/builtin handle, or an enum is excluded here — enums
+/// route through `is_heap_owning_enum_composite_return`, and a generic record
+/// return is a follow-on (it would need the mangled-key drop path). Fails
+/// closed for everything else (LESSONS: boundary-fail-closed,
+/// dedup-semantic-boundary).
+fn is_heap_owning_record_composite_return(
+    ty: &ResolvedTy,
+    record_layouts: &RecordLayoutMap<'_>,
+    enum_layouts: &[EnumLayout],
+) -> bool {
+    let ResolvedTy::Named {
+        name,
+        args,
+        builtin: None,
+    } = ty
+    else {
+        return false;
+    };
+    if !args.is_empty() {
+        return false;
+    }
+    // Exclude opaque pointer-backed handles (Stream/Sink/Connection/etc.):
+    // they carry no record struct layout, so they have no per-field
+    // `RecordInPlace` drop. A bare opaque handle return is handled elsewhere.
+    let short = short_name(name);
+    if record_layouts.opaque.contains(name.as_str()) || record_layouts.opaque.contains(short) {
+        return false;
+    }
+    // Must resolve to a registered user record layout (not an enum). The
+    // `record_inplace_drop_name` consumer keys on the bare monomorphic name, so
+    // confirm that key exists in the codegen record map.
+    let is_record = record_layouts.contains_key(name.as_str())
+        || record_layouts.contains_key(short)
+        || record_layouts
+            .keys()
+            .any(|k| short_name(k) == short || k == name);
+    is_record && ty_contains_heap_owning(ty, enum_layouts)
 }
 
 /// Returns `true` when the named enum registered in `enum_layouts` has
@@ -3034,16 +3319,41 @@ fn resolve_ty<'ctx>(
         // for any Named type that reaches it without a registered layout.
         //
         // WHEN-OBSOLETE: same as `machine_layout_for_local` note above.
+        //
+        // Module-qualification normalisation: at import-use boundaries the
+        // MIR carries qualified names (e.g. `Named { name: "fs.IoError" }`)
+        // while the layout-registration side uses bare names (`"IoError"`).
+        // Always resolve via the normalised (short) args so every use of
+        // `Result<Listener, fs.IoError>` maps to the same LLVM struct as
+        // `Result<Listener, IoError>`.  Without this, two distinct LLVM
+        // named structs are created for structurally-identical types, and
+        // cross-boundary moves fail with a type-identity mismatch.
+        let effective_args: std::borrow::Cow<[ResolvedTy]> = if args.iter().any(needs_normalization)
+        {
+            std::borrow::Cow::Owned(args.iter().cloned().map(shorten_named_args).collect())
+        } else {
+            std::borrow::Cow::Borrowed(args)
+        };
         let lookup_key: std::borrow::Cow<str> = if args.is_empty() {
             std::borrow::Cow::Borrowed(name.as_str())
         } else {
-            std::borrow::Cow::Owned(mangle(name, args))
+            std::borrow::Cow::Owned(mangle(name, &effective_args))
         };
         if let Some(st) = record_layouts.get(lookup_key.as_ref()) {
             return Ok((*st).into());
         }
-        if !args.is_empty() {
-            let short_key = mangle(short_name(name), args);
+        if args.is_empty() {
+            // Short-name fallback for zero-arg module-qualified types (e.g.
+            // `fs.IoError` → `IoError`).  The layout map is keyed by the
+            // bare (unqualified) name; a use site coming through an
+            // `import std::fs` boundary carries the qualified form.
+            // `is_indirect_enum` already does this fallback unconditionally;
+            // mirror that pattern here so `resolve_ty` agrees.
+            if let Some(st) = record_layouts.get(short_name(name)) {
+                return Ok((*st).into());
+            }
+        } else {
+            let short_key = mangle(short_name(name), &effective_args);
             if let Some(st) = record_layouts.get(short_key.as_str()) {
                 return Ok((*st).into());
             }
@@ -3143,7 +3453,7 @@ fn primitive_to_llvm<'ctx>(
         ResolvedTy::Named { name, .. }
             if matches!(
                 name.as_str(),
-                "Duplex" | "LocalPid" | "ActorRef" | "Actor" | "Stream"
+                "Duplex" | "LocalPid" | "ActorRef" | "Actor" | "Stream" | "Sink"
             ) =>
         {
             // M2 substrate duplex handle. The producer (`hew-mir/src/lower.rs`
@@ -3210,6 +3520,27 @@ fn primitive_to_llvm<'ctx>(
             // always a packed (node_id: u16, serial: u64) PID — a numeric
             // value, not a heap pointer.
             Ok(ctx.i64_type().into())
+        }
+        ResolvedTy::Named {
+            builtin:
+                Some(hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator),
+            ..
+        } => {
+            // A `Generator<Yield, Return>` value is the thread-based generator
+            // context handle `*mut HewGenCtx`, returned by `hew_gen_ctx_create`
+            // and released by `hew_gen_free`. Codegen materialises the slot as a
+            // bare opaque `ptr`, the same representation used for every other
+            // runtime handle (Duplex, Vec, HewTask, CancellationToken). The
+            // construction site stores the `hew_gen_ctx_create` result here;
+            // `.next()` loads it to drive `hew_gen_next`.
+            //
+            // Dispatched on the `builtin` discriminant, NOT the `name` string: a
+            // user-declared `type Generator { ... }` resolves to
+            // `Named { name: "Generator", builtin: None }` and must fall through
+            // to the D10 fail-closed arm below rather than be silently lowered to
+            // an opaque pointer. LESSONS: exhaustive-traversal-and-lowering,
+            // boundary-fail-closed, checker-authority.
+            Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
         ResolvedTy::Named { name, .. } => Err(CodegenError::FailClosed(format!(
             "D10 violation: Named/user type `{name}` reached the LLVM emitter; \
@@ -5555,6 +5886,25 @@ fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Clo
              body must intercept this arm and return null up front per plan §4.5 B"
                 .into(),
         )),
+        // W5.021 — Stream<T> / Sink<T> have no dup runtime helper, so the
+        // clone direction (supervisor-restart / aggregate clone) fails closed,
+        // matching the Connection posture. The owned-tuple drop spine only
+        // exercises the DROP direction (handles are moved, never cloned), so
+        // this arm is unreachable on that path; it stays fail-closed so a
+        // future clone caller cannot silently alias a handle pointer.
+        StateFieldCloneKind::IoHandle {
+            kind:
+                IoHandleKind::Stream
+                | IoHandleKind::Sink
+                | IoHandleKind::Generator
+                | IoHandleKind::CancellationToken,
+        } => Err(CodegenError::FailClosed(
+            "Stream/Sink/Generator/CancellationToken handle field reached per-field \
+             clone helper; these pointer-backed handles have no dup runtime symbol, \
+             so cloning (supervisor restart / aggregate clone) is unsupported. Only \
+             the drop direction is wired; move the handle instead of cloning it."
+                .into(),
+        )),
         StateFieldCloneKind::UserRecord { .. } => Err(CodegenError::FailClosed(
             "UserRecord arm requires per-record synthesised helper, not a \
              runtime extern — caller must dispatch separately"
@@ -5601,6 +5951,54 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
             // + `hew-runtime/src/actor.rs:766` C1 fix block.
             Ok(None)
         }
+        // W5.021 — Stream<T> / Sink<T> handle drop routes to the same C-ABI
+        // close symbol the single-handle `.close()` and standalone-binding drop
+        // use (`runtime_drop_symbol`: "Stream::close" -> hew_stream_close).
+        // The handle is a pointer loaded from the field slot; `emit_field_drop_
+        // step`'s `_` arm loads it and calls `void(ptr)`.
+        //
+        // SAFETY-CRITICAL: the runtime close is UNGUARDED at the pointer-free
+        // level. `hew_stream_close` / `hew_sink_close`
+        // (`hew-runtime/src/stream.rs`) do `drop(Box::from_raw(ptr))` behind a
+        // null check ONLY — there is no `ManuallyDrop` and no `AtomicBool` on
+        // the free. The `closed` flag in `HewStream::drop` guards the BACKING
+        // close, not the `Box` deallocation, so a second close of the same
+        // pointer is a double `Box::from_raw` = heap corruption / use-after-free,
+        // not a survivable leak. Exactly-once therefore rests ENTIRELY on the
+        // move-checker + the MIR drop-allow derivations
+        // (`derive_tuple_composite_drop_allowed`,
+        // `derive_returned_aggregate_member_bindings`): there is NO runtime
+        // backstop. Relaxing those provers re-opens the double-free. (Adding a
+        // real idempotency guard in the runtime is a possible defence-in-depth
+        // follow-on; until it exists, do not assume one.)
+        StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Stream,
+        } => Ok(Some(DropHelper {
+            name: "hew_stream_close",
+        })),
+        StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Sink,
+        } => Ok(Some(DropHelper {
+            name: "hew_sink_close",
+        })),
+        // Generator<Y, R> / AsyncGenerator<Y> handle drop routes to `hew_gen_free`
+        // (the same symbol the standalone generator-binding drop uses). The handle
+        // is a `*mut HewGenCtx` loaded from the field slot; `emit_field_drop_step`'s
+        // `_` arm loads it and calls `void(ptr)`. `hew_gen_free` is null-tolerant
+        // and the move-checker + tuple/record/enum drop-allow provers keep it
+        // exactly-once (same posture as Stream/Sink).
+        StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Generator,
+        } => Ok(Some(DropHelper {
+            name: "hew_gen_free",
+        })),
+        // CancellationToken handle drop routes to `hew_cancel_token_release`
+        // (ref-count decrement, free-at-zero; null-tolerant).
+        StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::CancellationToken,
+        } => Ok(Some(DropHelper {
+            name: "hew_cancel_token_release",
+        })),
         StateFieldCloneKind::UserRecord { .. } => Err(CodegenError::FailClosed(
             "UserRecord arm requires per-record synthesised drop helper, not a \
              runtime extern — caller must dispatch separately"
@@ -8334,6 +8732,148 @@ fn lower_instruction(
                 .build_store(dest_ptr, requested_bool)
                 .llvm_ctx("CancellationToken.is_cancelled store")?;
         }
+        Instr::GeneratorNext {
+            dest,
+            ctx,
+            yield_ty,
+        } => {
+            // Generator consumption (thread-based runtime,
+            // `hew-runtime/src/generator.rs:341`). Resume the generator, receive
+            // the next yielded value, and unbox it into `dest: Option<yield_ty>`:
+            //   - call `hew_gen_next(ctx, &out_size) -> *mut c_void`
+            //   - null result  → write None (tag 1) into dest
+            //   - non-null     → load the payload, write Some (tag 0) + value,
+            //                    free the heap pointer (consumer owns it).
+            // The Option tag convention (Some = 0, None = 1) matches
+            // `IntArithCheckedOption` above.
+            let Place::Local(dest_local) = dest else {
+                return Err(CodegenError::FailClosed(
+                    "Instr::GeneratorNext destination must be a local Option<Y> enum slot".into(),
+                ));
+            };
+            // Load the generator context handle (an opaque `ptr`).
+            let (ctx_slot, _ctx_slot_ty) = place_pointer(fn_ctx, *ctx)?;
+            let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+            let ctx_handle = fn_ctx
+                .builder
+                .build_load(ptr_ty, ctx_slot, "gen_next_ctx")
+                .llvm_ctx("gen next ctx load")?
+                .into_pointer_value();
+            // Out-param for the yielded value's byte size (written by the
+            // runtime; not otherwise consumed — the payload type is statically
+            // known from `yield_ty`).
+            let i64_ty = fn_ctx.ctx.i64_type();
+            let out_size = fn_ctx
+                .builder
+                .build_alloca(i64_ty, "gen_next_out_size")
+                .llvm_ctx("gen next out_size alloca")?;
+            let next_fn = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_gen_next",
+            )?;
+            let value_ptr = fn_ctx
+                .builder
+                .build_call(
+                    next_fn,
+                    &[ctx_handle.into(), out_size.into()],
+                    "hew_gen_next_call",
+                )
+                .llvm_ctx("hew_gen_next call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_gen_next returned void".into()))?
+                .into_pointer_value();
+            let is_null = fn_ctx
+                .builder
+                .build_is_null(value_ptr, "gen_next_is_done")
+                .llvm_ctx("gen next null check")?;
+
+            // Resolve the Option tag/payload slots (shared by both arms) and the
+            // yielded value's LLVM type BEFORE the conditional branch — these
+            // GEP/type resolutions must be emitted into the current (pre-branch)
+            // block, never after its terminator.
+            let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(*dest_local))?;
+            let tag_int = match tag_ty {
+                BasicTypeEnum::IntType(t) => t,
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "GeneratorNext dest Option tag must be integer-shaped; got {other:?}"
+                    )));
+                }
+            };
+            let some_payload = Place::EnumVariant {
+                local: *dest_local,
+                variant_idx: 0,
+                field_idx: 0,
+            };
+            let (payload_ptr, payload_ty) = place_pointer(fn_ctx, some_payload)?;
+            let yield_llvm = resolve_ty(fn_ctx.ctx, yield_ty, fn_ctx.record_layouts)?;
+            if yield_llvm != payload_ty {
+                return Err(CodegenError::FailClosed(format!(
+                    "GeneratorNext yield type {yield_llvm:?} must match Some payload slot {payload_ty:?}"
+                )));
+            }
+
+            let parent_fn = fn_ctx
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .ok_or_else(|| {
+                    CodegenError::Llvm("gen-next block has no parent function".into())
+                })?;
+            let none_bb = fn_ctx.ctx.append_basic_block(parent_fn, "gen_next_none");
+            let some_bb = fn_ctx.ctx.append_basic_block(parent_fn, "gen_next_some");
+            let cont_bb = fn_ctx.ctx.append_basic_block(parent_fn, "gen_next_cont");
+            fn_ctx
+                .builder
+                .build_conditional_branch(is_null, none_bb, some_bb)
+                .llvm_ctx("gen next branch")?;
+
+            // ── None: generator is done. Write tag 1; leave payload undef. ──
+            fn_ctx.builder.position_at_end(none_bb);
+            fn_ctx
+                .builder
+                .build_store(tag_ptr, tag_int.const_int(1, false))
+                .llvm_ctx("gen next None tag store")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(cont_bb)
+                .llvm_ctx("gen next None br")?;
+
+            // ── Some: load the yielded value, write tag 0 + payload, free. ──
+            // Load the yielded value from the runtime-returned heap pointer; the
+            // payload slot's LLVM type is the Some-variant field type
+            // (`yield_ty`), validated above.
+            fn_ctx.builder.position_at_end(some_bb);
+            let loaded = fn_ctx
+                .builder
+                .build_load(yield_llvm, value_ptr, "gen_next_value")
+                .llvm_ctx("gen next value load")?;
+            fn_ctx
+                .builder
+                .build_store(tag_ptr, tag_int.const_zero())
+                .llvm_ctx("gen next Some tag store")?;
+            fn_ctx
+                .builder
+                .build_store(payload_ptr, loaded)
+                .llvm_ctx("gen next Some payload store")?;
+            // The consumer owns the heap pointer `hew_gen_next` returned; free it
+            // now that the value has been copied into the Option payload slot
+            // (the runtime deep-copied it from the generator thread).
+            let free_fn = get_or_declare_libc_free(fn_ctx.ctx, fn_ctx.llvm_mod);
+            fn_ctx
+                .builder
+                .build_call(free_fn, &[value_ptr.into()], "gen_next_free_payload")
+                .llvm_ctx("gen next payload free")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(cont_bb)
+                .llvm_ctx("gen next Some br")?;
+
+            fn_ctx.builder.position_at_end(cont_bb);
+        }
         Instr::ContextField { dest, offset } => {
             lower_context_field(fn_ctx, *dest, *offset)?;
         }
@@ -9720,6 +10260,27 @@ fn lower_instruction(
             let _ = ctx;
         }
         Instr::TupleConstruct { elements, dest } => {
+            // The empty tuple `()` IS the unit value: `primitive_to_llvm(Unit)`
+            // maps it to a zero-information `i8`, not a struct, so there is no
+            // field to populate. Materialise the canonical zero into the dest
+            // slot (matching `Instr::UnitLit`) and finish — without this arm a
+            // `yield ()` / `let x = ()` would fail closed at the struct check
+            // below. A non-empty tuple still requires a struct dest.
+            if elements.is_empty() {
+                let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+                let BasicTypeEnum::IntType(unit_int) = dest_ty else {
+                    return Err(CodegenError::FailClosed(format!(
+                        "empty-tuple (unit) TupleConstruct dest must be the i8 unit \
+                         representation; got {dest_ty:?}"
+                    )));
+                };
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, unit_int.const_zero())
+                    .llvm_ctx("unit tuple construct store")?;
+                let _ = ctx;
+                return Ok(());
+            }
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
 
             let tuple_struct_ty = match dest_ty {
@@ -11304,30 +11865,24 @@ fn tuple_field_clone_kind(
     })
 }
 
-/// Synthesize the `__hew_tuple_{clone,drop}_inplace_<key>` bodies for an owned
-/// tuple shape. Reuses the per-field clone/drop step machinery
-/// (`emit_field_clone_step` / `emit_field_drop_step`) over the tuple's struct
-/// fields — the same primitives the record bodies use — so the rollback and
-/// drop discipline are identical (`lifecycle-symmetry`). Idempotent: no-ops if
-/// the bodies already exist (a tuple shape may be referenced by multiple owned
-/// Vecs).
-fn emit_tuple_inplace_thunk_bodies<'ctx>(
+/// Build the per-element drop/clone classifications for an owned tuple shape,
+/// plus the tuple's LLVM struct type. Shared by the clone+drop thunk emitter
+/// (owned-Vec element path) and the drop-only emitter (W5.021 owned-tuple drop
+/// spine), so both consume the same classification authority.
+fn tuple_inplace_field_kinds<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     tuple_key: &str,
     elems: &[ResolvedTy],
     tuple_llvm_ty: BasicTypeEnum<'ctx>,
-) -> CodegenResult<()> {
-    let ctx = fn_ctx.ctx;
-    let llvm_mod = fn_ctx.llvm_mod;
+) -> CodegenResult<(StructType<'ctx>, Vec<hew_mir::StateFieldCloneKind>)> {
     let BasicTypeEnum::StructType(tuple_struct) = tuple_llvm_ty else {
         return Err(CodegenError::FailClosed(format!(
             "owned tuple thunk `{tuple_key}`: tuple LLVM type is not a struct ({tuple_llvm_ty:?})"
         )));
     };
-    // Build the per-field clone kinds once (shared by clone + drop bodies).
-    // Needs the MIR record/enum layout slices; codegen carries the LLVM
-    // record map, so reconstruct a minimal RecordLayout slice from the
-    // resolved-field table for the classifier.
+    // Needs the MIR record/enum layout slices; codegen carries the LLVM record
+    // map, so reconstruct a minimal RecordLayout slice from the resolved-field
+    // table for the classifier.
     let record_layouts: Vec<hew_mir::RecordLayout> = fn_ctx
         .record_field_resolved_tys
         .iter()
@@ -11344,6 +11899,25 @@ fn emit_tuple_inplace_thunk_bodies<'ctx>(
             fn_ctx.enum_layouts,
         )?);
     }
+    Ok((tuple_struct, kinds))
+}
+
+/// Synthesize the `__hew_tuple_{clone,drop}_inplace_<key>` bodies for an owned
+/// tuple shape. Reuses the per-field clone/drop step machinery
+/// (`emit_field_clone_step` / `emit_field_drop_step`) over the tuple's struct
+/// fields — the same primitives the record bodies use — so the rollback and
+/// drop discipline are identical (`lifecycle-symmetry`). Idempotent: no-ops if
+/// the bodies already exist (a tuple shape may be referenced by multiple owned
+/// Vecs).
+fn emit_tuple_inplace_thunk_bodies<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    tuple_key: &str,
+    elems: &[ResolvedTy],
+    tuple_llvm_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<()> {
+    let ctx = fn_ctx.ctx;
+    let llvm_mod = fn_ctx.llvm_mod;
+    let (tuple_struct, kinds) = tuple_inplace_field_kinds(fn_ctx, tuple_key, elems, tuple_llvm_ty)?;
 
     let clone_fn = get_or_declare_tuple_clone_inplace(ctx, llvm_mod, tuple_key);
     if clone_fn.count_basic_blocks() == 0 {
@@ -11354,6 +11928,31 @@ fn emit_tuple_inplace_thunk_bodies<'ctx>(
         emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, &kinds)?;
     }
     Ok(())
+}
+
+/// Synthesize ONLY the `__hew_tuple_drop_inplace_<key>` body for an owned tuple
+/// shape — the W5.021 owned-tuple drop spine. Tuples crossing a return boundary
+/// are MOVED, never cloned, so the drop side is the only direction the spine
+/// needs; emitting the clone body would fail closed for a tuple carrying a
+/// `Stream`/`Sink` handle (no dup runtime helper). Idempotent: no-ops if the
+/// drop body already exists (the same tuple shape may also be an owned-Vec
+/// element, whose seeding emits both bodies via `emit_tuple_inplace_thunk_
+/// bodies` — whichever runs first wins, and both emit identical drop IR per
+/// `lifecycle-symmetry`).
+fn emit_tuple_drop_inplace_body_only<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    tuple_key: &str,
+    elems: &[ResolvedTy],
+    tuple_llvm_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<()> {
+    let ctx = fn_ctx.ctx;
+    let llvm_mod = fn_ctx.llvm_mod;
+    let drop_fn = get_or_declare_tuple_drop_inplace(ctx, llvm_mod, tuple_key);
+    if drop_fn.count_basic_blocks() > 0 {
+        return Ok(());
+    }
+    let (tuple_struct, kinds) = tuple_inplace_field_kinds(fn_ctx, tuple_key, elems, tuple_llvm_ty)?;
+    emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, &kinds)
 }
 
 /// Resolve an owned Vec element `ResolvedTy` to its `(thunk-kind, layout-key)`.
@@ -13068,6 +13667,57 @@ fn is_hashmap_constructor_symbol(symbol: &str) -> bool {
 /// resolved as a user/runtime symbol.
 fn is_bytes_constructor_symbol(symbol: &str) -> bool {
     symbol == "bytes::new"
+}
+
+/// Runtime consumers that take a `bytes` value BY POINTER (`*const BytesTriple`)
+/// rather than by value.
+///
+/// WHY: a 16-byte `BytesTriple {ptr, i32, i32}` passed by value as a NON-first
+/// argument loses its second eightbyte (offset/len) at the C-ABI boundary in
+/// the current codegen — the in-register small-struct coercion is only reliable
+/// for a single/first by-value struct argument (e.g. `hew_bytes_to_string`).
+/// These consumers all take the bytes value after a leading handle argument
+/// (`conn`/`sink`), so codegen passes the address of the caller's triple alloca
+/// (a plain `ptr`, always ABI-portable) and the runtime reads through it —
+/// exactly the proven `hew_bytes_push(&mut BytesTriple, ..)` pattern. The Hew
+/// surface still declares these params as `bytes`; only the C-ABI lowering
+/// differs. WHEN OBSOLETE: when codegen emits the correct C-ABI coercion for a
+/// by-value struct in any argument position (e.g. via the `byval`/coerced-int
+/// frontend lowering), these can revert to by-value `bytes` params.
+fn is_bytes_by_pointer_consumer(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "hew_tcp_write"
+            | "hew_sink_write_bytes"
+            | "hew_sink_try_write_bytes"
+            | "hew_bytes_to_string"
+            | "hew_bytes_len"
+    )
+}
+
+/// Runtime producers whose Rust impl returns a `#[repr(C)] BytesTriple` by value
+/// and that codegen therefore declares with the AAPCS/SysV `[2 x i64]` boundary
+/// return type (reconstructed into the `{ptr,i32,i32}` dest at the call's
+/// return-store).
+///
+/// SCOPED ALLOWLIST, not "every `bytes`-returning extern": the crypto / encoding
+/// / fs / quic / tls bytes runtime entries still return a legacy `*mut HewVec`
+/// (their migration to BytesTriple is separate, follow-on work). Declaring those
+/// with a `[2 x i64]` return would silently reinterpret a `HewVec` pointer as a
+/// triple — turning a loud fail-closed codegen error into wrong runtime output.
+/// Only the symbols whose Rust impl actually returns `BytesTriple` belong here.
+fn is_bytes_triple_return_producer(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "hew_tcp_read"
+            | "hew_string_to_bytes"
+            | "hew_bytes_from_str"
+            | "hew_bytes_from_static"
+            | "hew_bytes_concat"
+            | "hew_bytes_slice"
+            | "hew_stream_next_bytes"
+            | "hew_stream_try_next_bytes"
+    )
 }
 
 fn hashmap_constructor_runtime_symbol(symbol: &str) -> CodegenResult<&'static str> {
@@ -15184,6 +15834,116 @@ fn lower_call_runtime_abi(
             }
             let _ = (i64_ty, ptr_ty);
         }
+        // hew_bytes_index(ptr: *mut u8, offset: u32, len: u32, index: i64) -> u8
+        // (`hew-runtime/src/bytes.rs:773`). The dedicated `bytes` element getter
+        // for both the `b[i]` indexing sugar (MIR `lower_bytes_index`) and the
+        // `bytes.get(i)` method (`impl bytes` in `std/io.hew`).
+        //
+        // A `bytes` value is a stack-resident `BytesTriple { ptr, offset, len }`,
+        // NOT a `*mut HewVec`, so it must NOT route through the Vec getter (which
+        // loads a heap-Vec `ptr` from arg0 via `load_duplex_handle`). The triple
+        // is passed BY VALUE field-by-field: GEP the triple alloca for `ptr`
+        // (field 0), `offset` (field 1, i32), and `len` (field 2, i32), then
+        // hand them to the runtime alongside the i64 index. The runtime
+        // bounds-checks and aborts on OOB (boundary-fail-closed); no compiler-
+        // emitted trap CFG. The dest int type is widened from the runtime's i8
+        // return (i8 for `b[i]`'s `u8` dest; i32 for `bytes.get`'s `i32` dest).
+        "hew_bytes_index" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_bytes_index): expected 2 args \
+                     (bytes, index), got {}",
+                    args.len()
+                )));
+            }
+            if !matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_index arg0 must be a `bytes` receiver; got {:?}",
+                    place_resolved_ty(fn_ctx, args[0])?
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_bytes_index returns a byte; producer must supply a dest".into(),
+                )
+            })?;
+            // Unpack the BytesTriple alloca: {ptr, i32 offset, i32 len}.
+            let (triple_ptr, triple_ty) = place_pointer(fn_ctx, args[0])?;
+            let BasicTypeEnum::StructType(triple_struct_ty) = triple_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_index: bytes receiver alloca has non-struct type {triple_ty:?}; \
+                     expected the `{{ptr, i32, i32}}` BytesTriple layout"
+                )));
+            };
+            let data_ptr_gep = fn_ctx
+                .builder
+                .build_struct_gep(triple_struct_ty, triple_ptr, 0, "bytes_index_ptr_gep")
+                .llvm_ctx("hew_bytes_index ptr GEP")?;
+            let data_ptr = fn_ctx
+                .builder
+                .build_load(ptr_ty, data_ptr_gep, "bytes_index_ptr")
+                .llvm_ctx("hew_bytes_index ptr load")?
+                .into_pointer_value();
+            let offset_gep = fn_ctx
+                .builder
+                .build_struct_gep(triple_struct_ty, triple_ptr, 1, "bytes_index_offset_gep")
+                .llvm_ctx("hew_bytes_index offset GEP")?;
+            let offset_val = fn_ctx
+                .builder
+                .build_load(i32_ty, offset_gep, "bytes_index_offset")
+                .llvm_ctx("hew_bytes_index offset load")?
+                .into_int_value();
+            let len_gep = fn_ctx
+                .builder
+                .build_struct_gep(triple_struct_ty, triple_ptr, 2, "bytes_index_len_gep")
+                .llvm_ctx("hew_bytes_index len GEP")?;
+            let len_val = fn_ctx
+                .builder
+                .build_load(i32_ty, len_gep, "bytes_index_len")
+                .llvm_ctx("hew_bytes_index len load")?
+                .into_int_value();
+            let index_val = load_int_arg(fn_ctx, args[1], i64_ty, "hew_bytes_index index")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[
+                        data_ptr.into(),
+                        offset_val.into(),
+                        len_val.into(),
+                        index_val.into(),
+                    ],
+                    "hew_bytes_index_call",
+                )
+                .llvm_ctx("hew_bytes_index call")?;
+            let byte_val = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_bytes_index returned void".into()))?
+                .into_int_value();
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            let BasicTypeEnum::IntType(dest_int_ty) = dest_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_index dest must be integer-shaped (u8 / i32); got {dest_ty:?}"
+                )));
+            };
+            // Zero-extend the u8 byte to the dest width (no-op when dest is i8).
+            let store_val = fn_ctx
+                .builder
+                .build_int_z_extend_or_bit_cast(byte_val, dest_int_ty, "bytes_index_zext")
+                .llvm_ctx("hew_bytes_index zext")?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, store_val)
+                .llvm_ctx("hew_bytes_index store")?;
+            let _ = (i8_ty, i64_ty, ptr_ty);
+        }
         // Actor link/monitor builtins.
         //
         // SHIM(B3→Cluster2): `link()` returns `Result<(), LinkError>` and
@@ -15327,12 +16087,50 @@ fn lower_call_runtime_abi(
         // hew_vec_len(v: *mut HewVec) -> i64
         // args[0]: Place::Local(N) holding a `*mut HewVec` pointer — load the
         // ptr from the alloca. dest: Place::Local(M) of type i64 — store result.
+        //
         "hew_vec_len" => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_vec_len): expected 1 arg (vec), got {}",
                     args.len()
                 )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_len: producer must supply a dest place for the length".into(),
+                )
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            // `bytes` operand (B-2): a `bytes` value is a stack-resident
+            // `BytesTriple { ptr, offset, len }`, NOT a `*mut HewVec`, so the
+            // `hew_vec_len(*mut HewVec)` C ABI cannot apply. Route a bytes
+            // receiver to `hew_bytes_len(*const BytesTriple) -> i64`, passing the
+            // triple alloca's ADDRESS (a plain `ptr`) — the by-pointer bytes-
+            // consumer convention (`is_bytes_by_pointer_consumer`). By value the
+            // `{ptr,i32,i32}` arg is not reliably ABI-portable (LLVM's 3-register
+            // small-struct classification vs Rust's repr(C) two-register pair).
+            // Checker-authority: branch on `args[0]`'s `ResolvedTy::Bytes`.
+            if matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
+                let (triple_ptr, _triple_ty) = place_pointer(fn_ctx, args[0])?;
+                let fv = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_bytes_len",
+                )?;
+                let call = fn_ctx
+                    .builder
+                    .build_call(fv, &[triple_ptr.into()], "hew_bytes_len_call")
+                    .llvm_ctx("hew_bytes_len call")?;
+                let len_val = call.try_as_basic_value().basic().ok_or_else(|| {
+                    CodegenError::FailClosed("hew_bytes_len returned void".into())
+                })?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, len_val)
+                    .llvm_ctx("bytes.len store")?;
+                let _ = (i32_ty, ptr_ty);
+                return Ok(());
             }
             let vec_ptr = load_duplex_handle(fn_ctx, args[0], "hew_vec_len arg0")?;
             let fv = intern_runtime_decl(
@@ -15349,12 +16147,6 @@ fn lower_call_runtime_abi(
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| CodegenError::FailClosed("hew_vec_len returned void".into()))?;
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_vec_len: producer must supply a dest place for the length".into(),
-                )
-            })?;
-            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, len_val)
@@ -16406,6 +17198,12 @@ fn runtime_drop_symbol(drop_fn: &str) -> Option<&'static str> {
         // Elaborator-produced names (from builtin_type_classes.rs seeding).
         // Duplex<S, R> — close-both-directions.
         "Duplex::close" => Some("hew_duplex_close"),
+        // Stream<T> / Sink<T> handle close.  The runtime symbol is
+        // element-type-independent at the ABI level; the type checker's
+        // builtin-method table (builtin_names.rs) emits "Stream::close" /
+        // "Sink::close" as the drop_fn regardless of element type.
+        "Stream::close" => Some("hew_stream_close"),
+        "Sink::close" => Some("hew_sink_close"),
         // LambdaActorHandle — NB: the type-class seeding calls the method
         // "close" but the runtime C-ABI symbol is "release", not "close".
         // An explicit table entry is required; string-mangling would produce
@@ -17403,6 +18201,68 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
                 .llvm_ctx("enum inplace drop call")?;
             Ok(())
         }
+        // W5.021 — heap-owning tuple by value (the tuple-of-owned-handles drop
+        // spine) carried across a function/handler return boundary or held as a
+        // by-value owned local. The tuple is an inline struct in the binding's
+        // alloca; its owned elements (pointer handles like `Stream`/`Sink`, or
+        // heap leaves) are the heap owners, transferred to whichever binding
+        // owns the tuple at scope exit. Dispatch to the synthesised
+        // `__hew_tuple_drop_inplace_<key>` helper (the same per-field
+        // GEP-and-drop authority — `emit_aggregate_drop_inplace_body` — the
+        // record drop path uses), which drops each owned element in reverse
+        // declaration order and frees no wrapper (the tuple is embedded). The
+        // MIR elaborator emits this kind ONLY for a tuple its fail-closed
+        // sole-owner derivation proved still owns its members, so each member is
+        // freed exactly once. LESSONS: boundary-fail-closed, cleanup-all-exits,
+        // container-ingress-ownership-is-per-container, raii-null-after-move.
+        hew_mir::DropKind::TupleInPlace => {
+            if drop.drop_fn.is_some() {
+                return Err(CodegenError::FailClosed(format!(
+                    "TupleInPlace ElabDrop @ {place:?} unexpectedly carries \
+                     ElabDrop::drop_fn = {df:?}; it must carry none — the tuple \
+                     in-place helper is resolved from ElabDrop::ty \
+                     (LESSONS: boundary-fail-closed).",
+                    place = drop.place,
+                    df = drop.drop_fn,
+                )));
+            }
+            let ResolvedTy::Tuple(elems) = &drop.ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "TupleInPlace ElabDrop @ {place:?}: ElabDrop::ty {ty:?} is not a \
+                     tuple type; the MIR producer must only emit TupleInPlace for a \
+                     `ResolvedTy::Tuple` binding (LESSONS: boundary-fail-closed).",
+                    place = drop.place,
+                    ty = drop.ty,
+                )));
+            };
+            // Resolve the structural tuple key + LLVM struct type, then
+            // synthesise the DROP body on first reference. A returned tuple
+            // shape is referenced only by this drop (it has no registry-driven
+            // seed pass like records/enums), so synthesise-on-first-consumer is
+            // the natural seeding point. Only the drop direction is emitted:
+            // tuples crossing a return boundary are moved, never cloned, and a
+            // tuple carrying a `Stream`/`Sink` handle has no dup helper so the
+            // clone body would fail closed. The emitter is idempotent.
+            let tuple_key = tuple_thunk_key(elems);
+            let tuple_llvm_ty = resolve_ty(fn_ctx.ctx, &drop.ty, fn_ctx.record_layouts)?;
+            emit_tuple_drop_inplace_body_only(fn_ctx, &tuple_key, elems, tuple_llvm_ty)?;
+            let helper = get_or_declare_tuple_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &tuple_key);
+            if helper.count_basic_blocks() == 0 {
+                return Err(CodegenError::FailClosed(format!(
+                    "TupleInPlace ElabDrop @ {place:?} resolved \
+                     `__hew_tuple_drop_inplace_{tuple_key}`, but it has no body after \
+                     synthesis; refusing to emit a dangling helper call \
+                     (LESSONS: boundary-fail-closed).",
+                    place = drop.place,
+                )));
+            }
+            let (slot, _) = place_pointer(fn_ctx, drop.place)?;
+            fn_ctx
+                .builder
+                .build_call(helper, &[slot.into()], "tuple_inplace_drop")
+                .llvm_ctx("tuple inplace drop call")?;
+            Ok(())
+        }
         // `dyn Trait` FrameOwned: the concrete value lives in a frame
         // alloca owned by the surrounding scope; firing the vtable's
         // `__hew_dyn_drop_in_place_*` fn (slot 0) would call
@@ -17601,6 +18461,15 @@ fn cow_heap_release_symbol(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> Option<&'
             builtin: Some(hew_types::BuiltinType::HashSet),
             ..
         } => Some(HASHSET_FREE_LAYOUT_SYMBOL),
+        // A `Generator<Y, R>` / `AsyncGenerator<Y>` handle releases via
+        // `hew_gen_free` (cancel-if-running, join thread, drain yields, free
+        // ctx). Dispatched on the builtin discriminant, not the name string, so
+        // a user `type Generator { ... }` (builtin: None) never routes here.
+        ResolvedTy::Named {
+            builtin:
+                Some(hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator),
+            ..
+        } => Some("hew_gen_free"),
         _ => None,
     }
 }
@@ -17624,6 +18493,8 @@ fn is_known_cow_heap_drop_symbol(symbol: &str) -> bool {
             | "hew_vec_free_owned"
             | HASHMAP_FREE_LAYOUT_SYMBOL
             | HASHSET_FREE_LAYOUT_SYMBOL
+            // Generator<Y, R> / AsyncGenerator<Y> context release.
+            | "hew_gen_free"
     )
 }
 /// binding's alloca, call the single-`ptr`-arg release symbol, then
@@ -18630,13 +19501,13 @@ fn emit_tcp_attach_local_call<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, args: &[Place]) ->
     let on_data_const = i32_ty.const_int(on_data_id as u64, true);
     let on_close_const = i32_ty.const_int(on_close_id as u64, true);
 
-    // Load the conn handle (i32) and the handler actor pointer (ptr).
+    // Load the conn handle (pointer-shaped opaque `Connection`) and the handler
+    // actor pointer (ptr).
     let (conn_ptr, conn_slot_ty) = place_pointer(fn_ctx, *conn_arg)?;
     let conn_val = fn_ctx
         .builder
         .build_load(conn_slot_ty, conn_ptr, "attach_conn")
         .llvm_ctx("load attach conn")?;
-    let conn_val = reconcile_int_width_signed(fn_ctx, conn_val, i32_ty.into(), "attach conn")?;
 
     let (handler_ptr, handler_slot_ty) = place_pointer(fn_ctx, *handler_arg)?;
     let actor_ptr = fn_ctx
@@ -18990,6 +19861,212 @@ fn emit_remote_actor_ask_terminator<'ctx>(
 /// the Result construction lives here, not in a new `FnSymbol` variant
 /// (single-shim per the lane plan; mirrors `RemotePid::from_raw`'s precedent
 /// of catalog-return-as-u64 + user-visible-type-via-codegen).
+/// Lower `stream.recv()` / `stream.try_recv()` over a `Stream<bytes>` into an
+/// `Option<bytes>` destination.
+///
+/// The runtime entry (`hew_stream_next_bytes` / `hew_stream_try_next_bytes`)
+/// returns a `bytes` value as the AAPCS/SysV `[2 x i64]` register pair (the
+/// boundary type for a `bytes` return; see `predeclare_extern_decls`). An empty
+/// triple (eightbyte0 == null ptr) means EOF (`recv`) or "no item ready"
+/// (`try_recv`); both map to `None`. A present triple maps to `Some(bytes)`,
+/// with the raw `[2 x i64]` stored into the Some payload slot (itself the
+/// `{ptr,i32,i32}` bytes value — byte layouts match).
+///
+/// Mirrors the `Instr::GeneratorNext` null→None / Some+payload pattern, adapted
+/// to a by-value triple return rather than a heap pointer (no free: the triple
+/// is moved into the Option, whose drop spine owns it).
+fn emit_bytes_stream_recv_call<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    fn_symbols: &FnSymbolMap<'ctx>,
+    callee: &str,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    let [stream_arg] = args else {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee} (stream recv) expects exactly 1 argument (the stream handle), got {}",
+            args.len()
+        )));
+    };
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "{callee} (stream recv) returns Option<bytes>; producer must supply a dest"
+        ))
+    })?;
+    let Place::Local(dest_local) = dest_place else {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee} (stream recv) dest must be a local Option<bytes> enum slot, got {dest_place:?}"
+        )));
+    };
+
+    // The recv runtime entry is predeclared (from `std/stream.hew`'s extern
+    // block) with the `[2 x i64]` bytes boundary-return type. Use that
+    // declaration so the return shape matches the `predeclare_extern_decls`
+    // lowering rather than re-deriving it.
+    let FnSymbol::Real { value: recv_fn, .. } = *fn_symbols.get(callee).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "{callee} (stream recv) has no predeclared extern symbol"
+        ))
+    })?
+    else {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee} (stream recv) must resolve to a real extern function symbol"
+        )));
+    };
+
+    // arg0: the stream handle (an opaque `ptr` alloca).
+    let stream_ptr = load_duplex_handle(fn_ctx, *stream_arg, &format!("{callee} stream"))?;
+    let triple_val = fn_ctx
+        .builder
+        .build_call(recv_fn, &[stream_ptr.into()], "stream_recv_call")
+        .llvm_ctx_with(|| format!("{callee} call"))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{callee} returned void")))?;
+    // The boundary return is `[2 x i64]` (the two BytesTriple eightbytes:
+    // word0 = data pointer, word1 = offset (low 32) | len (high 32)).
+    let triple_array = triple_val.into_array_value();
+    let ptr_word = fn_ctx
+        .builder
+        .build_extract_value(triple_array, 0, "recv_triple_ptr_word")
+        .llvm_ctx_with(|| format!("{callee} extract ptr word"))?
+        .into_int_value();
+    let packed_word = fn_ctx
+        .builder
+        .build_extract_value(triple_array, 1, "recv_triple_packed_word")
+        .llvm_ctx_with(|| format!("{callee} extract packed word"))?
+        .into_int_value();
+    // Null data pointer ⇒ EOF / not-ready ⇒ None.
+    let is_eof = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            ptr_word,
+            ptr_word.get_type().const_zero(),
+            "recv_is_eof",
+        )
+        .llvm_ctx_with(|| format!("{callee} eof compare"))?;
+
+    // Reconstruct the `{ptr, i32, i32}` triple value so the Some-payload store
+    // is TYPE-CONSISTENT with the match arm's `{ptr, i32, i32}` load. A raw
+    // `store [2 x i64]` into the `{ptr,i32,i32}`-shaped Option payload (offset 8
+    // inside the enum) is not reliably store-to-load forwarded at -O2 because
+    // the value type and the load type disagree — the optimiser reads stale
+    // offset/len. Building the struct value avoids the type mismatch.
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let data_ptr = fn_ctx
+        .builder
+        .build_int_to_ptr(ptr_word, ptr_ty, "recv_data_ptr")
+        .llvm_ctx_with(|| format!("{callee} inttoptr data ptr"))?;
+    let offset_field = fn_ctx
+        .builder
+        .build_int_truncate(packed_word, i32_ty, "recv_offset")
+        .llvm_ctx_with(|| format!("{callee} offset truncate"))?;
+    let len_shifted = fn_ctx
+        .builder
+        .build_right_shift(
+            packed_word,
+            i64_ty.const_int(32, false),
+            false,
+            "recv_len_shift",
+        )
+        .llvm_ctx_with(|| format!("{callee} len shift"))?;
+    let len_field = fn_ctx
+        .builder
+        .build_int_truncate(len_shifted, i32_ty, "recv_len")
+        .llvm_ctx_with(|| format!("{callee} len truncate"))?;
+    let triple_struct_ty = fn_ctx
+        .ctx
+        .struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false);
+    let mut triple_struct = triple_struct_ty.get_undef();
+    triple_struct = fn_ctx
+        .builder
+        .build_insert_value(triple_struct, data_ptr, 0, "recv_triple_with_ptr")
+        .llvm_ctx_with(|| format!("{callee} insert ptr"))?
+        .into_struct_value();
+    triple_struct = fn_ctx
+        .builder
+        .build_insert_value(triple_struct, offset_field, 1, "recv_triple_with_offset")
+        .llvm_ctx_with(|| format!("{callee} insert offset"))?
+        .into_struct_value();
+    triple_struct = fn_ctx
+        .builder
+        .build_insert_value(triple_struct, len_field, 2, "recv_triple_with_len")
+        .llvm_ctx_with(|| format!("{callee} insert len"))?
+        .into_struct_value();
+
+    // Resolve the Option tag + Some-payload slots before branching.
+    let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(*dest_local))?;
+    let tag_int = match tag_ty {
+        BasicTypeEnum::IntType(t) => t,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "{callee} dest Option tag must be integer-shaped; got {other:?}"
+            )));
+        }
+    };
+    let some_payload = Place::EnumVariant {
+        local: *dest_local,
+        variant_idx: 0,
+        field_idx: 0,
+    };
+    let (payload_ptr, _payload_ty) = place_pointer(fn_ctx, some_payload)?;
+
+    let parent_fn = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("stream-recv block has no parent function".into()))?;
+    let none_bb = fn_ctx.ctx.append_basic_block(parent_fn, "recv_none");
+    let some_bb = fn_ctx.ctx.append_basic_block(parent_fn, "recv_some");
+    let cont_bb = fn_ctx.ctx.append_basic_block(parent_fn, "recv_cont");
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_eof, none_bb, some_bb)
+        .llvm_ctx_with(|| format!("{callee} branch"))?;
+
+    // ── None: EOF / not-ready. Write tag 1; payload left undef. ──
+    fn_ctx.builder.position_at_end(none_bb);
+    fn_ctx
+        .builder
+        .build_store(tag_ptr, tag_int.const_int(1, false))
+        .llvm_ctx_with(|| format!("{callee} None tag store"))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(cont_bb)
+        .llvm_ctx_with(|| format!("{callee} None br"))?;
+
+    // ── Some: write tag 0 + the reconstructed `{ptr,i32,i32}` triple. ──
+    fn_ctx.builder.position_at_end(some_bb);
+    fn_ctx
+        .builder
+        .build_store(tag_ptr, tag_int.const_int(0, false))
+        .llvm_ctx_with(|| format!("{callee} Some tag store"))?;
+    fn_ctx
+        .builder
+        .build_store(payload_ptr, triple_struct)
+        .llvm_ctx_with(|| format!("{callee} Some payload store"))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(cont_bb)
+        .llvm_ctx_with(|| format!("{callee} Some br"))?;
+
+    // ── Continue into the call's `next` block. ──
+    fn_ctx.builder.position_at_end(cont_bb);
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("{callee} next bb{next} missing")))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx_with(|| format!("{callee} cont br next"))?;
+    Ok(())
+}
+
 fn emit_node_lookup_call<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbols: &FnSymbolMap<'ctx>,
@@ -19442,6 +20519,51 @@ fn lower_terminator<'ctx>(
 ) -> CodegenResult<()> {
     match term {
         Terminator::Return => {
+            // Implicit actor-drain floor: emit `hew_shutdown_initiate(0)` then
+            // `hew_shutdown_wait()` before `main` returns. This ensures
+            // fire-and-forget actor messages (spawned actors, pending handler
+            // calls) are fully processed before the process exits. Without this,
+            // `main` returning before scheduler workers drain causes the OS to
+            // kill workers mid-dispatch, silently dropping messages.
+            //
+            // Scoped to native actor-using programs only (`emit_drain_epilogue`
+            // is false for non-actor programs and for WASM targets).
+            // WHY this is a codegen special-case and not a MIR Terminator: this
+            // is the implicit safe floor; the companion lane adds the explicit
+            // `drain`/`join{}` language surface and emits a MIR-level
+            // `Terminator::Drain`, at which point this codegen arm becomes dead.
+            if fn_ctx.emit_drain_epilogue {
+                let i64_ty = fn_ctx.ctx.i64_type();
+                let shutdown_initiate = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_shutdown_initiate",
+                )?;
+                let shutdown_wait = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_shutdown_wait",
+                )?;
+                // 0 → use DEFAULT_DRAIN_TIMEOUT_MS (5 s). The orchestrator
+                // polls `drain_is_idle()` and exits early once the scheduler
+                // queue has been empty for two consecutive 10 ms intervals, so
+                // typical actor programs complete in <100 ms; the 5 s ceiling
+                // is reached only by deliberately-never-idle actors.
+                fn_ctx
+                    .builder
+                    .build_call(
+                        shutdown_initiate,
+                        &[i64_ty.const_int(0, false).into()],
+                        "hew_shutdown_initiate_call",
+                    )
+                    .llvm_ctx("hew_shutdown_initiate call")?;
+                fn_ctx
+                    .builder
+                    .build_call(shutdown_wait, &[], "hew_shutdown_wait_call")
+                    .llvm_ctx("hew_shutdown_wait call")?;
+            }
             if matches!(fn_ctx.return_resolved_ty, ResolvedTy::Unit) {
                 fn_ctx
                     .builder
@@ -19559,6 +20681,28 @@ fn lower_terminator<'ctx>(
                     .llvm_ctx("hew_tcp_attach_local br next")?;
                 return Ok(());
             }
+            // `stream.recv()` / `stream.try_recv()` over a `Stream<bytes>` route
+            // to `hew_stream_next_bytes` / `hew_stream_try_next_bytes`, which
+            // return a `bytes` value the checker wraps as `Option<bytes>` (None
+            // on EOF / not-ready). The runtime returns an empty triple
+            // (null ptr) for None; this intercept unboxes the returned triple
+            // into the `Option<bytes>` dest (null ptr → None tag 1; else Some
+            // tag 0 + the triple payload). Dispatch by callee name, mirroring
+            // the `Node::lookup` / `hew_remote_pid_tell` precedent.
+            if matches!(
+                callee.as_str(),
+                "hew_stream_next_bytes" | "hew_stream_try_next_bytes"
+            ) {
+                emit_bytes_stream_recv_call(
+                    fn_ctx,
+                    fn_symbols,
+                    callee,
+                    args,
+                    dest.as_ref(),
+                    *next,
+                )?;
+                return Ok(());
+            }
             if let Some(intrinsic) = math_builtin_intrinsic(callee) {
                 if !fn_symbols.contains_key(callee) {
                     emit_math_builtin_intrinsic_call(
@@ -19662,6 +20806,21 @@ fn lower_terminator<'ctx>(
                         Vec::with_capacity(args.len());
                     for (idx, arg) in args.iter().enumerate() {
                         let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
+                        // By-pointer bytes consumer: the callee declares this
+                        // parameter as `ptr` while the Hew argument is a `bytes`
+                        // value (a `{ptr, i32, i32}` alloca). Pass the alloca
+                        // ADDRESS so the runtime reads the triple through the
+                        // pointer — sidesteps the non-first by-value small-struct
+                        // ABI coercion gap. See `is_bytes_by_pointer_consumer`.
+                        if matches!(
+                            declared_param_tys.get(idx),
+                            Some(BasicMetadataTypeEnum::PointerType(_))
+                        ) && matches!(arg_ty, BasicTypeEnum::StructType(_))
+                            && matches!(place_resolved_ty(fn_ctx, *arg)?, ResolvedTy::Bytes)
+                        {
+                            arg_vals.push(metadata_value_from_basic(arg_ptr.into()));
+                            continue;
+                        }
                         let loaded = fn_ctx
                             .builder
                             .build_load(arg_ty, arg_ptr, "call_arg")
@@ -19696,15 +20855,31 @@ fn lower_terminator<'ctx>(
                                     .into(),
                             )
                         })?;
-                        // Reconcile the runtime C-ABI return width against the
-                        // Hew dest width. A runtime function declared `-> i32`
-                        // (e.g. `hew_string_find` / `hew_string_index_of_start`,
-                        // returning the `-1` not-found sentinel) must
-                        // sign-extend its result up to the Hew-facing i64 dest,
-                        // so `-1` stays `-1` rather than `4294967295`. Equal
-                        // widths and matching types pass through; genuinely
-                        // incompatible shapes (int vs struct) still fail closed.
-                        let stored = if dest_ty == return_ty {
+                        // Bytes C-ABI return: a `bytes`-returning Rust extern is
+                        // declared with an `[2 x i64]` return (the AAPCS/SysV
+                        // two-eightbyte pair the Rust `#[repr(C)] BytesTriple`
+                        // actually uses) instead of `{ptr, i32, i32}` (which LLVM
+                        // would classify into three return registers and
+                        // mis-store). The dest alloca is the `{ptr, i32, i32}`
+                        // bytes value; a raw 16-byte store of the `[2 x i64]`
+                        // result writes ptr@0, offset@8, len@12 — the same byte
+                        // layout the caller-side field accesses expect. The store
+                        // is keyed on the value type, the pointer is opaque, so
+                        // this is a plain 16-byte memory write.
+                        let bytes_array_return = return_ty.is_array_type()
+                            && matches!(dest_ty, BasicTypeEnum::StructType(_))
+                            && matches!(place_resolved_ty(fn_ctx, *dest_place)?, ResolvedTy::Bytes);
+                        let stored = if bytes_array_return {
+                            ret_val
+                        } else if dest_ty == return_ty {
+                            // Reconcile the runtime C-ABI return width against the
+                            // Hew dest width. A runtime function declared `-> i32`
+                            // (e.g. `hew_string_find` / `hew_string_index_of_start`,
+                            // returning the `-1` not-found sentinel) must
+                            // sign-extend its result up to the Hew-facing i64 dest,
+                            // so `-1` stays `-1` rather than `4294967295`. Equal
+                            // widths and matching types pass through; genuinely
+                            // incompatible shapes (int vs struct) still fail closed.
                             ret_val
                         } else if dest_ty.is_int_type() && return_ty.is_int_type() {
                             reconcile_int_width_signed(fn_ctx, ret_val, dest_ty, "return")?
@@ -19719,9 +20894,36 @@ fn lower_terminator<'ctx>(
                             .build_store(dest_ptr, stored)
                             .llvm_ctx("call store")?;
                     } else if !returns_unit {
-                        return Err(CodegenError::FailClosed(format!(
-                            "Call to value-returning fn `{callee}` must carry a Terminator::Call dest"
-                        )));
+                        // `dest == None` with `!returns_unit`: the call site is
+                        // in statement position and the return value is
+                        // intentionally discarded (e.g. `conn.close()`,
+                        // `ln.close()` → `hew_tcp_close: i32`).
+                        //
+                        // Allow the discard ONLY for scalar (integer/float)
+                        // return types. These are BitCopy/status values with no
+                        // owned heap; silently dropping the i32 is correct.
+                        //
+                        // For pointer or aggregate (struct) returns — which are
+                        // potentially owned/heap — fail closed. The cross-crate
+                        // invariant is that `hew-mir` always assigns a tracked
+                        // `dest = Some` for owned/heap returns, so this arm
+                        // should never be reached for those types today. This
+                        // guard is the codegen-side backstop: if a future
+                        // `hew-mir` regression routes an owned/pointer/aggregate
+                        // return into `dest = None`, we fail loudly rather than
+                        // silently leaking.
+                        match return_ty {
+                            BasicTypeEnum::IntType(_) | BasicTypeEnum::FloatType(_) => {
+                                // Scalar status discard — intentional, safe.
+                            }
+                            _ => {
+                                return Err(CodegenError::FailClosed(format!(
+                                    "Call to value-returning fn `{callee}` must carry a \
+                                     Terminator::Call dest (return type {return_ty:?} is a \
+                                     pointer or aggregate; only scalar discards are allowed)"
+                                )));
+                            }
+                        }
                     }
                     if let Some(queue) = machine_step_queue {
                         emit_machine_step_exit_call(fn_ctx, queue)?;
@@ -20050,6 +21252,69 @@ fn lower_terminator<'ctx>(
                 .builder
                 .build_return(Some(&ret_val))
                 .llvm_ctx("gen cancel ret")?;
+        }
+        Terminator::MakeGenerator {
+            dest,
+            body_fn,
+            next,
+        } => {
+            // Generator construction (thread-based runtime,
+            // `hew-runtime/src/generator.rs:132`). The MIR producer
+            // (`lower_gen_block`) emitted this terminator with the deterministic
+            // `__hew_gen_body_*` body-fn name; codegen resolves that function's
+            // address and calls `hew_gen_ctx_create(<&body_fn>, null, 0)`,
+            // storing the returned `*mut HewGenCtx` handle into `dest`.
+            //
+            // The body arg is null / zero-size: capture-free generators carry no
+            // closure environment today (HIR rejects nested gen blocks, and the
+            // gen-body's `Local(0)` body-arg slot is unused). When generator
+            // captures land, this passes the address + size of the boxed
+            // environment instead.
+            let body_function = fn_ctx.llvm_mod.get_function(body_fn).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "Terminator::MakeGenerator: generator body fn `{body_fn}` was not \
+                     declared before its construction site — `lower_gen_block` must \
+                     register the `__hew_gen_body_*` function in the pipeline"
+                ))
+            })?;
+            let body_fn_ptr = body_function.as_global_value().as_pointer_value();
+            let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+            let null_arg = ptr_ty.const_null();
+            let zero_size = fn_ctx.ctx.i64_type().const_zero();
+            let create_fn = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_gen_ctx_create",
+            )?;
+            let gen_handle = fn_ctx
+                .builder
+                .build_call(
+                    create_fn,
+                    &[body_fn_ptr.into(), null_arg.into(), zero_size.into()],
+                    "hew_gen_ctx_create_call",
+                )
+                .llvm_ctx("hew_gen_ctx_create call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_gen_ctx_create returned void".into())
+                })?;
+            // Store the handle into the generator value slot. The slot's
+            // resolved type is `Generator<Y, R>`, lowered to an opaque `ptr` by
+            // `primitive_to_llvm`, so the store is a plain pointer store.
+            let (dest_slot, _dest_ty) = place_pointer(fn_ctx, *dest)?;
+            fn_ctx
+                .builder
+                .build_store(dest_slot, gen_handle)
+                .llvm_ctx("hew_gen_ctx_create handle store")?;
+            let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
+                CodegenError::FailClosed(format!("MakeGenerator next bb{next} missing"))
+            })?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(next_bb)
+                .llvm_ctx("MakeGenerator br next")?;
         }
         Terminator::Send {
             actor,
@@ -22106,6 +23371,8 @@ fn lower_function<'ctx>(
     gen_state_field_resolved_tys: &HashMap<String, Vec<ResolvedTy>>,
     dyn_vtable_registry: &[DynVtableInstance],
     const_globals: &ConstGlobalMap<'ctx>,
+    emit_wasm_entry_alias: bool,
+    has_supervisors: bool,
 ) -> CodegenResult<()> {
     let symbol = *fn_symbols.get(&func.name).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -22346,9 +23613,41 @@ fn lower_function<'ctx>(
     let borrow_escape_trap =
         borrow_mode.is_some() && has_unhandled_borrow_escape(func, &borrow_tainted);
 
+    // Emit the implicit actor-drain epilogue only for the native program entry
+    // point of an actor-using program WITHOUT supervisors.
+    //
+    // Supervisor programs are excluded because:
+    //   - They are designed as long-running services; their supervisor actors
+    //     keep the scheduler perpetually active, so `drain_is_idle()` never
+    //     returns true until the full 5-second timeout, after which
+    //     `hew_supervisor_stop` blocks in `wait_for_supervisor_self_actor_quiescent`.
+    //     Together these cause `hew_shutdown_wait` to hang indefinitely.
+    //   - Supervisor programs do not have the fire-and-forget message-loss
+    //     problem: their actor refs are obtained via `sup.child` (a handle
+    //     lookup from a live supervisor, not a fire-and-forget bare ref that
+    //     could escape scope).
+    //   - Supervisor shutdown is correctly triggered by SIGTERM/SIGINT via the
+    //     installed signal handlers, or explicitly by calling `supervisor_stop`.
+    //
+    // WASM is excluded because the host manages the cooperative scheduler's
+    // lifecycle and `hew_shutdown_initiate` would attempt to spawn a thread.
+    //
+    // Non-actor programs are excluded because the scheduler is never
+    // initialised there; emitting a drain would spin an orchestrator thread
+    // for ~20 ms on every program exit for no benefit.
+    //
+    // The WASM rename path (`emit_wasm_entry_alias = true`) doubles as the
+    // "is WASM target" signal: `main` becomes `__original_main` on WASM
+    // targets before body lowering.
+    let emit_drain_epilogue = func.name == "main"
+        && !actor_layouts.is_empty()
+        && !has_supervisors
+        && !emit_wasm_entry_alias;
+
     let fn_ctx = FnCtx {
         ctx,
         llvm_mod,
+        emit_drain_epilogue,
         target_data,
         builder,
         return_slot,
@@ -22394,23 +23693,39 @@ fn lower_function<'ctx>(
     // admitted because it never reaches the `StructType` arm. (`std::fs` import
     // was blocked solely because `fs.read_bytes -> bytes` was force-codegen'd.)
     //
-    // Every OTHER heap-owning composite return — tuples and records carrying
-    // owned heap, and (caught earlier by the checker) recursive value types —
-    // still lacks that ownership wiring and stays fail-closed rather than
-    // silently leaking or double-freeing. Bitcopy-only payloads (i64, f64,
-    // bool, …) carry no ownership and are unaffected. LESSONS:
-    // boundary-fail-closed, migration-completeness.
+    // W5.021 — heap-owning TUPLE and RECORD composite returns are now admitted:
+    // the MIR elaborator move-checks each owned member's single owner across the
+    // return boundary and emits a per-element `DropKind::TupleInPlace` /
+    // per-field `DropKind::RecordInPlace` caller-side drop, so the caller's
+    // binding (or destructure-temp element bindings) frees each member exactly
+    // once. The admit predicates key on the same `ty_contains_heap_owning`
+    // authority the MIR side uses, so the two can never disagree on which
+    // returns own heap (`dedup-semantic-boundary`).
+    //
+    // Every OTHER heap-owning composite return — arrays carrying owned heap, a
+    // generic record instantiation, and (caught earlier by the checker)
+    // recursive value types — still lacks that ownership wiring and stays
+    // fail-closed rather than silently leaking or double-freeing. Bitcopy-only
+    // payloads (i64, f64, bool, …) carry no ownership and are unaffected.
+    // LESSONS: boundary-fail-closed, migration-completeness.
     if matches!(return_ty_llvm, BasicTypeEnum::StructType(_))
         && ty_contains_heap_owning(&func.return_ty, fn_ctx.enum_layouts)
         && !is_heap_owning_enum_composite_return(&func.return_ty, fn_ctx.enum_layouts)
         && !is_single_heap_owning_leaf_return(&func.return_ty)
+        && !is_heap_owning_tuple_composite_return(&func.return_ty, fn_ctx.enum_layouts)
+        && !is_heap_owning_record_composite_return(
+            &func.return_ty,
+            fn_ctx.record_layouts,
+            fn_ctx.enum_layouts,
+        )
     {
         return Err(CodegenError::FailClosed(format!(
             "composite return of heap-owning payload `{}` requires tag-aware \
-             drop, which is implemented only for enum composites \
-             (`Result`/`Option`/user enums) in v0.5; for tuples or records \
-             carrying owned heap, restructure to return an enum or avoid \
-             returning owned values directly",
+             drop, which is implemented for enum composites \
+             (`Result`/`Option`/user enums), tuples, and monomorphic records \
+             carrying owned heap in v0.5; for an array of owned values or a \
+             generic record instantiation, restructure to return a supported \
+             composite or avoid returning owned values directly",
             func.return_ty,
         )));
     }
@@ -23187,6 +24502,8 @@ fn build_module_for_target<'ctx>(
             &gen_state_field_resolved_tys,
             &pipeline.dyn_vtable_registry,
             &const_globals,
+            emit_wasm_entry_alias,
+            !pipeline.supervisor_layouts.is_empty(),
         )?;
     }
     // Emit regex module-init infrastructure if the module uses any regex literals.
@@ -26253,6 +27570,109 @@ mod tests {
         );
     }
 
+    /// An enclosing function carrying a `Terminator::MakeGenerator` must emit a
+    /// call to `hew_gen_ctx_create` passing the gen-body function pointer, store
+    /// the returned handle into the `Generator<Y, R>` value slot, and verify.
+    /// This is the codegen-side contract for Slice 1's construction seam.
+    #[test]
+    fn make_generator_terminator_emits_hew_gen_ctx_create_and_module_verifies() {
+        let ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        let generator_ty = ResolvedTy::Named {
+            name: "Generator".to_string(),
+            args: vec![ResolvedTy::I64, ResolvedTy::Unit],
+            builtin: Some(hew_types::BuiltinType::Generator),
+        };
+        // The gen-body function the construction site references (mirrors what
+        // `lower_gen_block` mints). Its signature is the runtime body_fn
+        // contract `extern "C" fn(*mut c_void, *mut HewGenCtx)`.
+        let gen_body = RawMirFunction {
+            name: "__hew_gen_body_make_test_0".to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: FunctionCallConv::Default,
+            params: vec![ptr_ty.clone(), ptr_ty.clone()],
+            locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Return,
+            }],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+        };
+        // The enclosing function: allocate a Generator-typed local, construct it
+        // via MakeGenerator, then return.
+        let enclosing = RawMirFunction {
+            name: "build_gen".to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![generator_ty.clone()],
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::MakeGenerator {
+                        dest: Place::Local(0),
+                        body_fn: "__hew_gen_body_make_test_0".to_string(),
+                        next: 1,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Return,
+                },
+            ],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+        };
+        let pipeline = IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![gen_body, enclosing],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            user_consts: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+            actor_send_aliasing: std::collections::HashMap::new(),
+            polymorphic_mir: Vec::new(),
+        };
+        let ctx = Context::create();
+        let m = build_module(&ctx, &pipeline, "make_generator_codegen_test")
+            .expect("Terminator::MakeGenerator must lower without error");
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("call ptr @hew_gen_ctx_create"),
+            "MakeGenerator arm must emit a call to hew_gen_ctx_create; got IR:\n{ir}"
+        );
+        // The construction passes the gen-body function address as the first arg.
+        assert!(
+            ir.contains("@__hew_gen_body_make_test_0"),
+            "MakeGenerator must reference the gen-body function pointer; got IR:\n{ir}"
+        );
+        assert!(
+            m.verify().is_ok(),
+            "module with MakeGenerator must pass LLVM verify:\n{ir}"
+        );
+    }
+
     #[test]
     fn cancellation_token_is_cancelled_emits_runtime_observation_call() {
         let func = RawMirFunction {
@@ -27181,6 +28601,10 @@ mod tests {
         FnCtx {
             ctx,
             llvm_mod,
+            // Test harness contexts never exercise the drain epilogue; keep
+            // the flag off so the test builder's block does not attempt to
+            // intern shutdown symbols that are absent from the minimal fixture.
+            emit_drain_epilogue: false,
             target_data: &harness.target_data,
             builder,
             return_slot,
@@ -29006,6 +30430,140 @@ mod tests {
             .unwrap();
         assert_eq!(out, 42);
         assert!(!called.get(), "lazy closure must not run on Ok");
+    }
+
+    // ── Actor-drain epilogue gate tests ──────────────────────────────────────
+    //
+    // These tests verify that `hew_shutdown_initiate` / `hew_shutdown_wait`
+    // appear in `main`'s LLVM IR exactly when expected: native actor-using
+    // programs (gate = on), non-actor programs (gate = off), and non-`main`
+    // functions even in actor programs (gate = off).
+    //
+    // The root cause being guarded: fire-and-forget actor messages are silently
+    // dropped when `main` returns before scheduler workers drain.  The fix
+    // emits an implicit drain epilogue in codegen.  These tests lock in the
+    // guard so a future change cannot accidentally revert it.
+
+    /// Returns a minimal `IrPipeline` with a unit `main` function body and
+    /// optionally one stub actor layout (no state, no handlers). The main
+    /// function body consists of a single `Terminator::Return`-terminated
+    /// block that moves a const zero into the return slot. Unit return is
+    /// chosen because actor-program `fn main()` returns unit.
+    fn minimal_pipeline_with_unit_main(with_actor: bool) -> IrPipeline {
+        let main = RawMirFunction {
+            name: "main".to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![],
+                terminator: Terminator::Return,
+            }],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+        };
+        // Minimal stub actor: no state fields, no handlers, no clone/drop
+        // symbols.  The trampoline emits a vacuous dispatch switch; the
+        // state-clone synthesis loop skips it (all three symbols are None).
+        let actor_layouts = if with_actor {
+            vec![ActorLayout {
+                name: "StubActor".to_string(),
+                state_field_names: vec![],
+                state_field_tys: vec![],
+                state_field_defaults: vec![],
+                init_param_names: vec![],
+                init_param_tys: vec![],
+                init_symbol: None,
+                on_start_symbol: None,
+                on_stop_symbols: vec![],
+                on_crash_symbol: None,
+                max_heap_bytes: None,
+                cycle_capable: false,
+                handlers: vec![],
+                state_clone_fn_symbol: None,
+                state_drop_fn_symbol: None,
+                state_field_clone_kinds: None,
+            }]
+        } else {
+            vec![]
+        };
+        IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![main],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts,
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            user_consts: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+            actor_send_aliasing: std::collections::HashMap::new(),
+            polymorphic_mir: Vec::new(),
+        }
+    }
+
+    /// For a native actor-using program, the `main` function's IR must contain
+    /// `hew_shutdown_initiate` and `hew_shutdown_wait` calls immediately before
+    /// the return.  These are the implicit actor-drain floor that prevents
+    /// fire-and-forget messages from being silently dropped when `main` returns
+    /// before scheduler workers finish draining.
+    #[test]
+    fn actor_using_main_emits_drain_epilogue() {
+        let pipeline = minimal_pipeline_with_unit_main(true);
+        let ctx = Context::create();
+        let m = build_module(&ctx, &pipeline, "drain_epilogue_actor_test")
+            .expect("actor-drain epilogue module must build");
+        assert!(
+            m.verify().is_ok(),
+            "module with actor-drain epilogue must pass LLVM verify"
+        );
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("hew_shutdown_initiate"),
+            "actor-using main must emit hew_shutdown_initiate call before return:\n{ir}"
+        );
+        assert!(
+            ir.contains("hew_shutdown_wait"),
+            "actor-using main must emit hew_shutdown_wait call before return:\n{ir}"
+        );
+    }
+
+    /// For a non-actor program (no actor layouts), the `main` function's IR
+    /// must NOT contain drain calls.  Non-actor programs never call
+    /// `hew_sched_init`, so the scheduler is never initialised; emitting a
+    /// drain would spawn an orchestrator thread and poll for 20 ms on every
+    /// program exit — wasted overhead on the common non-actor path.
+    #[test]
+    fn non_actor_main_omits_drain_epilogue() {
+        let pipeline = minimal_pipeline_with_unit_main(false);
+        let ctx = Context::create();
+        let m = build_module(&ctx, &pipeline, "drain_epilogue_noactor_test")
+            .expect("non-actor module must build");
+        assert!(
+            m.verify().is_ok(),
+            "module without actors must pass LLVM verify"
+        );
+        let ir = m.print_to_string().to_string();
+        assert!(
+            !ir.contains("hew_shutdown_initiate"),
+            "non-actor main must NOT emit hew_shutdown_initiate:\n{ir}"
+        );
+        assert!(
+            !ir.contains("hew_shutdown_wait"),
+            "non-actor main must NOT emit hew_shutdown_wait:\n{ir}"
+        );
     }
 }
 

@@ -21,9 +21,11 @@ actor FileReader {
     }
 }
 
+import std::fs;
+
 fn main() {
     println("=== File Reader via Actors ===");
-    let content = read_file("examples/actor_fib.hew");
+    let content = fs.read("examples/actor_fib.hew");
     println("--- File Contents ---");
     println(content);
     println("--- End Contents ---");

@@ -1329,30 +1329,23 @@ pub unsafe extern "C" fn hew_string_reverse_utf8(s: *const c_char) -> *mut c_cha
     unsafe { malloc_cstring(bytes.as_ptr(), bytes.len()) }
 }
 
-/// Convert a string to a `HewVec` of raw bytes (`u8`). Caller must free the
-/// returned vec with [`crate::vec::hew_vec_free`].
+/// Convert a string to a `bytes` value (the canonical by-value
+/// [`crate::bytes::BytesTriple`] codegen materialises for a `bytes` return).
 ///
-/// Returns an empty vec for null input.
+/// The string's bytes (excluding the NUL terminator) are copied into a fresh,
+/// refcount-1 buffer the caller owns; the Hew drop spine releases it via
+/// `hew_bytes_drop`. Returns an empty triple (`null` ptr, len 0) for null or
+/// empty input. This is the `string -> bytes` analogue of
+/// [`crate::bytes::hew_bytes_from_str`] and shares its construction/ownership.
 ///
 /// # Safety
 ///
 /// `s` must be a valid NUL-terminated C string (or null).
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_to_bytes(s: *const c_char) -> *mut crate::vec::HewVec {
-    // SAFETY: hew_vec_new creates a Vec<i32>-style HewVec, matching what
-    // hew_tcp_write expects (i32-element vec, byte values in low 8 bits).
-    let v = unsafe { crate::vec::hew_vec_new() };
-    cabi_guard!(s.is_null(), v);
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
-    for &b in bytes {
-        // SAFETY: v is a valid HewVec; push each byte as i32 to match
-        // the convention used by hew_tcp_read.
-        unsafe {
-            crate::vec::hew_vec_push_i32(v, i32::from(b));
-        };
-    }
-    v
+pub unsafe extern "C" fn hew_string_to_bytes(s: *const c_char) -> crate::bytes::BytesTriple {
+    // SAFETY: `s` is a valid NUL-terminated C string (or null) per caller
+    // contract — exactly `hew_bytes_from_str`'s precondition.
+    unsafe { crate::bytes::hew_bytes_from_str(s.cast::<u8>()) }
 }
 
 /// Join a `Vec<String>` into a single string with `sep` between elements.

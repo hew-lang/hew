@@ -78,6 +78,7 @@ fn vec_resolved_impl_call_wrong_arity_panics_fail_closed() {
         return_ty: ResolvedTy::Unit,
         body,
         span: 0..0,
+        is_generator: false,
         intrinsic_id: None,
     })]);
 

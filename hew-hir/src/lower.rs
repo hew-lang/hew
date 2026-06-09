@@ -17,8 +17,8 @@ use hew_parser::ast::{
     ActorDecl, AttributeArg, BinaryOp, Block, CallArg, CompoundAssignOp, ConstDecl, Expr, FnDecl,
     Item, LambdaParam, Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl,
     RecordKind, ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, ShutdownDirective,
-    Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause,
-    TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp, VariantKind,
+    Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitItem,
+    TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp, VariantKind,
 };
 use hew_types::BuiltinType;
 use hew_types::{
@@ -168,6 +168,11 @@ fn literal_to_hir(lit: &Literal) -> (HirLiteral, ResolvedTy) {
 enum ForIterNextCall {
     BuiltinVecIter,
     VarSelf(HirVarSelfMethodTarget),
+    /// `for x in <generator>` — each iteration consumes one value via the
+    /// generator `.next()` consumption seam (`HirExprKind::GeneratorNext`).
+    /// The generator handle is the loop's `__hew_for_iter_*` binding; it is
+    /// borrowed by each `.next()` and freed by its scope-exit drop on loop exit.
+    Generator,
 }
 
 fn literal_match_supported(lit: &HirLiteral, ty: &ResolvedTy) -> bool {
@@ -659,6 +664,58 @@ fn collect_inherent_impl_close_methods(
     out
 }
 
+/// Collect trait default method bodies from all `Item::Trait` declarations
+/// in the root program. Keyed by trait name; values are the `TraitMethod`
+/// entries that carry a non-`None` body. Used by `lower_impl_block` to lower
+/// default methods for concrete impls that do not override them.
+fn collect_trait_default_methods(items: &[(Item, Span)]) -> HashMap<String, Vec<TraitMethod>> {
+    let mut out: HashMap<String, Vec<TraitMethod>> = HashMap::new();
+    for (item, _) in items {
+        let Item::Trait(trait_decl) = item else {
+            continue;
+        };
+        let defaults: Vec<TraitMethod> = trait_decl
+            .items
+            .iter()
+            .filter_map(|ti| match ti {
+                TraitItem::Method(m) if m.body.is_some() => Some(m.clone()),
+                _ => None,
+            })
+            .collect();
+        if !defaults.is_empty() {
+            out.insert(trait_decl.name.clone(), defaults);
+        }
+    }
+    out
+}
+
+/// Synthesize a `FnDecl` from a `TraitMethod` for HIR lowering purposes.
+/// The resulting `FnDecl` carries the default body and the same signature
+/// as the trait declaration. `current_impl_self_ty` in the lowering context
+/// handles substituting `Self` for the concrete type.
+fn trait_method_to_fn_decl(method: &TraitMethod) -> FnDecl {
+    FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: hew_parser::ast::Visibility::Private,
+        name: method.name.clone(),
+        type_params: method.type_params.clone(),
+        params: method.params.clone(),
+        return_type: method.return_type.clone(),
+        where_clause: method.where_clause.clone(),
+        // Only called for methods where `body.is_some()`; the unwrap is safe.
+        body: method
+            .body
+            .clone()
+            .expect("trait_method_to_fn_decl called on method without body"),
+        doc_comment: None,
+        decl_span: 0..0,
+        fn_span: 0..0,
+        intrinsic: None,
+    }
+}
+
 /// Compact, user-facing rendering of a parser-side `TypeExpr` used by the
 /// `ResourceCloseMustReturnUnit` diagnostic. Best-effort; complex / deeply
 /// nested shapes degrade to a short description rather than a full pretty
@@ -870,6 +927,10 @@ pub fn lower_program_with_mono_cap(
     // (W3.030 Q-α-B + Q-β-C ratifications).
     ctx.impl_close_methods = collect_inherent_impl_close_methods(&program.items);
 
+    // Pre-pre-pass: harvest trait default method bodies so that impl-block
+    // lowering can emit them for impls that do not override them.
+    ctx.trait_default_methods = collect_trait_default_methods(&program.items);
+
     let mut builtin_receiver_impl_method_symbols: HashSet<String> = HashSet::new();
 
     // First pass: collect all function signatures so that forward and mutual
@@ -903,6 +964,27 @@ pub fn lower_program_with_mono_cap(
                         let impl_type_params = impl_type_param_names(impl_decl);
                         for method in &impl_decl.methods {
                             ctx.register_impl_method_fn_entry(name, method, &impl_type_params);
+                        }
+                        // Also register trait default methods that are NOT
+                        // overridden in this impl block — they need fn_registry
+                        // entries so call sites resolve `Type::method` even
+                        // when the body lives on the trait declaration.
+                        if let Some(tb) = &impl_decl.trait_bound {
+                            let overridden: HashSet<&str> =
+                                impl_decl.methods.iter().map(|m| m.name.as_str()).collect();
+                            if let Some(defaults) = ctx.trait_default_methods.get(&tb.name).cloned()
+                            {
+                                for default_method in &defaults {
+                                    if !overridden.contains(default_method.name.as_str()) {
+                                        let fn_decl = trait_method_to_fn_decl(default_method);
+                                        ctx.register_impl_method_fn_entry(
+                                            name,
+                                            &fn_decl,
+                                            &impl_type_params,
+                                        );
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -2312,18 +2394,44 @@ pub fn lower_program_with_mono_cap(
                                 // MIR boundary — a separate lane.
                                 let mut skip_methods: HashSet<String> = HashSet::new();
                                 for method in &impl_decl.methods {
-                                    let body_unresolvable =
-                                        collect_all_bare_call_names(&method.body).into_iter().any(
-                                            |callee| {
-                                                !same_module_fn_rewrites.contains_key(&callee)
-                                                    && !ctx.fn_registry.contains_key(&callee)
-                                            },
-                                        );
+                                    let body_unresolvable = collect_all_bare_call_names(
+                                        &method.body,
+                                    )
+                                    .into_iter()
+                                    .any(|callee| {
+                                        // Built-in tagged-union variant
+                                        // constructors (`Ok`, `Err`,
+                                        // `Some`, `None`, …) parse as bare
+                                        // `Expr::Call { Identifier }` but
+                                        // resolve through
+                                        // `machine_ctor_registry`, not
+                                        // `fn_registry`. They are always
+                                        // resolvable cross-module, so a
+                                        // body that constructs an
+                                        // `Ok(n)` / `Err(e)` result is not
+                                        // "unresolvable" on their account.
+                                        !BUILTIN_ENUM_VARIANT_BARE_NAMES.contains(&callee.as_str())
+                                            && !same_module_fn_rewrites.contains_key(&callee)
+                                            && !ctx.fn_registry.contains_key(&callee)
+                                    });
+                                    // A dotted `module.Type` in a signature is
+                                    // safe iff its backing declaration was
+                                    // registered at the MIR boundary by the
+                                    // imported-module pre-pass (above): pub enums
+                                    // land in `enum_variants_by_name` /
+                                    // `type_classes`, pub records in
+                                    // `record_registry`, all under the dotted key.
+                                    let is_known_dotted_type = |name: &str| {
+                                        ctx.enum_variants_by_name.contains_key(name)
+                                            || ctx.type_classes.contains_key(name)
+                                            || ctx.record_registry.contains_key(name)
+                                    };
                                     let sig_unresolvable =
                                         method_signature_type_exprs(method).any(|ty| {
                                             !imported_impl_signature_type_is_safe(
                                                 ty,
                                                 self_type_name,
+                                                &is_known_dotted_type,
                                             )
                                         });
                                     if body_unresolvable || sig_unresolvable {
@@ -3075,6 +3183,7 @@ fn collect_call_sites_in_expr(
             collect_call_sites_in_expr(event, out, trait_out);
         }
         HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. } => {
             collect_call_sites_in_expr(receiver, out, trait_out);
         }
@@ -3672,6 +3781,12 @@ struct LowerCtx {
     /// `None` outside an impl-method context — top-level free functions, trait
     /// declarations, and actor/machine method lowerings do not touch this.
     current_impl_self_ty: Option<ResolvedTy>,
+    /// Default method bodies harvested from every `Item::Trait` in the root
+    /// program. Keyed by trait name; values are the `TraitMethod` entries
+    /// that carry a `body`. Populated once before the first lowering pass
+    /// so that `lower_impl_block` can lower default methods that are not
+    /// overridden in the concrete impl.
+    trait_default_methods: HashMap<String, Vec<TraitMethod>>,
 }
 
 impl LowerCtx {
@@ -3743,6 +3858,7 @@ impl LowerCtx {
             lang_items: tc_output.lang_items.clone(),
             target_arch,
             current_impl_self_ty: None,
+            trait_default_methods: HashMap::new(),
         }
     }
 
@@ -4402,23 +4518,46 @@ fn method_signature_type_exprs(method: &FnDecl) -> impl Iterator<Item = &TypeExp
 }
 
 /// Whether a `TypeExpr` appearing in an imported impl-method signature is safe
-/// to lower cross-module: it must reference only primitives/builtins and the
-/// impl's own self type. A user type, a user trait used as a generic argument,
-/// or a cross-module dotted type (`fs.IoError`) is rejected, because the
-/// imported-module lowering does not register such types at the MIR boundary —
-/// lowering a method that names one trips `unknown type` / D10 there.
+/// to lower cross-module: it must reference only primitives/builtins, the impl's
+/// own self type, or a cross-module dotted type whose backing declaration the
+/// imported-module pre-pass already registered at the MIR boundary. A user type
+/// or a user trait used as a generic argument is rejected, because lowering a
+/// method that names one trips `unknown type` / D10 at MIR time.
+///
+/// `is_known_dotted_type` answers whether a dotted `module.Type` name resolves
+/// to a declaration the lowering context has registered (e.g. `fs.IoError`, the
+/// `pub enum` seeded into `enum_variants_by_name` / `type_classes` under both
+/// its bare and dotted keys by the imported-module pre-pass). This is the
+/// checker/lowering authority — the gate consults it rather than re-inferring
+/// safety from syntax alone.
 ///
 /// Conservative by design: it admits the fluent-builder shape (scalar params +
-/// opaque self return) while excluding the signatures that surfaced
-/// pre-existing per-module resolution gaps when impl methods were eagerly
-/// lowered. Composite forms recurse into their components.
-fn imported_impl_signature_type_is_safe(ty: &TypeExpr, self_type_name: &str) -> bool {
+/// opaque self return) and ADT-returning methods (`Result<_, fs.IoError>`)
+/// while excluding signatures naming a type the importer cannot resolve.
+/// Composite forms recurse into their components.
+fn imported_impl_signature_type_is_safe(
+    ty: &TypeExpr,
+    self_type_name: &str,
+    is_known_dotted_type: &impl Fn(&str) -> bool,
+) -> bool {
     match ty {
         TypeExpr::Named { name, type_args } => {
-            // A cross-module dotted reference (`fs.IoError`) is never resolvable
-            // through the importing module's registries.
+            // A cross-module dotted reference (`fs.IoError`) is resolvable only
+            // when its backing declaration was registered at the MIR boundary by
+            // the imported-module pre-pass. Otherwise it is rejected.
             if name.contains('.') {
-                return false;
+                if !is_known_dotted_type(name) {
+                    return false;
+                }
+                return type_args.as_ref().is_none_or(|args| {
+                    args.iter().all(|arg| {
+                        imported_impl_signature_type_is_safe(
+                            &arg.0,
+                            self_type_name,
+                            is_known_dotted_type,
+                        )
+                    })
+                });
             }
             // The impl's own self type is the opaque handle (already resolvable);
             // scalar primitives (`string`, `i64`, `bool`, …) and compound
@@ -4433,26 +4572,35 @@ fn imported_impl_signature_type_is_safe(ty: &TypeExpr, self_type_name: &str) -> 
                 return false;
             }
             type_args.as_ref().is_none_or(|args| {
-                args.iter()
-                    .all(|arg| imported_impl_signature_type_is_safe(&arg.0, self_type_name))
+                args.iter().all(|arg| {
+                    imported_impl_signature_type_is_safe(
+                        &arg.0,
+                        self_type_name,
+                        is_known_dotted_type,
+                    )
+                })
             })
         }
         TypeExpr::Option(inner) | TypeExpr::Slice(inner) | TypeExpr::Borrow(inner) => {
-            imported_impl_signature_type_is_safe(&inner.0, self_type_name)
+            imported_impl_signature_type_is_safe(&inner.0, self_type_name, is_known_dotted_type)
         }
         TypeExpr::Array { element, .. } => {
-            imported_impl_signature_type_is_safe(&element.0, self_type_name)
+            imported_impl_signature_type_is_safe(&element.0, self_type_name, is_known_dotted_type)
         }
         TypeExpr::Pointer { pointee, .. } => {
-            imported_impl_signature_type_is_safe(&pointee.0, self_type_name)
+            imported_impl_signature_type_is_safe(&pointee.0, self_type_name, is_known_dotted_type)
         }
         TypeExpr::Result { ok, err } => {
-            imported_impl_signature_type_is_safe(&ok.0, self_type_name)
-                && imported_impl_signature_type_is_safe(&err.0, self_type_name)
+            imported_impl_signature_type_is_safe(&ok.0, self_type_name, is_known_dotted_type)
+                && imported_impl_signature_type_is_safe(
+                    &err.0,
+                    self_type_name,
+                    is_known_dotted_type,
+                )
         }
-        TypeExpr::Tuple(elems) => elems
-            .iter()
-            .all(|elem| imported_impl_signature_type_is_safe(&elem.0, self_type_name)),
+        TypeExpr::Tuple(elems) => elems.iter().all(|elem| {
+            imported_impl_signature_type_is_safe(&elem.0, self_type_name, is_known_dotted_type)
+        }),
         // Function-typed params, trait objects, and any other composite carry
         // user-type identity that the importer cannot resolve — reject.
         _ => false,
@@ -4477,15 +4625,32 @@ fn collect_imported_private_fn_closure(
         .collect();
     let mut reachable = HashSet::new();
     let mut worklist = Vec::new();
+    let seed_from = |body: &Block, reachable: &mut HashSet<String>, worklist: &mut Vec<String>| {
+        for helper in collect_bare_fn_call_refs(body, private_fns) {
+            if reachable.insert(helper.clone()) {
+                worklist.push(helper);
+            }
+        }
+    };
     for (item, _) in &module.items {
-        if let Item::Function(func) = item {
-            if func.visibility.is_pub() {
-                for helper in collect_bare_fn_call_refs(&func.body, private_fns) {
-                    if reachable.insert(helper.clone()) {
-                        worklist.push(helper);
-                    }
+        match item {
+            // Pub free fns are importer-callable entry points.
+            Item::Function(func) if func.visibility.is_pub() => {
+                seed_from(&func.body, &mut reachable, &mut worklist);
+            }
+            // Impl-block methods are importer-callable entry points too (they
+            // are lowered cross-module by `lower_impl_block`). A private helper
+            // reachable only through a method body — e.g. `net.set_read_timeout`
+            // calling `net_result_from_status` — must still be pulled into the
+            // closure so the method's body resolves it. Without this seed the
+            // method is skipped as body-unresolvable even though the helper
+            // exists in the same module.
+            Item::Impl(impl_decl) => {
+                for method in &impl_decl.methods {
+                    seed_from(&method.body, &mut reachable, &mut worklist);
                 }
             }
+            _ => {}
         }
     }
     while let Some(helper) = worklist.pop() {
@@ -5325,7 +5490,10 @@ impl LowerCtx {
             | HirExprKind::MachineStateName {
                 receiver: object, ..
             }
-            | HirExprKind::CancellationTokenIsCancelled { receiver: object } => {
+            | HirExprKind::CancellationTokenIsCancelled { receiver: object }
+            | HirExprKind::GeneratorNext {
+                receiver: object, ..
+            } => {
                 self.wrap_var_self_explicit_expr_returns(object, receiver, abi_return_ty);
             }
             HirExprKind::Index { container, index } => {
@@ -6116,9 +6284,11 @@ impl LowerCtx {
         }
         // V0b uses `FnDecl` for impl-block methods (per parser ast), which
         // always carries a `Block` body — there is no body-less / default-method
-        // shape representable here. Trait-decl default methods live on
-        // `TraitMethod` and are a separate lowering surface (out of scope for
-        // V0b). No body-less guard needed.
+        // shape representable on the impl AST node itself.  Trait-decl default
+        // methods are lowered below, after the explicitly-overridden methods,
+        // by synthesising a `FnDecl` from the trait's `TraitMethod` body.  This
+        // was previously skipped (out of scope for V0b) but is now required to
+        // support `self.other_method()` dispatch inside a default body.
 
         // Lower methods through the standard `lower_fn_with_name` path. Each
         // method becomes a top-level `HirItem::Function` keyed by
@@ -6169,6 +6339,34 @@ impl LowerCtx {
             method_symbols.push(symbol);
             method_names.push(method.name.clone());
         }
+
+        // Lower trait default methods that are NOT overridden in this impl.
+        // Each default body becomes its own `HirItem::Function` keyed by
+        // `<SelfType>::<method>`, exactly like an explicit impl method.
+        // `current_impl_self_ty` is already set to the concrete self type above
+        // so `Self` inside the default body lowers to the correct concrete type.
+        if let Some(tb) = &decl.trait_bound {
+            let overridden: HashSet<&str> = decl.methods.iter().map(|m| m.name.as_str()).collect();
+            if let Some(defaults) = self.trait_default_methods.get(&tb.name).cloned() {
+                for default_method in &defaults {
+                    if overridden.contains(default_method.name.as_str()) {
+                        continue;
+                    }
+                    let fn_decl = trait_method_to_fn_decl(default_method);
+                    let symbol =
+                        crate::node::HirImplBlock::method_symbol(self_type_name, &fn_decl.name);
+                    items.push(HirItem::Function(self.lower_fn_with_name_and_impl_params(
+                        &fn_decl,
+                        &symbol,
+                        span.clone(),
+                        &type_params,
+                    )));
+                    method_symbols.push(symbol);
+                    method_names.push(fn_decl.name.clone());
+                }
+            }
+        }
+
         if let Some(prev) = prior_imported_rewrites {
             self.imported_fn_rewrites = prev;
         }
@@ -6316,6 +6514,29 @@ impl LowerCtx {
             .return_type
             .as_ref()
             .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
+        // A `gen fn`'s declared `-> T` is the yield element type, NOT the body's
+        // return type. The body falls off the end (Unit) and the function value
+        // is `Generator<Yield = T, Return = Unit>` — matching the checker's
+        // registered signature (`Ty::generator(declared, Unit)`,
+        // registration.rs). The body lowers through the same gen-body path the
+        // `gen { ... }` block expression uses (`lower_gen_block`), so MIR/codegen
+        // construction (`Terminator::Yield`, state-record synthesis) is shared.
+        if func.is_generator {
+            let (body, generator_ty) = self.lower_generator_fn_body(func, source_return_ty, &span);
+            self.pop_scope();
+            return HirFn {
+                id,
+                node: self.ids.node(),
+                name: name.to_string(),
+                type_params: Self::concat_type_params(impl_type_params, func),
+                params,
+                return_ty: generator_ty,
+                body,
+                span,
+                is_generator: true,
+                intrinsic_id: None,
+            };
+        }
         let var_self_receiver = if Self::is_var_self_method(func) {
             params.first().cloned()
         } else {
@@ -6334,6 +6555,24 @@ impl LowerCtx {
         };
         self.pop_scope();
 
+        HirFn {
+            id,
+            node: self.ids.node(),
+            name: name.to_string(),
+            type_params: Self::concat_type_params(impl_type_params, func),
+            params,
+            return_ty,
+            body,
+            span,
+            is_generator: false,
+            intrinsic_id: None,
+        }
+    }
+
+    /// Concatenate impl-level and method-level type parameters for a lowered
+    /// function. A method MAY shadow an impl-level type param name; that is a
+    /// checker-level concern, so here we just concatenate.
+    fn concat_type_params(impl_type_params: &[String], func: &FnDecl) -> Vec<String> {
         let method_type_params: Vec<String> = func
             .type_params
             .as_ref()
@@ -6342,21 +6581,64 @@ impl LowerCtx {
         let mut type_params: Vec<String> =
             Vec::with_capacity(impl_type_params.len() + method_type_params.len());
         type_params.extend(impl_type_params.iter().cloned());
-        // A method MAY shadow an impl-level type param name; that is a
-        // checker-level concern. Here we just concatenate.
         type_params.extend(method_type_params);
+        type_params
+    }
 
-        HirFn {
-            id,
+    /// Lower a `gen fn` body into a `(HirBlock, Generator<Yield, Return>)` pair.
+    ///
+    /// The declared `-> T` is the Yield element type, NOT the body return type:
+    /// the body falls off the end (Unit) and the function value is
+    /// `Generator<Yield = T, Return = Unit>`, matching the checker's registered
+    /// signature (`Ty::generator(declared, Unit)`, registration.rs). The body
+    /// lowers through the same `GenBlock` path the `gen { ... }` block expression
+    /// uses, so MIR/codegen construction (`Terminator::Yield`, state-record
+    /// synthesis) is shared between both surfaces.
+    ///
+    /// Caller owns the surrounding `push_scope`/`pop_scope`; this only lowers the
+    /// body and wraps it. The returned block is a thin tail-only block whose tail
+    /// is the `GenBlock` expression.
+    fn lower_generator_fn_body(
+        &mut self,
+        func: &FnDecl,
+        source_return_ty: ResolvedTy,
+        span: &std::ops::Range<usize>,
+    ) -> (HirBlock, ResolvedTy) {
+        let yield_ty = source_return_ty;
+        let gen_return_ty = ResolvedTy::Unit;
+        self.generator_yield_tys.push(yield_ty.clone());
+        let gen_body = self.with_current_return_type(gen_return_ty.clone(), |ctx| {
+            ctx.lower_block(&func.body, &gen_return_ty)
+        });
+        self.generator_yield_tys.pop();
+
+        let generator_ty = ResolvedTy::Named {
+            name: "Generator".to_string(),
+            args: vec![yield_ty.clone(), gen_return_ty.clone()],
+            builtin: Some(hew_types::BuiltinType::Generator),
+        };
+        let gen_block_expr = HirExpr {
             node: self.ids.node(),
-            name: name.to_string(),
-            type_params,
-            params,
-            return_ty,
-            body,
-            span,
-            intrinsic_id: None,
-        }
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&generator_ty, &self.type_classes),
+            ty: generator_ty.clone(),
+            intent: IntentKind::Read,
+            kind: HirExprKind::GenBlock {
+                body: gen_body,
+                yield_ty,
+                return_ty: gen_return_ty,
+            },
+            span: span.clone(),
+        };
+        let body = HirBlock {
+            node: self.ids.node(),
+            scope: self.ids.scope(),
+            statements: Vec::new(),
+            tail: Some(Box::new(gen_block_expr)),
+            ty: generator_ty.clone(),
+            span: span.clone(),
+        };
+        (body, generator_ty)
     }
 
     /// W3.030 Stage 1 — three layered checks on `#[resource]` close:
@@ -12510,6 +12792,23 @@ impl LowerCtx {
                 args[0].clone(),
                 ForIterNextCall::BuiltinVecIter,
             ),
+            // `for x in <generator>`: the generator value IS the iterator. The
+            // loop binds it to `__hew_for_iter_*` (consuming it) and drives one
+            // `.next()` per iteration; the binding's scope-exit drop frees it.
+            ResolvedTy::Named {
+                ref args,
+                builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
+                ..
+            } if !args.is_empty() => {
+                let elem_ty = args[0].clone();
+                let gen_ty = lowered_iterable.ty.clone();
+                (
+                    lowered_iterable,
+                    gen_ty,
+                    elem_ty,
+                    ForIterNextCall::Generator,
+                )
+            }
             other => {
                 if let Some(shape) =
                     self.generic_into_iter_init(lowered_iterable.clone(), &iterable.1)
@@ -12576,6 +12875,30 @@ impl LowerCtx {
                         args: Vec::new(),
                         ret_ty: option_ty.clone(),
                         receiver_ty: iter_binding.ty.clone(),
+                    },
+                    option_ty,
+                    IntentKind::Read,
+                    iterable.1.clone(),
+                )
+            }
+            ForIterNextCall::Generator => {
+                // Borrow the generator binding (Read) and emit the dedicated
+                // `GeneratorNext` consumption node — identical to a source-level
+                // `g.next()`. The binding stays the sole owner so its scope-exit
+                // drop frees the context once on loop exit.
+                let receiver = self.make_binding_ref(
+                    iter_binding.name.clone(),
+                    iter_binding.id,
+                    iter_binding.ty.clone(),
+                    IntentKind::Read,
+                    iterable.1.clone(),
+                );
+                let option_ty = Self::resolved_option_ty(elem_ty.clone());
+                self.register_option_layout(&elem_ty, &iterable.1, "Generator::next");
+                self.make_expr(
+                    HirExprKind::GeneratorNext {
+                        receiver: Box::new(receiver),
+                        yield_ty: elem_ty.clone(),
                     },
                     option_ty,
                     IntentKind::Read,
@@ -13146,7 +13469,11 @@ impl LowerCtx {
                     ret_ty,
                 )
             }
-            Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. }) => {
+            Some(MethodCallRewrite::RewriteToFunction {
+                c_symbol,
+                consumes_receiver,
+                ..
+            }) => {
                 // S5: a method-call rewrite that lands on a builtin-generic
                 // enum result type (e.g. `Result<(), SendError>` for
                 // `RemotePid<T>::tell`) needs the per-instantiation enum
@@ -13200,7 +13527,21 @@ impl LowerCtx {
                     );
                 }
                 // Lower receiver + args, then prepend receiver as first argument.
-                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                // A consuming handle-release call (`.close()`-family: the
+                // checker set `consumes_receiver` from the resolved runtime
+                // symbol) takes ownership of the receiver, so lower it with
+                // `IntentKind::Consume`. The MIR move-checker then marks the
+                // handle moved-out and excludes it from the function-exit drop
+                // set — a second close at scope exit would double-free the
+                // underlying resource (LESSONS: raii-null-after-move,
+                // cleanup-all-exits). Borrowing methods (`send`/`recv`) keep
+                // `IntentKind::Read`.
+                let receiver_intent = if consumes_receiver {
+                    IntentKind::Consume
+                } else {
+                    IntentKind::Read
+                };
+                let lowered_receiver = self.lower_expr(receiver, receiver_intent);
                 // Slice 2: a by-value direct-dot call to a generic impl method
                 // on a concrete generic receiver (e.g. `p.first()` where
                 // `impl<T> Pair<T> { fn first(self) -> T }` and `p: Pair<i64>`)
@@ -13425,6 +13766,24 @@ impl LowerCtx {
                     ResolvedTy::Bool,
                 )
             }
+            Some(MethodCallRewrite::GeneratorNext { yield_ty }) => {
+                // The result is `Option<yield_ty>`; register its layout so MIR /
+                // codegen can size the enum slot the unbox writes into.
+                self.register_option_layout(&yield_ty, &span, "Generator::next");
+                let option_ty = Self::resolved_option_ty(yield_ty.clone());
+                // The receiver is borrowed (Read): `hew_gen_next` resumes the
+                // generator but does not consume the handle — it stays live for
+                // subsequent `.next()` calls and is freed by `hew_gen_free` on
+                // its own scope-exit drop.
+                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                (
+                    HirExprKind::GeneratorNext {
+                        receiver: Box::new(lowered_receiver),
+                        yield_ty,
+                    },
+                    option_ty,
+                )
+            }
             Some(MethodCallRewrite::StaticTraitDispatch {
                 receiver_type_param,
                 bound_trait,
@@ -13441,6 +13800,84 @@ impl LowerCtx {
                 // W4.047 P1.2: prove the typed handoff agrees at this fail-open
                 // static-trait-dispatch return site (no behaviour change).
                 self.assert_resolved_ty_totality(&span);
+
+                // Trait default method body — concrete Self interception.
+                //
+                // When a trait default method body is lowered as a concrete
+                // impl method (e.g. `Person::greet` instantiated from the
+                // `Greeter::greet` default), the checker recorded
+                // `StaticTraitDispatch { receiver_type_param: "Self" }` for
+                // every `self.sibling_method()` call inside that body.  MIR
+                // then tries to resolve "Self" through its monomorphization
+                // substitution map — but there is no substitution for a
+                // concrete function, causing `UnresolvedStaticDispatchSubstitution`.
+                //
+                // When `current_impl_self_ty` is set (we are inside
+                // `lower_impl_block`) and `receiver_type_param == "Self"`,
+                // the receiver is concretely known.  Derive the qualified
+                // symbol `<ConcreteType>::<method>` and emit a direct `Call`
+                // — the same shape a non-default trait-impl method would emit.
+                // This bypasses `CallTraitMethodStatic` entirely for the
+                // default-body context and lets MIR treat it as an ordinary
+                // concrete call.
+                if receiver_type_param == "Self" {
+                    if let Some(self_ty) = self.current_impl_self_ty.clone() {
+                        if let Some((self_type_name, _type_args)) =
+                            crate::dispatch::receiver_self_type_for_impl_lookup(&self_ty)
+                        {
+                            let c_symbol = crate::node::HirImplBlock::method_symbol(
+                                &self_type_name,
+                                &method_name,
+                            );
+                            self.try_register_enum_instantiation(&span);
+                            self.record_var_self_direct_monomorphisation(
+                                &c_symbol,
+                                // receiver type will be the concrete self type
+                                &self_ty, &span, site,
+                            );
+                            let receiver_intent = if requires_mutable_receiver {
+                                IntentKind::Consume
+                            } else {
+                                IntentKind::Read
+                            };
+                            let lowered_receiver = self.lower_expr(receiver, receiver_intent);
+                            let mut lowered_args = vec![lowered_receiver];
+                            for arg in args {
+                                lowered_args.push(self.lower_expr(arg.expr(), IntentKind::Read));
+                            }
+                            let callee_ty = ResolvedTy::Function {
+                                params: Vec::new(),
+                                ret: Box::new(ret_ty.clone()),
+                            };
+                            let resolved_ref = self
+                                .fn_registry
+                                .get(&c_symbol)
+                                .map_or(ResolvedRef::Unresolved, |entry| {
+                                    ResolvedRef::Item(entry.id)
+                                });
+                            let callee = HirExpr {
+                                node: self.ids.node(),
+                                site: self.ids.site(),
+                                value_class: ValueClass::PersistentShare,
+                                ty: callee_ty,
+                                intent: IntentKind::Read,
+                                kind: HirExprKind::BindingRef {
+                                    name: c_symbol,
+                                    resolved: resolved_ref,
+                                },
+                                span: span.clone(),
+                            };
+                            return (
+                                HirExprKind::Call {
+                                    callee: Box::new(callee),
+                                    args: lowered_args,
+                                },
+                                ret_ty,
+                            );
+                        }
+                    }
+                }
+
                 if requires_mutable_receiver {
                     let lowered_receiver = self.lower_expr(receiver, IntentKind::Consume);
                     let receiver_ty = lowered_receiver.ty.clone();
@@ -15537,6 +15974,7 @@ fn collect_captures_walk(
             collect_captures_walk(event, param_ids, seen, captures, self_id);
         }
         HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
         }
@@ -15810,6 +16248,7 @@ fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk(event, outer_bindings, seen, captures);
         }
         HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
         }
@@ -16571,6 +17010,7 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
             collect_hir_emitted_events_walk(event, event_names, out);
         }
         HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. } => {
             collect_hir_emitted_events_walk(receiver, event_names, out);
         }
@@ -19354,7 +19794,8 @@ fn scan_expr_for_call_shape(
             scan_expr_for_call_shape(receiver, callable, diagnostics);
             scan_expr_for_call_shape(arg, callable, diagnostics);
         }
-        HirExprKind::CancellationTokenIsCancelled { receiver } => {
+        HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);
         }
         HirExprKind::MachineEmit { fields, .. } => {

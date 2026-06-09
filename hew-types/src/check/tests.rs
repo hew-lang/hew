@@ -1674,6 +1674,7 @@ fn checker_output_contract_prunes_orphaned_method_call_metadata() {
         MethodCallRewrite::RewriteToFunction {
             c_symbol: "hew_bar_method".to_string(),
             elem_ty: None,
+            consumes_receiver: false,
         },
     );
 

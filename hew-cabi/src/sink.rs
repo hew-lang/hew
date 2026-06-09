@@ -45,33 +45,34 @@ pub fn take_last_errno() -> i32 {
     })
 }
 
-/// Return the last stream/sink error as a malloc'd C string, or NULL if none.
+/// Return the last stream/sink error as a header-aware C string, or NULL if none.
 ///
 /// Clears both the error message and the associated errno after reading.
-/// Callers must free the returned string.
+/// The returned string is allocated via [`crate::cabi::alloc_cstring_from_str`]
+/// (the header-aware path) and MUST be released through `hew_string_drop` /
+/// [`crate::cabi::free_cstring`]. Bare `libc::free` will abort.
 ///
-/// # Panics
-///
-/// Panics only if the hard-coded fallback diagnostic is not a valid C string.
+/// ALLOCATOR-PAIRING: cstring (`alloc_cstring_from_str` — header-aware; must be
+/// freed via `free_cstring` / `hew_string_drop`, never bare `libc::free`).
 #[no_mangle]
 pub extern "C" fn hew_stream_last_error() -> *mut std::ffi::c_char {
     match take_last_error() {
         Some(msg) => {
-            let c = std::ffi::CString::new(msg).unwrap_or_else(|_| {
-                std::ffi::CString::new(
-                    "hew_stream_last_error: stored error message contained interior NUL",
-                )
-                .expect("static diagnostic must be a valid C string")
-            });
-            let len = c.as_bytes_with_nul().len();
-            // SAFETY: allocating len bytes via malloc.
-            let ptr = unsafe { libc::malloc(len) }.cast::<std::ffi::c_char>(); // ALLOCATOR-PAIRING: libc
+            // Use the header-aware allocator so that the Hew drop spine's
+            // hew_string_drop → free_cstring can verify the magic sentinel and
+            // release the allocation without aborting.  If the message contains
+            // interior NUL bytes (rare: OS errors never do, but defensive), fall
+            // back to a safe diagnostic string before allocating.
+            let safe_msg: &str = if msg.contains('\0') {
+                "hew_stream_last_error: stored error message contained interior NUL"
+            } else {
+                &msg
+            };
+            let ptr = crate::cabi::alloc_cstring_from_str(safe_msg); // ALLOCATOR-PAIRING: cstring
             if ptr.is_null() {
                 set_last_error("hew_stream_last_error: allocation failed".to_string());
                 return std::ptr::null_mut();
             }
-            // SAFETY: ptr is freshly allocated with at least len bytes.
-            unsafe { std::ptr::copy_nonoverlapping(c.as_ptr(), ptr, len) };
             ptr
         }
         None => std::ptr::null_mut(),
@@ -354,11 +355,11 @@ mod tests {
         set_last_error("connection refused".to_string());
         let ptr = hew_stream_last_error();
         assert!(!ptr.is_null());
-        // SAFETY: ptr is a freshly malloc'd NUL-terminated string.
+        // SAFETY: ptr is a freshly alloc_cstring_from_str (header-aware) allocation.
         unsafe {
             let recovered = CStr::from_ptr(ptr).to_str().unwrap();
             assert_eq!(recovered, "connection refused");
-            libc::free(ptr.cast()); // ALLOCATOR-PAIRING: libc
+            crate::cabi::free_cstring(ptr); // CSTRING-FREE: str-open (hew_stream_last_error via alloc_cstring_from_str)
         }
     }
 
@@ -367,9 +368,9 @@ mod tests {
         set_last_error("timeout".to_string());
         let ptr = hew_stream_last_error();
         assert!(!ptr.is_null());
-        // SAFETY: ptr was malloc'd above.
-        unsafe { libc::free(ptr.cast()) }; // ALLOCATOR-PAIRING: libc
-                                           // Second call should return null — error was consumed.
+        // SAFETY: ptr is a header-aware alloc_cstring_from_str allocation.
+        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open
+                                                   // Second call should return null — error was consumed.
         let ptr2 = hew_stream_last_error();
         assert!(ptr2.is_null(), "error should be cleared after first read");
     }
@@ -379,11 +380,11 @@ mod tests {
         set_last_error("échec de connexion 🔥".to_string());
         let ptr = hew_stream_last_error();
         assert!(!ptr.is_null());
-        // SAFETY: ptr is a freshly malloc'd NUL-terminated string.
+        // SAFETY: ptr is a header-aware alloc_cstring_from_str allocation.
         unsafe {
             let recovered = CStr::from_ptr(ptr).to_str().unwrap();
             assert_eq!(recovered, "échec de connexion 🔥");
-            libc::free(ptr.cast()); // ALLOCATOR-PAIRING: libc
+            crate::cabi::free_cstring(ptr); // CSTRING-FREE: str-open (hew_stream_last_error via alloc_cstring_from_str)
         }
     }
 
@@ -392,11 +393,11 @@ mod tests {
         set_last_error("bad\0message".to_string());
         let ptr = hew_stream_last_error();
         assert!(!ptr.is_null());
-        // SAFETY: `ptr` is a freshly allocated NUL-terminated C string from the ABI.
+        // SAFETY: ptr is a header-aware alloc_cstring_from_str allocation.
         unsafe {
             let recovered = CStr::from_ptr(ptr).to_str().unwrap();
             assert!(recovered.contains("contained interior NUL"));
-            libc::free(ptr.cast()); // ALLOCATOR-PAIRING: libc
+            crate::cabi::free_cstring(ptr); // CSTRING-FREE: str-open (hew_stream_last_error via alloc_cstring_from_str)
         }
     }
 
@@ -417,11 +418,11 @@ mod tests {
         // Consuming errno does not consume the message.
         let ptr = hew_stream_last_error();
         assert!(!ptr.is_null());
-        // SAFETY: ptr is malloc'd; free it.
+        // SAFETY: ptr is a header-aware alloc_cstring_from_str allocation.
         unsafe {
             let recovered = CStr::from_ptr(ptr).to_str().unwrap();
             assert_eq!(recovered, "connection refused");
-            libc::free(ptr.cast()); // ALLOCATOR-PAIRING: libc
+            crate::cabi::free_cstring(ptr); // CSTRING-FREE: str-open (hew_stream_last_error via alloc_cstring_from_str)
         }
     }
 
@@ -440,8 +441,8 @@ mod tests {
         // Clean up the message side.
         let ptr = hew_stream_last_error();
         if !ptr.is_null() {
-            // SAFETY: malloc'd above.
-            unsafe { libc::free(ptr.cast()) }; // ALLOCATOR-PAIRING: libc
+            // SAFETY: ptr is a header-aware alloc_cstring_from_str allocation.
+            unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (hew_stream_last_error via alloc_cstring_from_str)
         }
     }
 
@@ -471,6 +472,90 @@ mod tests {
         assert_eq!(msg.as_deref(), Some("disk full"));
         // After take_last_error the errno path is also cleared.
         assert_eq!(take_last_errno(), 0);
+    }
+
+    // ── free_cstring roundtrip: hew_stream_last_error allocator contract ──
+    //
+    // These tests act as the Hew drop spine: they call hew_stream_last_error and
+    // release the result via free_cstring (exactly what hew_string_drop does at
+    // runtime). They assert no abort/leak, proving the allocator pairing is correct.
+    //
+    // The companion subprocess test proves that a raw libc::malloc pointer — the
+    // OLD allocator path — would cause free_cstring to abort, confirming the fix
+    // is load-bearing and not redundant.
+
+    /// Drop-spine simulation: `hew_stream_last_error` + `free_cstring` roundtrip.
+    ///
+    /// Calls `hew_stream_last_error`, reads the result, and releases it via
+    /// `free_cstring` (as `hew_string_drop` does). If `hew_stream_last_error` still
+    /// used raw `libc::malloc` this would abort on the missing header sentinel.
+    #[test]
+    fn hew_stream_last_error_free_cstring_roundtrip() {
+        set_last_error("connection reset by peer".to_string());
+        let ptr = hew_stream_last_error();
+        assert!(
+            !ptr.is_null(),
+            "error must be non-null after set_last_error"
+        );
+        // SAFETY: ptr was produced by hew_stream_last_error via alloc_cstring_from_str
+        // (header-aware). Reading it as a C string and releasing via free_cstring
+        // both satisfy the header-aware precondition.
+        unsafe {
+            let msg = std::ffi::CStr::from_ptr(ptr).to_str().unwrap();
+            assert_eq!(msg, "connection reset by peer");
+            // This is the exact call the Hew drop spine makes via hew_string_drop.
+            // With the OLD raw libc::malloc allocator, free_cstring would read
+            // 16 bytes before the allocation for the header magic sentinel, find
+            // garbage, and call libc::abort. With alloc_cstring_from_str the
+            // sentinel is present and this returns cleanly.
+            crate::cabi::free_cstring(ptr); // CSTRING-FREE: str-open
+        }
+        // Error was consumed; a second call must return null.
+        assert!(hew_stream_last_error().is_null());
+    }
+
+    /// Proves the OLD allocator path (raw `libc::malloc`, no header) causes `free_cstring`
+    /// to abort. Run in a subprocess so the SIGABRT does not take down the test runner.
+    ///
+    /// This is the falsification probe: it demonstrates that the fix is not
+    /// redundant and that the previous raw-malloc path was the actual hazard.
+    #[test]
+    fn free_cstring_aborts_on_raw_malloc_provenance() {
+        if std::env::var("HEW_SINK_RUN_ABORT_PROBE").is_ok() {
+            // Simulate the OLD hew_stream_last_error allocator: a raw libc::malloc
+            // result with no header sentinel, as free_cstring expects.
+            let msg = b"simulated old-path error\0";
+            // SAFETY: allocating len bytes via raw malloc, exactly as the old code did.
+            let ptr = unsafe { libc::malloc(msg.len()) }.cast::<std::ffi::c_char>();
+            assert!(!ptr.is_null());
+            // SAFETY: ptr is freshly allocated with msg.len() bytes.
+            unsafe { std::ptr::copy_nonoverlapping(msg.as_ptr(), ptr.cast::<u8>(), msg.len()) };
+            // free_cstring will read base = ptr - CSTRING_HEADER_SIZE, find no magic
+            // sentinel, print a diagnostic, and call libc::abort. This must not return.
+            // SAFETY: ptr was just malloc'd; we are intentionally passing a headerless
+            // pointer to prove free_cstring detects the mismatch and aborts.
+            unsafe { crate::cabi::free_cstring(ptr) };
+            // If we reach here the abort did NOT fire — exit cleanly so the parent fails.
+            std::process::exit(0);
+        }
+
+        let exe = std::env::current_exe().expect("current_exe");
+        let status = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "sink::tests::free_cstring_aborts_on_raw_malloc_provenance",
+            ])
+            .env("HEW_SINK_RUN_ABORT_PROBE", "1")
+            .env("RUST_BACKTRACE", "0")
+            .output()
+            .expect("spawn abort probe");
+        assert!(
+            !status.status.success(),
+            "free_cstring on a raw-malloc (headerless) pointer must abort (subprocess \
+             should not exit 0); stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&status.stdout),
+            String::from_utf8_lossy(&status.stderr),
+        );
     }
 
     // ── HewSink / into_sink_ptr / into_write_sink_ptr ───────────────────

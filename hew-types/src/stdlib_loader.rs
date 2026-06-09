@@ -191,6 +191,25 @@ fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
     (line, col)
 }
 
+/// Collect every extern (C-ABI) function name declared in the module's
+/// `extern` blocks. Used to decide whether a pub wrapper's inner callee is a
+/// real link-time C symbol (collapse permitted) or a same-module Hew helper
+/// (identity mapping required so the wrapper itself is compiled and callable).
+fn collect_extern_fn_names(program: &hew_parser::ast::Program) -> HashSet<String> {
+    program
+        .items
+        .iter()
+        .filter_map(|(item, _)| {
+            if let Item::ExternBlock(block) = item {
+                Some(block.functions.iter().map(|f| f.name.clone()))
+            } else {
+                None
+            }
+        })
+        .flatten()
+        .collect()
+}
+
 /// Extract all type information from a parsed `.hew` program.
 fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -> ModuleInfo {
     let mut info = ModuleInfo {
@@ -203,6 +222,16 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
         drop_funcs: Vec::new(),
         unsupported_type_signatures: Vec::new(),
     };
+
+    // Pre-collect every extern (C-ABI) function name declared in the module.
+    // A pub wrapper may only be collapsed to its inner callee — the trivial
+    // pass-through optimisation in `clean_names` — when that callee is an extern
+    // C symbol that exists at link time. A wrapper forwarding to a same-module
+    // *Hew* helper (e.g. `pub fn encode(s) { encode_impl(s) }`) must instead map
+    // to itself so the wrapper is compiled and called by its qualified name;
+    // collapsing to the private helper's bare name yields an unresolvable callee
+    // at the importer's call site.
+    let extern_fn_names = collect_extern_fn_names(program);
 
     for (item, _span) in &program.items {
         match item {
@@ -249,21 +278,26 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
                     return_type,
                 });
 
-                // Clean name mapping: use the C function target only for
-                // trivial pass-through wrappers (same param count). Non-trivial
-                // wrappers (e.g. `setup()` calling `hew_log_set_level(2)`) use
-                // identity mapping so the wrapper Hew function is compiled and
-                // called instead.
-                let c_target =
-                    if let Some((target, call_arg_count)) = extract_call_target(&fn_decl.body) {
-                        if call_arg_count == fn_decl.params.len() {
-                            target
-                        } else {
-                            fn_decl.name.clone()
-                        }
+                // Clean name mapping: use the inner call target only for trivial
+                // pass-through wrappers that forward to an extern C symbol with
+                // the same arity. Non-trivial wrappers (different arg count, e.g.
+                // `setup()` calling `hew_log_set_level(2)`) AND wrappers that
+                // forward to a same-module Hew helper (e.g. `encode()` calling
+                // `encode_impl()`) use identity mapping so the wrapper Hew
+                // function is compiled and called by its qualified name. A Hew
+                // helper is private to the module: collapsing the public wrapper
+                // onto it produces a callee the importer cannot resolve.
+                let c_target = if let Some((target, call_arg_count)) =
+                    extract_call_target(&fn_decl.body)
+                {
+                    if call_arg_count == fn_decl.params.len() && extern_fn_names.contains(&target) {
+                        target
                     } else {
                         fn_decl.name.clone()
-                    };
+                    }
+                } else {
+                    fn_decl.name.clone()
+                };
                 info.clean_names.push((fn_decl.name.clone(), c_target));
             }
             Item::Impl(impl_decl) => {

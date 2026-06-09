@@ -122,6 +122,44 @@ LLVM_PREFIX="$(brew --prefix llvm)" make
 LLVM_PREFIX="$(brew --prefix llvm)" make release
 ```
 
+## FreeBSD x86_64
+
+**Status:** Tier 2 — builds and tests pass on FreeBSD 15.0 x86_64.
+
+### Prerequisites
+
+Install LLVM 22 from the FreeBSD package collection:
+
+```sh
+pkg install llvm22
+```
+
+This places the LLVM tools and libraries under `/usr/local/llvm22`.
+`llvm-sys` does not discover this path automatically; set
+`LLVM_SYS_221_PREFIX` in your environment before building:
+
+```sh
+export LLVM_SYS_221_PREFIX=/usr/local/llvm22
+```
+
+Do **not** add this to a `.cargo/config.toml` `[env]` section — that would
+attempt to use `/usr/local/llvm22` on Linux and macOS where the path does not
+exist.  Set it in your shell profile (`~/.profile` or `~/.zshenv`) on the
+FreeBSD host, or pass it directly to make:
+
+```sh
+LLVM_SYS_221_PREFIX=/usr/local/llvm22 make
+```
+
+### Build
+
+```sh
+LLVM_SYS_221_PREFIX=/usr/local/llvm22 make
+LLVM_SYS_221_PREFIX=/usr/local/llvm22 make release
+```
+
+### Quick Reference (updated table below)
+
 ## Windows
 
 **Status:** Supported for release builds when LLVM 22 is installed locally
@@ -236,10 +274,11 @@ non-empty.
 For a full build of `hew`, prefer `make` / `make release`. The table below
 summarizes the LLVM install shape expected by local release validation.
 
-| Platform      | LLVM discovery                        | Extra packages |
-| ------------- | ------------------------------------- | -------------- |
-| Linux x86_64  | `llvm-config-22` on `PATH` or prefix  | n/a            |
-| Linux aarch64 | `llvm-config-22` on `PATH` or prefix  | n/a            |
-| macOS x86_64  | `LLVM_PREFIX="$(brew --prefix llvm)"` | n/a            |
-| macOS aarch64 | `LLVM_PREFIX="$(brew --prefix llvm)"` | n/a            |
-| Windows       | `LLVM_PREFIX=C:\llvm-22`              | `cmake`, `ninja` only if building LLVM locally |
+| Platform       | LLVM discovery                                        | Extra packages |
+| -------------- | ----------------------------------------------------- | -------------- |
+| Linux x86_64   | `llvm-config-22` on `PATH` or prefix                 | n/a            |
+| Linux aarch64  | `llvm-config-22` on `PATH` or prefix                 | n/a            |
+| macOS x86_64   | `LLVM_PREFIX="$(brew --prefix llvm)"`                | n/a            |
+| macOS aarch64  | `LLVM_PREFIX="$(brew --prefix llvm)"`                | n/a            |
+| FreeBSD x86_64 | `LLVM_SYS_221_PREFIX=/usr/local/llvm22` (host env)   | `pkg install llvm22` |
+| Windows        | `LLVM_PREFIX=C:\llvm-22`                             | `cmake`, `ninja` only if building LLVM locally |

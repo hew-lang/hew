@@ -272,7 +272,16 @@ fn reset_freebsd_argv_warning_for_tests() {
 }
 
 /// Read process arguments via FreeBSD's `kern.proc.args` sysctl.
+///
+/// Only called from the `#[cfg(target_os = "freebsd")]` integration test
+/// (`test_freebsd_sysctl_happy_path_matches_std_env_args`). The live path
+/// invokes `freebsd_args_with(&FreeBsdSysctl)` directly; this wrapper exists
+/// so the test can call it without importing `FreeBsdSysctl`.
 #[cfg(target_os = "freebsd")]
+#[allow(
+    dead_code,
+    reason = "test-only wrapper; the live path calls freebsd_args_with directly"
+)]
 fn freebsd_args() -> Result<Vec<String>, FreeBsdArgvError> {
     freebsd_args_with(&FreeBsdSysctl)
 }

@@ -102,9 +102,14 @@ fn which(tool: &str) -> Option<PathBuf> {
 /// (`_Sec*`, `_CF*`, `_SC*`, `_Authorization*`) live in CoreFoundation,
 /// Security, and SystemConfiguration. A bare `clang obj runtime` link does not
 /// read the crates' `cargo:rustc-link-lib=framework=…` directives (those only
-/// reach a `cargo`-driven link), so the frameworks are named here. Empty on
-/// non-macOS. (Mirrors the production native link's reliance on the macOS SDK
-/// + frameworks; this test links the archive directly without cargo.)
+/// reach a `cargo`-driven link), so the frameworks are named here.
+///
+/// On FreeBSD the same bare-link gap requires `-lpthread`/`-lm` explicitly
+/// (FreeBSD keeps these separate from libc), mirroring the production
+/// `NativeLinkPlan` for `TargetOs::FreeBsd` in `hew-cli/src/target.rs`. Linux
+/// needs nothing here because glibc 2.34+ folds libpthread/libm into libc.
+/// (Mirrors the production native link's reliance on the macOS SDK +
+/// frameworks; this test links the archive directly without cargo.)
 fn native_link_frameworks() -> &'static [&'static str] {
     #[cfg(target_os = "macos")]
     {
@@ -117,7 +122,11 @@ fn native_link_frameworks() -> &'static [&'static str] {
             "SystemConfiguration",
         ]
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "freebsd")]
+    {
+        &["-lpthread", "-lm"]
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
     {
         &[]
     }
@@ -644,12 +653,22 @@ fn init_targets() {
 /// macOS returns `arm64-apple-darwin25.x`, whose `arm64`/`darwin` spelling
 /// LLVM's `from_triple` rejects; normalise to `aarch64`/`x86_64` + `macosx`
 /// (matching the codegen's own `native_emission_triple`).
+///
+/// On FreeBSD the host default triple (e.g. `x86_64-portbld-freebsd15.0` or
+/// `aarch64-unknown-freebsd15.0`) is already LLVM-accepted, so we pass it
+/// through unchanged. The FreeBSD check MUST come before the macOS x86_64/
+/// aarch64 normalisation arms to prevent `x86_64-portbld-freebsd*` from being
+/// misidentified as `x86_64-apple-macosx13.0`.
 fn native_triple() -> String {
     let default = TargetMachine::get_default_triple()
         .as_str()
         .to_string_lossy()
         .into_owned();
-    if default.starts_with("x86_64") {
+    if default.contains("freebsd") {
+        // FreeBSD: the host-reported triple is already LLVM-accepted; pass it
+        // through. Covers both x86_64-portbld-freebsd* and aarch64-*-freebsd*.
+        default
+    } else if default.starts_with("x86_64") {
         "x86_64-apple-macosx13.0".to_string()
     } else if default.starts_with("aarch64") || default.starts_with("arm64") {
         "aarch64-apple-macosx13.0".to_string()

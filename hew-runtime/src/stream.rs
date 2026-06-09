@@ -4297,7 +4297,20 @@ mod tests {
             drop(peer);
         });
 
-        let (accepted, _) = listener.accept().unwrap();
+        // On FreeBSD (and other BSDs), `accept()` may return ECONNABORTED
+        // (os error 53) when the peer's RST arrives before the accept
+        // completes. This is POSIX-permitted BSD behaviour; Linux silently
+        // drops the aborted connection and waits for the next one.  Retry
+        // until we get a connection or a genuinely unexpected error.
+        let accepted = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionAborted => {
+                    // Peer RST arrived before accept completed; retry.
+                }
+                Err(e) => panic!("listener.accept() failed unexpectedly: {e}"),
+            }
+        };
         t.join().unwrap();
 
         // Give the RST time to arrive.

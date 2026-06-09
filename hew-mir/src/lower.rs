@@ -14252,18 +14252,25 @@ impl Builder {
         };
 
         // Suspendable-caller flip (NEW-7): `await stream.recv()` over a
-        // `Stream<bytes>` resolves to the extern `hew_stream_next_bytes`. In a
-        // caller that carries the execution context (actor handler / closure /
-        // task entry) the recv SUSPENDS over the channel-await substrate instead
-        // of blocking the worker — emit `Terminator::SuspendingStreamNext`. A
+        // `Stream<bytes>` resolves to the extern `hew_stream_next_bytes`; over
+        // a `Stream<string>` to `hew_stream_next` (the canonical name; the
+        // `_bytes` symbol is the bytes-element sibling, the unsuffixed name
+        // is the string-element variant). In a caller that carries the
+        // execution context (actor handler / closure / task entry) the recv
+        // SUSPENDS over the channel-await substrate instead of blocking the
+        // worker — emit `Terminator::SuspendingStreamNext` with
+        // `elem_is_string` selecting which runtime pop the bind edge calls
+        // (mirror of the `elem_is_int` flag on `SuspendingChannelRecv`). A
         // `FunctionCallConv::Default` caller (`main`, free fn) has no parkable
-        // continuation and keeps the blocking `hew_stream_next_bytes` call. This
-        // reuses the SAME `carries_execution_context` discriminator as
+        // continuation and keeps the blocking `hew_stream_next_*` call (the
+        // codegen `Terminator::Call` intercept materialises `Option<T>`).
+        // This reuses the SAME `carries_execution_context` discriminator as
         // `lower_conn_await_read` (DI-019/DI-020) — not a parallel predicate.
-        if callee_symbol == "hew_stream_next_bytes"
+        if matches!(callee_symbol, "hew_stream_next_bytes" | "hew_stream_next")
             && self.current_function_call_conv.carries_execution_context()
         {
             if let (Some(result_dest), [stream]) = (dest, arg_places.as_slice()) {
+                let elem_is_string = callee_symbol == "hew_stream_next";
                 let next = self.alloc_block();
                 // `SuspendingStreamNext` carries no separate MIR cleanup block —
                 // it rides the multi-suspend epilogue, so `cleanup` reuses `next`
@@ -14271,6 +14278,7 @@ impl Builder {
                 self.finish_current_block(Terminator::SuspendingStreamNext {
                     stream: *stream,
                     result_dest,
+                    elem_is_string,
                     resume: next,
                     cleanup: next,
                 });
@@ -22097,12 +22105,21 @@ fn instr_escape_places(instr: &Instr) -> Vec<Place> {
 fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<Place> {
     let arg_is_borrowed = |callee: &str, place: &Place| -> bool {
         let arg_ty = base_local(*place).and_then(|l| local_tys.get(l as usize));
-        // A no-close actor-pid leaf is a borrow under ANY callee; an
-        // allowlisted borrowing ABI additionally borrows its handle args
-        // by value without retaining/transferring them.
+        // A no-close actor-pid leaf is a borrow under ANY callee; the
+        // `is_borrowing_call_abi` allowlist additionally borrows the callee's
+        // non-handle-leaf args by value (e.g. `hew_tcp_attach_local`'s
+        // LocalPid handler — but its `conn` is consumed, so the per-arg
+        // owned-handle-leaf guard keeps `conn` poisoned). The
+        // `is_handle_borrowing_call_abi` allowlist promotes the stricter
+        // shape: the callee borrows EVERY arg including owned-handle leaves
+        // (the stream recv / try_recv runtime entries borrow the stream
+        // handle to read one item — the handle continues to live in the
+        // caller's slot afterwards, identical drop semantics to the
+        // suspending `Terminator::SuspendingStreamNext` path).
         arg_ty.is_some_and(ty_is_nonowning_handle_leaf)
             || (is_borrowing_call_abi(callee)
                 && arg_ty.is_some_and(|t| !ty_is_owned_handle_leaf(t)))
+            || is_handle_borrowing_call_abi(callee)
     };
     match term {
         Terminator::Call { callee, args, .. } => args
@@ -22187,9 +22204,40 @@ fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<
 /// free-count 1, via the caller's source drop alone). Kept as an explicit,
 /// narrow allowlist so the escape gate does not invent a phantom second free
 /// for a ratified borrowing surface while every non-listed call still fails
-/// closed by default.
+/// closed by default. This allowlist is the PARTIAL form — only the callee's
+/// non-handle-leaf args are borrowed; owned-handle-leaf args are still poisoned
+/// (e.g. `hew_tcp_attach_local`'s `conn`). For callees that borrow EVERY arg
+/// including owned-handle leaves, see [`is_handle_borrowing_call_abi`].
 fn is_borrowing_call_abi(callee: &str) -> bool {
     matches!(callee, "hew_tcp_attach_local")
+}
+
+/// Runtime ABIs whose owned-handle-leaf arguments are ALSO borrowed (not just
+/// the non-handle-leaf args of [`is_borrowing_call_abi`]). The stream recv /
+/// `try_recv` runtime entries — `hew_stream_next` / `hew_stream_try_next` for
+/// `Stream<string>::recv` / `try_recv` and `hew_stream_next_bytes` /
+/// `hew_stream_try_next_bytes` for `Stream<bytes>::recv` / `try_recv` — READ
+/// one item from the stream and return it as `Option<T>`; the stream handle
+/// itself is borrowed for the call and continues to live in the caller's slot
+/// afterwards (the caller's source drop is still the SOLE free of the stream's
+/// runtime context). Their suspending siblings ([`Terminator::SuspendingStreamNext`])
+/// are already exempt because they are not [`Terminator::Call`]s; listing
+/// the blocking / non-suspending entries here keeps the same
+/// borrow-not-consume semantics for the `let (sink, input) = stream.pipe(N);
+/// input.try_recv()` shape that goes through [`Terminator::Call`].
+///
+/// Kept narrow: each entry's Rust impl takes `*mut HewStream` and ONLY reads
+/// one queued item without mutating the handle's ownership; adding a callee
+/// that actually consumes the handle here would silently disable the
+/// double-free gate for its caller.
+fn is_handle_borrowing_call_abi(callee: &str) -> bool {
+    matches!(
+        callee,
+        "hew_stream_next"
+            | "hew_stream_try_next"
+            | "hew_stream_next_bytes"
+            | "hew_stream_try_next_bytes"
+    )
 }
 
 /// True when `ty` is a NON-OWNING owned-handle leaf: an actor pid
@@ -26474,6 +26522,7 @@ mod f1_suspending_escape_poison {
         let next = Terminator::SuspendingStreamNext {
             stream: Place::Local(1),
             result_dest: Place::Local(2),
+            elem_is_string: false,
             resume: 1,
             cleanup: 2,
         };

@@ -5,6 +5,7 @@ use std::ptr;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use hew_runtime::cabi::free_cstring;
 use hew_runtime::generator::{
     hew_gen_ctx_create, hew_gen_free, hew_gen_next, hew_gen_yield, HewGenCtx,
 };
@@ -77,7 +78,9 @@ fn stream_lines_empty_line_preserved() {
             }
             let cstr = std::ffi::CStr::from_ptr(ptr.cast());
             items.push(cstr.to_string_lossy().into_owned());
-            libc::free(ptr);
+            // hew_stream_next now returns a header-aware cstring payload — release
+            // via the matching deallocator so the magic-prefix invariant holds.
+            free_cstring(ptr);
         }
 
         assert_eq!(items.len(), 3, "expected 3 lines, got {items:?}");

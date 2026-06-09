@@ -1,0 +1,41 @@
+//! Status: runnable
+//! Description: Drains a `Stream<string>` with `for await` end-to-end,
+//! including an empty `""` item to lock the empty-item invariant.
+//!
+//! `Stream<string>::recv` resolves to the runtime symbol `hew_stream_next`
+//! (canonical, unsuffixed = string lane; `hew_stream_next_bytes` is the bytes
+//! sibling). The suspending coroutine path lowers it to
+//! `Terminator::SuspendingStreamNext { elem_is_string: true }`; the resume
+//! edge pops the item via `hew_stream_pop_string` and binds it as
+//! `Option<string>`. EOF is the sole `None`; an empty item surfaces as
+//! `Some("")` and the loop continues — the empty-item drain in this fixture
+//! is the regression for that invariant.
+//!
+//! The MIR drop spine frees each owned string payload via `hew_string_drop`
+//! once the loop body exits, and the stream handle is freed at end-of-scope
+//! (no extra free on the recv edge — see `is_handle_borrowing_call_abi`).
+
+import std::stream;
+
+actor DrainStrings {
+    let frames: i64;
+    receive fn run(unused: i64) {
+        let (sink, input) = stream.pipe(8);
+        // Send three normal frames, one empty frame between them, then EOF.
+        sink.send("frame-0");
+        sink.send("");
+        sink.send("frame-1");
+        sink.send("frame-2");
+        sink.close();
+        for await item in input {
+            println(f"recv [{item}]");
+        }
+        println("done");
+    }
+}
+
+fn main() {
+    let worker = spawn DrainStrings(frames: 4);
+    worker.run(0);
+    sleep_ms(500);
+}

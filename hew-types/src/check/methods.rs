@@ -2144,7 +2144,8 @@ impl Checker {
         let resolved_inner = self.subst.resolve(&inner);
         match method {
             // Channel-family naming: .recv() replaced .next() as the fundamental
-            // recv surface (routes to the same hew_stream_next runtime symbol).
+            // recv surface (routes to `hew_stream_next_bytes` /
+            // `hew_stream_next` runtime symbols per element type).
             // .try_recv() routes to hew_stream_try_next (non-blocking variant).
             // .lines() and .collect() are iterator-style ops removed from the
             // fundamental surface; they will land via trait impls in stdlib work.

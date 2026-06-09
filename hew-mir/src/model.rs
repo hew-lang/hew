@@ -2285,16 +2285,18 @@ pub enum Terminator {
     },
     /// Non-blocking `await stream.recv()` from a SUSPENDABLE caller (NEW-7). The
     /// channel-readiness analogue of [`Terminator::SuspendingRead`]: instead of
-    /// blocking an OS worker in `hew_stream_next_bytes`, codegen lowers this as a
-    /// `coro.suspend` source — it creates a read slot, registers the parked
-    /// continuation + the slot with the stream's channel core
-    /// (`hew_stream_await_next`), suspends (freeing the worker), and on the
-    /// resume edge pops the now-available item from the queue
-    /// (`hew_stream_pop_bytes`) and binds it as `Option<bytes>` (`None` on EOF /
-    /// a present zero-length item, mirroring the blocking recv narrowing). The
-    /// item travels through the channel queue held across the suspend (NOT a
-    /// terminator operand), exactly as `SuspendingRead`'s bytes travel through
-    /// its read slot — which is why the resume binding lives ON the terminator.
+    /// blocking an OS worker in `hew_stream_next_bytes` / `hew_stream_next`,
+    /// codegen lowers this as a `coro.suspend` source — it creates a read slot,
+    /// registers the parked continuation + the slot with the stream's channel
+    /// core (`hew_stream_await_next`), suspends (freeing the worker), and on
+    /// the resume edge pops the now-available item from the queue
+    /// (`hew_stream_pop_bytes` / `hew_stream_pop_string`) and binds it as
+    /// `Option<bytes>` / `Option<string>` (EOF is the SOLE `None`; an empty
+    /// item — empty `bytes` / empty `string` — surfaces as `Some` of the empty
+    /// value, mirroring the blocking-recv invariant).  The item travels
+    /// through the channel queue held across the suspend (NOT a terminator
+    /// operand), exactly as `SuspendingRead`'s bytes travel through its read
+    /// slot — which is why the resume binding lives ON the terminator.
     ///
     /// Carries the same SUSPEND carrier the codegen boundary reads for
     /// `has_suspend` / `is_coroutine`: any function whose CFG contains this
@@ -2303,16 +2305,24 @@ pub enum Terminator {
     /// (`FunctionCallConv::carries_execution_context` — actor handler / closure
     /// / task entry); a `FunctionCallConv::Default` caller (`main`, free fns)
     /// runs on a foreign thread with no parkable continuation and keeps the
-    /// blocking `hew_stream_next_bytes` FFI call.
+    /// blocking `hew_stream_next_bytes` / `hew_stream_next` FFI call.
     SuspendingStreamNext {
         /// The stream handle the recv is registered against (the receiver of
         /// `stream.recv()`). Read by codegen to register the parked continuation
         /// with the channel core and to pop the item on resume.
         stream: Place,
-        /// The `Option<bytes>` slot bound on the resume edge after the producer
-        /// deposited an item (or closed → `None`). Identical role to
-        /// [`Terminator::SuspendingRead::result_dest`].
+        /// The `Option<bytes>` / `Option<string>` slot bound on the resume edge
+        /// after the producer deposited an item (or closed → `None`). Identical
+        /// role to [`Terminator::SuspendingRead::result_dest`].
         result_dest: Place,
+        /// `true` → `Option<string>` element (`hew_stream_next` /
+        /// `hew_stream_pop_string`, nullable-ptr / header-aware cstring ABI);
+        /// `false` → `Option<bytes>` element (`hew_stream_next_bytes` /
+        /// `hew_stream_pop_bytes`, `BytesTriple` empty-triple ABI). Mirrors
+        /// the `elem_is_int` discriminator on
+        /// [`Terminator::SuspendingChannelRecv`] — selects which runtime pop
+        /// the resume edge materialises into `result_dest`.
+        elem_is_string: bool,
         /// Block reached on the coro switch resume edge (case 0) — the body
         /// continues here after `enqueue_resume` woke the parked continuation and
         /// the item is bound. This is the `next` block of the original recv.

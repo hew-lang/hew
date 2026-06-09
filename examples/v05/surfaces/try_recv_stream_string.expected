@@ -1,0 +1,6 @@
+poll [frame-0]
+poll []
+poll [frame-1]
+poll [frame-2]
+drained 4 frames
+done

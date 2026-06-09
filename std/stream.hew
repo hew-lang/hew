@@ -228,11 +228,13 @@ extern "C" {
     // Element-type-specific runtime functions used by enricher dispatch.
     // string element operations
     fn hew_stream_next(stream: Stream<string>) -> string;
+    fn hew_stream_try_next(stream: Stream<string>) -> string;
     fn hew_stream_collect_string(stream: Stream<string>) -> string;
     fn hew_sink_write_string(sink: Sink<string>, data: string);
 
     // Bytes element operations
     fn hew_stream_next_bytes(stream: Stream<bytes>) -> bytes;
+    fn hew_stream_try_next_bytes(stream: Stream<bytes>) -> bytes;
     fn hew_sink_write_bytes(sink: Sink<bytes>, data: bytes);
 
     // Bytes-typed pair extractors (same underlying handle, typed for the checker)

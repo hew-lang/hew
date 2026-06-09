@@ -524,6 +524,7 @@ stable = [
   "hew_stream_pair_stream_bytes",
   "hew_stream_pipe",
   "hew_stream_poll",
+  "hew_stream_pop_string",
   "hew_stream_take",
   "hew_string_abort_index_oob",
   "hew_string_abort_oob",

@@ -1456,6 +1456,12 @@ fn intern_runtime_decl<'ctx>(
         // immediate bind edge (empty triple → None). Returns the AAPCS/SysV
         // two-eightbyte `[2 x i64]` like `hew_read_slot_take`.
         "hew_stream_pop_bytes" => i64_ty.array_type(2).fn_type(&[ptr_ty.into()], false),
+        // hew_stream_pop_string(stream: *mut HewStream) -> *mut c_char
+        // (`hew-runtime/src/stream.rs`). String sibling of
+        // `hew_stream_pop_bytes`: pops one queued item on the resume /
+        // immediate bind edge (NULL → None, else Some — header-aware cstring
+        // the caller owns, drop spine frees via `hew_string_drop`).
+        "hew_stream_pop_string" => ptr_ty.fn_type(&[ptr_ty.into()], false),
         // hew_stream_detach_await(stream: *mut HewStream, slot: *mut HewReadSlot)
         //   -> void (`hew-runtime/src/stream.rs`). The abandon edge: releases the
         // channel core's in-flight ref on the slot.
@@ -22170,6 +22176,11 @@ struct SuspendingAcceptEmit {
 struct SuspendingStreamNextEmit {
     stream: Place,
     result_dest: Place,
+    /// `true` → `Option<string>` element (`hew_stream_pop_string`, nullable-ptr
+    /// header-aware cstring ABI); `false` → `Option<bytes>` element
+    /// (`hew_stream_pop_bytes`, `BytesTriple` empty-triple ABI). Mirrors the
+    /// `elem_is_int` flag on [`SuspendingChannelRecvEmit`].
+    elem_is_string: bool,
     resume: u32,
     cleanup: u32,
 }
@@ -23309,32 +23320,64 @@ fn emit_suspending_stream_next_terminator<'ctx>(
         .llvm_ctx("suspending stream-next abandon -> shared cleanup br")?;
 
     // ── bind: ready-now OR resumed. Pop the queued item, map it into the
-    // Option<bytes> dest, release the creator ref, branch to the MIR resume. ───
+    // Option<{bytes|string}> dest, release the creator ref, branch to the MIR
+    // resume. The element-kind discriminator (`elem_is_string`) selects which
+    // runtime pop the bind edge calls — mirror of the
+    // `SuspendingChannelRecv` ramp's `elem_is_int` selector. ─────────────────
     fn_ctx.builder.position_at_end(bind_bb);
-    let pop_bytes = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_stream_pop_bytes",
-    )?;
-    let triple_val = fn_ctx
-        .builder
-        .build_call(
-            pop_bytes,
-            &[stream_ptr.into()],
-            "suspending_stream_next_pop",
-        )
-        .llvm_ctx("hew_stream_pop_bytes call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_stream_pop_bytes returned void".into()))?;
     let Place::Local(dest_local) = term.result_dest else {
         return Err(CodegenError::FailClosed(format!(
-            "SuspendingStreamNext result_dest must be a local Option<bytes> slot, got {:?}",
+            "SuspendingStreamNext result_dest must be a local Option<bytes|string> slot, got {:?}",
             term.result_dest
         )));
     };
-    store_recv_triple_as_option(fn_ctx, triple_val, dest_local, "hew_stream_pop_bytes")?;
+    if term.elem_is_string {
+        // `Option<string>`: pop a header-aware `*mut c_char` (null = EOF →
+        // None; non-null = Some, OWNS the malloc'd cstring whose drop spine
+        // releases it via `hew_string_drop` exactly once on every consumption
+        // path — match arm or discard, mirroring the channel-recv string
+        // branch documented at `store_channel_recv_option`).
+        let pop_string = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_stream_pop_string",
+        )?;
+        let ret_ptr = fn_ctx
+            .builder
+            .build_call(
+                pop_string,
+                &[stream_ptr.into()],
+                "suspending_stream_next_pop_string",
+            )
+            .llvm_ctx("hew_stream_pop_string call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_stream_pop_string returned void".into()))?
+            .into_pointer_value();
+        store_recv_ptr_as_option_string(fn_ctx, ret_ptr, dest_local, "hew_stream_pop_string")?;
+    } else {
+        // `Option<bytes>`: pop a `BytesTriple` (`[2 x i64]`); empty triple
+        // (null data pointer) maps to `None`, present triple to `Some(bytes)`.
+        let pop_bytes = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_stream_pop_bytes",
+        )?;
+        let triple_val = fn_ctx
+            .builder
+            .build_call(
+                pop_bytes,
+                &[stream_ptr.into()],
+                "suspending_stream_next_pop",
+            )
+            .llvm_ctx("hew_stream_pop_bytes call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_stream_pop_bytes returned void".into()))?;
+        store_recv_triple_as_option(fn_ctx, triple_val, dest_local, "hew_stream_pop_bytes")?;
+    }
     fn_ctx
         .builder
         .build_call(
@@ -26081,6 +26124,141 @@ fn store_recv_triple_as_option<'ctx>(
     Ok(())
 }
 
+/// Store a raw `*mut c_char` (the stream/channel string-recv runtime return)
+/// into an `Option<string>` dest local. NULL → `None` (tag 1); non-null →
+/// `Some` (tag 0) with the OWNED malloc'd cstring pointer the MIR drop spine
+/// releases via `hew_string_drop` on every consumption path. Branchless: the
+/// tag is a `select`; the payload is stored unconditionally (a `None`-tagged
+/// Option never reads or drops its payload, so a stored null pointer is inert).
+/// Shared by the suspending `SuspendingStreamNext` ramp's bind edge and the
+/// non-suspending `Terminator::Call` intercept for `hew_stream_next` (the
+/// canonical string-element recv symbol — the `_bytes` suffix is the
+/// bytes-element sibling). Sibling of [`store_recv_triple_as_option`] for the
+/// bytes element kind, and mirrors the string branch of
+/// [`store_channel_recv_option`] (NEW-4).
+fn store_recv_ptr_as_option_string<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    ret_ptr: inkwell::values::PointerValue<'ctx>,
+    dest_local: u32,
+    callee: &str,
+) -> CodegenResult<()> {
+    let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(dest_local))?;
+    let BasicTypeEnum::IntType(tag_int) = tag_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee}: stream recv string dest Option tag must be integer-typed; got {tag_ty:?}"
+        )));
+    };
+    let payload_place = Place::EnumVariant {
+        local: dest_local,
+        variant_idx: 0,
+        field_idx: 0,
+    };
+    let (payload_ptr, _) = place_pointer(fn_ctx, payload_place)?;
+    let is_null = fn_ctx
+        .builder
+        .build_is_null(ret_ptr, "stream_recv_string_is_null")
+        .llvm_ctx_with(|| format!("{callee} null compare"))?;
+    // tag: None (null) = 1, Some (non-null) = 0.
+    let tag_val = fn_ctx
+        .builder
+        .build_select(
+            is_null,
+            tag_int.const_int(1, false),
+            tag_int.const_zero(),
+            "stream_recv_string_tag",
+        )
+        .llvm_ctx_with(|| format!("{callee} tag select"))?;
+    // Store the owned pointer into the Some payload slot (inert when None).
+    fn_ctx
+        .builder
+        .build_store(payload_ptr, ret_ptr)
+        .llvm_ctx_with(|| format!("{callee} payload store"))?;
+    fn_ctx
+        .builder
+        .build_store(tag_ptr, tag_val)
+        .llvm_ctx_with(|| format!("{callee} tag store"))?;
+    Ok(())
+}
+
+/// Lower `stream.recv()` / `stream.try_recv()` over a `Stream<string>` (the
+/// blocking path emitted by a `FunctionCallConv::Default` caller — `main` /
+/// free fn — where the suspending flip in `lower_direct_call` does NOT fire,
+/// and the always-direct `try_recv` path which never suspends) into an
+/// `Option<string>` destination. The string sibling of
+/// [`emit_bytes_stream_recv_call`].
+///
+/// The runtime entries (`hew_stream_next` / `hew_stream_try_next` — the
+/// canonical string-element recv symbols the checker resolves
+/// `Stream<string>::recv` / `::try_recv` to, predeclared from
+/// `std/stream.hew`'s extern block) return a header-aware `*mut c_char` —
+/// NULL on EOF (or "not ready" for try_recv); non-null is the OWNED malloc'd
+/// cstring whose drop spine frees via `hew_string_drop` exactly once.
+/// Empty items pass through as a non-null header-aware empty cstring
+/// (`Some("")`), never NULL. Mirrors the
+/// `hew_remote_pid_tell` / `hew_stream_next_bytes` intercept precedent.
+fn emit_string_stream_recv_call<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    fn_symbols: &FnSymbolMap<'ctx>,
+    callee: &str,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    let [stream_arg] = args else {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee} (stream recv string) expects exactly 1 argument (the stream handle), got {}",
+            args.len()
+        )));
+    };
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "{callee} (stream recv string) returns Option<string>; producer must supply a dest"
+        ))
+    })?;
+    let Place::Local(dest_local) = dest_place else {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee} (stream recv string) dest must be a local Option<string> enum slot, got {dest_place:?}"
+        )));
+    };
+
+    // The recv runtime entry is predeclared (from `std/stream.hew`'s extern
+    // block) returning `*mut c_char` — the same shape the bytes intercept
+    // resolves to here. Use the predeclared symbol so the call site agrees
+    // with `predeclare_extern_decls` rather than re-deriving the type.
+    let FnSymbol::Real { value: recv_fn, .. } = *fn_symbols.get(callee).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "{callee} (stream recv string) has no predeclared extern symbol"
+        ))
+    })?
+    else {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee} (stream recv string) must resolve to a real extern function symbol"
+        )));
+    };
+
+    let stream_ptr = load_duplex_handle(fn_ctx, *stream_arg, &format!("{callee} stream"))?;
+    let ret_ptr = fn_ctx
+        .builder
+        .build_call(recv_fn, &[stream_ptr.into()], "stream_recv_string_call")
+        .llvm_ctx_with(|| format!("{callee} call"))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{callee} returned void")))?
+        .into_pointer_value();
+    store_recv_ptr_as_option_string(fn_ctx, ret_ptr, *dest_local, callee)?;
+
+    // ── Continue into the call's `next` block. ──
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("{callee} next bb{next} missing")))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx_with(|| format!("{callee} cont br next"))?;
+    Ok(())
+}
+
 fn emit_node_lookup_call<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbols: &FnSymbolMap<'ctx>,
@@ -26980,6 +27158,35 @@ fn lower_terminator<'ctx>(
                 "hew_stream_next_bytes" | "hew_stream_try_next_bytes"
             ) {
                 emit_bytes_stream_recv_call(
+                    fn_ctx,
+                    fn_symbols,
+                    callee,
+                    args,
+                    dest.as_ref(),
+                    *next,
+                )?;
+                return Ok(());
+            }
+            // `stream.recv()` over a `Stream<string>` routes to the canonical
+            // `hew_stream_next` runtime symbol; the non-blocking
+            // `stream.try_recv()` routes to the sibling `hew_stream_try_next`
+            // (no `_string` suffix — the `_bytes` symbols are the
+            // bytes-element siblings; the unsuffixed names are the
+            // string-element variants, per the `builtin_names.rs`
+            // `ElementOverload`). In a context-bearing caller `recv` already
+            // flipped to `Terminator::SuspendingStreamNext { elem_is_string }`
+            // (the suspend ramp); a `Terminator::Call` to one of these
+            // symbols is the NON-SUSPENDING path: a default caller's blocking
+            // `recv` (`main`/free fn — a foreign thread with no parkable
+            // continuation) or any `try_recv` (which never suspends — only
+            // ever lowers as a direct call). The runtime returns NULL on EOF
+            // (or "not ready" for try_recv); this intercept materialises
+            // `Option<string>` in-place (null → None tag 1; else Some tag 0 +
+            // the OWNED malloc'd cstring pointer the MIR drop spine frees
+            // via `hew_string_drop`). Dispatch by callee name, mirroring the
+            // bytes-stream-recv precedent above.
+            if matches!(callee.as_str(), "hew_stream_next" | "hew_stream_try_next") {
+                emit_string_stream_recv_call(
                     fn_ctx,
                     fn_symbols,
                     callee,
@@ -28064,6 +28271,7 @@ fn lower_terminator<'ctx>(
         Terminator::SuspendingStreamNext {
             stream,
             result_dest,
+            elem_is_string,
             resume,
             cleanup,
         } => emit_suspending_stream_next_terminator(
@@ -28071,6 +28279,7 @@ fn lower_terminator<'ctx>(
             SuspendingStreamNextEmit {
                 stream: *stream,
                 result_dest: *result_dest,
+                elem_is_string: *elem_is_string,
                 resume: *resume,
                 cleanup: *cleanup,
             },
@@ -38156,6 +38365,7 @@ mod tests {
                     terminator: Terminator::SuspendingStreamNext {
                         stream: Place::Local(0),
                         result_dest: Place::Local(1),
+                        elem_is_string: false,
                         resume: 1,
                         cleanup: 2,
                     },

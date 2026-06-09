@@ -122,6 +122,21 @@ fn for_await_stream_bytes_drains_to_completion_under_single_worker() {
 }
 
 #[test]
+fn for_await_stream_string_drains_to_completion_under_single_worker() {
+    run_for_await_surface_fixture("for_await_stream_string");
+}
+
+#[test]
+fn typed_streams_string_single_await_recv_drains_to_completion_under_single_worker() {
+    run_for_await_surface_fixture("typed_streams_string");
+}
+
+#[test]
+fn try_recv_stream_string_drains_to_completion_under_single_worker() {
+    run_for_await_surface_fixture("try_recv_stream_string");
+}
+
+#[test]
 fn for_await_mir_dump_contains_suspending_recv_terminators() {
     for name in ["for_await_recv_string", "for_await_recv_int"] {
         let dump = for_await_mir_checked_dump(name);
@@ -131,31 +146,44 @@ fn for_await_mir_dump_contains_suspending_recv_terminators() {
         );
     }
 
-    let dump = for_await_mir_checked_dump("for_await_stream_bytes");
+    // Bytes element: `SuspendingStreamNext { elem_is_string: false, .. }`
+    // (the `false` discriminator selects the BytesTriple pop ABI in codegen).
+    let bytes_dump = for_await_mir_checked_dump("for_await_stream_bytes");
     assert!(
-        dump.contains("SuspendingStreamNext"),
-        "for_await_stream_bytes must lower to a SuspendingStreamNext terminator:\n{dump}",
+        bytes_dump.contains("SuspendingStreamNext"),
+        "for_await_stream_bytes must lower to a SuspendingStreamNext terminator:\n{bytes_dump}",
     );
-}
+    assert!(
+        bytes_dump.contains("elem_is_string: false"),
+        "for_await_stream_bytes's SuspendingStreamNext must carry \
+         elem_is_string: false (BytesTriple pop ABI):\n{bytes_dump}",
+    );
+    assert!(
+        !bytes_dump.contains("elem_is_string: true"),
+        "for_await_stream_bytes must NOT emit elem_is_string: true \
+         (string discriminator leaking into the bytes path):\n{bytes_dump}",
+    );
 
-#[test]
-fn for_await_stream_string_rejects_until_string_stream_recv_is_wired() {
-    let source = surface_fixture("for_await_stream_string_reject.hew");
-    let mut command = Command::new(hew_binary());
-    command.arg("compile").arg(&source).current_dir(repo_root());
-    let output = support::run_bounded_command(command, format!("hew compile {}", source.display()));
-
-    assert!(
-        !output.status.success(),
-        "Stream<string> for-await fixture should fail closed; stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    assert!(
-        stderr.contains("for await over Stream<string>") && stderr.contains("Stream<bytes>"),
-        "Stream<string> reject should name the Stage-1 diagnostic and supported stream element; stderr:\n{stderr}",
-    );
+    // String element: `SuspendingStreamNext { elem_is_string: true, .. }`
+    // (the `true` discriminator selects the header-aware cstring pop ABI
+    // — `hew_stream_pop_string` — and binds `Option<string>`).
+    for name in ["for_await_stream_string", "typed_streams_string"] {
+        let dump = for_await_mir_checked_dump(name);
+        assert!(
+            dump.contains("SuspendingStreamNext"),
+            "{name} must lower to a SuspendingStreamNext terminator:\n{dump}",
+        );
+        assert!(
+            dump.contains("elem_is_string: true"),
+            "{name}'s SuspendingStreamNext must carry elem_is_string: true \
+             (selects the hew_stream_pop_string ABI):\n{dump}",
+        );
+        assert!(
+            !dump.contains("elem_is_string: false"),
+            "{name} must NOT emit elem_is_string: false \
+             (bytes discriminator leaking into the string path):\n{dump}",
+        );
+    }
 }
 
 enum WaitOutcome {

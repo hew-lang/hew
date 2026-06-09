@@ -175,10 +175,16 @@ enum ForIterNextCall {
     ChannelRecv {
         elem_is_int: bool,
     },
-    /// `for await x in stream` over `Stream<bytes>` — each iteration borrows
-    /// the stream binding and emits `hew_stream_next_bytes`, reusing MIR's
-    /// existing `Terminator::SuspendingStreamNext` flip.
-    StreamRecvBytes,
+    /// `for await x in stream` over `Stream<bytes>` / `Stream<string>` — each
+    /// iteration borrows the stream binding and emits the matching runtime
+    /// recv symbol (`hew_stream_next_bytes` / `hew_stream_next`; the
+    /// unsuffixed name is the canonical string-element recv the checker
+    /// resolves `Stream<string>::recv` to), reusing MIR's existing
+    /// `Terminator::SuspendingStreamNext` flip with the `elem_is_string`
+    /// element-kind discriminator.
+    StreamRecv {
+        elem_is_string: bool,
+    },
     /// `for x in <generator>` — each iteration consumes one value via the
     /// generator `.next()` consumption seam (`HirExprKind::GeneratorNext`).
     /// The generator handle is the loop's `__hew_for_iter_*` binding; it is
@@ -8347,17 +8353,18 @@ impl LowerCtx {
     }
 
     /// True when the `await`'s inner expression is a suspending typed-stream
-    /// `recv()` over a `Stream<bytes>` — i.e. the checker wired the method call
-    /// to the `hew_stream_next_bytes` runtime symbol. `await stream.recv()` is a
-    /// bindable, value-producing await (NEW-7): it lowers to the inner recv call
-    /// whose Option<bytes> result the MIR `SuspendingStreamNext` resume edge
-    /// binds. (Only the canonical bytes surface suspends; `Stream<string>` recv
-    /// keeps the blocking path and is not an awaitable here.)
+    /// `recv()` over a `Stream<bytes>` or `Stream<string>` — i.e. the checker
+    /// wired the method call to the `hew_stream_next_bytes` (bytes element)
+    /// or `hew_stream_next` (string element — unsuffixed because string is the
+    /// canonical default) runtime symbol. `await stream.recv()` is a
+    /// bindable, value-producing await (NEW-7): it lowers to the inner recv
+    /// call whose `Option<{bytes,string}>` result the MIR `SuspendingStreamNext`
+    /// resume edge binds.
     fn is_stream_recv_await(&self, inner_key: &SpanKey) -> bool {
         matches!(
             self.method_call_rewrites.get(inner_key),
             Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                if c_symbol == "hew_stream_next_bytes"
+                if c_symbol == "hew_stream_next_bytes" || c_symbol == "hew_stream_next"
         )
     }
 
@@ -10026,13 +10033,18 @@ impl LowerCtx {
                         };
                     }
                 }
-                // NEW-7: `await stream.recv()` over a `Stream<bytes>` — the
-                // checker wired the inner method call to `hew_stream_next_bytes`.
+                // NEW-7: `await stream.recv()` over a `Stream<bytes>` /
+                // `Stream<string>` — the checker wired the inner method call
+                // to `hew_stream_next_bytes` / `hew_stream_next` (the
+                // unsuffixed `hew_stream_next` is the canonical string-element
+                // recv the checker resolves `Stream<string>::recv` to).
                 // Strip the `await` and lower the inner recv directly; its
-                // `Option<bytes>` result is bound on the resume edge of the MIR
-                // `SuspendingStreamNext` (the suspendable-caller flip in
-                // `lower_direct_call`), or the blocking call for a context-free
-                // caller. Mirrors the actor-ask / conn-read bindable-await paths.
+                // `Option<{bytes,string}>` result is bound on the resume edge
+                // of the MIR `SuspendingStreamNext` (the suspendable-caller
+                // flip in `lower_direct_call`, parameterised by
+                // `elem_is_string`), or the blocking call for a context-free
+                // caller. Mirrors the actor-ask / conn-read bindable-await
+                // paths.
                 if self.is_stream_recv_await(&SpanKey::from(&inner.1)) {
                     return self.lower_expr(inner, intent);
                 }
@@ -13622,38 +13634,43 @@ impl LowerCtx {
                             lowered_iterable,
                             iter_ty,
                             ResolvedTy::Bytes,
-                            ForIterNextCall::StreamRecvBytes,
+                            ForIterNextCall::StreamRecv {
+                                elem_is_string: false,
+                            },
                         )
                     }
                     ResolvedTy::String => {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::NotYetImplemented {
-                                construct: "for await over Stream<string>".to_string(),
-                                owning_pass: "stream-string-suspending-recv".to_string(),
-                            },
-                            iterable.1.clone(),
-                            "for await currently supports Stream<bytes>; the Stream<string> \
-                             suspending recv runtime path is not wired yet",
-                        ));
-                        self.push_scope();
-                        let _ = self.bind(
-                            var_name.clone(),
+                        // Stage 2 (Option B, slepp 2026-06-07): the
+                        // `Stream<string>` suspending-recv runtime path is now
+                        // wired end-to-end (`hew_stream_next` — the canonical
+                        // string-element recv the checker resolves
+                        // `Stream<string>::recv` to, header-aware via
+                        // `bytes_to_cstr` — plus `hew_stream_pop_string` and
+                        // the `elem_is_string` discriminator on
+                        // `Terminator::SuspendingStreamNext`), so the for-await
+                        // desugar emits the string recv symbol directly — no
+                        // fail-closed `NotYetImplemented` arm. MIR's
+                        // `lower_direct_call` suspendable-caller flip turns
+                        // this into `Terminator::SuspendingStreamNext` in
+                        // actor/task execution contexts; non-context callers
+                        // keep the blocking call via the `Terminator::Call`
+                        // intercept on `hew_stream_next`.
+                        let iter_ty = lowered_iterable.ty.clone();
+                        (
+                            lowered_iterable,
+                            iter_ty,
                             ResolvedTy::String,
-                            false,
-                            pattern.1.clone(),
-                        );
-                        let _ = self.lower_block(body, &ResolvedTy::Unit);
-                        self.pop_scope();
-                        return HirExprKind::Unsupported(
-                            "for await over Stream<string> is not wired".into(),
-                        );
+                            ForIterNextCall::StreamRecv {
+                                elem_is_string: true,
+                            },
+                        )
                     }
                     other => {
                         self.unsupported(
                             iterable.1.clone(),
                             format!(
-                                "for await over Stream<{other}>; only Stream<bytes> has a \
-                                 suspending recv runtime path"
+                                "for await over Stream<{other}>; only Stream<bytes> and \
+                                 Stream<string> have a suspending recv runtime path"
                             ),
                             "for-await-stream-runtime-dispatch",
                         );
@@ -13784,11 +13801,15 @@ impl LowerCtx {
                     iterable.1.clone(),
                 )
             }
-            ForIterNextCall::StreamRecvBytes => {
-                // Borrow the stream binding (Read) and emit the bytes recv
-                // runtime call directly. MIR's `lower_direct_call` converts this
-                // symbol into `Terminator::SuspendingStreamNext` in actor/task
-                // execution contexts; non-context callers keep the blocking call.
+            ForIterNextCall::StreamRecv { elem_is_string } => {
+                // Borrow the stream binding (Read) and emit the matching recv
+                // runtime call directly. MIR's `lower_direct_call` flips
+                // either symbol to `Terminator::SuspendingStreamNext` (with
+                // `elem_is_string` selecting the bind-edge pop) in actor/task
+                // execution contexts; non-context callers keep the blocking
+                // call routed through the codegen `Terminator::Call` intercept
+                // on `hew_stream_next_bytes` / `hew_stream_next` (the
+                // unsuffixed name is the canonical string-element recv).
                 let stream = self.make_binding_ref(
                     iter_binding.name.clone(),
                     iter_binding.id,
@@ -13798,8 +13819,13 @@ impl LowerCtx {
                 );
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
                 self.register_option_layout(&elem_ty, &iterable.1, "Stream::recv (for await)");
+                let symbol = if elem_is_string {
+                    "hew_stream_next"
+                } else {
+                    "hew_stream_next_bytes"
+                };
                 self.make_direct_method_call(
-                    "hew_stream_next_bytes".to_string(),
+                    symbol.to_string(),
                     stream,
                     &option_ty,
                     iterable.1.clone(),

@@ -1,0 +1,14 @@
+#[resource]
+type File { fd: i64; }
+
+impl File {
+    fn close(file: File) { }
+}
+
+type Holder { file: File; }
+
+fn main() -> i64 {
+    let file = File { fd: 1 };
+    let _holder = Holder { file: file };
+    file.fd
+}

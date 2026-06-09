@@ -473,6 +473,34 @@ if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/use_after_consume.hew" 
 fi
 grep -q 'UseAfterConsume' "${reject_output}"
 
+reject_check_use_after_consume() {
+  local fixture="$1"
+  if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/${fixture}.hew" >"${reject_output}" 2>&1; then
+    echo "expected ${fixture} fixture to fail" >&2
+    exit 1
+  fi
+  grep -q 'E_MIR_CHECK' "${reject_output}"
+  grep -q 'used after it was consumed' "${reject_output}"
+  grep -q 'UseAfterConsume' "${reject_output}"
+}
+
+for fixture in \
+  move_into_tuple_string \
+  move_into_record_string \
+  move_into_tuple_vec \
+  move_into_record_vec \
+  move_into_tuple_owned_record \
+  move_into_record_owned_record \
+  move_into_tuple_resource \
+  move_into_record_resource \
+  move_into_enum_string \
+  move_into_enum_vec \
+  move_into_array_string \
+  move_into_array_vec
+do
+  reject_check_use_after_consume "${fixture}"
+done
+
 # Reject: defer body references a binding that was moved/consumed earlier
 # in the scope. The dataflow lattice must surface `UseAfterConsume` for
 # the defer's lexical reference — Q205-B fail-closed boundary.

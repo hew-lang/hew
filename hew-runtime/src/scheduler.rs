@@ -457,11 +457,19 @@ pub extern "C" fn hew_sched_init() -> c_int {
 /// scheduler mutex before joining so no lock is held across the
 /// potentially-unbounded `join()` calls.
 fn teardown_workers(
-    scheduler: Option<&'static Scheduler>,
+    scheduler: Option<*const Scheduler>,
     handles: Option<Vec<Option<JoinHandle<()>>>>,
     take_scheduler: bool,
 ) -> Option<Box<Scheduler>> {
-    if let Some(sched) = scheduler {
+    // Take a raw pointer (not `&'static Scheduler`): a reference argument is
+    // strongly protected for the whole call, and the `take_scheduler` branch
+    // below `Box::from_raw`-frees this same allocation. Freeing strongly-protected
+    // memory is Stacked-Borrows UB, so the pre-free shutdown work uses only
+    // short-lived references whose protectors end before the free.
+    if let Some(sched_ptr) = scheduler {
+        // SAFETY: caller guarantees the pointer is valid for this call; the
+        // borrow is dropped before any free below.
+        let sched = unsafe { &*sched_ptr };
         sched.shutdown.store(true, Ordering::Release);
         for parker in &sched.parkers {
             parker.cond.notify_one();
@@ -469,8 +477,9 @@ fn teardown_workers(
     }
 
     let mut handles = handles.unwrap_or_else(|| {
-        scheduler.map_or_else(Vec::new, |sched| {
-            sched.worker_handles.access(std::mem::take)
+        scheduler.map_or_else(Vec::new, |sched_ptr| {
+            // SAFETY: as above; the borrow is confined to this closure.
+            unsafe { &*sched_ptr }.worker_handles.access(std::mem::take)
         })
     });
     let current_id = thread::current().id();
@@ -507,7 +516,11 @@ fn teardown_workers(
 /// Signals shutdown, joins all successfully-spawned workers, then removes
 /// and drops the scheduler from the global pointer.
 fn teardown_after_spawn_failure(handles: Vec<Option<JoinHandle<()>>>) {
-    drop(teardown_workers(get_scheduler(), Some(handles), true));
+    drop(teardown_workers(
+        get_scheduler().map(|s| s as *const Scheduler),
+        Some(handles),
+        true,
+    ));
 }
 
 /// Gracefully shut down the scheduler.
@@ -520,7 +533,7 @@ pub extern "C" fn hew_sched_shutdown() {
         return;
     };
 
-    teardown_workers(Some(sched), None, false);
+    teardown_workers(Some(sched as *const Scheduler), None, false);
 
     // Write profile files on exit if HEW_PROF_OUTPUT is set.  Must run BEFORE
     // session_reset() so that the dispatch-type registry is still populated
@@ -560,7 +573,7 @@ pub extern "C" fn hew_runtime_cleanup() {
 
     // Detach the scheduler from the global pointer and join any lingering
     // workers before freeing actor/timer state they might still reference.
-    let scheduler = teardown_workers(get_scheduler(), None, true);
+    let scheduler = teardown_workers(get_scheduler().map(|s| s as *const Scheduler), None, true);
 
     // Free any registered top-level supervisors — this drops their child
     // specs (names + init_state) via the InternalChildSpec Drop impl.
@@ -2306,7 +2319,6 @@ mod tests {
     /// assigns a unique `id` so concurrent tests do not collide in the
     /// process-wide registry.
     struct TrackedTestActor {
-        actor: Box<HewActor>,
         ptr: *mut HewActor,
     }
 
@@ -2314,11 +2326,16 @@ mod tests {
         fn install(mut actor: HewActor) -> Self {
             static NEXT_ID: AtomicU64 = AtomicU64::new(1);
             actor.id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let mut boxed = Box::new(actor);
-            let ptr: *mut HewActor = &raw mut *boxed;
+            // Own the actor through a single raw pointer from `Box::into_raw`
+            // rather than storing a `Box` alongside a derived raw pointer: under
+            // Stacked Borrows, moving the `Box` (e.g. returning `Self`) retags and
+            // invalidates the pointee, so the saved raw tag would be stale. The
+            // `into_raw` pointer keeps valid provenance across the struct move and
+            // `Drop` reconstitutes the `Box` to free it exactly once.
+            let ptr: *mut HewActor = Box::into_raw(Box::new(actor));
             // SAFETY: `ptr` is a freshly-boxed, fully-initialised actor.
             unsafe { crate::lifetime::live_actors::track_actor(ptr) };
-            Self { actor: boxed, ptr }
+            Self { ptr }
         }
 
         fn ptr(&self) -> *mut HewActor {
@@ -2336,7 +2353,8 @@ mod tests {
     impl std::ops::Deref for TrackedTestActor {
         type Target = HewActor;
         fn deref(&self) -> &HewActor {
-            &self.actor
+            // SAFETY: `ptr` owns a live, boxed actor for the guard's lifetime.
+            unsafe { &*self.ptr }
         }
     }
 
@@ -2345,6 +2363,9 @@ mod tests {
             // Idempotent: `untrack_actor` only removes a matching entry; a
             // double-untrack (test already called `untrack`) is a no-op.
             crate::lifetime::live_actors::untrack_actor(self.ptr);
+            // SAFETY: `ptr` came from `Box::into_raw` in `install`; reclaim the
+            // box so the actor is freed exactly once.
+            unsafe { drop(Box::from_raw(self.ptr)) };
         }
     }
 
@@ -3538,6 +3559,13 @@ mod tests {
     fn ticker_stops_during_runtime_cleanup() {
         use crate::timer_periodic::{TICKER_RUNNING, TICKER_TEST_MUTEX};
 
+        // Serialise against the actor/monitor/link test family (all of which hold
+        // `runtime_test_guard`): `hew_runtime_cleanup` → `cleanup_all_actors`
+        // frees EVERY registered actor, so it must not run while a parallel test
+        // still has a live actor (ASan heap-use-after-free). Acquired outermost,
+        // before the scheduler/ticker locks, to keep a single global lock order.
+        let _rt = crate::runtime_test_guard();
+
         // Acquire SCHED_TEST_MUTEX first (consistent lock order: sched → ticker).
         // hew_runtime_cleanup clears the global SCHEDULER pointer, so this test
         // must be serialised relative to other scheduler tests.
@@ -3781,6 +3809,14 @@ mod tests {
     fn runtime_cleanup_joins_workers_and_drops_scheduler() {
         use std::sync::Arc;
         use std::time::Instant;
+
+        // Serialise against the actor/monitor/link test family (all of which hold
+        // `runtime_test_guard`): this test runs the process-global
+        // `hew_runtime_cleanup` → `cleanup_all_actors`, which frees EVERY actor in
+        // the registry. Without this guard it tears down an actor a parallel
+        // libtest thread is still using (ASan heap-use-after-free). Acquired
+        // outermost, before SCHED_TEST_MUTEX, for a single global lock order.
+        let _rt = crate::runtime_test_guard();
 
         let _g = SCHED_TEST_MUTEX
             .lock()

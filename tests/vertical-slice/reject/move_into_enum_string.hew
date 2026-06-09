@@ -1,0 +1,5 @@
+fn main() -> string {
+    let s = "hello";
+    let _value = Some(s);
+    s
+}

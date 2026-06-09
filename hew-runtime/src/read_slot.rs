@@ -361,7 +361,10 @@ pub unsafe extern "C" fn hew_read_slot_take(slot: *mut HewReadSlot) -> BytesTrip
     // SAFETY: exclusive on the resume edge (single consumer); the reactor wrote
     // the deposit before waking and does not touch `value` after.
     unsafe {
-        let value_ptr = std::ptr::addr_of!(s.value).cast_mut();
+        // Derive the write pointer from the raw `slot` (mutable provenance) rather
+        // than from the shared reference `s`: `addr_of!(s.value)` is SharedReadOnly
+        // and writing through it is Stacked-Borrows UB.
+        let value_ptr = std::ptr::addr_of_mut!((*slot).value);
         (*value_ptr).ptr = std::ptr::null_mut();
         (*value_ptr).len = 0;
     }
@@ -433,7 +436,11 @@ pub(crate) unsafe fn read_slot_deposit_data(slot: *mut HewReadSlot, triple: Byte
     // SAFETY: the reactor is the sole writer; the resume edge reads only after
     // the status Release below.
     unsafe {
-        let value_ptr = std::ptr::addr_of!(s.value).cast_mut();
+        // Derive the write pointer from the raw `slot` (which carries mutable
+        // provenance) rather than from the shared reference `s`: `addr_of!(s.value)`
+        // yields SharedReadOnly provenance, and writing through it is Stacked-Borrows
+        // UB. `addr_of_mut!((*slot).value)` keeps write provenance for the deposit.
+        let value_ptr = std::ptr::addr_of_mut!((*slot).value);
         (*value_ptr) = triple;
     }
     if s.status
@@ -461,8 +468,11 @@ pub(crate) unsafe fn read_slot_deposit_data(slot: *mut HewReadSlot, triple: Byte
         }
         // SAFETY: the Data CAS failed, so no reader can observe this slot value
         // as published data; clear the raw fields before returning terminal state.
+        // Derive the write pointer from the raw `slot` (mutable provenance) rather
+        // than from the shared reference `s`: `addr_of!(s.value)` is SharedReadOnly
+        // and writing through it is Stacked-Borrows UB.
         unsafe {
-            let value_ptr = std::ptr::addr_of!(s.value).cast_mut();
+            let value_ptr = std::ptr::addr_of_mut!((*slot).value);
             (*value_ptr).ptr = std::ptr::null_mut();
             (*value_ptr).len = 0;
         }
@@ -833,5 +843,42 @@ mod tests {
             crate::await_cancel::hew_await_cancel_free(reg);
             hew_read_slot_free(slot);
         }
+    }
+
+    #[test]
+    fn deposit_loses_data_cas_drops_buffer_and_clears_value() {
+        // Exercises the Data-CAS-failure cleanup branch: the genuine TOCTOU race
+        // where the reactor observes `cancelled == 0`, copies the value, and then
+        // loses the `Pending -> Data` CAS because a deadline/cancel flipped the
+        // status in the meantime. A single-threaded test can't hit that ordering
+        // through the public cancel API (which sets `cancelled` BEFORE the CAS),
+        // so we drive the window directly: force a terminal status while leaving
+        // `cancelled` clear, then deposit. The cleanup must drop the buffer (no
+        // leak / no double-free) and clear the raw `value` fields through mutable
+        // provenance — Stacked-Borrows-clean under Miri.
+        let slot = hew_read_slot_new();
+        // Terminal status WITHOUT the cancelled flag = the lost-CAS window.
+        unsafe {
+            (*slot)
+                .status
+                .store(ReadStatus::TimedOut as i32, Ordering::Release);
+        }
+        let triple = make_triple(b"raced");
+        let wake = unsafe { read_slot_deposit_data(slot, triple) };
+        assert!(!wake, "a lost Data CAS must not signal a wake");
+        // The terminal status the deadline/cancel published stays intact.
+        assert_eq!(
+            unsafe { hew_read_slot_status(slot) },
+            ReadStatus::TimedOut as i32
+        );
+        // The cleanup wrote through the slot's mutable provenance: value cleared.
+        unsafe {
+            assert!(
+                (*slot).value.ptr.is_null(),
+                "lost-CAS cleanup must null the value pointer"
+            );
+            assert_eq!((*slot).value.len, 0, "lost-CAS cleanup must zero the len");
+        }
+        unsafe { hew_read_slot_free(slot) };
     }
 }

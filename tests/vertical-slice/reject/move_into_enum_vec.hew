@@ -1,0 +1,6 @@
+fn main() -> i64 {
+    let values: Vec<string> = Vec::new();
+    values.push("alpha");
+    let _value = Some(values);
+    values.len()
+}

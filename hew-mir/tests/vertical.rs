@@ -517,9 +517,10 @@ fn checked_mir_finding_carries_consume_and_use_sites() {
 // rejected at CHECK time. Before the fix the aggregate-construct move
 // did not mark the source consumed, so `(s, r); s.close()` passed
 // `hew check` and double-freed at runtime (explicit close + the
-// moved-into tuple's scope-exit drop). Copy operands (BitCopy ints,
-// CowValue strings) carry no single-owner drop obligation and must NOT
-// be flagged.
+// moved-into tuple's scope-exit drop). Copy operands (BitCopy ints)
+// carry no single-owner drop obligation and must NOT be flagged; heap-
+// owning CowValue operands (strings, bytes, containers, owned records)
+// are move sources at aggregate ingress and must be tracked.
 
 #[test]
 fn checked_mir_rejects_use_after_move_into_tuple() {
@@ -659,9 +660,9 @@ fn copy_operands_moved_into_tuple_are_not_flagged() {
 }
 
 #[test]
-fn cowvalue_string_moved_into_tuple_is_not_flagged() {
-    // CowValue strings copy-on-write share freely; placing one into a
-    // tuple and reading it afterwards is safe and must NOT be flagged.
+fn cowvalue_string_moved_into_tuple_rejects_post_move_use() {
+    // A heap-owning CowValue string moved into a tuple transfers ownership to
+    // the aggregate. Reading the source binding afterwards must be rejected.
     let p = lower_source(
         r#"fn main() -> string {
             let a = "hello";
@@ -672,10 +673,10 @@ fn cowvalue_string_moved_into_tuple_is_not_flagged() {
         }"#,
     );
     assert!(
-        !p.diagnostics
-            .iter()
-            .any(|d| matches!(&d.kind, MirDiagnosticKind::UseAfterConsume { .. })),
-        "reusing a CowValue string after it was placed into a tuple must NOT \
+        p.diagnostics.iter().any(
+            |d| matches!(&d.kind, MirDiagnosticKind::UseAfterConsume { name, .. } if name == "a")
+        ),
+        "reusing a CowValue string after it was placed into a tuple must \
          fire UseAfterConsume: {:?}",
         p.diagnostics
     );

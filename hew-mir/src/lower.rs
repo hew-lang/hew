@@ -7217,6 +7217,14 @@ impl Builder {
                     }
                 }
 
+                // An explicit owned field operand is moved into the record just
+                // like a tuple element is moved into a tuple. Mark the source
+                // binding in the checker stream so a later use is rejected
+                // without changing the drop elaborator's alias-aware inputs.
+                for (_, fexpr) in fields {
+                    self.alias_moved_owned_operand(fexpr);
+                }
+
                 // Lower the functional-update base, if any.
                 let base_place: Option<Place> = if let Some(base_expr) = base {
                     self.lower_value(base_expr)
@@ -7853,11 +7861,25 @@ impl Builder {
                     target_symbol.clone()
                 };
 
+                // Array literals are HIR-desugared to pushes into a synthetic
+                // Vec temp. Treat each pushed element as aggregate ingress so
+                // `[s, "x"]; s` is rejected without changing ordinary
+                // user-authored method/function argument semantics.
+                let is_array_literal_push = method_name == "push"
+                    && target_symbol.starts_with("hew_vec_push_")
+                    && matches!(
+                        &receiver.kind,
+                        HirExprKind::BindingRef { name, .. } if name.starts_with("__hew_array_")
+                    );
+
                 // Lower receiver as arg[0], then explicit args.
                 let receiver_place = self.lower_value(receiver)?;
                 let mut arg_places = vec![receiver_place];
                 for arg in args {
                     arg_places.push(self.lower_value(arg)?);
+                    if is_array_literal_push {
+                        self.alias_moved_owned_operand(arg);
+                    }
                 }
                 let dest = if matches!(ret_ty, ResolvedTy::Unit) {
                     None
@@ -8126,6 +8148,7 @@ impl Builder {
                             },
                             src,
                         });
+                        self.alias_moved_owned_operand(field_expr);
                     }
                 }
                 Some(dest)
@@ -16889,13 +16912,105 @@ impl Builder {
         self.owned_locals.retain(|(binding, _, _)| *binding != id);
     }
 
-    /// B1 (use-after-move into an aggregate): when an owned, single-owner
-    /// operand (`@resource` / `@linear`) is moved (aliased) into a tuple
-    /// constructor, emit a checker-stream `MirStatement::AggregateAlias` marker
-    /// for the source binding so the move-checker dataflow flags any later use
-    /// of it as `UseAfterConsume` at CHECK time — instead of letting
-    /// `(s, r); s.close()` pass `hew check` and double-free at runtime (the
-    /// explicit `close` plus the caller's drop of the returned/aliased tuple).
+    // JUSTIFIED: this predicate deliberately stays adjacent to the aggregate
+    // alias marker instead of collapsing to `ty_contains_heap_owning` alone.
+    // `ValueClass::AffineResource | Linear` covers move-only handles,
+    // `is_owned_aggregate_record_ty` is the record-admission authority, and the
+    // recursive enum/tuple/array walk below avoids marking registered user
+    // records that have not been admitted as owned aggregate values merely
+    // because a generic argument is heap-owning.
+    fn aggregate_ingress_moves_binding_ty(&self, ty: &ResolvedTy) -> bool {
+        self.aggregate_ingress_moves_binding_ty_inner(ty, &mut HashSet::new())
+    }
+
+    fn aggregate_ingress_moves_binding_ty_inner(
+        &self,
+        ty: &ResolvedTy,
+        visited_enum_layouts: &mut HashSet<String>,
+    ) -> bool {
+        if matches!(
+            ValueClass::of_ty(ty, &self.type_classes),
+            ValueClass::AffineResource | ValueClass::Linear
+        ) {
+            return true;
+        }
+
+        if self.is_owned_aggregate_record_ty(ty) {
+            return true;
+        }
+
+        match ty {
+            ResolvedTy::String
+            | ResolvedTy::Bytes
+            | ResolvedTy::CancellationToken
+            | ResolvedTy::Named {
+                builtin:
+                    Some(
+                        BuiltinType::Vec
+                        | BuiltinType::HashMap
+                        | BuiltinType::HashSet
+                        | BuiltinType::Generator
+                        | BuiltinType::AsyncGenerator,
+                    ),
+                ..
+            } => true,
+            ResolvedTy::Tuple(elems) => {
+                elems.iter().any(|elem| {
+                    self.aggregate_ingress_moves_binding_ty_inner(elem, visited_enum_layouts)
+                }) || crate::model::ty_contains_heap_owning(ty, &self.enum_layouts)
+            }
+            ResolvedTy::Array(elem, _) => {
+                self.aggregate_ingress_moves_binding_ty_inner(elem, visited_enum_layouts)
+                    || crate::model::ty_contains_heap_owning(ty, &self.enum_layouts)
+            }
+            ResolvedTy::Named { name, args, .. } => {
+                let short = crate::model::short_name(name);
+                let layout = if args.is_empty() {
+                    self.enum_layouts.iter().find(|layout| {
+                        layout.name == *name || crate::model::short_name(&layout.name) == short
+                    })
+                } else {
+                    let mangled = hew_hir::mangle(short, args);
+                    self.enum_layouts
+                        .iter()
+                        .find(|layout| layout.name == mangled || layout.name == *name)
+                };
+                if let Some(layout) = layout {
+                    let layout_name = layout.name.clone();
+                    if !visited_enum_layouts.insert(layout_name.clone()) {
+                        return true;
+                    }
+                    let field_tys: Vec<ResolvedTy> = layout
+                        .variants
+                        .iter()
+                        .flat_map(|variant| variant.field_tys.iter().cloned())
+                        .collect();
+                    let owns = field_tys.iter().any(|field_ty| {
+                        self.aggregate_ingress_moves_binding_ty_inner(
+                            field_ty,
+                            visited_enum_layouts,
+                        )
+                    });
+                    visited_enum_layouts.remove(&layout_name);
+                    return owns;
+                }
+                let is_registered_record = user_record_layout_key(ty)
+                    .is_some_and(|key| self.lookup_record_field_order(&key).is_some());
+                if is_registered_record {
+                    return false;
+                }
+                crate::model::ty_contains_heap_owning(ty, &self.enum_layouts)
+            }
+            _ => crate::model::ty_contains_heap_owning(ty, &self.enum_layouts),
+        }
+    }
+
+    /// B1 (use-after-move into an aggregate): when an owned or heap-owning
+    /// operand is moved (aliased) into an aggregate constructor (tuple, record,
+    /// enum variant payload, or array literal), emit a checker-stream
+    /// `MirStatement::AggregateAlias` marker for the source binding so the
+    /// move-checker dataflow flags any later use of it as `UseAfterConsume` at
+    /// CHECK time.
     ///
     /// The marker is deliberately NOT a `Use { Consume }`: consuming the source
     /// would suppress its scope-exit drop and break the alias/escape-scan drop
@@ -16904,10 +17019,8 @@ impl Builder {
     /// live owner for every drop reader and only adds the use-after-move check.
     ///
     /// Copy operands carry no single-owner drop obligation and share freely, so
-    /// they must NOT be flagged (the false-positive guard the brief requires):
-    /// `BitCopy` ints/durations and `CowValue` strings/bytes/tuples/Vec are
-    /// never registered in `owned_locals` and their `ValueClass` is neither
-    /// `AffineResource` nor `Linear`, so both guards exclude them.
+    /// they must NOT be flagged: `BitCopy` ints/durations, non-owning borrows,
+    /// and persistent handles are excluded by `aggregate_ingress_moves_binding_ty`.
     fn alias_moved_owned_operand(&mut self, operand: &HirExpr) {
         let HirExprKind::BindingRef {
             name,
@@ -16916,19 +17029,8 @@ impl Builder {
         else {
             return;
         };
-        // The Copy false-positive guard: only a genuinely owned single-owner
-        // operand carries a drop obligation a second consumer could double-free.
-        // `AffineResource` / `Linear` are exactly the owned handle / single-owner
-        // value classes; `BitCopy` ints/durations, `CowValue` strings/bytes/
-        // tuples/Vec, and `View` borrows are all excluded. This is keyed on the
-        // value class (not `owned_locals` membership) so an owned-handle FUNCTION
-        // PARAMETER — which is not registered in `owned_locals` — is still tracked
-        // (`(token, token)` of an owned param double-frees just as a local does).
         let ty = self.subst_ty(&operand.ty);
-        if !matches!(
-            ValueClass::of_ty(&ty, &self.type_classes),
-            ValueClass::AffineResource | ValueClass::Linear
-        ) {
+        if !self.aggregate_ingress_moves_binding_ty(&ty) {
             return;
         }
         self.statements.push(MirStatement::AggregateAlias {

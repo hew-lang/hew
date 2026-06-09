@@ -7505,6 +7505,107 @@ fn collect_record_inplace_drop_seeds(
     seeds
 }
 
+/// Collect the record- and enum-layout keys of every actor-handler message and
+/// reply type that needs a `__hew_record_drop_inplace_*` or
+/// `__hew_enum_drop_inplace_*` body emitted by the synthesis pass for the xnode
+/// codec path.
+///
+/// WHY: `emit_xnode_codec_thunks` (the cross-node serialize/deserialize
+/// emitter) calls `get_or_declare_record_drop_inplace` (for record-typed
+/// Msg/Reply) and `get_or_declare_enum_drop_inplace` (for enum-typed ones) in
+/// the fail-path drop walk (`emit_de_drop_owned`).  Those calls only DECLARE the
+/// helper; the BODY is emitted by `emit_state_clone_drop_synthesis`.  A record
+/// or enum used only as a handler message/reply type and not reachable from any
+/// actor state field will not appear in the existing seed collectors
+/// (`collect_enum_inplace_drop_seeds` / `collect_record_inplace_drop_seeds`), so
+/// without this seed its body is never emitted and LLVM verify rejects the
+/// module with "Global is external, but doesn't have external or weak linkage".
+/// WHEN-OBSOLETE: if `emit_de_drop_owned` is refactored to emit the body
+/// in-place rather than relying on a separately-seeded synthesis pass.
+/// WHAT: seed by walking actor handler `param_tys`/`return_ty`; the key
+/// resolution mirrors `xnode_registry_key` so the declared name and the body
+/// name agree.  Returns `(record_seeds, enum_seeds)`.
+fn collect_xnode_codec_drop_seeds(
+    actor_layouts: &[hew_mir::ActorLayout],
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> (Vec<String>, Vec<String>) {
+    let mut rec_seeds: Vec<String> = Vec::new();
+    let mut enum_seeds: Vec<String> = Vec::new();
+    let mut rec_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut enum_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let try_add = |ty: &ResolvedTy,
+                   rec_seeds: &mut Vec<String>,
+                   enum_seeds: &mut Vec<String>,
+                   rec_seen: &mut std::collections::HashSet<String>,
+                   enum_seen: &mut std::collections::HashSet<String>| {
+        let ResolvedTy::Named { name, args, .. } = ty else {
+            return;
+        };
+        let short = short_name(name);
+        // Check enum first (mirrors `emit_de_drop_owned` resolution order).
+        let enum_key = if args.is_empty() {
+            enum_layouts
+                .iter()
+                .find(|el| el.name == *name || short_name(&el.name) == short)
+                .map(|el| el.name.clone())
+        } else {
+            let mangled = hew_hir::mangle(short, args);
+            enum_layouts
+                .iter()
+                .find(|el| el.name == mangled || el.name == *name)
+                .map(|el| el.name.clone())
+        };
+        if let Some(key) = enum_key {
+            if enum_seen.insert(key.clone()) {
+                enum_seeds.push(key);
+            }
+            return; // Enum found; record path not needed for this type.
+        }
+        // Not an enum — check if it is a record.
+        let rec_key = if args.is_empty() {
+            record_layouts
+                .iter()
+                .find(|rl| rl.name == *name || short_name(&rl.name) == short)
+                .map(|rl| rl.name.clone())
+        } else {
+            let mangled = hew_hir::mangle(short, args);
+            record_layouts
+                .iter()
+                .find(|rl| rl.name == mangled || rl.name == *name)
+                .map(|rl| rl.name.clone())
+        };
+        if let Some(key) = rec_key {
+            if rec_seen.insert(key.clone()) {
+                rec_seeds.push(key);
+            }
+        }
+    };
+
+    for actor in actor_layouts {
+        for h in &actor.handlers {
+            if let Some(msg_ty) = h.param_tys.first() {
+                try_add(
+                    msg_ty,
+                    &mut rec_seeds,
+                    &mut enum_seeds,
+                    &mut rec_seen,
+                    &mut enum_seen,
+                );
+            }
+            try_add(
+                &h.return_ty,
+                &mut rec_seeds,
+                &mut enum_seeds,
+                &mut rec_seen,
+                &mut enum_seen,
+            );
+        }
+    }
+    (rec_seeds, enum_seeds)
+}
+
 /// Walk every raw-MIR function's local/param/return types and collect the
 /// record / enum layout keys of every owned-element `Vec<T>` (W5.016).
 ///
@@ -24895,6 +24996,30 @@ fn build_module_for_target<'ctx>(
             vec_owned_record_seeds.push(record_seed);
         }
     }
+    // xnode codec path — seed every record- or enum-typed actor handler
+    // message/reply so `emit_state_clone_drop_synthesis` emits the
+    // `__hew_record_drop_inplace_*` / `__hew_enum_drop_inplace_*` body before
+    // `emit_xnode_codec_module_init` declares it via
+    // `get_or_declare_{record,enum}_drop_inplace` in the fail-path drop walk
+    // (`emit_de_drop_owned`).  Without this seed, LLVM verify rejects the module
+    // ("Global is external, but doesn't have external or weak linkage") for any
+    // record or enum used as a handler type but not reachable from an actor
+    // state field.
+    let (xnode_codec_record_seeds, xnode_codec_enum_seeds) = collect_xnode_codec_drop_seeds(
+        &pipeline.actor_layouts,
+        &pipeline.record_layouts,
+        &pipeline.enum_layouts,
+    );
+    for xnode_enum_seed in xnode_codec_enum_seeds {
+        if !enum_inplace_drop_seeds.contains(&xnode_enum_seed) {
+            enum_inplace_drop_seeds.push(xnode_enum_seed);
+        }
+    }
+    for xnode_rec_seed in xnode_codec_record_seeds {
+        if !vec_owned_record_seeds.contains(&xnode_rec_seed) {
+            vec_owned_record_seeds.push(xnode_rec_seed);
+        }
+    }
     emit_state_clone_drop_synthesis(
         ctx,
         &llvm_mod,
@@ -24981,9 +25106,28 @@ fn build_module_for_target<'ctx>(
     // This must come AFTER all function bodies are lowered (the init function
     // references globals declared here) and BEFORE llvm_mod.verify() so the
     // verifier can check the emitted IR.
+    let mut module_init_ctors: Vec<FunctionValue<'ctx>> = Vec::new();
     if !pipeline.regex_literals.is_empty() {
-        emit_regex_module_init(ctx, &llvm_mod, &pipeline.regex_literals)?;
+        if let Some(f) = emit_regex_module_init(ctx, &llvm_mod, &pipeline.regex_literals)? {
+            module_init_ctors.push(f);
+        }
     }
+    // Emit the cross-node payload codec thunks + registration constructor so a
+    // Serializable actor message survives a process hop. Runs after layouts are
+    // registered. No-op when there are no actor handlers.
+    if let Some(f) = emit_xnode_codec_module_init(
+        ctx,
+        &llvm_mod,
+        &pipeline.actor_layouts,
+        &record_layouts,
+        &machine_layouts,
+        &pipeline.record_layouts,
+        &pipeline.enum_layouts,
+    )? {
+        module_init_ctors.push(f);
+    }
+    // Materialise the single @llvm.global_ctors from all collected module inits.
+    emit_global_ctors(ctx, &llvm_mod, &module_init_ctors)?;
     // Synthesize one erased method thunk per `(vtable_id, method_index)`
     // pair in `pipeline.dyn_vtable_registry`. The thunk has signature
     // `fn(ptr_erased_self, <receiver-skipped params>) -> ret`; its body
@@ -25872,6 +26016,1533 @@ fn emit_dyn_trait_vtable_definitions<'ctx>(
     Ok(())
 }
 
+// ===========================================================================
+// Cross-node payload serialization thunks (gap #31)
+// ===========================================================================
+//
+// For every actor-message type that can cross a process boundary, codegen emits
+// a `__hew_serialize_<key>` / `__hew_deserialize_<key>` C-ABI thunk pair. The
+// thunk WALKS the value's layout in IR (the single source of truth for field
+// order and offsets) and calls the runtime codec primitives
+// (`hew-runtime/src/xnode_serial.rs`) to build / read the wire bytes. The
+// byte-format authority lives in the runtime; the layout-walk authority lives
+// here. A module-init constructor registers each pair by its `msg_type`
+// discriminant so the receive path can find the decoder.
+//
+// Accepted subset == the `Serializable` floor the checker already enforces:
+// scalars, `string`, `bytes`, records (positional fields), enums (a tag + the
+// active variant's positional fields). Any other shape fails closed at codegen.
+
+/// Stable, symbol-safe key for a serializable message type, used as the
+/// `__hew_serialize_<key>` / `__hew_deserialize_<key>` suffix. Reuses the
+/// canonical structural `ResolvedTy` encoder so two distinct shapes never
+/// collide on one thunk.
+fn xnode_codec_key(ty: &ResolvedTy) -> String {
+    hew_hir::mangle_resolved_ty(ty)
+}
+
+/// Declare-or-fetch the serialize thunk:
+/// `ptr __hew_serialize_<key>(ptr value, ptr out_len)`.
+/// Returns a `libc::malloc`'d byte buffer (length written to `*out_len`) the
+/// caller owns (free with `hew_ser_free_bytes`). This matches the runtime
+/// `SerializeThunk` ABI so the registry can call it uniformly.
+fn get_or_declare_serialize_thunk<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    key: &str,
+) -> FunctionValue<'ctx> {
+    let sym = format!("__hew_serialize_{key}");
+    if let Some(fv) = llvm_mod.get_function(&sym) {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        &sym,
+        ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        Some(Linkage::Internal),
+    )
+}
+
+/// Declare-or-fetch the deserialize thunk:
+/// `ptr __hew_deserialize_<key>(ptr data, i64 len, ptr out_struct_size)`.
+/// Returns a `libc::malloc`'d reconstructed value (or null on decode failure)
+/// and writes the value's in-memory struct byte size to `*out_struct_size` so
+/// the runtime can hand the right byte count to the mailbox / ask path (the
+/// struct size differs from the wire length).
+fn get_or_declare_deserialize_thunk<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    key: &str,
+) -> FunctionValue<'ctx> {
+    let sym = format!("__hew_deserialize_{key}");
+    if let Some(fv) = llvm_mod.get_function(&sym) {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    llvm_mod.add_function(
+        &sym,
+        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
+        Some(Linkage::Internal),
+    )
+}
+
+/// Declare a runtime codec primitive by name with the given LLVM signature.
+fn declare_codec_prim<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    name: &str,
+    fn_ty: inkwell::types::FunctionType<'ctx>,
+) -> FunctionValue<'ctx> {
+    let _ = ctx;
+    llvm_mod
+        .get_function(name)
+        .unwrap_or_else(|| llvm_mod.add_function(name, fn_ty, Some(Linkage::External)))
+}
+
+/// Emit the per-field ENCODE walk for a value of type `ty` rooted at `value_ptr`,
+/// pushing onto the runtime `SerBuf` handle `buf`. Recurses into records and
+/// switches on enum tags. Fails closed on any unsupported shape.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+fn emit_ser_value<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    ty: &ResolvedTy,
+    value_ptr: PointerValue<'ctx>,
+    buf: PointerValue<'ctx>,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let void_ty = ctx.void_type();
+    let i64_ty = ctx.i64_type();
+    match ty {
+        ResolvedTy::Bool
+        | ResolvedTy::I8
+        | ResolvedTy::U8
+        | ResolvedTy::I16
+        | ResolvedTy::U16
+        | ResolvedTy::I32
+        | ResolvedTy::U32
+        | ResolvedTy::Char
+        | ResolvedTy::I64
+        | ResolvedTy::U64
+        | ResolvedTy::Isize
+        | ResolvedTy::Usize
+        | ResolvedTy::Duration => {
+            // Load the scalar (widening to i64 / u64) and push via the matching
+            // primitive. bool routes to push_bool (i8).
+            let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
+            let int_ty = llvm_ty.into_int_type();
+            let raw = builder
+                .build_load(int_ty, value_ptr, "ser_scalar")
+                .llvm_ctx("ser scalar load")?
+                .into_int_value();
+            if matches!(ty, ResolvedTy::Bool) {
+                let i8_ty = ctx.i8_type();
+                let as_i8 = if int_ty.get_bit_width() == 8 {
+                    raw
+                } else {
+                    builder
+                        .build_int_truncate(raw, i8_ty, "ser_bool_trunc")
+                        .llvm_ctx("ser bool trunc")?
+                };
+                let prim = declare_codec_prim(
+                    ctx,
+                    llvm_mod,
+                    "hew_ser_push_bool",
+                    void_ty.fn_type(&[ptr_ty.into(), i8_ty.into()], false),
+                );
+                builder
+                    .build_call(prim, &[buf.into(), as_i8.into()], "ser_push_bool")
+                    .llvm_ctx("ser push_bool")?;
+            } else {
+                let unsigned = matches!(
+                    ty,
+                    ResolvedTy::U8
+                        | ResolvedTy::U16
+                        | ResolvedTy::U32
+                        | ResolvedTy::U64
+                        | ResolvedTy::Usize
+                        | ResolvedTy::Char
+                );
+                let widened = if int_ty.get_bit_width() == 64 {
+                    raw
+                } else if unsigned {
+                    builder
+                        .build_int_z_extend(raw, i64_ty, "ser_zext")
+                        .llvm_ctx("ser zext")?
+                } else {
+                    builder
+                        .build_int_s_extend(raw, i64_ty, "ser_sext")
+                        .llvm_ctx("ser sext")?
+                };
+                let (prim_name, arg_ty) = if unsigned {
+                    ("hew_ser_push_u64", ctx.i64_type())
+                } else {
+                    ("hew_ser_push_i64", ctx.i64_type())
+                };
+                let prim = declare_codec_prim(
+                    ctx,
+                    llvm_mod,
+                    prim_name,
+                    void_ty.fn_type(&[ptr_ty.into(), arg_ty.into()], false),
+                );
+                builder
+                    .build_call(prim, &[buf.into(), widened.into()], "ser_push_int")
+                    .llvm_ctx("ser push_int")?;
+            }
+            Ok(())
+        }
+        ResolvedTy::F32 | ResolvedTy::F64 => {
+            let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
+            let f = builder
+                .build_load(llvm_ty, value_ptr, "ser_float")
+                .llvm_ctx("ser float load")?
+                .into_float_value();
+            let f64v = if matches!(ty, ResolvedTy::F64) {
+                f
+            } else {
+                builder
+                    .build_float_ext(f, ctx.f64_type(), "ser_fext")
+                    .llvm_ctx("ser fext")?
+            };
+            let prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_ser_push_f64",
+                void_ty.fn_type(&[ptr_ty.into(), ctx.f64_type().into()], false),
+            );
+            builder
+                .build_call(prim, &[buf.into(), f64v.into()], "ser_push_f64")
+                .llvm_ctx("ser push_f64")?;
+            Ok(())
+        }
+        ResolvedTy::String => {
+            // The value slot holds a `*const c_char`; load it and push.
+            let s = builder
+                .build_load(ptr_ty, value_ptr, "ser_string_ptr")
+                .llvm_ctx("ser string load")?
+                .into_pointer_value();
+            let prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_ser_push_string",
+                void_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+            );
+            builder
+                .build_call(prim, &[buf.into(), s.into()], "ser_push_string")
+                .llvm_ctx("ser push_string")?;
+            Ok(())
+        }
+        ResolvedTy::Unit | ResolvedTy::Never => {
+            let prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_ser_push_unit",
+                void_ty.fn_type(&[ptr_ty.into()], false),
+            );
+            builder
+                .build_call(prim, &[buf.into()], "ser_push_unit")
+                .llvm_ctx("ser push_unit")?;
+            Ok(())
+        }
+        ResolvedTy::Bytes => {
+            // `bytes` ABI is a triple { ptr: ptr, offset: i32, len: i32 }.
+            let i32_ty = ctx.i32_type();
+            let triple_ty = ctx.struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false);
+            let data_ptr = builder
+                .build_struct_gep(triple_ty, value_ptr, 0, "ser_bytes_ptr")
+                .llvm_ctx("ser bytes ptr gep")?;
+            let data = builder
+                .build_load(ptr_ty, data_ptr, "ser_bytes_data")
+                .llvm_ctx("ser bytes data load")?
+                .into_pointer_value();
+            let off_ptr = builder
+                .build_struct_gep(triple_ty, value_ptr, 1, "ser_bytes_off")
+                .llvm_ctx("ser bytes off gep")?;
+            let off = builder
+                .build_load(i32_ty, off_ptr, "ser_bytes_offv")
+                .llvm_ctx("ser bytes off load")?
+                .into_int_value();
+            let len_ptr = builder
+                .build_struct_gep(triple_ty, value_ptr, 2, "ser_bytes_len")
+                .llvm_ctx("ser bytes len gep")?;
+            let len = builder
+                .build_load(i32_ty, len_ptr, "ser_bytes_lenv")
+                .llvm_ctx("ser bytes len load")?
+                .into_int_value();
+            let prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_ser_push_bytes",
+                void_ty.fn_type(
+                    &[ptr_ty.into(), ptr_ty.into(), i32_ty.into(), i32_ty.into()],
+                    false,
+                ),
+            );
+            builder
+                .build_call(
+                    prim,
+                    &[buf.into(), data.into(), off.into(), len.into()],
+                    "ser_push_bytes",
+                )
+                .llvm_ctx("ser push_bytes")?;
+            Ok(())
+        }
+        ResolvedTy::Named { name, args, .. } => emit_ser_named(
+            ctx,
+            llvm_mod,
+            builder,
+            func,
+            name,
+            args,
+            value_ptr,
+            buf,
+            record_layouts,
+            machine_layouts,
+            pipeline_records,
+            enum_layouts,
+        ),
+        other => Err(CodegenError::FailClosed(format!(
+            "cross-node serialize: unsupported value type {other:?} \
+             (outside the Serializable floor)"
+        ))),
+    }
+}
+
+/// Resolve a `Named { name, args }` to the layout-map registration key:
+/// the plain (short) name for a monomorphic type, the `mangle`d name for a
+/// generic instantiation. Mirrors `user_record_layout_key` / `lookup_enum_layout`.
+fn xnode_registry_key(
+    name: &str,
+    args: &[ResolvedTy],
+    records: &[RecordLayout],
+    enums: &[EnumLayout],
+) -> String {
+    let short = name.rsplit_once('.').map_or(name, |(_, s)| s);
+    if args.is_empty() {
+        // Prefer an exact registered name; else the short form.
+        if records.iter().any(|r| r.name == name) || enums.iter().any(|e| e.name == name) {
+            return name.to_string();
+        }
+        short.to_string()
+    } else {
+        let full = hew_hir::mangle(name, args);
+        if records.iter().any(|r| r.name == full) || enums.iter().any(|e| e.name == full) {
+            return full;
+        }
+        hew_hir::mangle(short, args)
+    }
+}
+
+/// Emit the encode walk for a `Named` type: user enum (tag + active-variant
+/// fields) or user record (positional fields).
+#[allow(clippy::too_many_arguments)]
+fn emit_ser_named<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    name: &str,
+    args: &[ResolvedTy],
+    value_ptr: PointerValue<'ctx>,
+    buf: PointerValue<'ctx>,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+    // Enum first: tag + variant payload walk.
+    if let (Some(layout), Some(el)) = (
+        machine_layouts.get(&key),
+        enum_layouts.iter().find(|e| e.name == key),
+    ) {
+        return emit_ser_enum(
+            ctx,
+            llvm_mod,
+            builder,
+            func,
+            layout,
+            el,
+            value_ptr,
+            buf,
+            record_layouts,
+            machine_layouts,
+            pipeline_records,
+            enum_layouts,
+        );
+    }
+    // Record: positional fields.
+    if let (Some(struct_ty), Some(rl)) = (
+        record_layouts.get(&key).copied(),
+        pipeline_records.iter().find(|r| r.name == key),
+    ) {
+        for (idx, fty) in rl.field_tys.iter().enumerate() {
+            let field_ptr = builder
+                .build_struct_gep(
+                    struct_ty,
+                    value_ptr,
+                    idx as u32,
+                    &format!("ser_field_{idx}"),
+                )
+                .llvm_ctx("ser field gep")?;
+            emit_ser_value(
+                ctx,
+                llvm_mod,
+                builder,
+                func,
+                fty,
+                field_ptr,
+                buf,
+                record_layouts,
+                machine_layouts,
+                pipeline_records,
+                enum_layouts,
+            )?;
+        }
+        return Ok(());
+    }
+    Err(CodegenError::FailClosed(format!(
+        "cross-node serialize: named type `{name}` (key `{key}`) is neither a \
+         registered record nor enum layout"
+    )))
+}
+
+/// Emit the encode walk for an enum: push the discriminant, then switch on it
+/// and push the active variant's positional payload fields.
+#[allow(clippy::too_many_arguments)]
+fn emit_ser_enum<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    layout: &MachineCodegenLayout<'ctx>,
+    el: &EnumLayout,
+    value_ptr: PointerValue<'ctx>,
+    buf: PointerValue<'ctx>,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    let void_ty = ctx.void_type();
+
+    // For an `indirect` enum the value slot holds a heap pointer to the
+    // tagged-union struct; load through it first.
+    let base = if el.is_indirect {
+        builder
+            .build_load(ptr_ty, value_ptr, "ser_enum_indirect")
+            .llvm_ctx("ser enum indirect load")?
+            .into_pointer_value()
+    } else {
+        value_ptr
+    };
+
+    let tag_ptr = builder
+        .build_struct_gep(layout.outer_struct, base, 0, "ser_enum_tag_ptr")
+        .llvm_ctx("ser enum tag gep")?;
+    let tag = builder
+        .build_load(layout.tag_int_ty, tag_ptr, "ser_enum_tag")
+        .llvm_ctx("ser enum tag load")?
+        .into_int_value();
+    let tag_u64 = if layout.tag_int_ty.get_bit_width() == 64 {
+        tag
+    } else {
+        builder
+            .build_int_z_extend(tag, i64_ty, "ser_enum_tag_zext")
+            .llvm_ctx("ser enum tag zext")?
+    };
+    let push_tag = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_ser_push_enum_tag",
+        void_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+    );
+    builder
+        .build_call(push_tag, &[buf.into(), tag_u64.into()], "ser_push_enum_tag")
+        .llvm_ctx("ser push_enum_tag")?;
+
+    // Switch to each variant's payload-encode block.
+    let cont_bb = ctx.append_basic_block(func, "ser_enum_cont");
+    let trap_bb = ctx.append_basic_block(func, "ser_enum_tag_oob");
+    let mut cases = Vec::with_capacity(layout.variant_struct_tys.len());
+    let mut variant_bbs = Vec::with_capacity(layout.variant_struct_tys.len());
+    for idx in 0..layout.variant_struct_tys.len() {
+        let bb = ctx.append_basic_block(func, &format!("ser_enum_variant_{idx}"));
+        cases.push((layout.tag_int_ty.const_int(idx as u64, false), bb));
+        variant_bbs.push(bb);
+    }
+    builder
+        .build_switch(tag, trap_bb, &cases)
+        .llvm_ctx("ser enum switch")?;
+
+    builder.position_at_end(trap_bb);
+    emit_trap_with_code_raw(ctx, llvm_mod, builder, 208, "ser_enum_tag_oob")?;
+
+    for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
+        builder.position_at_end(variant_bbs[idx]);
+        let variant = &el.variants[idx];
+        if !variant.field_tys.is_empty() {
+            let payload_ptr = builder
+                .build_struct_gep(
+                    layout.outer_struct,
+                    base,
+                    1,
+                    &format!("ser_enum_payload_{idx}"),
+                )
+                .llvm_ctx("ser enum payload gep")?;
+            for (fidx, fty) in variant.field_tys.iter().enumerate() {
+                let field_ptr = builder
+                    .build_struct_gep(
+                        *variant_struct,
+                        payload_ptr,
+                        fidx as u32,
+                        &format!("ser_enum_v{idx}_f{fidx}"),
+                    )
+                    .llvm_ctx("ser enum variant field gep")?;
+                emit_ser_value(
+                    ctx,
+                    llvm_mod,
+                    builder,
+                    func,
+                    fty,
+                    field_ptr,
+                    buf,
+                    record_layouts,
+                    machine_layouts,
+                    pipeline_records,
+                    enum_layouts,
+                )?;
+            }
+        }
+        builder
+            .build_unconditional_branch(cont_bb)
+            .llvm_ctx("ser enum variant br")?;
+    }
+    builder.position_at_end(cont_bb);
+    Ok(())
+}
+
+/// Emit the DECODE walk for a value of type `ty`, reading from the runtime
+/// `DeReader` handle `reader` and storing the reconstructed value into `dst`.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+fn emit_de_value<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    ty: &ResolvedTy,
+    dst: PointerValue<'ctx>,
+    reader: PointerValue<'ctx>,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    match ty {
+        ResolvedTy::Bool
+        | ResolvedTy::I8
+        | ResolvedTy::U8
+        | ResolvedTy::I16
+        | ResolvedTy::U16
+        | ResolvedTy::I32
+        | ResolvedTy::U32
+        | ResolvedTy::Char
+        | ResolvedTy::I64
+        | ResolvedTy::U64
+        | ResolvedTy::Isize
+        | ResolvedTy::Usize
+        | ResolvedTy::Duration => {
+            let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
+            let int_ty = llvm_ty.into_int_type();
+            if matches!(ty, ResolvedTy::Bool) {
+                let i8_ty = ctx.i8_type();
+                let prim = declare_codec_prim(
+                    ctx,
+                    llvm_mod,
+                    "hew_de_read_bool",
+                    i8_ty.fn_type(&[ptr_ty.into()], false),
+                );
+                let v = builder
+                    .build_call(prim, &[reader.into()], "de_read_bool")
+                    .llvm_ctx("de read_bool")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| CodegenError::FailClosed("hew_de_read_bool void".into()))?
+                    .into_int_value();
+                let stored = if int_ty.get_bit_width() == 8 {
+                    v
+                } else {
+                    builder
+                        .build_int_z_extend(v, int_ty, "de_bool_zext")
+                        .llvm_ctx("de bool zext")?
+                };
+                builder.build_store(dst, stored).llvm_ctx("de bool store")?;
+            } else {
+                let unsigned = matches!(
+                    ty,
+                    ResolvedTy::U8
+                        | ResolvedTy::U16
+                        | ResolvedTy::U32
+                        | ResolvedTy::U64
+                        | ResolvedTy::Usize
+                        | ResolvedTy::Char
+                );
+                let prim_name = if unsigned {
+                    "hew_de_read_u64"
+                } else {
+                    "hew_de_read_i64"
+                };
+                let prim = declare_codec_prim(
+                    ctx,
+                    llvm_mod,
+                    prim_name,
+                    i64_ty.fn_type(&[ptr_ty.into()], false),
+                );
+                let wide = builder
+                    .build_call(prim, &[reader.into()], "de_read_int")
+                    .llvm_ctx("de read_int")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| CodegenError::FailClosed("hew_de_read_int void".into()))?
+                    .into_int_value();
+                let narrow = if int_ty.get_bit_width() == 64 {
+                    wide
+                } else {
+                    builder
+                        .build_int_truncate(wide, int_ty, "de_int_trunc")
+                        .llvm_ctx("de int trunc")?
+                };
+                builder.build_store(dst, narrow).llvm_ctx("de int store")?;
+            }
+            Ok(())
+        }
+        ResolvedTy::F32 | ResolvedTy::F64 => {
+            let prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_de_read_f64",
+                ctx.f64_type().fn_type(&[ptr_ty.into()], false),
+            );
+            let f = builder
+                .build_call(prim, &[reader.into()], "de_read_f64")
+                .llvm_ctx("de read_f64")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_de_read_f64 void".into()))?
+                .into_float_value();
+            let stored = if matches!(ty, ResolvedTy::F64) {
+                f
+            } else {
+                builder
+                    .build_float_trunc(f, ctx.f32_type(), "de_ftrunc")
+                    .llvm_ctx("de ftrunc")?
+            };
+            builder
+                .build_store(dst, stored)
+                .llvm_ctx("de float store")?;
+            Ok(())
+        }
+        ResolvedTy::String => {
+            let prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_de_read_string",
+                ptr_ty.fn_type(&[ptr_ty.into()], false),
+            );
+            let s = builder
+                .build_call(prim, &[reader.into()], "de_read_string")
+                .llvm_ctx("de read_string")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_de_read_string void".into()))?
+                .into_pointer_value();
+            builder.build_store(dst, s).llvm_ctx("de string store")?;
+            Ok(())
+        }
+        ResolvedTy::Unit | ResolvedTy::Never => {
+            let prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_de_read_unit",
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            );
+            builder
+                .build_call(prim, &[reader.into()], "de_read_unit")
+                .llvm_ctx("de read_unit")?;
+            Ok(())
+        }
+        ResolvedTy::Bytes => {
+            // Read raw bytes then build a refcounted `bytes` value via
+            // hew_bytes_from_raw(ptr, len) -> triple; store the triple.
+            let i32_ty = ctx.i32_type();
+            let len_slot = builder
+                .build_alloca(i32_ty, "de_bytes_len")
+                .llvm_ctx("de bytes len alloca")?;
+            let read_prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_de_read_bytes",
+                ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+            );
+            let raw = builder
+                .build_call(
+                    read_prim,
+                    &[reader.into(), len_slot.into()],
+                    "de_read_bytes",
+                )
+                .llvm_ctx("de read_bytes")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_de_read_bytes void".into()))?
+                .into_pointer_value();
+            let len = builder
+                .build_load(i32_ty, len_slot, "de_bytes_lenv")
+                .llvm_ctx("de bytes len load")?
+                .into_int_value();
+            // hew_bytes_from_static(ptr, len) -> { ptr, i32, i32 } copies into a
+            // fresh refcounted buffer.
+            let triple_ty = ctx.struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false);
+            let new_prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_bytes_from_static",
+                triple_ty.fn_type(&[ptr_ty.into(), i32_ty.into()], false),
+            );
+            let triple = builder
+                .build_call(new_prim, &[raw.into(), len.into()], "de_bytes_new")
+                .llvm_ctx("de bytes_from_static")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_bytes_from_static void".into()))?;
+            builder
+                .build_store(dst, triple)
+                .llvm_ctx("de bytes store")?;
+            // hew_de_read_bytes returned a malloc'd copy; hew_bytes_from_static
+            // copied it into its own refcounted buffer, so free the intermediate.
+            let free_prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_ser_free_bytes",
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            );
+            builder
+                .build_call(free_prim, &[raw.into()], "de_bytes_free_raw")
+                .llvm_ctx("de bytes free raw")?;
+            Ok(())
+        }
+        ResolvedTy::Named { name, args, .. } => emit_de_named(
+            ctx,
+            llvm_mod,
+            builder,
+            func,
+            name,
+            args,
+            dst,
+            reader,
+            record_layouts,
+            machine_layouts,
+            pipeline_records,
+            enum_layouts,
+        ),
+        other => Err(CodegenError::FailClosed(format!(
+            "cross-node deserialize: unsupported value type {other:?} \
+             (outside the Serializable floor)"
+        ))),
+    }
+}
+
+/// Emit the decode walk for a `Named` type into `dst`.
+#[allow(clippy::too_many_arguments)]
+fn emit_de_named<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    name: &str,
+    args: &[ResolvedTy],
+    dst: PointerValue<'ctx>,
+    reader: PointerValue<'ctx>,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+    if let (Some(layout), Some(el)) = (
+        machine_layouts.get(&key),
+        enum_layouts.iter().find(|e| e.name == key),
+    ) {
+        return emit_de_enum(
+            ctx,
+            llvm_mod,
+            builder,
+            func,
+            layout,
+            el,
+            dst,
+            reader,
+            record_layouts,
+            machine_layouts,
+            pipeline_records,
+            enum_layouts,
+        );
+    }
+    if let (Some(struct_ty), Some(rl)) = (
+        record_layouts.get(&key).copied(),
+        pipeline_records.iter().find(|r| r.name == key),
+    ) {
+        for (idx, fty) in rl.field_tys.iter().enumerate() {
+            let field_ptr = builder
+                .build_struct_gep(struct_ty, dst, idx as u32, &format!("de_field_{idx}"))
+                .llvm_ctx("de field gep")?;
+            emit_de_value(
+                ctx,
+                llvm_mod,
+                builder,
+                func,
+                fty,
+                field_ptr,
+                reader,
+                record_layouts,
+                machine_layouts,
+                pipeline_records,
+                enum_layouts,
+            )?;
+        }
+        return Ok(());
+    }
+    Err(CodegenError::FailClosed(format!(
+        "cross-node deserialize: named type `{name}` (key `{key}`) is neither a \
+         registered record nor enum layout"
+    )))
+}
+
+/// Emit the decode walk for an enum into `dst`: read the tag, store it, then
+/// switch and decode the active variant's positional payload fields.
+#[allow(clippy::too_many_arguments)]
+fn emit_de_enum<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    layout: &MachineCodegenLayout<'ctx>,
+    el: &EnumLayout,
+    dst: PointerValue<'ctx>,
+    reader: PointerValue<'ctx>,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+
+    // For an indirect enum, allocate the heap tagged-union struct and store the
+    // pointer into dst; the per-variant writes target that allocation.
+    let base = if el.is_indirect {
+        let size = layout
+            .outer_struct
+            .size_of()
+            .ok_or_else(|| CodegenError::FailClosed("indirect enum has no size".into()))?;
+        let align = i64_ty.const_int(8, false);
+        let alloc_prim = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_alloc",
+            ptr_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
+        );
+        let heap = builder
+            .build_call(alloc_prim, &[size.into(), align.into()], "de_enum_alloc")
+            .llvm_ctx("de enum alloc")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_alloc void".into()))?
+            .into_pointer_value();
+        builder
+            .build_store(dst, heap)
+            .llvm_ctx("de enum indirect store")?;
+        heap
+    } else {
+        dst
+    };
+
+    let read_tag = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_de_read_enum_tag",
+        i64_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    let tag64 = builder
+        .build_call(read_tag, &[reader.into()], "de_read_enum_tag")
+        .llvm_ctx("de read_enum_tag")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_de_read_enum_tag void".into()))?
+        .into_int_value();
+    let tag = if layout.tag_int_ty.get_bit_width() == 64 {
+        tag64
+    } else {
+        builder
+            .build_int_truncate(tag64, layout.tag_int_ty, "de_enum_tag_trunc")
+            .llvm_ctx("de enum tag trunc")?
+    };
+    let tag_ptr = builder
+        .build_struct_gep(layout.outer_struct, base, 0, "de_enum_tag_ptr")
+        .llvm_ctx("de enum tag gep")?;
+    builder
+        .build_store(tag_ptr, tag)
+        .llvm_ctx("de enum tag store")?;
+
+    let cont_bb = ctx.append_basic_block(func, "de_enum_cont");
+    let trap_bb = ctx.append_basic_block(func, "de_enum_tag_oob");
+    let mut cases = Vec::with_capacity(layout.variant_struct_tys.len());
+    let mut variant_bbs = Vec::with_capacity(layout.variant_struct_tys.len());
+    for idx in 0..layout.variant_struct_tys.len() {
+        let bb = ctx.append_basic_block(func, &format!("de_enum_variant_{idx}"));
+        cases.push((layout.tag_int_ty.const_int(idx as u64, false), bb));
+        variant_bbs.push(bb);
+    }
+    builder
+        .build_switch(tag, trap_bb, &cases)
+        .llvm_ctx("de enum switch")?;
+
+    builder.position_at_end(trap_bb);
+    emit_trap_with_code_raw(ctx, llvm_mod, builder, 208, "de_enum_tag_oob")?;
+
+    for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
+        builder.position_at_end(variant_bbs[idx]);
+        let variant = &el.variants[idx];
+        if !variant.field_tys.is_empty() {
+            let payload_ptr = builder
+                .build_struct_gep(
+                    layout.outer_struct,
+                    base,
+                    1,
+                    &format!("de_enum_payload_{idx}"),
+                )
+                .llvm_ctx("de enum payload gep")?;
+            for (fidx, fty) in variant.field_tys.iter().enumerate() {
+                let field_ptr = builder
+                    .build_struct_gep(
+                        *variant_struct,
+                        payload_ptr,
+                        fidx as u32,
+                        &format!("de_enum_v{idx}_f{fidx}"),
+                    )
+                    .llvm_ctx("de enum variant field gep")?;
+                emit_de_value(
+                    ctx,
+                    llvm_mod,
+                    builder,
+                    func,
+                    fty,
+                    field_ptr,
+                    reader,
+                    record_layouts,
+                    machine_layouts,
+                    pipeline_records,
+                    enum_layouts,
+                )?;
+            }
+        }
+        builder
+            .build_unconditional_branch(cont_bb)
+            .llvm_ctx("de enum variant br")?;
+    }
+    builder.position_at_end(cont_bb);
+    Ok(())
+}
+
+/// Emit inline drop calls for any heap-owning fields written by the decode walk
+/// into `dst`.  Used on the decode-failure path (Fix 3b): the destination struct
+/// was zero-initialised before the walk, so every field the walk did NOT reach is
+/// still null/zero and the null-safe drop helpers (`hew_string_drop`,
+/// `hew_bytes_drop`) short-circuit safely.
+///
+/// WHY here and not in a shared runtime helper: the field layout is statically
+/// known from the type, so a static walk is cheaper than a runtime descriptor
+/// lookup and avoids adding a new FFI surface for what is a narrow failure path.
+/// WHEN-OBSOLETE: if Hew gains a general GC or type-descriptor RTTI, delegate
+/// there instead.
+/// WHAT: only String and Bytes carry inline heap pointers that the decode walk
+/// allocates; scalars/unit/bool/int/float are value types — no drop needed.
+/// Named records and enums delegate to the existing
+/// `__hew_record_drop_inplace_*` / `__hew_enum_drop_inplace_*` helpers (which
+/// are also null-field-safe because Hew drop helpers guard against null).
+#[allow(clippy::too_many_arguments)]
+fn emit_de_drop_owned<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    ty: &ResolvedTy,
+    dst: PointerValue<'ctx>,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    _machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    match ty {
+        // Scalars: no heap allocation in the decode walk — nothing to drop.
+        ResolvedTy::Bool
+        | ResolvedTy::I8
+        | ResolvedTy::U8
+        | ResolvedTy::I16
+        | ResolvedTy::U16
+        | ResolvedTy::I32
+        | ResolvedTy::U32
+        | ResolvedTy::Char
+        | ResolvedTy::I64
+        | ResolvedTy::U64
+        | ResolvedTy::Isize
+        | ResolvedTy::Usize
+        | ResolvedTy::Duration
+        | ResolvedTy::F32
+        | ResolvedTy::F64
+        | ResolvedTy::Unit
+        | ResolvedTy::Never => Ok(()),
+
+        // String: `hew_de_read_string` stores a malloc'd C string pointer.
+        // `hew_string_drop(null)` is a no-op (guards with `cabi_guard!`), so
+        // calling it unconditionally on a zero-inited (i.e. null) field is safe.
+        ResolvedTy::String => {
+            let drop_str = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_string_drop",
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            );
+            // Load the *mut c_char pointer stored at `dst`.
+            let s = builder
+                .build_load(ptr_ty, dst, "de_drop_str_load")
+                .llvm_ctx("de drop string load")?
+                .into_pointer_value();
+            builder
+                .build_call(drop_str, &[s.into()], "de_drop_str")
+                .llvm_ctx("de drop string call")?;
+            Ok(())
+        }
+
+        // Bytes: stored as a `{ ptr, i32, i32 }` triple where the first word is
+        // the data pointer (null when zero-inited or on decode failure before the
+        // field is written).  `hew_bytes_drop(null)` returns immediately.
+        ResolvedTy::Bytes => {
+            let drop_bytes = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_bytes_drop",
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            );
+            // GEP to the first field (data ptr) of the triple.
+            let triple_ty = ctx.struct_type(
+                &[ptr_ty.into(), ctx.i32_type().into(), ctx.i32_type().into()],
+                false,
+            );
+            let data_ptr_slot = builder
+                .build_struct_gep(triple_ty, dst, 0, "de_drop_bytes_slot")
+                .llvm_ctx("de drop bytes gep")?;
+            let data_ptr = builder
+                .build_load(ptr_ty, data_ptr_slot, "de_drop_bytes_load")
+                .llvm_ctx("de drop bytes load")?
+                .into_pointer_value();
+            builder
+                .build_call(drop_bytes, &[data_ptr.into()], "de_drop_bytes")
+                .llvm_ctx("de drop bytes call")?;
+            Ok(())
+        }
+
+        // Named record: delegate to the codegen-emitted per-type in-place drop
+        // helper (`__hew_record_drop_inplace_<name>`).  That helper walks the
+        // struct's owned fields and drops them; null fields are safe.
+        ResolvedTy::Named { name, args, .. } => {
+            let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+            if let Some(_el) = enum_layouts.iter().find(|e| e.name == key) {
+                // Enum: delegate to the per-enum in-place drop helper.
+                let drop_fn = get_or_declare_enum_drop_inplace(ctx, llvm_mod, &key);
+                builder
+                    .build_call(drop_fn, &[dst.into()], "de_drop_enum")
+                    .llvm_ctx("de drop enum call")?;
+            } else if record_layouts.contains_key(&key) {
+                // Record: delegate to the per-record in-place drop helper.
+                let drop_fn = get_or_declare_record_drop_inplace(ctx, llvm_mod, &key);
+                builder
+                    .build_call(drop_fn, &[dst.into()], "de_drop_record")
+                    .llvm_ctx("de drop record call")?;
+            }
+            // If neither layout is found (e.g. a type not yet registered), the
+            // decode walk would have already failed with a codegen error before
+            // reaching this path — no drop needed.
+            Ok(())
+        }
+
+        // Tuples, arrays, slices, and other compound types are not admitted by the
+        // Serializable boundary checker (`is_serializable` rejects them), so the
+        // decode walk should never emit code for them.  If they somehow arrive here,
+        // emit no drop (the values contain no heap allocations the decode walk would
+        // have produced).
+        _ => Ok(()),
+    }
+}
+
+/// Emit the full serialize + deserialize thunk bodies for `ty` (idempotent: a
+/// second call for the same key no-ops). Returns the thunk symbols.
+#[allow(clippy::too_many_arguments)]
+fn emit_xnode_codec_thunks<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    ty: &ResolvedTy,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<(String, String)> {
+    let key = xnode_codec_key(ty);
+    let ser_sym = format!("__hew_serialize_{key}");
+    let de_sym = format!("__hew_deserialize_{key}");
+    let ser_fn = get_or_declare_serialize_thunk(ctx, llvm_mod, &key);
+    let de_fn = get_or_declare_deserialize_thunk(ctx, llvm_mod, &key);
+    if ser_fn.count_basic_blocks() > 0 {
+        return Ok((ser_sym, de_sym)); // already emitted
+    }
+
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+
+    // ── serialize(value, out_len) -> bytes: build a SerBuf, walk, finish. ──
+    {
+        let builder = ctx.create_builder();
+        let entry = ctx.append_basic_block(ser_fn, "entry");
+        builder.position_at_end(entry);
+        let value_ptr = ser_fn
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::FailClosed("serialize thunk missing value param".into()))?
+            .into_pointer_value();
+        let out_len = ser_fn
+            .get_nth_param(1)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("serialize thunk missing out_len param".into())
+            })?
+            .into_pointer_value();
+        let buf_new =
+            declare_codec_prim(ctx, llvm_mod, "hew_ser_buf_new", ptr_ty.fn_type(&[], false));
+        let buf = builder
+            .build_call(buf_new, &[], "ser_buf")
+            .llvm_ctx("ser_buf_new")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_ser_buf_new void".into()))?
+            .into_pointer_value();
+        emit_ser_value(
+            ctx,
+            llvm_mod,
+            &builder,
+            ser_fn,
+            ty,
+            value_ptr,
+            buf,
+            record_layouts,
+            machine_layouts,
+            pipeline_records,
+            enum_layouts,
+        )?;
+        let finish = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_ser_finish",
+            ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        );
+        let bytes = builder
+            .build_call(finish, &[buf.into(), out_len.into()], "ser_finish")
+            .llvm_ctx("ser_finish")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_ser_finish void".into()))?
+            .into_pointer_value();
+        builder.build_return(Some(&bytes)).llvm_ctx("ser return")?;
+    }
+
+    // ── deserialize: make a reader, alloc the value, walk, free reader. ──
+    {
+        let builder = ctx.create_builder();
+        let entry = ctx.append_basic_block(de_fn, "entry");
+        builder.position_at_end(entry);
+        let data = de_fn
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::FailClosed("deserialize thunk missing data".into()))?
+            .into_pointer_value();
+        let len = de_fn
+            .get_nth_param(1)
+            .ok_or_else(|| CodegenError::FailClosed("deserialize thunk missing len".into()))?
+            .into_int_value();
+        let out_struct_size = de_fn
+            .get_nth_param(2)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("deserialize thunk missing out_struct_size".into())
+            })?
+            .into_pointer_value();
+        let reader_new = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_de_reader_new",
+            ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        );
+        let reader = builder
+            .build_call(reader_new, &[data.into(), len.into()], "de_reader")
+            .llvm_ctx("de_reader_new")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_de_reader_new void".into()))?
+            .into_pointer_value();
+
+        // Allocate the destination value (malloc, so the caller owns it via libc::free).
+        let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
+        let size = llvm_ty.size_of().ok_or_else(|| {
+            CodegenError::FailClosed("deserialize: value has no static size".into())
+        })?;
+        // Publish the struct byte size so the runtime hands the mailbox the right
+        // count (the in-memory struct size, not the wire length).
+        builder
+            .build_store(out_struct_size, size)
+            .llvm_ctx("de store struct size")?;
+        let malloc_fn = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "malloc",
+            ptr_ty.fn_type(&[i64_ty.into()], false),
+        );
+        let dst = builder
+            .build_call(malloc_fn, &[size.into()], "de_value")
+            .llvm_ctx("de value malloc")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("malloc void".into()))?
+            .into_pointer_value();
+
+        // Fix 3a: fail closed on OOM — null malloc must not reach memset/walk.
+        {
+            let oom_bb = ctx.append_basic_block(de_fn, "de_oom");
+            let alloc_ok_bb = ctx.append_basic_block(de_fn, "de_alloc_ok");
+            let null_ptr = ptr_ty.const_null();
+            let is_null = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    builder
+                        .build_ptr_to_int(dst, ctx.i64_type(), "dst_as_int")
+                        .llvm_ctx("dst ptr_to_int")?,
+                    builder
+                        .build_ptr_to_int(null_ptr, ctx.i64_type(), "null_as_int")
+                        .llvm_ctx("null ptr_to_int")?,
+                    "dst_is_null",
+                )
+                .llvm_ctx("de null check")?;
+            builder
+                .build_conditional_branch(is_null, oom_bb, alloc_ok_bb)
+                .llvm_ctx("de oom branch")?;
+            builder.position_at_end(oom_bb);
+            // Free the reader and return null (fail-closed OOM path; no dst to free).
+            let reader_free_oom = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_de_reader_free",
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            );
+            builder
+                .build_call(reader_free_oom, &[reader.into()], "de_reader_free_oom")
+                .llvm_ctx("de reader free oom")?;
+            builder
+                .build_return(Some(&ptr_ty.const_null()))
+                .llvm_ctx("de oom return")?;
+            builder.position_at_end(alloc_ok_bb);
+        }
+
+        // Zero-init so partially-decoded values have well-defined slots.
+        let memset = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "memset",
+            ptr_ty.fn_type(
+                &[ptr_ty.into(), ctx.i32_type().into(), i64_ty.into()],
+                false,
+            ),
+        );
+        builder
+            .build_call(
+                memset,
+                &[dst.into(), ctx.i32_type().const_zero().into(), size.into()],
+                "de_zero",
+            )
+            .llvm_ctx("de zero-init")?;
+
+        emit_de_value(
+            ctx,
+            llvm_mod,
+            &builder,
+            de_fn,
+            ty,
+            dst,
+            reader,
+            record_layouts,
+            machine_layouts,
+            pipeline_records,
+            enum_layouts,
+        )?;
+
+        // Check failure: if the reader latched an error, free the partial value
+        // and the reader and return null (fail-closed — never deliver garbage).
+        let failed_prim = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_de_failed",
+            ctx.i32_type().fn_type(&[ptr_ty.into()], false),
+        );
+        let failed = builder
+            .build_call(failed_prim, &[reader.into()], "de_failed")
+            .llvm_ctx("de failed")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_de_failed void".into()))?
+            .into_int_value();
+        let reader_free = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_de_reader_free",
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        );
+        builder
+            .build_call(reader_free, &[reader.into()], "de_reader_free")
+            .llvm_ctx("de reader free")?;
+
+        let ok_bb = ctx.append_basic_block(de_fn, "de_ok");
+        let fail_bb = ctx.append_basic_block(de_fn, "de_fail");
+        let is_failed = builder
+            .build_int_compare(
+                IntPredicate::NE,
+                failed,
+                ctx.i32_type().const_zero(),
+                "de_is_failed",
+            )
+            .llvm_ctx("de is_failed cmp")?;
+        builder
+            .build_conditional_branch(is_failed, fail_bb, ok_bb)
+            .llvm_ctx("de fail branch")?;
+
+        builder.position_at_end(fail_bb);
+        // Fix 3b: drop any heap-owning fields already written before the failure
+        // (string/bytes/record/enum).  The struct was zero-initialised, so unwritten
+        // fields are null/zero — the null-safe drop helpers short-circuit safely.
+        // This prevents a bounded leak under adversarial peers that send malformed
+        // payloads.  CAREFUL: we call the drop helpers BEFORE free(dst); the drop
+        // helpers operate in-place (they do not free the shell), so free(dst) runs
+        // exactly once after all field drops — no double-free.
+        emit_de_drop_owned(
+            ctx,
+            llvm_mod,
+            &builder,
+            ty,
+            dst,
+            record_layouts,
+            machine_layouts,
+            pipeline_records,
+            enum_layouts,
+        )?;
+        let free_fn = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "free",
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        );
+        builder
+            .build_call(free_fn, &[dst.into()], "de_free_partial")
+            .llvm_ctx("de free partial")?;
+        builder
+            .build_return(Some(&ptr_ty.const_null()))
+            .llvm_ctx("de fail return")?;
+
+        builder.position_at_end(ok_bb);
+        builder.build_return(Some(&dst)).llvm_ctx("de return")?;
+    }
+
+    Ok((ser_sym, de_sym))
+}
+
+/// Emit the `@llvm.global_ctors` global once, from the collected list of
+/// module-init constructor functions (priority 65535 each, run before `main`).
+///
+/// LLVM permits only one `@llvm.global_ctors` symbol per module, so all module
+/// inits (regex, cross-node codec) register their init fn into a shared list and
+/// this helper materialises the single global. No-op for an empty list. inkwell
+/// 0.9 cannot read back an existing const-array initialiser element-wise, so the
+/// list-then-emit-once shape avoids ever needing to.
+fn emit_global_ctors<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    init_fns: &[FunctionValue<'ctx>],
+) -> CodegenResult<()> {
+    if init_fns.is_empty() {
+        return Ok(());
+    }
+    let i32_ty = ctx.i32_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let entry_ty = ctx.struct_type(&[i32_ty.into(), ptr_ty.into(), ptr_ty.into()], false);
+    let priority = i32_ty.const_int(65535, false);
+    let assoc = ptr_ty.const_null();
+    let entries: Vec<inkwell::values::StructValue<'ctx>> = init_fns
+        .iter()
+        .map(|f| {
+            let fp = f.as_global_value().as_pointer_value();
+            entry_ty.const_named_struct(&[priority.into(), fp.into(), assoc.into()])
+        })
+        .collect();
+    let arr = entry_ty.const_array(&entries);
+    let g = llvm_mod.add_global(
+        entry_ty.array_type(entries.len() as u32),
+        None,
+        "llvm.global_ctors",
+    );
+    g.set_initializer(&arr);
+    g.set_linkage(Linkage::Appending);
+    Ok(())
+}
+
+/// Emit the cross-node codec module-init: for every actor receive handler,
+/// synthesize the serialize/deserialize thunk pair for its message type (and
+/// reply type) and emit a `hew_xnode_register_codec` call keyed by `msg_type`,
+/// so the runtime receive path can decode inbound payloads and the ask reply
+/// path can encode reply values. No-op when there are no actor handlers.
+fn emit_xnode_codec_module_init<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    actor_layouts: &[ActorLayout],
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<Option<FunctionValue<'ctx>>> {
+    // Collect (msg_type, msg_ty, reply_ty) for every handler. Dedup by msg_type:
+    // a handler's msg_type is unique per (actor, handler).
+    let mut entries: Vec<(i32, ResolvedTy, ResolvedTy)> = Vec::new();
+    for actor in actor_layouts {
+        for h in &actor.handlers {
+            let Some(msg_ty) = h.param_tys.first() else {
+                continue;
+            };
+            if entries.iter().any(|(mt, _, _)| *mt == h.msg_type) {
+                continue;
+            }
+            entries.push((h.msg_type, msg_ty.clone(), h.return_ty.clone()));
+        }
+    }
+    if entries.is_empty() {
+        return Ok(None);
+    }
+
+    let void_ty = ctx.void_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+
+    // Emit thunk bodies for every distinct msg AND reply type first.
+    // (Best-effort: a type outside the Serializable floor fails closed here,
+    // surfacing the codegen error rather than shipping raw bytes.)
+    for (_mt, msg_ty, reply_ty) in &entries {
+        emit_xnode_codec_thunks(
+            ctx,
+            llvm_mod,
+            msg_ty,
+            record_layouts,
+            machine_layouts,
+            pipeline_records,
+            enum_layouts,
+        )?;
+        if !matches!(reply_ty, ResolvedTy::Unit | ResolvedTy::Never) {
+            emit_xnode_codec_thunks(
+                ctx,
+                llvm_mod,
+                reply_ty,
+                record_layouts,
+                machine_layouts,
+                pipeline_records,
+                enum_layouts,
+            )?;
+        }
+    }
+
+    // Constructor: void hew_module_init_xnode_codecs().
+    let init_fn = llvm_mod.add_function(
+        "hew_module_init_xnode_codecs",
+        void_ty.fn_type(&[], false),
+        Some(Linkage::Private),
+    );
+    let builder = ctx.create_builder();
+    let entry_bb = ctx.append_basic_block(init_fn, "entry");
+    builder.position_at_end(entry_bb);
+
+    // hew_xnode_register_codec(msg_type: i32, ser: ptr, de: ptr).
+    let reg_fn = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_xnode_register_codec",
+        void_ty.fn_type(&[i32_ty.into(), ptr_ty.into(), ptr_ty.into()], false),
+    );
+    // hew_xnode_register_reply_codec(msg_type: i32, ser: ptr, de: ptr) — the
+    // reply codec for the ask path, keyed by the request's msg_type.
+    let reg_reply_fn = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_xnode_register_reply_codec",
+        void_ty.fn_type(&[i32_ty.into(), ptr_ty.into(), ptr_ty.into()], false),
+    );
+
+    for (mt, msg_ty, reply_ty) in &entries {
+        let mt_const = i32_ty.const_int(*mt as u64, true);
+        let msg_key = xnode_codec_key(msg_ty);
+        let ser = get_or_declare_serialize_thunk(ctx, llvm_mod, &msg_key);
+        let de = get_or_declare_deserialize_thunk(ctx, llvm_mod, &msg_key);
+        builder
+            .build_call(
+                reg_fn,
+                &[
+                    mt_const.into(),
+                    ser.as_global_value().as_pointer_value().into(),
+                    de.as_global_value().as_pointer_value().into(),
+                ],
+                "xnode_register",
+            )
+            .llvm_ctx("hew_xnode_register_codec call")?;
+        if !matches!(reply_ty, ResolvedTy::Unit | ResolvedTy::Never) {
+            let reply_key = xnode_codec_key(reply_ty);
+            let rser = get_or_declare_serialize_thunk(ctx, llvm_mod, &reply_key);
+            let rde = get_or_declare_deserialize_thunk(ctx, llvm_mod, &reply_key);
+            builder
+                .build_call(
+                    reg_reply_fn,
+                    &[
+                        mt_const.into(),
+                        rser.as_global_value().as_pointer_value().into(),
+                        rde.as_global_value().as_pointer_value().into(),
+                    ],
+                    "xnode_register_reply",
+                )
+                .llvm_ctx("hew_xnode_register_reply_codec call")?;
+        }
+    }
+    builder
+        .build_return(None)
+        .llvm_ctx("xnode codec init return")?;
+
+    Ok(Some(init_fn))
+}
+
 /// Emit the module-level regex infrastructure when `pipeline.regex_literals` is non-empty.
 ///
 /// Emits:
@@ -25896,16 +27567,15 @@ fn emit_regex_module_init<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     literals: &[RegexLiteral],
-) -> CodegenResult<()> {
+) -> CodegenResult<Option<FunctionValue<'ctx>>> {
     if literals.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let n = u32::try_from(literals.len()).map_err(|_| {
         CodegenError::FailClosed("regex literal count exceeds u32::MAX — impossible".into())
     })?;
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i8_ty = ctx.i8_type();
-    let i32_ty = ctx.i32_type();
     let i64_ty = ctx.i64_type();
 
     // 1. Global handle array: [N x ptr] initialised to all-null.
@@ -26041,22 +27711,9 @@ fn emit_regex_module_init<'ctx>(
         .build_return(None)
         .llvm_ctx("return in hew_module_init_regex")?;
 
-    // 4. Register in @llvm.global_ctors (appending linkage, priority 65535).
-    // The struct type is { i32, ptr, ptr } — priority, fn ptr, associated data (null).
-    let ctor_entry_ty = ctx.struct_type(&[i32_ty.into(), ptr_ty.into(), ptr_ty.into()], false);
-    let ctor_arr_ty = ctor_entry_ty.array_type(1);
-    let priority = i32_ty.const_int(65535, false);
-    let init_fn_ptr = init_fn.as_global_value().as_pointer_value();
-    let assoc_data = ptr_ty.const_null();
-    let ctor_entry =
-        ctor_entry_ty.const_named_struct(&[priority.into(), init_fn_ptr.into(), assoc_data.into()]);
-    let ctor_arr_init = ctor_entry_ty.const_array(&[ctor_entry]);
-    // LLVM requires appending linkage for @llvm.global_ctors; the name is magic.
-    let ctors_global = llvm_mod.add_global(ctor_arr_ty, None, "llvm.global_ctors");
-    ctors_global.set_initializer(&ctor_arr_init);
-    ctors_global.set_linkage(Linkage::Appending);
-
-    Ok(())
+    // The caller collects this init fn and emits the single @llvm.global_ctors
+    // (priority 65535) alongside any other module-init constructor.
+    Ok(Some(init_fn))
 }
 
 fn emit_textual(pipeline: &IrPipeline, name: &str, out: &Path) -> CodegenResult<()> {

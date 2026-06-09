@@ -129,6 +129,11 @@ pub(crate) mod util;
 /// transport paths.
 pub mod envelope;
 
+/// Cross-node actor-message payload serialization codec: the runtime half of
+/// the codegen-driven value↔wire encoder that lets `Serializable` payloads
+/// survive a process hop without shipping in-memory heap pointers.
+pub mod xnode_serial;
+
 #[cfg(test)]
 pub(crate) struct RuntimeTestGuard {
     _lock_guard: Option<std::sync::MutexGuard<'static, ()>>,

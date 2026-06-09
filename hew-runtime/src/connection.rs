@@ -2217,6 +2217,18 @@ pub unsafe extern "C" fn hew_connmgr_send(
         }
     }
 
+    // Fix 5: guard the plaintext send path with the same validator that the
+    // encrypted branch runs inside `encode_envelope`.  Callers of
+    // `hew_connmgr_send` must already have serialised the payload (enforced at
+    // the `hew_node_send` level), so the class is truthfully SerializedCrossNode.
+    if validate_cross_node_send_params(
+        MailboxPayloadClass::SerializedCrossNode as u8,
+        crate::mailbox_envelope::CANCEL_TOKEN_NONE,
+    )
+    .is_none()
+    {
+        return -1;
+    }
     // SAFETY: mgr_ref.transport is valid per caller contract; conn_id verified active above;
     //         data is valid for size bytes per caller contract.
     let rc = unsafe {

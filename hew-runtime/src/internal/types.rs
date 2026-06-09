@@ -306,6 +306,11 @@ pub enum AskError {
     /// This is distinct from [`Timeout`]: the deadline has not necessarily
     /// expired, but the scheduler is idle and cannot advance the ask.
     NoRunnableWork = 12,
+    /// The inbound request payload could not be deserialized into a value in
+    /// the receiving node's address space (no codec registered for the
+    /// `msg_type`, or a malformed / truncated wire payload). The handler was
+    /// never dispatched — fail-closed rather than delivering garbage.
+    DecodeFailure = 13,
 }
 
 // ── Trap error codes ─────────────────────────────────────────────────────

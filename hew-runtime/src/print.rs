@@ -10,6 +10,30 @@
 
 use std::os::raw::c_char;
 
+/// Flush the C stdio `stdout` stream.
+///
+/// IMPORTANT: Hew's print intrinsics currently emit via `libc::printf`, so we
+/// must flush the *same* stdio buffer (not Rust's `std::io::stdout()`).
+fn flush_stdout() {
+    // SAFETY: `fflush` is safe to call with a valid `FILE*`. We ignore errors
+    // because failure to flush is non-fatal (e.g. broken pipe).
+    unsafe {
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        {
+            // On Darwin, `stdout` is a macro that expands to `__stdoutp`.
+            extern "C" {
+                static mut __stdoutp: *mut libc::FILE;
+            }
+            let _ = libc::fflush(__stdoutp);
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        {
+            let _ = libc::fflush(libc::stdout);
+        }
+    }
+}
+
 #[repr(u8)]
 enum PrintKind {
     I32 = 0,
@@ -59,6 +83,9 @@ unsafe fn print_i64(x: i64, newline: bool) {
     // SAFETY: Format string is a valid NUL-terminated C literal; x is a plain i64.
     // Use %lld (long long) because `long` is 32-bit on wasm32.
     unsafe { libc::printf(fmt.as_ptr(), x) };
+    if newline {
+        flush_stdout();
+    }
 }
 
 unsafe fn print_f64(x: f64, newline: bool) {
@@ -87,6 +114,7 @@ unsafe fn print_str(bits: u64, newline: bool) {
         if newline {
             // SAFETY: Format string is a valid NUL-terminated C literal.
             unsafe { libc::printf(c"\n".as_ptr()) };
+            flush_stdout();
         }
         return;
     }
@@ -94,6 +122,9 @@ unsafe fn print_str(bits: u64, newline: bool) {
     let fmt = if newline { c"%s\n" } else { c"%s" };
     // SAFETY: Caller guarantees s is a valid NUL-terminated C string.
     unsafe { libc::printf(fmt.as_ptr(), s) };
+    if newline {
+        flush_stdout();
+    }
 }
 
 unsafe fn print_u32(x: u32, newline: bool) {

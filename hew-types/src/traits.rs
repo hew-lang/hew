@@ -395,6 +395,16 @@ impl TraitRegistry {
                         .iter()
                         .all(|arg| self.implements_serializable_inner(arg, visiting));
                 }
+                // Fix 1: Vec, HashMap, and HashSet are NOT in `serializable_members`
+                // (they are never registered via `register_serializable_type`), so
+                // `serializable_members_any` returns `None` for them and they fall to
+                // `return false` below.  This is the fail-closed boundary for the
+                // RemotePid serialization gate: neither the codegen walk
+                // (`emit_{ser,de}_value`) nor the on-wire codec handles collection
+                // types, so admitting them here would be a silent correctness hole.
+                //
+                // Tests in the `tests` module assert this property for
+                // `Vec<i64>` and `HashMap<String, i64>` by name.
                 let Some(members) = self.serializable_members_any(name).cloned() else {
                     return false;
                 };
@@ -1436,6 +1446,42 @@ mod tests {
         };
         assert!(!registry.implements_marker(&closure, MarkerTrait::Copy));
         assert!(registry.implements_marker(&closure, MarkerTrait::Clone));
+    }
+
+    // Fix 1: confirm Vec and HashMap are rejected at the RemotePid serialization
+    // boundary.  The codegen codec walk (`emit_{ser,de}_value`) does not handle
+    // collection types; admitting them via `is_serializable` would silently skip
+    // serialization.  These tests are the gate-level proof that the checker
+    // is already fail-closed for collections — any future change that accidentally
+    // admits Vec/HashMap will break them immediately.
+    #[test]
+    fn vec_payload_rejected_at_serializable_boundary() {
+        let registry = TraitRegistry::new();
+        let vec_i64 = Ty::Named {
+            builtin: Some(BuiltinType::Vec),
+            name: "Vec".to_string(),
+            args: vec![Ty::I64],
+        };
+        assert!(
+            !registry.is_serializable(&vec_i64),
+            "Vec<i64> must NOT be Serializable at the RemotePid boundary \
+             (codec walk does not support collection types)"
+        );
+    }
+
+    #[test]
+    fn hashmap_payload_rejected_at_serializable_boundary() {
+        let registry = TraitRegistry::new();
+        let map_str_i64 = Ty::Named {
+            builtin: Some(BuiltinType::HashMap),
+            name: "HashMap".to_string(),
+            args: vec![Ty::String, Ty::I64],
+        };
+        assert!(
+            !registry.is_serializable(&map_str_i64),
+            "HashMap<String, i64> must NOT be Serializable at the RemotePid boundary \
+             (codec walk does not support collection types)"
+        );
     }
 
     #[test]

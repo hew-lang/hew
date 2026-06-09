@@ -44,6 +44,20 @@ use hew_runtime::supervisor::{
 };
 use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor, TestSupervisor};
 
+// Windows scheduler resolution (15 ms default) combined with the full parallel
+// test suite means actor/supervisor round-trips can take longer than on
+// POSIX platforms.  Use a wider assertion window for timing-sensitive tests.
+#[cfg(windows)]
+const SUPERVISOR_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(not(windows))]
+const SUPERVISOR_TIMEOUT: Duration = Duration::from_secs(5);
+/// Same value as [`SUPERVISOR_TIMEOUT`] expressed in milliseconds for
+/// `hew_supervisor_wait_restart`'s `timeout_ms` parameter.
+#[cfg(windows)]
+const SUPERVISOR_TIMEOUT_MS: u64 = 30_000;
+#[cfg(not(windows))]
+const SUPERVISOR_TIMEOUT_MS: u64 = 5_000;
+
 /// Global lock to serialize all tests in this file.
 ///
 /// Tests share mutable global state: the fault injection table (cleared by
@@ -419,11 +433,12 @@ fn circuit_breaker_trips_on_repeated_crashes() {
             hew_fault_inject_crash(child_id, 1);
             hew_actor_send(child, 1, std::ptr::null_mut(), 0);
             MONITOR_DISPATCH_SIGNAL
-                .wait_for_down_count(crash_num + 1, Duration::from_secs(5))
+                .wait_for_down_count(crash_num + 1, SUPERVISOR_TIMEOUT)
                 .expect("watcher should observe each crash");
 
             if crash_num == 0 {
-                let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5_000);
+                let restart_count =
+                    hew_supervisor_wait_restart(sup.as_ptr(), 1, SUPERVISOR_TIMEOUT_MS);
                 assert!(
                     restart_count >= 1,
                     "first crash should complete a supervisor restart cycle"
@@ -434,7 +449,7 @@ fn circuit_breaker_trips_on_repeated_crashes() {
                         sup.as_ptr(),
                         0,
                         HEW_CIRCUIT_BREAKER_OPEN,
-                        Duration::from_secs(5)
+                        SUPERVISOR_TIMEOUT,
                     ),
                     "second repeated crash should open the circuit breaker"
                 );

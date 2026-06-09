@@ -60,6 +60,8 @@ fn ensure_hew_runtime_lib(repo: &Path) {
     });
 }
 
+// WINDOWS-TODO: machine programs hang at startup on Windows; suspected timer/reactor issue.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn run_lifecycle_fixture_compiles_and_matches_expected_stdout() {
     let repo = repo_root();

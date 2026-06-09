@@ -11,13 +11,32 @@
 use crate::util::{MutexExt, RwLockExt};
 use std::collections::HashSet;
 use std::ffi::{c_char, c_int, c_void};
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
+#[cfg(not(windows))]
+use std::fs::OpenOptions;
+use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(windows)]
+use std::os::windows::io::FromRawHandle;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, RwLock};
+
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, INVALID_HANDLE_VALUE};
+#[cfg(windows)]
+use windows_sys::Win32::Security::Authorization::{
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
+#[cfg(windows)]
+use windows_sys::Win32::Security::{
+    DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
+};
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE, WRITE_DAC,
+};
 
 use snow::Builder;
 use zeroize::{Zeroize, Zeroizing};
@@ -37,6 +56,8 @@ const MAX_MSG_SIZE: usize = 65535;
 const FRAME_HEADER_LEN: usize = 4;
 const ALLOWLIST_MODE_OPEN: c_int = 0;
 const ALLOWLIST_MODE_STRICT: c_int = 1;
+#[cfg(windows)]
+const OWNER_ONLY_KEY_SDDL: &str = "D:P(A;;FA;;;OW)";
 
 /// Allowlist enforcement mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -659,6 +680,114 @@ pub(crate) fn hew_allowlist_check_active_peer(public_key: &[u8; KEY_LEN]) -> boo
     }
 }
 
+#[cfg(windows)]
+struct LocalSecurityDescriptor(*mut c_void);
+
+#[cfg(windows)]
+impl Drop for LocalSecurityDescriptor {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: the pointer was allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
+            unsafe { LocalFree(self.0) };
+        }
+    }
+}
+
+#[cfg(windows)]
+fn owner_only_key_security_descriptor() -> io::Result<LocalSecurityDescriptor> {
+    let sddl: Vec<u16> = OWNER_ONLY_KEY_SDDL
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut descriptor = ptr::null_mut();
+    // SAFETY: sddl is null-terminated and descriptor points to writable storage for the result.
+    let ok = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(LocalSecurityDescriptor(descriptor))
+}
+
+#[cfg(windows)]
+fn write_noise_key_file(path_str: &str, public: &[u8], private: &[u8]) -> io::Result<()> {
+    let path_wide: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
+    let descriptor = owner_only_key_security_descriptor()?;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "SECURITY_ATTRIBUTES size fits in u32 on Windows"
+    )]
+    let security_attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+
+    // SAFETY: path_wide is null-terminated; security_attributes and its descriptor
+    // remain valid until after CreateFileW returns.
+    let handle = unsafe {
+        CreateFileW(
+            path_wide.as_ptr(),
+            FILE_GENERIC_WRITE | WRITE_DAC,
+            0,
+            &raw const security_attributes,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+
+    // CREATE_ALWAYS truncates an existing file before bytes are written, but Windows
+    // ignores lpSecurityAttributes for existing files. Replace the DACL on the open
+    // handle before persisting private key material so overwrites are not left with
+    // inherited/world-readable ACLs.
+    // SAFETY: handle is valid and descriptor contains a valid protected DACL.
+    let secured = unsafe {
+        windows_sys::Win32::Security::SetKernelObjectSecurity(
+            handle,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            descriptor.0,
+        )
+    };
+    if secured == 0 {
+        // SAFETY: handle was returned by CreateFileW and has not been transferred to File.
+        unsafe { CloseHandle(handle) };
+        return Err(io::Error::last_os_error());
+    }
+
+    // SAFETY: handle is uniquely owned and will be closed when file is dropped.
+    let mut file = unsafe { fs::File::from_raw_handle(handle) };
+    file.write_all(public)?;
+    file.write_all(private)?;
+    file.flush()
+}
+
+#[cfg(not(windows))]
+fn write_noise_key_file(path_str: &str, public: &[u8], private: &[u8]) -> io::Result<()> {
+    let mut opts = OpenOptions::new();
+    opts.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+
+    let mut file = opts.open(path_str)?;
+    file.write_all(public)?;
+    file.write_all(private)?;
+
+    #[cfg(unix)]
+    fs::set_permissions(path_str, fs::Permissions::from_mode(0o600))?;
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Test-only hooks for the process-global allowlist state
 // ---------------------------------------------------------------------------
@@ -926,20 +1055,7 @@ pub unsafe extern "C" fn hew_noise_key_save(
     // SAFETY: pointers are validated non-null and caller guarantees KEY_LEN bytes.
     let private = unsafe { std::slice::from_raw_parts(private_key, KEY_LEN) };
 
-    let mut opts = OpenOptions::new();
-    opts.create(true).truncate(true).write(true);
-    #[cfg(unix)]
-    opts.mode(0o600);
-
-    let Ok(mut file) = opts.open(path_str) else {
-        return -1;
-    };
-    if file.write_all(public).is_err() || file.write_all(private).is_err() {
-        return -1;
-    }
-
-    #[cfg(unix)]
-    if fs::set_permissions(path_str, fs::Permissions::from_mode(0o600)).is_err() {
+    if write_noise_key_file(path_str, public, private).is_err() {
         return -1;
     }
 
@@ -1061,7 +1177,16 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
-    use tempfile::NamedTempFile;
+    use tempfile::tempdir;
+    #[cfg(windows)]
+    use windows_sys::Win32::Foundation::{LocalFree, ERROR_SUCCESS};
+    #[cfg(windows)]
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    #[cfg(windows)]
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 
     const TEST_PRIVATE_KEY: [u8; KEY_LEN] = [7u8; KEY_LEN];
 
@@ -1102,6 +1227,102 @@ mod tests {
     }
     fn usize_to_ptr(v: usize) -> *mut HewTransport {
         v as *mut HewTransport
+    }
+
+    #[cfg(windows)]
+    struct LocalAllocString(*mut u16);
+
+    #[cfg(windows)]
+    impl Drop for LocalAllocString {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: the pointer was allocated by a Windows security API.
+                unsafe { LocalFree(self.0.cast()) };
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    struct LocalAllocDescriptor(*mut c_void);
+
+    #[cfg(windows)]
+    impl Drop for LocalAllocDescriptor {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: the pointer was allocated by GetNamedSecurityInfoW.
+                unsafe { LocalFree(self.0) };
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn key_file_dacl_sddl(path: &std::path::Path) -> String {
+        let mut path_wide: Vec<u16> = path
+            .as_os_str()
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut descriptor = ptr::null_mut();
+        // SAFETY: path_wide is null-terminated and descriptor points to writable storage.
+        let rc = unsafe {
+            GetNamedSecurityInfoW(
+                path_wide.as_mut_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        assert_eq!(rc, ERROR_SUCCESS, "GetNamedSecurityInfoW failed: {rc}");
+        let _descriptor = LocalAllocDescriptor(descriptor);
+
+        let mut sddl_ptr = ptr::null_mut();
+        let mut sddl_len = 0;
+        // SAFETY: descriptor is valid and output pointers are writable.
+        let ok = unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut sddl_ptr,
+                &mut sddl_len,
+            )
+        };
+        assert_ne!(
+            ok, 0,
+            "ConvertSecurityDescriptorToStringSecurityDescriptorW failed"
+        );
+        let _sddl = LocalAllocString(sddl_ptr);
+        // SAFETY: sddl_ptr is valid for sddl_len UTF-16 code units on success.
+        String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(sddl_ptr, sddl_len as usize) })
+    }
+
+    #[cfg(windows)]
+    fn assert_owner_only_key_acl(path: &std::path::Path) {
+        let sddl = key_file_dacl_sddl(path);
+        assert!(
+            sddl.starts_with("D:P"),
+            "key file DACL must be protected from inherited broad ACEs: {sddl}"
+        );
+        assert!(
+            sddl.contains("OW") || sddl.contains("S-1-3-4"),
+            "key file DACL must grant owner rights only: {sddl}"
+        );
+        assert_eq!(
+            sddl.matches('(').count(),
+            1,
+            "key file DACL must contain exactly one ACE: {sddl}"
+        );
+        for broad_sid in ["WD", "AU", "BU", "BG", "AN"] {
+            assert!(
+                !sddl.contains(broad_sid),
+                "key file DACL must not grant broad SID {broad_sid}: {sddl}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1181,22 +1402,25 @@ mod tests {
         let rc = unsafe { hew_noise_keygen(public.as_mut_ptr(), private.as_mut_ptr()) };
         assert_eq!(rc, 0);
 
-        let key_file = NamedTempFile::new().unwrap();
-        let path = CString::new(key_file.path().to_string_lossy().into_owned()).unwrap();
+        let dir = tempdir().unwrap();
+        let key_file = dir.path().join("noise.key");
+        let path = CString::new(key_file.to_string_lossy().into_owned()).unwrap();
 
         // SAFETY: path and key pointers are valid.
         let save_rc =
             unsafe { hew_noise_key_save(path.as_ptr(), public.as_ptr(), private.as_ptr()) };
         assert_eq!(save_rc, 0);
 
-        let on_disk = fs::read(key_file.path()).unwrap();
+        let on_disk = fs::read(&key_file).unwrap();
         assert_eq!(on_disk.len(), KEYPAIR_FILE_LEN);
 
         #[cfg(unix)]
         {
-            let mode = fs::metadata(key_file.path()).unwrap().permissions().mode() & 0o777;
+            let mode = fs::metadata(&key_file).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
+        #[cfg(windows)]
+        assert_owner_only_key_acl(&key_file);
 
         let mut loaded_public = [0u8; KEY_LEN];
         let mut loaded_private = [0u8; KEY_LEN];
@@ -1211,6 +1435,32 @@ mod tests {
         assert_eq!(load_rc, 0);
         assert_eq!(loaded_public, public);
         assert_eq!(loaded_private, private);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn noise_key_save_replaces_existing_windows_dacl_before_writing_private_key() {
+        let mut public = [0u8; KEY_LEN];
+        let mut private = [0u8; KEY_LEN];
+
+        // SAFETY: output buffers are valid and writable.
+        let rc = unsafe { hew_noise_keygen(public.as_mut_ptr(), private.as_mut_ptr()) };
+        assert_eq!(rc, 0);
+
+        let dir = tempdir().unwrap();
+        let path_buf = dir.path().join("noise.key");
+        fs::write(&path_buf, [0xAA; KEYPAIR_FILE_LEN]).unwrap();
+        let path = CString::new(path_buf.to_string_lossy().into_owned()).unwrap();
+
+        // SAFETY: path and key pointers are valid.
+        let save_rc =
+            unsafe { hew_noise_key_save(path.as_ptr(), public.as_ptr(), private.as_ptr()) };
+        assert_eq!(save_rc, 0);
+
+        assert_owner_only_key_acl(&path_buf);
+        let on_disk = fs::read(&path_buf).unwrap();
+        assert_eq!(&on_disk[..KEY_LEN], public);
+        assert_eq!(&on_disk[KEY_LEN..], private);
     }
 
     #[test]

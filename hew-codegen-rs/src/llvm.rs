@@ -35288,6 +35288,8 @@ mod tests {
     /// must produce an object whose header architecture matches the request and
     /// differs from the host emit. The opposite-arch triple is chosen so the
     /// assertion has real signal on either supported 64-bit host.
+    // WINDOWS-TODO: emits COFF; object header parser only handles ELF/MachO.
+    #[cfg_attr(windows, ignore)]
     #[test]
     fn explicit_target_triple_drives_native_object_architecture() {
         let pipeline = empty_pipeline_with_const_42();

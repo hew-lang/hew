@@ -2051,6 +2051,14 @@ mod tests {
     }
 
     /// Body panic marks actor stopped; subsequent send returns `ActorStopped`.
+    ///
+    /// Containment is cross-platform. The body callback is `extern "C-unwind"`,
+    /// so a panic raised inside it unwinds across the FFI boundary into the
+    /// dispatch loop's `std::panic::catch_unwind`, which marks the actor
+    /// stopped on every target. This holds on Windows/MSVC as well: the
+    /// `C-unwind` ABI carries the unwind through SEH, so the outer
+    /// `catch_unwind` intercepts it exactly as it does on the Itanium ABI
+    /// targets. Verified on `x86_64-pc-windows-msvc`.
     #[test]
     fn body_panic_marks_actor_stopped() {
         use std::time::Duration;

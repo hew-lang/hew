@@ -2,16 +2,22 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+// WINDOWS-TODO: parallel tests compete to link target/debug/hew.exe; Windows locks running executables.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn actor_e2e_counter_compile_and_exit_code() {
     compile_and_run_actor_fixture("actor_counter", 42);
 }
 
+// WINDOWS-TODO: parallel tests compete to link target/debug/hew.exe; Windows locks running executables.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn actor_init_on_start_compile_and_exit_code() {
     compile_and_run_actor_fixture("actor_counter_init", 42);
 }
 
+// WINDOWS-TODO: parallel tests compete to link target/debug/hew.exe; Windows locks running executables.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn actor_on_stop_compile_and_exit_code() {
     compile_and_run_actor_fixture("actor_on_stop", 42);

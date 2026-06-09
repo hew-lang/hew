@@ -106,6 +106,8 @@ fn curated_playground_examples_run_under_wasi() {
     }
 }
 
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
     require_wasi_runner();
@@ -140,6 +142,8 @@ fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
     );
 }
 
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn wasi_run_timeout_terminates_a_non_terminating_program() {
     require_wasi_runner();

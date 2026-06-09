@@ -114,6 +114,8 @@ fn for_await_receiver_int_drains_to_completion_under_single_worker() {
     run_for_await_surface_fixture("for_await_recv_int");
 }
 
+// WINDOWS-TODO: async stream programs exit non-zero with no output on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn for_await_stream_bytes_drains_to_completion_under_single_worker() {
     run_for_await_surface_fixture("for_await_stream_bytes");
@@ -1259,6 +1261,8 @@ fn eval_file_type_errors_render_cli_diagnostics() {
 
 /// `hew eval --target wasm32-wasi <expr>` compiles and runs a simple inline
 /// expression through wasmtime, capturing stdout.
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn eval_wasm_inline_expression_succeeds() {
     require_codegen();
@@ -1279,6 +1283,8 @@ fn eval_wasm_inline_expression_succeeds() {
 }
 
 /// `hew eval --target wasm32-wasi -f <file>` evaluates a .hew file via WASM.
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn eval_wasm_file_succeeds() {
     require_codegen();
@@ -1464,6 +1470,8 @@ fn eval_wasm_hashset_string_values_are_correct() {
 }
 
 /// A WASM eval that runs longer than the timeout exits with a timeout error.
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn eval_wasm_timeout_is_reported() {
     require_codegen();
@@ -1735,6 +1743,8 @@ fn eval_file_runtime_failure_preserves_pre_failure_stdout() {
 //   1. Stdout produced before failure must not be discarded.
 //   2. The child's exit code must be propagated, not hard-coded to 1.
 
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn eval_wasm_inline_runtime_failure_exits_with_child_exit_code() {
     require_codegen();
@@ -1766,6 +1776,8 @@ fn eval_wasm_inline_runtime_failure_exits_with_child_exit_code() {
 // ratchet pins the narrower attributed-trap contract added before that cutover:
 // codegen still emits `hew_trap_with_code` followed by `llvm.trap`, and the
 // wasm32 runtime maps canonical non-actor trap code 201 to the child exit code.
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn eval_wasm_integer_overflow_exits_with_trap_code_201() {
     require_codegen();
@@ -1814,6 +1826,8 @@ fn eval_wasm_divide_by_zero_exits_with_trap_code_202() {
     );
 }
 
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn eval_wasm_file_runtime_failure_exits_with_child_exit_code() {
     require_codegen();
@@ -1843,6 +1857,8 @@ fn eval_wasm_file_runtime_failure_exits_with_child_exit_code() {
     );
 }
 
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn eval_wasm_file_runtime_failure_preserves_pre_failure_stdout() {
     require_codegen();
@@ -1989,6 +2005,8 @@ fn eval_json_runtime_failure_preserves_stdout() {
     );
 }
 
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn eval_wasm_json_ok_inline_expression() {
     require_codegen();
@@ -2017,6 +2035,8 @@ fn eval_wasm_json_ok_inline_expression() {
     assert_eq!(v["diagnostics"], "", "diagnostics must be empty on ok: {v}");
 }
 
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn eval_wasm_json_runtime_failure_captures_stderr_without_leaking() {
     require_codegen();

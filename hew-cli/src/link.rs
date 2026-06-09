@@ -1172,6 +1172,8 @@ mod tests {
 
     // ── has_tool ──────────────────────────────────────────────────────
 
+    // WINDOWS-TODO: true command does not exist on Windows.
+    #[cfg_attr(windows, ignore)]
     #[test]
     fn has_tool_finds_true_command() {
         // `true` is a standard Unix utility that always succeeds
@@ -1397,6 +1399,8 @@ mod tests {
         assert_eq!(WASM_RUNTIME_ARCHIVE, "libhew_runtime.a");
     }
 
+    // WINDOWS-TODO: wasm lib candidate path logic differs on Windows.
+    #[cfg_attr(windows, ignore)]
     #[test]
     fn wasm_lib_candidates_reject_flat_host_fallbacks() {
         let exe_dir = std::path::Path::new("/repo/target/debug");

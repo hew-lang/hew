@@ -43,6 +43,7 @@ pub(crate) enum TimeoutKillTarget {
     /// Kill only the direct child process.
     Child,
     /// Kill the child's process group.
+    #[cfg(unix)]
     ProcessGroup,
 }
 
@@ -537,39 +538,6 @@ fn kill_timed_out_child(child: &mut Child, kill_target: TimeoutKillTarget) -> Re
         TimeoutKillTarget::Child => {
             kill_child_only(child)?;
             Ok(false)
-        }
-        TimeoutKillTarget::ProcessGroup => {
-            let pid = child.id();
-            match Command::new("taskkill")
-                .args(["/T", "/F", "/PID", &pid.to_string()])
-                .status()
-            {
-                Ok(s) if s.success() => Ok(true),
-                Ok(s) => {
-                    // Exit 128 means the root PID was not found — the child
-                    // exited naturally, but its descendants may still be alive.
-                    // Any other non-zero code means partial or no kill.
-                    // In both cases fall back to a best-effort child kill and
-                    // return false so drain threads are detached, not joined.
-                    kill_child_only(child).map_err(|kill_error| {
-                        format!(
-                            "taskkill exited with {s}; \
-                             fallback child kill also failed: {kill_error}"
-                        )
-                    })?;
-                    Ok(false)
-                }
-                Err(spawn_error) => {
-                    // taskkill.exe not available; fall back to child-only kill.
-                    kill_child_only(child).map_err(|kill_error| {
-                        format!(
-                            "cannot spawn taskkill: {spawn_error}; \
-                             fallback child kill also failed: {kill_error}"
-                        )
-                    })?;
-                    Ok(false)
-                }
-            }
         }
     }
 }

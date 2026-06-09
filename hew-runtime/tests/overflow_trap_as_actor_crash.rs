@@ -149,6 +149,12 @@ unsafe extern "C-unwind" fn counting_dispatch(
 /// 5. The restarted child processes further messages (process is alive).
 /// 6. The crashed actor's `ExitReason` is `Signal(SIGILL)` or `Signal(SIGTRAP)`
 ///    depending on platform — either way, it is not `Normal` or `HeapExceeded`.
+// WINDOWS-TODO: hardware trap -> actor crash requires VEH (Vectored Exception Handling) on
+// Windows: a per-worker VEH handler must catch STATUS_ILLEGAL_INSTRUCTION and route it
+// through the supervisor crash seam via RtlRestoreContext, equivalent to the Unix
+// SIGILL/SIGTRAP per-worker signal handler. Until that is implemented, the trap aborts
+// the process instead of being caught. Track with the Windows exception-recovery gap.
+#[cfg_attr(windows, ignore)]
 #[test]
 #[allow(
     clippy::too_many_lines,

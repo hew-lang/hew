@@ -40,9 +40,11 @@ fn build_default_output_produces_runnable_binary() {
         describe_output(&output),
     );
 
-    // Default output is `./<stem>` in the cwd (no extension on Unix).
-    let binary = dir.path().join("hello");
-    assert!(binary.exists(), "default ./hello binary not created");
+    // Default output is `./<stem><EXE_SUFFIX>` in the cwd (`.exe` on Windows, no extension elsewhere).
+    let binary = dir
+        .path()
+        .join(format!("hello{}", std::env::consts::EXE_SUFFIX));
+    assert!(binary.exists(), "default hello binary not created");
 
     let run = run_bounded_command(Command::new(&binary), format!("run {}", binary.display()));
     assert!(
@@ -115,12 +117,19 @@ fn build_emit_obj_writes_object_without_linking() {
         describe_output(&output),
     );
 
-    // Host object extension is `.o` on every supported non-Windows host.
-    let object_path = dir.path().join("hello.o");
+    // Host object extension is `.obj` on Windows (COFF) and `.o` on every other supported host.
+    let obj_name = if cfg!(windows) {
+        "hello.obj"
+    } else {
+        "hello.o"
+    };
+    let object_path = dir.path().join(obj_name);
     assert!(object_path.exists(), "emit-obj object not created");
     // No linked binary should be produced in --emit-obj mode.
     assert!(
-        !dir.path().join("hello").exists(),
+        !dir.path()
+            .join(format!("hello{}", std::env::consts::EXE_SUFFIX))
+            .exists(),
         "--emit-obj must not produce a linked binary",
     );
 

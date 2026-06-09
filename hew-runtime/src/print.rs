@@ -23,6 +23,22 @@ fn flush_stdout() {
         let _ = libc::fflush(core::ptr::null_mut());
     }
 }
+/// Put the C stdio stdout into binary mode on Windows so that `libc::printf`
+/// does not translate LF to CRLF. Called lazily on the first print; idempotent.
+#[cfg(windows)]
+fn ensure_stdout_binary_mode() {
+    use std::sync::OnceLock;
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        extern "C" {
+            fn _setmode(fd: libc::c_int, mode: libc::c_int) -> libc::c_int;
+        }
+        // SAFETY: fd 1 is stdout; 0x8000 is _O_BINARY (Windows CRT constant).
+        // Disables CRLF translation so LF-only output is preserved on Windows.
+        // The return value (previous mode) is intentionally ignored.
+        unsafe { _setmode(1, 0x8000) };
+    });
+}
 
 #[repr(u8)]
 enum PrintKind {
@@ -138,6 +154,8 @@ unsafe fn print_u64(x: u64, newline: bool) {
 /// the payload encoding emitted by the compiler.
 #[no_mangle]
 pub unsafe extern "C" fn hew_print_value(kind: u8, bits: u64, newline: bool) {
+    #[cfg(windows)]
+    ensure_stdout_binary_mode();
     let Some(kind) = PrintKind::from_abi(kind) else {
         // Fail closed on an ABI mismatch rather than silently emitting the wrong
         // value format.

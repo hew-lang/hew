@@ -101,6 +101,8 @@ fn minimum_parity_set_is_enforced_by_test_name() {
     );
 }
 
+// WINDOWS-TODO: hew-sandbox-vm npm dependencies not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn playground_sources_match_native_or_catalogued_divergence() {
     set_test_hewpath();

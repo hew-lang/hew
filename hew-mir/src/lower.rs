@@ -4810,6 +4810,15 @@ struct LoopFrame {
     continue_target: u32,
     exit_target: u32,
     scope_depth: usize,
+    /// Body scope of the loop — the scope id `let opt = recv()` style
+    /// per-iteration bindings live in. Captured so a `continue` lowering
+    /// can register its terminator block in `loop_back_edge_blocks` with
+    /// the same scope filter the fall-through back-edge uses, releasing
+    /// body-scope heap-owning bindings before jumping to the loop header
+    /// (otherwise `let opt = rx.try_recv(); ... continue;` would leak the
+    /// live `Option<string>` every iteration that took the `continue`
+    /// arm — the body-end Drop sits past the `continue` and is skipped).
+    body_scope: ScopeId,
 }
 
 #[derive(Debug, Default)]
@@ -4897,7 +4906,62 @@ struct Builder {
     /// null-after-free makes a structurally-reachable second free a no-op
     /// (`raii-null-after-move`; the runtime also null-guards). Drained when the
     /// consuming body finishes lowering.
-    active_generator_yield_values: Vec<(usize, Place, ResolvedTy, &'static str)>,
+    /// Per-iteration generator-yielded heap value bindings active during a
+    /// consuming body's lowering. Each entry is `(active_scopes_len, Place,
+    /// ResolvedTy, drop_symbol, start_block_id, start_instr_len)`:
+    /// - `active_scopes_len`: depth marker used by break/continue at the
+    ///   matching loop scope to know which entries lie inside the breaking
+    ///   loop;
+    /// - `Place`/`ResolvedTy`/`drop_symbol`: what to drop and how;
+    /// - `start_block_id`/`start_instr_len`: the binding's site, used by
+    ///   `generator_yield_binding_drop_safe` to scan the body for an
+    ///   ownership-transferring escape (a `Move` of the binding's slot into
+    ///   another local, a store into a surviving aggregate). When the value
+    ///   escapes between its bind site and a break/continue point, the
+    ///   break/continue-edge drop MUST be skipped — the consumer (the
+    ///   move-destination) owns the release, so an unconditional break-edge
+    ///   drop would double-free the buffer at the move-out site. Without the
+    ///   scan, a `for await item in rx { carry = item; break; }` pattern
+    ///   reliably produces a use-after-free at `println(carry)` after the
+    ///   loop. (`scope_generator_bindings` for the generator HANDLE has no
+    ///   such case because handles do not get re-bound to another local
+    ///   mid-body — only their content is consumed via `next`.)
+    active_generator_yield_values: Vec<(usize, Place, ResolvedTy, &'static str, u32, usize)>,
+    /// Map from each MIR-bound HIR `BindingId` to the HIR `ScopeId` it was
+    /// declared in. Populated at every `MirStatement::Bind` push site (let
+    /// statements, match-arm payload bindings, function parameters, for-range
+    /// counter binds). Consulted by the elaborator (`enumerate_exits`) to
+    /// scope-filter back-edge `Goto` drops: a binding declared in a loop body's
+    /// scope must be released before the back-edge re-enters the body and
+    /// overwrites the slot with the next iteration's value.
+    ///
+    /// This is the missing piece that distinguishes per-iteration drops from
+    /// function-exit drops. Without scope tracking, the elaborator's existing
+    /// `drops_for_exit` (currently called only on `Return`/`Cancel`/`Panic`)
+    /// would either fire ALL live bindings on a back-edge (double-freeing
+    /// outer-scope values like the receiver itself) or fire NONE (the current
+    /// behaviour, which leaks the per-iteration heap-owning let-bindings).
+    /// Restricting the back-edge plan to bindings whose `binding_scope` matches
+    /// the loop body's scope (recorded in `loop_back_edge_blocks`) makes the
+    /// drop set per-iteration and CFG-correct: outer-scope bindings keep their
+    /// function-exit drop, inner-scope bindings get one drop per iteration.
+    binding_scope: HashMap<BindingId, ScopeId>,
+    /// Map from each loop-body back-edge `Goto`'s emitting block id to the HIR
+    /// `ScopeId` of the loop body that closes there. Populated immediately
+    /// before each loop's body→header (or body→inc) `Terminator::Goto` is
+    /// emitted, in `lower_while`/`lower_while_let`/`lower_for_range`/
+    /// `lower_loop`. Consulted by `enumerate_exits` to populate the back-edge's
+    /// `DropPlan` with drops for bindings whose `binding_scope` matches this
+    /// scope — releasing exactly the per-iteration heap-owning let-bindings
+    /// (`Option<T>` recv results, owned strings/Vecs/maps bound inside the body)
+    /// before the next iteration overwrites their slots.
+    ///
+    /// The dataflow's `BindingState` filter in `drops_for_exit` automatically
+    /// excludes bindings that are `Consumed` (moved out) or `Uninit` (not yet
+    /// assigned on the first iteration's first reach), so escape via `break x`
+    /// / pass-by-value / first-iteration-uninit double-free corner cases are
+    /// handled by the existing dataflow without bespoke logic.
+    loop_back_edge_blocks: HashMap<u32, ScopeId>,
     /// Diagnostics collected during MIR building (e.g., Unsupported HIR nodes).
     diagnostics: Vec<MirDiagnostic>,
     /// Per-function de-duplication for W3.029 user-aggregate value-class
@@ -5468,6 +5532,22 @@ impl Builder {
         }
     }
 
+    /// Record the HIR scope a freshly-bound `BindingId` was declared in. Called
+    /// at every `MirStatement::Bind` push site (let statements, match-arm
+    /// payload bindings, function parameters, for-range counters,
+    /// pattern-destructure binders) so the elaborator's back-edge drop pass can
+    /// scope-filter which bindings get a per-iteration release. A `Bind`
+    /// pushed outside any active scope (e.g. the synthetic param Binds before
+    /// the body is entered) is recorded against the function's outer scope —
+    /// `unwrap_or` to `ScopeId(0)` so the entry is non-empty even at the
+    /// pre-scope edge; back-edge drops never reference scope 0 (no loop body
+    /// closes there), so the fall-back is benign. The map is read by
+    /// `enumerate_exits` when building each loop back-edge `Goto`'s `DropPlan`.
+    fn record_binding_scope(&mut self, binding: BindingId) {
+        let scope = self.active_scopes.last().copied().unwrap_or(ScopeId(0));
+        self.binding_scope.insert(binding, scope);
+    }
+
     /// Emit a `hew_gen_free` release for every generator/`AsyncGenerator`
     /// handle binding declared in `scope_id`, at the point this scope closes.
     /// This runs on the NORMAL scope-exit path of a block; because a block
@@ -5622,15 +5702,59 @@ impl Builder {
     /// reachable second free a no-op (`raii-null-after-move`; the runtime also
     /// null-guards). An entry registered at `active_scopes` depth >=
     /// `loop_scope_depth` is inside the breaking loop's body window.
+    /// Free the per-iteration yielded heap value(s) on a `break`/`continue`
+    /// edge so the breaking/continuing iteration's payload is not leaked
+    /// (the body-end drop is past the break — would never run on the break
+    /// edge). Restricted to entries inside the breaking loop's scope window
+    /// (`active_scopes` depth >= `loop_scope_depth`).
+    ///
+    /// Escape-aware: for each candidate entry, consults
+    /// `generator_yield_binding_drop_safe` over the body window from the
+    /// binding site to the current instructions buffer. When the value's
+    /// slot has been MOVED into another local mid-body (e.g.
+    /// `for await item in rx { carry = item; break; }`), the consumer (the
+    /// move destination) owns the release; an unconditional break-edge drop
+    /// would double-free the buffer at the move-out site (a use-after-free
+    /// at every read of the move destination that happens after the break).
+    /// The scan refuses such drops — leak-not-double-free, matching the
+    /// body-end drop's discipline. (Before this lane the recv `Some(item)`
+    /// path never registered an entry here so the conflict was masked;
+    /// extending Phase F to recv-call scrutinees exposes the case so the
+    /// escape filter is now load-bearing.)
+    ///
+    /// CLONE discipline (entries are NOT removed): the mutually-exclusive
+    /// fall-through path still emits the body-end drop, which has its own
+    /// escape scan; the inline drop's null-after-free makes a structurally-
+    /// reachable second free a no-op (`raii-null-after-move`; the runtime
+    /// also null-guards).
     fn emit_generator_yield_value_drops_for_break_continue(&mut self, loop_scope_depth: usize) {
-        let to_drop: Vec<(Place, ResolvedTy, &'static str)> = self
+        let to_drop: Vec<(Place, ResolvedTy, &'static str, u32, usize)> = self
             .active_generator_yield_values
             .iter()
             .rev()
-            .filter(|(depth, _, _, _)| *depth >= loop_scope_depth)
-            .map(|(_, place, ty, symbol)| (*place, ty.clone(), *symbol))
+            .filter(|(depth, _, _, _, _, _)| *depth >= loop_scope_depth)
+            .map(|(_, place, ty, symbol, start_block_id, start_instr_len)| {
+                (
+                    *place,
+                    ty.clone(),
+                    *symbol,
+                    *start_block_id,
+                    *start_instr_len,
+                )
+            })
             .collect();
-        for (place, ty, symbol) in to_drop {
+        for (place, ty, symbol, start_block_id, start_instr_len) in to_drop {
+            let Some(local) = base_local(place) else {
+                continue;
+            };
+            if !self.generator_yield_binding_drop_safe(start_block_id, start_instr_len, local) {
+                // Value escaped the body (Move-out, store-into-aggregate,
+                // consuming terminator); the move-destination owns the
+                // release. Skipping is leak-not-double-free posture, but
+                // for an actually-escaped value it is correct: the consumer
+                // releases at its own drop site, no leak.
+                continue;
+            }
             self.instructions.push(Instr::Drop {
                 place,
                 ty,
@@ -6265,6 +6389,7 @@ impl Builder {
                     site: value.site,
                     ty: binding_ty.clone(),
                 });
+                self.record_binding_scope(binding.id);
                 // W3.031 Stage 1: discriminate the dyn-trait owned-binding
                 // case structurally on `value.ty` rather than on `binding.ty`.
                 // HIR's `lower_type` does not yet lower `TypeExpr::TraitObject`
@@ -8529,6 +8654,17 @@ impl Builder {
                 // Release in-loop generators on the continue edge so the
                 // skipped iteration's context + thread are not leaked.
                 self.emit_generator_drops_for_break_continue(frame.scope_depth);
+                // Register THIS block as a loop back-edge so `enumerate_exits`
+                // populates its `Goto` `DropPlan` with the scope-filtered
+                // releases for body-scope heap-owning bindings (a live
+                // `let opt = rx.try_recv()` carried into the next iteration
+                // would otherwise leak its `Option<string>` payload because
+                // the body-end Drop sits past the continue terminator and is
+                // skipped). The fall-through back-edge is registered at the
+                // bottom of each `lower_*` loop; this is the analogous
+                // registration for the explicit-continue exit path.
+                self.loop_back_edge_blocks
+                    .insert(self.current_block_id, frame.body_scope);
                 self.finish_current_block(Terminator::Goto {
                     target: frame.continue_target,
                 });
@@ -9654,6 +9790,69 @@ impl Builder {
         matches!(&scrutinee.kind, HirExprKind::GeneratorNext { .. })
     }
 
+    /// True when the match scrutinee is a stream/channel recv call returning
+    /// `Option<T>` whose `Some` payload owns heap. This covers every recv shape
+    /// that surfaces through `lower_match_enum_tag`: the for-await desugar's
+    /// synthetic `match channel.recv(__hew_for_iter_X) { Some(item) => body,
+    /// None => break }` and source-level `match await rx.recv() { ... }` /
+    /// `match rx.try_recv() { ... }` whose scrutinee lowers to the same direct
+    /// `Call { callee: hew_channel_recv* / hew_stream_next_* }` shape.
+    ///
+    /// Each recv hands the consumer a FRESH, solely-owned heap value (the
+    /// runtime allocates an `alloc_cstring_data` block per frame for `string`,
+    /// a fresh bytes header for `Bytes`). The `Some(item)` arm payload binding
+    /// owns exactly one reference whose only release path is the consuming
+    /// body's per-iteration drop — identical ownership shape to a generator
+    /// yield. Without that release every received frame leaks one heap block
+    /// per iteration (every `Stream<string>` recv loop, every `Receiver<T>::recv`
+    /// drain), which is the leak this lane closes.
+    ///
+    /// The detector matches structurally on the HIR `Call` callee `BindingRef`
+    /// name — the same identity codegen uses to intercept the call and
+    /// materialise `Option<T>` from the runtime's null-ptr-on-EOF return —
+    /// rather than on the MIR terminator shape, so this fires before MIR
+    /// lowering decides between `Terminator::Call` (blocking) and
+    /// `Terminator::SuspendingChannelRecv` (suspending in execution-context
+    /// callers). Both terminator shapes feed the same Option<T> wrapper into
+    /// the match; the per-iteration drop discipline is identical.
+    fn is_recv_next_scrutinee(scrutinee: &HirExpr) -> bool {
+        let HirExprKind::Call { callee, .. } = &scrutinee.kind else {
+            return false;
+        };
+        let HirExprKind::BindingRef { name, .. } = &callee.kind else {
+            return false;
+        };
+        // Every recv-result-producing runtime symbol (returns `Option<T>` or
+        // a null-ptr-on-EOF that codegen wraps into `Option<T>`) that can
+        // appear as a match scrutinee in a `match recv()` / `match next()`
+        // shape. Kept in sync with `runtime_call.rs`:
+        //   * channel recv: `hew_channel_recv` (String), `hew_channel_recv_int`,
+        //     `hew_channel_try_recv`, `hew_channel_try_recv_int`.
+        //   * stream next: `hew_stream_next` (String) / `hew_stream_next_bytes`
+        //     (Bytes), plus the non-suspending `hew_stream_try_next` /
+        //     `hew_stream_try_next_bytes` siblings. The String-variant
+        //     symbols are no-suffix per `hew-types/builtin_names.rs`; matching
+        //     the `_string` invented spelling would silently miss the
+        //     for-await `Stream<string>` surface.
+        //   * duplex recv: `hew_duplex_recv` / `hew_duplex_try_recv` and the
+        //     half-duplex `hew_duplex_recv_half` — all produce an `Option<T>`
+        //     payload in the same shape.
+        matches!(
+            name.as_str(),
+            "hew_channel_recv"
+                | "hew_channel_recv_int"
+                | "hew_channel_try_recv"
+                | "hew_channel_try_recv_int"
+                | "hew_stream_next"
+                | "hew_stream_next_bytes"
+                | "hew_stream_try_next"
+                | "hew_stream_try_next_bytes"
+                | "hew_duplex_recv"
+                | "hew_duplex_recv_half"
+                | "hew_duplex_try_recv"
+        )
+    }
+
     /// Emit the per-iteration release for a `for line in vec_of_strings` binding.
     ///
     /// `hew_vec_get_str` returns a FRESH, solely-owned retained owner of the
@@ -10098,6 +10297,7 @@ impl Builder {
                     site: arm.body.site,
                     ty: binding_ty.clone(),
                 });
+                self.record_binding_scope(*binding_id);
                 let dest = self.alloc_local(binding_ty);
                 self.instructions.push(Instr::Move {
                     dest,
@@ -10228,6 +10428,7 @@ impl Builder {
                 site: selected.body.site,
                 ty: binding_ty.clone(),
             });
+            self.record_binding_scope(binding.binding);
             let dest = self.alloc_local(binding_ty);
             match &selected.predicate {
                 hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
@@ -11133,6 +11334,7 @@ impl Builder {
         }
         let vec_string_iter_next_scrutinee = self.is_vec_string_iter_next_scrutinee(scrutinee);
         let generator_next_scrutinee = Self::is_generator_next_scrutinee(scrutinee);
+        let recv_next_scrutinee = Self::is_recv_next_scrutinee(scrutinee);
 
         // Lower the scrutinee in the entry block. A failure propagates
         // via `?`; the half-built match leaves no dangling block.
@@ -11328,6 +11530,16 @@ impl Builder {
             );
             let arm_is_vec_iter_some = vec_string_iter_next_scrutinee && arm_is_some;
             let arm_is_generator_some = generator_next_scrutinee && arm_is_some;
+            // Recv-call scrutinee `Some` arm: the runtime hands the consumer a
+            // FRESH, solely-owned heap value per frame (an `alloc_cstring_data`
+            // block for `string`, a fresh `Bytes` header for `bytes`). The
+            // payload binding's only release path is the consuming body's
+            // per-iteration drop — identical ownership shape to a generator
+            // yield (`hew_gen_next` returns the same kind of fresh owned value).
+            // Without this drop every received frame leaks a heap block per
+            // iteration: the leak this lane closes for `for await item in rx` /
+            // `match channel.recv(...) { ... }` / `match stream.recv() { ... }`.
+            let arm_is_recv_some = recv_next_scrutinee && arm_is_some;
             let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
             let mut retained_vec_string_iter_bindings = Vec::new();
             // Generator-yielded `Some(x)` bindings whose payload owns heap. The
@@ -11345,6 +11557,7 @@ impl Builder {
                     site: arm.body.site,
                     ty: binding_ty.clone(),
                 });
+                self.record_binding_scope(binding.binding);
                 let keep_for_drop_elab =
                     ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy;
                 if keep_for_drop_elab {
@@ -11391,15 +11604,21 @@ impl Builder {
                         binding_ty,
                         arm.body.site,
                     ));
-                } else if arm_is_generator_some
+                } else if (arm_is_generator_some || arm_is_recv_some)
                     && self.ty_has_generator_yield_drop_symbol(&binding_ty)
                 {
-                    // The yielded payload owns heap (a `string`, a `Vec`, a
-                    // `HashMap`/`HashSet`). Schedule a body-end release and take
-                    // it back out of `owned_locals` so the function-scope drop
-                    // pass cannot also fire (double-free guard). The body-shape
-                    // drop-safety scan in `emit_generator_yield_binding_drop`
-                    // refuses to emit if the value escapes the body.
+                    // The yielded/received payload owns heap (a `string`, a
+                    // `Vec`, a `HashMap`/`HashSet`, a `Bytes`). Schedule a
+                    // body-end release and take it back out of `owned_locals`
+                    // so the function-scope drop pass cannot also fire
+                    // (double-free guard). The body-shape drop-safety scan in
+                    // `emit_generator_yield_binding_drop` refuses to emit if
+                    // the value escapes the body. The recv-call surface
+                    // (`for await item in rx`, `match channel.recv(...)`,
+                    // `match stream.recv()`) reuses this exact discipline
+                    // because the recv runtime's ownership contract is
+                    // identical: each `Some(item)` is a fresh heap allocation
+                    // the consumer alone is responsible for releasing.
                     if keep_for_drop_elab {
                         self.owned_locals.retain(|(b, _, _)| *b != binding.binding);
                     }
@@ -11443,8 +11662,14 @@ impl Builder {
             for (_binding, place, ty, _site) in &generator_yield_drop_bindings {
                 if let Some(symbol) = self.generator_yield_drop_symbol(ty) {
                     let depth = self.active_scopes.len();
-                    self.active_generator_yield_values
-                        .push((depth, *place, ty.clone(), symbol));
+                    self.active_generator_yield_values.push((
+                        depth,
+                        *place,
+                        ty.clone(),
+                        symbol,
+                        body_start_block_id,
+                        body_start_instr_len,
+                    ));
                 }
             }
             // The retained `Vec<String>` iteration binding is a per-iteration
@@ -11465,6 +11690,8 @@ impl Builder {
                         *place,
                         ty.clone(),
                         "hew_string_drop",
+                        body_start_block_id,
+                        body_start_instr_len,
                     ));
                 }
             }
@@ -11551,6 +11778,7 @@ impl Builder {
             site: arm.body.site,
             ty: binding_ty.clone(),
         });
+        self.record_binding_scope(*binding_id);
         let dest = self.alloc_local(binding_ty);
         self.instructions.push(Instr::Move {
             dest,
@@ -11610,6 +11838,7 @@ impl Builder {
             continue_target: header_bb,
             exit_target: exit_bb,
             scope_depth: loop_scope_depth,
+            body_scope: body.scope,
         });
         self.active_scopes.push(body.scope);
         for stmt in &body.statements {
@@ -11624,6 +11853,17 @@ impl Builder {
         // iteration rather than accumulating one per pass (see
         // `emit_scope_generator_drops`).
         self.emit_scope_generator_drops(body.scope);
+        // Record this block as a loop-body back-edge so `enumerate_exits`
+        // populates its `Goto` `DropPlan` with per-iteration releases for
+        // heap-owning bindings declared in `body.scope`. Without this, an
+        // `Option<T>` (or other heap-owning) let-binding bound inside the body
+        // gets overwritten on the next iteration with no preceding drop — the
+        // memory leak this lane closes (Stream<T>/Receiver<T> recv loops).
+        // The scope captured is the body's, not any nested block's: nested
+        // block-scope bindings already self-drop when their block closes via
+        // the existing scope-exit pass.
+        self.loop_back_edge_blocks
+            .insert(self.current_block_id, body.scope);
         self.active_scopes.pop();
         self.loop_stack.pop();
         self.finish_current_block(Terminator::Goto { target: header_bb });
@@ -11676,6 +11916,15 @@ impl Builder {
         bindings: &[hew_hir::HirMatchArmBinding],
         body: &hew_hir::HirBlock,
     ) -> Option<Place> {
+        // Two-line addition for back-edge `DropPlan` plumbing tips this fn
+        // past clippy's 100-line bar; the algorithm is one coherent unit and
+        // factoring it would obscure the loop CFG.
+        #![allow(
+            clippy::too_many_lines,
+            reason = "back-edge DropPlan plumbing tipped this past clippy's 100-line bar; \
+                      the algorithm is one coherent unit and factoring it would obscure \
+                      the loop CFG"
+        )]
         let header_bb = self.alloc_block();
         let body_bb = self.alloc_block();
         let exit_bb = self.alloc_block();
@@ -11754,6 +12003,7 @@ impl Builder {
                 site: scrutinee.site,
                 ty: binding_ty.clone(),
             });
+            self.record_binding_scope(binding.binding);
             if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
@@ -11779,6 +12029,7 @@ impl Builder {
             continue_target: header_bb,
             exit_target: exit_bb,
             scope_depth: loop_scope_depth,
+            body_scope: body.scope,
         });
         for stmt in &body.statements {
             self.stmt(stmt);
@@ -11790,6 +12041,12 @@ impl Builder {
         // Release generators declared in the loop body before the back-edge
         // (per-iteration `hew_gen_free`; see `emit_scope_generator_drops`).
         self.emit_scope_generator_drops(body.scope);
+        // Record this block as a loop-body back-edge so `enumerate_exits`
+        // populates its `Goto` `DropPlan` with per-iteration releases for
+        // heap-owning bindings declared in `body.scope` (including the
+        // match-arm payload bindings the `while let` itself introduces).
+        self.loop_back_edge_blocks
+            .insert(self.current_block_id, body.scope);
         self.active_scopes.pop();
         self.loop_stack.pop();
         // Restore the prior `binding_locals` entries so the binding scope
@@ -11914,6 +12171,7 @@ impl Builder {
                 site: scrutinee.site,
                 ty: binding_ty.clone(),
             });
+            self.record_binding_scope(binding.binding);
             if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
@@ -12146,6 +12404,7 @@ impl Builder {
             site: hew_hir::SiteId(0),
             ty: counter_ty.clone(),
         });
+        self.record_binding_scope(binding.id);
 
         self.active_scopes.push(body.scope);
         // continue → inc_bb (advances the counter, then re-checks the header);
@@ -12157,6 +12416,7 @@ impl Builder {
             continue_target: inc_bb,
             exit_target: exit_bb,
             scope_depth: loop_scope_depth,
+            body_scope: body.scope,
         });
         for stmt in &body.statements {
             self.stmt(stmt);
@@ -12169,6 +12429,15 @@ impl Builder {
         // back-edge (per-iteration `hew_gen_free`; see
         // `emit_scope_generator_drops`).
         self.emit_scope_generator_drops(body.scope);
+        // Record body→inc as the per-iteration back-edge for body-scope
+        // bindings. body.scope closes here (active_scopes.pop next), so any
+        // heap-owning let-binding declared inside the body must be released
+        // before fall-through into the inc/header re-evaluation overwrites it
+        // on the next iteration. The counter binding itself lives in the
+        // outer scope (registered before active_scopes.push(body.scope)) and
+        // is i64 — no drop — so the back-edge plan never touches it.
+        self.loop_back_edge_blocks
+            .insert(self.current_block_id, body.scope);
         self.active_scopes.pop();
         self.loop_stack.pop();
         // Body fall-through → increment block.
@@ -12251,6 +12520,7 @@ impl Builder {
             continue_target: body_bb,
             exit_target: exit_bb,
             scope_depth: loop_scope_depth,
+            body_scope: body.scope,
         });
         self.active_scopes.push(body.scope);
         for stmt in &body.statements {
@@ -12263,6 +12533,13 @@ impl Builder {
         // Release generators declared in the loop body before the back-edge
         // (per-iteration `hew_gen_free`; see `emit_scope_generator_drops`).
         self.emit_scope_generator_drops(body.scope);
+        // Record this block as a loop-body back-edge so `enumerate_exits`
+        // populates its `Goto` `DropPlan` with per-iteration releases for
+        // heap-owning bindings declared in `body.scope`. `loop { ... }` has
+        // no separate header — `body_bb` is both entry and re-entry — so
+        // this back-edge is the one place per-iteration drops can fire.
+        self.loop_back_edge_blocks
+            .insert(self.current_block_id, body.scope);
         self.active_scopes.pop();
         self.loop_stack.pop();
         self.finish_current_block(Terminator::Goto { target: body_bb });
@@ -13746,6 +14023,7 @@ impl Builder {
             site,
             ty: ty.clone(),
         });
+        self.record_binding_scope(binding_id);
         if ValueClass::of_ty(ty, &self.type_classes) != ValueClass::BitCopy
             && !self
                 .owned_locals
@@ -15156,6 +15434,7 @@ impl Builder {
                     site: arm.body.site,
                     ty: ty_of_place,
                 });
+                self.record_binding_scope(binding_id);
             }
             let body_value = self.lower_value(&arm.body);
             if let Some(src) = body_value {
@@ -17391,6 +17670,7 @@ fn elaborate(
         &checked.blocks,
         &builder.owned_locals,
         &builder.binding_locals,
+        &builder.binding_scope,
         &builder.locals,
         &builder.enum_layouts,
     );
@@ -17512,6 +17792,8 @@ fn elaborate(
             .iter()
             .map(|site| site.bb_id)
             .collect::<HashSet<_>>(),
+        &builder.binding_scope,
+        &builder.loop_back_edge_blocks,
     );
 
     ElaboratedMirFunction {
@@ -19380,6 +19662,7 @@ fn derive_enum_composite_drop_allowed(
     blocks: &[BasicBlock],
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
+    binding_scope: &HashMap<BindingId, ScopeId>,
     local_tys: &[ResolvedTy],
     enum_layouts: &[crate::model::EnumLayout],
 ) -> HashSet<BindingId> {
@@ -19448,11 +19731,36 @@ fn derive_enum_composite_drop_allowed(
         }
     }
 
+    // Local→ScopeId helper for the propagation scope-equality check.
+    // Built from the public `binding_locals` × `binding_scope` view: each
+    // HIR binding has a base `Place` (its MIR slot) and a registered
+    // declaring scope. A local with no entry here is a synthetic MIR
+    // temp (call-arg slot, intermediate copy register) that does not
+    // outlive its surrounding statement and so can safely participate
+    // in payload-binder chains without inflating the surviving-binding
+    // set.
+    let local_scope: HashMap<u32, ScopeId> = binding_locals
+        .iter()
+        .filter_map(|(binding, place)| {
+            let local = base_local(*place)?;
+            let scope = binding_scope.get(binding).copied()?;
+            Some((local, scope))
+        })
+        .collect();
+
     // Payload-binder set: destinations of `Move { dest, src: interior
     // projection of an alias-set local }` — the match/while-let destructure
-    // binders. Propagate forward through whole-value Move so a binder copied
-    // onward is still tracked.
-    let mut payload_binders: HashSet<u32> = HashSet::new();
+    // binders. Each entry remembers the SOURCE binder's declaring scope so
+    // the onward-propagation step (next loop) can reject moves that hand
+    // the buffer to a binding in a DIFFERENT scope — which is precisely the
+    // outer/surviving-local escape shape (`var carry; while { match opt {
+    // Some(item) => { carry = item; ... } } }` — `carry` lives past the
+    // back-edge that would drop the payload, so admitting EnumInPlace would
+    // free the buffer while `carry` still aliases it). MIR temps with no
+    // scope mapping inherit the source binder's scope on propagation; HIR
+    // bindings whose scope does not match are filtered out and the source
+    // escape scan below treats the move as an unbound-destination escape.
+    let mut payload_binders: HashMap<u32, ScopeId> = HashMap::new();
     for block in blocks {
         for instr in &block.instructions {
             if let Instr::Move { dest, src } = instr {
@@ -19467,7 +19775,19 @@ fn derive_enum_composite_drop_allowed(
                                 // out — tracking it would over-exclude the
                                 // composite drop and leak.
                                 if local_is_heap_owning(dl) {
-                                    payload_binders.insert(dl);
+                                    // Source scope: the destructure binder
+                                    // `dl` is the original — its declaring
+                                    // scope is the same-scope reference for
+                                    // all onward propagation. Falls back to
+                                    // ScopeId(0) for the rare case where the
+                                    // binder's HIR registration ran on a code
+                                    // path that bypassed `record_binding_
+                                    // scope`; that fallback only ever weakens
+                                    // the scope match (everything compares
+                                    // unequal), never strengthens it, so the
+                                    // posture stays fail-closed.
+                                    let scope = local_scope.get(&dl).copied().unwrap_or(ScopeId(0));
+                                    payload_binders.entry(dl).or_insert(scope);
                                 }
                             }
                         }
@@ -19482,7 +19802,31 @@ fn derive_enum_composite_drop_allowed(
             for instr in &block.instructions {
                 if let Instr::Move { dest, src } = instr {
                     if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
-                        if payload_binders.contains(&sl) && payload_binders.insert(dl) {
+                        let Some(&src_scope) = payload_binders.get(&sl) else {
+                            continue;
+                        };
+                        if payload_binders.contains_key(&dl) {
+                            continue;
+                        }
+                        // Same-scope discipline. A `Move` into a HIR binding
+                        // is only a benign onward hand-off when the binding
+                        // is declared in the SAME scope as the originating
+                        // destructure binder — i.e. the binding closes (and
+                        // its drop fires) before the surrounding loop's
+                        // back-edge re-enters and overwrites the source
+                        // composite's slot. A different-scope binding lives
+                        // past that back-edge and the EnumInPlace would
+                        // free its buffer while it still aliased the
+                        // pointer (use-after-free). MIR temps (no entry in
+                        // `local_scope`) have no own lifetime longer than
+                        // the statement that produced them, so they inherit
+                        // the source scope and propagate freely.
+                        let propagate = match local_scope.get(&dl) {
+                            Some(&dst_scope) => dst_scope == src_scope,
+                            None => true,
+                        };
+                        if propagate {
+                            payload_binders.insert(dl, src_scope);
                             changed = true;
                         }
                     }
@@ -19546,9 +19890,9 @@ fn derive_enum_composite_drop_allowed(
                 //     binder→binder copy is the benign onward hand-off the
                 //     forward-propagation already tracks.
                 if let Some(sl) = src_local {
-                    if payload_binders.contains(&sl) {
+                    if payload_binders.contains_key(&sl) {
                         let benign_handoff = dest_local
-                            .is_some_and(|dl| payload_binders.contains(&dl))
+                            .is_some_and(|dl| payload_binders.contains_key(&dl))
                             && matches!(dest, Place::Local(_));
                         if !benign_handoff {
                             note_payload_escape(
@@ -19578,7 +19922,7 @@ fn derive_enum_composite_drop_allowed(
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
-                        if payload_binders.contains(&l) {
+                        if payload_binders.contains_key(&l) {
                             note_payload_escape(
                                 &payload_binders,
                                 l,
@@ -19608,7 +19952,7 @@ fn derive_enum_composite_drop_allowed(
                         note_alias_escape(l, &mut excluded_roots);
                     }
                 }
-                if payload_binders.contains(&l)
+                if payload_binders.contains_key(&l)
                     && !retained_string_terminator_drop_safe(&block.terminator, l)
                 {
                     note_payload_escape(
@@ -21397,7 +21741,7 @@ fn ty_is_heap_owning_tuple(ty: &ResolvedTy, enum_layouts: &[crate::model::EnumLa
 /// observable, and the precise per-root attribution is a follow-on slice if a
 /// fixture ever needs it.
 fn note_payload_escape(
-    _payload_binders: &HashSet<u32>,
+    _payload_binders: &HashMap<u32, ScopeId>,
     _escaping_binder: u32,
     alias_of: &HashMap<u32, u32>,
     _blocks: &[BasicBlock],
@@ -22092,6 +22436,8 @@ fn enumerate_exits(
     >,
     binding_locals: &HashMap<BindingId, Place>,
     cancellation_blocks: &HashSet<u32>,
+    binding_scope: &HashMap<BindingId, ScopeId>,
+    loop_back_edge_blocks: &HashMap<u32, ScopeId>,
 ) -> (Vec<ElabBlock>, Vec<(ExitPath, DropPlan)>) {
     // Track the highest block id observed so cleanup-block ids can
     // start past it. Slice 2 onwards may emit multiple non-trivial
@@ -22151,6 +22497,40 @@ fn enumerate_exits(
             .collect()
     };
 
+    // Per-iteration drops for a loop-body back-edge `Goto`. Restricts
+    // `drops_for_exit` to bindings declared in this loop body's scope so the
+    // back-edge releases ONLY per-iteration bindings (`let opt = await
+    // rx.recv();` in a `while`, `let item = ...` in a `loop`) and never the
+    // outer-scope bindings whose drop belongs at function exit (the receiver
+    // itself, function parameters, bindings declared before the loop). The
+    // body-scope match is exact, not transitive: nested block-scope bindings
+    // already self-drop via the existing scope-exit pass when their inner
+    // block closes, so this back-edge sees only the body's own bindings as
+    // Live in `exit_states`.
+    //
+    // The escape / first-iteration / pass-by-value double-free corner cases
+    // are handled by `drops_for_exit`'s `BindingState` filter (the same one
+    // that gates `Return`/`Cancel`): a binding `Consumed` mid-body (moved out
+    // to `break x;` or to a by-value call) is excluded — the consumer owns
+    // the release; a binding `Uninit` on a path that misses its
+    // initialisation (first iteration before the let runs) is excluded — no
+    // value, nothing to free. So the back-edge plan is structurally safe.
+    let drops_for_back_edge = |block_id: u32, body_scope: ScopeId| -> Vec<ElabDrop> {
+        drops_for_exit(block_id)
+            .into_iter()
+            .filter(|drop| match place_to_binding.get(&drop.place) {
+                Some(binding) => binding_scope.get(binding).copied() == Some(body_scope),
+                // Unknown binding mapping — conservatively skip the
+                // back-edge drop. The function-exit / cancel plans still
+                // hold any unbound drop entries via their own paths, so a
+                // miss here at worst leaves the value for the function-exit
+                // pass to handle (leak-not-double-free posture matching the
+                // existing `drops_for_exit` None arm).
+                None => false,
+            })
+            .collect()
+    };
+
     for block in blocks {
         let block_id = block.id;
         let plan = match &block.terminator {
@@ -22160,13 +22540,25 @@ fn enumerate_exits(
                     drops: drops_for_exit(block_id),
                 },
             ),
-            Terminator::Goto { target } => (
-                ExitPath::Goto {
-                    block: block_id,
-                    target: *target,
-                },
-                DropPlan::default(),
-            ),
+            Terminator::Goto { target } => {
+                // Per-iteration drops fire on loop-body back-edges; ordinary
+                // `Goto`s (block-scope close, sequential CFG join, post-loop
+                // continuation) keep the default empty plan because their
+                // bindings either self-drop via scope-exit, are still Live on
+                // a join (and drop at the eventual exit), or belong to the
+                // outer-scope function-exit window.
+                let drops = match loop_back_edge_blocks.get(&block_id) {
+                    Some(&body_scope) => drops_for_back_edge(block_id, body_scope),
+                    None => Vec::new(),
+                };
+                (
+                    ExitPath::Goto {
+                        block: block_id,
+                        target: *target,
+                    },
+                    DropPlan { drops },
+                )
+            }
             Terminator::Branch {
                 cond: _,
                 then_target,
@@ -23557,7 +23949,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
 
             // Exactly one Return plan for the single block.
             prop_assert_eq!(plans.len(), 1);
@@ -23612,7 +24004,7 @@ mod slice3_narrowing_proptests {
             let lifo = build_lifo(n);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
             let (_, plan) = &plans[0];
 
             // Expected: every binding NOT Consumed survives in the drop
@@ -23651,8 +24043,8 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new());
-            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new());
+            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
 
             prop_assert_eq!(b1.len(), b2.len());
             prop_assert_eq!(p1.len(), p2.len());
@@ -23678,7 +24070,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
             let (_, plan) = &plans[0];
 
             for d in &plan.drops {

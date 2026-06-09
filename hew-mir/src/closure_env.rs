@@ -292,6 +292,8 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
         | HirExprKind::Yield { .. }
         | HirExprKind::ActorAsk { .. }
         | HirExprKind::RemoteActorAsk { .. }
+        // `await conn.read()` suspends the handler on fd-readiness (NEW-1).
+        | HirExprKind::ConnAwaitRead { .. }
         | HirExprKind::ActorSend { .. } => {
             *found = true;
         }

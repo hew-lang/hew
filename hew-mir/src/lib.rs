@@ -44,16 +44,17 @@ pub use hew_hir::sanitize_for_symbol;
 pub use model::{
     call_arg_source_escapes, callee_param_is_borrow, container_ingress_is_copy_in,
     mangle_dyn_drop_in_place_symbol, mangle_dyn_thunk_symbol, mangle_dyn_vtable_symbol, short_name,
-    ty_contains_heap_owning, ty_contains_unclonable_opaque, validate_context_markers, ActorLayout,
-    BasicBlock, BlockKind, BorrowKind, CaptureKind, CheckedMirFunction, ChildInitArg, CmpPred,
-    CooperateKind, CooperateSite, CoroutineSchema, DecisionFact, Direction, DropKind, DropPlan,
-    DynVtableInstance, ElabBlock, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath,
-    ExternDecl, FieldOffset, FloatWidth, FunctionCallConv, GenStateDropTable, GenStateLayout,
-    GenStateLiveLocal, Instr, IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MachineLayout,
-    MachineVariantLayout, MirCheck, MirConst, MirConstValue, MirDiagnostic, MirDiagnosticKind,
-    MirStatement, Place, PolymorphicMirFunction, RawMirFunction, RecordLayout, RegexLiteral,
-    RuntimeCall, SelectArm, SelectArmKind, SendAliasMode, Strategy, SupervisorChildLayout,
-    SupervisorLayout, Terminator, ThirFunction, TraitObjectStorage, TrapKind, WitnessOperand,
+    ty_contains_heap_owning, ty_contains_unclonable_opaque, validate_context_markers,
+    ActorHandlerLayout, ActorLayout, BasicBlock, BlockKind, BorrowKind, CaptureKind,
+    CheckedMirFunction, ChildInitArg, CmpPred, CooperateKind, CooperateSite, CoroutineSchema,
+    DecisionFact, Direction, DropKind, DropPlan, DynVtableInstance, ElabBlock, ElabDrop,
+    ElaboratedMirFunction, EnumLayout, ExitPath, ExternDecl, FieldOffset, FloatWidth,
+    FunctionCallConv, GenStateDropTable, GenStateLayout, GenStateLiveLocal, Instr, IntArithOp,
+    IntSignedness, IrPipeline, LambdaCapture, MachineLayout, MachineVariantLayout, MirCheck,
+    MirConst, MirConstValue, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
+    PolymorphicMirFunction, RawMirFunction, RecordLayout, RegexLiteral, RuntimeCall, SelectArm,
+    SelectArmKind, SendAliasMode, Strategy, SupervisorChildLayout, SupervisorLayout, Terminator,
+    ThirFunction, TraitObjectStorage, TrapKind, WitnessOperand,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use state_clone::{

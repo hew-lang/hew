@@ -1123,6 +1123,22 @@ pub enum HirExprKind {
         /// The `T` from `Task<T>` — the type produced by this await.
         output_ty: ResolvedTy,
     },
+    /// `await conn.read()` / `await conn.read_string()` — a non-blocking
+    /// suspending socket read (NEW-1). Produced by HIR lowering when an `await`
+    /// wraps a `net.Connection::read`/`read_string` method call. A suspendable
+    /// caller (actor handler / closure / task entry) lowers this to
+    /// `Terminator::SuspendingRead` (suspend, free the worker, resume with the
+    /// bytes); a `Default` caller keeps the blocking `hew_tcp_read` call.
+    ///
+    /// `read_string` is `await conn.read()` + `hew_bytes_to_string`, so the HIR
+    /// node carries only the bytes read; the string conversion wraps it.
+    ConnAwaitRead {
+        /// The connection receiver expression (`conn`).
+        conn: Box<HirExpr>,
+        /// `true` when the source was `read_string()` (the bytes are converted
+        /// to a string after the suspending read); `false` for raw `read()`.
+        to_string: bool,
+    },
     /// Sealed `select{}` expression.
     ///
     /// The HIR shape carries the per-arm sealed-form discriminator and

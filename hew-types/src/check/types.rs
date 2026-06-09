@@ -161,6 +161,13 @@ pub struct TypeCheckOutput {
     ///
     /// MIR/codegen consumers: wired in slice 6.
     pub machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
+    /// Checker-resolved `await conn.read()` / `await conn.read_string()` sites,
+    /// keyed by the inner method-call span (NEW-1). Populated when an `await`
+    /// wraps a `net.Connection::read`/`read_string` call. HIR lowering consumes
+    /// this to emit `HirExprKind::ConnAwaitRead` (the non-blocking suspending
+    /// read) instead of the blocking method call. The `bool` is `true` for
+    /// `read_string` (bytes-to-string wrap), `false` for raw `read`.
+    pub conn_await_reads: HashMap<SpanKey, bool>,
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span. Missing entry means the checker rejected the target.
     pub assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
@@ -879,6 +886,7 @@ impl Default for TypeCheckOutput {
             supervisor_child_slots: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
+            conn_await_reads: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
@@ -1812,6 +1820,9 @@ pub struct Checker {
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     /// Machine method dispatch side-table. Mirrors [`TypeCheckOutput::machine_method_dispatch`].
     pub(super) machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
+    /// `await conn.read()` suspending-read sites. Mirrors
+    /// [`TypeCheckOutput::conn_await_reads`].
+    pub(super) conn_await_reads: HashMap<SpanKey, bool>,
     pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     /// Diagnostic-only stack-allocation hints accumulated by `classify_stack_hints`.
@@ -2263,6 +2274,7 @@ impl Checker {
             numeric_method_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
+            conn_await_reads: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             stack_hints: Vec::new(),

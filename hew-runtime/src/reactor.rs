@@ -92,6 +92,39 @@ enum Pending {
     UnregisterFd { fd: c_int },
 }
 
+/// The readiness ACTION a registration carries — the central design seam (D-3).
+/// One readiness loop, two consumption modes:
+///
+/// - [`RegMode::AutoSend`] — active mode (LANDED): on `Data` the reactor
+///   auto-sends an `on_data(bytes)` mailbox message; on close it sends
+///   `on_close()`. Inverted control flow (`conn.attach(handler)`).
+/// - [`RegMode::Resume`] — await-suspension (NEW-1): on `Data`/EOF/error the
+///   reactor deposits the result into the suspending handler's read slot and
+///   wakes its parked continuation via `enqueue_resume`. Straight-line control
+///   flow (`await conn.read()`). One-shot: the registration is removed after the
+///   single deposit+wake (an `await` reads once; a loop re-registers).
+///
+/// NEW-2 (async HTTP/connection client) instantiates `Resume` without rework.
+enum RegMode {
+    /// Active-mode auto-send to the actor's `on_data` / `on_close` handlers.
+    AutoSend {
+        /// `msg_type` index for `on_data(bytes)` delivery.
+        on_data_type: i32,
+        /// `msg_type` index for the one-shot `on_close()` delivery.
+        on_close_type: i32,
+    },
+    /// Await-suspension: deposit into the read slot + `enqueue_resume`.
+    Resume {
+        /// The suspending handler's read slot — the value-routing vehicle held
+        /// across the OS-thread suspend. The reactor holds a ref (taken in
+        /// `reactor_await_read`) it releases after the deposit+wake (or when the
+        /// registration is scrubbed). Raw pointer because the slot crosses the
+        /// thread boundary by value on the `Registration`; the refcount upholds
+        /// validity, not a borrow.
+        read_slot: *mut crate::read_slot::HewReadSlot,
+    },
+}
+
 /// Per-connection registration. The `actor_ref` is a by-value [`HewActorRef`]
 /// snapshot so liveness stays checkable after the registering worker has moved
 /// on (mirrors the websocket attach reader, which owns a `Box<HewActorRef>`).
@@ -103,12 +136,11 @@ struct Registration {
     /// Stable actor identity (`*mut HewActor` as `usize`) for
     /// `reactor_detach_actor` matching on actor teardown.
     actor_key: usize,
-    /// `msg_type` index for `on_data(bytes)` delivery.
-    on_data_type: i32,
-    /// `msg_type` index for the one-shot `on_close()` delivery.
-    on_close_type: i32,
-    /// Set once an `on_close` has been delivered for this conn, so EOF/error
-    /// is reported exactly once even if readiness fires again before removal.
+    /// The readiness action (auto-send vs resume — the D-3 seam).
+    mode: RegMode,
+    /// Set once a terminal close (`on_close` / EOF / error deposit) has been
+    /// reported for this conn, so it is reported exactly once even if readiness
+    /// fires again before removal.
     closed: bool,
 }
 
@@ -118,11 +150,34 @@ struct Registration {
 // only copies those scalar/pointer bytes; nothing is dereferenced during the
 // move. The snapshot is dereferenced solely on the reactor thread, after the
 // registry lock has handed the `Registration` over, so the cross-thread
-// transfer never races a dereference. `Registration`'s own `Send` impl below
-// is what authorizes that move; the carried pointers' validity is upheld by
-// the liveness protocol (the Dekker `DELIVERING_ACTOR` guard plus the
-// synchronous `reactor_detach_actor` on `hew_actor_free`), not by this impl.
+// transfer never races a dereference. The `RegMode::Resume.read_slot` raw
+// pointer is likewise only dereferenced on the reactor thread; its validity is
+// upheld by the read slot's manual refcount (the reactor ref taken in
+// `reactor_await_read`), not by a borrow. `Registration`'s own `Send` impl is
+// what authorizes the move; the carried pointers' validity is upheld by the
+// liveness protocol (the Dekker `DELIVERING_ACTOR` guard plus the synchronous
+// `reactor_detach_actor` on `hew_actor_free`) and the slot refcount, not by
+// this impl.
 unsafe impl Send for Registration {}
+
+impl Drop for Registration {
+    /// SINGLE AUTHORITY for releasing the reactor's read-slot ref. A resume-mode
+    /// registration owns one ref on its `read_slot` (taken in
+    /// `reactor_await_read`). Whenever a `Registration` is dropped — removed from
+    /// the registry by `unregister_fd`, scrubbed by `evict_actor_state` on the
+    /// abandon edge, cleared by `reactor_shutdown`, or consumed by the
+    /// `apply_add` poller-register-failure path — that ref is released here
+    /// exactly once. Deposit/wake sites must NOT free the slot themselves; they
+    /// drop the registration and let this impl release the ref. Active-mode
+    /// (`AutoSend`) registrations carry no slot, so the drop is a no-op for them.
+    fn drop(&mut self) {
+        if let RegMode::Resume { read_slot } = self.mode {
+            // SAFETY: the registration held one live ref on `read_slot`; this
+            // releases it. The slot box is freed when its last ref drops.
+            unsafe { crate::read_slot::hew_read_slot_free(read_slot) };
+        }
+    }
+}
 
 /// The reactor's shared state. The `poller` is owned exclusively by the
 /// reactor thread (only it dereferences the pointer); the mutex guards the
@@ -375,20 +430,107 @@ fn unregister_fd(poller: *mut HewIoPoller, fd: c_int) {
     });
 }
 
+/// The mode-specific fields `handle_ready_fd` needs after the registry lock is
+/// released. Mirrors the registration's [`RegMode`] but holds the resolved
+/// resume-mode slot pointer by value so the lock is not held across the
+/// deposit+wake.
+enum ReadyMode {
+    AutoSend {
+        on_data_type: i32,
+        on_close_type: i32,
+    },
+    Resume {
+        read_slot: *mut crate::read_slot::HewReadSlot,
+    },
+}
+
 /// A snapshot of the fields `handle_ready_fd` needs, taken under the registry
 /// lock and used after the lock is released.
 struct ReadySnapshot {
     conn: c_int,
     actor_ref: HewActorRef,
     actor_local: *mut HewActor,
-    on_data_type: i32,
-    on_close_type: i32,
+    mode: ReadyMode,
     already_closed: bool,
 }
 
+/// RAII release of the IN-FLIGHT read-slot ref `handle_ready_fd` takes for a
+/// resume-mode delivery.
+///
+/// P1-A guard. The `Registration` snapshot copies `read_slot` by raw pointer,
+/// and the deposit in `handle_ready_resume` runs WITHOUT the registry lock. A
+/// concurrent `reactor_detach_actor` is scrub-then-wait: its Phase-1
+/// `evict_actor_state` drops the `Registration` (and thus the registration-owned
+/// slot ref) BEFORE the Phase-2 `DELIVERING_ACTOR` wait. Teardown destroys the
+/// coroutine first (the codegen cleanup drops the creator ref), so the Phase-1
+/// scrub can drop the LAST ref and free the slot while the reactor is mid-deposit
+/// on this pointer — the `DELIVERING_ACTOR` guard protects the actor, not the
+/// slot.
+///
+/// `handle_ready_fd` retains its OWN ref on the slot UNDER the registry lock (in
+/// the snapshot closure, where the `Registration`'s ref guarantees the slot is
+/// live), independent of the registration-owned ref. This guard releases that
+/// in-flight ref on EVERY exit from `handle_ready_fd` (successful deposit, the
+/// `!still_registered || !alive` abort, the spurious-`WouldBlock` no-deposit
+/// return inside `handle_ready_resume`, and any future path). `Drop for
+/// Registration` remains the single authority for the registration-owned ref;
+/// this in-flight ref is separate and never double-released.
+struct InflightSlotRef(*mut crate::read_slot::HewReadSlot);
+
+impl Drop for InflightSlotRef {
+    fn drop(&mut self) {
+        // SAFETY: the ref was taken under the registry lock in `handle_ready_fd`'s
+        // snapshot closure (mirroring `reactor_await_read`'s retain). Releasing it
+        // here drops exactly that one in-flight ref; the slot box is reclaimed
+        // only when its last ref (creator/registration/in-flight) drops.
+        unsafe { crate::read_slot::hew_read_slot_free(self.0) };
+    }
+}
+
+/// Liveness for a snapshotted actor ref WITHOUT a raw deref of a possibly-freed
+/// local actor pointer.
+///
+/// The reactor releases the registry lock between snapshotting `actor_ref` and
+/// publishing the `DELIVERING_ACTOR` guard. A concurrent `reactor_detach_actor`
+/// that runs entirely inside that window observes the guard as 0, does not
+/// spin-wait, and lets `hew_actor_free_inner` reclaim the actor box. A raw
+/// `hew_actor_ref_is_alive` probe dereferences `(*actor).actor_state` for a LOCAL
+/// ref (transport.rs), so calling it here would be a use-after-free.
+///
+/// This routes the LOCAL case through `with_live_actor`, which holds the
+/// `LIVE_ACTORS` registry lock across the closure. Every free path
+/// (`hew_actor_free_inner`, `drain_quiesced_actor`, `cleanup_all_actors`) removes
+/// the actor from `LIVE_ACTORS` BEFORE reclaiming the box, so while the closure
+/// runs the box cannot be freed; if the actor was already torn down the closure
+/// never runs and the actor is reported dead. The `actor_state` load inside the
+/// closure preserves the original semantics (a Stopping/Crashed/Stopped actor is
+/// reported dead, not just an untracked one).
+///
+/// A REMOTE ref (`actor_local` null) carries no actor pointer to deref; its
+/// liveness is `hew_actor_ref_is_alive`'s connection-validity check on the
+/// by-value snapshot, which never touches actor memory.
+fn actor_snapshot_alive(actor_local: *mut HewActor, actor_ref: &HewActorRef) -> bool {
+    if actor_local.is_null() {
+        // REMOTE (or null-local) ref: `hew_actor_ref_is_alive` reads only the
+        // by-value snapshot's connection handle; no actor pointer is dereferenced.
+        // SAFETY: `actor_ref` is a valid stack snapshot owned by the caller.
+        return unsafe { hew_actor_ref_is_alive(std::ptr::addr_of!(*actor_ref)) != 0 };
+    }
+    // LOCAL ref: check liveness + terminal state under the `LIVE_ACTORS` lock so
+    // a freed actor is never dereferenced. `None` => not tracked => freed/dead.
+    crate::lifetime::live_actors::with_live_actor(actor_local, |a| {
+        let state = a.actor_state.load(Ordering::Acquire);
+        state != crate::internal::types::HewActorState::Stopped as i32
+            && state != crate::internal::types::HewActorState::Crashed as i32
+    })
+    .unwrap_or(false)
+}
+
 /// Handle one ready fd: liveness-check the owning actor, read available bytes,
-/// deliver `on_data` / `on_close`. Never holds the registry lock across the
-/// read or the send.
+/// and EITHER auto-send `on_data`/`on_close` mailbox messages (active mode) OR
+/// deposit the result into the suspending handler's read slot + `enqueue_resume`
+/// (await-suspension). Never holds the registry lock across the read or the
+/// send/wake.
 fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     // Snapshot what we need under the lock, then release it.
     let snapshot = REACTOR_STATE.access(|state| {
@@ -398,8 +540,31 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
             // snapshot so liveness can be checked after the lock is released.
             actor_ref: unsafe { std::ptr::read(std::ptr::addr_of!(reg.actor_ref)) },
             actor_local: actor_ref_local_ptr(&reg.actor_ref).cast::<HewActor>(),
-            on_data_type: reg.on_data_type,
-            on_close_type: reg.on_close_type,
+            mode: match &reg.mode {
+                RegMode::AutoSend {
+                    on_data_type,
+                    on_close_type,
+                } => ReadyMode::AutoSend {
+                    on_data_type: *on_data_type,
+                    on_close_type: *on_close_type,
+                },
+                RegMode::Resume { read_slot } => {
+                    // P1-A: take an IN-FLIGHT ref on the slot UNDER the registry
+                    // lock, independent of the registration-owned ref. While the
+                    // lock is held the `Registration` exists and holds its own
+                    // ref, so the slot is live for this retain (mirrors
+                    // `reactor_await_read`'s retain). The `InflightSlotRef` guard
+                    // below releases it on every exit; a concurrent detach's
+                    // Phase-1 scrub can then drop the registration's ref without
+                    // freeing the slot out from under the in-flight deposit.
+                    // SAFETY: the lock is held and the registration holds a ref,
+                    // so `*read_slot` is a live slot.
+                    unsafe { crate::read_slot::read_slot_retain(*read_slot) };
+                    ReadyMode::Resume {
+                        read_slot: *read_slot,
+                    }
+                }
+            },
             already_closed: reg.closed,
         })
     });
@@ -409,6 +574,14 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
         return;
     };
 
+    // Bind the in-flight slot ref to an RAII guard so it is released on EVERY
+    // exit from here on (the retain was taken under the lock in the snapshot
+    // closure above). Active-mode snapshots carry no slot, so no guard is bound.
+    let _inflight_slot = match &snap.mode {
+        ReadyMode::Resume { read_slot } => Some(InflightSlotRef(*read_slot)),
+        ReadyMode::AutoSend { .. } => None,
+    };
+
     let actor_key = snap.actor_local as usize;
 
     // Publish the in-flight target BEFORE re-validating + sending (Dekker
@@ -416,18 +589,29 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     // revalidation below guarantees that a concurrent `hew_actor_free` either
     // (a) removes the registration before we re-read it under the lock — so we
     // see it gone and abort — or (b) observes `DELIVERING_ACTOR == actor_key`
-    // and spin-waits until we clear it. Either way no send reaches a freed
-    // actor.
+    // and spin-waits until we clear it. Either way no send/wake reaches a freed
+    // actor. The resume-mode wake (`enqueue_resume`) is ALSO independently
+    // fail-safe (its own liveness check + `Suspended → Runnable` CAS), so the
+    // guard + the waker are belt-and-braces for the abandon edge.
     DELIVERING_ACTOR.store(actor_key, Ordering::SeqCst);
 
     // Re-validate under the lock AFTER publishing the guard: if the actor was
     // detached (freed) between the snapshot and now, the registration is gone
     // and we must not deliver. This pairs with the synchronous registry removal
-    // in `reactor_detach_actor`.
+    // in `reactor_detach_actor`. On the resume-mode abort path the in-flight slot
+    // ref taken above is released by the `InflightSlotRef` guard on return; the
+    // registration-owned ref is released by `reactor_detach_actor`'s scrub.
     let still_registered = REACTOR_STATE.access(|state| state.registry.contains_key(&fd));
-    // Liveness on the by-value ref snapshot is a second guard (the actor may be
-    // Stopping but not yet freed). SAFETY: the snapshot owns a valid ref.
-    let alive = unsafe { hew_actor_ref_is_alive(std::ptr::addr_of!(snap.actor_ref)) != 0 };
+    // Liveness as a second guard (the actor may be Stopping but not yet freed).
+    // For a LOCAL actor this MUST NOT raw-deref the snapshot pointer: a
+    // concurrent `reactor_detach_actor` that observed the guard as 0 in the
+    // snapshot→publish window can free the actor before this point, so a raw
+    // `(*actor).actor_state` load would be a use-after-free. `actor_snapshot_alive`
+    // routes the LOCAL case through `with_live_actor` (the `LIVE_ACTORS`-guarded
+    // discipline `enqueue_resume` uses): the membership check + the state load run
+    // under the registry lock that every free path takes before reclaiming the
+    // box, so a freed actor is reported dead without ever being dereferenced.
+    let alive = actor_snapshot_alive(snap.actor_local, &snap.actor_ref);
     if !still_registered || !alive {
         DELIVERING_ACTOR.store(0, Ordering::SeqCst);
         unregister_fd(poller, fd);
@@ -444,15 +628,49 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
         ActiveReadOutcome::WouldBlock
     };
 
+    match &snap.mode {
+        ReadyMode::AutoSend {
+            on_data_type,
+            on_close_type,
+        } => handle_ready_auto_send(
+            poller,
+            fd,
+            &snap,
+            outcome,
+            hard_close,
+            *on_data_type,
+            *on_close_type,
+        ),
+        ReadyMode::Resume { read_slot } => {
+            handle_ready_resume(poller, fd, &snap, outcome, hard_close, *read_slot);
+        }
+    }
+
+    // Delivery (if any) is complete; release the in-flight guard so a waiting
+    // `reactor_detach_actor` may proceed with the free.
+    DELIVERING_ACTOR.store(0, Ordering::SeqCst);
+}
+
+/// Active-mode readiness handling: auto-send `on_data(bytes)` for each chunk and
+/// a single `on_close()` on EOF/error. Unchanged from the pre-NEW-1 behaviour.
+fn handle_ready_auto_send(
+    poller: *mut HewIoPoller,
+    fd: c_int,
+    snap: &ReadySnapshot,
+    outcome: ActiveReadOutcome,
+    hard_close: bool,
+    on_data_type: i32,
+    on_close_type: i32,
+) {
     match outcome {
         ActiveReadOutcome::Data(data) => {
-            deliver_data(snap.actor_local, snap.on_data_type, &data);
+            deliver_data(snap.actor_local, on_data_type, &data);
             if hard_close {
                 deliver_close_once(
                     poller,
                     fd,
                     snap.actor_local,
-                    snap.on_close_type,
+                    on_close_type,
                     snap.already_closed,
                 );
             }
@@ -463,7 +681,7 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
                     poller,
                     fd,
                     snap.actor_local,
-                    snap.on_close_type,
+                    on_close_type,
                     snap.already_closed,
                 );
             }
@@ -473,15 +691,146 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
                 poller,
                 fd,
                 snap.actor_local,
-                snap.on_close_type,
+                on_close_type,
                 snap.already_closed,
             );
         }
     }
+}
 
-    // Delivery (if any) is complete; release the in-flight guard so a waiting
-    // `reactor_detach_actor` may proceed with the free.
-    DELIVERING_ACTOR.store(0, Ordering::SeqCst);
+/// An empty `bytes` value (null ptr, len 0). The resume edge binds this for an
+/// EOF / error / over-length read, matching the blocking `hew_tcp_read` empty
+/// convention.
+fn empty_bytes_triple() -> BytesTriple {
+    BytesTriple {
+        ptr: std::ptr::null_mut(),
+        offset: 0,
+        len: 0,
+    }
+}
+
+/// Await-suspension readiness handling (NEW-1): deposit the read result into the
+/// suspending handler's read slot and `enqueue_resume` the parked continuation,
+/// then remove the (one-shot) registration. An `await conn.read()` reads once;
+/// the handler re-registers for the next read on its next `await`.
+///
+/// - `Data` → deposit `Ok(bytes)` + wake.
+/// - `Eof`/`Closed` → deposit an `Eof`/`Error` status + wake (the handler
+///   resumes with an empty `bytes`; NEW-6 layers a typed-error surface on top).
+///   A `hard_close` with buffered data delivers the data first; the next
+///   readiness reports EOF, but the registration is already gone, so the handler
+///   re-`await`ing observes the close.
+/// - `WouldBlock` with no hard close → a spurious wake; leave the registration
+///   in place and wait for the next readiness (no deposit, no wake).
+///
+/// `read_slot` validity for the lock-free deposit below is upheld by the
+/// IN-FLIGHT ref `handle_ready_fd` took under the registry lock (P1-A), NOT by
+/// the registration-owned ref: a concurrent `reactor_detach_actor`'s Phase-1
+/// scrub may drop the registration's ref while this deposit runs, but the
+/// in-flight ref keeps the slot box alive until `handle_ready_fd` returns and its
+/// `InflightSlotRef` guard drops.
+fn handle_ready_resume(
+    poller: *mut HewIoPoller,
+    fd: c_int,
+    snap: &ReadySnapshot,
+    outcome: ActiveReadOutcome,
+    hard_close: bool,
+    read_slot: *mut crate::read_slot::HewReadSlot,
+) {
+    use crate::read_slot::ReadStatus;
+    // P1-A forced-ordering injection point: a test runs the scrub-then-creator-
+    // free ordering here, after the in-flight ref is held but before the deposit,
+    // so the deposit below lands while the registration-owned ref is already gone.
+    #[cfg(test)]
+    fire_resume_pre_deposit_hook();
+    let deposit = match outcome {
+        ActiveReadOutcome::Data(data) => {
+            // Build an owned refcount-1 bytes value the slot takes ownership of.
+            let triple = match u32::try_from(data.len()) {
+                Ok(0) => empty_bytes_triple(),
+                Ok(len) => {
+                    // SAFETY: data is valid for len bytes; copied into a fresh
+                    // refcount-1 buffer the slot then owns.
+                    unsafe { hew_bytes_from_static(data.as_ptr(), len) }
+                }
+                Err(_) => {
+                    crate::set_last_error("hew reactor: await read chunk exceeds u32 range");
+                    empty_bytes_triple()
+                }
+            };
+            // SAFETY: the reactor holds a ref to `read_slot`; deposit checks the
+            // cancelled flag and drops the buffer if the abandon edge won.
+            let wake = unsafe { crate::read_slot::read_slot_deposit_data(read_slot, triple) };
+            DepositOutcome {
+                wake,
+                slot_done: true,
+            }
+        }
+        ActiveReadOutcome::Eof => {
+            // SAFETY: reactor holds a ref.
+            let wake =
+                unsafe { crate::read_slot::read_slot_deposit_status(read_slot, ReadStatus::Eof) };
+            DepositOutcome {
+                wake,
+                slot_done: true,
+            }
+        }
+        ActiveReadOutcome::Closed => {
+            // SAFETY: reactor holds a ref.
+            let wake =
+                unsafe { crate::read_slot::read_slot_deposit_status(read_slot, ReadStatus::Error) };
+            DepositOutcome {
+                wake,
+                slot_done: true,
+            }
+        }
+        ActiveReadOutcome::WouldBlock => {
+            if hard_close {
+                // SAFETY: reactor holds a ref.
+                let wake = unsafe {
+                    crate::read_slot::read_slot_deposit_status(read_slot, ReadStatus::Error)
+                };
+                DepositOutcome {
+                    wake,
+                    slot_done: true,
+                }
+            } else {
+                // Spurious readiness with no data and no close: leave the
+                // registration live, wait for the next readiness.
+                DepositOutcome {
+                    wake: false,
+                    slot_done: false,
+                }
+            }
+        }
+    };
+
+    if !deposit.slot_done {
+        return;
+    }
+
+    if deposit.wake {
+        // SAFETY: `enqueue_resume` re-confirms liveness under the registry lock
+        // and only flips state + enqueues; a freed actor drops the wake.
+        unsafe { crate::scheduler::enqueue_resume(snap.actor_local, std::ptr::null_mut()) };
+    }
+    // One-shot: remove the registration. Dropping the `Registration` releases the
+    // REGISTRATION-OWNED slot ref (the `Drop for Registration` single authority
+    // for THAT ref); no further readiness can reach this slot via the registry
+    // afterwards. The separate IN-FLIGHT ref taken by `handle_ready_fd` is
+    // released by its `InflightSlotRef` guard when it returns.
+    let _ = read_slot;
+    unregister_fd(poller, fd);
+}
+
+/// Result of a resume-mode deposit attempt.
+struct DepositOutcome {
+    /// Whether the parked continuation should be woken (`enqueue_resume`).
+    wake: bool,
+    /// Whether the slot received a terminal deposit (so the one-shot
+    /// registration must be removed + the reactor's slot ref released). `false`
+    /// only for a spurious `WouldBlock` with no hard close.
+    slot_done: bool,
 }
 
 /// Deliver an `on_data(bytes)` message. The mailbox deep-copies the
@@ -553,17 +902,54 @@ fn deliver_close_once(
     unregister_fd(poller, fd);
 }
 
-/// Deliver `on_close` for a registration that never made it into the registry
-/// (poller register failed). No fd to unregister.
+/// Deliver a terminal close for a registration that never made it into the
+/// registry (poller register failed). No fd to unregister.
+///
+/// - `AutoSend`: send the one-shot `on_close()` mailbox message.
+/// - `Resume`: deposit an `Error` status into the read slot + `enqueue_resume`
+///   so the suspending handler resumes with an error rather than hanging
+///   forever, then release the reactor's slot ref.
 fn deliver_orphan_close(reg: &Registration) {
     let actor_local = actor_ref_local_ptr(&reg.actor_ref).cast::<HewActor>();
-    if actor_local.is_null() {
-        return;
+    match reg.mode {
+        RegMode::AutoSend { on_close_type, .. } => {
+            if actor_local.is_null() {
+                return;
+            }
+            // SAFETY: snapshot deref; the actor was alive at attach time. A
+            // try_send to a since-stopped actor returns an error and is harmless.
+            unsafe {
+                hew_actor_try_send(actor_local, on_close_type, std::ptr::null_mut(), 0);
+            }
+        }
+        RegMode::Resume { read_slot } => {
+            resume_with_status(actor_local, read_slot, crate::read_slot::ReadStatus::Error);
+        }
     }
-    // SAFETY: snapshot deref; the actor was alive at attach time. A try_send to
-    // a since-stopped actor returns an error and is harmless.
-    unsafe {
-        hew_actor_try_send(actor_local, reg.on_close_type, std::ptr::null_mut(), 0);
+}
+
+/// Deposit a terminal status into a resume-mode read slot and wake the parked
+/// continuation. The deposit is dropped (no wake) if the slot was cancelled by
+/// an abandon edge. Runs on the reactor thread; the `enqueue_resume` waker
+/// performs its own liveness check + atomic `Suspended → Runnable` CAS, so an
+/// actor freed concurrently drops the wake.
+///
+/// Does NOT release the reactor's slot ref — the caller drops the owning
+/// `Registration`, whose `Drop` impl is the single authority for that release.
+fn resume_with_status(
+    actor_local: *mut HewActor,
+    read_slot: *mut crate::read_slot::HewReadSlot,
+    status: crate::read_slot::ReadStatus,
+) {
+    // SAFETY: the reactor holds a ref to `read_slot` (taken in
+    // `reactor_await_read`); the deposit checks the cancelled flag before
+    // publishing.
+    let should_wake = unsafe { crate::read_slot::read_slot_deposit_status(read_slot, status) };
+    if should_wake && !actor_local.is_null() {
+        // SAFETY: `enqueue_resume` does NOT trust the pointer — it re-confirms
+        // liveness under the registry lock and only flips state + enqueues; a
+        // freed actor drops the wake.
+        unsafe { crate::scheduler::enqueue_resume(actor_local, std::ptr::null_mut()) };
     }
 }
 
@@ -642,8 +1028,87 @@ pub(crate) unsafe fn reactor_attach(
         conn,
         actor_ref: snapshot,
         actor_key,
-        on_data_type,
-        on_close_type,
+        mode: RegMode::AutoSend {
+            on_data_type,
+            on_close_type,
+        },
+        closed: false,
+    };
+    REACTOR_STATE.access(|state| {
+        state.pending.push(Pending::Add { fd, reg });
+    });
+    0
+}
+
+/// Register a TCP connection for a SUSPENDING `await conn.read()` (NEW-1, the
+/// resume-mode sibling of [`reactor_attach`]).
+///
+/// The suspending handler has created a [`crate::read_slot::HewReadSlot`] (held
+/// across its suspend in the coro frame) and registered its parked continuation
+/// on the actor. This sets the socket non-blocking, snapshots the actor-ref,
+/// takes a REACTOR ref on the slot, and queues the fd for the reactor to add to
+/// its poller as a [`RegMode::Resume`] registration. When the reactor reports
+/// the fd ready it reads the available bytes, deposits the result into the slot,
+/// and `enqueue_resume`s the parked continuation.
+///
+/// One-shot: an `await conn.read()` reads once; the handler re-registers on its
+/// next `await`. Reuses the SAME eviction-prone mailbox refusal is NOT needed —
+/// the resume path delivers via the slot, not the mailbox, so no `on_data`
+/// eviction-leak hazard exists.
+///
+/// Returns 0 on success, -1 on failure (reactor could not start, unknown conn
+/// handle, or non-blocking set failed). On failure the caller's slot ref is
+/// untouched (the abandon/err edge frees it); no reactor ref was taken.
+///
+/// # Safety
+///
+/// `actor_ref` must point to a valid [`HewActorRef`] for the duration of this
+/// call (a by-value snapshot is taken). `conn` must be a valid TCP connection
+/// handle. `read_slot` must be a valid live `HewReadSlot` the caller holds a ref
+/// to (a reactor ref is taken on success).
+pub(crate) unsafe fn reactor_await_read(
+    conn: c_int,
+    actor_ref: *const HewActorRef,
+    read_slot: *mut crate::read_slot::HewReadSlot,
+) -> c_int {
+    if actor_ref.is_null() {
+        crate::set_last_error("hew_conn_await_read: null actor reference");
+        return -1;
+    }
+    if read_slot.is_null() {
+        crate::set_last_error("hew_conn_await_read: null read slot");
+        return -1;
+    }
+    let Some(fd) = tcp_conn_raw_fd(conn) else {
+        crate::set_last_error("hew_conn_await_read: unknown TCP connection handle");
+        return -1;
+    };
+    if !tcp_conn_set_nonblocking(conn, true) {
+        crate::set_last_error("hew_conn_await_read: failed to set connection non-blocking");
+        return -1;
+    }
+    if !ensure_reactor_started() {
+        let _ = tcp_conn_set_nonblocking(conn, false);
+        return -1;
+    }
+
+    // SAFETY: caller guarantees actor_ref is valid for this call; we copy it.
+    let snapshot = unsafe { std::ptr::read(actor_ref) };
+    let actor_local = actor_ref_local_ptr(&snapshot).cast::<HewActor>();
+    let actor_key = actor_local as usize;
+
+    // Take the REACTOR ref on the slot BEFORE queueing the registration, so the
+    // slot cannot be freed out from under the reactor between the queue and the
+    // promotion. The ref is owned by the `Registration` and released by its
+    // `Drop` (the single authority) on removal.
+    // SAFETY: caller holds a ref, so the slot is live for this retain.
+    unsafe { crate::read_slot::read_slot_retain(read_slot) };
+
+    let reg = Registration {
+        conn,
+        actor_ref: snapshot,
+        actor_key,
+        mode: RegMode::Resume { read_slot },
         closed: false,
     };
     REACTOR_STATE.access(|state| {
@@ -870,8 +1335,38 @@ pub(crate) fn inject_registration_for_test(
                 conn,
                 actor_ref,
                 actor_key,
-                on_data_type: 1,
-                on_close_type: 2,
+                mode: RegMode::AutoSend {
+                    on_data_type: 1,
+                    on_close_type: 2,
+                },
+                closed: false,
+            },
+        );
+    });
+}
+
+/// Inject a RESUME-mode registration directly into the registry (test-only),
+/// bypassing the pending queue + OS poller. The reactor ref on `read_slot` must
+/// be taken by the caller (mirrors `reactor_await_read`'s retain); the
+/// registration's `Drop` releases it on removal. Lets the resume branch + the
+/// detach scrub be exercised against a real read slot without a live socket.
+#[cfg(test)]
+pub(crate) fn inject_resume_registration_for_test(
+    fd: c_int,
+    conn: c_int,
+    actor_ref: HewActorRef,
+    actor_key: usize,
+    read_slot: *mut crate::read_slot::HewReadSlot,
+) {
+    REACTOR_STATE.access(|state| {
+        state.conn_to_fd.insert(conn, fd);
+        state.registry.insert(
+            fd,
+            Registration {
+                conn,
+                actor_ref,
+                actor_key,
+                mode: RegMode::Resume { read_slot },
                 closed: false,
             },
         );
@@ -938,8 +1433,10 @@ pub(crate) fn enqueue_pending_add_for_test(
                 conn,
                 actor_ref,
                 actor_key,
-                on_data_type: 1,
-                on_close_type: 2,
+                mode: RegMode::AutoSend {
+                    on_data_type: 1,
+                    on_close_type: 2,
+                },
                 closed: false,
             },
         });
@@ -960,11 +1457,38 @@ fn with_reactor_state_locked_for_test<R>(f: impl FnOnce(&mut ReactorState) -> R)
 #[cfg(test)]
 thread_local! {
     static FAIL_REACTOR_SPAWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
+    /// Mid-deposit injection hook (P1-A forced-ordering). Fires inside
+    /// `handle_ready_resume` immediately BEFORE the lock-free deposit, after the
+    /// in-flight slot ref has been taken. A test installs it to run the exact
+    /// scrub-then-creator-free ordering at the mid-deposit point, so the deposit
+    /// that follows lands while the registration-owned ref is already gone — the
+    /// P1-A window. With the in-flight ref the slot survives the deposit; without
+    /// it the deposit is a use-after-free (a sanitizer trap).
+    static RESUME_PRE_DEPOSIT_HOOK: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
 fn should_fail_reactor_spawn() -> bool {
     FAIL_REACTOR_SPAWN.with(std::cell::Cell::get)
+}
+
+/// Install (or clear) the mid-deposit hook. Test-only.
+#[cfg(test)]
+fn set_resume_pre_deposit_hook(hook: Option<Box<dyn Fn()>>) {
+    RESUME_PRE_DEPOSIT_HOOK.with(|h| *h.borrow_mut() = hook);
+}
+
+/// Fire the mid-deposit hook if installed (test-only). Called by
+/// `handle_ready_resume` just before the deposit.
+#[cfg(test)]
+fn fire_resume_pre_deposit_hook() {
+    // Take the closure out so a re-entrant deposit cannot re-fire it (one-shot).
+    let hook = RESUME_PRE_DEPOSIT_HOOK.with(|h| h.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
 }
 
 #[cfg(test)]
@@ -1217,6 +1741,484 @@ mod tests {
         reset_reactor();
     }
 
+    // ---- NEW-1 resume-mode registration (await conn.read) -----------------
+    //
+    // A resume-mode `Registration` carries a `HewReadSlot` instead of the
+    // `on_data`/`on_close` msg types. On fd readiness the reactor deposits the
+    // read result into the slot + `enqueue_resume`s the parked continuation
+    // (instead of auto-sending a mailbox message). The detach scrub keyed on
+    // `actor_key` covers it UNCHANGED, and dropping the registration releases the
+    // reactor's slot ref (the abandon-edge no-leak property).
+
+    /// Slice 1: a resume-mode registration is scrubbed by `reactor_detach_actor`
+    /// exactly like an active-mode one (the scrub is keyed on `actor_key`, mode-
+    /// agnostic), and dropping the evicted registration releases the reactor's
+    /// slot ref so the slot is reclaimed once the creator ref also drops (the
+    /// abandon edge: handler freed while parked on the fd).
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test-only FFI: every pointer is a fresh local slot/poller/conn the \
+                  test body sets up and tears down; the lifecycle is described inline"
+    )]
+    fn resume_registration_scrubbed_by_detach_releases_slot_ref() {
+        const KEY: usize = 0x00DE_AD01;
+
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        let (rfd, wfd) = make_pipe();
+        // Creator ref (models the suspending handler's frame ref).
+        let slot = crate::read_slot::hew_read_slot_new();
+        // Reactor ref (models `reactor_await_read`'s retain), owned by the reg.
+        // SAFETY: creator holds a ref so the slot is live.
+        unsafe { crate::read_slot::read_slot_retain(slot) };
+        inject_resume_registration_for_test(rfd, 701, dead_actor_ref(), KEY, slot);
+        assert_eq!(registration_count_for_test(), 1);
+
+        // The handler is freed while parked: detach scrubs the registration and
+        // its Drop releases the reactor slot ref.
+        reactor_detach_actor(KEY);
+        assert_eq!(
+            registration_count_for_test(),
+            0,
+            "resume-mode registration must be scrubbed by detach like any other"
+        );
+
+        // The abandon edge cancels + frees the creator ref. With both refs gone
+        // the slot is reclaimed (no leak, no double-free).
+        // SAFETY: slot is still live (creator ref held).
+        unsafe { crate::read_slot::hew_read_slot_cancel(slot) };
+        unsafe { crate::read_slot::hew_read_slot_free(slot) };
+
+        // SAFETY: closing our own fds.
+        unsafe {
+            libc::close(rfd);
+            libc::close(wfd);
+        }
+        reset_reactor();
+    }
+
+    /// Slice 2 (liveness abort): a resume-mode readiness for a DEAD actor (the
+    /// handler was freed while parked) drops the event WITHOUT reading or
+    /// depositing — the slot stays `Pending` and the fd is unregistered. The
+    /// reactor's liveness re-validation (shared with active mode) protects the
+    /// resume branch exactly as it protects the auto-send branch. The live-actor
+    /// data-routing + wake path is exercised end-to-end in
+    /// `scheduler::tests::reactor_data_deposit_resumes_parked_handler_with_bytes`.
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test-only FFI: every pointer is a fresh local slot/poller/conn the \
+                  test body sets up and tears down; the lifecycle is described inline"
+    )]
+    fn resume_readiness_for_dead_actor_drops_event_no_deposit() {
+        use std::io::Write;
+        const KEY: usize = 0x00DA_7A01;
+
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // SAFETY: no preconditions for new.
+        let poller = unsafe { hew_io_poller_new() };
+        assert!(!poller.is_null());
+        let (conn, mut client) = crate::transport::tcp_socketpair_conn_for_test();
+        let fd = crate::transport::tcp_conn_raw_fd(conn).expect("conn fd");
+        assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
+        // SAFETY: poller valid; fd live; dummy actor unused by the reporting path.
+        assert_eq!(
+            unsafe { hew_io_poller_register(poller, fd, std::ptr::null_mut(), 0, HEW_IO_READ) },
+            0
+        );
+
+        let slot = crate::read_slot::hew_read_slot_new();
+        // SAFETY: creator ref held.
+        unsafe { crate::read_slot::read_slot_retain(slot) }; // reactor ref (owned by reg)
+        inject_resume_registration_for_test(fd, conn, dead_actor_ref(), KEY, slot);
+
+        // Peer writes bytes that would be read IF the actor were alive.
+        client
+            .write_all(b"unread-because-dead")
+            .expect("client write");
+        client.flush().ok();
+        std::thread::sleep(Duration::from_millis(20));
+
+        handle_ready_fd_for_test(poller, fd, HEW_IO_READ);
+
+        // The dead-actor liveness guard unregistered the fd WITHOUT reading.
+        assert_eq!(
+            registration_count_for_test(),
+            0,
+            "a readiness event for a dead actor must unregister the fd"
+        );
+        // No deposit landed — the slot is still Pending (no garbage bytes).
+        assert_eq!(
+            unsafe { crate::read_slot::hew_read_slot_status(slot) },
+            crate::read_slot::ReadStatus::Pending as i32,
+            "a dead-actor readiness must not deposit a read result"
+        );
+        // Creator ref free reclaims the slot.
+        // SAFETY: creator ref held.
+        unsafe { crate::read_slot::hew_read_slot_free(slot) };
+
+        drop(client);
+        // SAFETY: cleanup.
+        unsafe {
+            crate::transport::tcp_close_raw_for_test(conn);
+            hew_io_poller_stop(poller);
+        }
+        reset_reactor();
+    }
+
+    /// Slice 2 (abandon): a resume-mode readiness whose slot was CANCELLED (the
+    /// handler abandoned before the deposit) drops the deposit + suppresses the
+    /// wake — no buffer leak, no wake to a freed actor.
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test-only FFI: every pointer is a fresh local slot/poller/conn the \
+                  test body sets up and tears down; the lifecycle is described inline"
+    )]
+    fn resume_cancelled_slot_drops_deposit_no_wake() {
+        use std::io::Write;
+        const KEY: usize = 0x00CA_4CE1;
+
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // SAFETY: no preconditions.
+        let poller = unsafe { hew_io_poller_new() };
+        assert!(!poller.is_null());
+        let (conn, mut client) = crate::transport::tcp_socketpair_conn_for_test();
+        let fd = crate::transport::tcp_conn_raw_fd(conn).expect("conn fd");
+        assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
+        // SAFETY: poller valid; fd live.
+        assert_eq!(
+            unsafe { hew_io_poller_register(poller, fd, std::ptr::null_mut(), 0, HEW_IO_READ) },
+            0
+        );
+
+        let slot = crate::read_slot::hew_read_slot_new();
+        // SAFETY: creator ref held.
+        unsafe { crate::read_slot::read_slot_retain(slot) }; // reactor ref
+                                                             // Abandon edge fired first: the slot is cancelled.
+        unsafe { crate::read_slot::hew_read_slot_cancel(slot) };
+        inject_resume_registration_for_test(fd, conn, dead_actor_ref(), KEY, slot);
+
+        // Make the fd readable.
+        client.write_all(b"dropped").expect("client write");
+        client.flush().ok();
+        std::thread::sleep(Duration::from_millis(20));
+
+        handle_ready_fd_for_test(poller, fd, HEW_IO_READ);
+
+        // The deposit was dropped (cancelled): status stays Pending, no buffer.
+        assert_eq!(
+            unsafe { crate::read_slot::hew_read_slot_status(slot) },
+            crate::read_slot::ReadStatus::Pending as i32,
+            "a cancelled slot must not receive a data deposit"
+        );
+        // Creator ref free reclaims the slot (no leak).
+        // SAFETY: creator ref held.
+        unsafe { crate::read_slot::hew_read_slot_free(slot) };
+
+        drop(client);
+        // SAFETY: cleanup.
+        unsafe {
+            crate::transport::tcp_close_raw_for_test(conn);
+            hew_io_poller_stop(poller);
+        }
+        reset_reactor();
+    }
+
+    // ---- P1-B: snapshot→publish actor-ref deref UAF guard ------------------
+    //
+    // `handle_ready_fd` snapshots `actor_ref`/`actor_local` and releases the
+    // registry lock BEFORE publishing the `DELIVERING_ACTOR` guard. A concurrent
+    // `reactor_detach_actor` that runs entirely inside that window observes the
+    // guard as 0, does NOT spin-wait, and lets `hew_actor_free` reclaim the actor
+    // box. The pre-fix liveness check called `hew_actor_ref_is_alive`, which for a
+    // LOCAL ref does `(*actor).actor_state.load(..)` — a raw deref of the freed
+    // box (use-after-free; a sanitizer trap, and logically may read reclaimed
+    // memory and falsely report the actor alive). The fix routes the LOCAL case
+    // through `with_live_actor`, which reports a freed (untracked) actor dead
+    // WITHOUT dereferencing it.
+
+    /// Direct invariant proof: a LOCAL actor freed (untracked + box reclaimed)
+    /// between the snapshot and the liveness check is reported dead by
+    /// `actor_snapshot_alive` without dereferencing the freed box.
+    ///
+    /// FAIL-BEFORE / PASS-AFTER: with the pre-fix raw `hew_actor_ref_is_alive`
+    /// probe this dereferences the freed actor (`(*actor).actor_state`) — a
+    /// use-after-free the sanitizer suite traps, and which may read reclaimed
+    /// memory and return `true` (asserted-against below). With the fix the
+    /// `with_live_actor` membership miss returns `false` with no deref.
+    #[test]
+    fn actor_snapshot_alive_reports_freed_local_actor_dead_without_deref() {
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // A real, LIVE_ACTORS-tracked local actor (spawn → track_actor).
+        let actor = spawn_full_reject_actor();
+        // SAFETY: `actor` is a live, test-owned local actor.
+        let actor_ref = unsafe { crate::transport::hew_actor_ref_local(actor) };
+        let actor_local = actor_ref_local_ptr(&actor_ref).cast::<HewActor>();
+        assert_eq!(
+            actor_local, actor,
+            "local ref must resolve to the actor ptr"
+        );
+
+        // While tracked + non-terminal it is reported alive.
+        assert!(
+            actor_snapshot_alive(actor_local, &actor_ref),
+            "a live tracked local actor must be reported alive"
+        );
+
+        // The detacher frees the actor inside the snapshot→publish window:
+        // untrack (removes from LIVE_ACTORS) then reclaim the box.
+        free_parked_actor(actor);
+
+        // The snapshot still holds the (now dangling) pointer, exactly as
+        // `handle_ready_fd` would after the lock release. The liveness check MUST
+        // report dead WITHOUT dereferencing it.
+        assert!(
+            !actor_snapshot_alive(actor_local, &actor_ref),
+            "a freed (untracked) local actor must be reported dead — the pre-fix raw \
+             hew_actor_ref_is_alive deref of the freed box was a use-after-free"
+        );
+
+        reset_reactor();
+    }
+
+    /// Full-path proof: drive `handle_ready_fd` for a registration whose LOCAL
+    /// actor was freed in the snapshot→publish window. The abort path must
+    /// unregister the fd and NOT deref the freed actor. Models the reactor
+    /// reaching delivery for an fd whose owning actor a racing detach already
+    /// reclaimed.
+    ///
+    /// FAIL-BEFORE / PASS-AFTER: pre-fix the unconditional `hew_actor_ref_is_alive`
+    /// dereferences the freed box on the abort path (UAF). Post-fix the
+    /// `with_live_actor` miss aborts cleanly.
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test-only FFI: every pointer is a fresh local slot/poller/conn the \
+                  test body sets up and tears down; the lifecycle is described inline"
+    )]
+    fn handle_ready_fd_aborts_without_deref_when_local_actor_freed() {
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // SAFETY: no preconditions for new.
+        let poller = unsafe { hew_io_poller_new() };
+        assert!(!poller.is_null());
+        let (rfd, wfd) = make_pipe();
+        // SAFETY: poller valid; rfd is a live read fd.
+        assert_eq!(
+            unsafe { hew_io_poller_register(poller, rfd, std::ptr::null_mut(), 0, HEW_IO_READ) },
+            0
+        );
+
+        // A real LOCAL actor + a resume-mode registration referencing it. The
+        // slot carries the reactor ref the Registration's Drop will release.
+        let actor = spawn_full_reject_actor();
+        let actor_key = actor as usize;
+        let actor_ref = unsafe { crate::transport::hew_actor_ref_local(actor) };
+        let slot = crate::read_slot::hew_read_slot_new();
+        // SAFETY: creator ref held → slot live for this retain.
+        unsafe { crate::read_slot::read_slot_retain(slot) }; // reactor ref (owned by reg)
+        inject_resume_registration_for_test(rfd, 911, actor_ref, actor_key, slot);
+        assert_eq!(registration_count_for_test(), 1);
+
+        // The detacher freed the actor in the snapshot→publish window (untrack +
+        // reclaim). The registration still points at it; the snapshot the reactor
+        // takes will carry the dangling pointer.
+        free_parked_actor(actor);
+
+        // Drive the readiness: the liveness check must report dead (no deref) and
+        // abort — unregistering the fd without depositing.
+        handle_ready_fd_for_test(poller, rfd, HEW_IO_READ);
+        assert_eq!(
+            registration_count_for_test(),
+            0,
+            "a readiness whose local actor was freed mid-window must abort + unregister"
+        );
+        // No deposit landed (the abort fired before any read/deposit).
+        assert_eq!(
+            unsafe { crate::read_slot::hew_read_slot_status(slot) },
+            crate::read_slot::ReadStatus::Pending as i32,
+            "the abort path must not deposit a read result"
+        );
+        // The Registration drop released the reactor ref; the creator ref free
+        // reclaims the slot (no leak).
+        // SAFETY: creator ref still held.
+        unsafe { crate::read_slot::hew_read_slot_free(slot) };
+
+        // SAFETY: closing our own fds and surrendering the poller.
+        unsafe {
+            libc::close(rfd);
+            libc::close(wfd);
+            hew_io_poller_stop(poller);
+        }
+        reset_reactor();
+    }
+
+    // ---- P1-A: read-slot UAF during in-flight deposit ----------------------
+    //
+    // `handle_ready_fd` snapshots `RegMode::Resume { read_slot }` by raw pointer.
+    // The deposit in `handle_ready_resume` runs WITHOUT the registry lock. A
+    // concurrent `reactor_detach_actor` is scrub-then-wait: Phase-1
+    // `evict_actor_state` drops the `Registration` (and the registration-owned
+    // slot ref) BEFORE the Phase-2 `DELIVERING_ACTOR` wait. Teardown destroys the
+    // coroutine first (drops the creator ref), so the Phase-1 scrub can drop the
+    // LAST ref and free the slot while the reactor is mid-deposit — the
+    // `DELIVERING_ACTOR` guard protects the ACTOR, not the SLOT.
+    //
+    // The fix: `handle_ready_fd` takes its OWN in-flight ref on the slot under the
+    // registry lock (in the snapshot closure), released by the `InflightSlotRef`
+    // guard on every exit. This forced-ordering test drives the EXACT mid-deposit
+    // ordering via the `RESUME_PRE_DEPOSIT_HOOK`: with the in-flight ref held, the
+    // slot survives a creator-free + registration-scrub that together would
+    // otherwise drop the last ref, so the deposit that follows is valid.
+
+    /// Forced-ordering proof: at the mid-deposit point (in-flight ref held), run
+    /// the teardown ordering that drops BOTH the creator ref and the
+    /// registration-owned ref. The in-flight ref must keep the slot alive so the
+    /// deposit lands on valid memory; the refcount across the scrub is asserted
+    /// directly, and the deposit itself runs (the UAF site) so the sanitizer suite
+    /// traps the pre-fix shape.
+    ///
+    /// FAIL-BEFORE / PASS-AFTER: without the in-flight ref the creator-free +
+    /// scrub drop the slot's last ref, so the deposit dereferences a freed slot
+    /// (`(*slot).cancelled` / `(*slot).status`) — a use-after-free the sanitizer
+    /// suite traps.
+    /// With the fix the in-flight ref holds refs >= 1 across the scrub and the
+    /// deposit is valid; the guard releases the final ref on return.
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test-only FFI: every pointer is a fresh local slot/poller/conn the \
+                  test body sets up and tears down; the lifecycle is described inline"
+    )]
+    fn inflight_slot_ref_survives_scrub_during_deposit() {
+        use std::io::Write;
+        const KEY: usize = 0x00F1_1761;
+
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // SAFETY: no preconditions for new.
+        let poller = unsafe { hew_io_poller_new() };
+        assert!(!poller.is_null());
+        let (conn, mut client) = crate::transport::tcp_socketpair_conn_for_test();
+        let fd = crate::transport::tcp_conn_raw_fd(conn).expect("conn fd");
+        assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
+        // SAFETY: poller valid; fd live.
+        assert_eq!(
+            unsafe { hew_io_poller_register(poller, fd, std::ptr::null_mut(), 0, HEW_IO_READ) },
+            0
+        );
+
+        // A LIVE local actor so `handle_ready_fd` passes the liveness check and
+        // reaches the deposit (this test exercises the SLOT UAF, not the actor).
+        let actor = spawn_full_reject_actor();
+        let actor_ref = unsafe { crate::transport::hew_actor_ref_local(actor) };
+
+        // Slot lifecycle: creator ref (=1), then the registration ref (=2) the
+        // `reactor_await_read` retain models, owned by the injected registration.
+        let slot = crate::read_slot::hew_read_slot_new();
+        // SAFETY: creator ref held.
+        unsafe { crate::read_slot::read_slot_retain(slot) }; // registration ref
+        assert_eq!(
+            unsafe { crate::read_slot::read_slot_refs_for_test(slot) },
+            2
+        );
+        inject_resume_registration_for_test(fd, conn, actor_ref, KEY, slot);
+
+        // Make the fd readable so the deposit path runs.
+        client.write_all(b"deposit-race").expect("client write");
+        client.flush().ok();
+        std::thread::sleep(Duration::from_millis(20));
+
+        // Install the mid-deposit hook: at the moment the reactor is about to
+        // deposit (in-flight ref held), run the teardown ordering that the
+        // verdict describes — creator-free FIRST, then the Phase-1 registration
+        // scrub. Together these drop the creator + registration refs; only the
+        // in-flight ref keeps the slot alive for the deposit that follows.
+        let slot_addr = slot as usize;
+        let scrub_observed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let scrub_observed_h = std::sync::Arc::clone(&scrub_observed);
+        set_resume_pre_deposit_hook(Some(Box::new(move || {
+            let slot = slot_addr as *mut crate::read_slot::HewReadSlot;
+            // With the fix the in-flight ref is held: refs == 3 here
+            // (creator + registration + in-flight). Pre-fix it would be 2.
+            let refs_at_hook = unsafe { crate::read_slot::read_slot_refs_for_test(slot) };
+            // Teardown destroys the coroutine first: drop the creator ref.
+            unsafe { crate::read_slot::hew_read_slot_free(slot) };
+            // Phase-1 scrub: remove the registration → its Drop releases the
+            // registration-owned ref. (We cannot call `reactor_detach_actor` here:
+            // it would spin-wait on DELIVERING_ACTOR, which this same thread holds
+            // inside `handle_ready_fd`. Removing the registry entry models exactly
+            // the Phase-1 `evict_actor_state` drop of the `Registration`.)
+            with_reactor_state_locked_for_test(|state| {
+                state.registry.remove(&fd);
+                state.conn_to_fd.retain(|_, mapped| *mapped != fd);
+            });
+            // After creator-free + scrub: pre-fix refs == 0 (slot FREED → the
+            // deposit below is a UAF). Post-fix refs == 1 (the in-flight ref
+            // survives → the deposit is valid).
+            let refs_after_scrub = unsafe { crate::read_slot::read_slot_refs_for_test(slot) };
+            scrub_observed_h.store((refs_at_hook << 8) | refs_after_scrub, Ordering::SeqCst);
+        })));
+
+        // Drive the readiness: snapshot (takes the in-flight ref) → hook (creator-
+        // free + scrub) → deposit (the UAF site pre-fix) → guard releases the
+        // in-flight ref on return.
+        handle_ready_fd_for_test(poller, fd, HEW_IO_READ);
+
+        // Clear the hook so no later test inherits it.
+        set_resume_pre_deposit_hook(None);
+
+        let observed = scrub_observed.load(Ordering::SeqCst);
+        let refs_at_hook = observed >> 8;
+        let refs_after_scrub = observed & 0xff;
+        assert_eq!(
+            refs_at_hook, 3,
+            "at the deposit point the in-flight ref must be held (creator + \
+             registration + in-flight = 3)"
+        );
+        assert_eq!(
+            refs_after_scrub, 1,
+            "after the creator-free + registration scrub the in-flight ref must be \
+             the sole surviving ref (1), keeping the slot alive across the deposit"
+        );
+
+        // The slot was reclaimed exactly once when `handle_ready_fd` returned and
+        // its `InflightSlotRef` guard dropped the final ref (no leak, no
+        // double-free — proven leak-/double-free-clean under the sanitizer suite).
+
+        drop(client);
+        // SAFETY: cleanup.
+        unsafe {
+            crate::transport::tcp_close_raw_for_test(conn);
+            hew_io_poller_stop(poller);
+        }
+        free_parked_actor(actor);
+        reset_reactor();
+    }
+
     // ---- attach-then-free-before-promotion UAF guard (pending scrub) -------
     //
     // An `attach` queues a `Pending::Add` and returns; the reactor promotes it
@@ -1456,8 +2458,10 @@ mod tests {
                     conn: 601,
                     actor_ref: dead_actor_ref(),
                     actor_key: KEY,
-                    on_data_type: 1,
-                    on_close_type: 2,
+                    mode: RegMode::AutoSend {
+                        on_data_type: 1,
+                        on_close_type: 2,
+                    },
                     closed: false,
                 },
             );

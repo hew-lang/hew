@@ -1,0 +1,46 @@
+//! Worker-occupancy proof for non-blocking `await conn.read()` (NEW-1).
+//!
+//! N readers each connect on their own socket and `await` a read. Run with
+//! `HEW_WORKERS=1`: all N suspend concurrently on the single worker (each freed
+//! while it waits, resumed by the reactor when its socket is readable), so N
+//! concurrent awaits occupy fewer than N workers. A blocking `read` would strand
+//! the lone worker on reader-0 forever and deadlock the rest.
+//!
+//! Each reader binds its OWN payload — the value-routing edge: the reactor must
+//! deposit each socket's bytes into the right parked continuation, not cross
+//! them. A correct run prints `reader-i-got: payload-i` for every i.
+
+import std::net;
+
+const READER_COUNT: i64 = 4;
+
+actor Reader {
+    let id: i64;
+    let port: string;
+
+    receive fn go(unused: i64) {
+        sleep_ms(150);
+        let conn = net.connect(f"127.0.0.1:{port}");
+        let body = await conn.read_string();
+        println(f"reader-{id}-got: {body}");
+        let _ = conn.close();
+    }
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:18078");
+    var i = 0;
+    while i < READER_COUNT {
+        let r = spawn Reader(id: i, port: "18078");
+        r.go(0);
+        i = i + 1;
+    }
+    var accepted = 0;
+    while accepted < READER_COUNT {
+        let client = listener.accept();
+        client.write_string(f"payload-{accepted}");
+        accepted = accepted + 1;
+    }
+    sleep_ms(800);
+    println("server-done");
+}

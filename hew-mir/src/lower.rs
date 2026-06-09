@@ -3920,6 +3920,9 @@ fn collect_unknown_self_fields_in_expr(
         HirExprKind::Unary { operand, .. } => {
             collect_unknown_self_fields_in_expr(operand, state_fields, seen, unknown);
         }
+        HirExprKind::ConnAwaitRead { conn, .. } => {
+            collect_unknown_self_fields_in_expr(conn, state_fields, seen, unknown);
+        }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
         }
@@ -7302,6 +7305,9 @@ impl Builder {
                 args,
                 reply_ty,
             } => self.lower_actor_ask(receiver, method_id, args, reply_ty, expr),
+            HirExprKind::ConnAwaitRead { conn, to_string } => {
+                self.lower_conn_await_read(conn, *to_string, expr)
+            }
             HirExprKind::RemoteActorAsk {
                 receiver,
                 msg,
@@ -9716,6 +9722,8 @@ impl Builder {
                     | Terminator::Ask { .. }
                     | Terminator::RemoteAsk { .. }
                     | Terminator::Suspend { .. }
+                    | Terminator::SuspendingAsk { .. }
+                    | Terminator::SuspendingRead { .. }
                     | Terminator::Select { .. } => false,
                 }
             }
@@ -14746,17 +14754,111 @@ impl Builder {
             is_opaque: false,
         });
         let next = self.alloc_block();
-        self.finish_current_block(Terminator::Ask {
-            actor,
-            msg_type: info.msg_type,
-            value,
-            result_dest,
-            reply_dest,
-            error_dest,
+        // Suspendable-caller flip (W6.010, E2/D-W2). A caller that carries the
+        // execution context (an actor handler / closure / task entry) runs on
+        // the scheduler as a coroutine and can PARK its continuation: emit the
+        // non-blocking `SuspendingAsk` so the ask suspends (freeing the worker)
+        // and resumes on the reply, binding the value on the resume edge. A
+        // `FunctionCallConv::Default` caller (`main`, a free function) runs on a
+        // foreign/main thread with no parkable continuation, so it keeps the
+        // blocking `Terminator::Ask` (the condvar path, E6). The resume edge IS
+        // `next` — lowering continues in the same block where the ask result is
+        // already bound; `cleanup` routes to the codegen single-teardown
+        // epilogue (`SuspendingAsk` carries no separate MIR cleanup block, so it
+        // reuses `next` as the drop-elaboration cleanup seam, exactly as the
+        // codegen `Terminator::Suspend` case-1 edge routes to the shared
+        // epilogue).
+        if self.current_function_call_conv.carries_execution_context() {
+            self.finish_current_block(Terminator::SuspendingAsk {
+                actor,
+                msg_type: info.msg_type,
+                value,
+                result_dest,
+                reply_dest,
+                error_dest,
+                resume: next,
+                cleanup: next,
+            });
+        } else {
+            self.finish_current_block(Terminator::Ask {
+                actor,
+                msg_type: info.msg_type,
+                value,
+                result_dest,
+                reply_dest,
+                error_dest,
+                next,
+            });
+        }
+        self.start_block(next);
+        Some(result_dest)
+    }
+
+    /// Lower `await conn.read()` / `await conn.read_string()` (NEW-1). Mirrors
+    /// `lower_actor_ask`'s suspendable-caller flip:
+    ///
+    /// - A caller that carries the execution context (actor handler / closure /
+    ///   task entry) lowers to `Terminator::SuspendingRead`: the read suspends
+    ///   (freeing the worker) and resumes when the reactor reports the fd ready,
+    ///   binding the bytes on the resume edge.
+    /// - A `FunctionCallConv::Default` caller (`main`, free fn) runs on a
+    ///   foreign/main thread with no parkable continuation, so it keeps the
+    ///   blocking `hew_tcp_read` FFI call (E8).
+    ///
+    /// `read_string` reads `bytes` then converts via `hew_bytes_to_string`; the
+    /// suspend carrier always binds `bytes` (the value-routing destination), and
+    /// the string conversion wraps the bound bytes on the resume edge.
+    fn lower_conn_await_read(
+        &mut self,
+        conn: &HirExpr,
+        to_string: bool,
+        expr: &HirExpr,
+    ) -> Option<Place> {
+        let conn_place = self.lower_value(conn)?;
+        let bytes_ty = ResolvedTy::Bytes;
+
+        // The bytes slot the read binds (the SuspendingRead `result_dest` / the
+        // blocking `hew_tcp_read` return).
+        let bytes_dest = self.alloc_local(bytes_ty.clone());
+
+        if self.current_function_call_conv.carries_execution_context() {
+            let next = self.alloc_block();
+            // `SuspendingRead` carries no separate MIR cleanup block — it rides
+            // the multi-suspend epilogue, so `cleanup` reuses `next` (exactly as
+            // `SuspendingAsk` does).
+            self.finish_current_block(Terminator::SuspendingRead {
+                conn: conn_place,
+                result_dest: bytes_dest,
+                resume: next,
+                cleanup: next,
+            });
+            self.start_block(next);
+        } else {
+            // Default caller: the blocking read FFI (no parkable continuation).
+            let next = self.alloc_block();
+            self.finish_current_block(Terminator::Call {
+                callee: "hew_tcp_read".to_string(),
+                args: vec![conn_place],
+                dest: Some(bytes_dest),
+                next,
+            });
+            self.start_block(next);
+        }
+
+        if !to_string {
+            return Some(bytes_dest);
+        }
+        // `read_string`: convert the bound bytes to a string.
+        let string_dest = self.alloc_local(self.subst_ty(&expr.ty));
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_bytes_to_string".to_string(),
+            args: vec![bytes_dest],
+            dest: Some(string_dest),
             next,
         });
         self.start_block(next);
-        Some(result_dest)
+        Some(string_dest)
     }
 
     fn remote_actor_method_info(
@@ -17173,6 +17275,12 @@ fn validate_cross_block_split_consume(
             // the in-CFG successor edges.
             Terminator::Suspend {
                 resume, cleanup, ..
+            }
+            | Terminator::SuspendingAsk {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingRead {
+                resume, cleanup, ..
             } => {
                 emit(*resume);
                 emit(*cleanup);
@@ -17199,6 +17307,12 @@ fn validate_cross_block_split_consume(
             // Suspend's default edge exits the function; resume + cleanup are
             // the in-CFG successors.
             Terminator::Suspend {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingAsk {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingRead {
                 resume, cleanup, ..
             } => vec![*resume, *cleanup],
         }
@@ -17782,6 +17896,14 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
         // `reply_dest` is the slot the reply is written into — a write, not
         // a source.
         Terminator::Ask { actor, value, .. } => vec![*actor, *value],
+        // `SuspendingAsk` mirrors `Ask`'s operand shape: `actor` + `value` are
+        // the reads; `result_dest`/`reply_dest`/`error_dest` are write slots
+        // bound on the resume edge. Kept a separate arm per the exhaustiveness
+        // fail-closed guarantee above.
+        Terminator::SuspendingAsk { actor, value, .. } => vec![*actor, *value],
+        // `SuspendingRead` reads `conn` (the read source); `result_dest` is a
+        // write slot bound on the resume edge, not a source.
+        Terminator::SuspendingRead { conn, .. } => vec![*conn],
         Terminator::RemoteAsk {
             actor,
             value,
@@ -17997,15 +18119,18 @@ fn generator_yield_terminator_escapes(term: &Terminator, local: u32) -> bool {
         | Terminator::Branch { .. }
         | Terminator::Trap { .. }
         | Terminator::Suspend { .. }
+        // `SuspendingRead` carries only `conn` (a connection handle read), never
+        // a generator-yielded `local`, so it never escapes one.
+        | Terminator::SuspendingRead { .. }
         | Terminator::MakeGenerator { .. } => false,
         // A bare `Return` moves the function's ReturnSlot (already written by an
         // earlier `Move`, caught by the instr scan); `Return` itself carries no
         // operand. Re-yield / send / ask / select transfer the value out.
         Terminator::Return => false,
         Terminator::Yield { value, .. } => place_refs_local(*value, local),
-        Terminator::Send { value, .. } | Terminator::Ask { value, .. } => {
-            place_refs_local(*value, local)
-        }
+        Terminator::Send { value, .. }
+        | Terminator::Ask { value, .. }
+        | Terminator::SuspendingAsk { value, .. } => place_refs_local(*value, local),
         Terminator::RemoteAsk { value, .. } => place_refs_local(*value, local),
         Terminator::Select { .. } => terminator_source_places(term)
             .into_iter()
@@ -21203,6 +21328,21 @@ fn enumerate_exits(
             // site. Function-wide DropPlan is intentionally empty, mirroring
             // `ExitPath::Yield`/`Goto`.
             Terminator::Suspend {
+                resume, cleanup, ..
+            }
+            // `SuspendingAsk` is a suspend point with the identical drop posture:
+            // live state (including the reply channel) is preserved in the coro
+            // frame across the suspend, dropped exactly once by the `cleanup`
+            // outline on `coro.destroy`, never at the suspend site.
+            | Terminator::SuspendingAsk {
+                resume, cleanup, ..
+            }
+            // `SuspendingRead` has the identical drop posture: the read slot +
+            // any live-across-suspend state ride the coro frame, dropped exactly
+            // once by the `cleanup` outline on `coro.destroy` (the abandon edge
+            // additionally cancels + frees the read slot), never at the suspend
+            // site.
+            | Terminator::SuspendingRead {
                 resume, cleanup, ..
             } => (
                 ExitPath::Suspend {

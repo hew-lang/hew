@@ -477,6 +477,8 @@ pub mod execution_context;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lambda_actor;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod read_slot;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod reply_channel;
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod reply_channel_wasm;

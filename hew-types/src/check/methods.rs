@@ -4115,7 +4115,23 @@ impl Checker {
         self.reject_if_wasm_native_only_handle(&resolved, span);
         self.reject_if_wasm_blocking_semaphore_method(&resolved, method, span);
         if let Ty::Named { name, .. } = &resolved {
-            self.warn_if_blocking_handle_method(name, method, span);
+            // NEW-1: `await conn.read()` / `await conn.read_string()` is the
+            // non-blocking suspending read. Record the inner method-call span so
+            // HIR lowering emits `ConnAwaitRead` instead of the blocking method.
+            // Recognised ONLY directly under an `await` (the suspend point); a
+            // bare `conn.read()` stays the blocking FFI call (E8).
+            let is_conn_await_read = self.inside_await_expr
+                && (name == "Connection" || name == "net.Connection")
+                && matches!(method, "read" | "read_string");
+            if is_conn_await_read {
+                self.conn_await_reads
+                    .insert(SpanKey::from(span), method == "read_string");
+            } else {
+                // The blocking-call warning is correct for a bare (non-awaited)
+                // `conn.read()`; suppress it when the read is the non-blocking
+                // suspending form (it no longer strands a worker).
+                self.warn_if_blocking_handle_method(name, method, span);
+            }
         }
 
         match (&resolved, method) {

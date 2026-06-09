@@ -1082,6 +1082,19 @@ fn walk_expr(
                 cap_diag_emitted,
             );
         }
+        HirExprKind::ConnAwaitRead { conn, .. } => {
+            walk_expr(
+                conn,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+        }
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             walk_expr(
                 left,

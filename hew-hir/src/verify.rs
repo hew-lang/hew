@@ -201,6 +201,7 @@ impl Verifier {
                 self.expr(right);
             }
             HirExprKind::Unary { operand, .. } => self.expr(operand),
+            HirExprKind::ConnAwaitRead { conn, .. } => self.expr(conn),
             HirExprKind::NumericCast {
                 value,
                 from_ty,

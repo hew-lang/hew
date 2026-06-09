@@ -864,6 +864,33 @@ pub(crate) fn tcp_release_conn(handle: c_int) {
     });
 }
 
+/// Test-only: create a connected loopback TCP socketpair, register the server
+/// end as a conn handle, and return `(conn_handle, client_stream)`. Lets the
+/// reactor's resume-mode read branch be driven against a REAL readable socket
+/// (writing to `client_stream` makes `conn_handle` readable). The caller closes
+/// `conn_handle` with [`tcp_close_raw_for_test`] and drops `client_stream`.
+#[cfg(all(test, unix))]
+pub(crate) fn tcp_socketpair_conn_for_test() -> (c_int, TcpStream) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let client = TcpStream::connect(addr).expect("connect loopback client");
+    let (server, _) = listener.accept().expect("accept loopback server");
+    server.set_nodelay(true).ok();
+    let handle = TCP_API_STATE.access(|state| {
+        let handle = state.alloc_handle();
+        state.streams.insert(handle, server);
+        handle
+    });
+    (handle, client)
+}
+
+/// Test-only: remove a conn handle's stream from the table (no shutdown), the
+/// counterpart to [`tcp_socketpair_conn_for_test`].
+#[cfg(test)]
+pub(crate) fn tcp_close_raw_for_test(handle: c_int) {
+    tcp_release_conn(handle);
+}
+
 // ---- Active-mode reactor support -------------------------------------------
 //
 // These helpers back the non-blocking "I/O completion as a mailbox message"
@@ -2157,6 +2184,46 @@ pub unsafe extern "C" fn hew_tcp_attach_local(
     unsafe {
         crate::reactor::reactor_attach(conn, &raw const actor_ref, on_data_type, on_close_type)
     }
+}
+
+/// Register a TCP connection for a SUSPENDING `await conn.read()` (NEW-1).
+///
+/// The codegen ramp for `Terminator::SuspendingRead` calls this from a
+/// suspendable handler: it has created a `HewReadSlot` (held across the suspend
+/// in the coro frame) and parked its continuation on `actor`. This forwards to
+/// the reactor's resume-mode registration: when the fd becomes readable the
+/// reactor reads the bytes, deposits the result into `read_slot`, and
+/// `enqueue_resume`s the parked continuation.
+///
+/// `actor` is the raw `*mut HewActor` the Hew `LocalPid` lowers to (same shape
+/// as `hew_tcp_attach_local`); the runtime constructs the local `HewActorRef`.
+///
+/// Returns 0 on success, -1 on failure (null args, unknown handle, reactor
+/// unavailable). On failure the caller's slot ref is untouched and the codegen
+/// ramp binds the error edge.
+///
+/// # Safety
+///
+/// - `conn` must be a valid TCP connection handle from the stdlib `net` API.
+/// - `actor` must be a valid pointer to a live [`HewActor`] that owns the parked
+///   continuation registered for this read.
+/// - `read_slot` must be a valid live `HewReadSlot` the caller holds a ref to.
+#[no_mangle]
+pub unsafe extern "C" fn hew_conn_await_read(
+    conn: c_int,
+    actor: *mut HewActor,
+    read_slot: *mut crate::read_slot::HewReadSlot,
+) -> c_int {
+    if actor.is_null() {
+        set_last_error("hew_conn_await_read: null actor pointer");
+        return -1;
+    }
+    // SAFETY: `actor` is non-null and the caller guarantees it is live.
+    let actor_ref = unsafe { hew_actor_ref_local(actor) };
+    // SAFETY: `actor_ref` is a valid stack-local `HewActorRef`; the reactor takes
+    // a by-value snapshot before returning. `read_slot` validity is the caller's
+    // contract (the reactor takes its own ref on success).
+    unsafe { crate::reactor::reactor_await_read(conn, &raw const actor_ref, read_slot) }
 }
 
 /// Detach a TCP connection from the active-mode reactor without closing it.

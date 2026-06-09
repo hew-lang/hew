@@ -108,6 +108,7 @@ pub struct HewActor {
     pub suspended_cont: AtomicPtr<c_void>,
     pub cont_tag: AtomicI32,
     pub pending_wake: AtomicBool,
+    pub suspended_reply_channel: AtomicPtr<c_void>,
 }
 
 // SAFETY: Single-threaded on WASM; on native (tests), the struct is only
@@ -165,6 +166,7 @@ const _: () = {
     assert!(offset_of!(W, suspended_cont) == offset_of!(N, suspended_cont));
     assert!(offset_of!(W, cont_tag) == offset_of!(N, cont_tag));
     assert!(offset_of!(W, pending_wake) == offset_of!(N, pending_wake));
+    assert!(offset_of!(W, suspended_reply_channel) == offset_of!(N, suspended_reply_channel));
 };
 
 // ── HewMsgNode layout (strict prefix of native mailbox.rs) ──────────────
@@ -948,6 +950,13 @@ fn as_native_actor<'a>(actor: *mut HewActor) -> &'a crate::actor::HewActor {
 unsafe fn park_suspended_activation_wasm(actor: *mut HewActor, cont: *mut c_void) -> bool {
     let a = as_native_actor(actor);
     if !crate::coro_exec::begin_park(a).is_ok() {
+        // P1-B (parity with native): begin_park refused, but we still OWN
+        // `cont` (the dispatch produced it and it was never stored). Destroy it
+        // rather than dropping it silently — a dropped handle leaks the coro
+        // frame + any frame-owned heap values.
+        // SAFETY: `cont` is the live, not-yet-parked, not-yet-destroyed frame
+        // this activation produced; no other owner exists.
+        unsafe { crate::cont::hew_cont_destroy(cont) };
         return false;
     }
     // SAFETY: `cont` is a live suspended continuation per the fn contract.
@@ -979,9 +988,48 @@ unsafe fn park_suspended_activation_wasm(actor: *mut HewActor, cont: *mut c_void
 /// `actor` is owned by the calling activation (Running on this single thread).
 unsafe fn resume_suspended_activation_wasm(actor: *mut HewActor) {
     let a = as_native_actor(actor);
+
+    // W6.010 value routing (parity with native `resume_suspended_activation`):
+    // re-establish an execution context carrying the handler's stashed reply
+    // channel (saved at park) BEFORE driving the resume, so the resumed body's
+    // final-return `hew_reply` (via `hew_get_reply_channel`) deposits the reply
+    // to the handler's caller. The suspend tore down the original dispatch
+    // context; without this the body would see no reply channel and the caller
+    // would hang. The context also re-establishes actor/arena/lock_seat so a
+    // post-resume self/state/context read reads the live values, not a stale
+    // frame — the same fix the native path and the codegen coro-aware context
+    // readers rely on. The context is a scheduler-owned stack carrier restored
+    // after the resume step.
+    let stashed_reply = a.suspended_reply_channel.load(Ordering::Acquire);
+    let mut resume_context = crate::execution_context::HewExecutionContext {
+        actor: actor.cast::<c_void>().cast::<crate::actor::HewActor>(),
+        actor_id: a.id,
+        arena: a.arena.cast::<crate::arena::ActorArena>(),
+        prev_context: crate::execution_context::current_context(),
+        lock_seat: crate::actor::actor_state_lock_seat(actor.cast::<crate::actor::HewActor>()),
+        reply_channel: stashed_reply,
+        ..crate::execution_context::HewExecutionContext::default()
+    };
+    let prev_context = resume_context.prev_context;
+    let installed_prev = crate::execution_context::set_current_context(&raw mut resume_context);
+    debug_assert_eq!(installed_prev, prev_context);
+
     // SAFETY: parked handle is the executor-owned frame; resume_park enforces
     // FG2/FG4 internally.
     let poll = unsafe { crate::coro_exec::resume_park(a) };
+
+    // Restore the prior context now that the resume step (resume + poll, and any
+    // body-side reply deposit it performed) has run. On Ready/None the body
+    // already deposited its reply; clear the stash so a re-armed multi-await
+    // actor cannot reuse a freed channel. On Pending the handler re-parked, so
+    // the stash stays for the next resume. Mirrors the native restore exactly.
+    let restored = crate::execution_context::set_current_context(prev_context);
+    debug_assert_eq!(restored, &raw mut resume_context);
+    if matches!(poll, Some(crate::cont::ResumePoll::Ready) | None) {
+        a.suspended_reply_channel
+            .store(std::ptr::null_mut(), Ordering::Release);
+    }
+
     match poll {
         Some(crate::cont::ResumePoll::Pending) => {
             // Re-park: suspended again.
@@ -1007,6 +1055,11 @@ unsafe fn resume_suspended_activation_wasm(actor: *mut HewActor) {
             // SAFETY: tag is Done or terminal; destroy_parked refuses a second
             // teardown.
             let _ = unsafe { crate::coro_exec::destroy_parked(a) };
+            // P1-B (parity with native): re-arm `Destroyed → Empty` on the
+            // quiescent edge so this actor can park a NEW continuation on its
+            // next `await`. Fail-closed: only a Destroyed tag with a null slot
+            // re-arms.
+            let _ = crate::coro_exec::re_arm(a);
             // SAFETY: single-threaded; actor valid.
             unsafe { settle_after_activation_wasm(actor) };
         }
@@ -1322,7 +1375,23 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                 execution_context.reply_channel = std::ptr::null_mut();
                 execution_context.flags &=
                     !crate::execution_context::HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
-                if reply_consumed
+                if !suspend_handle.is_null() {
+                    // W6.010 suspend edge (parity with native, scheduler.rs:1433):
+                    // a suspending handler still owes a reply to ITS caller. Stash
+                    // this dispatch's reply channel on the actor and SKIP the normal
+                    // teardown/free below — the channel reference is transferred to
+                    // `suspended_reply_channel`, and the resume edge re-establishes a
+                    // context carrying it so the resumed body deposits the reply.
+                    // Without this the WASM suspend edge nulled + freed the channel
+                    // here, leaving the resumed body with no channel and hanging the
+                    // caller (the P1-wasm parity gap).
+                    // SAFETY: msg is exclusively owned by this scheduler tick.
+                    unsafe {
+                        a.suspended_reply_channel
+                            .store((*msg).reply_channel, Ordering::Release);
+                        (*msg).reply_channel = std::ptr::null_mut();
+                    }
+                } else if reply_consumed
                     || (actor_state != HewActorState::Stopping as i32
                         && actor_state != HewActorState::Stopped as i32)
                 {
@@ -1821,6 +1890,7 @@ mod tests {
             suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
+            suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -2478,6 +2548,156 @@ mod tests {
             "a completed resume with an empty mailbox settles to Idle"
         );
 
+        hew_sched_shutdown();
+    }
+
+    /// A wasm dispatch handler that suspends — returns a non-null `coro.begin`-
+    /// shaped handle (the D-A.2 suspend outcome the trampoline surfaces on a
+    /// Pending poll). The scratch frame completes on its 1st resume.
+    unsafe extern "C-unwind" fn suspend_once_dispatch_wasm(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _data_size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
+        Box::into_raw(frame).cast::<c_void>()
+    }
+
+    /// PRODUCTION SUSPEND EDGE (wasm parity): a handler that returns a non-null
+    /// handle from the dispatch trampoline drives the cooperative message loop to
+    /// PARK the activation — CAS to `Suspended`, store the handle. Mirrors the
+    /// native `dispatch_returning_handle_parks_the_activation`; the wasm
+    /// deliverable is parity (E9 — actors are wasm-rejected from source, so the
+    /// synthetic dispatch fn is the producer).
+    #[test]
+    fn wasm_dispatch_returning_handle_parks_the_activation() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut actor = stub_actor();
+        // SAFETY: test exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        actor.dispatch = Some(suspend_once_dispatch_wasm);
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+
+        // Enqueue one message and drive one cooperative tick.
+        // SAFETY: actor is valid, scheduler initialized, mailbox live.
+        unsafe { sched_enqueue(actor_ptr) };
+        // SAFETY: actor has a valid mailbox.
+        unsafe { queue_wasm_message(actor_ptr, 0) };
+        hew_sched_run();
+
+        // The handler suspended: the cooperative loop parked the returned handle.
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Suspended as i32,
+            "a handler returning a non-null handle parks the activation on wasm"
+        );
+        assert!(
+            !actor.suspended_cont.load(Ordering::Relaxed).is_null(),
+            "the returned handle is parked in the resume slot on wasm"
+        );
+        assert_eq!(
+            actor.cont_tag.load(Ordering::Relaxed),
+            crate::internal::types::ContTag::Parked as i32,
+            "the parked cont tag is Parked on wasm"
+        );
+
+        // Teardown: destroy the parked scratch frame exactly once + free mailbox.
+        // SAFETY: the parked handle is live and not yet destroyed.
+        assert!(unsafe { crate::coro_exec::destroy_parked(as_native_actor(actor_ptr)) }.is_ok());
+        // SAFETY: mailbox was allocated for this test.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
+        hew_sched_shutdown();
+    }
+
+    /// P1-wasm parity (W6.010): a suspending handler still owes a reply to its
+    /// caller, so the wasm suspend edge must STASH the message's reply channel
+    /// into `suspended_reply_channel` and SKIP the normal teardown/free — exactly
+    /// like the native path — so the resume edge can re-establish a context
+    /// carrying it. Before this fix the wasm dispatch loop nulled + freed the
+    /// reply channel before parking, leaving the resumed body with no channel
+    /// (the caller would hang). Drives one cooperative tick with an ask
+    /// (reply-channel-bearing) message + a suspending dispatch and asserts the
+    /// channel was stashed, not freed.
+    #[test]
+    fn wasm_suspend_edge_stashes_reply_channel_for_resume() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut actor = stub_actor();
+        actor.dispatch = Some(suspend_once_dispatch_wasm);
+        // SAFETY: this test creates and exclusively owns the mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        actor
+            .actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+
+        let ch = crate::reply_channel_wasm::hew_reply_channel_new();
+        let value: i32 = 7;
+        // SAFETY: actor, channel, and payload are valid for the test duration.
+        let rc = unsafe {
+            crate::actor::ask_with_channel_wasm_internal(
+                actor_ptr.cast(),
+                1,
+                (&raw const value).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+                ch.cast(),
+            )
+        };
+        assert_eq!(rc, HewError::Ok as i32);
+        // The queued send retained the caller's channel (refs == 2).
+        assert_eq!(
+            // SAFETY: `ch` is live for the test.
+            unsafe { crate::reply_channel_wasm::test_ref_count(ch) },
+            2,
+            "the ask must retain the reply channel"
+        );
+
+        // Drive the cooperative loop: dispatch suspends, the loop parks.
+        hew_sched_run();
+
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Suspended as i32,
+            "the suspending handler parks the activation"
+        );
+        // The reply channel was STASHED on the actor (not nulled/freed): the
+        // resume edge consumes it. This is the parity fix.
+        let a = as_native_actor(actor_ptr);
+        assert_eq!(
+            a.suspended_reply_channel.load(Ordering::Relaxed),
+            ch.cast::<c_void>(),
+            "the suspend edge must stash the reply channel for the resume edge"
+        );
+        // The sender-side retain is still outstanding (NOT freed on the suspend
+        // edge) — the channel remains live for the eventual reply.
+        assert_eq!(
+            // SAFETY: `ch` is live for the test.
+            unsafe { crate::reply_channel_wasm::test_ref_count(ch) },
+            2,
+            "the suspend edge must NOT free the reply channel ref"
+        );
+
+        // Teardown: destroy the parked frame, then release both refs + mailbox.
+        // SAFETY: the parked handle is live and not yet destroyed.
+        assert!(unsafe { crate::coro_exec::destroy_parked(a) }.is_ok());
+        a.suspended_reply_channel
+            .store(ptr::null_mut(), Ordering::Relaxed);
+        // SAFETY: release the stashed sender ref and the test's waiter ref.
+        unsafe {
+            crate::reply_channel_wasm::hew_reply_channel_free(ch.cast());
+            crate::reply_channel_wasm::hew_reply_channel_free(ch.cast());
+            crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast());
+        }
         hew_sched_shutdown();
     }
 
@@ -4485,6 +4705,7 @@ mod tests {
             suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
+            suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────

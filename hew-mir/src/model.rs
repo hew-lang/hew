@@ -1808,7 +1808,16 @@ impl BasicBlock {
             // The default suspend-return edge exits the function (returns to the
             // executor, like a `Return`); only the resume + cleanup arms are
             // in-CFG successors.
+            // Both suspend carriers: the default suspend-return edge exits to
+            // the executor (like a `Return`); only the resume + cleanup arms are
+            // in-CFG successors.
             Terminator::Suspend {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingAsk {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingRead {
                 resume, cleanup, ..
             } => vec![*resume, *cleanup],
         }
@@ -1986,6 +1995,88 @@ pub enum Terminator {
         /// as the `Err` variant payload.
         error_dest: Place,
         next: u32,
+    },
+    /// Non-blocking local actor ask from a SUSPENDABLE caller (W6.010). The
+    /// caller-side companion of [`Terminator::Ask`]: same `{actor, msg_type,
+    /// value, result_dest, reply_dest, error_dest}` shape, but instead of
+    /// blocking an OS worker on the reply condvar, codegen lowers this as a
+    /// `coro.suspend` source — it sends the ask with the parked-continuation
+    /// waiter registered on the reply channel (so `hew_reply` →
+    /// `enqueue_resume`), suspends (freeing the worker), and on the resume edge
+    /// reads the now-ready reply value from the channel and binds it to
+    /// `result_dest` (`Ok(reply)`/`Err(AskError)`). The reply value travels
+    /// through the reply channel held across the suspend (the channel is a
+    /// frame-spilled local), NOT a terminator operand — this is why the resume
+    /// binding lives ON the terminator rather than on a bare
+    /// [`Terminator::Suspend`] (which carries no source places, `model.rs`
+    /// `suspend_reads_no_source_places`).
+    ///
+    /// Carries the same SUSPEND carrier the codegen boundary reads for
+    /// `has_suspend` (R2 / the Lane-B silent-no-op class): any function whose
+    /// CFG contains this terminator is lowered as a `presplitcoroutine`. Emitted
+    /// ONLY when the lowering function carries the execution context
+    /// (`FunctionCallConv::carries_execution_context` — actor handler / closure
+    /// / task entry); a `FunctionCallConv::Default` caller (`main`, free fns)
+    /// runs on a foreign thread with no parkable continuation and keeps
+    /// `Terminator::Ask` (the condvar path, E6). Remote asks keep
+    /// `Terminator::RemoteAsk` (NEW-5 owns the wire-reply readiness source).
+    SuspendingAsk {
+        actor: Place,
+        msg_type: i32,
+        value: Place,
+        /// `Result<R, AskError>` slot — bound on the resume edge after the
+        /// reply lands. Identical role to [`Terminator::Ask::result_dest`].
+        result_dest: Place,
+        /// Raw reply slot — the unwrapped `R` read from the reply channel on
+        /// the resume edge (`hew_reply_wait` fast path, already ready).
+        reply_dest: Place,
+        /// `AskError` slot for the null-reply failure path on resume.
+        error_dest: Place,
+        /// Block reached on the coro switch resume edge (case 0) — the body
+        /// continues here after `enqueue_resume` woke the parked continuation.
+        /// This is the block where the reply is bound; it is the `next` block of
+        /// the original ask (lowering continues there).
+        resume: u32,
+        /// Block reached on the coro switch cleanup edge (case 1) — the frame's
+        /// teardown when the parked continuation is abandoned (`coro.destroy`).
+        cleanup: u32,
+    },
+    /// Non-blocking `await conn.read()` from a SUSPENDABLE caller (NEW-1). The
+    /// fd-readiness analogue of [`Terminator::SuspendingAsk`]: instead of
+    /// blocking an OS worker in `hew_tcp_read`, codegen lowers this as a
+    /// `coro.suspend` source — it creates a read slot, registers the parked
+    /// continuation + the slot with the reactor (`hew_conn_await_read`), suspends
+    /// (freeing the worker), and on the resume edge reads the now-ready bytes
+    /// from the slot and binds them to `result_dest`. The bytes travel through
+    /// the read slot held across the suspend (a frame-spilled codegen local),
+    /// NOT a terminator operand — exactly as `SuspendingAsk`'s reply travels
+    /// through its reply channel.
+    ///
+    /// Carries the same SUSPEND carrier the codegen boundary reads for
+    /// `has_suspend` (R2 / the Lane-B silent-no-op class): any function whose CFG
+    /// contains this terminator is lowered as a `presplitcoroutine`. Emitted ONLY
+    /// when the lowering function carries the execution context
+    /// (`FunctionCallConv::carries_execution_context` — actor handler / closure /
+    /// task entry); a `FunctionCallConv::Default` caller (`main`, free fns) runs
+    /// on a foreign thread with no parkable continuation and keeps the blocking
+    /// `hew_tcp_read` FFI call.
+    SuspendingRead {
+        /// The TCP connection handle the read is registered against (the receiver
+        /// of `conn.read()`). Read by codegen to register the fd with the reactor.
+        conn: Place,
+        /// The `bytes` slot bound on the resume edge after the reactor deposits
+        /// the read result. Identical role to [`Terminator::SuspendingAsk`]'s
+        /// `reply_dest` — the value-routing destination a dedicated carrier
+        /// states directly (D-1).
+        result_dest: Place,
+        /// Block reached on the coro switch resume edge (case 0) — the body
+        /// continues here after `enqueue_resume` woke the parked continuation and
+        /// the bytes are bound. This is the `next` block of the original read.
+        resume: u32,
+        /// Block reached on the coro switch cleanup edge (case 1) — the frame's
+        /// teardown when the parked continuation is abandoned (`coro.destroy`);
+        /// the read slot is cancelled + freed there.
+        cleanup: u32,
     },
     /// Remote actor ask: send `value` to a `RemotePid<T>` and construct
     /// `Result<Reply, AskError>` in `result_dest`.

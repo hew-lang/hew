@@ -388,18 +388,30 @@ pub fn emit_coro_prologue<'a, 'ctx>(
     })
 }
 
-/// Emit the coroutine epilogue into `coro.end`'s block: free the frame via
-/// `coro.free` → `hew_cont_frame_free`, then `coro.end(hdl, false, none)` and
-/// `ret`. The caller positions the builder at the cleanup/return block first
-/// and drops any frame-owned heap values BEFORE calling this (the single
-/// teardown owner discipline — see `hew-runtime/src/cont.rs`).
+/// Emit the coroutine cleanup arm: free the frame via `coro.free` →
+/// `hew_cont_frame_free`, then BRANCH into the shared `join_block` (the
+/// suspend-return block that carries the single fallthrough `coro.end` + `ret`).
+///
+/// This is the `coro.destroy` teardown half of the epilogue. It deliberately
+/// does NOT emit `coro.end` or `ret`: LLVM permits exactly one fallthrough
+/// `coro.end` per coroutine, and that single one lives in `join_block`, reached
+/// by BOTH this cleanup edge and the suspend-return (yield-to-executor) edge.
+/// Owning a second `coro.end` here is what made CoroSplit emit `unreachable` for
+/// the suspend-return block inside the `.resume` outline, crashing the second
+/// `await` (a multi-suspend body's later yield routes through that outline).
+///
+/// The caller positions the builder at the cleanup block first and drops any
+/// frame-owned heap values BEFORE calling this (single teardown owner discipline
+/// — see `hew-runtime/src/cont.rs`). After this returns the builder is left at
+/// the end of `free_block`'s branch; the caller emits the single `coro.end` +
+/// `ret` into `join_block`.
 pub fn emit_coro_frame_free<'ctx>(
     cc: &CoroContext<'_, 'ctx>,
     free_block: inkwell::basic_block::BasicBlock<'ctx>,
-    end_block: inkwell::basic_block::BasicBlock<'ctx>,
+    join_block: inkwell::basic_block::BasicBlock<'ctx>,
 ) -> CodegenResult<()> {
     let ptr_ty = cc.ctx.ptr_type(AddressSpace::default());
-    // %freemem = coro.free(id, hdl); br (freemem != null) -> dyn.free, end
+    // %freemem = coro.free(id, hdl); br (freemem != null) -> dyn.free, join
     let coro_free = coro_intrinsic(cc.llvm_mod, "llvm.coro.free")?;
     let freemem = unsafe {
         let mut args: [LLVMValueRef; 2] = [cc.id_token, cc.handle.as_value_ref()];
@@ -413,21 +425,34 @@ pub fn emit_coro_frame_free<'ctx>(
         .build_is_null(freemem, "coro.freemem.isnull")
         .llvm_ctx("coro.free null check")?;
     cc.builder
-        .build_conditional_branch(is_null, end_block, free_block)
+        .build_conditional_branch(is_null, join_block, free_block)
         .llvm_ctx("coro.free branch")?;
 
-    // dyn.free: hew_cont_frame_free(freemem); br end
+    // dyn.free: hew_cont_frame_free(freemem); br join
     cc.builder.position_at_end(free_block);
     let frame_free = declare_frame_free(cc.ctx, cc.llvm_mod);
     cc.builder
         .build_call(frame_free, &[freemem.into()], "")
         .llvm_ctx("hew_cont_frame_free call")?;
     cc.builder
-        .build_unconditional_branch(end_block)
-        .llvm_ctx("dyn.free -> end branch")?;
+        .build_unconditional_branch(join_block)
+        .llvm_ctx("dyn.free -> join branch")?;
 
-    // end: coro.end(hdl, false, none); ret
-    cc.builder.position_at_end(end_block);
+    let _ = ptr_ty;
+    Ok(())
+}
+
+/// Emit the single fallthrough `coro.end(hdl, false, none)` followed by
+/// `ret ptr hdl` into the block the builder is currently positioned at.
+///
+/// This is the coroutine ramp's one return point, shared by the suspend-return
+/// (yield-to-executor) edge and the cleanup (frame-free) edge. CoroSplit reads
+/// this `coro.end` to mark where the `.resume`/`.destroy` outlines return to the
+/// executor — there must be EXACTLY ONE fallthrough `coro.end` per coroutine, so
+/// every yield and every teardown path joins this block rather than carrying its
+/// own `coro.end`. The caller positions the builder at the shared
+/// suspend-return block before calling this.
+pub fn emit_coro_end_ret<'ctx>(cc: &CoroContext<'_, 'ctx>) -> CodegenResult<()> {
     let coro_end = coro_intrinsic(cc.llvm_mod, "llvm.coro.end")?;
     unsafe {
         let c = cc.ctx.raw();
@@ -441,7 +466,9 @@ pub fn emit_coro_frame_free<'ctx>(
         let name = std::ffi::CString::new("").unwrap();
         emit_coro_intrinsic_token(cc.builder.as_mut_ptr(), coro_end, &mut args, &name);
     }
-    let _ = ptr_ty;
+    cc.builder
+        .build_return(Some(&cc.handle))
+        .llvm_ctx("coro suspend-return coro.end + ret handle")?;
     Ok(())
 }
 

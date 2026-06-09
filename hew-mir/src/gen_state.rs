@@ -145,9 +145,14 @@ fn terminator_reads(term: &Terminator) -> Vec<Place> {
         Terminator::Branch { cond, .. } => vec![*cond],
         Terminator::Call { args, .. } => args.clone(),
         Terminator::Yield { value, .. } => vec![*value],
-        Terminator::Send { actor, value, .. } | Terminator::Ask { actor, value, .. } => {
+        Terminator::Send { actor, value, .. }
+        | Terminator::Ask { actor, value, .. }
+        | Terminator::SuspendingAsk { actor, value, .. } => {
             vec![*actor, *value]
         }
+        // `SuspendingRead` reads `conn` (the read source); `result_dest` is a
+        // write slot bound on the resume edge, not a read.
+        Terminator::SuspendingRead { conn, .. } => vec![*conn],
         Terminator::RemoteAsk {
             actor,
             value,

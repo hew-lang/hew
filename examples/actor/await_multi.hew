@@ -1,0 +1,88 @@
+// W6.010 — multiple sequential `await`s in a single handler body.
+//
+// A handler may suspend more than once: `Coordinator.two` awaits twice,
+// `three` awaits three times, and `loop_sum` awaits inside a `for` loop. Each
+// `await` parks the continuation and resumes on its own reply; the coroutine
+// epilogue's single fallthrough `coro.end` lets every yield-back-to-executor
+// return cleanly, so the second-and-later await resumes at the right point
+// instead of running off into undefined code. With HEW_WORKERS=1 all of these
+// funnel through one worker by suspension — a lost wake or mis-resumed second
+// await would hang or crash; a bounded run with the correct totals is the proof.
+actor Worker {
+    let factor: i64;
+    receive fn compute(n: i64) -> i64 {
+        n * factor
+    }
+}
+
+actor Coordinator {
+    let worker: LocalPid<Worker>;
+    let rounds: i64;
+
+    // Two sequential awaits: 7*6 + 7*6 = 84.
+    receive fn two(n: i64) -> i64 {
+        let a = await worker.compute(n);
+        let b = await worker.compute(n);
+        match a {
+            Ok(va) => match b {
+                Ok(vb) => va + vb,
+                Err(_) => -1,
+            },
+            Err(_) => -1,
+        }
+    }
+
+    // Three sequential awaits: 42 * 3 = 126.
+    receive fn three(n: i64) -> i64 {
+        let a = await worker.compute(n);
+        let b = await worker.compute(n);
+        let c = await worker.compute(n);
+        match a {
+            Ok(va) => match b {
+                Ok(vb) => match c {
+                    Ok(vc) => va + vb + vc,
+                    Err(_) => -1,
+                },
+                Err(_) => -1,
+            },
+            Err(_) => -1,
+        }
+    }
+
+    // An await inside a loop: `rounds` (4) awaits accumulate 42 each -> 168.
+    receive fn loop_sum(n: i64) -> i64 {
+        var total: i64 = 0;
+        for i in 0 .. rounds {
+            let r = await worker.compute(n);
+            match r {
+                Ok(v) => {
+                    total = total + v;
+                },
+                Err(_) => {
+                    total = total - 1;
+                },
+            }
+        }
+        total
+    }
+}
+
+fn main() {
+    let w = spawn Worker(factor: 6);
+    let c = spawn Coordinator(worker: w, rounds: 4);
+    let r2 = await c.two(7);
+    match r2 {
+        Ok(v) => println(f"two={v}"),
+        Err(_) => println("two failed"),
+    }
+    let r3 = await c.three(7);
+    match r3 {
+        Ok(v) => println(f"three={v}"),
+        Err(_) => println("three failed"),
+    }
+    let rl = await c.loop_sum(7);
+    match rl {
+        Ok(v) => println(f"loop={v}"),
+        Err(_) => println("loop failed"),
+    }
+}

@@ -1,0 +1,52 @@
+// W6.010 — a `scope { fork ... }` placed AFTER an `await` spawns through the
+// LIVE resume context, not the unwound dispatch frame.
+//
+// `Coordinator.run` awaits `Worker.compute`, then runs a structured-concurrency
+// `scope { fork { background(); } }`. The await suspends and unwinds the
+// dispatch frame; the resume installs a fresh thread-local execution context.
+// The spawn site (`SpawnTaskDirect`) snapshots supervisor/trace/cancel by
+// dereferencing the parent context, so a post-await fork must read the
+// resume-installed live context — dereferencing the spilled `ctx` param here
+// would touch the freed dispatch stack. The scope joins the fork before the
+// handler returns, so a correct run prints the background line then the result.
+fn _background() {
+    println("background-ran");
+}
+
+actor Worker {
+    let factor: i64;
+    receive fn compute(n: i64) -> i64 {
+        n * factor
+    }
+}
+
+actor Coordinator {
+    let worker: LocalPid<Worker>;
+    let bias: i64;
+    receive fn run(n: i64) -> i64 {
+        let r = await worker.compute(n);
+        // The fork runs AFTER the await resolves: the spawn must read the live
+        // resume context, not the unwound spilled `ctx` param.
+        scope {
+            fork {
+                _background();
+            };
+        };
+        match r {
+            // `bias` is read after the await + fork — also from the live context.
+            Ok(v) => v + bias,
+            Err(_) => -1,
+        }
+    }
+}
+
+fn main() {
+    let w = spawn Worker(factor: 6);
+    let c = spawn Coordinator(worker: w, bias: 100);
+    let r = await c.run(7);
+    match r {
+        // compute(7) = 42; + bias(100) = 142
+        Ok(v) => println(f"result={v}"),
+        Err(_) => println("ask failed"),
+    }
+}

@@ -3148,6 +3148,9 @@ fn collect_call_sites_in_expr(
                 collect_call_sites_in_expr(arg, out, trait_out);
             }
         }
+        HirExprKind::ConnAwaitRead { conn, .. } => {
+            collect_call_sites_in_expr(conn, out, trait_out);
+        }
         HirExprKind::RemoteActorAsk {
             receiver,
             msg,
@@ -3585,6 +3588,10 @@ struct LowerCtx {
     /// HIR checks this before `method_call_rewrites` to produce `MachineStep` /
     /// `MachineStateName` nodes rather than falling through to `MethodCallNoRewrite`.
     machine_method_dispatch: HashMap<SpanKey, hew_types::MachineMethodKind>,
+    /// Checker-owned `await conn.read()` suspending-read sites keyed by the inner
+    /// method-call span (NEW-1). `true` = `read_string` (string-wrapped), `false`
+    /// = raw `read`. HIR's `Expr::Await` arm consumes this to emit `ConnAwaitRead`.
+    conn_await_reads: HashMap<SpanKey, bool>,
     /// Checker-owned method-call receiver classifications. Used only to fail
     /// closed when the checker classified a receiver as actor-dispatchable but
     /// omitted the corresponding `actor_method_dispatch` discriminator.
@@ -3989,6 +3996,7 @@ impl LowerCtx {
             numeric_method_lowerings: tc_output.numeric_method_lowerings.clone(),
             actor_method_dispatch: tc_output.actor_method_dispatch.clone(),
             machine_method_dispatch: tc_output.machine_method_dispatch.clone(),
+            conn_await_reads: tc_output.conn_await_reads.clone(),
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
@@ -5677,7 +5685,8 @@ impl LowerCtx {
             | HirExprKind::CancellationTokenIsCancelled { receiver: object }
             | HirExprKind::GeneratorNext {
                 receiver: object, ..
-            } => {
+            }
+            | HirExprKind::ConnAwaitRead { conn: object, .. } => {
                 self.wrap_var_self_explicit_expr_returns(object, receiver, abi_return_ty);
             }
             HirExprKind::Index { container, index } => {
@@ -8216,19 +8225,27 @@ impl LowerCtx {
                 // (the reply lands in MIR's `reply_dest`) and are handled by the
                 // `Expr::Await` arm after typecheck's actor-dispatch classification.
                 if let Some(val_expr) = value {
-                    let is_actor_ask_await = match &val_expr.0 {
-                        Expr::Await(inner) => matches!(
-                            self.actor_method_dispatch.get(&SpanKey::from(&inner.1)),
-                            Some(ActorMethodKind::Ask(_, _))
-                        ),
+                    // A bindable `await` produces a value: an actor ask
+                    // (`Result<R, AskError>`) or a non-blocking connection read
+                    // (`bytes`/`string`, NEW-1). Both lower to a suspend carrier
+                    // whose resume edge binds the value.
+                    let is_bindable_await = match &val_expr.0 {
+                        Expr::Await(inner) => {
+                            let inner_key = SpanKey::from(&inner.1);
+                            matches!(
+                                self.actor_method_dispatch.get(&inner_key),
+                                Some(ActorMethodKind::Ask(_, _))
+                            ) || self.conn_await_reads.contains_key(&inner_key)
+                        }
                         _ => false,
                     };
-                    if matches!(&val_expr.0, Expr::Await(_)) && !is_actor_ask_await {
+                    if matches!(&val_expr.0, Expr::Await(_)) && !is_bindable_await {
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::AwaitOutOfPosition,
                             val_expr.1.clone(),
                             "`await` cannot be used as a let-value; \
-                             only actor ask awaits produce a bindable value",
+                             only actor ask awaits and `await conn.read()` \
+                             produce a bindable value",
                         ));
                         let name = self
                             .pattern_name(pattern)
@@ -9762,6 +9779,37 @@ impl LowerCtx {
                 }
             }
             Expr::Await(inner) => {
+                // NEW-1: `await conn.read()` / `await conn.read_string()` — the
+                // checker recorded the inner method-call span as a suspending
+                // read. Lower to `ConnAwaitRead` (MIR emits `SuspendingRead` for
+                // a suspendable caller, else the blocking read). The HIR type is
+                // the method's return type (`bytes` for read, `string` for
+                // read_string), already assigned to `expr` by the checker.
+                if let Some(&to_string) = self.conn_await_reads.get(&SpanKey::from(&inner.1)) {
+                    if let Expr::MethodCall { receiver, .. } = &inner.0 {
+                        let conn = self.lower_expr(receiver, IntentKind::Read);
+                        // The await's value type is the read's return type:
+                        // `string` for `read_string`, `bytes` for raw `read`.
+                        let result_ty = if to_string {
+                            ResolvedTy::String
+                        } else {
+                            ResolvedTy::Bytes
+                        };
+                        let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
+                        return HirExpr {
+                            node: self.ids.node(),
+                            site: self.ids.site(),
+                            value_class,
+                            ty: result_ty,
+                            intent,
+                            kind: HirExprKind::ConnAwaitRead {
+                                conn: Box::new(conn),
+                                to_string,
+                            },
+                            span: span.clone(),
+                        };
+                    }
+                }
                 if let Some(ActorMethodKind::Ask(_, reply_ty)) = self
                     .actor_method_dispatch
                     .get(&SpanKey::from(&inner.1))
@@ -16120,6 +16168,9 @@ fn collect_captures_walk(
         HirExprKind::Unary { operand, .. } => {
             collect_captures_walk(operand, param_ids, seen, captures, self_id);
         }
+        HirExprKind::ConnAwaitRead { conn, .. } => {
+            collect_captures_walk(conn, param_ids, seen, captures, self_id);
+        }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_captures_walk(value, param_ids, seen, captures, self_id);
         }
@@ -16390,6 +16441,9 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::Unary { operand, .. } => {
             collect_general_closure_captures_walk(operand, outer_bindings, seen, captures);
+        }
+        HirExprKind::ConnAwaitRead { conn, .. } => {
+            collect_general_closure_captures_walk(conn, outer_bindings, seen, captures);
         }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
@@ -17055,6 +17109,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         }
         HirExprKind::Unary { operand, .. } => {
             collect_hir_emitted_events_walk(operand, event_names, out);
+        }
+        HirExprKind::ConnAwaitRead { conn, .. } => {
+            collect_hir_emitted_events_walk(conn, event_names, out);
         }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_hir_emitted_events_walk(value, event_names, out);
@@ -19970,6 +20027,9 @@ fn scan_expr_for_call_shape(
         }
         HirExprKind::Unary { operand, .. } => {
             scan_expr_for_call_shape(operand, callable, diagnostics);
+        }
+        HirExprKind::ConnAwaitRead { conn, .. } => {
+            scan_expr_for_call_shape(conn, callable, diagnostics);
         }
         HirExprKind::NumericCast { value, .. } => {
             scan_expr_for_call_shape(value, callable, diagnostics);

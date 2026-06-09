@@ -593,50 +593,80 @@ pub fn sched_enqueue(actor: *mut HewActor) {
 ///
 /// # Safety
 ///
-/// `actor`, if non-null, must reference a live `HewActor`. `cont`, if non-null,
-/// must be the continuation parked on `actor` (a `coro.begin` frame). The
-/// caller (a readiness source) owns the wake edge; the executor owns teardown.
+/// `actor`, if non-null, may reference a freed `HewActor` — this function does
+/// NOT trust the pointer to be live. It re-confirms liveness against the
+/// `LIVE_ACTORS` registry under the registry lock before dereferencing, so a
+/// stale pointer from an abandoned/late reply is rejected atomically rather than
+/// dereferenced. `cont`, if non-null, must be the continuation parked on
+/// `actor` (a `coro.begin` frame). The caller (a readiness source) owns the wake
+/// edge; the executor owns teardown.
 pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
     if actor.is_null() {
         return;
     }
-    // SAFETY: caller guarantees `actor` references a live HewActor.
-    let a = unsafe { &*actor };
 
-    // If the park has not yet stored a handle, the suspend edge is mid-park
-    // (the FG3 window). Record the wake so the suspend edge re-enqueues; do NOT
-    // store the handle ourselves (the suspend edge owns the slot write).
-    let parked = a.suspended_cont.load(Ordering::Acquire);
-    if parked.is_null() {
-        crate::coro_exec::mark_pending_wake(a);
-        // The actor is not yet `Suspended`; the CAS below would fail anyway.
-        // Re-check after marking: if the park JUST finished publishing
-        // `Suspended` between our load and the mark, fall through to the CAS so
-        // the wake is delivered now rather than waiting on the suspend edge's
-        // pending-wake drain. (Two-phase park, both directions covered.)
-        if a.actor_state.load(Ordering::Acquire) != HewActorState::Suspended as i32 {
-            let _ = cont; // handle is owned by the suspend edge; nothing to store.
-            return;
+    // W6.010 caller-actor UAF guard (S1). `enqueue_resume` is reached not only by
+    // a live reply but also by the orphan-retire teardown
+    // (`hew_reply_channel_retire_orphaned_ask_sender_ref`), which the CALLEE
+    // mailbox runs during its own teardown. The reply channel stores a raw
+    // `caller_actor` pointer that nothing nulls when the CALLER is freed, and
+    // `cleanup_all_actors` frees actors in nondeterministic `HashMap` order — so
+    // the caller box can already be freed when the callee teardown fires this
+    // wake. Dereferencing `actor` directly would be a heap-use-after-free.
+    //
+    // `with_live_actor` makes the liveness check and the wake one atomic action:
+    // it holds the `LIVE_ACTORS` registry lock across the closure, and EVERY free
+    // path (`hew_actor_free_inner`, `drain_quiesced_actor`, `cleanup_all_actors`)
+    // removes the actor from `LIVE_ACTORS` BEFORE reclaiming the box. So while the
+    // closure runs the box cannot be freed, and if the caller was already torn
+    // down the closure never runs (the pointer is no longer tracked) — the stale
+    // wake is dropped, never dereferenced. The freed caller's continuation is
+    // already destroyed by its own C1 teardown, so dropping the wake is correct.
+    let enqueued = crate::lifetime::live_actors::with_live_actor(actor, |a| {
+        // If the park has not yet stored a handle, the suspend edge is mid-park
+        // (the FG3 window). Record the wake so the suspend edge re-enqueues; do
+        // NOT store the handle ourselves (the suspend edge owns the slot write).
+        let parked = a.suspended_cont.load(Ordering::Acquire);
+        if parked.is_null() {
+            crate::coro_exec::mark_pending_wake(a);
+            // The actor is not yet `Suspended`; the CAS below would fail anyway.
+            // Re-check after marking: if the park JUST finished publishing
+            // `Suspended` between our load and the mark, fall through to the CAS
+            // so the wake is delivered now rather than waiting on the suspend
+            // edge's pending-wake drain. (Two-phase park, both directions.)
+            if a.actor_state.load(Ordering::Acquire) != HewActorState::Suspended as i32 {
+                let _ = cont; // handle is owned by the suspend edge; nothing to store.
+                return false;
+            }
         }
-    }
 
-    // CAS Suspended → Runnable; only enqueue on success (fail-closed against a
-    // terminal or not-yet-parked actor).
-    if a.actor_state
-        .compare_exchange(
-            HewActorState::Suspended as i32,
-            HewActorState::Runnable as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
+        // CAS Suspended → Runnable; only enqueue on success (fail-closed against
+        // a terminal or not-yet-parked actor).
+        if a.actor_state
+            .compare_exchange(
+                HewActorState::Suspended as i32,
+                HewActorState::Runnable as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            true
+        } else {
+            // The actor was not `Suspended` yet (park still completing) — record
+            // the wake so the suspend edge observes it. Terminal actors also land
+            // here; marking is harmless (the actor will never park again).
+            crate::coro_exec::mark_pending_wake(a);
+            false
+        }
+    });
+
+    // `sched_enqueue` pushes onto the global queue and wakes a worker; it does not
+    // dereference the actor, so it is safe to run after dropping the registry lock
+    // (the successful `Suspended → Runnable` CAS already latched the actor out of
+    // any racing free path, exactly like the `Idle → Runnable` waker discipline).
+    if enqueued == Some(true) {
         sched_enqueue(actor);
-    } else {
-        // The actor was not `Suspended` yet (park still completing) — record
-        // the wake so the suspend edge observes it. Terminal actors also land
-        // here; marking is harmless (the actor will never park again).
-        crate::coro_exec::mark_pending_wake(a);
     }
 }
 
@@ -744,8 +774,11 @@ fn try_steal_from_peers(
 ///    deadlock while the actor is suspended. The lock is held across each
 ///    message dispatch; a suspend that returns between acquire and release MUST
 ///    release it here, exactly as the panic path releases on its crash edge.
-/// 2. `begin_park` publishes the `Parked` tag and clears any stale wake (FG3
-///    phase 1), BEFORE the handle is stored.
+/// 2. `begin_park` publishes the `Parked` tag (FG3 phase 1), BEFORE the handle
+///    is stored. It does NOT clear `pending_wake`: a reply armed inside the
+///    coroutine body can fire before this edge, so the wake flag is kept
+///    monotonic within a cycle and consumed once by `take_pending_wake` at each
+///    drain (the lost-wake fix; see `coro_exec::begin_park`).
 /// 3. `finish_park` stores the handle (FG3 phase 2).
 /// 4. CAS `Running → Suspended` so wakes can find the parked actor.
 /// 5. Drain the FG3 lost-wake flag: a wake that fired in the park window
@@ -770,6 +803,16 @@ unsafe fn park_suspended_activation(actor: *mut HewActor, cont: *mut c_void) -> 
 
     // (2) FG3 phase 1: publish the park intent before storing the handle.
     if !crate::coro_exec::begin_park(a).is_ok() {
+        // P1-B: begin_park refused (tag not Empty/Resuming — e.g. a stale
+        // Destroyed that the quiescent re-arm has not reached, or a corrupt
+        // tag). We still OWN `cont` (the dispatch produced it and it was never
+        // stored), so destroy it here rather than dropping it silently — a
+        // dropped handle leaks the coro frame + any frame-owned heap values.
+        // `hew_cont_destroy` is null-safe and runs the single cleanup outline.
+        // SAFETY: `cont` is the live, not-yet-parked, not-yet-destroyed frame
+        // this activation produced; no other owner exists (park never stored
+        // it, so no resume/destroy edge can race it).
+        unsafe { crate::cont::hew_cont_destroy(cont) };
         return false;
     }
     // (3) FG3 phase 2: store the handle.
@@ -834,9 +877,49 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     // SAFETY: caller owns `actor` via the Running CAS.
     let a = unsafe { &*actor };
 
+    // W6.010 value routing: re-establish an execution context carrying the
+    // handler's stashed reply channel (saved at park) BEFORE driving the resume,
+    // so the resumed coroutine body's final-return `hew_reply` (via
+    // `hew_get_reply_channel`) deposits the reply to the handler's caller. The
+    // suspend tore down the original dispatch context; without this the body
+    // would see no reply channel and the caller would hang (R1). The context is
+    // a scheduler-owned stack carrier for the duration of the resume, restored
+    // after (mirroring the fresh-dispatch carrier install/restore).
+    let stashed_reply = a.suspended_reply_channel.load(Ordering::Acquire);
+    let mut resume_context = HewExecutionContext {
+        actor,
+        actor_id: a.id,
+        parent_supervisor: a.supervisor,
+        supervisor_child_index: a.supervisor_child_index,
+        flags: 0,
+        cancel_token: std::ptr::null_mut(),
+        task_scope: std::ptr::null_mut(),
+        arena: a.arena,
+        trace: crate::tracing::HewTraceContext::default(),
+        partition_policy: std::ptr::null_mut(),
+        prev_context: crate::execution_context::current_context(),
+        lock_seat: dispatch_lock_seat_for_actor(actor),
+        reply_channel: stashed_reply,
+    };
+    let prev_context = resume_context.prev_context;
+    let installed_prev = crate::execution_context::set_current_context(&raw mut resume_context);
+    debug_assert_eq!(installed_prev, prev_context);
+
     // SAFETY: the parked handle is the executor-owned frame; `resume_park`
     // enforces FG2/FG4 internally (refuses a null slot or non-Parked tag).
     let poll = unsafe { crate::coro_exec::resume_park(a) };
+
+    // Restore the prior context now that the resume step (resume + poll, and any
+    // body-side reply deposit it performed) has run. On a Ready completion the
+    // body already deposited its reply; clear the stash so a re-armed multi-await
+    // actor does not reuse a freed channel. On Pending the handler re-parked, so
+    // the stash stays for the next resume.
+    let restored = crate::execution_context::set_current_context(prev_context);
+    debug_assert_eq!(restored, &raw mut resume_context);
+    if matches!(poll, Some(crate::cont::ResumePoll::Ready) | None) {
+        a.suspended_reply_channel
+            .store(std::ptr::null_mut(), Ordering::Release);
+    }
 
     match poll {
         Some(crate::cont::ResumePoll::Pending) => {
@@ -875,6 +958,13 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
             // SAFETY: the tag is `Done` (Ready) or already terminal (None);
             // destroy_parked refuses a second teardown.
             let _ = unsafe { crate::coro_exec::destroy_parked(a) };
+            // P1-B: the continuation is fully reclaimed and the slot is null
+            // (FG4). Re-arm the tag `Destroyed → Empty` on this quiescent edge
+            // so the SAME actor can park a NEW continuation on its next
+            // `await` (multi-await). Fail-closed: `re_arm` only transitions a
+            // Destroyed tag with a null slot, so a refusal here (the None
+            // branch where nothing was ever parked) is harmless.
+            let _ = crate::coro_exec::re_arm(a);
             // Settle: the resumed dispatch is finished. Mirror the post-loop
             // idle/requeue CAS so queued messages are served. Reset the arena
             // for the completed activation.
@@ -1342,6 +1432,21 @@ fn activate_actor(actor: *mut HewActor) {
                         set_last_error("actor dispatch panicked");
                         std::ptr::null_mut()
                     };
+
+                    // W6.010 value routing: a suspending handler still owes a
+                    // reply to ITS caller. Stash this dispatch's reply channel on
+                    // the actor BEFORE the context/msg reply-channel teardown
+                    // below clears it, so the resume edge can re-establish a
+                    // context carrying it and the resumed coroutine body deposits
+                    // the reply (the body, not the unwound trampoline frame, owns
+                    // the deposit — the trampoline's out-slot is dead by resume).
+                    // The channel reference is transferred to the actor slot: the
+                    // suspend path below skips the normal reply teardown so the
+                    // channel is NOT freed here; the resume edge consumes it.
+                    if !suspend_handle.is_null() {
+                        a.suspended_reply_channel
+                            .store(msg_ref.reply_channel, Ordering::Release);
+                    }
 
                     let reply_consumed =
                         current_reply_channel_consumed_on(&raw mut execution_context);
@@ -2041,6 +2146,56 @@ mod tests {
             suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
+            suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
+        }
+    }
+
+    /// RAII guard that registers a stub actor in `LIVE_ACTORS` for the duration
+    /// of a test and untracks it on drop. `enqueue_resume` now confirms liveness
+    /// against `LIVE_ACTORS` before waking (the W6.010 caller-actor UAF guard),
+    /// so a wake-expecting test must present its stub as a LIVE actor. Each guard
+    /// assigns a unique `id` so concurrent tests do not collide in the
+    /// process-wide registry.
+    struct TrackedTestActor {
+        actor: Box<HewActor>,
+        ptr: *mut HewActor,
+    }
+
+    impl TrackedTestActor {
+        fn install(mut actor: HewActor) -> Self {
+            static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+            actor.id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let mut boxed = Box::new(actor);
+            let ptr: *mut HewActor = &raw mut *boxed;
+            // SAFETY: `ptr` is a freshly-boxed, fully-initialised actor.
+            unsafe { crate::lifetime::live_actors::track_actor(ptr) };
+            Self { actor: boxed, ptr }
+        }
+
+        fn ptr(&self) -> *mut HewActor {
+            self.ptr
+        }
+
+        /// Untrack the actor WITHOUT freeing the box, modelling a caller actor
+        /// torn down before a late/orphan-retire reply fires. After this returns
+        /// `enqueue_resume(ptr)` must observe the actor as no longer live.
+        fn untrack(&self) {
+            crate::lifetime::live_actors::untrack_actor(self.ptr);
+        }
+    }
+
+    impl std::ops::Deref for TrackedTestActor {
+        type Target = HewActor;
+        fn deref(&self) -> &HewActor {
+            &self.actor
+        }
+    }
+
+    impl Drop for TrackedTestActor {
+        fn drop(&mut self) {
+            // Idempotent: `untrack_actor` only removes a matching entry; a
+            // double-untrack (test already called `untrack`) is a no-op.
+            crate::lifetime::live_actors::untrack_actor(self.ptr);
         }
     }
 
@@ -2101,7 +2256,7 @@ mod tests {
     #[test]
     fn enqueue_resume_wakes_suspended_actor() {
         let sched = NoWorkerSchedulerForTest::install();
-        let actor = stub_actor();
+        let actor = TrackedTestActor::install(stub_actor());
         actor
             .actor_state
             .store(HewActorState::Suspended as i32, Ordering::Release);
@@ -2116,9 +2271,10 @@ mod tests {
             crate::internal::types::ContTag::Parked as i32,
             Ordering::Release,
         );
-        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+        let actor_ptr = actor.ptr();
 
-        // SAFETY: actor is live for this scope; sentinel handle is never resumed.
+        // SAFETY: actor is live (tracked) for this scope; sentinel handle is
+        // never resumed.
         unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
 
         assert_eq!(
@@ -2133,13 +2289,140 @@ mod tests {
         );
     }
 
+    /// W6.010 caller-actor UAF guard (S1): `enqueue_resume` must NOT dereference
+    /// or wake a caller actor that has already been freed (untracked from
+    /// `LIVE_ACTORS`). This drives the exact teardown ordering the security gate
+    /// reproduced under `ASan`: a `Suspended` caller parked on a reply channel is
+    /// torn down (untracked) FIRST, and only then does the callee's
+    /// orphan-retire reply path fire `enqueue_resume` on the now-stale pointer.
+    /// With the registry-liveness guard the wake is dropped (no enqueue, no
+    /// deref); without it, the deref of the freed box is a heap-use-after-free.
+    #[test]
+    fn enqueue_resume_drops_wake_for_freed_caller() {
+        let sched = NoWorkerSchedulerForTest::install();
+        let actor = TrackedTestActor::install(stub_actor());
+        // The caller is parked: Suspended with a published (sentinel) handle.
+        actor
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Release);
+        actor.suspended_cont.store(
+            ptr::null_mut::<u8>().wrapping_add(1).cast(),
+            Ordering::Release,
+        );
+        actor.cont_tag.store(
+            crate::internal::types::ContTag::Parked as i32,
+            Ordering::Release,
+        );
+        let actor_ptr = actor.ptr();
+
+        // Teardown ordering: the caller is freed (untracked) BEFORE the late
+        // reply fires. The box still exists in this test (so a buggy deref would
+        // read live-but-logically-dead memory rather than crash), but the actor
+        // is no longer tracked — exactly the production window where
+        // `cleanup_all_actors` already drained the registry.
+        actor.untrack();
+
+        // SAFETY: `actor_ptr` is a stale (untracked) pointer; `enqueue_resume`
+        // must reject it via the registry check rather than dereference it.
+        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "a freed (untracked) caller must NOT be CAS'd to Runnable"
+        );
+        assert_eq!(
+            sched.pop_global(),
+            None,
+            "a wake targeting a freed caller must enqueue nothing"
+        );
+        assert!(
+            !crate::coro_exec::take_pending_wake(&actor),
+            "a freed caller must not record a pending wake either"
+        );
+    }
+
+    /// The same UAF guard exercised through the full reply path: a reply
+    /// published on a channel whose parked-waiter caller has been freed
+    /// (untracked) must reach `enqueue_resume`, find the caller dead, and drop
+    /// the wake — never deref the stale `caller_actor`. This mirrors the
+    /// orphan-retire teardown (`hew_reply_channel_retire_orphaned_ask_sender_ref`)
+    /// the callee mailbox runs while a caller is gone.
+    #[test]
+    fn reply_to_freed_parked_waiter_drops_wake() {
+        let _guard = crate::runtime_test_guard();
+        let sched = NoWorkerSchedulerForTest::install();
+        let actor = TrackedTestActor::install(stub_actor());
+        actor
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Release);
+        actor.suspended_cont.store(
+            ptr::null_mut::<u8>().wrapping_add(1).cast(),
+            Ordering::Release,
+        );
+        actor.cont_tag.store(
+            crate::internal::types::ContTag::Parked as i32,
+            Ordering::Release,
+        );
+        let actor_ptr = actor.ptr();
+
+        let ch = crate::reply_channel::hew_reply_channel_new();
+        let payload = 99_i64;
+        // SAFETY: `ch` is a fresh live channel; retain the sender ref the reply
+        // consumes; arm the parked-waiter BEFORE the caller is freed (the
+        // production order: set_parked_waiter happens-before the ask submit).
+        unsafe {
+            crate::reply_channel::hew_reply_channel_retain(ch);
+            crate::reply_channel::hew_reply_channel_set_parked_waiter(ch, actor_ptr);
+        }
+
+        // Free (untrack) the caller while the reply is still in flight.
+        actor.untrack();
+
+        // SAFETY: the reply fires on a channel whose `caller_actor` is now stale;
+        // the deposit + wake must not deref the freed caller.
+        unsafe {
+            let delivered = crate::reply_channel::hew_reply(
+                ch,
+                (&raw const payload).cast_mut().cast(),
+                std::mem::size_of::<i64>(),
+            );
+            assert!(
+                delivered,
+                "the reply still deposits its value on the channel"
+            );
+        }
+
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "the reply must not revive a freed caller"
+        );
+        assert_eq!(
+            sched.pop_global(),
+            None,
+            "a reply to a freed parked waiter must enqueue nothing"
+        );
+
+        // The value sits on `ch`; drain + free so the test leaks nothing.
+        // SAFETY: the test still holds a channel reference.
+        unsafe {
+            let v = crate::reply_channel::hew_reply_wait(ch).cast::<i64>();
+            assert!(!v.is_null());
+            libc::free(v.cast());
+            crate::reply_channel::hew_reply_channel_free(ch);
+        }
+    }
+
     /// `enqueue_resume` is fail-closed: a terminal (`Stopped`) actor is never
     /// enqueued — the CAS fails and the actor stays terminal, mirroring the
     /// `Idle → Runnable` waker discipline that closes the use-after-free window.
     #[test]
     fn enqueue_resume_fail_closed_on_terminal_actor() {
         let sched = NoWorkerSchedulerForTest::install();
-        let actor = stub_actor();
+        // Tracked (live in the registry) but TERMINAL — so this exercises the
+        // state-CAS fail-closed arm, not the registry-liveness drop.
+        let actor = TrackedTestActor::install(stub_actor());
         actor
             .actor_state
             .store(HewActorState::Stopped as i32, Ordering::Release);
@@ -2147,9 +2430,9 @@ mod tests {
             ptr::null_mut::<u8>().wrapping_add(1).cast(),
             Ordering::Release,
         );
-        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+        let actor_ptr = actor.ptr();
 
-        // SAFETY: actor is live; terminal so it is never resumed/enqueued.
+        // SAFETY: actor is live (tracked); terminal so it is never resumed/enqueued.
         unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
 
         assert_eq!(
@@ -2170,20 +2453,197 @@ mod tests {
     #[test]
     fn enqueue_resume_mid_park_records_pending_wake() {
         let _sched = NoWorkerSchedulerForTest::install();
-        let actor = stub_actor();
+        let actor = TrackedTestActor::install(stub_actor());
         // Park not yet published: state not Suspended, slot null.
         actor
             .actor_state
             .store(HewActorState::Running as i32, Ordering::Release);
-        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+        let actor_ptr = actor.ptr();
 
-        // SAFETY: actor is live; null slot means no handle is ever resumed.
+        // SAFETY: actor is live (tracked); null slot means no handle is ever
+        // resumed.
         unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
 
         assert!(
             crate::coro_exec::take_pending_wake(&actor),
             "a wake in the park window must be recorded, not lost (FG3)"
         );
+    }
+
+    /// W6.010 waiter-kind: a reply to a channel whose waiter is a PARKED
+    /// CONTINUATION wakes the caller actor via `enqueue_resume` (CAS
+    /// Suspended -> Runnable + enqueue), NOT the condvar. The resumed
+    /// continuation reads the now-ready value on its resume edge.
+    #[test]
+    fn reply_to_parked_waiter_enqueues_resume() {
+        // Serialize against tests that read the process-wide reply-channel
+        // counter (actor::tests::native_ask_*). Acquire the channel-counter
+        // guard BEFORE installing the scheduler (the actor tests' lock order).
+        let _guard = crate::runtime_test_guard();
+        let sched = NoWorkerSchedulerForTest::install();
+        let actor = TrackedTestActor::install(stub_actor());
+        // The caller is parked: Suspended with a published (sentinel) handle.
+        actor
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Release);
+        actor.suspended_cont.store(
+            ptr::null_mut::<u8>().wrapping_add(1).cast(),
+            Ordering::Release,
+        );
+        actor.cont_tag.store(
+            crate::internal::types::ContTag::Parked as i32,
+            Ordering::Release,
+        );
+        let actor_ptr = actor.ptr();
+
+        let ch = crate::reply_channel::hew_reply_channel_new();
+        let payload = 42_i64;
+        // SAFETY: `ch` is a fresh live channel; retain for the sender ref the
+        // reply consumes; `actor_ptr` is live (tracked) for this scope.
+        unsafe {
+            crate::reply_channel::hew_reply_channel_retain(ch);
+            crate::reply_channel::hew_reply_channel_set_parked_waiter(ch, actor_ptr);
+            let delivered = crate::reply_channel::hew_reply(
+                ch,
+                (&raw const payload).cast_mut().cast(),
+                std::mem::size_of::<i64>(),
+            );
+            assert!(delivered, "reply to a parked waiter must deliver the value");
+        }
+
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Runnable as i32,
+            "a parked-continuation reply must wake the caller via enqueue_resume"
+        );
+        assert_eq!(
+            sched.pop_global(),
+            Some(actor_ptr),
+            "the woken caller actor must be enqueued exactly once"
+        );
+
+        // The value is held on `ch` for the resume edge to read; drain + free.
+        // SAFETY: `ch` is still live (the test holds the waiter reference).
+        unsafe {
+            let v = crate::reply_channel::hew_reply_wait(ch).cast::<i64>();
+            assert!(!v.is_null(), "the reply value must be readable on resume");
+            assert_eq!(*v, 42, "the resumed caller binds the CORRECT reply value");
+            libc::free(v.cast());
+            crate::reply_channel::hew_reply_channel_free(ch);
+        }
+    }
+
+    /// NEW-1 (reactor fd-IO): the reactor's resume-mode wake is the SECOND
+    /// production source of `enqueue_resume` (after the reply path). This models
+    /// the reactor depositing read bytes into a parked handler's read slot and
+    /// waking it: the parked actor transitions `Suspended → Runnable`, is
+    /// enqueued exactly once, and the resume edge reads the CORRECT bytes back
+    /// from the slot (the value-routing edge — not garbage). It is the runtime
+    /// half of the `await conn.read()` cycle, mirroring
+    /// `reply_to_parked_waiter_enqueues_resume` for the reactor source.
+    #[test]
+    fn reactor_data_deposit_resumes_parked_handler_with_bytes() {
+        let _guard = crate::runtime_test_guard();
+        let sched = NoWorkerSchedulerForTest::install();
+        let actor = TrackedTestActor::install(stub_actor());
+        // The handler is parked on the fd: Suspended with a published handle.
+        actor
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Release);
+        actor.suspended_cont.store(
+            ptr::null_mut::<u8>().wrapping_add(1).cast(),
+            Ordering::Release,
+        );
+        actor.cont_tag.store(
+            crate::internal::types::ContTag::Parked as i32,
+            Ordering::Release,
+        );
+        let actor_ptr = actor.ptr();
+
+        // The reactor's resume-mode deposit + wake (what `handle_ready_resume`
+        // does on `Data`): build an owned bytes value, deposit it into the slot,
+        // then `enqueue_resume(actor, null)`.
+        let slot = crate::read_slot::hew_read_slot_new();
+        let payload = b"reactor-delivered-bytes";
+        let payload_len = u32::try_from(payload.len()).expect("payload fits u32");
+        // SAFETY: payload valid for its len; copied into a refcount-1 buffer.
+        let triple = unsafe { crate::bytes::hew_bytes_from_static(payload.as_ptr(), payload_len) };
+        // SAFETY: fresh slot; the deposit takes ownership of the triple.
+        let wake = unsafe { crate::read_slot::read_slot_deposit_data(slot, triple) };
+        assert!(wake, "a non-cancelled deposit must signal a wake");
+        // SAFETY: `actor_ptr` is live (tracked) for this scope.
+        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Runnable as i32,
+            "a reactor fd-readiness wake must transition the parked handler to Runnable"
+        );
+        assert_eq!(
+            sched.pop_global(),
+            Some(actor_ptr),
+            "the woken handler must be enqueued exactly once"
+        );
+
+        // The resume edge reads the bytes back — the value-routing edge.
+        // SAFETY: `slot` is the fresh live slot; status read after the deposit.
+        let status = unsafe { crate::read_slot::hew_read_slot_status(slot) };
+        assert_eq!(status, crate::read_slot::ReadStatus::Data as i32);
+        // SAFETY: `slot` is live; take transfers ownership of the deposited buffer.
+        let taken = unsafe { crate::read_slot::hew_read_slot_take(slot) };
+        assert_eq!(taken.len as usize, payload.len());
+        // SAFETY: take transferred ownership of a refcount-1 buffer of len bytes.
+        let read_back = unsafe {
+            std::slice::from_raw_parts(taken.ptr.add(taken.offset as usize), taken.len as usize)
+        };
+        assert_eq!(
+            read_back, payload,
+            "the resumed handler must bind the CORRECT reactor-delivered bytes"
+        );
+        // SAFETY: take transferred ownership of the buffer.
+        unsafe { crate::bytes::hew_bytes_drop(taken.ptr) };
+        // SAFETY: the creator ref is the last ref; this reclaims the slot.
+        unsafe { crate::read_slot::hew_read_slot_free(slot) };
+    }
+
+    /// W6.010 waiter-kind (E6): a reply to a channel with NO parked waiter
+    /// (the default — a foreign/main-thread condvar ask) does NOT touch the
+    /// scheduler queue; the foreign thread is woken by the condvar. The
+    /// foreign-thread ask path must not regress.
+    #[test]
+    fn reply_to_condvar_waiter_does_not_enqueue() {
+        // Serialize against the process-wide reply-channel counter (see the
+        // parked-waiter test above) — guard before installing the scheduler.
+        let _guard = crate::runtime_test_guard();
+        let sched = NoWorkerSchedulerForTest::install();
+
+        let ch = crate::reply_channel::hew_reply_channel_new();
+        let payload = 7_i64;
+        // SAFETY: `ch` is a fresh live channel; retain for the sender ref. No
+        // `set_parked_waiter` -> `caller_actor` stays null (condvar path).
+        unsafe {
+            crate::reply_channel::hew_reply_channel_retain(ch);
+            let delivered = crate::reply_channel::hew_reply(
+                ch,
+                (&raw const payload).cast_mut().cast(),
+                std::mem::size_of::<i64>(),
+            );
+            assert!(delivered, "condvar reply must still deliver the value");
+        }
+
+        assert!(
+            sched.pop_global().is_none(),
+            "a condvar-waiter reply must not enqueue any actor (E6 foreign-thread path)"
+        );
+
+        // SAFETY: `ch` is still live; the value was deposited on the fast path.
+        unsafe {
+            let v = crate::reply_channel::hew_reply_wait(ch).cast::<i64>();
+            assert!(!v.is_null());
+            assert_eq!(*v, 7);
+            libc::free(v.cast());
+            crate::reply_channel::hew_reply_channel_free(ch);
+        }
     }
 
     /// The SUSPEND edge parks a scratch continuation, publishes `Suspended`,
@@ -2295,9 +2755,15 @@ mod tests {
             actor.suspended_cont.load(Ordering::Acquire).is_null(),
             "FG4: the slot is nulled in the Destroyed critical section"
         );
+        // P1-B: a completed resume re-arms the tag `Destroyed -> Empty` on the
+        // quiescent edge so the actor can park a NEW continuation on its next
+        // `await` (multi-await). The destroy still ran exactly once (asserted
+        // above via the scratch frame's `destroyed` counter); the tag is now
+        // back to the armed `Empty` steady state, not the terminal `Destroyed`.
         assert_eq!(
             actor.cont_tag.load(Ordering::Acquire),
-            crate::internal::types::ContTag::Destroyed as i32
+            crate::internal::types::ContTag::Empty as i32,
+            "P1-B: the completed continuation is reclaimed and the tag re-armed to Empty"
         );
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
@@ -2312,11 +2778,16 @@ mod tests {
     /// mailbox without blocking, and the resume re-entry then settles to
     /// `Runnable` (re-enqueued) so the queued message is served.
     ///
-    /// The per-message lock RELEASE on the production suspend edge (between
-    /// `hew_actor_state_lock_acquire_for_context` and the matching release)
-    /// lands with the Slice-5 trampoline rewrite that routes real `await`
-    /// through this seam; the seed driver here holds no lock, and the invariant
-    /// this slice enforces is that the executor edges themselves are lock-free.
+    /// The per-message lock RELEASE on the production suspend edge is LANDED
+    /// (NEW-3a): the dispatch loop releases the per-actor state lock on the
+    /// normal dispatch-return edge (`hew_actor_state_lock_release_for_context`,
+    /// the matching release of the acquire above the `dispatch` call) BEFORE the
+    /// suspend handle is captured and parked, so a suspended actor never holds
+    /// its lock against senders. The production edge is asserted by
+    /// `production_suspend_edge_releases_the_actor_lock` below (a real dispatch
+    /// fn returning a non-null handle, with a registered lock). This test pins
+    /// the complementary executor-edge invariant: the seed driver itself holds
+    /// no lock, and a send to a `Suspended` actor never blocks.
     #[test]
     fn suspended_actor_accepts_sends_without_blocking() {
         // The worker-less scheduler holds SCHED_TEST_MUTEX for us AND lets the
@@ -2461,6 +2932,7 @@ mod tests {
             suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
+            suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -2563,6 +3035,339 @@ mod tests {
             }
             mailbox::hew_mailbox_free(mailbox);
         }
+    }
+
+    /// PRODUCTION SUSPEND-EDGE LOCK RELEASE (R2 P0, NEW-3a): a handler that
+    /// suspends (returns a non-null handle) must leave the actor's per-actor
+    /// state lock RELEASED while it is parked, so a sender / another message is
+    /// never blocked by a suspended actor holding its lock. Drives the FULL
+    /// production message loop (`activate_actor` → lock acquire → dispatch → lock
+    /// release → park) with a real dispatch fn + a registered lock, and asserts
+    /// the lock is NOT held once the actor is `Suspended`. The lock seat is the
+    /// test-mode auto-created sidecar `dispatch_lock_seat_for_actor` resolves.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn production_suspend_edge_releases_the_actor_lock() {
+        let _sched = NoWorkerSchedulerForTest::install();
+        // SAFETY: fresh mailbox with a single message to drive one dispatch.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            // SAFETY: mailbox is live; null payload of size 0 is valid.
+            unsafe { mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0) },
+            0
+        );
+
+        let mut actor = stub_actor();
+        actor.dispatch = Some(suspend_once_dispatch);
+        actor.mailbox = mailbox.cast();
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+
+        // Prime the per-actor state lock seat the dispatch loop will
+        // acquire/release (the same test-mode sidecar `dispatch_lock_seat_for_actor`
+        // resolves), and confirm it starts unheld.
+        let _seat = crate::actor::actor_state_lock_seat(actor_ptr);
+        assert_eq!(
+            crate::actor::actor_state_lock_is_held_for_test(actor_ptr),
+            Some(false),
+            "the actor lock starts unheld"
+        );
+
+        activate_actor(actor_ptr);
+
+        // The handler suspended → the activation is parked as Suspended.
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "the suspending handler parks the activation"
+        );
+        // The P0: the per-actor lock is RELEASED across the suspend edge — a
+        // suspended actor holds no lock against senders.
+        assert_eq!(
+            crate::actor::actor_state_lock_is_held_for_test(actor_ptr),
+            Some(false),
+            "the per-actor state lock is released across the suspend edge (R2 P0)"
+        );
+
+        // A concurrent send to the Suspended actor must not block (no lock held).
+        assert_eq!(
+            // SAFETY: mailbox is live; null payload of size 0 is valid.
+            unsafe { mailbox::hew_mailbox_send(mailbox, 2, ptr::null_mut(), 0) },
+            0,
+            "a send to a Suspended actor must not block"
+        );
+
+        // Teardown: destroy the parked frame once + drain + free mailbox.
+        // SAFETY: the parked handle is live and not yet destroyed.
+        assert!(unsafe { crate::coro_exec::destroy_parked(&actor) }.is_ok());
+        // SAFETY: single-threaded test; mailbox unused afterwards.
+        unsafe {
+            loop {
+                let msg = hew_mailbox_try_recv(mailbox.cast::<HewMailbox>());
+                if msg.is_null() {
+                    break;
+                }
+                hew_msg_node_free(msg);
+            }
+            mailbox::hew_mailbox_free(mailbox);
+        }
+    }
+
+    /// A dispatch handler that suspends and stays Pending across TWO resumes
+    /// before completing — models a handler that suspends at a non-final
+    /// `coro.suspend`, is resumed once (still Pending), then completes on the
+    /// second resume. The trampoline-equivalent first poll is modelled by
+    /// returning the handle (Pending); the executor drives the rest.
+    unsafe extern "C-unwind" fn suspend_twice_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut std::ffi::c_void,
+        _msg_type: i32,
+        _data: *mut std::ffi::c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(2));
+        Box::into_raw(frame).cast::<c_void>()
+    }
+
+    /// FULL PRODUCTION ROUND-TRIP (D-4 Pending-then-resume): a suspendable
+    /// handler's trampoline-produced handle is parked, woken via the production
+    /// wake edge (`enqueue_resume`), resumed to completion, and destroyed exactly
+    /// once — driving `dispatch → park → enqueue_resume → resume(Pending) →
+    /// re-park → enqueue_resume → resume(Ready) → destroy → settle`. Proves the
+    /// trampoline-produced handle (not a bare seed) completes the executor cycle
+    /// with no leak.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn production_round_trip_pending_then_resume_to_ready_destroys_once() {
+        let _sched = NoWorkerSchedulerForTest::install();
+        // SAFETY: fresh mailbox with one message to drive the first dispatch.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            // SAFETY: mailbox is live; null payload of size 0 is valid.
+            unsafe { mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0) },
+            0
+        );
+
+        let mut stub = stub_actor();
+        stub.dispatch = Some(suspend_twice_dispatch);
+        stub.mailbox = mailbox.cast();
+        stub.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        // Tracked: the production wake edge (`enqueue_resume`) now confirms
+        // registry liveness before resuming.
+        let actor = TrackedTestActor::install(stub);
+        let actor_ptr = actor.ptr();
+
+        // Dispatch → the handler suspends; the activation parks.
+        activate_actor(actor_ptr);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "the suspending handler parks the activation"
+        );
+        let parked_handle = actor.suspended_cont.load(Ordering::Acquire);
+        assert!(!parked_handle.is_null(), "a handle is parked");
+
+        // Wake #1: enqueue_resume → Runnable → activate → resume #1 (Pending) →
+        // re-park as Suspended.
+        // SAFETY: actor live; parked handle is the executor-owned frame.
+        unsafe { enqueue_resume(actor_ptr, parked_handle) };
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Runnable as i32,
+            "the wake CASes Suspended -> Runnable"
+        );
+        activate_actor(actor_ptr);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "a Pending resume re-parks the activation"
+        );
+
+        // Wake #2: enqueue_resume → activate → resume #2 (Ready) → destroy once →
+        // settle to Idle (empty mailbox).
+        // SAFETY: actor live; same parked handle.
+        unsafe { enqueue_resume(actor_ptr, parked_handle) };
+        activate_actor(actor_ptr);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Idle as i32,
+            "a completed resume with an empty mailbox settles to Idle"
+        );
+        assert!(
+            actor.suspended_cont.load(Ordering::Acquire).is_null(),
+            "FG4: the slot is nulled when the Ready continuation is destroyed"
+        );
+        // P1-B: the completed continuation is destroyed exactly once (the slot
+        // is null above) and the tag is RE-ARMED `Destroyed -> Empty` on the
+        // quiescent edge, so this actor can park a NEW continuation on its next
+        // `await` rather than being stuck terminal (the one-shot leak this lane
+        // closes).
+        assert_eq!(
+            actor.cont_tag.load(Ordering::Acquire),
+            crate::internal::types::ContTag::Empty as i32,
+            "P1-B: the completed continuation is reclaimed and the tag re-armed to Empty"
+        );
+
+        // SAFETY: single-threaded test; mailbox unused afterwards.
+        unsafe { mailbox::hew_mailbox_free(mailbox) };
+    }
+
+    /// P1-B multi-await at the SCHEDULER layer: one actor parks, is woken,
+    /// resumes to completion, is destroyed and RE-ARMED, then services a SECOND
+    /// message that ALSO suspends — parking a NEW continuation. Without the
+    /// quiescent re-arm the second dispatch's `begin_park` would refuse from the
+    /// terminal `Destroyed` tag, leaking the second handle and dropping the
+    /// activation (the fail-OPEN this lane closes). Both continuations are
+    /// destroyed exactly once; the actor ends armed (`Empty`) for a third await.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn p1b_multi_await_parks_and_completes_twice_on_one_actor() {
+        let _sched = NoWorkerSchedulerForTest::install();
+        // SAFETY: fresh mailbox; two messages drive two dispatches.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        // SAFETY: mailbox live; null payloads of size 0 are valid.
+        unsafe {
+            assert_eq!(mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0), 0);
+            assert_eq!(mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0), 0);
+        }
+
+        let mut stub = stub_actor();
+        stub.dispatch = Some(suspend_once_dispatch);
+        stub.mailbox = mailbox.cast();
+        stub.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        // Tracked: the production wake edge (`enqueue_resume`) now confirms
+        // registry liveness before resuming.
+        let actor = TrackedTestActor::install(stub);
+        let actor_ptr = actor.ptr();
+
+        // ── First await cycle. ──
+        // Dispatch → the handler suspends; the activation parks the 1st handle.
+        activate_actor(actor_ptr);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "first dispatch parks the activation"
+        );
+        let handle1 = actor.suspended_cont.load(Ordering::Acquire);
+        assert!(!handle1.is_null(), "first handle is parked");
+        assert_eq!(
+            actor.cont_tag.load(Ordering::Acquire),
+            crate::internal::types::ContTag::Parked as i32
+        );
+
+        // Wake → resume(Ready) → destroy once → re-arm to Empty. The mailbox
+        // still has the 2nd message, so the completed resume settles to Runnable
+        // (not Idle) and is re-enqueued.
+        // SAFETY: actor live; handle1 is the executor-owned frame.
+        unsafe { enqueue_resume(actor_ptr, handle1) };
+        activate_actor(actor_ptr);
+        assert!(
+            actor.suspended_cont.load(Ordering::Acquire).is_null(),
+            "FG4: first handle's slot nulled on destroy"
+        );
+        assert_eq!(
+            actor.cont_tag.load(Ordering::Acquire),
+            crate::internal::types::ContTag::Empty as i32,
+            "P1-B: tag re-armed to Empty after the first completion"
+        );
+
+        // ── Second await cycle (the one a one-shot tag would leak). ──
+        // Ensure the actor is Runnable to service the 2nd message, then dispatch.
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        activate_actor(actor_ptr);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "second dispatch parks a NEW continuation (re-arm worked)"
+        );
+        let handle2 = actor.suspended_cont.load(Ordering::Acquire);
+        assert!(!handle2.is_null(), "second handle is parked");
+        assert_eq!(
+            actor.cont_tag.load(Ordering::Acquire),
+            crate::internal::types::ContTag::Parked as i32
+        );
+
+        // Wake → resume(Ready) → destroy once → re-arm. Mailbox now empty → Idle.
+        // SAFETY: actor live; handle2 is the executor-owned frame.
+        unsafe { enqueue_resume(actor_ptr, handle2) };
+        activate_actor(actor_ptr);
+        assert!(
+            actor.suspended_cont.load(Ordering::Acquire).is_null(),
+            "FG4: second handle's slot nulled on destroy"
+        );
+        assert_eq!(
+            actor.cont_tag.load(Ordering::Acquire),
+            crate::internal::types::ContTag::Empty as i32,
+            "P1-B: tag re-armed to Empty after the second completion (ready for a third)"
+        );
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Idle as i32,
+            "the actor settles to Idle once the mailbox drains"
+        );
+
+        // SAFETY: single-threaded test; mailbox unused afterwards.
+        unsafe { mailbox::hew_mailbox_free(mailbox) };
+    }
+
+    /// D-4 Ready-immediately: a run-to-completion dispatch (the trampoline drove
+    /// the coroutine to Ready in one step, deposited the reply, and returned a
+    /// null handle) does NOT park — the activation settles normally. This is the
+    /// other half of the D-4 shape pair: a suspendable handler that reaches its
+    /// final suspend on the first poll completes this dispatch with no park.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn ready_immediately_dispatch_does_not_park() {
+        let _sched = NoWorkerSchedulerForTest::install();
+        // SAFETY: fresh mailbox with one message.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            // SAFETY: mailbox is live; null payload of size 0 is valid.
+            unsafe { mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0) },
+            0
+        );
+
+        let mut actor = stub_actor();
+        // noop_dispatch returns null — modelling a handler the trampoline drove
+        // to Ready on the first poll (reply deposited, no park).
+        actor.dispatch = Some(noop_dispatch);
+        actor.mailbox = mailbox.cast();
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+
+        activate_actor(actor_ptr);
+
+        // No park: the actor never reaches Suspended, the slot stays empty.
+        assert_ne!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "a Ready-immediately dispatch must NOT park the activation"
+        );
+        assert!(
+            actor.suspended_cont.load(Ordering::Acquire).is_null(),
+            "no handle is parked for a Ready-immediately dispatch"
+        );
+        assert_eq!(
+            actor.cont_tag.load(Ordering::Acquire),
+            crate::internal::types::ContTag::Empty as i32,
+            "the cont tag stays Empty when nothing parks"
+        );
+
+        // SAFETY: single-threaded test; mailbox unused afterwards.
+        unsafe { mailbox::hew_mailbox_free(mailbox) };
     }
 
     #[test]
@@ -3052,6 +3857,7 @@ mod tests {
             suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
+            suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 

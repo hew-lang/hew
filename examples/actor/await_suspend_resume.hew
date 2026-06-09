@@ -1,0 +1,35 @@
+// W6.010 — the live non-blocking actor await.
+//
+// `Coordinator.run` awaits `Worker.compute` from inside a handler. The await
+// SUSPENDS the coordinator's continuation (freeing the worker that was running
+// it), the reply RESUMES it, and the awaited value is bound correctly. Running
+// with HEW_WORKERS=1 is the worker-freeing proof: a single worker must suspend
+// the coordinator, run the worker actor, then resume the coordinator — a
+// blocking ask would deadlock the lone worker.
+actor Worker {
+    let factor: i64;
+    receive fn compute(n: i64) -> i64 {
+        n * factor
+    }
+}
+
+actor Coordinator {
+    let worker: LocalPid<Worker>;
+    receive fn run(n: i64) -> i64 {
+        let r = await worker.compute(n);
+        match r {
+            Ok(v) => v,
+            Err(_) => -1,
+        }
+    }
+}
+
+fn main() {
+    let w = spawn Worker(factor: 6);
+    let c = spawn Coordinator(worker: w);
+    let r = await c.run(7);
+    match r {
+        Ok(v) => println(f"result={v}"),
+        Err(_) => println("ask failed"),
+    }
+}

@@ -350,6 +350,17 @@ fn release_actor_state_lock_ref(lock: &ActorStateLock) -> c_int {
     HEW_ACTOR_STATE_LOCK_OK
 }
 
+/// Test-only: observe whether an actor's registered state lock is currently
+/// held. Used by the scheduler suspend-edge test to assert the per-actor lock is
+/// RELEASED across the suspend edge (a suspended actor must hold no lock against
+/// senders — R2 P0). Returns `None` when no lock is registered for `actor`.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn actor_state_lock_is_held_for_test(actor: *mut HewActor) -> Option<bool> {
+    let lock = lookup_actor_state_lock(actor)?;
+    let state = lock.state.lock().unwrap_or_else(recover_runtime_mutex);
+    Some(state.held)
+}
+
 #[cfg(target_arch = "wasm32")]
 #[derive(Debug, Default)]
 struct ActorStateLockState {
@@ -951,6 +962,18 @@ pub struct HewActor {
     /// Go's runtime calls this the `pdNil→pdWait→pdReady` race; this flag is
     /// the `pdReady`-arrived-early signal the parker drains.
     pub pending_wake: AtomicBool,
+
+    /// W6.010 value routing: the suspended handler's OWN reply channel (the one
+    /// its caller is awaiting), stashed from the dispatch execution context when
+    /// the handler parks. A suspendable handler tears down its execution context
+    /// on suspend, but its coroutine body still owes a reply to its caller; on
+    /// resume the scheduler re-establishes a `HewExecutionContext` carrying this
+    /// channel so the body's final-return `hew_reply` (via
+    /// `hew_get_reply_channel`) deposits the reply — regardless of whether the
+    /// coroutine completes on the trampoline's first poll or on a later
+    /// `resume_park`. Null when the handler had no reply channel (a
+    /// fire-and-forget handler that suspended) or between dispatches.
+    pub suspended_reply_channel: AtomicPtr<c_void>,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -1909,6 +1932,7 @@ fn build_spawned_actor(
         suspended_cont: AtomicPtr::new(ptr::null_mut()),
         cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
         pending_wake: AtomicBool::new(false),
+        suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
     })
 }
 
@@ -5473,6 +5497,7 @@ mod tests {
                 suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
                 cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
                 pending_wake: AtomicBool::new(false),
+                suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             }));
             (actor, mailbox)
         }
@@ -5511,6 +5536,7 @@ mod tests {
             suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
+            suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         unsafe { live_actors::track_actor(actor) };
@@ -8377,6 +8403,7 @@ mod tests {
             suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
+            suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         unsafe { live_actors::track_actor(actor) };

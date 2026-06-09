@@ -1,0 +1,49 @@
+// W6.010 — no lost-wake under a nested suspend chain (the no-hang fail-safe).
+//
+// `Top.run` awaits `Mid.step`, whose handler awaits `Bottom.leaf`. Each level
+// suspends its continuation and resumes on the reply below it. With
+// HEW_WORKERS=1 the whole chain funnels through one worker by suspension: a
+// lost wake at any level (a `Suspend` whose waker never fires) would hang the
+// program. A bounded run completing with the correct value is the proof that
+// every park is matched by exactly one resume across the chain.
+actor Bottom {
+    let base: i64;
+    receive fn leaf(n: i64) -> i64 {
+        n + base
+    }
+}
+
+actor Mid {
+
+    // leaf(5) = 15; step doubles -> 30; run adds 1 -> 31.
+    let bottom: LocalPid<Bottom>;
+    receive fn step(n: i64) -> i64 {
+        let r = await bottom.leaf(n);
+        match r {
+            Ok(v) => v * 2,
+            Err(_) => -1,
+        }
+    }
+}
+
+actor Top {
+    let mid: LocalPid<Mid>;
+    receive fn run(n: i64) -> i64 {
+        let r = await mid.step(n);
+        match r {
+            Ok(v) => v + 1,
+            Err(_) => -1,
+        }
+    }
+}
+
+fn main() {
+    let b = spawn Bottom(base: 10);
+    let m = spawn Mid(bottom: b);
+    let t = spawn Top(mid: m);
+    let r = await t.run(5);
+    match r {
+        Ok(v) => println(f"result={v}"),
+        Err(_) => println("chain failed"),
+    }
+}

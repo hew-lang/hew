@@ -150,14 +150,24 @@ fn cas_tag_strict(a: &HewActor, expected: ContTag, next: ContTag) -> ExecGuard {
 /// Phase 1 of the suspend edge: publish the park INTENT before storing the
 /// handle, so a wake firing mid-park is not lost.
 ///
-/// Clears any stale `pending_wake` and moves the tag to `Parked`. The expected
-/// prior tag is `Empty` (first suspend of a fresh actor) or `Resuming` (the
-/// actor was resumed, ran to a non-final suspend, and is parking again). Any
-/// other prior tag refuses — a park cannot begin on a `Done`/`Destroyed`
-/// handle.
+/// Moves the tag to `Parked`. The expected prior tag is `Empty` (first suspend
+/// of a fresh actor) or `Resuming` (the actor was resumed, ran to a non-final
+/// suspend, and is parking again). Any other prior tag refuses — a park cannot
+/// begin on a `Done`/`Destroyed` handle.
+///
+/// W6.010 lost-wake fix: `begin_park` does NOT clear `pending_wake`. The
+/// readiness source (an actor-ask send) is armed INSIDE the coroutine body —
+/// which runs during the ramp call, BEFORE this park edge — so a reply can fire
+/// (and `mark_pending_wake`) in the window between the send and `begin_park`. A
+/// clear here would wipe that valid wake and the caller would hang forever (the
+/// pre-park lost-wake race). The flag is instead kept monotonic within a cycle
+/// and CONSUMED by `take_pending_wake` (a swap-to-false) at every drain (the
+/// park-edge drain and the resume drain), so it never goes stale across cycles
+/// — every set is drained exactly once, whether the wake arrived before or
+/// after the park published `Parked`. This is Go's `pdReady`-before-`pdWait`
+/// case: a readiness that beats the park is still observed.
 #[must_use]
 pub fn begin_park(a: &HewActor) -> ExecGuard {
-    a.pending_wake.store(false, Ordering::Release);
     let cur = load_tag(a);
     match cur {
         // First park of a fresh actor (internal invariant: the executor only
@@ -348,6 +358,46 @@ pub fn has_live_parked_cont(a: &HewActor) -> bool {
     )
 }
 
+// ── P1-B: quiescent re-arm for multi-await actors ─────────────────────────
+
+/// Re-arm a fully-reclaimed continuation slot so the actor can park AGAIN.
+///
+/// `ContTag::Empty` is set ONLY at actor init; `destroy_parked` leaves the tag
+/// at terminal `Destroyed`. Without this transition an actor that `await`s,
+/// completes, then `await`s a SECOND time would hit [`begin_park`] from
+/// `Destroyed` (which accepts only `Empty`/`Resuming`) and be refused — the new
+/// handle would be neither parked nor destroyed: a leak plus a dropped
+/// activation (fail-OPEN). This closes that loop for a multi-await actor.
+///
+/// The transition is `Destroyed → Empty`, run on the QUIESCENT edge: after
+/// [`destroy_parked`] has reclaimed the continuation and nulled the slot (FG4)
+/// and the resumed activation has settled. It is fail-closed in two ways:
+///
+/// - It only fires when the slot is already null (the post-`destroy_parked`
+///   invariant): re-arming while a handle is still parked would orphan that
+///   handle. A non-null slot refuses (no transition).
+/// - It only CASes from `Destroyed`. Any other current tag (`Empty` — already
+///   armed, the no-op steady state; `Parked`/`Resuming`/`Done` — a live
+///   continuation, must NOT be discarded) refuses without touching the tag.
+///
+/// Returns `Ok` when this call performed the re-arm (`Destroyed → Empty`);
+/// `Refused` when no re-arm was needed or was unsafe (already `Empty`, a live
+/// continuation present, or a non-null slot). A `Refused` is not an error: the
+/// common steady state (an actor that never suspended, or one already re-armed)
+/// returns `Refused` and the caller proceeds normally.
+#[must_use]
+pub fn re_arm(a: &HewActor) -> ExecGuard {
+    // The slot must already be null (destroy_parked's FG4 swap). A non-null
+    // slot means a live handle is still parked — re-arming would orphan it.
+    if !a.suspended_cont.load(Ordering::Acquire).is_null() {
+        return ExecGuard::Refused;
+    }
+    // Only a terminal Destroyed tag re-arms; every other tag refuses. This is
+    // the external-state guard path (a Refused is the steady state, not a bug),
+    // so it does NOT trip a debug_assert.
+    cas_tag(a, ContTag::Destroyed, ContTag::Empty)
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     //! A scratch switched-resume coroutine the executor can drive without the
@@ -525,6 +575,7 @@ mod tests {
             suspended_cont: AtomicPtr::new(ptr::null_mut()),
             cont_tag: AtomicI32::new(ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
+            suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
         })
     }
 
@@ -764,6 +815,103 @@ mod tests {
         );
     }
 
+    /// P1-B — multi-await re-arm: an actor that parks, completes, is destroyed,
+    /// then RE-ARMS can `begin_park` a SECOND continuation. Without `re_arm`,
+    /// the second `begin_park` from `Destroyed` refuses (leak + dropped
+    /// activation). The two continuations park/wake/destroy exactly once each.
+    #[test]
+    fn p1b_re_arm_allows_a_second_park_after_destroy() {
+        let a = exec_test_actor();
+
+        // ── First await lifecycle: park → resume(Ready) → destroy. ──
+        let mut frame1 = Box::new(ScratchFrame::new(1));
+        let handle1 = (&raw mut *frame1).cast::<c_void>();
+        assert!(begin_park(&a).is_ok());
+        // SAFETY: frame1 outlives this scope.
+        unsafe { finish_park(&a, handle1) };
+        // SAFETY: parked handle is live.
+        assert_eq!(unsafe { resume_park(&a) }, Some(ResumePoll::Ready));
+        // SAFETY: Done handle, single owner.
+        assert!(unsafe { destroy_parked(&a) }.is_ok());
+        assert_eq!(load_tag(&a), ContTag::Destroyed);
+        assert_eq!(frame1.destroyed.load(Ordering::Acquire), 1);
+
+        // Without the re-arm a second begin_park would refuse from Destroyed.
+        // Re-arm on the quiescent edge: Destroyed → Empty (slot already null).
+        assert!(
+            re_arm(&a).is_ok(),
+            "re_arm must transition Destroyed -> Empty once the slot is null"
+        );
+        assert_eq!(load_tag(&a), ContTag::Empty);
+        assert!(!has_live_parked_cont(&a));
+
+        // ── Second await lifecycle: park → resume(Ready) → destroy. ──
+        let mut frame2 = Box::new(ScratchFrame::new(1));
+        let handle2 = (&raw mut *frame2).cast::<c_void>();
+        assert!(
+            begin_park(&a).is_ok(),
+            "after re_arm the actor must park a SECOND continuation"
+        );
+        // SAFETY: frame2 outlives this scope.
+        unsafe { finish_park(&a, handle2) };
+        assert_eq!(
+            a.suspended_cont.load(Ordering::Acquire),
+            handle2,
+            "the second park carries the new handle, not the destroyed first one"
+        );
+        // SAFETY: parked handle is live.
+        assert_eq!(unsafe { resume_park(&a) }, Some(ResumePoll::Ready));
+        // SAFETY: Done handle, single owner.
+        assert!(unsafe { destroy_parked(&a) }.is_ok());
+        assert_eq!(
+            frame2.destroyed.load(Ordering::Acquire),
+            1,
+            "the second continuation is destroyed exactly once"
+        );
+        // The first frame was destroyed exactly once across the whole test.
+        assert_eq!(frame1.destroyed.load(Ordering::Acquire), 1);
+    }
+
+    /// P1-B fail-closed: `re_arm` refuses while a handle is still parked (a
+    /// non-null slot). Re-arming there would orphan the live continuation.
+    #[test]
+    fn p1b_re_arm_refuses_with_a_live_parked_handle() {
+        let a = exec_test_actor();
+        let mut frame = Box::new(ScratchFrame::new(2));
+        let handle = (&raw mut *frame).cast::<c_void>();
+
+        assert!(begin_park(&a).is_ok());
+        // SAFETY: frame outlives this scope.
+        unsafe { finish_park(&a, handle) };
+        assert_eq!(load_tag(&a), ContTag::Parked);
+
+        // A live Parked continuation (non-null slot) must NOT be re-armed.
+        assert_eq!(
+            re_arm(&a),
+            ExecGuard::Refused,
+            "re_arm must refuse while a handle is parked (non-null slot)"
+        );
+        assert_eq!(load_tag(&a), ContTag::Parked, "tag untouched on refusal");
+
+        // Clean up.
+        // SAFETY: Parked handle, single owner.
+        assert!(unsafe { destroy_parked(&a) }.is_ok());
+    }
+
+    /// P1-B fail-closed: `re_arm` is a no-op refusal on an already-`Empty`
+    /// actor (the steady state for an actor that never suspended).
+    #[test]
+    fn p1b_re_arm_refuses_when_already_empty() {
+        let a = exec_test_actor();
+        assert_eq!(load_tag(&a), ContTag::Empty);
+        assert_eq!(
+            re_arm(&a),
+            ExecGuard::Refused,
+            "re_arm on an already-Empty actor is a harmless refusal"
+        );
+        assert_eq!(load_tag(&a), ContTag::Empty);
+    }
+
     /// FG1 — abandoning a still-`Parked` continuation (cancellation) destroys
     /// it exactly once; the GUARD lands here even though the cancellation FLOW
     /// is NEW-6.
@@ -857,6 +1005,7 @@ mod forced_ordering_probe {
             suspended_cont: AtomicPtr::new(ptr::null_mut()),
             cont_tag: AtomicI32::new(ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
+            suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
         })
     }
 

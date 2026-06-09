@@ -615,6 +615,7 @@ impl Checker {
             numeric_method_lowerings: std::mem::take(&mut self.numeric_method_lowerings),
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
+            conn_await_reads: std::mem::take(&mut self.conn_await_reads),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),
             assign_target_shapes: std::mem::take(&mut self.assign_target_shapes),
             errors: std::mem::take(&mut self.errors),

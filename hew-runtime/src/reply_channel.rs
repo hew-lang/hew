@@ -9,10 +9,11 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use crate::actor::HewActor;
 use crate::util::{CondvarExt, MutexExt};
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -61,6 +62,16 @@ pub struct HewReplyChannel {
     value_size: usize,
     /// Distinguishes allocator failure from a legitimate null reply.
     allocation_failed: AtomicBool,
+    /// The waiter-kind discriminator (W6.010). When non-null, the waiter is a
+    /// PARKED CONTINUATION belonging to this actor: a reply wakes it via
+    /// `scheduler::enqueue_resume(caller_actor, ..)` (the suspend edge owns the
+    /// `suspended_cont` handle; the FG3 two-phase park inside `enqueue_resume`
+    /// covers a reply that fires mid-park). When null (the default), the waiter
+    /// is a CONDVAR-blocked foreign/main thread woken by `cond.notify_one()`
+    /// (E6 — the foreign-thread ask path stays on the condvar). Set BEFORE the
+    /// ask is submitted (so before any possible reply) by
+    /// [`hew_reply_channel_set_parked_waiter`].
+    caller_actor: AtomicPtr<HewActor>,
     /// Mutex protecting the condvar wait.
     lock: Mutex<()>,
     /// Condvar signalled by [`hew_reply`].
@@ -102,9 +113,40 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         value: ptr::null_mut(),
         value_size: 0,
         allocation_failed: AtomicBool::new(false),
+        caller_actor: AtomicPtr::new(ptr::null_mut()),
         lock: Mutex::new(()),
         cond: Condvar::new(),
     }))
+}
+
+/// Record that the waiter on this reply channel is a PARKED CONTINUATION
+/// belonging to `actor` (W6.010), so [`hew_reply`] wakes it via
+/// `scheduler::enqueue_resume` instead of the condvar.
+///
+/// Called by the suspendable-caller ask emission BEFORE submitting the ask, so
+/// the waiter-kind is visible to any reply (no race: the set happens-before the
+/// send, the send happens-before the handler can reply). A null `actor` is a
+/// no-op that leaves the channel on the condvar path (the foreign-thread
+/// default, E6).
+///
+/// # Safety
+///
+/// `ch` must be a valid pointer returned by [`hew_reply_channel_new`]. `actor`,
+/// if non-null, must reference the live `HewActor` whose continuation is being
+/// parked on this ask; it must outlive the reply (upheld by the suspend edge
+/// owning the parked continuation).
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_set_parked_waiter(
+    ch: *mut HewReplyChannel,
+    actor: *mut HewActor,
+) {
+    if ch.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `ch` is a live reply-channel reference.
+    unsafe {
+        (*ch).caller_actor.store(actor, Ordering::Release);
+    }
 }
 
 unsafe fn alloc_reply_buffer(size: usize) -> *mut c_void {
@@ -166,10 +208,32 @@ unsafe fn publish_reply_from_sender_ref(
         // Release barrier ensures value writes are visible to the waiter.
         (*ch).ready.store(true, Ordering::Release);
 
-        // Wake the condvar waiter.
-        let guard = (*ch).lock.lock_or_recover();
-        (*ch).cond.notify_one();
-        drop(guard);
+        // Waiter-kind branch (W6.010, E5/E6). A parked-continuation waiter
+        // (`caller_actor` non-null) is woken by re-enqueuing its actor; the
+        // resumed continuation reads the now-ready reply value from `ch` on its
+        // resume edge. A condvar-blocked foreign/main thread (`caller_actor`
+        // null — the default, E6) is woken by `cond.notify_one()`. The load is
+        // Acquire-paired with the Release store in
+        // `hew_reply_channel_set_parked_waiter`, which happens-before the ask
+        // submission and therefore before any reply can fire.
+        let caller_actor = (*ch).caller_actor.load(Ordering::Acquire);
+        if caller_actor.is_null() {
+            // Foreign/main-thread condvar waiter (E6 — unchanged).
+            let guard = (*ch).lock.lock_or_recover();
+            (*ch).cond.notify_one();
+            drop(guard);
+        } else {
+            // Parked-continuation waiter: re-enqueue the caller actor. The
+            // continuation handle is owned by the scheduler's suspend edge (the
+            // `suspended_cont` slot); `enqueue_resume` reads the slot itself and
+            // records a `pending_wake` if the reply fired in the FG3 park window
+            // (so a mid-park reply is never lost). The `cont` argument is unused
+            // by the resume edge (the slot is authoritative), so pass null.
+            // SAFETY: `caller_actor` references the live `HewActor` whose
+            // continuation is parked on this ask; the suspend edge keeps it
+            // alive until the resume reclaims the parked continuation.
+            crate::scheduler::enqueue_resume(caller_actor, ptr::null_mut());
+        }
         hew_reply_channel_free(ch);
     }
 }
@@ -565,6 +629,30 @@ pub(crate) unsafe fn hew_reply_channel_is_ready(ch: *mut HewReplyChannel) -> boo
     unsafe { (*ch).ready.load(Ordering::Acquire) }
 }
 
+/// Return `1` if the channel was marked orphaned by mailbox teardown
+/// ([`hew_reply_channel_retire_orphaned_ask_sender_ref`]), `0` otherwise.
+///
+/// The orphaned flag distinguishes a mailbox-teardown null reply (the actor's
+/// mailbox was torn down before the handler called `hew_reply`) from a
+/// legitimate null reply the handler deposited. The blocking ask path reads it
+/// directly to bind [`AskError::OrphanedAsk`]; the codegen suspending-ask
+/// resume edge calls this FFI to bind the SAME discriminator instead of the
+/// TLS last-error slot (which never carries the channel-local orphaned fact).
+/// Must be called on the caller-side reference BEFORE it is released.
+///
+/// # Safety
+///
+/// `ch` must be a valid pointer returned by [`hew_reply_channel_new`] that the
+/// caller still holds a reference to.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_is_orphaned(ch: *mut HewReplyChannel) -> i32 {
+    if ch.is_null() {
+        return 0;
+    }
+    // SAFETY: caller holds a reference that keeps `ch` alive.
+    i32::from(unsafe { (*ch).orphaned.load(Ordering::Acquire) })
+}
+
 /// Poll multiple reply channels, returning the index of the first one
 /// that becomes ready.  Returns -1 on timeout.
 ///
@@ -772,6 +860,39 @@ mod tests {
             );
             hew_reply_channel_free(ch);
         }
+    }
+
+    #[test]
+    fn is_orphaned_reports_mailbox_teardown_flag() {
+        let _guard = crate::runtime_test_guard();
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: ch is a fresh, live channel for this scope.
+        unsafe {
+            // A fresh channel is not orphaned.
+            assert_eq!(
+                hew_reply_channel_is_orphaned(ch),
+                0,
+                "a fresh reply channel must not report orphaned"
+            );
+
+            // Mailbox-teardown sets the orphaned flag before publishing the null
+            // sentinel; the FFI must surface it for the suspending-ask resume edge
+            // to bind AskError::OrphanedAsk (matching the blocking path).
+            hew_reply_channel_retain(ch);
+            hew_reply_channel_retire_orphaned_ask_sender_ref(ch);
+            assert_eq!(
+                hew_reply_channel_is_orphaned(ch),
+                1,
+                "mailbox teardown must make is_orphaned report 1"
+            );
+
+            hew_reply_channel_free(ch);
+        }
+
+        // A null channel is treated as not-orphaned (fail-safe, no deref).
+        // SAFETY: passing null is an explicit no-op contract.
+        assert_eq!(unsafe { hew_reply_channel_is_orphaned(ptr::null_mut()) }, 0);
     }
 
     #[test]

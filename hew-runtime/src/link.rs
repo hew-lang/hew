@@ -464,6 +464,7 @@ mod tests {
             suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
+            suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 

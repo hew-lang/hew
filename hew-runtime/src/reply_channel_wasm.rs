@@ -20,6 +20,7 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use crate::actor::HewActor;
 use std::ffi::c_void;
 use std::ptr;
 #[cfg(test)]
@@ -54,6 +55,14 @@ pub struct WasmReplyChannel {
     /// Set by [`retire_reply_channel`] (in `mailbox_wasm`) so the ask caller
     /// can distinguish mailbox-teardown null from a legitimate null reply.
     pub(crate) orphaned: bool,
+    /// Waiter-kind discriminator (W6.010), the wasm parity counterpart of the
+    /// native `HewReplyChannel::caller_actor`. When non-null, the waiter is a
+    /// PARKED CONTINUATION belonging to this actor and a reply wakes it via the
+    /// wasm `scheduler_wasm::enqueue_resume`; when null (the default), the
+    /// waiter is the cooperative ask loop that drives the scheduler tick and
+    /// reads the deposited reply directly. Single-threaded: a plain pointer (no
+    /// atomic) suffices. Parity-only — no wasm actor-await e2e (E10).
+    caller_actor: *mut HewActor,
 }
 
 /// Create a new WASM reply channel.
@@ -74,7 +83,33 @@ pub extern "C" fn hew_reply_channel_new() -> *mut WasmReplyChannel {
         replied: false,
         cancelled: false,
         orphaned: false,
+        caller_actor: ptr::null_mut(),
     }))
+}
+
+/// Record that the waiter on this reply channel is a PARKED CONTINUATION
+/// belonging to `actor` (W6.010 wasm parity). A reply then wakes it via
+/// `scheduler_wasm::enqueue_resume` instead of leaving it for the cooperative
+/// ask loop. Parity counterpart of the native
+/// `hew_reply_channel_set_parked_waiter`.
+///
+/// # Safety
+///
+/// `ch` must be a valid pointer returned by [`hew_reply_channel_new`]. `actor`,
+/// if non-null, must reference the live `HewActor` whose continuation is parked.
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
+pub unsafe extern "C" fn hew_reply_channel_set_parked_waiter(
+    ch: *mut WasmReplyChannel,
+    actor: *mut HewActor,
+) {
+    if ch.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `ch` is a live reply-channel reference;
+    // single-threaded so a plain store is sufficient.
+    unsafe {
+        (*ch).caller_actor = actor;
+    }
 }
 
 unsafe fn alloc_reply_buffer(size: usize) -> *mut c_void {
@@ -154,6 +189,22 @@ pub unsafe extern "C" fn hew_reply(
             }
         }
         (*ch).replied = true;
+        // Waiter-kind branch (W6.010 wasm parity, E5/E6). A parked-continuation
+        // waiter (`caller_actor` non-null) is re-enqueued so the cooperative
+        // scheduler resumes it; the resumed continuation reads the now-ready
+        // reply from `ch` on its resume edge. A null `caller_actor` (the
+        // default) leaves the channel for the cooperative ask loop, which polls
+        // `reply_ready` directly — no wake needed (single-threaded). The wasm
+        // actor-decl gate (E10) means no wasm program reaches this parked branch
+        // today; it stays SYMMETRIC with native for parity (native-wasm-parity).
+        let caller_actor = (*ch).caller_actor;
+        if !caller_actor.is_null() {
+            // The wasm scheduler owns a layout-identical `scheduler_wasm::HewActor`
+            // view (verified by the module's `offset_of!` parity assertions); the
+            // cooperative `enqueue_resume` takes that type, so cast the
+            // `actor::HewActor` handle the setter stored. Parity-only (E10).
+            crate::scheduler_wasm::enqueue_resume(caller_actor.cast(), ptr::null_mut());
+        }
         hew_reply_channel_free(ch);
         delivered
     }

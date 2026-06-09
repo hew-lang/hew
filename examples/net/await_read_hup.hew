@@ -1,0 +1,29 @@
+//! fd-error / close-while-suspended for `await conn.read()` (NEW-1).
+//!
+//! The reader connects to a port with no listener (a connect to a dead endpoint,
+//! or a peer that closes immediately). The `await conn.read()` must NOT hang
+//! forever: the reactor reports the error/EOF, resumes the parked handler, and
+//! the read binds an empty `bytes` (the EOF/error convention shared with the
+//! blocking `hew_tcp_read`). A correct run resolves promptly — `read 0 bytes` —
+//! and exits, never deadlocking.
+
+import std::net;
+
+actor Reader {
+    receive fn go(unused: i64) {
+
+        // Nothing listens here: the connect fails or the read errors. Either
+        // way the await must resume with an empty result, not hang.
+        let conn = net.connect("127.0.0.1:9");
+        let body = await conn.read();
+        println(f"read {body.len()} bytes");
+        let _ = conn.close();
+    }
+}
+
+fn main() {
+    let r = spawn Reader;
+    r.go(0);
+    sleep_ms(300);
+    println("done");
+}

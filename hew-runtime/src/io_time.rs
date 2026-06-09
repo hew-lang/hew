@@ -16,37 +16,7 @@ use std::ffi::{c_char, c_int, CStr};
 // Duration
 // ---------------------------------------------------------------------------
 
-/// Duration value exchanged with C code.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct HewDuration {
-    /// Milliseconds.
-    pub ms: u64,
-}
-
-/// Create a [`HewDuration`] from whole seconds.
-///
-/// # Safety
-///
-/// No preconditions — pure arithmetic.
-#[no_mangle]
-pub unsafe extern "C" fn hew_seconds(s: c_int) -> HewDuration {
-    HewDuration {
-        ms: u64::from(s.cast_unsigned()).wrapping_mul(1000),
-    }
-}
-
-/// Create a [`HewDuration`] from milliseconds.
-///
-/// # Safety
-///
-/// No preconditions — pure arithmetic.
-#[no_mangle]
-pub unsafe extern "C" fn hew_milliseconds(ms: c_int) -> HewDuration {
-    HewDuration {
-        ms: u64::from(ms.cast_unsigned()),
-    }
-}
+pub use crate::duration::{hew_milliseconds, hew_seconds, HewDuration};
 
 // ---------------------------------------------------------------------------
 // File I/O

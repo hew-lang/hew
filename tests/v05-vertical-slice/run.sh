@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HEW="${ROOT}/target/debug/hew"
 
+# hew-emit-v05 is the out-of-process object emitter required by `hew compile`.
+# libhew.a is the combined runtime+stdlib static library linked into native outputs.
+cargo build -q -p hew-codegen-rs --bin hew-emit-v05
+cargo build -q -p hew-lib
 cargo build -q -p hew-cli
 
 mkdir -p "${ROOT}/.tmp"
@@ -101,6 +105,11 @@ run_accept_expect_status "actor_counter_init" 42
 # Exit code 42 proves the actor ran its full lifecycle (spawn → start → messages → stop).
 run_accept_expect_status "actor_on_stop" 42
 
+# Multiple #[on(stop)] hooks on the same actor must compile and run without
+# ActorHandlerSymbolCollision. Previously the second hook would collide with
+# the first at MIR lowering. Exit 0 = Sequencer(start: 0).value() = 0.
+run_accept_expect_status "actor_multi_on_stop" 0
+
 # select{} with two actor-ask arms + after-timer: FastWorker replies with 42
 # immediately; SlowWorker sleeps 50 ms; after-arm deadline is 100 ms.
 # FastWorker always wins under normal CI load. Exit code 42 proves the winner
@@ -111,11 +120,70 @@ run_accept_expect_status "actor_ask_race" 42
 # main returns 42 after bootstrap completes successfully.
 run_accept_expect_status "supervisor_basic" 42
 
+# Supervisor child-accessor round-trip: spawn App → hew_supervisor_child_get
+# returns a Live handle (tag=0) → ask child worker → echo 42 back as exit code.
+# Exercises the { i64, i64 } ABI fix for hew_supervisor_child_get.
+run_accept_expect_status "supervised_ingest_race" 42
+
+# Supervisor graceful stop: spawn AppSupervisor → supervisor_stop(sup) lowers to
+# hew_supervisor_stop; main returns 0. Exercises the user-name → C-ABI bridge and
+# the void-return (dest: None) MIR + codegen path.
+run_accept_expect_status "supervisor_stop_basic" 0
+
 # on(crash) handler attachment: Crasher actor declares #[on(crash)]; codegen emits
 # a non-null on_crash fn-pointer in HewChildSpec; supervisor boots and main returns 42.
 # The crash path is not triggered at runtime — handler-fire observability is covered
 # by hew-runtime/tests/on_crash_invocation.rs.
 run_accept_expect_status "on_crash_basic" 42
+
+# on(crash) with info.code field access: verifies the full HIR → MIR → codegen path
+# for reading PanicInfo.code inside an on(crash) body.  PanicInfo is loaded from
+# std/failure.hew via the module graph walk, so record_field_orders is populated and
+# FieldAccess lowering succeeds.  The supervisor boots and main returns 42.
+run_accept_expect_status "on_crash_info_code" 42
+
+# `#[max_heap(N)]` wire-through — direct spawn path:
+#   1. MIR dump confirms ActorLayout carries max_heap_bytes: Some(65536),
+#      proving the annotation propagated from HIR through MIR.
+#   2. Binary exits 42, proving codegen routed the spawn through
+#      hew_actor_spawn_opts (arena_cap_bytes=65536) without breaking
+#      actor functionality.
+"${HEW}" compile --dump-mir raw "${ROOT}/tests/v05-vertical-slice/accept/actor_max_heap_basic.hew" >"${accept_output}" 2>&1
+grep -q 'max_heap_bytes: Some(' "${accept_output}"
+grep -q '65536' "${accept_output}"
+run_accept_expect_status "actor_max_heap_basic" 42
+
+# `#[max_heap(N)]` wire-through — supervisor child path:
+#   1. MIR dump confirms the supervisor bootstrap's SpawnActor instruction
+#      carries max_heap_bytes: Some(131072), proving the post-loop pass
+#      mirrored the cap from ActorLayout into SupervisorChildLayout, and
+#      codegen emitted it into HewChildSpec.arena_cap_bytes.
+#   2. Binary exits 42, proving the supervisor bootstrap path is
+#      unaffected.
+"${HEW}" compile --dump-mir raw "${ROOT}/tests/v05-vertical-slice/accept/supervisor_max_heap.hew" >"${accept_output}" 2>&1
+grep -q 'max_heap_bytes: Some(' "${accept_output}"
+grep -q '131072' "${accept_output}"
+run_accept_expect_status "supervisor_max_heap" 42
+
+# Reject: accessing a non-existent child name on a supervisor LHS.
+# `app.w2` does not exist — App declares only `w1`.  The checker emits
+# UndefinedField with a fuzzy suggestion for `w1`.
+if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/supervisor_unknown_child.hew" >"${reject_output}" 2>&1; then
+  echo "expected supervisor-unknown-child fixture to fail" >&2
+  exit 1
+fi
+grep -q 'has no child named' "${reject_output}"
+grep -q 'w1' "${reject_output}"
+
+# Reject: field access on a plain actor LocalPid, not a supervisor.
+# `w.child` on LocalPid<Worker> — the checker emits UndefinedField because
+# LocalPid has no user-visible fields and is not in the supervisor_children map.
+if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/supervisor_child_on_plain_actor.hew" >"${reject_output}" 2>&1; then
+  echo "expected supervisor-child-on-plain-actor fixture to fail" >&2
+  exit 1
+fi
+grep -q 'no field' "${reject_output}"
+grep -q 'LocalPid' "${reject_output}"
 
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"

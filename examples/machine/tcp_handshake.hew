@@ -70,36 +70,36 @@ machine TcpHandshake {
         // Reset collapses to Closed from any state.
         Closed
     }
-    on SynReceive: SynReceived -> SynReceived {
+    on SynReceive: SynReceived -> SynReceived @reenter {
 
         // ── Wildcard fallbacks (protocol violations — stay in current state) ─
 
         // SYN while not Closed: ignore (already connected or waiting).
         SynReceived { remote_port: self.remote_port }
     }
-    on SynReceive: Established -> Established {
+    on SynReceive: Established -> Established @reenter {
         Established { remote_port: self.remote_port }
     }
-    on SynReceive: CloseWait -> CloseWait {
+    on SynReceive: CloseWait -> CloseWait @reenter {
         CloseWait
     }
-    on AckReceive: Closed -> Closed {
+    on AckReceive: Closed -> Closed @reenter {
 
         // Unexpected ACK while Closed or Established: ignore.
         Closed
     }
-    on AckReceive: Established -> Established {
+    on AckReceive: Established -> Established @reenter {
         Established { remote_port: self.remote_port }
     }
-    on FinReceive: Closed -> Closed {
+    on FinReceive: Closed -> Closed @reenter {
 
         // FIN while not Established: ignore (nothing to close).
         Closed
     }
-    on FinReceive: SynReceived -> SynReceived {
+    on FinReceive: SynReceived -> SynReceived @reenter {
         SynReceived { remote_port: self.remote_port }
     }
-    on FinReceive: CloseWait -> CloseWait {
+    on FinReceive: CloseWait -> CloseWait @reenter {
         CloseWait
     }
 }

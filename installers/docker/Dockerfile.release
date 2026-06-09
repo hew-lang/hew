@@ -3,8 +3,7 @@
 # All binaries are built statically inside Docker — no gcompat, no glibc.
 #
 # Usage:
-#   docker run --rm -v "$PWD:/work" ghcr.io/hew-lang/hew build main.hew
-#   docker run --rm -v "$PWD:/work" ghcr.io/hew-lang/hew run main.hew
+#   docker run --rm -v "$PWD:/work" ghcr.io/hew-lang/hew compile main.hew
 #
 # Build:
 #   docker buildx build -f installers/docker/Dockerfile.release \
@@ -13,11 +12,11 @@
 ARG VERSION=0.0.0
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Stage 0: Pre-built LLVM+MLIR for Alpine (musl)
+# Stage 0: Pre-built LLVM for Alpine (musl)
 # ═════════════════════════════════════════════════════════════════════════════
-# Built by alpine-llvm.yml and pushed to GHCR. Contains /opt/llvm-22 with
-# static LLVM+MLIR libraries, cmake configs, and tools (including mlir-tblgen).
-# Alpine 3.21 does not ship llvm22/mlir22 packages, so we use this image.
+# Built by alpine-llvm.yml and pushed to GHCR. Contains /opt/llvm-22 with the
+# static LLVM libraries, configs, and tools required by llvm-sys.
+# Alpine 3.21 does not ship the pinned LLVM 22 toolchain, so we use this image.
 FROM ghcr.io/hew-lang/llvm-alpine:22 AS llvm
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -25,23 +24,20 @@ FROM ghcr.io/hew-lang/llvm-alpine:22 AS llvm
 # ═════════════════════════════════════════════════════════════════════════════
 FROM rust:alpine3.21 AS rust-builder
 
-# Copy pre-built LLVM+MLIR from the llvm stage
+# Copy pre-built LLVM from the llvm stage
 COPY --from=llvm /opt/llvm-22 /opt/llvm-22
 
 # musl-dev: libc headers for static linking
-# cmake/samurai: build system for embedded C++ codegen
-# clang: C/C++ compiler for the codegen library
-# python3: required by CMake's FindPython3 during embedded codegen configure
+# clang: C/C++ compiler for crates and native link steps
 # zlib-static/zstd-static: compression libs for LLVM (static)
 RUN apk add --no-cache \
-    musl-dev cmake samurai clang python3 \
+    musl-dev clang \
     zlib-dev zlib-static zstd-dev zstd-static
 
 ENV LLVM_PREFIX=/opt/llvm-22
 ENV PATH=/opt/llvm-22/bin:$PATH
 ENV CC=clang
 ENV CXX=clang++
-ENV HEW_EMBED_STATIC=1
 
 WORKDIR /src
 COPY . .
@@ -60,7 +56,7 @@ FROM alpine:edge
 
 ARG VERSION
 
-# gcc + musl-dev: needed by `hew build` to link compiled programs (cc driver + libc).
+# gcc + musl-dev: needed by `hew compile` to link compiled programs (cc driver + libc).
 # lld is intentionally omitted — it pulls in 170MB of shared LLVM libs.
 # The compiler falls back to GNU ld when lld is absent.
 RUN apk add --no-cache ca-certificates gcc musl-dev
@@ -68,7 +64,7 @@ RUN apk add --no-cache ca-certificates gcc musl-dev
 # Non-root user
 RUN adduser -D -u 1000 hew
 
-# Binaries (codegen is embedded in the hew binary)
+# Binaries
 COPY --from=rust-builder /src/target/release/hew     /usr/local/bin/hew
 COPY --from=rust-builder /src/target/release/adze    /usr/local/bin/adze
 COPY --from=rust-builder /src/target/release/hew-lsp /usr/local/bin/hew-lsp

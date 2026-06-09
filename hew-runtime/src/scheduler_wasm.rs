@@ -43,6 +43,32 @@ fn notify_actor_group_waiters(actor_id: u64) {
     }
 }
 
+#[inline]
+fn trace_actor_stop_lifecycle(
+    actor_id: u64,
+    trace_context: *mut crate::execution_context::HewExecutionContext,
+) {
+    // WASM-R37-S2: WASM stop/on(stop) paths must be observable through the
+    // same lifecycle trace event as native before invoking terminate_fn.
+    //
+    // WASM-TODO(#1451) / WASM-R37-S9: drain-time actor_type_id remains zero on
+    // WASM until codegen emits handler-name/type registration. Keep the stop
+    // lifecycle event itself observable now; the actor_type_id regression flips
+    // with Slice 5.
+    let installed_trace_context =
+        crate::execution_context::current_context().is_null() && !trace_context.is_null();
+    let prev_context = if installed_trace_context {
+        crate::execution_context::set_current_context(trace_context)
+    } else {
+        std::ptr::null_mut()
+    };
+    crate::tracing::hew_trace_lifecycle(actor_id, crate::tracing::SPAN_STOP);
+    if installed_trace_context {
+        let restored_context = crate::execution_context::set_current_context(prev_context);
+        debug_assert_eq!(restored_context, trace_context);
+    }
+}
+
 // ── HewActor layout (matches native actor.rs exactly) ───────────────────
 
 /// Actor struct layout for WASM. Field order and types MUST match the
@@ -993,6 +1019,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
 
                 // SAFETY: `msg` is exclusively owned by this scheduler tick.
                 let msg_ref = unsafe { &*msg };
+                crate::tracing::hew_trace_begin(a.id, msg_ref.msg_type);
                 // Install the per-message reply channel directly on the
                 // activation's canonical context. The consumed flag is reset
                 // before every dispatch so a previous handler's `hew_reply`
@@ -1015,6 +1042,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     execution_context.reply_channel = std::ptr::null_mut();
                     execution_context.flags &=
                         !crate::execution_context::HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
+                    crate::tracing::hew_trace_end(a.id, msg_ref.msg_type);
                     // SAFETY: msg is exclusively owned by this scheduler tick.
                     unsafe {
                         (*msg).reply_channel = std::ptr::null_mut();
@@ -1048,6 +1076,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     execution_context.reply_channel = std::ptr::null_mut();
                     execution_context.flags &=
                         !crate::execution_context::HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
+                    crate::tracing::hew_trace_end(a.id, msg_ref.msg_type);
                     // SAFETY: msg is exclusively owned by this scheduler tick.
                     unsafe {
                         (*msg).reply_channel = std::ptr::null_mut();
@@ -1106,6 +1135,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                         }
                     }
                 }
+                crate::tracing::hew_trace_end(a.id, msg_ref.msg_type);
 
                 msgs_processed += 1;
                 a.prof_messages_processed.fetch_add(1, Ordering::Relaxed);
@@ -1197,6 +1227,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     if cur_state == HewActorState::Stopping as i32 {
         a.actor_state
             .store(HewActorState::Stopped as i32, Ordering::Relaxed);
+        trace_actor_stop_lifecycle(a.id, &raw mut execution_context);
         notify_actor_group_waiters(a.id);
         // SAFETY: actor just transitioned to Stopped; dispatch is finished.
         // call_terminate_fn has an internal `terminate_called` guard so later
@@ -1267,13 +1298,9 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
             // Mailbox closed while draining -> IDLE -> STOPPED.
             // Mirrors the native scheduler's post-drain close-path (see
             // scheduler.rs `Idle -> Stopped` branch).
-            //
-            // Note: native also calls hew_trace_lifecycle here, but
-            // `crate::tracing` is #[cfg(not(target_arch = "wasm32"))] and does
-            // not exist on the real WASM target.  Consistent with the existing
-            // Stopping->Stopped path in this file which likewise omits tracing.
             a.actor_state
                 .store(HewActorState::Stopped as i32, Ordering::Relaxed);
+            trace_actor_stop_lifecycle(a.id, &raw mut execution_context);
             notify_actor_group_waiters(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
             // call_terminate_fn has an internal `terminate_called` guard so
@@ -1394,7 +1421,8 @@ pub use crate::execution_context::hew_get_reply_channel;
 /// non-recursive cooperative driver so yielding never returns `1` without a
 /// scheduler tick.
 ///
-/// Returns 0 if the actor should continue, 1 if it yielded.
+/// Returns 0 if the actor should continue, 1 if it yielded, and 2 if the
+/// actor observed cancellation.
 ///
 /// # Safety
 ///
@@ -1451,18 +1479,23 @@ pub extern "C" fn hew_actor_cooperate() -> c_int {
     // Stopped, Crashed) that happened mid-handler must propagate to the
     // codegen-emitted `cooperate == 2 → cancel_exit` branch, matching the
     // native behaviour. On native this signal travels via task-scope cancel
-    // tokens; on WASM (single-threaded, no task scopes) the only observable
-    // cancel source within a handler is the actor's own state, which an
-    // earlier statement in the same handler (or a supervisor stop pre-empted
-    // by a host tick) may have already transitioned. Reading it here turns
-    // a previously-silent divergence into the same fail-closed cancel exit
-    // that native produces.
+    // tokens; on WASM (single-threaded, no task scopes) the observable cancel
+    // sources within a handler are the actor's own state and the actor mailbox
+    // closing under it. Reading them here turns previously-silent divergence
+    // into the same fail-closed cancel exit that native produces.
     let actor_state = a.actor_state.load(Ordering::Acquire);
     if actor_state == HewActorState::Stopping as i32
         || actor_state == HewActorState::Stopped as i32
         || actor_state == HewActorState::Crashed as i32
     {
         return 2;
+    }
+    if !a.mailbox.is_null() {
+        // SAFETY: actor mailbox pointer is owned by the live actor installed in
+        // the current execution context.
+        if unsafe { crate::mailbox_wasm::mailbox_is_closed(a.mailbox.cast()) } {
+            return 2;
+        }
     }
 
     // Decrement reduction counter. If still positive, continue.

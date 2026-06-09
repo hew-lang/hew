@@ -29,12 +29,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore LLVM+MLIR cache (FreeBSD)
+      - name: Restore LLVM cache (FreeBSD)
         id: cache-llvm-freebsd
         uses: actions/cache/restore@v4
         with:
           path: llvm-freebsd-install.tar.zst
-          key: llvm-mlir-22.1.0-freebsd15-amd64-v1
+          key: llvm-22.1.0-freebsd15-amd64-v2
 
       - name: Build and test on FreeBSD
         uses: vmactions/freebsd-vm@v1
@@ -47,7 +47,7 @@ jobs:
           run: |
             set -eux
 
-            # ── LLVM/MLIR ──────────────────────────────────────────────────
+            # ── LLVM ───────────────────────────────────────────────────────
             LLVM_PREFIX=/usr/local/llvm22-src
             if [ -f llvm-freebsd-install.tar.zst ]; then
               echo "==> Restoring LLVM from cache"
@@ -59,12 +59,11 @@ jobs:
               git clone --depth 1 --branch llvmorg-22.1.0 \
                 --filter=blob:none --sparse \
                 https://github.com/llvm/llvm-project.git /tmp/llvm-src
-              (cd /tmp/llvm-src && git sparse-checkout set llvm mlir cmake third-party)
+              (cd /tmp/llvm-src && git sparse-checkout set llvm cmake third-party)
 
               cmake -S /tmp/llvm-src/llvm -B /tmp/llvm-build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX="${LLVM_PREFIX}" \
-                -DLLVM_ENABLE_PROJECTS="mlir" \
                 -DLLVM_TARGETS_TO_BUILD="X86" \
                 -DLLVM_BUILD_TOOLS=ON \
                 -DLLVM_BUILD_UTILS=ON \
@@ -77,9 +76,7 @@ jobs:
                 -DLLVM_ENABLE_ZLIB=ON \
                 -DLLVM_ENABLE_ZSTD=OFF \
                 -DLLVM_BUILD_LLVM_DYLIB=OFF \
-                -DBUILD_SHARED_LIBS=OFF \
-                -DMLIR_BUILD_MLIR_C_DYLIB=OFF \
-                -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
+                -DBUILD_SHARED_LIBS=OFF
 
               cmake --build /tmp/llvm-build -j$(sysctl -n hw.ncpu)
               cmake --install /tmp/llvm-build
@@ -135,9 +132,9 @@ jobs:
             # as all other platforms, replacing the previous bare cargo test.
             cargo nextest run --workspace --exclude hew-wasm --exclude hew-cabi --profile ci
 
-      - name: Save LLVM+MLIR cache (FreeBSD)
+      - name: Save LLVM cache (FreeBSD)
         if: steps.cache-llvm-freebsd.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: llvm-freebsd-install.tar.zst
-          key: llvm-mlir-22.1.0-freebsd15-amd64-v1
+          key: llvm-22.1.0-freebsd15-amd64-v2

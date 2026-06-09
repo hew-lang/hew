@@ -118,6 +118,10 @@ fn loop_cooperate_sites_emit_runtime_calls() {
         ll.contains("cancel_exit"),
         "cooperate emission must materialize cancel-exit branches;\n--- IR ---\n{ll}"
     );
+    assert!(
+        ll.contains("icmp eq i32") && ll.contains(", 2"),
+        "cooperate emission must branch on runtime cancel code 2;\n--- IR ---\n{ll}"
+    );
 
     let entry_call = ll
         .find("call i32 @hew_actor_cooperate()")

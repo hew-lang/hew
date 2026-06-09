@@ -87,7 +87,8 @@ const JIT_CLASSIFICATION_TOML: &str =
 ///
 /// Returns a `HashSet<&'static str>` so membership checks are O(1).
 /// The parsing is line-based (no full TOML dep): each quoted string inside
-/// `stable = [` ... `]` is extracted. The `internal` block is excluded.
+/// `stable = [` ... `]` is extracted. The `codegen-stable` and `internal`
+/// blocks are excluded — those tiers are not user-callable via `extern "rt"`.
 ///
 /// WHY no dep: the block format is simple and has been stable since the file
 /// was introduced; adding a toml dep to hew-types for a single string-list
@@ -3343,8 +3344,10 @@ impl Checker {
                         ),
                         notes: vec![(
                             f.span.clone(),
-                            "The `internal` classification covers scheduler/lifecycle \
-                             symbols that must not be named by user code."
+                            "The `internal` classification covers lifecycle/shutdown \
+                             symbols; `codegen-stable` covers compiler-emitted symbols \
+                             (e.g. cooperate safepoints, actor-state locks). Neither \
+                             may be named by user code in `extern \"rt\"` blocks."
                                 .to_string(),
                         )],
                         suggestions: vec![format!(

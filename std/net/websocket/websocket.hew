@@ -81,7 +81,7 @@ trait ConnMethods {
     /// `handler` is the actor that will receive on_message and on_close.
     /// `on_message_type` is the msg_type index for the on_message receive fn.
     /// `on_close_type` is the msg_type index for the on_close receive fn.
-    fn attach(conn: Conn, handler: ActorRef, on_message_type: i64, on_close_type: i64);
+    fn attach(conn: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64);
 }
 
 impl ConnMethods for Conn {
@@ -128,7 +128,7 @@ impl ConnMethods for Conn {
             hew_ws_close(conn)
         };
     }
-    fn attach(conn: Conn, handler: ActorRef, on_message_type: i64, on_close_type: i64) {
+    fn attach(conn: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64) {
         unsafe {
             hew_ws_attach(conn, handler, on_message_type as i32, on_close_type as i32)
         }; // INTERNAL-ABI: C ABI takes i32 type indices
@@ -271,5 +271,5 @@ extern "C" {
     fn hew_ws_server_port(server: Server) -> i32;
     fn hew_ws_server_accept(server: Server) -> Conn;
     fn hew_ws_server_close(server: Server);
-    fn hew_ws_attach(ws: Conn, handler: ActorRef, on_message_type: i32, on_close_type: i32);
+    fn hew_ws_attach(ws: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i32, on_close_type: i32);
 }

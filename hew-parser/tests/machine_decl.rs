@@ -231,6 +231,37 @@ machine Counter {
 }
 
 #[test]
+fn parse_machine_transition_with_reenter_annotation() {
+    let source = r"
+machine Counter {
+    state Active { n: Int; }
+
+    event Inc;
+
+    on Inc: Active -> Active @reenter {
+        Active { n: self.n + 1 }
+    }
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
+        assert_eq!(m.transitions.len(), 1);
+        assert!(
+            m.transitions[0].reenter,
+            "expected transition annotation to set reenter=true"
+        );
+    } else {
+        panic!("expected Machine item");
+    }
+}
+
+#[test]
 fn reject_nested_state_in_state_body() {
     let source = r"
 machine Bad {

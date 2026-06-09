@@ -30,18 +30,17 @@
 //!
 //! ## Two-stage emission (front-half / back-half split)
 //!
-//! IR construction runs in-process via inkwell — that path is safe even
-//! when the caller binary has `libMLIR.dylib` loaded (as the `hew` binary
-//! does via the embedded C++ codegen). Object emission via
-//! `TargetMachine::write_to_file` is **not** safe under that dual-load:
+//! IR construction runs in-process via inkwell. Object emission via
+//! `TargetMachine::write_to_file` is **not** safe in that same process:
 //! LLVM's legacy PassManager scheduler (which the C codegen API still
-//! routes through) hits an `addLowerLevelRequiredPass` trap when libMLIR
-//! has pre-touched the global `PassRegistry`. The fix is structural —
-//! the back half runs in its own process. `emit_module` writes the
-//! textual `.ll` in-process, then spawns the sibling `hew-emit-v05`
-//! helper binary to compile each requested triple to a relocatable
-//! object. The helper's process loads only `libLLVM.dylib`, so the
-//! legacy PM scheduler finds its analyses and `write_to_file` succeeds.
+//! routes through) can hit an `addLowerLevelRequiredPass` trap after
+//! earlier in-process LLVM setup has pre-touched the global
+//! `PassRegistry`. The fix is structural — the back half runs in its own
+//! process. `emit_module` writes the textual `.ll` in-process, then
+//! spawns the sibling `hew-emit-v05` helper binary to compile each
+//! requested triple to a relocatable object. The helper process starts
+//! with a clean `libLLVM` global-state footprint, so the legacy PM
+//! scheduler finds its analyses and `write_to_file` succeeds.
 //! See `src/bin/hew_emit_v05.rs` for the helper's own module docs.
 //!
 //! ## Side-table audit
@@ -196,8 +195,8 @@ pub struct EmitArtefacts {
 /// of every artefact produced. Fail-closed on any verification failure.
 ///
 /// The textual LLVM IR (`<name>.ll`) is built in-process — the
-/// IR-construction path is safe under the dual `libMLIR` / `libLLVM` load
-/// state that the `hew` binary runs under. Object emission shells out to
+/// IR-construction path is safe under the `hew` driver's normal in-process
+/// LLVM setup. Object emission shells out to
 /// the `hew-emit-v05` helper (see the helper's module docs for why), so the
 /// caller's binary must ship `hew-emit-v05` alongside `hew` in the same
 /// directory (the workspace `cargo build` produces both into `target/<profile>/`).
@@ -257,17 +256,23 @@ pub fn emit_module(
     Ok(artefacts)
 }
 
-/// Return the first duplex substrate symbol found in `pipeline`'s instruction
-/// stream, or `None` if no such symbol is present.
+/// Return the first WASM-excluded substrate symbol found in `pipeline`'s
+/// instruction stream, or `None` if none is present.
 ///
-/// Duplex symbols (`hew_duplex_*`) are excluded from wasm32 builds via
-/// `hew-runtime/src/duplex.rs:54` (`#![cfg(not(target_arch = "wasm32"))]`).
+/// Excluded symbols:
+/// - `hew_duplex_*` — excluded from wasm32 builds via
+///   `hew-runtime/src/duplex.rs:54` (`#![cfg(not(target_arch = "wasm32"))]`).
+///   WASM-TODO(#1451).
+/// - `hew_supervisor_child_get` — requires the native preemptive scheduler's
+///   supervisor restart machinery; WASM builds use a cooperative executor that
+///   does not support it.  WASM-TODO(#1475).
+///
 /// This scan detects them in the MIR before the `wasm-ld` step so the caller
 /// can return `CodegenError::WasmUnsupportedSubstrate` instead of a confusing
-/// linker error.  WASM-TODO(#1451).
+/// linker error.
 ///
 /// The scan covers:
-/// - `Instr::CallRuntimeAbi` with a symbol that starts with `"hew_duplex_"`.
+/// - `Instr::CallRuntimeAbi` with an excluded symbol.
 /// - `Instr::Drop { drop_fn: Some(fn_name), .. }` in raw_mir where `fn_name`
 ///   starts with `"hew_duplex_"` (e.g. `hew_duplex_close`).
 /// - `ElabDrop { drop_fn: Some(name), .. }` in `elaborated_mir.drop_plans`
@@ -281,7 +286,16 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
                 let excluded = match instr {
                     Instr::CallRuntimeAbi(call) => {
                         let sym = call.symbol();
-                        sym.starts_with("hew_duplex_").then(|| sym.to_string())
+                        // hew_duplex_* — excluded via hew-runtime/src/duplex.rs:54
+                        //   `#![cfg(not(target_arch = "wasm32"))]`.
+                        //   WASM-TODO(#1451).
+                        // hew_supervisor_* — the supervisor family requires the native
+                        //   preemptive scheduler; WASM builds use a cooperative
+                        //   single-threaded executor that does not support supervisor
+                        //   restart machinery.
+                        //   WASM-TODO(#1475): supervisor WASM parity is tracked there.
+                        (sym.starts_with("hew_duplex_") || sym.starts_with("hew_supervisor_"))
+                            .then(|| sym.to_string())
                     }
                     Instr::Drop {
                         drop_fn: Some(fn_name),
@@ -415,6 +429,10 @@ struct FnCtx<'a, 'ctx> {
     /// is shared (read-only) — no new declarations are added during body
     /// lowering.
     fn_symbols: &'a FnSymbolMap<'ctx>,
+    /// Module-wide actor layouts keyed by `ActorLayout.name` at use sites.
+    /// Spawn lowering consumes these layouts to emit the WASM bridge metadata
+    /// producer before calling into the runtime spawn ABI.
+    actor_layouts: &'a [ActorLayout],
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
@@ -580,6 +598,16 @@ fn intern_runtime_decl<'ctx>(
         "hew_actor_state_lock_acquire" => i32_ty.fn_type(&[ptr_ty.into()], false),
         "hew_actor_state_lock_release" => i32_ty.fn_type(&[ptr_ty.into()], false),
         "hew_actor_spawn" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
+        // hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut HewActor
+        // (`hew-runtime/src/actor.rs:1754`). Used when `#[max_heap(N)]` is
+        // set; routes through the opts struct instead of the 3-arg spawn.
+        "hew_actor_spawn_opts" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_wasm_register_actor_meta(meta: *const HewActorMeta) -> void
+        // (`hew-runtime/src/bridge.rs`). WASM/test bridge registration for
+        // trace actor-type attribution and host metadata queries. The metadata
+        // structs are generated on the spawn path because this backend has no
+        // module-init hook.
+        "hew_wasm_register_actor_meta" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         "hew_get_reply_channel" => ptr_ty.fn_type(&[], false),
         "hew_reply" => ctx
             .bool_type()
@@ -671,6 +699,41 @@ fn intern_runtime_decl<'ctx>(
         // and spawns its self-actor. Returns 0 on success. The bootstrap
         // traps on non-zero (fail-closed) before returning the supervisor ptr.
         "hew_supervisor_start" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_supervisor_stop(sup: *mut HewSupervisor) -> void
+        // (`hew-runtime/src/supervisor.rs:1944`). Requests graceful shutdown of
+        // the supervisor and all its children. Void return; the Hew builtin
+        // `supervisor_stop(sup)` discards the result.
+        "hew_supervisor_stop" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_supervisor_child_get(sup: *mut HewSupervisor, key: u32)
+        //     -> ChildLookupResult
+        // (`hew-runtime/src/supervisor.rs:2795`). Returns the live actor handle
+        // for slot `key`, or a tagged Transient/Dead result when the slot is
+        // unavailable (mid-restart, circuit-open, budget-exhausted, or the
+        // supervisor is shut down). The 16-byte `ChildLookupResult` C-ABI struct
+        // On aarch64 (SysV/AAPCS), structs ≤ 16 bytes are returned in x0:x1
+        // as a `[2 x i64]` aggregate — NOT via an x8 sret pointer.  The Rust
+        // runtime emits `define [2 x i64] @hew_supervisor_child_get(...)`.
+        // Declaring the return type as `{ i8, i8, [6 x i8], ptr }` causes LLVM
+        // to choose the indirect-return (sret) path, so the caller reads the tag
+        // byte from a stale x8 stack slot → spurious non-zero tag → trap 206.
+        //
+        // Fix: declare the return type as `{ i64, i64 }`.  Field 0 is the
+        // packed `(tag: u8, reason: u8, _pad: [u8; 6])` word (tag lives in the
+        // low byte); field 1 is the handle integer.  The extractvalue block
+        // below truncates field 0 to i8 for the tag check.
+        //
+        // `key` is `u32` (i32 in LLVM) — the slot index fits in 32 bits.
+        //
+        // NOTE: `hew_supervisor_nested_get` (hew-runtime/src/supervisor.rs)
+        // also returns `ChildLookupResult` by value and will need the same
+        // `{ i64, i64 }` ABI declaration when wired into codegen.
+        //
+        // WASM: supervisor child access requires the native scheduler; see
+        // `uses_wasm_excluded_symbol` which gates this symbol at WASM emit time.
+        "hew_supervisor_child_get" => {
+            let result_ty = ctx.struct_type(&[i64_ty.into(), i64_ty.into()], false);
+            result_ty.fn_type(&[ptr_ty.into(), i32_ty.into()], false)
+        }
         // hew_task_new() -> *mut HewTask
         // (`hew-runtime/src/task_scope.rs:214`). Box-allocates a HewTask
         // in the Ready state. Producer calls this to obtain a task handle
@@ -1291,14 +1354,224 @@ fn emit_spawn_task_direct(
     Ok(())
 }
 
+fn llvm_global_name_fragment(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "unnamed".to_string()
+    } else {
+        out
+    }
+}
+
+fn intern_global_string_ptr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: &str,
+    name: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    if let Some(global) = fn_ctx.llvm_mod.get_global(name) {
+        return Ok(global.as_pointer_value());
+    }
+    let global = fn_ctx
+        .builder
+        .build_global_string_ptr(value, name)
+        .map_err(|e| CodegenError::Llvm(format!("actor metadata string `{name}`: {e:?}")))?;
+    Ok(global.as_pointer_value())
+}
+
+fn emit_wasm_actor_metadata_registration<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    actor_name: &str,
+) -> CodegenResult<()> {
+    let layout = fn_ctx
+        .actor_layouts
+        .iter()
+        .find(|layout| layout.name == actor_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "spawn `{actor_name}` has no ActorLayout for WASM trace metadata registration"
+            ))
+        })?;
+
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let actor_fragment = llvm_global_name_fragment(actor_name);
+    let actor_name_ptr = intern_global_string_ptr(
+        fn_ctx,
+        actor_name,
+        &format!("str_actor_meta_name_{actor_fragment}"),
+    )?;
+
+    // Mirrors hew-runtime/src/bridge.rs:
+    //   HewHandlerMeta { name: *const u8, msg_type: i32, param_count: u32,
+    //                    params: *const HewParamMeta, return_type: *const u8,
+    //                    return_size: u32 }
+    //   HewActorMeta   { name: *const u8, handler_count: u32,
+    //                    handlers: *const HewHandlerMeta }
+    //
+    // Parameter and return metadata require names/layouts that ActorLayout does
+    // not own today. Trace attribution consumes the supported fields available
+    // here (actor name, handler name, msg_type) and leaves params/return null.
+    let handler_ty = fn_ctx.ctx.struct_type(
+        &[
+            ptr_ty.into(),
+            i32_ty.into(),
+            i32_ty.into(),
+            ptr_ty.into(),
+            ptr_ty.into(),
+            i32_ty.into(),
+        ],
+        false,
+    );
+    let actor_meta_ty = fn_ctx
+        .ctx
+        .struct_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false);
+
+    let handlers_ptr = if layout.handlers.is_empty() {
+        ptr_ty.const_null()
+    } else {
+        let handler_count = u32::try_from(layout.handlers.len()).map_err(|_| {
+            CodegenError::FailClosed(format!(
+                "actor `{actor_name}` has more than u32::MAX handlers"
+            ))
+        })?;
+        let handler_array_ty = handler_ty.array_type(handler_count);
+        let handler_array_slot = fn_ctx
+            .builder
+            .build_alloca(
+                handler_array_ty,
+                &format!("actor_meta_handlers_{actor_fragment}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("actor metadata handler array: {e:?}")))?;
+        for (idx, handler) in layout.handlers.iter().enumerate() {
+            let handler_idx = u32::try_from(idx).map_err(|_| {
+                CodegenError::FailClosed(format!(
+                    "actor `{actor_name}` handler index exceeds u32::MAX"
+                ))
+            })?;
+            let handler_name_fragment = llvm_global_name_fragment(&handler.name);
+            let handler_name_ptr = intern_global_string_ptr(
+                fn_ctx,
+                &handler.name,
+                &format!(
+                    "str_actor_meta_handler_{actor_fragment}_{handler_idx}_{handler_name_fragment}"
+                ),
+            )?;
+            let handler_slot = unsafe {
+                fn_ctx
+                    .builder
+                    .build_gep(
+                        handler_array_ty,
+                        handler_array_slot,
+                        &[
+                            i32_ty.const_zero(),
+                            i32_ty.const_int(handler_idx as u64, false),
+                        ],
+                        &format!("actor_meta_handler_{handler_idx}"),
+                    )
+                    .map_err(|e| CodegenError::Llvm(format!("actor metadata handler GEP: {e:?}")))?
+            };
+            let fields: [(u32, BasicValueEnum<'ctx>); 6] = [
+                (0, handler_name_ptr.into()),
+                (1, i32_ty.const_int(handler.msg_type as u64, true).into()),
+                (2, i32_ty.const_zero().into()),
+                (3, ptr_ty.const_null().into()),
+                (4, ptr_ty.const_null().into()),
+                (5, i32_ty.const_zero().into()),
+            ];
+            for (field_idx, value) in fields {
+                let field_ptr = fn_ctx
+                    .builder
+                    .build_struct_gep(
+                        handler_ty,
+                        handler_slot,
+                        field_idx,
+                        &format!("actor_meta_handler_{handler_idx}_f{field_idx}"),
+                    )
+                    .map_err(|e| {
+                        CodegenError::Llvm(format!("actor metadata handler field GEP: {e:?}"))
+                    })?;
+                fn_ctx.builder.build_store(field_ptr, value).map_err(|e| {
+                    CodegenError::Llvm(format!("actor metadata handler field store: {e:?}"))
+                })?;
+            }
+        }
+        unsafe {
+            fn_ctx
+                .builder
+                .build_gep(
+                    handler_array_ty,
+                    handler_array_slot,
+                    &[i32_ty.const_zero(), i32_ty.const_zero()],
+                    "actor_meta_handlers_ptr",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("actor metadata handlers ptr: {e:?}")))?
+        }
+    };
+
+    let actor_meta_slot = fn_ctx
+        .builder
+        .build_alloca(actor_meta_ty, &format!("actor_meta_{actor_fragment}"))
+        .map_err(|e| CodegenError::Llvm(format!("actor metadata alloca: {e:?}")))?;
+    let handler_count = u32::try_from(layout.handlers.len()).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "actor `{actor_name}` has more than u32::MAX handlers"
+        ))
+    })?;
+    let fields: [(u32, BasicValueEnum<'ctx>); 3] = [
+        (0, actor_name_ptr.into()),
+        (1, i32_ty.const_int(handler_count as u64, false).into()),
+        (2, handlers_ptr.into()),
+    ];
+    for (field_idx, value) in fields {
+        let field_ptr = fn_ctx
+            .builder
+            .build_struct_gep(
+                actor_meta_ty,
+                actor_meta_slot,
+                field_idx,
+                &format!("actor_meta_f{field_idx}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("actor metadata field GEP: {e:?}")))?;
+        fn_ctx
+            .builder
+            .build_store(field_ptr, value)
+            .map_err(|e| CodegenError::Llvm(format!("actor metadata field store: {e:?}")))?;
+    }
+
+    let register = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_wasm_register_actor_meta",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            register,
+            &[actor_meta_slot.into()],
+            "hew_wasm_register_actor_meta_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_wasm_register_actor_meta call: {e:?}")))?;
+    Ok(())
+}
+
 fn emit_spawn_actor(
     fn_ctx: &FnCtx<'_, '_>,
     actor_name: &str,
     state: Option<Place>,
     init_args: &[Place],
     dest: Place,
+    max_heap_bytes: Option<u64>,
 ) -> CodegenResult<()> {
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let i32_ty = fn_ctx.ctx.i32_type();
     let i64_ty = fn_ctx.ctx.i64_type();
     let (state_ptr, state_size) = if let Some(state_place) = state {
         let (slot, slot_ty) = place_pointer(fn_ctx, state_place)?;
@@ -1338,28 +1611,108 @@ fn emit_spawn_actor(
         .builder
         .build_call(sched_init, &[], "hew_sched_init_call")
         .map_err(|e| CodegenError::Llvm(format!("hew_sched_init call: {e:?}")))?;
-    let spawn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_spawn",
-    )?;
-    let spawned = fn_ctx
-        .builder
-        .build_call(
-            spawn,
+    emit_wasm_actor_metadata_registration(fn_ctx, actor_name)?;
+
+    let spawned = if let Some(cap) = max_heap_bytes {
+        // `#[max_heap(N)]` is set — route through `hew_actor_spawn_opts` so
+        // the runtime applies the per-dispatch arena cap. The `HewActorOpts`
+        // struct is stack-allocated, populated with the minimal fields, and
+        // passed by pointer.
+        //
+        // `HewActorOpts` `#[repr(C)]` field order (hew-runtime/src/actor.rs:1418):
+        //   0  init_state:       *mut c_void   → ptr
+        //   1  state_size:       usize         → i64
+        //   2  dispatch:         Option<fn>    → ptr
+        //   3  mailbox_capacity: i32           → i32
+        //   4  overflow:         i32           → i32
+        //   5  coalesce_key_fn:  Option<fn>    → ptr
+        //   6  coalesce_fallback: i32          → i32
+        //   7  budget:           i32           → i32
+        //   8  arena_cap_bytes:  usize         → i64
+        let opts_ty = fn_ctx.ctx.struct_type(
             &[
-                state_ptr.into(),
-                state_size.into(),
-                dispatch.as_global_value().as_pointer_value().into(),
+                ptr_ty.into(), // init_state
+                i64_ty.into(), // state_size
+                ptr_ty.into(), // dispatch
+                i32_ty.into(), // mailbox_capacity
+                i32_ty.into(), // overflow
+                ptr_ty.into(), // coalesce_key_fn (null)
+                i32_ty.into(), // coalesce_fallback
+                i32_ty.into(), // budget
+                i64_ty.into(), // arena_cap_bytes
             ],
-            "hew_actor_spawn_call",
-        )
-        .map_err(|e| CodegenError::Llvm(format!("hew_actor_spawn call: {e:?}")))?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_actor_spawn returned void".into()))?
-        .into_pointer_value();
+            false,
+        );
+        let opts_slot = fn_ctx
+            .builder
+            .build_alloca(opts_ty, "actor_spawn_opts")
+            .map_err(|e| CodegenError::Llvm(format!("HewActorOpts alloca: {e:?}")))?;
+        let opts_fields: [(u32, BasicValueEnum<'_>); 9] = [
+            (0, state_ptr.into()),
+            (1, state_size.into()),
+            (2, dispatch.as_global_value().as_pointer_value().into()),
+            (3, i32_ty.const_zero().into()),
+            (4, i32_ty.const_zero().into()),
+            (5, ptr_ty.const_null().into()),
+            (6, i32_ty.const_zero().into()),
+            (7, i32_ty.const_zero().into()),
+            (8, i64_ty.const_int(cap, false).into()),
+        ];
+        for (field_idx, value) in opts_fields {
+            let gep = fn_ctx
+                .builder
+                .build_struct_gep(opts_ty, opts_slot, field_idx, &format!("opts_f{field_idx}"))
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("HewActorOpts GEP field {field_idx}: {e:?}"))
+                })?;
+            fn_ctx.builder.build_store(gep, value).map_err(|e| {
+                CodegenError::Llvm(format!("HewActorOpts store field {field_idx}: {e:?}"))
+            })?;
+        }
+        let spawn_opts_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_actor_spawn_opts",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                spawn_opts_fn,
+                &[opts_slot.into()],
+                "hew_actor_spawn_opts_call",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("hew_actor_spawn_opts call: {e:?}")))?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_actor_spawn_opts returned void".into()))?
+            .into_pointer_value()
+    } else {
+        // No arena cap — use the lighter 3-arg `hew_actor_spawn` path.
+        let spawn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_actor_spawn",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                spawn,
+                &[
+                    state_ptr.into(),
+                    state_size.into(),
+                    dispatch.as_global_value().as_pointer_value().into(),
+                ],
+                "hew_actor_spawn_call",
+            )
+            .map_err(|e| CodegenError::Llvm(format!("hew_actor_spawn call: {e:?}")))?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_actor_spawn returned void".into()))?
+            .into_pointer_value()
+    };
+
     emit_actor_spawn_lifecycle(fn_ctx, actor_name, spawned, init_args)?;
     let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
     if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
@@ -1520,6 +1873,20 @@ fn emit_supervisor_bootstrap_body<'ctx>(
 
     let mut runtime_decls = RuntimeDeclMap::new();
 
+    // ── hew_sched_init() ────────────────────────────────────────────────────
+    // The plain-actor spawn path calls hew_sched_init before hew_actor_spawn
+    // (llvm.rs `emit_spawn_actor`).  The supervisor bootstrap must do the same
+    // before hew_supervisor_new, or the runtime panics "scheduler not
+    // initialized" (exit 134).
+    let sched_init = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_sched_init")?;
+    builder
+        .build_call(sched_init, &[], "hew_sched_init_call")
+        .map_err(|e| {
+            CodegenError::Llvm(format!(
+                "hew_sched_init call in supervisor bootstrap: {e:?}"
+            ))
+        })?;
+
     // ── %sup = call hew_supervisor_new(strategy, max_restarts, window_secs)
     let sup_new = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_supervisor_new")?;
     let sup = builder
@@ -1679,6 +2046,10 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     let name_ptr = name_global.as_pointer_value();
 
     let restart_int = child.restart_policy.map(restart_policy_to_int).unwrap_or(0);
+    // arena_cap_bytes: lifted from the child actor's `#[max_heap(N)]`
+    // annotation (mirrored into SupervisorChildLayout.max_heap_bytes by the
+    // MIR post-loop pass). Zero means unbounded — matches runtime default.
+    let arena_cap = child.max_heap_bytes.unwrap_or(0);
 
     let field_values: [(u32, BasicValueEnum<'ctx>); 9] = [
         (0, name_ptr.into()),
@@ -1688,7 +2059,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         (4, i32_ty.const_int(restart_int as u64, true).into()),
         (5, i32_ty.const_zero().into()),
         (6, i32_ty.const_zero().into()),
-        (7, i64_ty.const_zero().into()),
+        (7, i64_ty.const_int(arena_cap, false).into()), // arena_cap_bytes from #[max_heap(N)]
         (8, on_crash_ptr), // on_crash: fn-pointer when child's actor has #[on(crash)], null otherwise
     ];
     for (field_idx, value) in field_values {
@@ -2663,18 +3034,57 @@ fn lower_instruction(
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let (src_ptr, src_ty) = place_pointer(fn_ctx, *src)?;
             if dest_ty != src_ty {
-                return Err(CodegenError::FailClosed(format!(
-                    "Move type mismatch: src={src_ty:?} dest={dest_ty:?}"
-                )));
+                // Special case: i64 → ptr is the handle-pointer promotion path
+                // emitted by `lower_supervisor_child_get`. The MIR stores the
+                // runtime handle as a raw `i64` in the `__HewChildLookupResult`
+                // struct (field 1); after extraction via `RecordFieldLoad`, the
+                // value must be reinterpreted as a `ptr` before being stored
+                // into an `ActorHandle`-typed place (which is `LocalPid<T>`,
+                // lowered to `ptr`). Emit `inttoptr` instead of failing.
+                //
+                // WHY this shape: `lower_supervisor_child_get` in hew-mir uses
+                // `ResolvedTy::I64` for both struct fields so a single MIR type
+                // covers the wire representation; S3 is the responsible layer for
+                // the `i64 → ptr` promotion (S2 doc comment, lower.rs:5225–5226).
+                //
+                // WHEN obsolete: when the supervisor accessor MIR is redesigned
+                // to carry a ptr-typed handle field directly.
+                use inkwell::types::BasicTypeEnum;
+                if matches!(src_ty, BasicTypeEnum::IntType(t) if t.get_bit_width() == 64)
+                    && matches!(dest_ty, BasicTypeEnum::PointerType(_))
+                    && matches!(*dest, Place::ActorHandle(_))
+                {
+                    let i64_val = fn_ctx
+                        .builder
+                        .build_load(src_ty, src_ptr, "move_i64_load")
+                        .map_err(|e| CodegenError::Llvm(format!("move i64 load: {e:?}")))?
+                        .into_int_value();
+                    let ptr_ty = dest_ty.into_pointer_type();
+                    let ptr_val = fn_ctx
+                        .builder
+                        .build_int_to_ptr(i64_val, ptr_ty, "move_inttoptr")
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("move inttoptr (handle promotion): {e:?}"))
+                        })?;
+                    fn_ctx
+                        .builder
+                        .build_store(dest_ptr, ptr_val)
+                        .map_err(|e| CodegenError::Llvm(format!("move ptr store: {e:?}")))?;
+                } else {
+                    return Err(CodegenError::FailClosed(format!(
+                        "Move type mismatch: src={src_ty:?} dest={dest_ty:?}"
+                    )));
+                }
+            } else {
+                let loaded = fn_ctx
+                    .builder
+                    .build_load(src_ty, src_ptr, "move_load")
+                    .map_err(|e| CodegenError::Llvm(format!("move load: {e:?}")))?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, loaded)
+                    .map_err(|e| CodegenError::Llvm(format!("move store: {e:?}")))?;
             }
-            let loaded = fn_ctx
-                .builder
-                .build_load(src_ty, src_ptr, "move_load")
-                .map_err(|e| CodegenError::Llvm(format!("move load: {e:?}")))?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, loaded)
-                .map_err(|e| CodegenError::Llvm(format!("move store: {e:?}")))?;
         }
         Instr::CallRuntimeAbi(call) => {
             // Per-symbol C-ABI lowering. The `RuntimeCall::new`
@@ -2994,8 +3404,16 @@ fn lower_instruction(
             state,
             init_args,
             dest,
+            max_heap_bytes,
         } => {
-            emit_spawn_actor(fn_ctx, actor_name, *state, init_args, *dest)?;
+            emit_spawn_actor(
+                fn_ctx,
+                actor_name,
+                *state,
+                init_args,
+                *dest,
+                *max_heap_bytes,
+            )?;
             let _ = ctx;
         }
         // TO-3 lands the MIR shape (`Instr::CoerceToDynTrait`,
@@ -3885,6 +4303,38 @@ fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
+        // hew_supervisor_stop(sup: *mut HewSupervisor) -> void
+        // (`hew-runtime/src/supervisor.rs:1944`). Graceful shutdown: void return.
+        // The `supervisor_stop(sup)` builtin passes a single supervisor handle;
+        // the producer always supplies `dest: None`.
+        "hew_supervisor_stop" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_supervisor_stop): expected 1 arg \
+                     (sup), got {}",
+                    args.len()
+                )));
+            }
+            let sup_ptr = load_duplex_handle(fn_ctx, args[0], "supervisor_stop_arg0")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(fv, &[sup_ptr.into()], "hew_supervisor_stop_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_stop call: {e:?}")))?;
+            // Void return — producer supplies dest: None; fail-closed if not.
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_supervisor_stop is void; producer must not supply \
+                     dest={d:?}"
+                )));
+            }
+            let _ = (i32_ty, i64_ty);
+        }
         // `hew_duplex_close` is only called from the Drop ritual
         // (`lower_drop`); reaching it via `Instr::CallRuntimeAbi`
         // means a producer mis-routed a destructor through the
@@ -4380,6 +4830,148 @@ fn lower_call_runtime_abi(
                     "hew_task_free returns void; producer must not supply dest={d:?}"
                 )));
             }
+            let _ = (i32_ty, ptr_ty);
+        }
+        // ── supervisor child-slot lookup (S3) ────────────────────────────────
+        //
+        // hew_supervisor_child_get(sup: *mut HewSupervisor, key: u32)
+        //     -> ChildLookupResult  (16-byte #[repr(C)] struct)
+        //
+        // MIR shape (from `lower_supervisor_child_get`):
+        //   args[0]: Place::ActorHandle(N) — supervisor PID (ptr-typed alloca).
+        //   args[1]: Place::Local(M)       — i64 slot index (ConstI64 from MIR).
+        //   dest:    Place::Local(K)       — __HewChildLookupResult (struct alloca).
+        //
+        // ABI bridge:
+        //   The runtime returns `{ i8, i8, [6 x i8], ptr }` by value (SysV
+        //   amd64: two-register return, rdx:rax, 16 bytes total).  The MIR
+        //   dest alloca is typed `{ i64, i64 }` (MIR's 2-field flattening of
+        //   the C struct — see `CHILD_LOOKUP_RESULT_TY_NAME` in lower.rs:394).
+        //   This arm bridges the two shapes:
+        //     field 0 (i8 tag)    → zext to i64 → store into dest struct field 0
+        //     field 3 (ptr handle)→ ptrtoint i64 → store into dest struct field 1
+        //   Fields 1 (reason u8) and 2 ([6 x i8] padding) are discarded; the
+        //   MIR branch-on-tag + Trap(SupervisorChildUnavailable) makes
+        //   per-reason discrimination unnecessary at this layer.
+        //
+        //   `key` is `u32` in the runtime (i32 in LLVM); MIR emits i64 for the
+        //   slot index (ConstI64). Truncate to i32 before the call.
+        //
+        // WASM: `uses_wasm_excluded_symbol` gates this symbol before WASM
+        //   emission; supervisor tree requires the native scheduler runtime.
+        "hew_supervisor_child_get" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_supervisor_child_get): expected 2 args \
+                     (sup, key), got {}",
+                    args.len()
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_supervisor_child_get: producer must supply a dest place \
+                     (the __HewChildLookupResult alloca)"
+                        .to_string(),
+                )
+            })?;
+
+            // arg0: supervisor handle — ptr-typed (ActorHandle or actor-derived ptr).
+            let sup_ptr = load_duplex_handle(fn_ctx, args[0], "supervisor_child_get sup")?;
+
+            // arg1: slot index — i64 in MIR (ConstI64); truncate to i32 for the ABI.
+            let key_i64 = load_int_arg(fn_ctx, args[1], i64_ty, "supervisor_child_get key_i64")?;
+            let key_i32 = fn_ctx
+                .builder
+                .build_int_truncate(key_i64, i32_ty, "supervisor_child_get key_i32")
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("supervisor_child_get key truncate: {e:?}"))
+                })?;
+
+            // Call hew_supervisor_child_get — returns { i8, i8, [6 x i8], ptr }.
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let llvm_args: [BasicMetadataValueEnum; 2] = [sup_ptr.into(), key_i32.into()];
+            let call_site = fn_ctx
+                .builder
+                .build_call(fv, &llvm_args, "hew_supervisor_child_get_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_child_get call: {e:?}")))?;
+            let struct_val = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "hew_supervisor_child_get returned void unexpectedly".into(),
+                    )
+                })?
+                .into_struct_value();
+
+            // Return type is `{ i64, i64 }` (aarch64 reg-return ABI).
+            // Field 0: packed word — tag lives in the low byte; truncate to i8,
+            //          then zext to i64 for the dest alloca's i64-typed slot.
+            // Field 1: handle integer — already i64; use directly.
+            let word0_i64 = fn_ctx
+                .builder
+                .build_extract_value(struct_val, 0, "child_word0_i64")
+                .map_err(|e| CodegenError::Llvm(format!("extractvalue word0: {e:?}")))?
+                .into_int_value();
+            let tag_i8 = fn_ctx
+                .builder
+                .build_int_truncate(word0_i64, fn_ctx.ctx.i8_type(), "child_tag_i8")
+                .map_err(|e| CodegenError::Llvm(format!("trunc tag: {e:?}")))?;
+            let tag_i64 = fn_ctx
+                .builder
+                .build_int_z_extend(tag_i8, i64_ty, "child_tag_i64")
+                .map_err(|e| CodegenError::Llvm(format!("zext tag: {e:?}")))?;
+
+            // field 1: handle integer — already i64.
+            let handle_i64 = fn_ctx
+                .builder
+                .build_extract_value(struct_val, 1, "child_handle_i64")
+                .map_err(|e| CodegenError::Llvm(format!("extractvalue handle: {e:?}")))?
+                .into_int_value();
+
+            // The dest alloca has struct type { i64, i64 } (the MIR 2-field
+            // flattening of ChildLookupResult registered in lower.rs:412).
+            let (dest_ptr, dest_slot_ty) = place_pointer(fn_ctx, dest_place)?;
+            let dest_struct_ty = match dest_slot_ty {
+                BasicTypeEnum::StructType(st) => st,
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "hew_supervisor_child_get: dest Place must be a struct \
+                         ({{i64, i64}} for __HewChildLookupResult), got {other:?}"
+                    )));
+                }
+            };
+            // Store tag into field 0 of the dest alloca.
+            let tag_field_ptr = fn_ctx
+                .builder
+                .build_struct_gep(dest_struct_ty, dest_ptr, 0, "dest_tag_field_ptr")
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("supervisor_child_get dest tag GEP: {e:?}"))
+                })?;
+            fn_ctx
+                .builder
+                .build_store(tag_field_ptr, tag_i64)
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("supervisor_child_get tag store: {e:?}"))
+                })?;
+            // Store handle into field 1 of the dest alloca.
+            let handle_field_ptr = fn_ctx
+                .builder
+                .build_struct_gep(dest_struct_ty, dest_ptr, 1, "dest_handle_field_ptr")
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("supervisor_child_get dest handle GEP: {e:?}"))
+                })?;
+            fn_ctx
+                .builder
+                .build_store(handle_field_ptr, handle_i64)
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("supervisor_child_get handle store: {e:?}"))
+                })?;
             let _ = (i32_ty, ptr_ty);
         }
         other => {
@@ -5033,18 +5625,22 @@ fn lower_terminator<'ctx>(
         }
         Terminator::Trap { kind } => {
             // The exit-code constants here MUST stay in lock-step
-            // with `HEW_TRAP_*` in `hew-runtime/src/supervisor.rs`.
+            // with canonical `HEW_TRAP_*` in
+            // `hew-runtime/src/internal/types.rs`; the native supervisor
+            // module re-exports those constants for native callers.
             const HEW_TRAP_INTEGER_OVERFLOW: u64 = 201;
             const HEW_TRAP_DIVIDE_BY_ZERO: u64 = 202;
             const HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE: u64 = 203;
             const HEW_TRAP_SHIFT_OUT_OF_RANGE: u64 = 204;
             const HEW_TRAP_INDEX_OUT_OF_BOUNDS: u64 = 205;
+            const HEW_TRAP_ACTOR_SEND_FAILED: u64 = 206;
             let code: u64 = match *kind {
                 TrapKind::IntegerOverflow => HEW_TRAP_INTEGER_OVERFLOW,
                 TrapKind::DivideByZero => HEW_TRAP_DIVIDE_BY_ZERO,
                 TrapKind::SignedMinDivNegOne => HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
                 TrapKind::ShiftOutOfRange => HEW_TRAP_SHIFT_OUT_OF_RANGE,
                 TrapKind::IndexOutOfBounds => HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+                TrapKind::SupervisorChildUnavailable => HEW_TRAP_ACTOR_SEND_FAILED,
             };
             emit_trap_with_code(fn_ctx, code, "trap")?;
         }
@@ -6143,6 +6739,10 @@ fn declare_function<'ctx>(
 /// dataflow pass. Empty/missing checked MIR means no cooperate injection
 /// for legacy hand-built codegen tests; full lowered pipelines always carry
 /// a matching checked function.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "module-lowering context is deliberately passed as explicit borrows"
+)]
 fn lower_function<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -6151,6 +6751,7 @@ fn lower_function<'ctx>(
     elab: Option<&ElaboratedMirFunction>,
     checked: Option<&CheckedMirFunction>,
     record_layouts: &RecordLayoutMap<'ctx>,
+    actor_layouts: &[ActorLayout],
 ) -> CodegenResult<()> {
     let symbol = *fn_symbols.get(&func.name).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -6276,6 +6877,7 @@ fn lower_function<'ctx>(
         runtime_decls: RefCell::new(HashMap::new()),
         record_layouts,
         fn_symbols,
+        actor_layouts,
     };
 
     // Extract drop_plans from the matched elaborated function, or use an
@@ -6339,24 +6941,26 @@ fn lower_function<'ctx>(
     Ok(())
 }
 
-/// Emit a C-ABI terminate trampoline for an actor's `#[on(stop)]` hook.
+/// Emit a C-ABI terminate trampoline for an actor's `#[on(stop)]` hooks.
 ///
 /// The runtime's `terminate_fn` slot has ABI `fn(*mut c_void state) -> void`.
-/// The ActorHandler-lowered `__on_stop` function has ABI
-/// `fn(*mut HewExecutionContext) -> void`. This trampoline bridges the two:
+/// Each ActorHandler-lowered `__on_stop__<i>` function has ABI
+/// `fn(*mut HewExecutionContext) -> void`. This trampoline bridges the two
+/// and fans out to all stop hooks in lexical declaration order:
 ///
-/// 1. Acquire the actor-state lock via `hew_actor_state_lock_acquire` (using
-///    the actor pointer from the installed execution context, offset 0).
-/// 2. Call `hew_require_execution_context()` to get the context already
+/// 1. Call `hew_require_execution_context()` to get the context already
 ///    installed by `call_terminate_fn` before this trampoline is entered.
-/// 3. Call `<Actor>__on_stop(ctx)` with the ActorHandler ABI.
-/// 4. Release the lock via `hew_actor_state_lock_release`.
+/// 2. Load the actor pointer from context offset 0 (HEW_CTX_OFFSET_ACTOR).
+/// 3. Acquire the actor-state lock via `hew_actor_state_lock_acquire`.
+/// 4. For each `<Actor>__on_stop__<i>` in declaration order, call it with
+///    the ActorHandler ABI (ctx as first arg).
+/// 5. Release the lock via `hew_actor_state_lock_release`.
 ///
 /// The `state` parameter is unused — the execution context carries the actor
 /// pointer (offset 0) and all other dispatch-substrate state. `state` is
 /// present only to satisfy the `terminate_fn: fn(*mut c_void) -> void` ABI.
 ///
-/// Panic safety: if the on(stop) body panics, `call_terminate_fn`'s
+/// Panic safety: if any on(stop) body panics, `call_terminate_fn`'s
 /// `catch_unwind` catches it and releases the lock via
 /// `hew_actor_state_lock_release_after_panic` (LESSONS: cleanup-all-exits P0).
 fn emit_actor_terminate_trampoline<'ctx>(
@@ -6365,16 +6969,19 @@ fn emit_actor_terminate_trampoline<'ctx>(
     layout: &ActorLayout,
     fn_symbols: &FnSymbolMap<'ctx>,
 ) -> CodegenResult<()> {
-    let on_stop_symbol = layout.on_stop_symbol.as_deref().ok_or_else(|| {
-        CodegenError::FailClosed("emit_actor_terminate_trampoline: no on_stop_symbol".into())
-    })?;
-    let on_stop_fn = fn_symbols.get(on_stop_symbol).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "terminate trampoline for `{}` references undeclared on_stop handler `{on_stop_symbol}`",
-            layout.name
-        ))
-    })?;
-    let (on_stop_fn, _, _) = on_stop_fn.real(on_stop_symbol, "terminate trampoline")?;
+    // Resolve all per-hook LLVM functions up front so we fail-closed before
+    // emitting any IR.
+    let mut on_stop_fns = Vec::with_capacity(layout.on_stop_symbols.len());
+    for sym in &layout.on_stop_symbols {
+        let entry = fn_symbols.get(sym).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "terminate trampoline for `{}` references undeclared on_stop handler `{sym}`",
+                layout.name
+            ))
+        })?;
+        let (fn_val, _, _) = entry.real(sym, "terminate trampoline")?;
+        on_stop_fns.push(fn_val);
+    }
 
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let trampoline_name = format!("__terminate_{}", layout.name);
@@ -6440,10 +7047,20 @@ fn emit_actor_terminate_trampoline<'ctx>(
         )
         .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: lock acquire: {e:?}")))?;
 
-    // Call the on(stop) handler with the ActorHandler ABI (ctx as first arg).
-    builder
-        .build_call(on_stop_fn, &[ctx_ptr.into()], "terminate_on_stop_call")
-        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: on_stop call: {e:?}")))?;
+    // Call each on(stop) handler in lexical declaration order with the
+    // ActorHandler ABI (ctx as first arg). All hooks share the single
+    // acquire/release pair above.
+    for (i, on_stop_fn) in on_stop_fns.iter().enumerate() {
+        builder
+            .build_call(
+                *on_stop_fn,
+                &[ctx_ptr.into()],
+                &format!("terminate_on_stop_call_{i}"),
+            )
+            .map_err(|e| {
+                CodegenError::Llvm(format!("terminate trampoline: on_stop[{i}] call: {e:?}"))
+            })?;
+    }
 
     // Release the actor-state lock.
     builder
@@ -6615,7 +7232,14 @@ fn actor_name_from_handler_symbol(symbol: &str) -> Option<&str> {
         .map(|(actor_name, _)| actor_name)
         .or_else(|| symbol.strip_suffix("__init"))
         .or_else(|| symbol.strip_suffix("__on_start"))
-        .or_else(|| symbol.strip_suffix("__on_stop"))
+        // Indexed stop-hook symbols: `<Actor>__on_stop__<N>`.
+        // Strip the numeric suffix first, then the `__on_stop` infix.
+        .or_else(|| {
+            let after_on_stop = symbol.split_once("__on_stop__")?;
+            // Verify the suffix is a decimal index (no empty or non-numeric).
+            after_on_stop.1.parse::<usize>().ok()?;
+            Some(after_on_stop.0)
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -6648,7 +7272,7 @@ fn build_module<'ctx>(
     }
     for actor in &pipeline.actor_layouts {
         emit_actor_dispatch_trampoline(ctx, &llvm_mod, actor, &fn_symbols, &record_layouts)?;
-        if actor.on_stop_symbol.is_some() {
+        if !actor.on_stop_symbols.is_empty() {
             emit_actor_terminate_trampoline(ctx, &llvm_mod, actor, &fn_symbols)?;
         }
     }
@@ -6702,6 +7326,7 @@ fn build_module<'ctx>(
             elab,
             checked,
             &record_layouts,
+            &pipeline.actor_layouts,
         )?;
     }
     llvm_mod

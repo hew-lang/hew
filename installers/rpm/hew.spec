@@ -19,7 +19,7 @@ Source0:        https://github.com/hew-lang/hew/releases/download/v%{version}/he
 # Pre-built binaries — no compilation needed.
 %global debug_package %{nil}
 
-# LLVM/MLIR, libstdc++, zlib, and zstd are statically linked into hew.
+# LLVM, libstdc++, zlib, and zstd are statically linked into hew.
 # Rust binaries link only glibc.  Let RPM auto-detect the actual deps.
 # AutoProv: no — we don't export reusable shared-library provides.
 AutoProv:       no
@@ -30,7 +30,7 @@ concurrent and distributed systems, featuring Erlang-inspired supervision
 trees and first-class async/await.
 
 This package provides:
-  - hew          the compiler driver (with embedded MLIR codegen)
+  - hew          the compiler driver
   - adze         the package manager
   - hew-lsp      the language server
   - libhew.a     the combined runtime + stdlib static library

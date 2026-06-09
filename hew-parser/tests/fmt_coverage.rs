@@ -1648,6 +1648,13 @@ fn fmt_machine_transition_with_guard_and_body_roundtrip() {
 }
 
 #[test]
+fn fmt_machine_transition_with_reenter_roundtrip() {
+    exact_roundtrip(
+        "machine Counter {\n    state Active { n: Int; }\n\n    event Inc;\n\n    on Inc: Active -> Active @reenter {\n        Active { n: active.n + 1 }\n    }\n}\n",
+    );
+}
+
+#[test]
 fn fmt_machine_default_clause_roundtrip() {
     exact_roundtrip(
         "machine Safe {\n    state On;\n    state Off;\n\n    event Toggle;\n\n    on Toggle: On -> Off;\n\n    default { state }\n}\n",

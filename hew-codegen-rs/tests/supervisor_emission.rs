@@ -54,8 +54,9 @@ fn supervisor_pipeline() -> IrPipeline {
         init_param_tys: vec![],
         init_symbol: None,
         on_start_symbol: None,
-        on_stop_symbol: None,
+        on_stop_symbols: vec![],
         on_crash_symbol: None,
+        max_heap_bytes: None,
         handlers: vec![],
     };
 
@@ -127,6 +128,7 @@ fn supervisor_pipeline() -> IrPipeline {
             wired_to: Default::default(),
             spawn_order: 0,
             on_crash_symbol: None,
+            max_heap_bytes: None,
         }],
     };
 
@@ -244,8 +246,9 @@ fn on_crash_pipeline() -> IrPipeline {
         init_param_tys: vec![],
         init_symbol: None,
         on_start_symbol: None,
-        on_stop_symbol: None,
+        on_stop_symbols: vec![],
         on_crash_symbol: Some(on_crash_symbol.clone()),
+        max_heap_bytes: None,
         handlers: vec![],
     };
 
@@ -321,6 +324,7 @@ fn on_crash_pipeline() -> IrPipeline {
             wired_to: Default::default(),
             spawn_order: 0,
             on_crash_symbol: Some(on_crash_symbol.clone()),
+            max_heap_bytes: None,
         }],
     };
 

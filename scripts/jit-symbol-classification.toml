@@ -2,7 +2,25 @@
 #
 # The verifier treats every #[no_mangle] extern "C" fn in hew-runtime/src/
 # as part of the candidate host ABI and requires it to appear exactly once
-# in one of the lists below. Keep entries sorted for stable diffs.
+# in one of the three lists below. Keep entries sorted for stable diffs.
+#
+# Three-tier model (rationale: Option A chosen over Option B for substrate
+# clarity — the tier boundary is a compile-time contract, not just a doc claim):
+#
+#   stable         — handle-oriented, user-visible runtime surface that
+#                    `extern "rt"` declarations in user code may name directly,
+#                    and that JIT hosts must expose in their symbol map.
+#
+#   codegen-stable — symbols the compiler emits into generated IR for non-trivial
+#                    actor programs (cooperate safepoints, task-scope wiring,
+#                    actor-state locking, execution-context access, scheduler
+#                    bootstrap). These are NOT user-callable via `extern "rt"`;
+#                    the checker rejects any attempt. JIT hosts must provide
+#                    them alongside the stable tier.
+#
+#   internal       — lifecycle, session/global-state, scheduler shutdown/reset/
+#                    drain, and conservative runtime-control hooks. Never
+#                    JIT-reachable. AOT-linkable only.
 
 # jit: stable — handle-oriented/user-visible runtime surface that JIT
 # modules may reference directly.
@@ -726,9 +744,22 @@ stable = [
   "hew_wire_zigzag_encode",
 ]
 
-# jit: internal — lifecycle, session/global-state, scheduler bootstrap,
-# reset/drain, and conservative runtime-control hooks that must stay out
-# of JIT session dylibs.
+# jit: codegen-stable — symbols the Hew compiler emits into generated IR for
+# non-trivial actor programs. NOT user-callable via `extern "rt"` (the checker
+# enforces this). JIT hosts must expose these in the same symbol map as `stable`.
+codegen-stable = [
+  "hew_actor_cooperate",
+  "hew_actor_state_lock_acquire",
+  "hew_actor_state_lock_release",
+  "hew_get_reply_channel",
+  "hew_require_execution_context",
+  "hew_sched_init",
+  "hew_task_scope_set_current",
+]
+
+# jit: internal — lifecycle, session/global-state, scheduler shutdown/reset/
+# drain, and conservative runtime-control hooks that must stay out of any JIT
+# session dylib. AOT-linkable only; never JIT-reachable.
 #
 # Phase α capability boundary:
 #   `hew_actor_send_aliased` and `hew_mailbox_send_aliased` are listed
@@ -745,14 +776,10 @@ stable = [
 #   back on (Phase β re-enablement).
 internal = [
   "_start",
-  "hew_actor_cooperate",
   "hew_actor_drain_outcome_free",
   "hew_actor_drain_set",
-  "hew_actor_state_lock_acquire",
   "hew_actor_state_lock_poison_after_panic",
-  "hew_actor_state_lock_release",
   "hew_actor_state_lock_release_after_panic",
-  "hew_require_execution_context",
   "hew_actor_register_type",
   "hew_actor_send_aliased",
   "hew_deterministic_get_seed",
@@ -764,7 +791,6 @@ internal = [
   "hew_fault_inject_crash",
   "hew_fault_inject_delay",
   "hew_fault_inject_drop",
-  "hew_get_reply_channel",
   "hew_is_shutting_down",
   "hew_mailbox_send_aliased",
   "hew_node_api_ask",
@@ -779,7 +805,6 @@ internal = [
   "hew_register_handler_name",
   "hew_registry_clear",
   "hew_runtime_cleanup",
-  "hew_sched_init",
   "hew_sched_metrics_active_workers",
   "hew_sched_metrics_global_queue_len",
   "hew_sched_metrics_messages_received",
@@ -802,7 +827,6 @@ internal = [
   "hew_simtime_is_enabled",
   "hew_simtime_now_ms",
   "hew_simtime_set_ms",
-  "hew_task_scope_set_current",
   "hew_trace_clear",
   "hew_trace_drain",
   "hew_trace_reset",

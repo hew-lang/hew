@@ -1323,6 +1323,59 @@ fn eval_wasm_inline_runtime_failure_exits_with_child_exit_code() {
     );
 }
 
+// Slice 8 owns unignoring the broader WASI eval/stdout suite. This ignored
+// ratchet pins the narrower attributed-trap contract added before that cutover:
+// codegen still emits `hew_trap_with_code` followed by `llvm.trap`, and the
+// wasm32 runtime maps canonical non-actor trap code 201 to the child exit code.
+#[ignore = "v0.5: temporarily disabled during cutover; re-enable with Slice 8 WASI eval suite"]
+#[test]
+fn eval_wasm_integer_overflow_exits_with_trap_code_201() {
+    require_codegen();
+    support::require_wasi_runner();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--target", "wasm32-wasi", "9223372036854775807 + 1"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert_eq!(
+        output.status.code(),
+        Some(201),
+        "expected child exit code 201 (Hew integer overflow via WASM), got {:?}",
+        output.status.code()
+    );
+}
+
+// Slice 8 owns unignoring the broader WASI eval/stdout suite. This ignored
+// ratchet proves attributed traps do not collapse to Hew panic code 101.
+#[ignore = "v0.5: temporarily disabled during cutover; re-enable with Slice 8 WASI eval suite"]
+#[test]
+fn eval_wasm_divide_by_zero_exits_with_trap_code_202() {
+    require_codegen();
+    support::require_wasi_runner();
+
+    let output = Command::new(hew_binary())
+        .args([
+            "eval",
+            "--target",
+            "wasm32-wasi",
+            "let a: i64 = 10; let b: i64 = 0; a / b",
+        ])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert_eq!(
+        output.status.code(),
+        Some(202),
+        "expected child exit code 202 (Hew divide by zero via WASM), got {:?}",
+        output.status.code()
+    );
+}
+
 // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
 #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]

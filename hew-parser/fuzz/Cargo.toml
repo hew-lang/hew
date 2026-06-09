@@ -14,6 +14,12 @@ libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 hew-lexer = { path = "../../hew-lexer" }
 hew-parser = { path = ".." }
+hew-types = { path = "../../hew-types" }
+hew-hir = { path = "../../hew-hir" }
+hew-mir = { path = "../../hew-mir" }
+hew-serialize = { path = "../../hew-serialize" }
+hew-wirecodec = { path = "../../hew-wirecodec" }
+rmp-serde = "1"
 
 [[bin]]
 name = "fuzz_parse"
@@ -34,4 +40,19 @@ doc = false
 [[bin]]
 name = "fuzz_machine"
 path = "fuzz_targets/fuzz_machine.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_check"
+path = "fuzz_targets/fuzz_check.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_mir"
+path = "fuzz_targets/fuzz_mir.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_msgpack"
+path = "fuzz_targets/fuzz_msgpack.rs"
 doc = false

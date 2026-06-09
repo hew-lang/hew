@@ -6,8 +6,8 @@
 //     `hew_supervisor_add_child_spec`, then `hew_supervisor_start`
 //   - control returns to `main`, which exits 42
 //
-// Out-of-scope (deferred): child handle field access (`app.w1`), crash
-// + restart-policy assertion, window-as-string parsing, `on(crash)` hooks.
+// Out-of-scope (deferred): crash + restart-policy assertion,
+// window-as-string parsing, `on(crash)` hooks.
 actor Worker {
     receive fn ping(_n: i64) {
         _n;

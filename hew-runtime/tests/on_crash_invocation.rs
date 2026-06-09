@@ -17,7 +17,7 @@
 )]
 
 use std::ffi::{c_void, CString};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 
 use hew_runtime::actor::hew_actor_send;
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
@@ -40,7 +40,7 @@ const OVERFLOW_DROP_NEW: i32 = 1;
 
 static DISPATCH_COUNT: AtomicI32 = AtomicI32::new(0);
 static ON_CRASH_CALLS: AtomicI32 = AtomicI32::new(0);
-static LAST_CRASH_CODE: AtomicI32 = AtomicI32::new(0);
+static LAST_CRASH_CODE: AtomicI64 = AtomicI64::new(0);
 
 unsafe extern "C-unwind" fn noop_dispatch(
     _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
@@ -53,9 +53,12 @@ unsafe extern "C-unwind" fn noop_dispatch(
 }
 
 /// Test `on_crash` handler: records that it fired and captures the trap code.
+///
+/// `crash_code` is `i64` matching the updated `HewOnCrashFn` ABI, which aligns
+/// with `PanicInfo.code: i64` in `std/failure.hew`.
 unsafe extern "C" fn recording_on_crash(
     _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
-    crash_code: std::ffi::c_int,
+    crash_code: i64,
     _actor_state_ptr: *mut c_void,
 ) {
     ON_CRASH_CALLS.fetch_add(1, Ordering::SeqCst);
@@ -154,7 +157,7 @@ fn on_crash_handler_fires_once_per_crash_then_restart_proceeds() {
         // 11 placeholder or 0/unknown.
         assert_eq!(
             LAST_CRASH_CODE.load(Ordering::SeqCst),
-            -1,
+            -1i64,
             "handler must receive the real trap code captured on the actor"
         );
 

@@ -1,0 +1,38 @@
+// Acceptance fixture for `info.code` field access in an `#[on(crash)]` handler.
+//
+// Exercises the full codegen path for reading `PanicInfo.code`:
+//   - `import std.failure` loads std/failure.hew into the module graph so the
+//     checker registers PanicInfo's `code: i64` field in type_defs
+//   - `Crasher` actor declares an `#[on(crash)]` handler
+//   - the MIR prologue injects `let info = PanicInfo { code: __crash_code }`
+//     so `info.code` resolves to the i64 ABI parameter
+//   - `PanicInfo` appears in `record_field_orders` (registered unconditionally
+//     in the MIR lowering pass) so `FieldAccess` lowering succeeds
+//   - the fixture compiles and the supervisor boots cleanly; main returns 42
+//
+// Body uses `let _code = info.code` (a `Stmt::Let`) to exercise the field-access
+// lowering path without triggering the `Stmt::If` unsupported gate. The runtime
+// crash path is not triggered here — handler-fire observability is covered by
+// hew-runtime/tests/on_crash_invocation.rs.
+import std::failure;
+
+actor Crasher {
+    #[on(crash)]
+    fn handle_crash(info: PanicInfo) -> CrashAction {
+        let _code = info.code;
+        panic("crash handler reached")
+    }
+}
+
+supervisor AppSupervisor {
+    strategy: one_for_one;
+    max_restarts: 3;
+    window: 60;
+
+    child c: Crasher;
+}
+
+fn main() -> i64 {
+    spawn AppSupervisor;
+    42
+}

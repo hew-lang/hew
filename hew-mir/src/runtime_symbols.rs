@@ -12,11 +12,13 @@
 //! lands at MIR construction, not at codegen link-time.
 //!
 //! Source of truth: `scripts/jit-symbol-classification.toml`'s
-//! `stable` list. The full toml is parsed by `hew-runtime`'s build
-//! script — `hew-mir` carries the M2-substrate subset inline so
-//! the allowlist check does not require a build-time fixture or
-//! parsing step. When a new runtime-ABI symbol becomes producer-
-//! emittable from MIR, add it to both lists in the same change.
+//! `stable` and `codegen-stable` lists. The full toml is parsed by
+//! `hew-runtime`'s build script — `hew-mir` carries the M2-substrate
+//! subset inline so the allowlist check does not require a build-time
+//! fixture or parsing step. When a new runtime-ABI symbol becomes
+//! producer-emittable from MIR, add it to both lists in the same change
+//! (`stable` if user-callable via `extern "rt"`, `codegen-stable` if
+//! emitted only by the compiler).
 //! The drift-test in `tests/runtime_symbols_classification.rs` —
 //! TODO when a producer for a non-substrate symbol lands — would
 //! cross-verify the two lists; for now the substrate list is
@@ -158,6 +160,13 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // over child_supervisors; the handle field carries a *mut HewSupervisor
     // bit-pattern for multi-segment dotted access (`app.api.auth`).
     "hew_supervisor_nested_get",
+    // `hew_supervisor_stop(sup: *mut HewSupervisor) -> void`
+    // (`hew-runtime/src/supervisor.rs:1944`). Graceful shutdown: requests
+    // shutdown of all children and initiates teardown. Void return — the
+    // Hew `supervisor_stop(sup)` builtin discards the result. Requires
+    // the native preemptive scheduler; WASM-excluded (same family rule as
+    // `hew_supervisor_child_get`).
+    "hew_supervisor_stop",
     // --- Task ABI (scope{}/spawn/await) — Phase 2, rows 2/3/4 ----------------
     // `hew_task_await_blocking(task: *mut HewTask) -> *mut c_void`
     // (`hew-runtime/src/task_scope.rs:411`). Blocks the calling thread until
@@ -312,6 +321,10 @@ pub fn user_name_to_c_symbol(name: &str) -> Option<&'static str> {
         // symbol adds the `hew_actor_` prefix.
         "link" => Some("hew_actor_link"),
         "monitor" => Some("hew_actor_monitor"),
+        // supervisor_stop(sup) — the Hew source name; the C-ABI symbol adds the
+        // `hew_supervisor_` prefix.  The checker registers the builtin under the
+        // user-facing name so HIR emits the bare name.
+        "supervisor_stop" => Some("hew_supervisor_stop"),
         _ => None,
     }
 }

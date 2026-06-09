@@ -173,10 +173,10 @@ fn actor_on_stop_emits_terminate_trampoline_and_registration() {
         ir.contains("__terminate_Counter"),
         "LLVM IR must define the terminate trampoline;\ngot:\n{ir}"
     );
-    // The on(stop) handler must be defined with ActorHandler ABI.
+    // The on(stop) handler must be defined with ActorHandler ABI (indexed symbol).
     assert!(
-        ir.contains("Counter__on_stop"),
-        "LLVM IR must define Counter__on_stop;\ngot:\n{ir}"
+        ir.contains("Counter__on_stop__0"),
+        "LLVM IR must define Counter__on_stop__0;\ngot:\n{ir}"
     );
     // hew_actor_set_terminate must be called at spawn time.
     assert!(
@@ -192,5 +192,43 @@ fn actor_on_stop_emits_terminate_trampoline_and_registration() {
     assert!(
         ir.contains("hew_require_execution_context"),
         "LLVM IR must call hew_require_execution_context inside the trampoline;\ngot:\n{ir}"
+    );
+}
+
+#[test]
+fn actor_multiple_on_stop_emits_fan_out_trampoline_calling_both_hooks() {
+    let src = r#"
+        actor Sequencer {
+            let counter: i64;
+            receive fn value() -> i64 { counter }
+            #[on(stop)]
+            fn cleanup_a() { counter = 1; }
+            #[on(stop)]
+            fn cleanup_b() { counter = counter + 1; }
+        }
+        fn main() -> i64 {
+            let s = spawn Sequencer(counter: 0);
+            s.value()
+        }
+    "#;
+    let ir = emit_ll_for_source(src, "actor_multi_on_stop_ir");
+    // Both indexed per-hook symbols must appear in the IR.
+    assert!(
+        ir.contains("Sequencer__on_stop__0"),
+        "LLVM IR must define Sequencer__on_stop__0;\ngot:\n{ir}"
+    );
+    assert!(
+        ir.contains("Sequencer__on_stop__1"),
+        "LLVM IR must define Sequencer__on_stop__1;\ngot:\n{ir}"
+    );
+    // A single terminate trampoline must be registered (fan-out wrapper).
+    assert!(
+        ir.contains("__terminate_Sequencer"),
+        "LLVM IR must define the terminate trampoline;\ngot:\n{ir}"
+    );
+    // hew_actor_set_terminate called once to register the fan-out wrapper.
+    assert!(
+        ir.contains("hew_actor_set_terminate"),
+        "LLVM IR must call hew_actor_set_terminate;\ngot:\n{ir}"
     );
 }

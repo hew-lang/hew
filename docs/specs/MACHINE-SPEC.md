@@ -1,4 +1,4 @@
-# Hew `machine` Type Specification v0.1.0 (Draft)
+# Hew `machine` Surface Specification v0.5
 
 A `machine` is a **value type** that defines a closed set of named states, a closed set of named events, and transition rules mapping `(State, Event)` pairs to new states. It compiles to a tagged union with a generated `step()` function. Machines are not actors — they are data, like enums with per-state fields and compiler-checked transition logic.
 
@@ -9,9 +9,12 @@ A `machine` is a **value type** that defines a closed set of named states, a clo
 - **Composability** — machines embed in actors, structs, collections, and function parameters.
 - **Zero-cost** — compiles to an integer tag + union of structs. No allocations, no threads.
 
-**Changes in v0.1.0:**
+**Status in v0.5:**
 
-_Initial specification. Defines syntax, type system integration, generated API, exhaustiveness rules, transition semantics, wildcard transitions, events with data, and pattern matching._
+_This document records the shipped v0.5 machine surface: declaration syntax,
+inline state `entry {}` / `exit {}` blocks, `@reenter` transition annotations,
+exhaustiveness rules, and diagram-oriented structure. Executable machine
+lowering remains tracked separately._
 
 ---
 
@@ -34,7 +37,8 @@ A machine value is always in exactly one state. The only way to change state is 
 
 - No hierarchical/nested states.
 - ~~No guard conditions on transitions.~~ _(implemented — see note above)_
-- No entry/exit hooks.
+- ~~No entry/exit hooks.~~ _(implemented — inline state `entry {}` / `exit {}`
+  blocks are part of the shipped v0.5 surface)_
 - No side effects in transition bodies (pure transformation only).
 - No `initial` keyword (the caller constructs the initial state explicitly).
 
@@ -728,11 +732,22 @@ MachineDecl    = "machine" Ident TypeParams? "{"
                    { StateDecl | EventDecl | TransitionDecl }
                  "}" ;
 
-StateDecl      = "state" Ident ( "{" { StructFieldDecl } "}" )? ";" ;
+StateDecl      = "state" Ident ( "{"
+                   { StructFieldDecl }
+                   [ StateEntryDecl ]
+                   [ StateExitDecl ]
+                 "}" )? ";" ;
+
+StateEntryDecl = "entry" Block ;
+
+StateExitDecl  = "exit" Block ;
 
 EventDecl      = "event" Ident ( "{" { StructFieldDecl } "}" )? ";" ;
 
-TransitionDecl = "on" Ident ":" TransitionSource "->" TransitionTarget Block ;
+TransitionDecl = "on" Ident ":" TransitionSource "->" TransitionTarget
+                 [ ReenterAttr ] Block ;
+
+ReenterAttr    = "@reenter" ;
 
 TransitionSource = Ident | "_" ;
 
@@ -749,11 +764,13 @@ The following features are explicitly deferred to future versions:
 
 1. **Mealy outputs** — transitions producing output values alongside new state: `on Event: S1 -> S2 / OutputType { ... }`.
 2. **Hierarchical states** — states containing sub-machines.
-3. **Entry/exit hooks** — `enter S1 { ... }`, `exit S1 { ... }`.
-4. **History states** — returning to a previously active sub-state.
-5. **Timeout events** — compiler-generated events triggered by elapsed time.
+3. **History states** — returning to a previously active sub-state.
+4. **Timeout events** — compiler-generated events triggered by elapsed time.
 
 Guard conditions are shipping in v0.2.0 (see §1.1 and §3.11.4 of `HEW-SPEC.md`).
+Inline state `entry {}` / `exit {}` blocks are also shipping in v0.5. This
+document does not imply that executable machine lowering is complete; that work
+remains tracked separately from the shipped surface described here.
 Visualization is also shipping via the CLI: `hew machine diagram` emits Mermaid
 by default and `hew machine diagram --dot` emits Graphviz DOT from machine
 source declarations.

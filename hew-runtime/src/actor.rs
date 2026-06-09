@@ -3506,17 +3506,36 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
     unsafe { (*ctx).actor }
 }
 
+/// Stamp the WASM actor panic sentinel on the current actor, when present.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn stamp_wasm_actor_panic() -> bool {
+    crate::trap_code::stamp_current_actor_error_code(101)
+}
+
 /// Trigger a panic in the current execution context.
 ///
-/// Inside an actor: longjmps back to the scheduler, which marks the
-/// actor as `Crashed`. The supervisor (if any) will restart the actor
-/// according to its restart strategy.
+/// Inside an actor: longjmps back to the scheduler on native, or stamps the
+/// panic sentinel and unwinds to the scheduler on WASM. The supervisor (if any)
+/// will restart the actor according to its restart strategy.
 ///
 /// Outside an actor (e.g. `main`): exits the process with code 101.
 ///
 /// This function never returns.
 #[no_mangle]
 pub extern "C" fn hew_panic() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        if stamp_wasm_actor_panic() {
+            panic!("hew_panic: actor panic");
+        }
+        // JUSTIFIED: wasm32 non-actor Hew panic terminates the process
+        // immediately with Rust's panic exit convention, so bypassing Rust Drop
+        // is deliberate and the WASI host reclaims process resources. Actor
+        // paths stamp `actor.error_code` and unwind above; they do not use this
+        // process-exit route.
+        std::process::exit(101);
+    }
+
     // Try direct longjmp recovery first. This avoids going through the
     // signal/exception path, which is essential on Windows where longjmp
     // from a VEH handler causes STATUS_BAD_STACK.
@@ -3532,6 +3551,7 @@ pub extern "C" fn hew_panic() {
 
     // No recovery context (e.g. panic called from main) — exit cleanly.
     // Exit code 101 follows Rust's convention for panics.
+    #[cfg(not(target_arch = "wasm32"))]
     std::process::exit(101);
 }
 
@@ -4169,6 +4189,11 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
         )
         .is_ok()
     {
+        // WASM-R37-S2: direct close of an idle actor mirrors native
+        // `hew_actor_close` observability before invoking terminate_fn.
+        // WASM-TODO(#1451) / WASM-R37-S9: actor_type_id remains zero at trace
+        // drain time until WASM codegen emits handler-name/type registration.
+        crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
         // SAFETY: actor just transitioned to Stopped; not being dispatched.
         unsafe { call_terminate_fn(actor) };
         return;
@@ -4188,6 +4213,10 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
     {
         // SAFETY: actor is valid; cancel is safe from the scheduler thread.
         unsafe { crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor.cast()) };
+        // WASM-R37-S2: mirror native stop lifecycle observability.
+        // WASM-TODO(#1451) / WASM-R37-S9: actor_type_id remains zero until
+        // WASM handler registration lands.
+        crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
         // SAFETY: actor just transitioned to Stopped.
         unsafe { call_terminate_fn(actor) };
     }
@@ -4218,6 +4247,11 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
         )
         .is_ok()
     {
+        // WASM-R37-S2: direct stop of an idle actor mirrors native
+        // `hew_actor_stop` observability before invoking terminate_fn.
+        // WASM-TODO(#1451) / WASM-R37-S9: actor_type_id remains zero at trace
+        // drain time until WASM codegen emits handler-name/type registration.
+        crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
         // SAFETY: actor just transitioned to Stopped; not being dispatched.
         unsafe { call_terminate_fn(actor) };
         return;
@@ -4235,6 +4269,10 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     {
         // SAFETY: actor is valid; cancel is safe from the scheduler thread.
         unsafe { crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor.cast()) };
+        // WASM-R37-S2: mirror native stop lifecycle observability.
+        // WASM-TODO(#1451) / WASM-R37-S9: actor_type_id remains zero until
+        // WASM handler registration lands.
+        crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
         // SAFETY: actor just transitioned to Stopped.
         unsafe { call_terminate_fn(actor) };
         return;

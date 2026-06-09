@@ -1,0 +1,30 @@
+// Proves `#[max_heap(N)]` propagates into `HewChildSpec.arena_cap_bytes`
+// for supervisor-managed children.
+//
+// Observation mechanism: two assertions back-to-back.
+//   1. `hew compile --dump-mir raw` emits `max_heap_bytes: Some(131072)` under
+//      the SupervisorChildLayout for `w1`. This proves the MIR post-loop pass
+//      mirrors the cap from ActorLayout into SupervisorChildLayout.
+//   2. The compiled binary exits 42. This proves codegen emitted the cap into
+//      the `HewChildSpec` literal without breaking supervisor bootstrap.
+//
+// Runtime crash + restart-with-cap observability is deferred to Cluster-2.
+#[max_heap(128 kb)]
+actor Worker {
+    receive fn ping(_n: i64) {
+        _n;
+    }
+}
+
+supervisor AppSupervisor {
+    strategy: one_for_one;
+    max_restarts: 3;
+    window: 60;
+
+    child w1: Worker;
+}
+
+fn main() -> i64 {
+    spawn AppSupervisor;
+    42
+}

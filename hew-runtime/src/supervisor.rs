@@ -1515,7 +1515,21 @@ unsafe fn apply_restart(
             // execution context for the in-flight dispatch; `state_ptr`
             // is the template state the supervisor owns for this child
             // slot (allocated in `hew_supervisor_add_child_spec`).
-            unsafe { handler(ctx, crash_code, state_ptr) };
+            // Widen crash_code from c_int to i64 at the call boundary.
+            // `HewOnCrashFn` uses i64 to match `PanicInfo.code: i64` in
+            // std/failure.hew; the internal event plumbing stays c_int so the
+            // public `hew_supervisor_notify_child_event` C ABI is unchanged.
+            #[allow(
+                clippy::cast_lossless,
+                reason = "c_int to i64: intentional widening to match HewOnCrashFn ABI"
+            )]
+            // SAFETY: `handler` is a valid fn-pointer registered by the caller of
+            // `hew_supervisor_add_child_spec`; `ctx` is the current execution context
+            // (non-null, live for the duration of this supervisor dispatch); `state_ptr`
+            // is the template state owned by this child slot (allocated in add_child_spec).
+            unsafe {
+                handler(ctx, crash_code as i64, state_ptr);
+            }
         }
 
         // Apply exponential backoff delay after crash (only for subsequent crashes)

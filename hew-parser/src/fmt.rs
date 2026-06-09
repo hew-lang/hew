@@ -1077,6 +1077,9 @@ impl<'a> Formatter<'a> {
             self.write(&transition.source_state);
             self.write(" -> ");
             self.write(&transition.target_state);
+            if transition.reenter {
+                self.write(" @reenter");
+            }
             if let Some(guard) = &transition.guard {
                 self.write(" when ");
                 self.format_expr(&guard.0);

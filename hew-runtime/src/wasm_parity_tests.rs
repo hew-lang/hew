@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use std::ffi::c_void;
+use std::ffi::{c_void, CStr};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -178,6 +178,39 @@ fn stub_dispatch_actor(
         .store(crate::actor::HEW_DEFAULT_REDUCTIONS, Ordering::Relaxed);
     actor.dispatch = Some(dispatch);
     actor
+}
+
+struct CurrentExecutionContextReset {
+    prev: *mut crate::execution_context::HewExecutionContext,
+}
+
+impl CurrentExecutionContextReset {
+    fn new() -> Self {
+        crate::hew_clear_error();
+        let prev = crate::execution_context::set_current_context(std::ptr::null_mut());
+        Self { prev }
+    }
+}
+
+impl Drop for CurrentExecutionContextReset {
+    fn drop(&mut self) {
+        let _ = crate::execution_context::set_current_context(self.prev);
+    }
+}
+
+fn last_error_message() -> Option<String> {
+    let ptr = crate::hew_last_error();
+    if ptr.is_null() {
+        None
+    } else {
+        // SAFETY: hew_last_error returns a C string pointer valid until the next
+        // error mutation on this thread.
+        Some(
+            unsafe { CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
 }
 
 #[test]
@@ -617,6 +650,56 @@ fn wasm_envelope_must_be_zero_mask_covers_bits_nine_through_thirtyone() {
 
 // ── Execution-context dispatch parity ────────────────────────────────────────
 
+#[test]
+fn wasm_reply_channel_lookup_reads_current_execution_context() {
+    use crate::execution_context::{HewExecutionContext, TestExecutionContext};
+
+    let _guard = crate::runtime_test_guard();
+    let _context_reset = CurrentExecutionContextReset::new();
+    let reply_channel = 0x5151_5151usize as *mut c_void;
+
+    let _ctx_guard = TestExecutionContext::install(HewExecutionContext {
+        reply_channel,
+        ..HewExecutionContext::default()
+    });
+
+    assert_eq!(
+        crate::scheduler_wasm::hew_get_reply_channel(),
+        reply_channel
+    );
+    assert_eq!(last_error_message(), None);
+}
+
+#[test]
+fn wasm_reply_channel_lookup_without_context_fails_closed_after_context_removed() {
+    use crate::execution_context::{
+        HewExecutionContext, TestExecutionContext, EXECUTION_CONTEXT_NOT_INSTALLED,
+    };
+
+    let _guard = crate::runtime_test_guard();
+    let _context_reset = CurrentExecutionContextReset::new();
+    let stale_reply_channel = 0x5252_5252usize as *mut c_void;
+
+    {
+        let _ctx_guard = TestExecutionContext::install(HewExecutionContext {
+            reply_channel: stale_reply_channel,
+            ..HewExecutionContext::default()
+        });
+        assert_eq!(
+            crate::scheduler_wasm::hew_get_reply_channel(),
+            stale_reply_channel
+        );
+    }
+
+    crate::hew_clear_error();
+    assert!(crate::execution_context::current_context().is_null());
+    assert!(crate::scheduler_wasm::hew_get_reply_channel().is_null());
+    assert_eq!(
+        last_error_message().as_deref(),
+        Some(EXECUTION_CONTEXT_NOT_INSTALLED)
+    );
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct DispatchContextSnapshot {
     current_id: i64,
@@ -775,6 +858,192 @@ fn wasm_dispatch_context_snapshots() -> Vec<DispatchContextSnapshot> {
         crate::scheduler_wasm::hew_sched_shutdown();
         snapshots
     }
+}
+
+unsafe extern "C-unwind" fn request_wasm_stop_dispatch(
+    ctx: *mut crate::execution_context::HewExecutionContext,
+    _state: *mut c_void,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _data_size: usize,
+) {
+    // SAFETY: scheduler_wasm installs a non-null canonical context before
+    // entering dispatch.
+    unsafe {
+        let actor = (*ctx).actor;
+        if !actor.is_null() {
+            (*actor)
+                .actor_state
+                .store(HewActorState::Stopping as i32, Ordering::Release);
+        }
+    }
+}
+
+unsafe extern "C-unwind" fn close_wasm_mailbox_then_cooperate_dispatch(
+    ctx: *mut crate::execution_context::HewExecutionContext,
+    _state: *mut c_void,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _data_size: usize,
+) {
+    // SAFETY: scheduler_wasm installs a non-null canonical context before
+    // entering dispatch.
+    unsafe {
+        let actor = (*ctx).actor;
+        assert!(!actor.is_null(), "dispatch context must carry actor");
+        let mailbox = (*actor)
+            .mailbox
+            .cast::<crate::mailbox_wasm::HewMailboxWasm>();
+        assert!(!mailbox.is_null(), "actor must carry mailbox");
+        crate::mailbox_wasm::hew_mailbox_close(mailbox);
+    }
+    push_dispatch_context_snapshot(ctx, crate::scheduler_wasm::hew_actor_cooperate());
+}
+
+unsafe extern "C" fn mark_terminate_state(state: *mut c_void) {
+    if !state.is_null() {
+        // SAFETY: the test installs an AtomicBool as the actor state pointer.
+        unsafe { (*state.cast::<AtomicBool>()).store(true, Ordering::Release) };
+    }
+}
+
+#[test]
+fn wasm_on_stop_emits_stop_lifecycle_trace_before_terminate_completes() {
+    let _guard = crate::runtime_test_guard();
+    crate::scheduler_wasm::hew_sched_shutdown();
+    crate::scheduler_wasm::hew_sched_init();
+    crate::tracing::hew_trace_reset();
+    crate::tracing::hew_trace_enable(1);
+
+    // SAFETY: test owns the mailbox and actor until after the scheduler drain.
+    unsafe {
+        let mailbox = crate::mailbox_wasm::hew_mailbox_new().cast::<c_void>();
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            crate::mailbox_wasm::hew_mailbox_send(mailbox.cast(), 7, std::ptr::null_mut(), 0),
+            HewError::Ok as i32
+        );
+
+        let terminate_seen = Box::new(AtomicBool::new(false));
+        let terminate_state = Box::into_raw(terminate_seen).cast::<c_void>();
+        let mut actor = stub_dispatch_actor(mailbox, request_wasm_stop_dispatch);
+        actor.id = 37;
+        actor.state = terminate_state;
+        actor.terminate_fn = Some(mark_terminate_state);
+        let actor_ptr = Box::into_raw(actor);
+
+        crate::scheduler_wasm::sched_enqueue(actor_ptr.cast::<crate::scheduler_wasm::HewActor>());
+        crate::scheduler_wasm::hew_sched_run();
+
+        assert_eq!(
+            (*actor_ptr).actor_state.load(Ordering::Acquire),
+            HewActorState::Stopped as i32
+        );
+        assert!(
+            (*actor_ptr).terminate_called.load(Ordering::Acquire),
+            "scheduler_wasm must still route on(stop) through call_terminate_fn"
+        );
+        assert!(
+            (*actor_ptr).terminate_finished.load(Ordering::Acquire),
+            "terminate_fn must complete on the stopped actor"
+        );
+        assert!(
+            (*terminate_state.cast::<AtomicBool>()).load(Ordering::Acquire),
+            "terminate_fn must receive the actor state pointer"
+        );
+
+        let mut events = [crate::tracing::HewTraceEvent {
+            trace_id_hi: 0,
+            trace_id_lo: 0,
+            span_id: 0,
+            parent_span_id: 0,
+            actor_id: 0,
+            event_type: 0,
+            msg_type: 0,
+            timestamp_ns: 0,
+        }; 4];
+        let count = crate::tracing::hew_trace_drain(events.as_mut_ptr(), 4);
+        assert_eq!(
+            count, 3,
+            "dispatch should emit begin/end plus one lifecycle stop event"
+        );
+        assert_eq!(events[0].event_type, crate::tracing::SPAN_BEGIN);
+        assert_eq!(events[0].actor_id, 37);
+        assert_eq!(events[0].msg_type, 7);
+        assert_eq!(events[1].event_type, crate::tracing::SPAN_END);
+        assert_eq!(events[1].actor_id, 37);
+        assert_eq!(events[1].msg_type, 7);
+        assert_eq!(events[2].event_type, crate::tracing::SPAN_STOP);
+        assert_eq!(events[2].actor_id, 37);
+        assert_eq!(
+            events[2].msg_type, 0,
+            "lifecycle stop events mirror native and carry no message type"
+        );
+
+        crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
+        drop(Box::from_raw(terminate_state.cast::<AtomicBool>()));
+        drop(Box::from_raw(actor_ptr));
+    }
+
+    crate::tracing::hew_trace_reset();
+    crate::scheduler_wasm::hew_sched_shutdown();
+}
+
+#[test]
+#[cfg(feature = "profiler")]
+fn wasm_trace_json_uses_registered_actor_type_attribution() {
+    let _guard = crate::runtime_test_guard();
+    let _bridge_guard = crate::bridge::BRIDGE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _trace_guard = crate::tracing::tracing_test_guard();
+    let _ctx = crate::execution_context::TestExecutionContext::install(
+        crate::execution_context::HewExecutionContext::default(),
+    );
+
+    crate::bridge::reset_bridge_full();
+    crate::tracing::hew_trace_reset();
+    crate::tracing::hew_trace_enable(1);
+
+    let handler = crate::bridge::HewHandlerMeta {
+        name: c"on_ping".as_ptr().cast(),
+        msg_type: 55,
+        param_count: 0,
+        params: std::ptr::null(),
+        return_type: std::ptr::null(),
+        return_size: 0,
+    };
+    let actor_meta = crate::bridge::HewActorMeta {
+        name: c"WasmActor".as_ptr().cast(),
+        handler_count: 1,
+        handlers: &raw const handler,
+    };
+    // SAFETY: actor_meta is a valid stack-allocated struct with valid C strings.
+    unsafe { crate::bridge::hew_wasm_register_actor_meta(&raw const actor_meta) };
+
+    crate::tracing::hew_trace_begin(9, 55);
+    crate::tracing::hew_trace_begin(9, 56);
+
+    let json = crate::tracing::drain_events_json();
+    assert!(
+        json.contains(r#""actor_type":"WasmActor""#),
+        "registered actor type should render in WASM/test trace JSON: {json}"
+    );
+    assert!(
+        json.contains(r#""handler_name":"WasmActor::on_ping""#),
+        "registered handler name should render in WASM/test trace JSON: {json}"
+    );
+    assert!(
+        !json.contains(r#""actor_type_id":0,"actor_type":"WasmActor""#),
+        "registered actor type id should be non-zero: {json}"
+    );
+    assert!(
+        json.contains(r#""actor_type_id":0,"actor_type":null"#),
+        "unregistered msg_type should remain zero/null: {json}"
+    );
+
+    crate::bridge::reset_bridge_full();
+    crate::tracing::hew_trace_reset();
 }
 
 #[test]
@@ -973,6 +1242,46 @@ fn wasm_cooperate_returns_zero_when_actor_state_is_running() {
     }
 }
 
+#[test]
+fn wasm_cooperate_returns_cancel_when_mailbox_closes_during_dispatch() {
+    let _guard = crate::runtime_test_guard();
+    crate::scheduler_wasm::hew_sched_shutdown();
+    crate::scheduler_wasm::hew_sched_init();
+    reset_dispatch_context_snapshots();
+
+    // SAFETY: test owns mailbox and actor until after the scheduler drain.
+    unsafe {
+        let mailbox = crate::mailbox_wasm::hew_mailbox_new().cast::<c_void>();
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            crate::mailbox_wasm::hew_mailbox_send(mailbox.cast(), 7, std::ptr::null_mut(), 0),
+            HewError::Ok as i32
+        );
+
+        let actor = stub_dispatch_actor(mailbox, close_wasm_mailbox_then_cooperate_dispatch);
+        let actor_ptr = Box::into_raw(actor);
+        crate::scheduler_wasm::sched_enqueue(actor_ptr.cast::<crate::scheduler_wasm::HewActor>());
+        crate::scheduler_wasm::hew_sched_run();
+
+        let snapshots = wait_for_dispatch_context_snapshots(1);
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(
+            snapshots[0].cooperate_result, 2,
+            "closing a WASM actor mailbox during dispatch must propagate cooperate cancel code 2"
+        );
+        assert_eq!(
+            (*actor_ptr).actor_state.load(Ordering::Acquire),
+            HewActorState::Stopped as i32,
+            "closed mailbox should still drive the post-dispatch stop transition"
+        );
+
+        crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
+        drop(Box::from_raw(actor_ptr));
+    }
+
+    crate::scheduler_wasm::hew_sched_shutdown();
+}
+
 // ── HeapExceeded parity ─────────────────────────────────────────────────────
 //
 // Native arena cap exhaustion routes through the longjmp seam, stamping
@@ -1017,6 +1326,86 @@ fn heap_exceeded_exit_reason_round_trips_through_internal_types() {
     );
 }
 
+fn assert_canonical_wasi_trap_exit(code: i32, expected_reason: crate::internal::types::ExitReason) {
+    assert_eq!(
+        crate::internal::types::canonical_trap_wasi_exit_code(code),
+        Some(code),
+        "canonical Hew trap code {code} must be allowlisted for non-actor WASI process exit"
+    );
+    assert_eq!(
+        crate::internal::types::ExitReason::from_error_code(code),
+        expected_reason,
+        "canonical Hew trap code {code} must keep the same actor ExitReason discriminator"
+    );
+}
+
+#[test]
+fn wasm_non_actor_trap_exit_code_mapping_heap_exceeded_returns_200() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+        crate::internal::types::ExitReason::HeapExceeded,
+    );
+}
+
+#[test]
+fn wasm_non_actor_trap_exit_code_mapping_integer_overflow_returns_201() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_INTEGER_OVERFLOW,
+        crate::internal::types::ExitReason::IntegerOverflow,
+    );
+}
+
+#[test]
+fn wasm_non_actor_trap_exit_code_mapping_divide_by_zero_returns_202() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_DIVIDE_BY_ZERO,
+        crate::internal::types::ExitReason::DivideByZero,
+    );
+}
+
+#[test]
+fn wasm_non_actor_trap_exit_code_mapping_signed_min_div_neg_one_returns_203() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+        crate::internal::types::ExitReason::SignedMinDivNegOne,
+    );
+}
+
+#[test]
+fn wasm_non_actor_trap_exit_code_mapping_shift_out_of_range_returns_204() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_SHIFT_OUT_OF_RANGE,
+        crate::internal::types::ExitReason::ShiftOutOfRange,
+    );
+}
+
+#[test]
+fn wasm_non_actor_trap_exit_code_mapping_index_out_of_bounds_returns_205() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+        crate::internal::types::ExitReason::IndexOutOfBounds,
+    );
+}
+
+#[test]
+fn wasm_trap_exit_code_mapping_actor_send_failed_is_allowlisted_as_206() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED,
+        crate::internal::types::ExitReason::ActorSendFailed,
+    );
+}
+
+#[test]
+fn wasm_unknown_non_actor_trap_code_is_not_mapped_to_process_exit() {
+    for unknown in [-1, 1, 101, 199, 207, i32::MAX] {
+        assert_eq!(
+            crate::internal::types::canonical_trap_wasi_exit_code(unknown),
+            None,
+            "unknown trap code {unknown} must return to the generated trailing llvm.trap sink"
+        );
+    }
+}
+
 /// Native test that exercises the WASM activation crash-transition logic:
 /// when a dispatch panics with `actor.error_code != 0`, the scheduler must
 /// observe the code and transition the actor to `Crashed`. The WASM-only
@@ -1043,6 +1432,33 @@ unsafe extern "C-unwind" fn stamp_then_panic_dispatch(
     // Simulate the panic that `arena_wasm::hew_arena_malloc` raises on cap
     // exhaustion under wasm32.
     panic!("simulated HEW_TRAP_HEAP_EXCEEDED panic");
+}
+
+unsafe extern "C-unwind" fn hew_trap_with_code_dispatch(
+    _ctx: *mut crate::execution_context::HewExecutionContext,
+    _state: *mut c_void,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _data_size: usize,
+) {
+    if crate::trap_code::stamp_current_actor_error_code(
+        crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+    ) {
+        panic!("simulated wasm hew_trap_with_code panic");
+    }
+}
+
+unsafe extern "C-unwind" fn hew_panic_wasm_actor_dispatch(
+    _ctx: *mut crate::execution_context::HewExecutionContext,
+    _state: *mut c_void,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _data_size: usize,
+) {
+    assert!(
+        !crate::actor::stamp_wasm_actor_panic(),
+        "simulated wasm hew_panic actor unwind"
+    );
 }
 
 #[test]
@@ -1089,6 +1505,103 @@ fn wasm_activation_transitions_actor_to_crashed_when_dispatch_stamps_error_code(
             "WASM activation must transition the actor to Crashed when \
              the dispatch unwind comes with a non-zero error_code"
         );
+
+        let _ = Box::from_raw(actor_ptr);
+        crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
+    }
+
+    crate::scheduler_wasm::hew_sched_shutdown();
+}
+
+#[test]
+fn wasm_actor_panic_stamps_101_and_unwinds_to_scheduler() {
+    let _guard = crate::runtime_test_guard();
+    crate::scheduler_wasm::hew_sched_shutdown();
+    crate::scheduler_wasm::hew_sched_init();
+
+    // SAFETY: test owns the mailbox and actor for the full scenario.
+    unsafe {
+        let mailbox = crate::mailbox_wasm::hew_mailbox_new();
+        assert!(!mailbox.is_null());
+
+        let actor = stub_dispatch_actor(mailbox.cast(), hew_panic_wasm_actor_dispatch);
+        let actor_ptr: *mut HewActor = Box::into_raw(actor);
+
+        let payload: i32 = 0;
+        let rc = crate::mailbox_wasm::hew_mailbox_send(
+            mailbox.cast(),
+            1,
+            (&raw const payload).cast_mut().cast(),
+            std::mem::size_of::<i32>(),
+        );
+        assert_eq!(rc, HewError::Ok as i32);
+
+        crate::scheduler_wasm::sched_enqueue(actor_ptr.cast());
+        crate::scheduler_wasm::hew_sched_run();
+
+        let error = (*actor_ptr).error_code.load(Ordering::Acquire);
+        let state = (*actor_ptr).actor_state.load(Ordering::Acquire);
+
+        assert_eq!(
+            error, 101,
+            "wasm actor hew_panic must stamp the raw panic sentinel before unwinding"
+        );
+        assert_eq!(
+            crate::internal::types::ExitReason::from_error_code(error),
+            crate::internal::types::ExitReason::Signal(101),
+        );
+        assert_eq!(
+            state,
+            HewActorState::Crashed as i32,
+            "WASM activation must catch actor panic unwinds instead of terminating the process"
+        );
+
+        let _ = Box::from_raw(actor_ptr);
+        crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
+    }
+
+    crate::scheduler_wasm::hew_sched_shutdown();
+}
+
+#[test]
+fn wasm_heaps_exceeded_uses_trap_with_code_bridge_to_crash_actor() {
+    let _guard = crate::runtime_test_guard();
+    crate::scheduler_wasm::hew_sched_shutdown();
+    crate::scheduler_wasm::hew_sched_init();
+
+    // SAFETY: test owns the mailbox and actor for the full scenario.
+    unsafe {
+        let mailbox = crate::mailbox_wasm::hew_mailbox_new();
+        assert!(!mailbox.is_null());
+
+        let actor = stub_dispatch_actor(mailbox.cast(), hew_trap_with_code_dispatch);
+        let actor_ptr: *mut HewActor = Box::into_raw(actor);
+
+        let payload: i32 = 0;
+        let rc = crate::mailbox_wasm::hew_mailbox_send(
+            mailbox.cast(),
+            1,
+            (&raw const payload).cast_mut().cast(),
+            std::mem::size_of::<i32>(),
+        );
+        assert_eq!(rc, HewError::Ok as i32);
+
+        crate::scheduler_wasm::sched_enqueue(actor_ptr.cast());
+        crate::scheduler_wasm::hew_sched_run();
+
+        let error = (*actor_ptr).error_code.load(Ordering::Acquire);
+        let state = (*actor_ptr).actor_state.load(Ordering::Acquire);
+
+        assert_eq!(
+            error,
+            crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+            "hew_trap_with_code must stamp the HeapExceeded discriminator"
+        );
+        assert_eq!(
+            crate::internal::types::ExitReason::from_error_code(error),
+            crate::internal::types::ExitReason::HeapExceeded,
+        );
+        assert_eq!(state, HewActorState::Crashed as i32);
 
         let _ = Box::from_raw(actor_ptr);
         crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());

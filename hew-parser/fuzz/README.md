@@ -13,10 +13,21 @@ cargo install cargo-fuzz
 
 ```bash
 cd hew-parser
-cargo +nightly fuzz run fuzz_parse   # Fuzz the parser
-cargo +nightly fuzz run fuzz_lex     # Fuzz the lexer
+cargo +nightly fuzz run fuzz_parse       # UTF-8 source -> parser
+cargo +nightly fuzz run fuzz_lex         # UTF-8 source -> lexer span invariants
+cargo +nightly fuzz run fuzz_check       # parse-clean source -> checker
+cargo +nightly fuzz run fuzz_mir         # typecheck-clean source -> HIR/MIR lowering
+cargo +nightly fuzz run fuzz_msgpack     # wire declarations and msgpack descriptors
 ```
 
 ## Corpus
 
-Initial corpus seeds are in `fuzz/corpus/`. New interesting inputs are saved automatically.
+Corpus directories under `fuzz/corpus/` are generated and ignored by git.
+Hydrate them from current v0.5 fixtures and parseable examples with:
+
+```bash
+make fuzz-corpus
+```
+
+`make fuzz-smoke FUZZ_SMOKE_SECONDS=45` rebuilds the corpus, builds every
+target, and runs a short local libFuzzer smoke window for each target.

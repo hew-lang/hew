@@ -44,6 +44,8 @@
 #   make tsan         — run the nightly rust-runtime TSan test command locally
 #   make lint         — cargo clippy (workspace + tests, warnings are errors) + hew fmt gate
 #   make hew-fmt-check — check that std/ and examples/ .hew files are formatted (part of lint)
+#   make fuzz-corpus    — regenerate ignored cargo-fuzz corpora from current fixtures/examples
+#   make fuzz-smoke     — build and smoke-run cargo-fuzz targets locally
 #   make clean        — remove build/, target/
 # ============================================================================
 
@@ -52,6 +54,7 @@
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined
+.PHONY: fuzz-corpus fuzz-smoke
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
@@ -84,6 +87,8 @@ NATIVE_LIB_TRIPLES := $(HOST_TRIPLE) $(DARWIN_NATIVE_LIB_TRIPLES)
 SANITIZER_RUST_TARGET ?= x86_64-unknown-linux-gnu
 RUNTIME_ASAN_TARGET_DIR := target/sanitizer-runtime-asan
 RUNTIME_TSAN_TARGET_DIR := target/sanitizer-runtime-tsan
+FUZZ_TARGETS := fuzz_parse fuzz_lex fuzz_structured fuzz_machine fuzz_check fuzz_mir fuzz_msgpack
+FUZZ_SMOKE_SECONDS ?= 45
 
 # ── Default target ──────────────────────────────────────────────────────────
 
@@ -153,6 +158,21 @@ ci-preflight-strict:
 	$(MAKE) playground-check
 	$(MAKE) test
 	$(MAKE) stdlib-lint
+
+fuzz-corpus:
+	scripts/fuzz/hydrate-corpus.sh
+
+fuzz-smoke: fuzz-corpus
+	@command -v cargo-fuzz >/dev/null 2>&1 || { echo "error: cargo-fuzz is required (cargo install cargo-fuzz)"; exit 127; }
+	@rustup toolchain list | grep -q '^nightly' || { echo "error: Rust nightly toolchain is required (rustup install nightly)"; exit 127; }
+	@cd hew-parser && for target in $(FUZZ_TARGETS); do \
+		echo "==> cargo fuzz build $$target"; \
+		cargo +nightly fuzz build "$$target"; \
+	done
+	@cd hew-parser && for target in $(FUZZ_TARGETS); do \
+		echo "==> cargo fuzz smoke $$target ($(FUZZ_SMOKE_SECONDS)s)"; \
+		cargo +nightly fuzz run "$$target" -- -max_total_time=$(FUZZ_SMOKE_SECONDS); \
+	done
 
 bootstrap: install-hooks
 

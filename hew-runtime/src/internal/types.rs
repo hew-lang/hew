@@ -1,7 +1,5 @@
 //! Internal type definitions shared across runtime modules.
 
-use std::ffi::c_int;
-
 use crate::execution_context::HewExecutionContext;
 
 /// Actor dispatch function signature (context-leading canonical).
@@ -21,10 +19,16 @@ pub type HewDispatchFn = unsafe extern "C-unwind" fn(
 /// policy is applied. Receives the execution context, the crash code
 /// (trap kind integer), and the actor's current state pointer.
 ///
-/// `void (*on_crash)(HewExecutionContext *ctx, int crash_code, void *actor_state_ptr)`
+/// `crash_code` is i64 to match the `code: i64` field of `PanicInfo` in
+/// `std/failure.hew`. The supervisor's internal plumbing tracks the code as
+/// `c_int` and widens it to `i64` at the call site so the internal event
+/// struct and the public C ABI (`hew_supervisor_notify_child_event`) stay
+/// unchanged.
+///
+/// `void (*on_crash)(HewExecutionContext *ctx, int64_t crash_code, void *actor_state_ptr)`
 pub type HewOnCrashFn = unsafe extern "C" fn(
     ctx: *mut HewExecutionContext,
-    crash_code: c_int,
+    crash_code: i64,
     actor_state_ptr: *mut std::ffi::c_void,
 );
 
@@ -245,6 +249,26 @@ pub const HEW_TRAP_INDEX_OUT_OF_BOUNDS: i32 = 205;
 /// queue was full, or the actor ID routed to a remote partition that rejected
 /// the message.
 pub const HEW_TRAP_ACTOR_SEND_FAILED: i32 = 206;
+
+/// Convert a canonical Hew trap discriminator into the WASI process exit code
+/// used when a trap escapes outside actor dispatch.
+///
+/// This is an untrusted wasm-to-host boundary: only Hew-owned trap
+/// discriminators may become process exit statuses. Unknown values must return
+/// `None` so the generated trailing `llvm.trap` remains the fail-closed sink.
+#[must_use]
+pub fn canonical_trap_wasi_exit_code(code: i32) -> Option<i32> {
+    match code {
+        HEW_TRAP_HEAP_EXCEEDED
+        | HEW_TRAP_INTEGER_OVERFLOW
+        | HEW_TRAP_DIVIDE_BY_ZERO
+        | HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE
+        | HEW_TRAP_SHIFT_OUT_OF_RANGE
+        | HEW_TRAP_INDEX_OUT_OF_BOUNDS
+        | HEW_TRAP_ACTOR_SEND_FAILED => Some(code),
+        _ => None,
+    }
+}
 
 /// Named exit reason for a crashed actor.
 ///

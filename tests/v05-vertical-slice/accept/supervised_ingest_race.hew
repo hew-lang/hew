@@ -1,0 +1,31 @@
+// Acceptance fixture: supervisor child-accessor round-trip.
+//
+// Exercises the full `supervisor.<child>` surface end-to-end:
+//   1. `spawn App` runs the bootstrap: hew_supervisor_new + add_child_spec +
+//      hew_supervisor_start.  Children are spawned synchronously inside
+//      `add_child_spec`, so the slot is Live before `start` returns.
+//   2. `app.w1` lowers through hew_supervisor_child_get: the result tag must
+//      be 0 (Live) to yield a LocalPid<Worker> without trapping.
+//   3. `w.ping(42)` sends an ask message to the child actor, which echoes the
+//      argument back.
+//   4. `main` returns the reply as the process exit code; exit 42 proves the
+//      cross-actor send went through the child handle, not a shortcut.
+actor Worker {
+    receive fn ping(n: i64) -> i64 {
+        n
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    max_restarts: 3;
+    window: 60;
+
+    child w1: Worker;
+}
+
+fn main() -> i64 {
+    let app = spawn App;
+    let w = app.w1;
+    w.ping(42)
+}

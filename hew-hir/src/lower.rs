@@ -7,9 +7,9 @@ use hew_parser::ast::{
     SupervisorStrategy, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
 };
 use hew_types::{
-    ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ClosureCaptureFact,
-    ExecutionContextReader, LoweringFact, MethodCallReceiverKind, MethodCallRewrite, ResolvedTy,
-    SpanKey, Ty, TypeCheckOutput,
+    ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildSlot,
+    ClosureCaptureFact, ExecutionContextReader, LoweringFact, MethodCallReceiverKind,
+    MethodCallRewrite, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -194,12 +194,45 @@ pub fn lower_program_with_mono_cap(
             let module_short = mod_id.path.last().map_or("", String::as_str);
             if let Some(module) = mg.modules.get(mod_id) {
                 for (item, _) in &module.items {
-                    if let Item::Function(func) = item {
-                        if func.visibility.is_pub() {
+                    match item {
+                        Item::Function(func) if func.visibility.is_pub() => {
                             let qualified =
                                 crate::mangle_dotted_name(&format!("{module_short}.{}", func.name));
                             ctx.register_fn_entry(&qualified, func);
                         }
+                        // Register pub type declarations from imported modules
+                        // into `record_registry` so `Expr::StructInit` and
+                        // `Expr::FieldAccess` lowering can resolve their field
+                        // layouts. Without this, `PanicInfo.code` in an
+                        // `#[on(crash)]` body fails with `CutoverUnsupported`
+                        // because the layout is missing from `record_field_orders`
+                        // at MIR time.
+                        //
+                        // All pub TypeDecls from non-root modules are registered,
+                        // not just monomorphic ones; the generic case is filtered
+                        // at MIR layout-emission time (same rule as root items).
+                        Item::TypeDecl(decl) if decl.visibility.is_pub() => {
+                            let id = ctx.ids.item();
+                            let type_params: Vec<String> = decl
+                                .type_params
+                                .as_ref()
+                                .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
+                            let mut fields: Vec<(String, ResolvedTy)> = Vec::new();
+                            for body_item in &decl.body {
+                                if let TypeBodyItem::Field { name, ty, .. } = body_item {
+                                    fields.push((name.clone(), ctx.lower_type(ty)));
+                                }
+                            }
+                            ctx.record_registry.insert(
+                                decl.name.clone(),
+                                RecordEntry {
+                                    id,
+                                    type_params,
+                                    fields,
+                                },
+                            );
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -389,16 +422,23 @@ pub fn lower_program_with_mono_cap(
     // emitted `HirModule`.  Walking `module_graph` here ensures each
     // imported user module contributes exactly one `HirFn` per pub fn,
     // keyed by the same mangled name registered in the pre-pass above.
+    //
+    // Pub TypeDecls are emitted here for the same reason: `PanicInfo` (and any
+    // other pub type from an imported module) must appear as `HirItem::TypeDecl`
+    // so that `hew-mir`'s layout pass (which walks `module.items`) can populate
+    // `record_field_orders` and emit a `RecordLayout`.  Without this, field
+    // accesses like `info.code` in `#[on(crash)]` bodies fail at MIR time
+    // because `PanicInfo` is absent from `record_field_orders`.
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root {
                 continue;
             }
-            let module_short = mod_id.path.last().map_or("", String::as_str);
             if let Some(module) = mg.modules.get(mod_id) {
                 for (item, span) in &module.items {
-                    if let Item::Function(func) = item {
-                        if func.visibility.is_pub() {
+                    match item {
+                        Item::Function(func) if func.visibility.is_pub() => {
+                            let module_short = mod_id.path.last().map_or("", String::as_str);
                             let qualified =
                                 crate::mangle_dotted_name(&format!("{module_short}.{}", func.name));
                             items.push(HirItem::Function(ctx.lower_fn_with_name(
@@ -407,6 +447,10 @@ pub fn lower_program_with_mono_cap(
                                 span.clone(),
                             )));
                         }
+                        Item::TypeDecl(decl) if decl.visibility.is_pub() => {
+                            items.push(HirItem::TypeDecl(ctx.lower_type_decl(decl, span.clone())));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -416,6 +460,7 @@ pub fn lower_program_with_mono_cap(
     let mut monomorphisations = ctx.mono_registry.into_vec();
     let call_site_type_args = ctx.call_site_type_args;
     let record_layouts = ctx.record_layout_registry.into_vec();
+    let supervisor_child_slots = ctx.supervisor_child_slots;
 
     // Closure under substitution: walk every monomorphisation's origin
     // body, find inner generic-fn call sites, substitute their recorded
@@ -437,6 +482,7 @@ pub fn lower_program_with_mono_cap(
             monomorphisations,
             call_site_type_args,
             record_layouts,
+            supervisor_child_slots,
         },
         diagnostics: ctx.diagnostics,
     }
@@ -929,6 +975,18 @@ struct LowerCtx {
     /// their bodies skipped during lowering (the body is a placeholder).
     /// Fail-closed: an unknown key emits `UnknownIntrinsic`.
     intrinsic_declarations: HashMap<String, String>,
+    /// Checker-side supervisor child-slot table, keyed by the `SpanKey` of
+    /// each `FieldAccess` expression that the checker resolved as a supervisor
+    /// child accessor. Cloned from `tc_output.supervisor_child_slots` at
+    /// construction. Read-only during lowering; lookups translate the span key
+    /// to the pre-allocated `SiteId` and accumulate into `supervisor_child_slots`.
+    supervisor_child_slots_checker: HashMap<SpanKey, ChildSlot>,
+    /// Per-field-access `SiteId` → `ChildSlot` accumulator. Populated during
+    /// `HirExprKind::FieldAccess` lowering whenever
+    /// `supervisor_child_slots_checker` contains an entry for the expression
+    /// span. Drained into `HirModule.supervisor_child_slots` at the end of
+    /// `lower_program` (mirrors the `call_site_type_args` pattern).
+    supervisor_child_slots: HashMap<SiteId, ChildSlot>,
 }
 
 impl LowerCtx {
@@ -969,6 +1027,8 @@ impl LowerCtx {
             record_layout_registry: RecordLayoutRegistry::with_cap(mono_cap),
             record_layout_cap_diag_emitted: false,
             intrinsic_declarations: tc_output.intrinsic_declarations.clone(),
+            supervisor_child_slots_checker: tc_output.supervisor_child_slots.clone(),
+            supervisor_child_slots: HashMap::new(),
         }
     }
 
@@ -1322,6 +1382,41 @@ impl LowerCtx {
                 },
             );
         }
+        // Checker-registered runtime-builtin functions that have no stdlib_catalog
+        // entry and no AST `fn` item.  The HIR verifier rejects `Unresolved`
+        // callee refs, so these builtins need a synthetic `Item(id)` in
+        // `fn_registry` for `lower_identifier` to resolve.  IDs live in the
+        // `u32::MAX / 2` range — below the stdlib IDs (`u32::MAX - N`) and
+        // above the source-item sequence (which starts from 0).
+        //
+        // MIR: the callee `BindingRef { name: "supervisor_stop", resolved: Item(_) }`
+        // routes through `user_name_to_c_symbol("supervisor_stop")` →
+        // `lower_runtime_call("hew_supervisor_stop", …)` before the Item-resolved
+        // fail-closed arm at `lower.rs:2774` is reached.
+        //
+        // WHEN obsolete: when HIR gains `ResolvedRef::Builtin { c_symbol }` and the
+        // verifier exempts it from the Unresolved check, at which point this seeding
+        // and `user_name_to_c_symbol` become the bridge between the two.
+        // WHAT: add `ResolvedRef::Builtin { c_symbol: String }` to `hew-hir`;
+        // populate in `lower_identifier`; match in MIR.
+        // `supervisor_stop(sup: LocalPid<S>) -> ()`.  The param type is a
+        // `LocalPid<S>` (named "LocalPid" in resolved form), which is what
+        // the checker registers.  The exact inner type does not matter here
+        // because MIR lowering consults `user_name_to_c_symbol` on the
+        // callee name and passes the sup place opaquely.
+        self.fn_registry.insert(
+            "supervisor_stop".to_string(),
+            FnEntry {
+                id: ItemId(u32::MAX / 2),
+                return_ty: ResolvedTy::Unit,
+                param_tys: vec![ResolvedTy::Named {
+                    name: "LocalPid".to_string(),
+                    args: vec![ResolvedTy::Unit],
+                }],
+                linkage: None,
+                type_params: Vec::new(),
+            },
+        );
     }
 
     fn register_fn_entry(&mut self, name: &str, func: &FnDecl) {
@@ -3258,6 +3353,15 @@ impl LowerCtx {
                         ));
                         ResolvedTy::Unit
                     };
+                    // Checker-authority: if the checker recorded a supervisor
+                    // child-slot for this field-access span, propagate it into
+                    // the accumulator keyed by the pre-allocated SiteId. MIR
+                    // (S2) reads `HirModule.supervisor_child_slots` to intercept
+                    // these sites before the `record_field_orders` path.
+                    // Mirrors the `call_site_type_args` pattern (lower.rs line 1127).
+                    if let Some(slot) = self.supervisor_child_slots_checker.get(&checker_key) {
+                        self.supervisor_child_slots.insert(site, slot.clone());
+                    }
                     (
                         HirExprKind::FieldAccess {
                             object: Box::new(hir_object),

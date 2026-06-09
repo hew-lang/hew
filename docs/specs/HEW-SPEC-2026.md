@@ -90,7 +90,7 @@ Rules:
 
 Actors expose message handlers using `receive fn`. Named actor `receive fn` methods are callable directly — no `.send()` or `.ask()` required.
 
-In pre-2026 editions, Hew borrowed the Akka classic surface: `.send()` for fire-and-forget and `.ask()` for request-reply. The 2026 rewrite eliminated both. The distinguishing axis is now the callee's `receive fn` signature: a `receive fn` without a return type produces a fire-and-forget call (type `()`); a `receive fn` with a return type `R` produces a request-reply call (type `Result<R, AskError>`). The checker derives the call kind from the callee's signature — no caller-side keyword is needed, because `ActorRef<T>` is a distinct nominal type that already encodes the mailbox boundary.
+In pre-2026 editions, Hew borrowed the Akka classic surface: `.send()` for fire-and-forget and `.ask()` for request-reply. The 2026 rewrite eliminated both. The distinguishing axis is now the callee's `receive fn` signature: a `receive fn` without a return type produces a fire-and-forget call (type `()`); a `receive fn` with a return type `R` produces a request-reply call (type `Result<R, AskError>`). The checker derives the call kind from the callee's signature — no caller-side keyword is needed, because `LocalPid<T>` is a distinct nominal type that already encodes the mailbox boundary.
 
 The token `ask` does not appear at actor call sites. Request-reply against a named actor is written `await <ref>.<method>(<args>)` and has result type `Result<R, AskError>`. Fire-and-forget is written `<ref>.<method>(<args>)` (no `await`) and has type `()`. `ask` is not lexer-recognised at any position in edition 2026 (reserved for a future syntactic marker; see §4.11.1 and HEW-FUTURE).
 
@@ -232,19 +232,19 @@ ActorSpawn      = "spawn" Ident TypeArgs? "(" FieldInitList? ")" ;  (* spawn Cou
 
 **Type system:**
 
-Lambda actors return `ActorRef<Actor<M>>` for fire-and-forget or `ActorRef<Actor<M, R>>` for request-response, where:
+Lambda actors return `LocalPid<Actor<M>>` for fire-and-forget or `LocalPid<Actor<M, R>>` for request-response, where:
 
 - `M` is the message type (from parameter)
 - `R` is the return type (from annotation or inference)
 
-**Spawning returns ActorRef:**
+**Spawning returns LocalPid:**
 
 ```hew
-// Named actor spawn returns ActorRef<ActorType>
-let counter: ActorRef<Counter> = spawn Counter(0);
+// Named actor spawn returns LocalPid<ActorType>
+let counter: LocalPid<Counter> = spawn Counter(0);
 
-// Lambda actor expression returns ActorRef<Actor<M>>
-let worker: ActorRef<Actor<i64>> = actor |msg: i64| { println(msg); };
+// Lambda actor expression returns LocalPid<Actor<M>>
+let worker: LocalPid<Actor<i64>> = actor |msg: i64| { println(msg); };
 ```
 
 **Capture semantics:**
@@ -297,9 +297,13 @@ Specifically:
   - is observed by its supervisor
   - may trigger restart per policy
 
+Actors may declare `#[max_heap(N)]` to cap their per-actor arena. If an arena allocation would exceed that cap, the runtime fails closed with the `ExitReason::HeapExceeded` crash variant and the `HEW_TRAP_HEAP_EXCEEDED` trap-kind discriminator. Supervisors receive that heap-exhaustion payload through the same crash-report routing path as other traps, so restart policy, escalation, and `#[on(crash)]` observation all see the cap breach as an unrecoverable actor failure rather than a recoverable `Result`.
+
+> **v0.5 composite-return boundary:** v0.5 ships the `Result<T, E>` and `Option<T>` type definitions and pattern matching, but user functions returning `Result<T, E>` or `Option<T>` are deferred to v0.6 through the composite-return spine. v0.5 alternatives are out-parameter mutation, panic-on-error, or wrapping a single handle. The propagation examples below describe the intended v0.6 source surface where they require such returns.
+
 ### 2.2.1 Error Propagation
 
-The `?` operator propagates errors from Result types:
+The `?` operator propagates errors from Result types once the v0.6 composite-return spine is available:
 
 ```hew
 fn read_file(path: String) -> Result<String, String> {
@@ -371,7 +375,7 @@ unaffected.
 - **Value types** (copy): integers, floats, bool, char, small fixed aggregates.
 - **Owned heap types**: `String`, `Bytes`, `Vec<T>`, `HashMap<K,V>`, user-defined types.
 - **Shared immutable types**: `Frozen` values are the conceptual shared-immutable category. The runtime has internal `Arc`/ABI support, but v0.2.x does **not** yet expose a user-facing Hew `Arc<T>` type.
-- **Actor references**: `ActorRef<A>` is sendable.
+- **Actor references**: `LocalPid<A>` is sendable.
 - **I/O stream types**: `Stream<T>` (readable) and `Sink<T>` (writable) — move-only, `Send`, first-class sequential I/O handles (§6.5).
 
 ### 3.2 Mutability
@@ -425,7 +429,7 @@ A value may cross an actor boundary only if it satisfies **Send**.
 - the value is a value type (integers, floats, bool, char), or
 - the value is **owned** and transferred (move) with no remaining aliases, or
 - the value is `Frozen` (deeply immutable), or
-- the value is an actor reference (`ActorRef<A>`)
+- the value is an actor reference (`LocalPid<A>`)
 
 This is the central compile-time guarantee: **no data races without locks**, aligning with capability-based actor safety in Pony. ([tutorial.ponylang.io][1])
 
@@ -439,7 +443,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | ---------------------------------- | ------------------------------------------ |
 | Value types (i32, f64, bool, char) | Always `Send`                              |
 | `String`                           | Always `Send` (owned, deep-copied on send) |
-| `ActorRef<A>`                      | Always `Send`                              |
+| `LocalPid<A>`                      | Always `Send`                              |
 | `type S { f1: T1; f2: T2; ... }`   | All fields are `Send`                      |
 | `enum E { V1(T1), V2(T2), ... }`   | All variant payloads are `Send`            |
 | `Vec<T>`                           | `T` is `Send`                              |
@@ -457,7 +461,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | ----------------------------- | ----------------------------------------- |
 | Value types                   | Always `Frozen`                           |
 | `String`                      | NOT `Frozen` (mutable content)            |
-| `ActorRef<A>`                 | Always `Frozen` (identity reference only) |
+| `LocalPid<A>`                 | Always `Frozen` (identity reference only) |
 | `type S` with NO `var` fields | All fields are `Frozen`                   |
 | `type S` with ANY `var` field | NOT `Frozen`                              |
 | `enum E`                      | All variant payloads are `Frozen`         |
@@ -596,7 +600,7 @@ This distinction exists because actor fields are stateful (they change over the 
 The **only** ownership constraint is at actor boundaries. When a value crosses an actor boundary (via method call or `.send()`), it must be **moved** or **cloned**:
 
 ```hew
-receive fn forward(message: Message, target: ActorRef<Handler>) {
+receive fn forward(message: Message, target: LocalPid<Handler>) {
     target.handle(message);  // message is MOVED to target's mailbox
     // message is now invalid - compile error if used
 }
@@ -622,7 +626,7 @@ worker.send(message);        // message is MOVED via .send()
 **Cloning for continued use:**
 
 ```hew
-receive fn broadcast(message: Message, targets: Vec<ActorRef<Handler>>) {
+receive fn broadcast(message: Message, targets: Vec<LocalPid<Handler>>) {
     for target in targets {
         target.handle(message.clone());  // Each recipient gets a clone
     }
@@ -711,7 +715,7 @@ actor Example {
 actor Example {
     var data: Vec<i64> = Vec::new();
 
-    receive fn bad_examples(other: ActorRef<Other>) {
+    receive fn bad_examples(other: LocalPid<Other>) {
         // Sending without move - ERROR (implicit move makes source invalid)
         other.handle(data);
         data.push(1);     // compile error: data was moved
@@ -969,7 +973,7 @@ impl Display for Point {
   - Value types (integers, floats, bool, char)
   - Owned types transferred by move
   - `Frozen` types (deeply immutable)
-  - `ActorRef<A>`
+  - `LocalPid<A>`
 
 - `Frozen` - Type is deeply immutable and thus safely shareable. Implies `Send`.
   - Runtime-internal shared immutable handles (the planned `Arc<T>` surface is not yet exposed in Hew source)
@@ -1034,9 +1038,9 @@ Inside an actor body, the `this` keyword provides a read-only handle to the acto
 
 ```hew
 actor Worker {
-    var manager: ActorRef<Manager>;
+    var manager: LocalPid<Manager>;
 
-    receive fn register(mgr: ActorRef<Manager>) {
+    receive fn register(mgr: LocalPid<Manager>) {
         manager = mgr;
         mgr.add_worker(this);  // pass this actor's reference to the manager
     }
@@ -1047,7 +1051,7 @@ actor Worker {
 
 - Available only inside actor bodies (`receive fn` and `fn` methods)
 - Read-only — you cannot assign to `this`
-- Of type `ActorRef<Self>` — a sendable handle to the enclosing actor
+- Of type `LocalPid<Self>` — a sendable handle to the enclosing actor
 - Not valid in struct `impl` blocks or free functions
 
 **Variable shadowing:**
@@ -1093,7 +1097,7 @@ Hew distinguishes three cases of variable shadowing:
 **Trait bounds on generics:**
 
 ```hew
-fn broadcast<T: Send>(message: T, recipients: Vec<ActorRef<Receiver>>) {
+fn broadcast<T: Send>(message: T, recipients: Vec<LocalPid<Receiver>>) {
     for recipient in recipients {
         recipient.handle(message.clone());
     }
@@ -1153,7 +1157,7 @@ This hybrid gives the safety of Rust's move semantics (no use-after-send bugs) w
 - No references cross actor boundaries
 
 ```hew
-receive fn forward(message: Message, target: ActorRef<Handler>) {
+receive fn forward(message: Message, target: LocalPid<Handler>) {
     target.handle(message);  // message is MOVED — runtime deep-copies to target's heap
     // message is now invalid — compile error if used
 }
@@ -1172,7 +1176,7 @@ trait Send {}  // Marker trait — no methods
 - The value is a value type (integers, floats, bool, char)
 - The value is owned and transferred by move with no remaining aliases
 - The value is `Frozen` (deeply immutable)
-- The value is an `ActorRef<A>`
+- The value is a `LocalPid<A>`
 - The value is a struct/enum where all fields/variants satisfy `Send`
 
 > **Implementation note:** At runtime, messages are deep-copied into the receiver's per-actor heap. This deep-copy is performed by the runtime, not by a user-visible method. The `Send` marker trait tells the compiler that a type's structure permits this deep-copy. User-defined types do NOT need to implement `Send` explicitly — the compiler derives it automatically based on field types.
@@ -1274,7 +1278,7 @@ fn eval(e: Expr) -> Int {
 - Use for shared ownership within one actor
 - Current compiler support is fail-closed: `Rc<T>` currently accepts `T: Copy`, `String`, `bytes`, and nested `Rc` of supported payloads until recursive drop lowering exists
 - For collection admissibility, the checker currently enforces an internal `RcFree` boundary (current checker behaviour, not stable user-written trait syntax): a type is treated as RcFree only when its resolved structure contains no `Rc<_>` after recursively checking wrapper type arguments, tuples/arrays/slices, and registered named struct/enum/actor members, including module-qualified and non-root private definitions seen during checking
-- `ActorRef<A>` participates in that structural check through its actor type argument: if actor `A` stores non-RcFree state, `ActorRef<A>` is also non-RcFree for collection checks
+- `LocalPid<A>` participates in that structural check through its actor type argument: if actor `A` stores non-RcFree state, `LocalPid<A>` is also non-RcFree for collection checks
 - `HashMap` and `HashSet` reject non-RcFree key/value/element types during type checking; `Vec` rejects non-RcFree elements at collection method-call sites (`push`, `pop`, `get`, `remove`, `set`, `append`, `extend`, `map`, `filter`, `fold`) rather than as a bare annotation-level ban
 
 ```hew
@@ -1325,9 +1329,9 @@ produces identical results with or without them.
 | No memory leaks\* | RAII ensures cleanup; cycles in `Rc` can leak (use weak refs)  |
 
 \*Reference cycles in `Rc<T>` can cause leaks. Use `Weak<T>` to break
-cycles. Actor references (`ActorRef<A>`) use reference counting and can
+cycles. Actor references (`LocalPid<A>`) use reference counting and can
 form cycles; supervision trees naturally avoid them by keeping ownership
-parent-to-child only, and `Weak<ActorRef<A>>` is available for back-
+parent-to-child only, and `Weak<LocalPid<A>>` is available for back-
 references.
 
 #### 3.7.8 Resource markers (`@resource` and `@linear`)
@@ -1594,7 +1598,7 @@ max(3.14, 2.71);       // max$f64
 **Inline bounds:**
 
 ```hew
-fn broadcast<T: Send + Clone>(message: T, targets: Vec<ActorRef<Receiver>>) {
+fn broadcast<T: Send + Clone>(message: T, targets: Vec<LocalPid<Receiver>>) {
     for target in targets {
         target.handle(message.clone());
     }
@@ -1683,12 +1687,12 @@ The runtime also has internal `Arc` support, but those `Send`/`Frozen` rules are
 
 ```hew
 // Error: T might not be Send
-receive fn forward_unsafe<T>(message: T, target: ActorRef<Handler<T>>) {
+receive fn forward_unsafe<T>(message: T, target: LocalPid<Handler<T>>) {
     target.handle(message);     // Compile error: T not bounded by Send
 }
 
 // Correct: T is bounded by Send
-receive fn forward<T: Send>(message: T, target: ActorRef<Handler<T>>) {
+receive fn forward<T: Send>(message: T, target: LocalPid<Handler<T>>) {
     target.handle(message);     // OK: T: Send verified at instantiation
 }
 ```
@@ -1847,9 +1851,21 @@ help: or annotate the lambda parameters directly
 
 ### 3.9 Foreign Function Interface (FFI)
 
+> **In-planning — deferred to v0.6+.** The full FFI surface described in this
+> section (`extern "C"` blocks, `#[repr(C)]`, `#[export]`, C-string helpers,
+> and safe-wrapper patterns) is not lowered in v0.5. The v0.5 compiler lowers
+> only the fixed `hew_*` runtime allowlist (§8.4); any other foreign-call
+> declaration reaches a cutover diagnostic during HIR lowering. This section
+> documents the intended v0.6+ design so implementers and embedders can plan
+> for it. No v0.5 code should rely on the constructs below.
+
 Hew provides FFI capabilities for interoperating with C libraries and system calls.
 
 #### 3.9.1 Extern Function Declaration
+
+> **v0.6+.** `extern "C"` blocks with arbitrary foreign symbols are not lowered
+> in v0.5. Declarations of foreign functions other than the runtime's own
+> `hew_*` symbols produce a cutover diagnostic.
 
 External C functions are declared in `extern` blocks:
 
@@ -1871,6 +1887,10 @@ extern "C" {
 - Future: `extern "stdcall"`, `extern "fastcall"` for platform-specific conventions
 
 #### 3.9.2 C-Compatible Struct Layout
+
+> **v0.6+.** `#[repr(C)]` is not recognised by the v0.5 HIR lowering pass.
+> Annotating a type with `#[repr(C)]` produces a cutover diagnostic; layout
+> is controlled by the compiler for all v0.5 types.
 
 Use `#[repr(C)]` to ensure C-compatible memory layout:
 
@@ -1898,6 +1918,11 @@ type FileInfo {
 
 #### 3.9.3 Type Mapping: Hew ↔ C
 
+> **v0.6+.** This mapping becomes relevant when `extern "C"` blocks and
+> `#[repr(C)]` land. In v0.5, raw pointer types (`*T`, `*var T`) are only
+> usable within the runtime allowlist; the cross-language mapping below is
+> informational for v0.6+ planning.
+
 | Hew Type                  | C Type                      | Notes                      |
 | ------------------------- | --------------------------- | -------------------------- |
 | `i8`, `i16`, `i32`, `i64` | `int8_t`, `int16_t`, etc.   | Exact size match           |
@@ -1912,6 +1937,10 @@ type FileInfo {
 | `fn(...) -> T`            | Function pointer            | C function pointer         |
 
 #### 3.9.4 Exporting Functions to C
+
+> **v0.6+.** `#[export]` is not recognised by the v0.5 compiler. Annotating
+> a function with `#[export]` produces a cutover diagnostic. Hew functions
+> are not linkable from C in v0.5.
 
 Use `#[export]` to make Hew functions callable from C:
 
@@ -1928,6 +1957,11 @@ extern "C" fn my_callback(value: i32) -> i32 {
 ```
 
 #### 3.9.5 Safety Rules
+
+> **v0.6+.** The `unsafe` block, C string helper (`to_c_string`), safe-wrapper
+> pattern, and `Drop` integration shown below are the intended v0.6+ surface.
+> In v0.5, `unsafe {}` blocks are parsed but produce a cutover diagnostic
+> during HIR lowering; there is no user-accessible unsafe escape hatch.
 
 **All FFI calls are `unsafe`:**
 
@@ -2060,6 +2094,12 @@ enum Result<T, E> {
 }
 ```
 
+v0.5 ships these definitions and permits pattern matching over them, but
+user-authored functions that return `Result<T, E>` or `Option<T>` are deferred
+to v0.6 through the composite-return spine. In v0.5, use out-parameter
+mutation, panic-on-error, or a single handle wrapper when a function must
+communicate failure across a call boundary.
+
 Any error type `E` may be used with `Result<T, E>`. The recommended pattern is for each module to define its own structured error enum, as demonstrated by the canonical `std::fs::IoError`:
 
 ```hew
@@ -2093,7 +2133,7 @@ impl<T> Vec<T> {
 
 **Current `Vec<T>` element restrictions** — the type checker rejects element types that the vec lowering cannot handle:
 
-- Non-RcFree elements: `Vec<T>` operations reject element types that fail the internal RcFree boundary (for example direct `Rc<U>`, named wrappers/structs/enums that contain `Rc`, and `ActorRef<A>` when actor `A` stores `Rc` state); this remains enforced at method-call sites (`push`, `pop`, `get`, `remove`, `set`, `append`, `extend`, `map`, `filter`, `fold`) rather than as a bare annotation-level ban
+- Non-RcFree elements: `Vec<T>` operations reject element types that fail the internal RcFree boundary (for example direct `Rc<U>`, named wrappers/structs/enums that contain `Rc`, and `LocalPid<A>` when actor `A` stores `Rc` state); this remains enforced at method-call sites (`push`, `pop`, `get`, `remove`, `set`, `append`, `extend`, `map`, `filter`, `fold`) rather than as a bare annotation-level ban
 - Element types that structurally contain a fixed-size array (`[T; N]`) are rejected; flatten such data before storing in a Vec
 
 Commonly used string operations include `+`, `==`, `!=`, `.len()`,
@@ -2190,7 +2230,7 @@ Important current details:
   type checking, including nested annotations, function signatures, and
   `wire enum` payloads; collection element admissibility also requires the
   internal RcFree boundary, so `HashSet<Rc<T>>`, named wrappers that contain
-  `Rc`, and `ActorRef<A>` handles to actors with `Rc` state are rejected
+  `Rc`, and `LocalPid<A>` handles to actors with `Rc` state are rejected
 - `std::iter` is presently specialised to `Vec<i64>` helpers such as
   `map_int`, `filter_int`, `fold_int`, `any`, `all`, and `sum`
 - `std::sort` exposes concrete helpers like `sort_ints`, `sort_strings`,
@@ -3408,7 +3448,13 @@ Supervisor has `(max_restarts, window)`; exceeding the restart budget escalates 
 
 ### 5.5 Nested Supervisors
 
-Supervisors can contain other supervisors as children, forming supervision trees:
+Nested supervisors are reserved for v0.6. In v0.5, child declarations whose
+target is itself a supervisor with children fail closed during lowering as
+`nested supervisor child accessor (v0.6)`. Keep v0.5 supervisor children as
+actors and compose larger trees outside the child-access surface until the
+v0.6 nested-supervisor spine lands.
+
+The intended v0.6 shape is:
 
 ```hew
 supervisor Inner {
@@ -3437,12 +3483,11 @@ fn main() {
     let pool = spawn MyPool;
     sleep_ms(50);
 
-    // Access children by declared name (preferred)
+    // Access children by declared name
     let w = pool.worker1;              // Typed: compiler knows w is a Worker
     w.tick();
 
-    // Or access by index (legacy)
-    let w2 = supervisor_child(pool, 1);
+    let w2 = pool.worker2;             // Dotted access is resolved statically
     w2.tick();
 
     supervisor_stop(pool);              // Graceful shutdown
@@ -3450,8 +3495,7 @@ fn main() {
 ```
 
 - `spawn SupervisorName` — creates and starts the supervisor with all declared children
-- `sup.child_name` — named child access via field syntax. The compiler resolves the child name to its index at compile time and returns a fully typed `ActorRef` for the child's actor type. The child name must match one of the `child` declarations in the supervisor definition.
-- `supervisor_child(sup, index)` — compiler intrinsic that returns a typed reference to the child at the given index. The compiler resolves the child's actor type from the supervisor declaration, so the returned reference is fully typed without a cast.
+- `sup.child_name` — named child access via field syntax. The compiler resolves the child name to its index at compile time and returns a fully typed `LocalPid` for the child's actor type. The child name must match one of the `child` declarations in the supervisor definition.
 - `supervisor_stop(sup)` — gracefully stops the supervisor and all its children
 
 ### 5.7 Crash Isolation
@@ -4217,39 +4261,60 @@ void Counter_dispatch(void* state, i64 msg_type, void* data, size_t data_size) {
 
 #### 9.1.2 Lifecycle Hooks
 
-Actors expose user-defined startup and cleanup logic through **lifecycle hook annotations** on plain `fn` declarations inside the actor body. The hook surface uses a single annotation `on` with the hook kind as a positional argument, so additional hooks (`#[on(panic)]`, `#[on(pre_restart)]`, …) can be added in later editions without growing the annotation vocabulary.
+Actors expose user-defined startup, cleanup, crash-observation, and future
+upgrade logic through **lifecycle hook annotations** on plain `fn`
+declarations inside the actor body. The hook surface uses a single annotation
+`on` with the hook kind as a positional argument, so additional hooks can be
+added in later editions without growing the annotation vocabulary.
 
 **Hooks defined in this edition:**
 
-| Annotation      | Signature   | Runs when                                                                                       |
-| --------------- | ----------- | ----------------------------------------------------------------------------------------------- |
-| `#[on(start)]`  | `fn name()` | Once, after the actor's fields are initialized and before any message is dispatched.            |
-| `#[on(stop)]`   | `fn name()` | Once per actor instance, on normal exit, cancellation by an enclosing `fork{}`, or supervisor `Shutdown`. |
+| Annotation       | Signature                                 | Runs when                                                                                       |
+| ---------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `#[on(start)]`   | `fn name()`                               | Once, after the actor's fields are initialized and before any message is dispatched.            |
+| `#[on(stop)]`    | `fn name()`                               | Once per actor instance, on normal exit, cancellation by an enclosing `fork{}`, or supervisor `Shutdown`. |
+| `#[on(crash)]`   | `fn name(info: PanicInfo) -> CrashAction` | After a child trap is classified and before v0.5 restart-policy handling.                       |
+| `#[on(upgrade)]` | reserved                                  | Reserved for v0.6 hot-upgrade machinery; not a usable v0.5 hook.                               |
 
 Unknown hook kinds (e.g. `#[on(restart)]`) are rejected with a diagnostic listing the valid set.
 
+`#[on(crash)]` is live in v0.5 as of `373b95ea`. The v0.5 handler ABI is
+`(PanicInfo) -> CrashAction`, but the returned `CrashAction` is ignored in this
+edition; supervisors honour each child's `restart_policy` instead. `#[on(upgrade)]`
+is a reserved spelling for v0.6, when hot-upgrade invocation and state migration
+are expected to land.
+
 **Signature rules (normative):**
 
-1. A hook is a plain `fn` declaration inside an actor body carrying exactly one of `#[on(start)]` or `#[on(stop)]`.
-2. A hook takes **no parameters**. Actor fields are in scope by bare name (the same convention as `init { }` and ordinary actor methods).
-3. A hook returns `()`.
-4. A hook is **not** `pure`, **not** generic, and has no `where` clause.
-5. Hook functions are not invocable from message handlers; the runtime is the sole caller.
-6. `#[on(start)]` appears **at most once** per actor. `#[on(stop)]` MAY appear multiple times; lexical declaration order is the run order.
+1. A hook is a plain `fn` declaration inside an actor body carrying exactly one `#[on(...)]` annotation whose kind is `start`, `stop`, `crash`, or the reserved `upgrade`.
+2. `#[on(start)]` and `#[on(stop)]` hooks take **no parameters**. Actor fields are in scope by bare name (the same convention as `init { }` and ordinary actor methods).
+3. `#[on(crash)]` hooks take exactly one `PanicInfo` parameter and declare `CrashAction` as the return type. The return value is side-effects-only in v0.5 and becomes a control surface no earlier than v0.6.
+4. `#[on(upgrade)]` is rejected during v0.5 lowering; source that needs hot upgrade must wait for the v0.6 upgrade machinery.
+5. `#[on(start)]` and `#[on(stop)]` hooks return `()`.
+6. A hook is **not** `pure`, **not** generic, and has no `where` clause.
+7. Hook functions are not invocable from message handlers; the runtime is the sole caller.
+8. Multiple `#[on(stop)]` hooks are permitted and execute in **lexical order**.
+   `#[on(start)]` and `#[on(crash)]` each appear **at most once** per actor.
 
 **Cancellation and resource ordering (normative):**
 
-7. Cancellation by an enclosing `fork{}` scope triggers `#[on(stop)]` for each cancelled actor before its task ends. This is the common path under structured concurrency, not an exceptional one.
-8. The runtime sequence at terminal transition is:
+9. Cancellation by an enclosing `fork{}` scope triggers `#[on(stop)]` for each cancelled actor before its task ends. This is the common path under structured concurrency, not an exceptional one.
+10. The runtime sequence at terminal transition is:
    - (a) actor body exits or is cancelled;
-   - (b) every `#[on(stop)]` hook runs in lexical declaration order with field access live;
+   - (b) the `#[on(stop)]` hook runs with field access live, if present;
    - (c) `@linear` consumed-checks fire (unconsumed linear values surface as diagnostics);
    - (d) `@resource` field `close()` methods run in reverse declaration order.
    Hooks therefore run BEFORE `@resource` `close()`, so user logic in a hook can still use resources for goodbye flushes.
-9. A panic in `#[on(start)]` aborts actor startup. The supervisor is notified; `#[on(stop)]` does NOT run, because the actor never reached the *started* state.
-10. The default `#[on(stop)]` timeout budget is 5 seconds; future editions MAY introduce `#[on(stop, timeout = <duration>)]` to override per actor.
+11. A panic in `#[on(start)]` aborts actor startup. The supervisor is notified; `#[on(stop)]` does NOT run, because the actor never reached the *started* state.
+12. The default `#[on(stop)]` timeout budget is 5 seconds; future editions MAY introduce `#[on(stop, timeout = <duration>)]` to override per actor.
 
-**Compilation:** Multiple `#[on(stop)]` hooks are concatenated by the codegen into a single C-ABI `_terminate` function pointer; the runtime ABI exposes one hook slot per actor regardless of source-level hook count. `#[on(start)]` bodies are appended to the synthesized `_init` function in lexical order, after any `init { ... }` block. Per-hook panic isolation between sibling hooks is reserved for a future edition; in this edition a panic in one `#[on(stop)]` hook short-circuits subsequent hooks of the same actor, while `@resource` `close()` (state-drop) is unaffected.
+**Compilation:** The runtime ABI exposes one hook slot per actor for each
+v0.5 kind. `#[on(start)]` bodies are appended to the synthesized `_init`
+function after any `init { ... }` block. `#[on(stop)]` lowers to the actor's
+C-ABI `_terminate` function pointer. `#[on(crash)]` lowers to the crash hook
+slot used by supervisor crash routing, with its `CrashAction` result ignored in
+v0.5. `#[on(upgrade)]` is parsed as a reserved kind but fails closed before
+codegen until the v0.6 hot-upgrade machinery exists.
 
 **Migration from v0.4:** The `terminate { ... }` block surface accepted by the v0.4 parser is removed in this edition. Existing cleanup logic should be rewritten as a `#[on(stop)] fn <name>() { ... }` declaration; the body and field-access semantics are identical.
 

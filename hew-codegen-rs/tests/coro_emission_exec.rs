@@ -144,27 +144,33 @@ fn wasmtime() -> Option<PathBuf> {
     })
 }
 
-/// Build (once) the native runtime archive the coroutine links against for
+/// Build the native runtime archive the coroutine links against for
 /// `hew_cont_frame_alloc`/`free` and the resume/done/destroy verbs.
 ///
 /// Uses `hew-runtime` (the `staticlib` crate) rather than `hew-lib` because
 /// `hew-lib` transitively pulls in `security-framework`, `core-foundation`,
 /// and other macOS-only system libraries that require passing extra `-framework`
 /// flags to clang. `hew-runtime` only needs `libSystem` (the default libc).
+///
+/// Always (re)builds via `cargo build -p hew-runtime` rather than trusting an
+/// existing `libhew_runtime.a`: the `staticlib` artifact is NOT refreshed by
+/// `cargo test`/`cargo nextest` (the workspace test build emits only the
+/// rlib), so a cached archive carried across commits — e.g. one predating the
+/// `hew_cont_*` continuation substrate (`cont.rs` is newer than `origin/main`)
+/// — would otherwise be linked against freshly-emitted coro objects, failing
+/// with undefined-symbol errors. Cargo's incremental build makes this a fast
+/// no-op when the archive is already current.
 fn ensure_native_runtime() -> PathBuf {
     static BUILT: OnceLock<PathBuf> = OnceLock::new();
     BUILT
         .get_or_init(|| {
             let lib = target_dir().join("debug").join("libhew_runtime.a");
-            if !lib.exists() {
-                let status =
-                    Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
-                        .current_dir(repo_root())
-                        .args(["build", "--quiet", "-p", "hew-runtime"])
-                        .status()
-                        .expect("spawn cargo build -p hew-runtime");
-                assert!(status.success(), "cargo build -p hew-runtime failed");
-            }
+            let status = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+                .current_dir(repo_root())
+                .args(["build", "--quiet", "-p", "hew-runtime"])
+                .status()
+                .expect("spawn cargo build -p hew-runtime");
+            assert!(status.success(), "cargo build -p hew-runtime failed");
             assert!(
                 lib.exists(),
                 "libhew_runtime.a not produced at {}",
@@ -175,8 +181,12 @@ fn ensure_native_runtime() -> PathBuf {
         .clone()
 }
 
-/// Build (once) the wasm32-wasip1 runtime archive. `None` if the wasm toolchain
+/// Build the wasm32-wasip1 runtime archive. `None` if the wasm toolchain
 /// is unavailable (test skips rather than fails on a box without the target).
+///
+/// Like [`ensure_native_runtime`], always (re)builds so a stale cached wasm
+/// archive is never linked; a missing target or any build failure leaves the
+/// caller to skip.
 fn ensure_wasm_runtime() -> Option<PathBuf> {
     static BUILT: OnceLock<Option<PathBuf>> = OnceLock::new();
     BUILT
@@ -185,9 +195,6 @@ fn ensure_wasm_runtime() -> Option<PathBuf> {
                 .join("wasm32-wasip1")
                 .join("debug")
                 .join("libhew_runtime.a");
-            if lib.exists() {
-                return Some(lib);
-            }
             let status = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
                 .current_dir(repo_root())
                 .args([

@@ -420,14 +420,21 @@ test: test-rust
 # TODO: Add test-stdlib to `test-all` unconditionally once stdlib files are type-check clean
 test-all: test test-stdlib test-hew test-ux-examples test-surface-examples
 
-# Build the combined runtime+stdlib static lib and the WASM runtime before
-# running the full workspace test suite.  Several hew-cli integration tests
-# (eval_e2e, eval_wasm_*) call `hew eval` which needs both libs at link time.
+# Build the combined runtime+stdlib static lib, the native runtime staticlib,
+# and the WASM runtime before running the full workspace test suite.  Several
+# hew-cli integration tests (eval_e2e, eval_wasm_*) call `hew eval` which needs
+# both libs at link time.
 # The WASM runtime (libhew_runtime.a for wasm32-wasip1) is required by the
 # wasm32-wasi eval tests even when they are expected to fail before codegen:
 # the linker library search runs before the fast-typecheck diagnostic path,
 # so a missing staticlib causes an unrelated error that aborts those tests.
-test-rust: stdlib wasm-runtime
+# `runtime` builds the *native* libhew_runtime.a that the hew-codegen-rs coro
+# substrate execution tests link directly.  `cargo test`/`nextest` build only
+# hew-runtime's rlib, never its staticlib, so without this prereq a stale
+# cached archive (e.g. one predating the hew_cont_* continuation substrate)
+# would be linked against freshly-emitted coro objects and fail with
+# undefined-symbol errors on a target dir carried across commits.
+test-rust: stdlib wasm-runtime runtime
 	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
 		cargo nextest run --workspace --profile ci; \
 	else \

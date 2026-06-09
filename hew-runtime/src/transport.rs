@@ -318,13 +318,6 @@ pub unsafe extern "C" fn hew_actor_ref_is_alive(ref_ptr: *const HewActorRef) -> 
 /// actor reference, or null for a REMOTE reference. Used by the active-mode
 /// reactor, which only supports local actors (mirrors the websocket attach
 /// reader's `actor_ref_local_actor`).
-#[cfg_attr(
-    not(unix),
-    allow(
-        dead_code,
-        reason = "only consumed by the Unix active-mode reactor; the reactor is stubbed out (fail-closed) on non-Unix targets"
-    )
-)]
 pub(crate) fn actor_ref_local_ptr(actor_ref: &HewActorRef) -> *mut c_void {
     if actor_ref.kind != ACTOR_REF_LOCAL {
         return std::ptr::null_mut();
@@ -900,7 +893,7 @@ pub(crate) fn tcp_close_orphan_conn(handle: c_int) {
 /// reactor's resume-mode read branch be driven against a REAL readable socket
 /// (writing to `client_stream` makes `conn_handle` readable). The caller closes
 /// `conn_handle` with [`tcp_close_raw_for_test`] and drops `client_stream`.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn tcp_socketpair_conn_for_test() -> (c_int, TcpStream) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
     let addr = listener.local_addr().expect("listener addr");
@@ -930,7 +923,7 @@ pub(crate) fn tcp_close_raw_for_test(handle: c_int) {
 /// accept/abandon-race regression (the reactor accepts a real connection, then
 /// the deposit fails on a cancelled slot). The caller closes the listener with
 /// [`tcp_close_raw_for_test`] and drops `client_stream`.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn tcp_listener_with_pending_conn_for_test() -> (c_int, TcpStream) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
     let addr = listener.local_addr().expect("listener addr");
@@ -947,12 +940,13 @@ pub(crate) fn tcp_listener_with_pending_conn_for_test() -> (c_int, TcpStream) {
     (handle, client)
 }
 
-/// Test-only: number of live connection handles in `TCP_API_STATE.streams`.
-/// Lets the accept/abandon-race regression assert the accepted handle was closed
-/// (the table does not grow) rather than leaked.
+/// Test-only: check whether a specific connection handle is currently in the
+/// live streams table. Checks a specific token rather than the global count,
+/// so concurrent transport tests adding/removing their own handles do not cause
+/// false positives or false negatives.
 #[cfg(test)]
-pub(crate) fn tcp_streams_len_for_test() -> usize {
-    TCP_API_STATE.access(|state| state.streams.len())
+pub(crate) fn tcp_streams_has_handle_for_test(handle: c_int) -> bool {
+    TCP_API_STATE.access(|state| state.streams.contains_key(&handle))
 }
 
 // ---- Active-mode reactor support -------------------------------------------
@@ -975,6 +969,34 @@ pub(crate) fn tcp_conn_raw_fd(handle: c_int) -> Option<c_int> {
     TCP_API_STATE.access(|state| state.streams.get(&handle).map(AsRawFd::as_raw_fd))
 }
 
+/// Windows token form of [`tcp_conn_raw_fd`]. A Windows `SOCKET` is pointer-width
+/// and does not fit the poller's `c_int fd` ABI, so the reactor uses the
+/// user-facing connection handle itself as the poller token (D-2a); the IOCP
+/// poller resolves that token back to the `SOCKET` via [`tcp_handle_raw_socket`].
+/// Returns the handle unchanged when it names a live stream, mirroring the unix
+/// "fd is known" semantics.
+#[cfg(windows)]
+pub(crate) fn tcp_conn_raw_fd(handle: c_int) -> Option<c_int> {
+    TCP_API_STATE.access(|state| state.streams.contains_key(&handle).then_some(handle))
+}
+
+/// Resolve a reactor poller token (a `c_int` connection or listener handle) to
+/// the OS `SOCKET` it names, checking the stream table first and then the
+/// listener table. The Windows IOCP poller owns the token↔`SOCKET` indirection
+/// (D-2a); the engine never sees a raw `SOCKET`. Returns `None` if the handle is
+/// unknown (already closed) — the poller treats that as a benign stale token.
+#[cfg(windows)]
+pub(crate) fn tcp_handle_raw_socket(handle: c_int) -> Option<std::os::windows::io::RawSocket> {
+    use std::os::windows::io::AsRawSocket;
+    TCP_API_STATE.access(|state| {
+        state
+            .streams
+            .get(&handle)
+            .map(AsRawSocket::as_raw_socket)
+            .or_else(|| state.listeners.get(&handle).map(AsRawSocket::as_raw_socket))
+    })
+}
+
 /// Return the raw OS file descriptor for a TCP *listener* handle, or `None` if
 /// the handle is unknown (NEW-2 `await listener.accept()`). The fd-readiness
 /// sibling of [`tcp_conn_raw_fd`]: the reactor registers the listener fd for
@@ -986,16 +1008,17 @@ pub(crate) fn tcp_listener_raw_fd(handle: c_int) -> Option<c_int> {
     TCP_API_STATE.access(|state| state.listeners.get(&handle).map(AsRawFd::as_raw_fd))
 }
 
+/// Windows token form of [`tcp_listener_raw_fd`] — returns the listener handle
+/// itself as the poller token (D-2a; see [`tcp_conn_raw_fd`]). The IOCP poller
+/// resolves it to the `SOCKET` via [`tcp_handle_raw_socket`].
+#[cfg(windows)]
+pub(crate) fn tcp_listener_raw_fd(handle: c_int) -> Option<c_int> {
+    TCP_API_STATE.access(|state| state.listeners.contains_key(&handle).then_some(handle))
+}
+
 /// Put a TCP *listener* handle's socket into non-blocking mode (the reactor
 /// thread must never park in `accept()`). Returns `true` on success. The
 /// readiness-suspension sibling of [`tcp_conn_set_nonblocking`].
-#[cfg_attr(
-    not(unix),
-    allow(
-        dead_code,
-        reason = "only consumed by the Unix active-mode reactor; the reactor is stubbed out (fail-closed) on non-Unix targets"
-    )
-)]
 pub(crate) fn tcp_listener_set_nonblocking(handle: c_int, nonblocking: bool) -> bool {
     TCP_API_STATE.access(|state| {
         state
@@ -1008,7 +1031,6 @@ pub(crate) fn tcp_listener_set_nonblocking(handle: c_int, nonblocking: bool) -> 
 /// Outcome of a single non-blocking `accept()` on a registered listener handle
 /// (NEW-2 reactor accept-readiness). The accept-path analogue of
 /// [`ActiveReadOutcome`].
-#[cfg(unix)]
 pub(crate) enum AcceptOutcome {
     /// A connection was accepted and registered as a new conn handle.
     Accepted(c_int),
@@ -1023,7 +1045,6 @@ pub(crate) enum AcceptOutcome {
 /// listener.accept()` accepts once; the handler re-registers on its next
 /// `await`), registers it as a fresh conn handle with `set_nodelay`, and returns
 /// the handle. The accept-path sibling of [`tcp_conn_read_available`].
-#[cfg(unix)]
 pub(crate) fn tcp_listener_accept_nonblocking(listener: c_int) -> AcceptOutcome {
     let Some(listener) = tcp_clone_listener(listener) else {
         return AcceptOutcome::Closed;
@@ -1049,13 +1070,6 @@ pub(crate) fn tcp_listener_accept_nonblocking(listener: c_int) -> AcceptOutcome 
 
 /// Put a TCP connection handle's socket into non-blocking mode (active mode
 /// reads must never park the reactor thread). Returns `true` on success.
-#[cfg_attr(
-    not(unix),
-    allow(
-        dead_code,
-        reason = "only consumed by the Unix active-mode reactor; the reactor is stubbed out (fail-closed) on non-Unix targets"
-    )
-)]
 pub(crate) fn tcp_conn_set_nonblocking(handle: c_int, nonblocking: bool) -> bool {
     TCP_API_STATE.access(|state| {
         state
@@ -1066,7 +1080,6 @@ pub(crate) fn tcp_conn_set_nonblocking(handle: c_int, nonblocking: bool) -> bool
 }
 
 /// Outcome of a single non-blocking active-mode read.
-#[cfg(unix)]
 pub(crate) enum ActiveReadOutcome {
     /// Bytes were read (non-empty).
     Data(Vec<u8>),
@@ -1083,7 +1096,6 @@ pub(crate) enum ActiveReadOutcome {
 /// notification does not strand buffered data when the poller is edge
 /// triggered). Returns the concatenated bytes, or a non-`Data` outcome
 /// describing EOF / would-block / error.
-#[cfg(unix)]
 pub(crate) fn tcp_conn_read_available(handle: c_int) -> ActiveReadOutcome {
     let Some(mut stream) = tcp_clone_stream(handle) else {
         return ActiveReadOutcome::Closed;

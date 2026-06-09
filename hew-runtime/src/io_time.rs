@@ -981,9 +981,844 @@ mod platform {
     }
 }
 
-// ---- Stub (Windows, WASM, etc.) --------------------------------------------
+// ---- Windows (IOCP + AFD_POLL readiness bridge) ----------------------------
+//
+// IOCP is completion-based; the Hew reactor contract is readiness-based. We
+// synthesize readiness with the AFD_POLL technique (the mio/wepoll production
+// approach): a single `\Device\Afd` helper handle is associated with an I/O
+// completion port, and each registered socket arms a one-shot
+// `NtDeviceIoControlFile(IOCTL_AFD_POLL)` whose completion reports which socket
+// events fired. `poll_ready` dequeues those completions, translates the AFD
+// event mask to the `HEW_IO_*` flags the reactor expects, writes `(token, mask)`
+// pairs, and re-arms the one-shot poll. The reactor — not the poller — then does
+// the recv/accept and the mailbox delivery, exactly as on epoll/kqueue.
+//
+// D-2a token model: a Windows `SOCKET` is pointer-width and does not fit the
+// poller's `c_int fd` ABI, so the reactor registers the user-facing connection
+// (or listener) HANDLE as the `c_int` token; the poller resolves token→`SOCKET`
+// via `crate::transport::tcp_handle_raw_socket`. The engine never sees a `SOCKET`.
+#[cfg(windows)]
+#[allow(
+    non_snake_case,
+    non_camel_case_types,
+    clippy::upper_case_acronyms,
+    clippy::unreadable_literal,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    reason = "Win32/NT FFI module: struct/field names mirror the platform headers \
+              verbatim, status/handle values are fixed-width casts at the ABI boundary, \
+              and the constants are copied from the documented Win32 headers"
+)]
+mod platform {
+    use super::{c_int, HEW_IO_ERROR, HEW_IO_HUP, HEW_IO_READ, HEW_IO_WRITE};
+    use std::collections::HashMap;
+    use std::ffi::c_void;
+    use std::ptr;
 
-#[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "macos")))]
+    type HANDLE = *mut c_void;
+    type SOCKET = usize;
+    type NTSTATUS = i32;
+
+    // NT status codes (low 32 bits of the IO_STATUS_BLOCK union).
+    const STATUS_SUCCESS: NTSTATUS = 0x0000_0000;
+    const STATUS_PENDING: NTSTATUS = 0x0000_0103;
+    const STATUS_CANCELLED: u32 = 0xC000_0120;
+
+    // Win32 / NT constants.
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const WAIT_TIMEOUT: u32 = 258;
+    const INFINITE: u32 = 0xFFFF_FFFF;
+    const IOCTL_AFD_POLL: u32 = 0x0001_2024;
+    const SIO_BASE_HANDLE: u32 = 0x4800_0022;
+
+    // AFD poll event flags (the undocumented-but-stable wepoll/mio set).
+    const AFD_POLL_RECEIVE: u32 = 0x0001;
+    const AFD_POLL_RECEIVE_EXPEDITED: u32 = 0x0002;
+    const AFD_POLL_SEND: u32 = 0x0004;
+    const AFD_POLL_DISCONNECT: u32 = 0x0008;
+    const AFD_POLL_ABORT: u32 = 0x0010;
+    const AFD_POLL_LOCAL_CLOSE: u32 = 0x0020;
+    const AFD_POLL_ACCEPT: u32 = 0x0080;
+    const AFD_POLL_CONNECT_FAIL: u32 = 0x0100;
+
+    /// Completion key used when associating the AFD helper handle with the IOCP.
+    /// Unused for routing (we key on the completion's overlapped/ApcContext
+    /// pointer) but a stable constant aids debugging.
+    const AFD_COMPLETION_KEY: usize = 0xAFD0;
+
+    /// Maximum completions dequeued per `GetQueuedCompletionStatusEx` call.
+    const MAX_COMPLETIONS: usize = 64;
+
+    #[repr(C)]
+    struct UNICODE_STRING {
+        Length: u16,
+        MaximumLength: u16,
+        Buffer: *mut u16,
+    }
+
+    #[repr(C)]
+    struct OBJECT_ATTRIBUTES {
+        Length: u32,
+        RootDirectory: HANDLE,
+        ObjectName: *mut UNICODE_STRING,
+        Attributes: u32,
+        SecurityDescriptor: *mut c_void,
+        SecurityQualityOfService: *mut c_void,
+    }
+
+    /// `IO_STATUS_BLOCK`: the first member is a pointer-sized union of an
+    /// `NTSTATUS` and a `PVOID`. We store it as `isize` and read the status from
+    /// its low 32 bits (little-endian), matching the kernel's layout.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct IO_STATUS_BLOCK {
+        status: isize,
+        information: usize,
+    }
+
+    impl IO_STATUS_BLOCK {
+        const fn zeroed() -> Self {
+            Self {
+                status: 0,
+                information: 0,
+            }
+        }
+        fn ntstatus(self) -> u32 {
+            // Read the NTSTATUS from the low 32 bits of the pointer-sized union.
+            self.status as u32
+        }
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct AFD_POLL_HANDLE_INFO {
+        Handle: HANDLE,
+        Events: u32,
+        Status: NTSTATUS,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct AFD_POLL_INFO {
+        Timeout: i64,
+        NumberOfHandles: u32,
+        Exclusive: u32,
+        Handles: [AFD_POLL_HANDLE_INFO; 1],
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct OVERLAPPED_ENTRY {
+        lpCompletionKey: usize,
+        lpOverlapped: *mut c_void,
+        Internal: usize,
+        dwNumberOfBytesTransferred: u32,
+    }
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtCreateFile(
+            FileHandle: *mut HANDLE,
+            DesiredAccess: u32,
+            ObjectAttributes: *mut OBJECT_ATTRIBUTES,
+            IoStatusBlock: *mut IO_STATUS_BLOCK,
+            AllocationSize: *mut i64,
+            FileAttributes: u32,
+            ShareAccess: u32,
+            CreateDisposition: u32,
+            CreateOptions: u32,
+            EaBuffer: *mut c_void,
+            EaLength: u32,
+        ) -> NTSTATUS;
+
+        fn NtDeviceIoControlFile(
+            FileHandle: HANDLE,
+            Event: HANDLE,
+            ApcRoutine: *mut c_void,
+            ApcContext: *mut c_void,
+            IoStatusBlock: *mut IO_STATUS_BLOCK,
+            IoControlCode: u32,
+            InputBuffer: *mut c_void,
+            InputBufferLength: u32,
+            OutputBuffer: *mut c_void,
+            OutputBufferLength: u32,
+        ) -> NTSTATUS;
+
+        fn NtCancelIoFileEx(
+            FileHandle: HANDLE,
+            IoRequestToCancel: *mut IO_STATUS_BLOCK,
+            IoStatusBlock: *mut IO_STATUS_BLOCK,
+        ) -> NTSTATUS;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateIoCompletionPort(
+            FileHandle: HANDLE,
+            ExistingCompletionPort: HANDLE,
+            CompletionKey: usize,
+            NumberOfConcurrentThreads: u32,
+        ) -> HANDLE;
+        fn GetQueuedCompletionStatusEx(
+            CompletionPort: HANDLE,
+            lpCompletionPortEntries: *mut OVERLAPPED_ENTRY,
+            ulCount: u32,
+            ulNumEntriesRemoved: *mut u32,
+            dwMilliseconds: u32,
+            fAlertable: i32,
+        ) -> i32;
+        fn CloseHandle(hObject: HANDLE) -> i32;
+        fn GetLastError() -> u32;
+    }
+
+    #[link(name = "ws2_32")]
+    extern "system" {
+        fn WSAIoctl(
+            s: SOCKET,
+            dwIoControlCode: u32,
+            lpvInBuffer: *mut c_void,
+            cbInBuffer: u32,
+            lpvOutBuffer: *mut c_void,
+            cbOutBuffer: u32,
+            lpcbBytesReturned: *mut u32,
+            lpOverlapped: *mut c_void,
+            lpCompletionRoutine: *mut c_void,
+        ) -> i32;
+    }
+
+    fn invalid_handle() -> HANDLE {
+        (-1isize) as HANDLE
+    }
+
+    /// Resolve a socket's AFD base handle (peeling any layered service
+    /// providers). Falls back to the socket itself when `SIO_BASE_HANDLE` is
+    /// unsupported (the common case for vanilla loopback TCP).
+    fn base_socket(socket: SOCKET) -> SOCKET {
+        let mut base: SOCKET = 0;
+        let mut bytes: u32 = 0;
+        // SAFETY: `socket` is a live OS SOCKET; the output buffer is a local
+        // `SOCKET`-sized slot. A failed ioctl leaves `base` unchanged.
+        let rc = unsafe {
+            WSAIoctl(
+                socket,
+                SIO_BASE_HANDLE,
+                ptr::null_mut(),
+                0,
+                ptr::addr_of_mut!(base).cast::<c_void>(),
+                std::mem::size_of::<SOCKET>() as u32,
+                ptr::addr_of_mut!(bytes),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        };
+        if rc == 0 && base != 0 {
+            base
+        } else {
+            socket
+        }
+    }
+
+    /// Translate the requested `HEW_IO_*` interest into the AFD poll event mask
+    /// to arm. Read interest always includes the close/abort family so EOF and
+    /// resets surface as `HUP`/`ERROR` readiness; `ACCEPT` lets a listener token
+    /// report readability for `accept()`.
+    fn afd_interest(events: c_int) -> u32 {
+        let mut mask =
+            AFD_POLL_ABORT | AFD_POLL_CONNECT_FAIL | AFD_POLL_DISCONNECT | AFD_POLL_LOCAL_CLOSE;
+        if events & HEW_IO_READ != 0 {
+            mask |= AFD_POLL_RECEIVE | AFD_POLL_RECEIVE_EXPEDITED | AFD_POLL_ACCEPT;
+        }
+        if events & HEW_IO_WRITE != 0 {
+            mask |= AFD_POLL_SEND;
+        }
+        mask
+    }
+
+    /// Translate fired AFD poll events into the reactor's `HEW_IO_*` mask.
+    fn afd_to_hew(afd: u32) -> c_int {
+        let mut hew = 0;
+        if afd & (AFD_POLL_RECEIVE | AFD_POLL_RECEIVE_EXPEDITED | AFD_POLL_ACCEPT) != 0 {
+            hew |= HEW_IO_READ;
+        }
+        if afd & AFD_POLL_SEND != 0 {
+            hew |= HEW_IO_WRITE;
+        }
+        if afd & (AFD_POLL_DISCONNECT | AFD_POLL_LOCAL_CLOSE) != 0 {
+            hew |= HEW_IO_HUP;
+        }
+        if afd & (AFD_POLL_ABORT | AFD_POLL_CONNECT_FAIL) != 0 {
+            hew |= HEW_IO_ERROR;
+        }
+        hew
+    }
+
+    /// Per-registered-socket AFD poll state. Boxed so its heap address is stable;
+    /// that address is passed as the `ApcContext` of the AFD poll IOCTL and comes
+    /// back as the completion's `lpOverlapped`, keying the completion to this
+    /// state. The `poll_info`/`iosb` buffers are owned here and MUST outlive any
+    /// in-flight poll (the kernel writes into them on completion), which is why a
+    /// cancelled state is held in `zombies` until its cancellation completion is
+    /// drained.
+    struct AfdState {
+        token: c_int,
+        base_socket: SOCKET,
+        interest: u32,
+        /// Whether this state currently has an ARMED (genuinely in-flight) AFD
+        /// poll IOCTL. `true` from a successful `arm_poll` until its completion is
+        /// dequeued in `poll_ready`; set back to `false` on a delivered TERMINAL
+        /// (HUP/ERROR) completion that is not re-armed. Distinguishes a state with
+        /// a pending kernel completion (must be cancelled+drained / zombied) from
+        /// a terminal one with nothing in flight (can be dropped directly).
+        armed: bool,
+        poll_info: AFD_POLL_INFO,
+        iosb: IO_STATUS_BLOCK,
+    }
+
+    /// Arm a one-shot AFD poll for `state` on the `afd` helper handle. Returns the
+    /// raw `NTSTATUS`; `STATUS_PENDING` (armed) and `STATUS_SUCCESS` (already
+    /// ready, completion queued) are both success.
+    fn arm_poll(afd: HANDLE, state: &mut AfdState) -> NTSTATUS {
+        // ApcContext = this state's stable heap address; comes back as the
+        // completion's lpOverlapped.
+        let apc_ctx = (state as *mut AfdState).cast::<c_void>();
+        state.poll_info.Timeout = i64::MAX;
+        state.poll_info.NumberOfHandles = 1;
+        state.poll_info.Exclusive = 0;
+        state.poll_info.Handles[0].Handle = state.base_socket as HANDLE;
+        state.poll_info.Handles[0].Status = 0;
+        state.poll_info.Handles[0].Events = state.interest;
+        state.iosb.status = STATUS_PENDING as isize;
+        let info_ptr = ptr::addr_of_mut!(state.poll_info).cast::<c_void>();
+        let iosb_ptr = ptr::addr_of_mut!(state.iosb);
+        let size = std::mem::size_of::<AFD_POLL_INFO>() as u32;
+        // SAFETY: `afd` is the live helper handle bound to the IOCP; the buffers
+        // are owned by `state` and outlive the in-flight poll (held in `entries`
+        // or `zombies`); ApcRoutine is null so the completion posts to the IOCP
+        // with `apc_ctx` as the overlapped pointer.
+        unsafe {
+            NtDeviceIoControlFile(
+                afd,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                apc_ctx,
+                iosb_ptr,
+                IOCTL_AFD_POLL,
+                info_ptr,
+                size,
+                info_ptr,
+                size,
+            )
+        }
+    }
+
+    fn arm_ok(status: NTSTATUS) -> bool {
+        status == STATUS_PENDING || status == STATUS_SUCCESS
+    }
+
+    /// IOCP + `AFD_POLL` readiness poller. Single-threaded: every method runs on the
+    /// reactor thread (the sole poller owner), so no interior locking is needed.
+    #[derive(Debug)]
+    pub struct HewIoPoller {
+        iocp: HANDLE,
+        afd: HANDLE,
+        /// Active registrations, keyed by reactor token.
+        entries: HashMap<c_int, Box<AfdState>>,
+        /// `AfdState` heap address → token, for routing a completion (keyed by its
+        /// `lpOverlapped`) back to the owning entry.
+        index: HashMap<usize, c_int>,
+        /// Cancelled registrations awaiting their final (cancellation) completion;
+        /// kept alive so the kernel's last write into their `iosb` is not a UAF.
+        zombies: HashMap<usize, Box<AfdState>>,
+    }
+
+    impl std::fmt::Debug for AfdState {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("AfdState")
+                .field("token", &self.token)
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl HewIoPoller {
+        fn new() -> Option<Self> {
+            // SAFETY: no preconditions; creating a fresh completion port.
+            let iocp = unsafe { CreateIoCompletionPort(invalid_handle(), ptr::null_mut(), 0, 0) };
+            if iocp.is_null() {
+                return None;
+            }
+            let Some(afd) = open_afd_helper() else {
+                // SAFETY: iocp is our freshly-created port; close it on failure.
+                unsafe { CloseHandle(iocp) };
+                return None;
+            };
+            // Associate the AFD helper handle with the completion port.
+            // SAFETY: both handles are live and owned here.
+            let assoc = unsafe { CreateIoCompletionPort(afd, iocp, AFD_COMPLETION_KEY, 0) };
+            if assoc != iocp {
+                // SAFETY: both handles are live and owned here.
+                unsafe {
+                    CloseHandle(afd);
+                    CloseHandle(iocp);
+                }
+                return None;
+            }
+            Some(Self {
+                iocp,
+                afd,
+                entries: HashMap::new(),
+                index: HashMap::new(),
+                zombies: HashMap::new(),
+            })
+        }
+
+        fn register(&mut self, token: c_int, events: c_int) -> c_int {
+            if self.entries.contains_key(&token) {
+                // Already armed for this token; idempotent success.
+                return 0;
+            }
+            let Some(raw) = crate::transport::tcp_handle_raw_socket(token) else {
+                return -1; // unknown handle (closed/never existed)
+            };
+            let socket = raw as SOCKET;
+            // SAFETY: `socket` is a live OS SOCKET from the transport table.
+            let base = base_socket(socket);
+            let mut state = Box::new(AfdState {
+                token,
+                base_socket: base,
+                interest: afd_interest(events),
+                armed: false,
+                // SAFETY: AFD_POLL_INFO / IO_STATUS_BLOCK are POD; all-zero is valid.
+                poll_info: unsafe { std::mem::zeroed() },
+                iosb: IO_STATUS_BLOCK::zeroed(),
+            });
+            let addr = ptr::addr_of!(*state) as usize;
+            let status = arm_poll(self.afd, &mut state);
+            if !arm_ok(status) {
+                // Arm failed: no I/O was queued, so dropping the box is safe.
+                return -1;
+            }
+            state.armed = true;
+            self.index.insert(addr, token);
+            self.entries.insert(token, state);
+            0
+        }
+
+        fn unregister(&mut self, token: c_int) -> c_int {
+            let Some(mut state) = self.entries.remove(&token) else {
+                // Benign double-unregister (mirrors the unix backends).
+                return 0;
+            };
+            let addr = ptr::addr_of!(*state) as usize;
+            self.index.remove(&addr);
+            if !state.armed {
+                // A terminal (HUP/ERROR) completion was already delivered and the
+                // poll was NOT re-armed, so nothing is in flight: no future
+                // completion will ever arrive. Drop the state directly — issuing
+                // NtCancelIoFileEx would be a no-op and parking it in `zombies`
+                // would leak it (the zombie-cleanup path in `poll_ready` only runs
+                // when a completion is dequeued, which never happens here) and
+                // would inflate the shutdown in-flight count.
+                drop(state);
+                return 0;
+            }
+            let mut cancel_iosb = IO_STATUS_BLOCK::zeroed();
+            // SAFETY: `afd` is live; `state.iosb` identifies the in-flight poll to
+            // cancel. The state is moved into `zombies` so its buffers stay valid
+            // until the cancellation completion is drained in `poll_ready`/shutdown.
+            unsafe {
+                NtCancelIoFileEx(
+                    self.afd,
+                    ptr::addr_of_mut!(state.iosb),
+                    ptr::addr_of_mut!(cancel_iosb),
+                );
+            }
+            self.zombies.insert(addr, state);
+            0
+        }
+
+        fn poll_ready(
+            &mut self,
+            timeout_ms: c_int,
+            out_fds: *mut c_int,
+            out_events: *mut c_int,
+            out_cap: c_int,
+        ) -> c_int {
+            // SAFETY: OVERLAPPED_ENTRY is POD; all-zero is a valid bit pattern.
+            let mut completions: [OVERLAPPED_ENTRY; MAX_COMPLETIONS] =
+                unsafe { std::mem::zeroed() };
+            let mut removed: u32 = 0;
+            let timeout = if timeout_ms < 0 {
+                INFINITE
+            } else {
+                timeout_ms as u32
+            };
+            // SAFETY: `iocp` is live; the entries buffer holds MAX_COMPLETIONS slots.
+            let ok = unsafe {
+                GetQueuedCompletionStatusEx(
+                    self.iocp,
+                    completions.as_mut_ptr(),
+                    MAX_COMPLETIONS as u32,
+                    ptr::addr_of_mut!(removed),
+                    timeout,
+                    0,
+                )
+            };
+            if ok == 0 {
+                // SAFETY: no preconditions.
+                let err = unsafe { GetLastError() };
+                if err == WAIT_TIMEOUT {
+                    return 0;
+                }
+                return -1;
+            }
+
+            let cap = out_cap as usize;
+            let mut count: usize = 0;
+            for entry in completions.iter().take(removed as usize) {
+                let addr = entry.lpOverlapped as usize;
+                if let Some(&token) = self.index.get(&addr) {
+                    let (mask, is_close) = {
+                        let state = self
+                            .entries
+                            .get(&token)
+                            .expect("index points to a live entry");
+                        let cancelled = state.iosb.ntstatus() == STATUS_CANCELLED;
+                        let mask = if cancelled || state.poll_info.NumberOfHandles == 0 {
+                            0
+                        } else {
+                            afd_to_hew(state.poll_info.Handles[0].Events)
+                        };
+                        (mask, mask & (HEW_IO_HUP | HEW_IO_ERROR) != 0)
+                    };
+                    if mask != 0 && count < cap {
+                        // SAFETY: count < cap <= out_cap; the buffers have out_cap slots.
+                        unsafe {
+                            *out_fds.add(count) = token;
+                            *out_events.add(count) = mask;
+                        }
+                        count += 1;
+                    }
+                    if is_close {
+                        // Close/error reported: do NOT re-arm (avoid busy-cycling on
+                        // a level-triggered close). The reactor will unregister.
+                        // Mark the state disarmed: its one-shot completion has been
+                        // dequeued and no new poll is in flight, so a later
+                        // `unregister` must drop it directly (no zombie) and
+                        // shutdown must not count it as in-flight.
+                        if let Some(state) = self.entries.get_mut(&token) {
+                            state.armed = false;
+                        }
+                        continue;
+                    }
+                    // Re-arm the one-shot poll for the next readiness.
+                    let state = self
+                        .entries
+                        .get_mut(&token)
+                        .expect("index points to a live entry");
+                    if !arm_ok(arm_poll(self.afd, state)) {
+                        // Re-arm failed (socket gone): surface a HUP so the reactor
+                        // closes + unregisters, and drop the entry (no I/O queued).
+                        if count < cap {
+                            // SAFETY: count < cap <= out_cap.
+                            unsafe {
+                                *out_fds.add(count) = token;
+                                *out_events.add(count) = HEW_IO_HUP;
+                            }
+                            count += 1;
+                        }
+                        self.index.remove(&addr);
+                        self.entries.remove(&token);
+                    }
+                } else {
+                    // Cancelled entry's final completion: drop the zombie now that
+                    // the kernel is done writing into its buffers.
+                    self.zombies.remove(&addr);
+                }
+            }
+            count as c_int
+        }
+
+        /// Cancel every genuinely in-flight AFD poll (armed `entries` + already-
+        /// cancelled `zombies`) and block until EVERY one of their guaranteed
+        /// completions has been dequeued from the IOCP. Returns
+        /// `(pending, drained)`; on return all `entries` are disarmed and
+        /// `zombies` is empty, so a second call is a no-op (no double-cancel hang).
+        ///
+        /// Termination proof (no bounded give-up needed): a one-shot
+        /// `IOCTL_AFD_POLL` is either still pending — in which case
+        /// `NtCancelIoFileEx` forces the AFD driver to complete the IRP with
+        /// `STATUS_CANCELLED` — or it has already completed and its packet is
+        /// queued on the port. Either way each in-flight request posts EXACTLY one
+        /// completion to `iocp`, so `drained` reaches `pending` after a finite
+        /// number of `GetQueuedCompletionStatusEx` dequeues. A poll timeout is NOT
+        /// treated as progress; the loop simply keeps waiting until the count is
+        /// reached, so no `AfdState`/`iosb`/`poll_info` buffer is ever freed while
+        /// the kernel still owns a pending write into it.
+        fn cancel_and_drain_inflight(&mut self) -> (usize, usize) {
+            let mut pending = self.zombies.len();
+            for state in self.entries.values_mut() {
+                if !state.armed {
+                    // Terminal completion already dequeued, not re-armed: nothing
+                    // is in flight, so it must NOT be cancelled or counted.
+                    continue;
+                }
+                let mut cancel_iosb = IO_STATUS_BLOCK::zeroed();
+                // SAFETY: `afd` is live; cancels the in-flight poll for this state.
+                unsafe {
+                    NtCancelIoFileEx(
+                        self.afd,
+                        ptr::addr_of_mut!(state.iosb),
+                        ptr::addr_of_mut!(cancel_iosb),
+                    );
+                }
+                // Its completion is now accounted for in `pending`; the buffers
+                // remain alive (still owned by `entries`) until drained below.
+                state.armed = false;
+                pending += 1;
+            }
+            let mut drained = 0usize;
+            while drained < pending {
+                // SAFETY: OVERLAPPED_ENTRY is POD; all-zero is valid.
+                let mut completions: [OVERLAPPED_ENTRY; MAX_COMPLETIONS] =
+                    unsafe { std::mem::zeroed() };
+                let mut removed: u32 = 0;
+                // SAFETY: `iocp` is live; buffer holds MAX_COMPLETIONS slots.
+                let ok = unsafe {
+                    GetQueuedCompletionStatusEx(
+                        self.iocp,
+                        completions.as_mut_ptr(),
+                        MAX_COMPLETIONS as u32,
+                        ptr::addr_of_mut!(removed),
+                        1000,
+                        0,
+                    )
+                };
+                if ok == 0 {
+                    // SAFETY: no preconditions.
+                    let err = unsafe { GetLastError() };
+                    if err == WAIT_TIMEOUT {
+                        // Timeout is NOT progress: the cancelled completions are
+                        // guaranteed to arrive, so keep waiting rather than free
+                        // buffers the kernel may still write.
+                        continue;
+                    }
+                    // A hard port error: we can no longer prove further completions
+                    // will be posted, so stop to avoid an unbounded hang. The
+                    // `debug_assert` in `shutdown` flags the (should-be-impossible)
+                    // free-while-pending this would imply.
+                    break;
+                }
+                drained += removed as usize;
+            }
+            // Their completions have been drained, so the zombie boxes are now
+            // safe to free; clearing here keeps a repeat call a no-op.
+            self.zombies.clear();
+            (pending, drained)
+        }
+
+        /// Cancel and drain every in-flight AFD poll before the handles are closed
+        /// and the state boxes freed, so the kernel never writes into a freed
+        /// `iosb`/`poll_info`.
+        fn shutdown(&mut self) {
+            let (pending, drained) = self.cancel_and_drain_inflight();
+            // Instrumentation: we must NOT free any buffer while a completion is
+            // still pending. With a healthy port `drained == pending` always.
+            debug_assert_eq!(
+                drained, pending,
+                "AFD buffers freed while a kernel completion was still pending"
+            );
+            // SAFETY: all in-flight I/O has completed/cancelled above, so closing
+            // the handles and freeing the state boxes is sound.
+            unsafe {
+                CloseHandle(self.afd);
+                CloseHandle(self.iocp);
+            }
+            self.entries.clear();
+            self.index.clear();
+            self.zombies.clear();
+        }
+
+        /// (entries, zombies, index) sizes — test-only inspection of internal
+        /// bookkeeping (no zombie retention / phantom in-flight checks).
+        #[cfg(test)]
+        pub(crate) fn debug_state_counts(&self) -> (usize, usize, usize) {
+            (self.entries.len(), self.zombies.len(), self.index.len())
+        }
+
+        /// Test-only: cancel + drain all in-flight polls and return
+        /// `(pending, drained)` without closing handles, so a test can assert the
+        /// drain-before-free invariant on a still-usable poller.
+        #[cfg(test)]
+        pub(crate) fn cancel_and_drain_for_test(&mut self) -> (usize, usize) {
+            self.cancel_and_drain_inflight()
+        }
+    }
+
+    /// Open a `\Device\Afd` helper handle for arming AFD polls.
+    fn open_afd_helper() -> Option<HANDLE> {
+        let name: Vec<u16> = r"\Device\Afd\Hew".encode_utf16().collect();
+        let byte_len = (name.len() * 2) as u16;
+        let mut unicode = UNICODE_STRING {
+            Length: byte_len,
+            MaximumLength: byte_len,
+            Buffer: name.as_ptr().cast_mut(),
+        };
+        let mut object_attributes = OBJECT_ATTRIBUTES {
+            Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
+            RootDirectory: ptr::null_mut(),
+            ObjectName: ptr::addr_of_mut!(unicode),
+            Attributes: 0,
+            SecurityDescriptor: ptr::null_mut(),
+            SecurityQualityOfService: ptr::null_mut(),
+        };
+        let mut handle: HANDLE = ptr::null_mut();
+        let mut iosb = IO_STATUS_BLOCK::zeroed();
+        // SAFETY: all pointers reference live locals that outlive the call; `name`
+        // backs the UNICODE_STRING buffer for the duration of NtCreateFile.
+        let status = unsafe {
+            NtCreateFile(
+                ptr::addr_of_mut!(handle),
+                SYNCHRONIZE,
+                ptr::addr_of_mut!(object_attributes),
+                ptr::addr_of_mut!(iosb),
+                ptr::null_mut(),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                FILE_OPEN,
+                0,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        if status == STATUS_SUCCESS {
+            Some(handle)
+        } else {
+            None
+        }
+    }
+
+    /// Create a new I/O poller.
+    ///
+    /// # Safety
+    ///
+    /// No preconditions.
+    #[no_mangle]
+    pub unsafe extern "C" fn hew_io_poller_new() -> *mut HewIoPoller {
+        match HewIoPoller::new() {
+            Some(p) => Box::into_raw(Box::new(p)),
+            None => ptr::null_mut(),
+        }
+    }
+
+    /// Register a connection/listener token for read readiness.
+    ///
+    /// The `actor`/`msg_type` parameters are unused on this backend (the reactor
+    /// drives the readiness-reporting `poll_ready` path and does its own
+    /// lookup/recv/deliver). Returns 0 on success, -1 on error.
+    ///
+    /// # Safety
+    ///
+    /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
+    #[no_mangle]
+    pub unsafe extern "C" fn hew_io_poller_register(
+        p: *mut HewIoPoller,
+        fd: c_int,
+        _actor: *mut super::HewActor,
+        _msg_type: c_int,
+        events: c_int,
+    ) -> c_int {
+        if p.is_null() {
+            return -1;
+        }
+        // SAFETY: caller guarantees `p` is valid and reactor-owned (single thread).
+        let poller = unsafe { &mut *p };
+        poller.register(fd, events)
+    }
+
+    /// Unregister a token from the poller. Idempotent (benign double-unregister).
+    ///
+    /// # Safety
+    ///
+    /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
+    #[no_mangle]
+    pub unsafe extern "C" fn hew_io_poller_unregister(p: *mut HewIoPoller, fd: c_int) -> c_int {
+        if p.is_null() {
+            return -1;
+        }
+        // SAFETY: caller guarantees `p` is valid and reactor-owned.
+        let poller = unsafe { &mut *p };
+        poller.unregister(fd)
+    }
+
+    /// Auto-send poll variant — unsupported on this backend (the reactor uses
+    /// `hew_io_poller_poll_ready`). Always returns -1.
+    ///
+    /// # Safety
+    ///
+    /// No preconditions.
+    #[no_mangle]
+    pub unsafe extern "C" fn hew_io_poller_poll(_p: *mut HewIoPoller, _timeout_ms: c_int) -> c_int {
+        -1
+    }
+
+    /// Poll for readiness and report ready `(token, hew_event_mask)` pairs without
+    /// dispatching (the Windows IOCP/AFD counterpart of the epoll/kqueue
+    /// `hew_io_poller_poll_ready`). Returns the number of ready tokens
+    /// (0..=`out_cap`), or -1 on error.
+    ///
+    /// # Safety
+    ///
+    /// `p` must be a valid pointer returned by [`hew_io_poller_new`]. `out_fds`
+    /// and `out_events` must each point to at least `out_cap` writable `c_int`
+    /// slots, or be null when `out_cap` is 0.
+    #[no_mangle]
+    pub unsafe extern "C" fn hew_io_poller_poll_ready(
+        p: *mut HewIoPoller,
+        timeout_ms: c_int,
+        out_fds: *mut c_int,
+        out_events: *mut c_int,
+        out_cap: c_int,
+    ) -> c_int {
+        if p.is_null() {
+            return -1;
+        }
+        if out_cap <= 0 || out_fds.is_null() || out_events.is_null() {
+            return 0;
+        }
+        // SAFETY: caller guarantees `p` is valid and reactor-owned.
+        let poller = unsafe { &mut *p };
+        poller.poll_ready(timeout_ms, out_fds, out_events, out_cap)
+    }
+
+    /// Stop and destroy the poller, draining all in-flight AFD polls first.
+    ///
+    /// # Safety
+    ///
+    /// `p` must be a valid pointer returned by [`hew_io_poller_new`], and must
+    /// not be used after this call.
+    #[no_mangle]
+    pub unsafe extern "C" fn hew_io_poller_stop(p: *mut HewIoPoller) {
+        if p.is_null() {
+            return;
+        }
+        // SAFETY: caller surrenders ownership of `p`.
+        let mut poller = unsafe { Box::from_raw(p) };
+        poller.shutdown();
+    }
+}
+
+// ---- Stub (other unsupported native targets) -------------------------------
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "macos",
+    windows
+)))]
 mod platform {
     use std::ffi::c_int;
 
@@ -1527,6 +2362,276 @@ mod tests {
                 libc::close(wfd);
                 hew_io_poller_stop(p);
             }
+        }
+    }
+
+    // -- Windows IOCP/AFD_POLL readiness (G0 spike + backend coverage) -------
+    //
+    // Drives the real IOCP + AFD_POLL backend over loopback TCP sockets, proving
+    // peer-write → AFD_POLL_RECEIVE → HEW_IO_READ readiness and peer-close →
+    // HEW_IO_HUP, plus the register/unregister/stop lifecycle.
+    #[cfg(windows)]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        clippy::cast_sign_loss,
+        reason = "test-only FFI: every pointer is a fresh local poller/socket the test \
+                  body sets up and tears down; the lifecycle is described inline"
+    )]
+    mod afd_poller {
+        use super::*;
+        use std::io::Write;
+        use std::time::{Duration, Instant};
+
+        /// Poll until `poll_ready` reports the token (any event) or the deadline
+        /// elapses. Returns the reported event mask, or `None` on timeout.
+        unsafe fn wait_ready(p: *mut HewIoPoller, token: c_int, ms: u64) -> Option<c_int> {
+            let deadline = Instant::now() + Duration::from_millis(ms);
+            let mut fds = [0_i32; 8];
+            let mut evs = [0_i32; 8];
+            while Instant::now() < deadline {
+                let n = unsafe {
+                    hew_io_poller_poll_ready(p, 50, fds.as_mut_ptr(), evs.as_mut_ptr(), 8)
+                };
+                if n > 0 {
+                    for i in 0..n as usize {
+                        if fds[i] == token {
+                            return Some(evs[i]);
+                        }
+                    }
+                }
+            }
+            None
+        }
+
+        #[test]
+        fn new_returns_non_null_and_stop_is_clean() {
+            // SAFETY: no preconditions.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null(), "IOCP poller creation failed");
+            // SAFETY: p valid; surrenders ownership.
+            unsafe { hew_io_poller_stop(p) };
+        }
+
+        #[test]
+        fn register_unknown_token_returns_error() {
+            // SAFETY: no preconditions.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+            // A token that names no live socket must fail closed.
+            // SAFETY: p valid.
+            let rc =
+                unsafe { hew_io_poller_register(p, 999_999, std::ptr::null_mut(), 0, HEW_IO_READ) };
+            assert_eq!(rc, -1);
+            // SAFETY: p valid.
+            unsafe { hew_io_poller_stop(p) };
+        }
+
+        #[test]
+        fn peer_write_reports_read_readiness() {
+            // SAFETY: no preconditions.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+            let (conn, mut client) = crate::transport::tcp_socketpair_conn_for_test();
+            // SAFETY: conn is a live stream handle = the poller token (D-2a).
+            let token = crate::transport::tcp_conn_raw_fd(conn).expect("conn token");
+            assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
+            // SAFETY: p valid; token names a live socket.
+            assert_eq!(
+                unsafe { hew_io_poller_register(p, token, std::ptr::null_mut(), 0, HEW_IO_READ) },
+                0
+            );
+
+            client.write_all(b"ping").expect("client write");
+            client.flush().ok();
+
+            // SAFETY: p valid; token registered.
+            let mask = unsafe { wait_ready(p, token, 2000) }.expect("no read readiness reported");
+            assert!(
+                mask & HEW_IO_READ != 0,
+                "expected HEW_IO_READ, got {mask:#x}"
+            );
+
+            // SAFETY: cleanup.
+            unsafe {
+                hew_io_poller_unregister(p, token);
+                hew_io_poller_stop(p);
+            }
+            drop(client);
+            crate::transport::tcp_close_raw_for_test(conn);
+        }
+
+        #[test]
+        fn peer_close_reports_hup() {
+            // SAFETY: no preconditions.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+            let (conn, client) = crate::transport::tcp_socketpair_conn_for_test();
+            // SAFETY: conn is a live stream handle.
+            let token = crate::transport::tcp_conn_raw_fd(conn).expect("conn token");
+            assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
+            // SAFETY: p valid; token names a live socket.
+            assert_eq!(
+                unsafe { hew_io_poller_register(p, token, std::ptr::null_mut(), 0, HEW_IO_READ) },
+                0
+            );
+
+            // Peer closes its end → AFD reports disconnect/abort.
+            drop(client);
+
+            // SAFETY: p valid; token registered.
+            let mask = unsafe { wait_ready(p, token, 2000) }.expect("no close readiness reported");
+            assert!(
+                mask & (HEW_IO_HUP | HEW_IO_ERROR | HEW_IO_READ) != 0,
+                "expected close/read readiness, got {mask:#x}"
+            );
+
+            // SAFETY: cleanup.
+            unsafe {
+                hew_io_poller_unregister(p, token);
+                hew_io_poller_stop(p);
+            }
+            crate::transport::tcp_close_raw_for_test(conn);
+        }
+
+        #[test]
+        fn double_unregister_is_benign() {
+            // SAFETY: no preconditions.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+            let (conn, client) = crate::transport::tcp_socketpair_conn_for_test();
+            // SAFETY: conn is a live stream handle.
+            let token = crate::transport::tcp_conn_raw_fd(conn).expect("conn token");
+            assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
+            // SAFETY: p valid.
+            assert_eq!(
+                unsafe { hew_io_poller_register(p, token, std::ptr::null_mut(), 0, HEW_IO_READ) },
+                0
+            );
+            // SAFETY: p valid; second unregister must be a no-op (returns 0).
+            unsafe {
+                assert_eq!(hew_io_poller_unregister(p, token), 0);
+                assert_eq!(hew_io_poller_unregister(p, token), 0);
+                hew_io_poller_stop(p);
+            }
+            drop(client);
+            crate::transport::tcp_close_raw_for_test(conn);
+        }
+
+        /// Poll until `poll_ready` reports a TERMINAL (HUP/ERROR) mask for `token`
+        /// or the deadline elapses. Returns the terminal mask, or `None`.
+        unsafe fn wait_terminal(p: *mut HewIoPoller, token: c_int, ms: u64) -> Option<c_int> {
+            let deadline = Instant::now() + Duration::from_millis(ms);
+            let mut fds = [0_i32; 8];
+            let mut evs = [0_i32; 8];
+            while Instant::now() < deadline {
+                let n = unsafe {
+                    hew_io_poller_poll_ready(p, 50, fds.as_mut_ptr(), evs.as_mut_ptr(), 8)
+                };
+                for i in 0..n.max(0) as usize {
+                    if fds[i] == token && evs[i] & (HEW_IO_HUP | HEW_IO_ERROR) != 0 {
+                        return Some(evs[i]);
+                    }
+                }
+            }
+            None
+        }
+
+        /// REGRESSION (MED/code, zombie leak): a peer close delivers a terminal
+        /// completion that is NOT re-armed; the subsequent `unregister` must DROP
+        /// the disarmed state directly — no `NtCancelIoFileEx`, no zombie — so
+        /// there is no per-connection heap leak and no phantom in-flight count at
+        /// shutdown, and the whole HUP→unregister→stop sequence has bounded latency.
+        #[test]
+        fn close_readiness_unregister_drops_without_zombie() {
+            // SAFETY: no preconditions.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+            let (conn, client) = crate::transport::tcp_socketpair_conn_for_test();
+            // SAFETY: conn is a live stream handle = the poller token.
+            let token = crate::transport::tcp_conn_raw_fd(conn).expect("conn token");
+            assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
+            // SAFETY: p valid; token names a live socket.
+            assert_eq!(
+                unsafe { hew_io_poller_register(p, token, std::ptr::null_mut(), 0, HEW_IO_READ) },
+                0
+            );
+
+            // Peer closes → AFD reports disconnect/abort: a terminal completion the
+            // poller delivers and deliberately does not re-arm.
+            drop(client);
+            // SAFETY: p valid; token registered.
+            let mask = unsafe { wait_terminal(p, token, 2000) }
+                .expect("no terminal (HUP/ERROR) close readiness reported");
+            assert!(mask & (HEW_IO_HUP | HEW_IO_ERROR) != 0, "got {mask:#x}");
+
+            // The state is now disarmed (terminal completion drained, no re-arm).
+            // unregister must drop it directly rather than zombieing it.
+            let start = Instant::now();
+            // SAFETY: p valid.
+            assert_eq!(unsafe { hew_io_poller_unregister(p, token) }, 0);
+            // SAFETY: p valid; inspecting internal bookkeeping on the reactor thread.
+            let (entries, zombies, index) = unsafe { (*p).debug_state_counts() };
+            assert_eq!(entries, 0, "entry not dropped on unregister");
+            assert_eq!(
+                zombies, 0,
+                "terminal state was zombied — per-connection leak"
+            );
+            assert_eq!(index, 0, "index left dangling");
+
+            // Nothing is in flight, so stop drains zero and returns promptly.
+            // SAFETY: p valid; surrenders ownership.
+            unsafe { hew_io_poller_stop(p) };
+            assert!(
+                start.elapsed() < Duration::from_millis(750),
+                "HUP→unregister→stop latency unbounded: {:?}",
+                start.elapsed()
+            );
+            crate::transport::tcp_close_raw_for_test(conn);
+        }
+
+        /// REGRESSION (SEC-HIGH, shutdown UAF): with a genuinely-pending AFD poll
+        /// IOCTL in flight, shutdown must CANCEL and DRAIN its completion before any
+        /// buffer is freed. The drain is unbounded/proven: it reports exactly one
+        /// pending request and drains exactly one completion (`pending == drained`),
+        /// so no `AfdState`/`iosb`/`poll_info` is freed while the kernel still owns a
+        /// pending write. (`shutdown` also carries a `debug_assert_eq!` enforcing
+        /// the same no-free-while-pending invariant.)
+        #[test]
+        fn shutdown_drains_genuinely_pending_inflight_poll() {
+            // SAFETY: no preconditions.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+            let (conn, client) = crate::transport::tcp_socketpair_conn_for_test();
+            // SAFETY: conn is a live stream handle = the poller token.
+            let token = crate::transport::tcp_conn_raw_fd(conn).expect("conn token");
+            assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
+            // Arm a poll and leave it genuinely in flight: no peer write, no close,
+            // so the one-shot IOCTL_AFD_POLL is still pending in the kernel.
+            // SAFETY: p valid; token names a live socket.
+            assert_eq!(
+                unsafe { hew_io_poller_register(p, token, std::ptr::null_mut(), 0, HEW_IO_READ) },
+                0
+            );
+            // SAFETY: p valid; single-threaded inspection.
+            let (entries, zombies, _) = unsafe { (*p).debug_state_counts() };
+            assert_eq!(entries, 1, "expected one armed entry");
+            assert_eq!(zombies, 0);
+
+            // Drive the exact cancel-and-drain shutdown performs, observing counts.
+            // SAFETY: p valid and still owned (cancel_and_drain leaves handles open).
+            let (pending, drained) = unsafe { (*p).cancel_and_drain_for_test() };
+            assert_eq!(pending, 1, "the in-flight poll was not counted as pending");
+            assert_eq!(
+                drained, pending,
+                "shutdown would free buffers with a pending completion (UAF)"
+            );
+
+            // Now fully stop/free (the in-flight completion is already drained, so
+            // this second cancel-and-drain is a no-op and cannot hang).
+            // SAFETY: p valid; surrenders ownership.
+            unsafe { hew_io_poller_stop(p) };
+            drop(client);
+            crate::transport::tcp_close_raw_for_test(conn);
         }
     }
 }

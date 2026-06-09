@@ -82,6 +82,13 @@ fn run_crash_teardown_order_hook(event: c_int) {
 static FREE_PRE_DETACH_HOOK: Mutex<Option<fn(*mut HewActor)>> = Mutex::new(None);
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg_attr(
+    not(unix),
+    allow(
+        dead_code,
+        reason = "only consumed by the unix-gated free-during-reactor-detach race test"
+    )
+)]
 fn set_free_pre_detach_hook_for_test(hook: Option<fn(*mut HewActor)>) {
     let mut guard = FREE_PRE_DETACH_HOOK
         .lock()
@@ -2693,13 +2700,6 @@ pub unsafe extern "C" fn hew_actor_try_send(
 ///
 /// Same requirements as [`hew_actor_try_send`].
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg_attr(
-    not(unix),
-    allow(
-        dead_code,
-        reason = "only consumed by the Unix active-mode reactor; the reactor is stubbed out (fail-closed) on non-Unix targets"
-    )
-)]
 pub(crate) unsafe fn hew_actor_send_guaranteed(
     actor: *mut HewActor,
     msg_type: i32,
@@ -5814,6 +5814,13 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        not(unix),
+        allow(
+            dead_code,
+            reason = "only consumed by the unix-gated free-during-reactor-detach race test"
+        )
+    )]
     static REACTOR_WAKE_HOOK_FIRED: AtomicBool = AtomicBool::new(false);
 
     /// Pre-detach hook that models a reactor delivery waking the actor during
@@ -5825,6 +5832,13 @@ mod tests {
     /// (uses only the `actor` argument) so it can be a plain `fn` pointer, and
     /// it deliberately does NOT touch the process-global `DELIVERING_ACTOR`
     /// guard, so it needs no cross-test serialization with the reactor tests.
+    #[cfg_attr(
+        not(unix),
+        allow(
+            dead_code,
+            reason = "only consumed by the unix-gated free-during-reactor-detach race test"
+        )
+    )]
     fn reactor_wake_during_detach_hook(actor: *mut HewActor) {
         // SAFETY: the free path holds the actor live across the hook; it is the
         // same pointer free is about to detach.

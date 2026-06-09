@@ -7,10 +7,11 @@
 //! worker. This is the substrate beneath the active-mode echo/web/redis
 //! servers; it must RUN, not merely type-check.
 //!
-//! Gated to Unix: the active-mode reactor uses epoll/kqueue over raw socket
-//! fds and is fail-closed (stubbed) on non-Unix targets, where `hew_tcp_attach`
-//! intentionally returns an error. Windows active-mode I/O is a punch-list item.
-#![cfg(unix)]
+//! Gated to native targets: the active-mode reactor needs a platform readiness
+//! poller (epoll/kqueue/IOCP) + OS threads and is fail-closed on WASM, where the
+//! type checker rejects TCP networking before any reactor call. On Windows the
+//! reactor is backed by the IOCP + `AFD_POLL` readiness bridge.
+#![cfg(not(target_arch = "wasm32"))]
 #![expect(
     clippy::undocumented_unsafe_blocks,
     reason = "FFI e2e test asserts raw ABI behaviour directly"

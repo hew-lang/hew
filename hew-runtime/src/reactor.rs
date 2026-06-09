@@ -1,13 +1,15 @@
-// native-only: the active-mode reactor uses epoll/kqueue + OS threads, neither
-// available on WASM. The WASM build fails closed via the type checker's
-// `WasmUnsupportedFeature::TcpNetworking` gate before any reactor call.
+// native-only: the active-mode reactor uses a platform readiness poller
+// (epoll/kqueue/IOCP) + OS threads, neither available on WASM. The WASM build
+// fails closed via the type checker's `WasmUnsupportedFeature::TcpNetworking`
+// gate before any reactor call.
 //! Active-mode network I/O reactor — "I/O completion as a mailbox message".
 //!
 //! A single non-scheduler background thread (the *reactor*) owns a platform
 //! readiness poller ([`crate::io_time::HewIoPoller`], epoll on Linux / kqueue
-//! on macOS+FreeBSD) and a registry mapping each registered connection fd to
-//! the actor that should receive its data. When a registered socket becomes
-//! readable the reactor reads the available bytes and delivers them to the
+//! on macOS+FreeBSD / IOCP+AFD_POLL on Windows) and a registry mapping each
+//! registered connection token to the actor that should receive its data. When
+//! a registered socket becomes readable the reactor reads the available bytes
+//! and delivers them to the
 //! owning actor's mailbox as an ordinary `on_data(bytes)` message; on EOF or
 //! error it delivers a single `on_close()` message and unregisters the fd.
 //!
@@ -899,7 +901,15 @@ fn handle_ready_accept(
 ) {
     use crate::read_slot::INVALID_CONNECTION_HANDLE;
     let (deposit_handle, slot_done) = match tcp_listener_accept_nonblocking(snap.conn) {
-        AcceptOutcome::Accepted(handle) => (i64::from(handle), true),
+        AcceptOutcome::Accepted(handle) => {
+            // Record the accepted handle for the abandon-race close regression
+            // test so it can assert the specific handle was closed without
+            // depending on the global streams-table size (which concurrent
+            // transport tests also modify).
+            #[cfg(test)]
+            LAST_ACCEPTED_CONN_FOR_TEST.set(handle);
+            (i64::from(handle), true)
+        }
         AcceptOutcome::Closed => (INVALID_CONNECTION_HANDLE, true),
         AcceptOutcome::WouldBlock => {
             if hard_close {
@@ -1585,6 +1595,13 @@ pub(crate) fn registration_count_for_test() -> usize {
 /// pending queue and the OS poller register. Lets the dead-actor and
 /// detach-by-actor races be exercised without a live scheduler.
 #[cfg(test)]
+#[cfg_attr(
+    not(unix),
+    allow(
+        dead_code,
+        reason = "only consumed by unix-gated reactor engine tests (pipe-fd based)"
+    )
+)]
 pub(crate) fn inject_registration_for_test(
     fd: c_int,
     conn: c_int,
@@ -1642,6 +1659,16 @@ pub(crate) fn inject_resume_registration_for_test(
 #[cfg(test)]
 pub(crate) fn handle_ready_fd_for_test(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     handle_ready_fd(poller, fd, events);
+}
+
+// Test-only thread-local: the most-recently accepted connection handle inside
+// `handle_ready_accept`. Lets the accept/abandon-race test assert that the
+// specific accepted handle was closed without depending on the global
+// `TCP_API_STATE.streams` count (which concurrent transport tests also modify).
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static LAST_ACCEPTED_CONN_FOR_TEST: std::cell::Cell<c_int> =
+        const { std::cell::Cell::new(-1) };
 }
 
 /// Drive `handle_ready_accept` directly (test-only) against a registered LISTENER
@@ -1709,6 +1736,13 @@ pub(crate) fn set_promoting_actor_for_test(actor_key: usize) {
 /// ref is a by-value snapshot; `actor_key` is the stable identity used by
 /// `reactor_detach_actor`'s pending scrub.
 #[cfg(test)]
+#[cfg_attr(
+    not(unix),
+    allow(
+        dead_code,
+        reason = "only consumed by unix-gated reactor engine tests (pipe-fd based)"
+    )
+)]
 pub(crate) fn enqueue_pending_add_for_test(
     fd: c_int,
     conn: c_int,
@@ -1919,6 +1953,7 @@ mod tests {
         unsafe { crate::transport::hew_actor_ref_remote(0, -1, std::ptr::null_mut()) }
     }
 
+    #[cfg(unix)]
     fn make_pipe() -> (c_int, c_int) {
         let mut fds = [0i32; 2];
         // SAFETY: fds is a valid 2-element array.
@@ -1929,6 +1964,7 @@ mod tests {
     // 4b oracle (unit form): a readiness event for an actor that has stopped
     // (dead actor-ref) is DROPPED — no delivery — and the fd is unregistered,
     // so a post-stop readiness event never reaches a freed actor.
+    #[cfg(unix)]
     #[test]
     fn ready_event_for_dead_actor_is_dropped_and_unregistered() {
         let _guard = REACTOR_TEST_MUTEX
@@ -1969,6 +2005,7 @@ mod tests {
 
     // The actor-teardown hook path: detach-by-actor removes every registration
     // owned by that actor key (so a stopped actor leaks no fd registration).
+    #[cfg(unix)]
     #[test]
     fn detach_actor_removes_all_registrations_for_that_actor() {
         let _guard = REACTOR_TEST_MUTEX
@@ -2044,6 +2081,7 @@ mod tests {
     /// agnostic), and dropping the evicted registration releases the reactor's
     /// slot ref so the slot is reclaimed once the creator ref also drops (the
     /// abandon edge: handler freed while parked on the fd).
+    #[cfg(unix)]
     #[test]
     #[allow(
         clippy::undocumented_unsafe_blocks,
@@ -2258,8 +2296,10 @@ mod tests {
             0
         );
 
-        let streams_before = crate::transport::tcp_streams_len_for_test();
         let accepts_before = crate::transport::tcp_counters_snapshot().accept_count;
+        // Reset the per-test thread-local so a stale value from a prior call
+        // cannot mask a WouldBlock (no-accept) outcome.
+        LAST_ACCEPTED_CONN_FOR_TEST.set(-1);
 
         let slot = crate::read_slot::hew_read_slot_new();
         // SAFETY: creator ref held.
@@ -2279,12 +2319,21 @@ mod tests {
             accepts_before + 1,
             "the regression requires a real accept to have occurred (not WouldBlock)"
         );
-        // …but the accepted handle was CLOSED on the deposit-failure path, so the
-        // streams table did not grow — no fd/handle leak.
-        let streams_after = crate::transport::tcp_streams_len_for_test();
-        assert_eq!(
-            streams_after, streams_before,
-            "an accepted handle with no resume owner must be closed, not leaked"
+        // …but the accepted handle was CLOSED on the deposit-failure path: the
+        // specific handle must NOT remain in the streams table.  We check the
+        // handle directly rather than comparing global table sizes, because
+        // concurrent transport tests can add/remove their own handles between
+        // the two measurements and cause false failures (the pre-fix leak would
+        // leave the SPECIFIC accepted handle in the table, and this check still
+        // catches it without being sensitive to the global count).
+        let accepted_handle = LAST_ACCEPTED_CONN_FOR_TEST.get();
+        assert_ne!(
+            accepted_handle, -1,
+            "LAST_ACCEPTED_CONN_FOR_TEST not set — handle_ready_accept did not record a real accept"
+        );
+        assert!(
+            !crate::transport::tcp_streams_has_handle_for_test(accepted_handle),
+            "accepted handle {accepted_handle} must be closed, not leaked into streams table"
         );
 
         // The cancelled slot took no deposit and fired no wake.
@@ -2377,6 +2426,7 @@ mod tests {
     /// FAIL-BEFORE / PASS-AFTER: pre-fix the unconditional `hew_actor_ref_is_alive`
     /// dereferences the freed box on the abort path (UAF). Post-fix the
     /// `with_live_actor` miss aborts cleanly.
+    #[cfg(unix)]
     #[test]
     #[allow(
         clippy::undocumented_unsafe_blocks,
@@ -2604,6 +2654,7 @@ mod tests {
     /// Before the fix the add survived the detach and `drain_pending` promoted a
     /// dangling registration; this test asserts it is gone from `pending` and
     /// never reaches the registry.
+    #[cfg(unix)]
     #[test]
     fn detach_actor_scrubs_pending_add_before_promotion() {
         const KEY: usize = 0x00A7_7AC4;
@@ -2652,6 +2703,7 @@ mod tests {
 
     /// A `Pending::Add` for a DIFFERENT live actor must survive the detach: the
     /// scrub is keyed by actor identity, not a blanket pending clear.
+    #[cfg(unix)]
     #[test]
     fn detach_actor_pending_scrub_spares_other_actors() {
         const FREED: usize = 0x00DE_AD01;
@@ -2690,6 +2742,7 @@ mod tests {
     /// cannot see it) but has not yet inserted it into the registry. The detach
     /// must spin-wait on `PROMOTING_ACTOR`, and once the registration lands it
     /// must be re-scrubbed before the detach returns — never left dangling.
+    #[cfg(unix)]
     #[test]
     fn detach_actor_waits_out_promotion_then_rescrubs_registry() {
         const KEY: usize = 0x0C0F_FEE5;
@@ -2775,6 +2828,7 @@ mod tests {
     /// detach does NOT return while `DELIVERING_ACTOR == key`. Fails on the
     /// single-wait code (detach returns mid-delivery); passes once phase 2 loops
     /// scrub-then-wait until the key is fully drained.
+    #[cfg(unix)]
     #[test]
     fn detach_actor_waits_out_delivery_begun_after_promotion_spinwait() {
         const KEY: usize = 0x00DE_117B;
@@ -2901,6 +2955,7 @@ mod tests {
     /// is cleared. Negative control: with the spin-wait removed, the spawned
     /// detach returns while the guard is still set and the "still blocked"
     /// assertion fails.
+    #[cfg(unix)]
     #[test]
     fn detach_actor_blocks_while_delivery_in_flight() {
         const KEY: usize = 0xD1F_F00D;

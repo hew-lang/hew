@@ -1,0 +1,34 @@
+//! Status: runnable (v0.5 std::text::unicode rune helpers + predicates)
+//! Description: Unicode runes — decode a UTF-8 string into codepoints and classify each one.
+//!
+//! Uses `rune_count` (vs the byte `len()`), `runes` to decode a string into a
+//! `Vec<i64>` of codepoints, `rune_len` for each rune's UTF-8 width, the
+//! classification predicates (`is_space` / `is_digit` / `is_upper` / `is_lower`
+//! / `is_letter` / `is_punct`) dispatched with `match` guards, and `to_upper`
+//! case folding on a per-rune basis.
+
+import std::text::unicode;
+
+fn classify(cp: i64) -> string {
+    match cp {
+        c if unicode.is_space(c) => "space",
+        c if unicode.is_digit(c) => "digit",
+        c if unicode.is_upper(c) => "upper",
+        c if unicode.is_lower(c) => "lower",
+        c if unicode.is_letter(c) => "letter",
+        c if unicode.is_punct(c) => "punct",
+        _ => "other",
+    }
+}
+
+fn main() {
+    let text = "Hé 9世!";
+    println(f"runes={unicode.rune_count(text)} bytes={text.len()}");
+    let runes = unicode.runes(text);
+    for i in 0 .. runes.len() {
+        let cp = runes.get(i);
+        let kind = classify(cp);
+        let upper = unicode.to_upper(cp);
+        println(f"cp={cp} width={unicode.rune_len(cp)} kind={kind} upper_cp={upper}");
+    }
+}

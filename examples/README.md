@@ -95,6 +95,17 @@ The learning paths here are mostly language-focused. When you want shipped libra
   `hew build --target=wasm32-wasi`).  The authoritative per-feature table is in
   [`docs/wasm-capability-matrix.md`](../docs/wasm-capability-matrix.md#playground-capability-contract).
 
+### v0.5 Surfaces
+
+- **v05/surfaces/** -- One-file idiomatic demos for the landed v0.5 surfaces, each with a paired `.expected` and gated by `make test-surface-examples`:
+  - [`typed_streams.hew`](v05/surfaces/typed_streams.hew) -- suspending typed streams (`await sink.send(x)` / `await stream.recv()`)
+  - [`regex_captures.hew`](v05/surfaces/regex_captures.hew) -- regex capture groups (`capture` / `capture_named` / `find_all` / `find_all_submatch`)
+  - [`template_render.hew`](v05/surfaces/template_render.hew) -- Go-style text templates (`parse` + `render_try`)
+  - [`unicode_runes.hew`](v05/surfaces/unicode_runes.hew) -- unicode rune helpers + classification predicates
+- Networking surfaces live under **net/**:
+  - [`http_await_service.hew`](net/http_await_service.hew) -- async HTTP/1.1 client + server over `await` (two routes). Loopback-only (`127.0.0.1`), so it is offline and deterministic — it **is** wired into the `make test-surface-examples` gate alongside the pure surface demos, with a paired `.expected`.
+  - [`tls_client.hew`](net/tls_client.hew) -- TLS client free-function surface (`tls.connect`/`write`/`read`/`close`); type-checks + runs, encrypted round-trip gated on a known v0.5 data-plane ABI fix. **Excluded from `make test-surface-examples`** on purpose: it dials a real public host (`example.com:443`), a genuine outbound network dependency that cannot run offline, and it deliberately fails closed on the data-plane gap. It ships a paired `.expected` for local diffing only.
+
 ### Cross-Language Comparisons
 
 - **benchmarks/** -- Cross-language benchmark fixtures: paired `bench_*` implementations under `hew/`, `go/`, and `rust/`, plus the HTTP server comparison files at the directory root ([README](benchmarks/README.md))

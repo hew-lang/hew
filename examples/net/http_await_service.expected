@@ -1,0 +1,3 @@
+GET /hello -> 200 text/plain; charset=utf-8: hi from hew
+GET /health -> 200 application/json: {"status":"ok"}
+done

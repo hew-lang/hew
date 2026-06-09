@@ -850,6 +850,15 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     overload(
+        "to_bytes_str",
+        "to_bytes",
+        STRING,
+        BuiltinTy::Bytes,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_to_bytes",
+        },
+    ),
+    overload(
         "clone_str",
         "clone",
         STRING,

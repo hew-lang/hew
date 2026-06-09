@@ -7,7 +7,8 @@
 import std::channel::channel;
 
 actor Worker {
-    receive fn run(unused: i64) {
+    #[on(start)]
+    fn start() {
         let (txa, rxa): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
         let (txb, rxb): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);
         txb.send(7);
@@ -34,6 +35,6 @@ actor Worker {
 }
 
 fn main() {
-    let w = spawn Worker;
-    w.run(0);
+    let _w = spawn Worker;
+    sleep_ms(100);
 }

@@ -765,6 +765,15 @@ impl string {
     fn codepoint_at_utf8(s: string, i: i64) -> i64 {
         -1
     }
+    /// Return the UTF-8 byte encoding of this string as an owned `bytes` value.
+    ///
+    /// This is the canonical string-to-`bytes` conversion: use it to build a
+    /// `bytes` payload (network writes, byte streams, hashing) from text without
+    /// reaching for raw FFI. The inverse is `bytes.to_string()`.
+    #[extern_symbol(hew_string_to_bytes)]
+    fn to_bytes(s: string) -> bytes {
+        bytes::new()
+    }
 }
 
 // ── Trait: ToString ──────────────────────────────────────────────────

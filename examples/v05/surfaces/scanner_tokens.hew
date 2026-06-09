@@ -1,0 +1,28 @@
+//! Scanner surface: line and word tokenisation through `std::io::scanner`.
+//!
+//! `Scanner` is a value-state API: each call to `scan` returns the next scanner
+//! state, and `text` is meaningful only while `has_next` is true.
+
+import std::io::scanner;
+
+fn main() {
+    var words = scanner.from_string("alpha beta\ncolour");
+    words = scanner.with_split(words, SplitWords);
+    words = scanner.scan(words);
+    while scanner.has_next(words) {
+        println(f"word={scanner.text(words)}");
+        words = scanner.scan(words);
+    }
+    var lines = scanner.from_string("first\nsecond");
+    var done = false;
+    while !done {
+        let step = scanner.next_line(lines);
+        lines = step.0;
+        match step.1 {
+            Some(line) => println(f"line={line}"),
+            None => {
+                done = true;
+            },
+        }
+    }
+}

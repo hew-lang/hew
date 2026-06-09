@@ -1,0 +1,114 @@
+//! Status: runnable (v0.5 NEW-2 async HTTP/1.1 client + server over await)
+//! Description: HTTP flagship — an await-suspended HTTP/1.1 server with two routes and a client.
+//!
+//! The `Server` actor opens a listener and serves a fixed number of requests:
+//! for each it `await`s a connection, drives an `await conn.read_string()` loop
+//! until the request is fully buffered, parses it with the
+//! `std::net::http::http_async_server` codec, and dispatches on the path —
+//! `/hello` returns plain text, `/health` returns JSON, anything else 404s.
+//! The `Client` actor issues two sequential requests with the
+//! `std::net::http::http_async_client` codec, `await`ing each response to close.
+//!
+//! Every `await` suspends the handler rather than blocking the worker, so a
+//! single worker (`HEW_WORKERS=1`) can both serve and fetch on the same thread.
+//! The `Listener` / `Connection` handles are handler LOCALS — an opaque handle
+//! in actor state is rejected by the supervisor-restart clone gate.
+
+import std::net;
+
+import std::net::http::http_async_server;
+
+import std::net::http::http_async_client;
+
+import std::string;
+
+actor Server {
+    let addr: string;
+    let requests: i64;
+
+    receive fn serve(unused: i64) {
+        let listener = net.listen(addr);
+        for r in 0 .. requests {
+            let conn = await listener.accept();
+            var raw = "";
+            var reads = 0;
+            var done = false;
+            while !done {
+                let chunk = await conn.read_string();
+                reads = reads + 1;
+                if string.is_empty(chunk) {
+                    done = true;
+                } else {
+                    raw = raw + chunk;
+                    if http_async_server.over_limit(raw) {
+                        done = true;
+                    } else if http_async_server.request_complete(raw) {
+                        done = true;
+                    }
+                }
+                if reads > http_async_server.MAX_READS {
+                    done = true;
+                }
+            }
+            let req = http_async_server.parse_request(raw);
+            var reply = http_async_server.response_text(req.reject_status(), "rejected");
+            if req.is_valid() {
+                reply = match req.path() {
+                    "/hello" => http_async_server.response_text(200, "hi from hew"),
+                    "/health" => http_async_server.response_json(200, "{\"status\":\"ok\"}"),
+                    _ => http_async_server.response_text(404, "not found"),
+                };
+            }
+            conn.write_string(reply);
+            let _ = conn.close();
+        }
+        let _ = listener.close();
+    }
+}
+
+actor Client {
+    let addr: string;
+    let host: string;
+
+    receive fn fetch(path: string) {
+        let conn = net.connect(addr);
+        conn.write_string(http_async_client.build_get(host, path));
+        var raw = "";
+        var reads = 0;
+        var done = false;
+        while !done {
+            let chunk = await conn.read_string();
+            reads = reads + 1;
+            if string.is_empty(chunk) {
+                done = true;
+            } else {
+                raw = raw + chunk;
+                if http_async_client.response_over_limit(raw) {
+                    done = true;
+                }
+            }
+            if reads > http_async_client.MAX_READS {
+                done = true;
+            }
+        }
+        let _ = conn.close();
+        let resp = http_async_client.parse_response(raw);
+        let line = match resp.status() {
+            200 => f"GET {path} -> 200 {resp.content_type()}: {resp.body()}",
+            code => f"GET {path} -> {code}",
+        };
+        println(line);
+    }
+}
+
+fn main() {
+    let s = spawn Server(addr: "127.0.0.1:18234", requests: 2);
+    let c = spawn Client(addr: "127.0.0.1:18234", host: "127.0.0.1");
+    s.serve(0);
+    sleep_ms(300);
+    c.fetch("/hello");
+    sleep_ms(400);
+    c.fetch("/health");
+    sleep_ms(600);
+    println("done");
+}

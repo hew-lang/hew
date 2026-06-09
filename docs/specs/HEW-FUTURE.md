@@ -24,18 +24,18 @@ more sections in this document into normative status. Within edition
 
 ---
 
-## 1. Concurrency surfaces deferred from edition 2026
+## 1. Concurrency surfaces
 
-### 1.1 Channels (`std::channel::channel<T>`)
+### 1.1 Channels (`std::channel::channel`)
 
-**[Target: v0.6]**
+**[Landed in v0.5; not deferred]**
 
-Earlier drafts exposed `std::channel::channel(N)` returning a `(tx, rx)`
-pair for non-actor dataflow. Edition 2026 covers the same use cases with
-`Stream<T>` / `Sink<T>` (HEW-SPEC-2026 §6.5). Channels are redundant for
-the dataflow shape today; the gap they would fill — rendezvous-style
-unbuffered hand-off (`bounded(0)`) and N:M broadcast — has no deciding
-example yet. Defer until a real workload makes the missing case concrete.
+The v0.5 stdlib ships `std::channel::channel.new(capacity)` returning a
+typed `(Sender<T>, Receiver<T>)` pair. `await rx.recv()` in an execution
+context suspends worker-free and returns `Option<T>`; `rx.try_recv()` is
+non-suspending. A channel receive can also participate in `select` as
+`pat from rx.recv()`. Future channel work may still add new topology
+forms, but the bounded MPSC surface itself is no longer a future item.
 
 ### 1.2 Cancellation tokens
 

@@ -1,0 +1,53 @@
+//! Status: runnable (v0.5 NEW-7 suspending typed streams over await)
+//! Description: Typed streams — `await sink.send(x)` / `await stream.recv()` on a Stream<bytes>.
+//!
+//! A single actor handler builds a bounded `Stream<bytes>`/`Sink<bytes>` pipe
+//! with the PUBLIC `std::stream.bytes_pipe(capacity)` constructor, then drives
+//! both ends with the suspending terminators: each `await sink.send(item)`
+//! writes a frame (suspending on a full ring — backpressure-aware) and each
+//! `await stream.recv()` yields the next `Option<bytes>` (`Some(frame)` until
+//! EOF, then `None`). Both ends live in the SAME handler because moving an owned
+//! `Stream`/`Sink` handle into actor state is NYI in v0.5 (owned-handle aggregate
+//! state lands in v0.5.1). The canonical method names are `recv()` / `send()`
+//! (not `next()` / `write()`), and only the `Stream<bytes>` / `Sink<bytes>`
+//! element type suspends. Frames are built from text with the public
+//! `string.to_bytes()` surface — no raw extern, no `unsafe`.
+
+import std::stream;
+
+actor Pipeline {
+    let frames: i64;
+    receive fn run(unused: i64) {
+        let (sink, input) = stream.bytes_pipe(8);
+        // Producer: each send suspends on a full ring (backpressure-aware).
+        for i in 0 .. frames {
+            let frame = f"frame-{i}".to_bytes();
+            await sink.send(frame);
+        }
+        sink.close();
+
+        // Consumer: each recv suspends until a frame is ready; None == EOF.
+        var received = 0;
+        var done = false;
+        while !done {
+            let item = await input.recv();
+            match item {
+                Some(frame) => {
+                    println(f"recv {frame.to_string()}");
+                    received = received + 1;
+                },
+                None => {
+                    done = true;
+                },
+            }
+        }
+        println(f"drained {received} frames");
+    }
+}
+
+fn main() {
+    let p = spawn Pipeline(frames: 3);
+    p.run(0);
+    sleep_ms(500);
+    println("done");
+}

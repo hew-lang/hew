@@ -1598,3 +1598,319 @@ fn main() {
 ```
 
 `std::string`, `std::math`, `std::iter` import together cleanly — the safe stdlib trio to lean on. An unused import warns but still compiles.
+
+## v0.5 surfaces
+
+The v0.5 release adds async networking, channels, and text surfaces. Each
+subsection below is a runnable snippet; a full idiomatic program per surface
+lives under [`examples/v05/surfaces/`](../examples/v05/surfaces) (text
+surfaces), [`examples/channel/`](../examples/channel) (channels), or
+[`examples/net/`](../examples/net) (networking).
+
+### Typed streams — `await sink.send(x)` / `await stream.recv()`
+
+```hew
+import std::stream;
+
+actor Echo {
+    let n: i64;
+    receive fn run(unused: i64) {
+        let (sink, input) = stream.bytes_pipe(4);
+        for i in 0..n {
+            await sink.send(f"x{i}".to_bytes());
+        }
+        sink.close();
+        var done = false;
+        while !done {
+            let item = await input.recv();
+            match item {
+                Some(b) => println(b.to_string()),  // x0, x1
+                None => { done = true; },
+            }
+        }
+    }
+}
+
+fn main() {
+    let e = spawn Echo(n: 2);
+    e.run(0);
+    sleep_ms(300);
+}
+```
+
+`await sink.send(x)` and `await stream.recv()` suspend the calling coroutine
+instead of OS-parking a worker, so a stream stage frees its worker while waiting.
+Only `Stream<bytes>` / `Sink<bytes>` suspend (the canonical element type), and the
+canonical method names are `recv()` / `send()` — not `next()` / `write()`. `recv()`
+yields `Option<bytes>` (`None` is EOF); match it, never unwrap. `await sink.send`
+is statement-position only. Build the pipe with the public
+`std::stream.bytes_pipe(capacity)` constructor — no raw extern, no `unsafe` — and
+turn text into a frame with the public `string.to_bytes()` surface. In v0.5 keep
+both ends in one handler: moving an owned `Stream`/`Sink` into actor state is NYI
+(owned-handle aggregate state lands in v0.5.1). Full example:
+[`examples/v05/surfaces/typed_streams.hew`](../examples/v05/surfaces/typed_streams.hew).
+
+### Channels — `channel.new`, `await rx.recv()`, and select arms
+
+```hew
+import std::channel::channel;
+
+actor Inbox {
+    receive fn run(unused: i64) {
+        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+        tx.send("ready");
+        tx.close();
+
+        match await rx.recv() {
+            Some(msg) => println(msg),   // ready
+            None => println("closed"),
+        }
+
+        select {
+            again from rx.recv() => {
+                match again {
+                    Some(msg) => println(msg),
+                    None => println("closed"),
+                }
+            },
+            after 1s => println("timeout"),
+        };
+
+        rx.close();
+    }
+}
+```
+
+Use `channel.new(capacity)` to build a bounded MPSC channel. `Sender<T>` is
+cloneable; close senders when production is complete. `await rx.recv()` returns
+`Option<T>`: `Some(value)` for a received item and `None` when the channel is
+closed. `rx.try_recv()` never suspends and returns `None` for both empty and
+closed. In `select`, write the sealed channel arm as `pat from rx.recv()` and
+match the bound `Option<T>`. Full examples:
+[`examples/channel/await_recv_actor.hew`](../examples/channel/await_recv_actor.hew)
+and [`examples/channel/select_recv.hew`](../examples/channel/select_recv.hew).
+
+### Regex captures — `capture` / `find_all` / `find_all_submatch`
+
+```hew
+import std::text::regex;
+
+fn main() {
+    let re = regex.new("(?P<k>[a-z]+)=(?P<v>[0-9]+)");
+    let text = "a=1 bb=22";
+    match re.capture_named(text, "v") {
+        Some(v) => println(f"first value: {v}"),   // first value: 1
+        None => println("none"),
+    }
+    let rows = re.find_all_submatch(text);
+    for i in 0..rows.len() {
+        let key = match rows.group(i, 1) { Some(g) => g, None => "?" };
+        let val = match rows.group(i, 2) { Some(g) => g, None => "?" };
+        println(f"{key} -> {val}");   // a -> 1 ; bb -> 22
+    }
+    re.free();
+}
+```
+
+Compile a pattern with `regex.new` (panics on bad syntax; use `try_new` for a
+`Result`). `capture(input, group)` / `capture_named(input, name)` return the
+indexed/named submatch of the FIRST match as an `Option<string>` — group 0 is the
+whole match. `find_all` returns every whole match as a `Vec<string>`;
+`find_all_submatch` returns a row-major `CaptureMatches` table — `rows.len()`
+rows, `rows.width()` groups each, read with `rows.group(row, col)` /
+`rows.whole(row)`. Always `free()` a compiled `Pattern`. Full example:
+[`examples/v05/surfaces/regex_captures.hew`](../examples/v05/surfaces/regex_captures.hew).
+
+### Templates — `parse` + `render_try`
+
+```hew
+import std::text::template;
+
+fn main() {
+    let ctx = template.new_ctx();
+    template.ctx_set_str(ctx, "name", "Hew");
+    let xs: Vec<string> = Vec::new();
+    xs.push("a");
+    xs.push("b");
+    template.ctx_set_list(ctx, "xs", xs);
+    let t = template.parse("hi {{.name}}:{{range .xs}} {{.}}{{end}}");
+    match template.render_try(t, ctx) {
+        Ok(s) => println(s),   // hi Hew: a b
+        Err(_) => println("error"),
+    }
+}
+```
+
+Build a flat `Ctx` with `new_ctx()` then `ctx_set_str` / `ctx_set_int` /
+`ctx_set_bool` (scalars) and `ctx_set_list` (a `Vec<string>`). `parse` compiles a
+Go-style template — `{{.key}}` substitutes, `{{if .key}}…{{end}}` is conditional,
+`{{range .list}}…{{.}}…{{end}}` iterates with `.` bound to each item. Render with
+the free function `template.render_template(t, ctx)` (panics on error) or
+`template.render_try(t, ctx)` (returns `Result`); the method form `t.render(ctx)`
+is deferred in v0.5. `TemplateError` has no `Display`, so handle the `Err` arm
+with a literal message rather than interpolating it. Full example:
+[`examples/v05/surfaces/template_render.hew`](../examples/v05/surfaces/template_render.hew).
+
+### Unicode — rune helpers + classification predicates
+
+```hew
+import std::text::unicode;
+
+fn main() {
+    let s = "Aé!";
+    println(f"runes={unicode.rune_count(s)} bytes={s.len()}");   // runes=3 bytes=4
+    let runes = unicode.runes(s);
+    for i in 0..runes.len() {
+        let cp = runes.get(i);
+        let up = unicode.is_upper(cp);
+        println(f"cp={cp} upper={up} width={unicode.rune_len(cp)}");
+    }
+}
+```
+
+`rune_count(s)` counts codepoints (vs `s.len()` bytes); `runes(s)` decodes a
+string into a `Vec<i64>` of codepoints; `codepoint_at` / `try_codepoint_at` read
+one rune at a byte offset; `rune_len(cp)` is a rune's UTF-8 width. Classify a
+codepoint with the predicates `is_upper` / `is_lower` / `is_digit` / `is_letter`
+/ `is_space` / `is_punct` / `is_alnum` / `is_valid_rune`, and case-fold with
+`to_upper` / `to_lower` / `to_title` (all over `i64` codepoints). Dispatch with
+`match` guards over the predicates rather than range checks. Full example:
+[`examples/v05/surfaces/unicode_runes.hew`](../examples/v05/surfaces/unicode_runes.hew).
+
+### Scanner — line and word tokenisation
+
+```hew
+import std::io::scanner;
+
+fn main() {
+    var sc = scanner.from_string("alpha beta\ncolour");
+    sc = scanner.with_split(sc, SplitWords);
+    sc = scanner.scan(sc);
+    while scanner.has_next(sc) {
+        println(scanner.text(sc));
+        sc = scanner.scan(sc);
+    }
+
+    let (next, line) = scanner.next_line(scanner.from_string("first\nsecond"));
+    match line {
+        Some(s) => println(s),   // first
+        None => println("none"),
+    }
+    let _ = next;
+}
+```
+
+`scanner.from_string` and `scanner.from_stdin` construct a `Scanner` directly;
+`scanner.from_file(path)` returns `Result<Scanner, fs.IoError>`, so match
+`Ok`/`Err`. Drive the value-state API with `scan(sc) -> Scanner`, then read the
+current token with `text(sc)` only when `has_next(sc)` is true. Use
+`with_split(sc, SplitWords)` for whitespace tokens; the default is
+`SplitLines`. `next_line(sc)` is a convenience helper returning the updated
+scanner plus `Option<string>`. Full example:
+[`examples/v05/surfaces/scanner_tokens.hew`](../examples/v05/surfaces/scanner_tokens.hew).
+
+### HTTP over `await` — async client + server
+
+The flagship v0.5 networking surface is an `await`-suspended HTTP/1.1 client and
+server built on `net.connect` / `net.listen` plus the pure-Hew codecs in
+`std::net::http::http_async_client` / `http_async_server`. A server handler
+`await`s a connection, drives an `await conn.read_string()` loop until the
+request is buffered, then replies; a client writes a request and `await`s the
+response. Every `await` suspends the handler (not the worker), so one worker can
+serve and fetch on the same thread. The request/response codecs are pure and
+runnable in isolation:
+
+```hew
+import std::net::http::http_async_client;
+
+fn main() {
+    let parts = http_async_client.split_address("http://127.0.0.1:8080/health");
+    println(f"connect to {parts.0}");   // connect to 127.0.0.1:8080
+    let raw = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}";
+    let resp = http_async_client.parse_response(raw);
+    println(f"status={resp.status()} type={resp.content_type()} body={resp.body()}");
+}
+```
+
+Build requests with `build_get(host, path)` / `build_request(...)` and parse
+replies with `parse_response` → `status()` / `body()` / `header(name)` /
+`content_type()`; the server side parses with `parse_request` → `method()` /
+`path()` / `header(name)` / `is_valid()` and builds replies with
+`response_text` / `response_json`. The `Listener` / `Connection` handles must be
+handler LOCALS — an opaque handle in actor state is rejected by the
+supervisor-restart clone gate. Full client+server program (two routes):
+[`examples/net/http_await_service.hew`](../examples/net/http_await_service.hew)
+(run with `HEW_WORKERS=1` to see the single-worker serve+fetch proof).
+
+### Remote ask suspension — `RemotePid<T>.ask` from an actor handler
+
+```hew
+actor Echo {
+    receive fn handle(req: i64) -> i64 { req }
+}
+
+impl ActorMsg for Echo {
+    type Msg = i64;
+    type Reply = i64;
+}
+
+actor Client {
+    receive fn go(unused: i64) {
+        let found: Result<RemotePid<Echo>, LookupError> = Node::lookup("echo");
+        match found {
+            Ok(peer) => {
+                let reply = peer.ask(7, 1000);
+                match reply {
+                    Ok(n) => println(f"answer={n}"),
+                    Err(_) => println("ask failed"),
+                }
+            },
+            Err(_) => println("lookup failed"),
+        }
+    }
+}
+```
+
+`RemotePid<T>` names an actor discovered through the node registry. From an
+actor handler, `peer.ask(msg, timeout_ms)` lowers to the cross-node suspending
+remote-ask path and returns `Result<T::Reply, AskError>` on resume; match
+`Ok`/`Err` instead of assuming a reply. A same-node lookup can still return a
+`RemotePid<T>`, but the local-mailbox bridge for the remote-ask path is scoped
+to fail closed as `AskError::RoutingFailed`; use a `LocalPid<T>` direct actor
+call when both actors are intentionally local. Full example:
+[`examples/distributed/kv_client.hew`](../examples/distributed/kv_client.hew)
+and [`examples/distributed/kv_server.hew`](../examples/distributed/kv_server.hew).
+
+### TLS client — free-function surface (with a v0.5 data-plane caveat)
+
+```hew
+import std::net::tls;
+
+fn main() {
+    let stream = tls.connect("example.com", 443);
+    let req = "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
+    let payload = req.to_bytes();
+    let sent = tls.write(stream, payload);
+    println(f"sent {sent}/{payload.len()} bytes");
+    // match tls.read(stream, 256) { Ok(data) => ..., Err(_) => ... }
+    tls.close(stream);
+}
+```
+
+Use the FREE-FUNCTION surface — `tls.connect(host, port)` (system-root verified),
+`tls.write` / `tls.try_write`, `tls.read`, `tls.close`. Request/response bodies
+are `bytes`: build a payload with the public `string.to_bytes()` surface and decode
+with `bytes.to_string()`. The method form (`stream.read(n)`) is NOT supported yet.
+
+> **Known gap (v0.5):** the TLS data-plane FFI bridge
+> (`hew_tls_write_result` / `hew_tls_read_result`) is wired to the legacy
+> `(ptr, len)` / `HewVec` byte ABI while Hew's `bytes` is a `BytesTriple`, so
+> `tls.write` currently transmits 0 bytes (the length is dropped at the boundary)
+> and the response read does not complete. `tls.connect` also does not record a
+> failed handshake in `last_error()`. The snippet above is the correct caller
+> shape and type-checks/runs to completion (reporting the short write); the
+> encrypted round-trip works once the runtime bridge adopts the `BytesTriple`
+> ABI. Tracked for the under-the-hood TLS workstream.
+
+Full example (fail-closed on the short write so it terminates):
+[`examples/net/tls_client.hew`](../examples/net/tls_client.hew).

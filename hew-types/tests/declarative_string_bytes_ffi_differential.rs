@@ -44,6 +44,7 @@ fn string_methods_resolve_through_std_string_extern_symbols() {
             let _: string = s.repeat(2);
             let _: i64 = s.char_at(0);
             let _: Vec<char> = s.chars();
+            let _: bytes = s.to_bytes();
         }
     "#;
     let output = typecheck(source);
@@ -74,6 +75,7 @@ fn string_methods_resolve_through_std_string_extern_symbols() {
         "hew_string_repeat",
         "hew_string_char_at",
         "hew_string_chars",
+        "hew_string_to_bytes",
     ] {
         assert!(
             has_rewrite(&output, symbol),

@@ -55,7 +55,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-runtime-net test-runtime-unit test-stdlib test-hew test-ux-examples test-release-binary asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-runtime-net test-runtime-unit test-stdlib test-hew test-ux-examples test-surface-examples test-release-binary asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined
@@ -415,7 +415,7 @@ test: test-rust
 # by CI (which uses cargo nextest directly). Use `make test-all` when you
 # want the previous behaviour.
 # TODO: Add test-stdlib to `test-all` unconditionally once stdlib files are type-check clean
-test-all: test test-stdlib test-hew test-ux-examples
+test-all: test test-stdlib test-hew test-ux-examples test-surface-examples
 
 # Build the combined runtime+stdlib static lib and the WASM runtime before
 # running the full workspace test suite.  Several hew-cli integration tests
@@ -548,6 +548,44 @@ test-ux-examples: hew runtime stdlib
 	echo "  $$pass passed, $$skip skipped (substrate-gated), $$fail failed"; \
 	if [ $$fail -gt 0 ]; then \
 	  echo "ERROR: $$fail tutorial(s) failed — run \`hew run <file>\` to reproduce"; \
+	  exit 1; \
+	fi
+
+# Run every offline v0.5-surface example against its paired .expected file.
+# Two lanes:
+#   1. examples/v05/surfaces/*.hew — idiomatic single-file demos for the landed
+#      v0.5 surfaces (typed streams, regex captures, template, unicode). Pure,
+#      deterministic, no I/O.
+#   2. examples/net/http_await_service.hew — the async HTTP/1.1 flagship. It is
+#      LOOPBACK-only (127.0.0.1) so it needs no external network and is offline;
+#      its output is deterministic and was verified stable across repeated runs,
+#      so it is gated here too.
+# The TLS client (examples/net/tls_client.hew) is intentionally NOT gated: it
+# dials a real public host (example.com:443) — a genuine outbound network
+# dependency that cannot run offline — and additionally exercises a known TLS
+# data-plane ABI gap (it fails closed on a short write). It ships a paired
+# .expected for local diffing only. See examples/README.md for the rationale.
+test-surface-examples: hew runtime stdlib
+	@echo "==> Running v0.5 surface examples against .expected"
+	@fail=0; pass=0; \
+	srcs="$$(find examples/v05/surfaces -maxdepth 1 -name '*.hew' | sort) examples/net/http_await_service.hew"; \
+	for src in $$srcs; do \
+	  exp="$${src%.hew}.expected"; \
+	  test -f "$$exp" || continue; \
+	  actual=$$($(DEBUG_DIR)/hew run "$$src" 2>&1); \
+	  expected=$$(cat "$$exp"); \
+	  if [ "$$actual" = "$$expected" ]; then \
+	    pass=$$((pass + 1)); \
+	  else \
+	    echo "  FAIL: $$src"; \
+	    echo "    expected: $$(echo "$$expected" | head -3 | tr '\n' '|')"; \
+	    echo "    actual:   $$(echo "$$actual"   | head -3 | tr '\n' '|')"; \
+	    fail=$$((fail + 1)); \
+	  fi; \
+	done; \
+	echo "  $$pass passed, $$fail failed"; \
+	if [ $$fail -gt 0 ]; then \
+	  echo "ERROR: $$fail surface example(s) failed — run \`hew run <file>\` to reproduce"; \
 	  exit 1; \
 	fi
 

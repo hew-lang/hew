@@ -977,6 +977,58 @@ mod tests {
         checker.check_program(&parse_result.program)
     }
 
+    /// Dot-completion must surface `impl`-block methods on a named type with
+    /// their return-type detail. This is the analysis-layer coverage that the
+    /// LSP relies on once imported stdlib modules (e.g. `std/text/regex`) are
+    /// inlined into the checked program: the regex `Pattern.captures(input) ->
+    /// CaptureMatches` surface has exactly this trait + impl shape.
+    #[test]
+    fn completions_surface_impl_block_methods_with_return_type() {
+        let source = "\
+type Caps { count: i64; }
+type Matcher { id: i64; }
+trait MatcherMethods {
+    fn captures(self, input: string) -> Caps;
+    fn find_all(self, input: string) -> Vec<string>;
+}
+impl MatcherMethods for Matcher {
+    fn captures(m: Matcher, input: string) -> Caps { Caps { count: 0 } }
+    fn find_all(m: Matcher, input: string) -> Vec<string> { Vec::new() }
+}
+fn probe(mat: Matcher, s: string) {
+    let c = mat.captures(s);
+}
+";
+        let tc = type_check(source);
+        assert!(
+            !tc.errors
+                .iter()
+                .any(|e| e.severity == hew_types::error::Severity::Error),
+            "fixture must type-check cleanly: {:?}",
+            tc.errors
+        );
+        let dot = source.find("mat.captures").expect("receiver present") + "mat.".len();
+        let parse_result = hew_parser::parse(source);
+        let items = complete(source, &parse_result, Some(&tc), dot);
+        let captures = items
+            .iter()
+            .find(|i| i.label == "captures")
+            .expect("captures method should appear in completions");
+        assert!(
+            captures
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("Caps")),
+            "captures completion should carry its `-> Caps` return type, got: {:?}",
+            captures.detail,
+        );
+        assert!(
+            items.iter().any(|i| i.label == "find_all"),
+            "sibling impl method find_all should also be surfaced, got: {:?}",
+            items.iter().map(|i| &i.label).collect::<Vec<_>>(),
+        );
+    }
+
     #[test]
     fn completions_include_locals_inside_call_argument_blocks() {
         let labels = labels_at_cursor(

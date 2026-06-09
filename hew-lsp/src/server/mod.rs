@@ -38,7 +38,9 @@ use self::workspace::{build_code_lenses, collect_project_workspace_symbols};
 
 // Items additionally needed by the test module (only compiled in test builds).
 #[cfg(test)]
-use self::analysis::{build_diagnostics, diagnostic_data, populate_user_module_imports};
+use self::analysis::{
+    analyze_document, build_diagnostics, diagnostic_data, populate_user_module_imports,
+};
 #[cfg(test)]
 use self::convert::analysis_symbol_kind_to_lsp;
 #[cfg(test)]
@@ -6181,7 +6183,7 @@ machine Traffic {
     //  v05_regex_literal                  | accepted                       | `re"…"` regex literal; LSP + hover tests pass
     //  v05_result_option_ctors            | accepted                       | Result/Option enum ctors; LSP test passes
     //  v05_scope_fork                     | accepted                       | `scope { fork { … } }` syntax; LSP test passes
-    //  v05_select_arms                    | pending-upstream-substrate     | StreamNext/TaskAwait/AfterTimer/ActorAsk select arm kinds; parser cannot handle them; blocking lane: unassigned (no W3 lane in current PLANNING-MAP; file follow-on lane before Stage 4)
+    //  v05_select_arms                    | accepted                       | compiler-accepted actor ask, channel recv, and after select arms; LSP + hard-error guard pass
     //  v05_spawn_lambda_actor             | pending-upstream-substrate     | `spawn |msg: T| { … }` lambda-actor spawn syntax; parser/analysis do not support inline lambda spawn; blocking lane: unassigned (no W3 lane in current PLANNING-MAP; file follow-on lane before Stage 4)
     //  v05_std_channels                   | accepted (syntax/smoke tier)   | parser admits Channel<T>/Stream<T>/Sink<T>; LSP probe test passes; generic channel type errors are a substrate limitation (lowering implemented only for string/bytes), not intentional fixture design; future work should add fail-closed type-error assertions for the generic params
     //  v05_string_methods                 | accepted                       | string method completions; LSP + full L2 surface tests pass
@@ -6194,7 +6196,6 @@ machine Traffic {
     //  Test name                               | Decision        | Rationale
     //  ──────────────────────────────────────────────────────────────────────────────────────────────
     //  v05_record_tuple_literal_lsp_coverage   | remain-ignored  | Compiler-substrate dependency W3.006; do not unignore until W3.006 tuple substrate lands.
-    //  v05_select_arms_lsp_coverage            | remain-ignored  | Compiler-substrate dependency (unassigned select-arm-kinds lane); do not unignore until parser admits these arm kinds.
     //  v05_spawn_lambda_actor_lsp_coverage     | remain-ignored  | Compiler-substrate dependency (unassigned lambda-spawn lane); do not unignore until parser/analysis support lambda-actor spawn.
     //  v05_async_await_lsp_coverage            | become-fail-closed-diagnostic | `async fn`/`await` permanently not in Hew syntax; test should assert parse-error diagnostics rather than remaining an indefinitely-ignored smoke check.  See v05_async_await_is_rejected_with_parse_errors below.
     //
@@ -6209,12 +6210,12 @@ machine Traffic {
     // ─── Fixture count notes ─────────────────────────────────────────────
     //
     //  Total v05_*.hew fixtures: 31
-    //    accepted:                          26 (all have passing native LSP tests;
+    //    accepted:                          27 (all have passing native LSP tests;
     //                                          v05_std_channels accepted at
     //                                          syntax/smoke tier — see row note)
     //    cross-module-single-source-limited: 1 (v05_cross_module_machine_main)
     //    known-rejected:                     1 (v05_async_await)
-    //    pending-upstream-substrate:         3 (v05_record_tuple_literal, v05_select_arms,
+    //    pending-upstream-substrate:         2 (v05_record_tuple_literal,
     //                                           v05_spawn_lambda_actor)
     //  WASM fixture table covers 30 (all except v05_cross_module_machine_main, tested separately).
     //  Hard count guards: FIXTURES.len()==30, ANALYSIS_ERROR_FIXTURES.len()==9 in v05_wasm_coverage.rs.
@@ -6994,15 +6995,21 @@ machine Traffic {
         );
     }
 
-    // W4.023 Stage 0: pending-upstream-substrate — unassigned select-arm-kinds lane
-    // Do not unignore until a dedicated lane lands parser support for StreamNext,
-    // TaskAwait, AfterTimer, and ActorAsk select arm syntax.
     #[test]
-    #[ignore = "pending-upstream-substrate unassigned: select arm kinds (StreamNext/TaskAwait/AfterTimer/ActorAsk) not yet parsed"]
     fn v05_select_arms_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_select_arms.hew");
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-lsp has a parent (repo root)")
+            .to_path_buf();
+        let uri = Url::from_file_path(repo_root.join("hew-lsp/tests/fixtures/v05_select_arms.hew"))
+            .expect("fixture path is absolute");
+        let docs: DashMap<Url, DocumentState> = DashMap::new();
+        let doc = analyze_document(&uri, source, &docs);
+        assert_no_hard_type_errors("v05_select_arms", &doc);
         assert_v05_lsp_fixture(
             "v05_select_arms",
-            include_str!("../../tests/fixtures/v05_select_arms.hew"),
+            source,
             "select_probe",
             &["Responder", "ask", "select_probe", "select_arms"],
         );

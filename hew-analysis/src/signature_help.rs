@@ -323,6 +323,51 @@ mod tests {
         assert_eq!(result.signatures[0].label, "fn sum(value: i64) -> i64");
     }
 
+    /// Signature help must label an `impl`-block method on a named type with
+    /// its full parameter list and return type. This is the analysis-layer
+    /// coverage the LSP relies on for imported stdlib method surfaces once the
+    /// module is inlined (e.g. regex `captures(input: string) -> CaptureMatches`).
+    #[test]
+    fn sig_help_labels_impl_block_method_with_return_type() {
+        let source = "\
+type Caps { count: i64; }
+type Matcher { id: i64; }
+trait MatcherMethods {
+    fn captures(self, input: string) -> Caps;
+}
+impl MatcherMethods for Matcher {
+    fn captures(m: Matcher, input: string) -> Caps { Caps { count: 0 } }
+}
+fn probe(mat: Matcher, s: string) {
+    let c = mat.captures(s);
+}
+";
+        let parse_result = hew_parser::parse(source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "parse errors: {:?}",
+            parse_result.errors
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut checker = hew_types::Checker::new(registry);
+        let tc = checker.check_program(&parse_result.program);
+        assert!(
+            !tc.errors
+                .iter()
+                .any(|e| e.severity == hew_types::error::Severity::Error),
+            "fixture must type-check cleanly: {:?}",
+            tc.errors
+        );
+        let call = source.find("mat.captures").expect("call present");
+        let paren = call + source[call..].find('(').unwrap() + 1;
+        let sh = build_signature_help(source, &tc, paren)
+            .expect("signature help should resolve the impl-block method");
+        assert_eq!(
+            sh.signatures[0].label, "fn captures(input: string) -> Caps",
+            "signature label should include the param list and return type",
+        );
+    }
+
     #[test]
     fn module_qualified_function_sig_help_prefers_exact_dotted_name_over_receiver_method_fallback()
     {

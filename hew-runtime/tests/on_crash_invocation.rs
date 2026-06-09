@@ -129,6 +129,7 @@ fn on_crash_handler_fires_once_per_crash_then_restart_proceeds() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
+            cycle_capable: 0,
             on_crash: Some(recording_on_crash),
         };
         assert_eq!(
@@ -210,6 +211,7 @@ fn null_on_crash_handler_is_skipped_cleanly() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
+            cycle_capable: 0,
             on_crash: None,
         };
         assert_eq!(

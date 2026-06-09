@@ -382,7 +382,7 @@ fn supervisor_child_with_on_crash_hook_surfaces_symbol_on_layout() {
         actor Crashable {
             receive fn ping() {}
             #[on(crash)]
-            fn handle_crash(info: PanicInfo) -> CrashAction { CrashAction::Restart }
+            fn handle_crash(info: CrashInfo) -> CrashAction { CrashAction::Restart }
         }
         actor Stable {
             receive fn ping() {}
@@ -395,7 +395,7 @@ fn supervisor_child_with_on_crash_hook_surfaces_symbol_on_layout() {
         ",
     );
 
-    // `PanicInfo` and `CrashAction` are seeded into the HIR TypeClassTable by
+    // `CrashInfo` and `CrashAction` are seeded into the HIR TypeClassTable by
     // `seed_builtin_type_classes`, so `push_unknown_type_diagnostics` no longer
     // fires for them. The hook body uses `CrashAction::Restart`, which HIR
     // lowers as `UnresolvedSymbol` (enum-variant paths are v0.5 out-of-scope),

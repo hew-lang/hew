@@ -1,0 +1,4 @@
+fn main() {
+    let answer: i64 = 40 + 2;
+    println(answer);
+}

@@ -1477,6 +1477,10 @@ pub struct HewActorOpts {
     /// Set from the `#[max_heap(N)]` actor attribute; callers that do not use
     /// the attribute must supply `0`.
     pub arena_cap_bytes: usize,
+    /// Non-zero when the checker determined this actor participates in an
+    /// actor-ref cycle. Future consumer: cycle-detection / Machine Lane B
+    /// cycle handling.
+    pub cycle_capable: i32,
 }
 
 fn parse_overflow_policy(policy: i32) -> HewOverflowPolicy {
@@ -1542,6 +1546,12 @@ struct ActorSpawnConfig {
     mailbox: *mut c_void,
     budget: i32,
     coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
+    /// Checker-derived cycle capability for future Machine Lane B handling.
+    #[expect(
+        dead_code,
+        reason = "receiver-side ABI bit is staged for the Machine Lane B cycle-detection consumer"
+    )]
+    cycle_capable: bool,
     /// Arena cap in bytes. `0` = unbounded (calls `hew_arena_new`).
     /// Non-zero calls `hew_arena_new_with_cap(cap_bytes)`.
     cap_bytes: usize,
@@ -1774,6 +1784,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
             mailbox: mailbox.cast(),
             budget: HEW_MSG_BUDGET,
             coalesce_key_fn: None,
+            cycle_capable: false,
             cap_bytes: 0,
         })
     }
@@ -1832,6 +1843,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
             mailbox: mailbox.cast(),
             budget,
             coalesce_key_fn: opts.coalesce_key_fn,
+            cycle_capable: opts.cycle_capable != 0,
             cap_bytes: opts.arena_cap_bytes,
         })
     }
@@ -1872,6 +1884,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
             mailbox: mailbox.cast(),
             budget: HEW_MSG_BUDGET,
             coalesce_key_fn: None,
+            cycle_capable: false,
             cap_bytes: 0,
         })
     }
@@ -3752,6 +3765,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
             mailbox,
             budget: HEW_MSG_BUDGET,
             coalesce_key_fn: None,
+            cycle_capable: false,
             cap_bytes: 0,
         })
     }
@@ -3787,6 +3801,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
             mailbox,
             budget: HEW_MSG_BUDGET,
             coalesce_key_fn: None,
+            cycle_capable: false,
             cap_bytes: 0,
         })
     }
@@ -3846,6 +3861,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
             mailbox,
             budget,
             coalesce_key_fn: opts.coalesce_key_fn,
+            cycle_capable: opts.cycle_capable != 0,
             cap_bytes: opts.arena_cap_bytes,
         })
     }
@@ -7050,6 +7066,7 @@ mod tests {
             coalesce_fallback: 0,
             budget: 0,
             arena_cap_bytes: 128,
+            cycle_capable: 0,
         };
 
         // SAFETY: opts is valid for the duration of the call.
@@ -7114,6 +7131,7 @@ mod tests {
             coalesce_fallback: 0,
             budget: 0,
             arena_cap_bytes: 0,
+            cycle_capable: 0,
         };
 
         // SAFETY: opts is valid for the duration of the call.

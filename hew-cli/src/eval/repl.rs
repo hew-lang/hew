@@ -2,12 +2,15 @@
 
 use super::classify::{self, InputCompleteness, InputKind, ReplCommand};
 use super::session::{Session, SessionCounts, SyntheticDiagnosticView};
+use std::collections::HashMap;
 use std::fmt;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
 const DEFAULT_EVAL_TIMEOUT: Duration = Duration::from_secs(30);
+const TYPE_QUERY_NO_INFO: &str = "could not determine type: no type information for expression";
+const TYPE_QUERY_MARKER: &str = "__repl_type_query = ";
 
 /// Result of evaluating a single input in the REPL.
 #[derive(Debug)]
@@ -79,6 +82,21 @@ impl fmt::Display for LoadFileError {
     }
 }
 
+fn load_file_error_from_cli(error: CliEvalError) -> LoadFileError {
+    match error {
+        CliEvalError::DiagnosticsRendered => LoadFileError::DiagnosticsRendered,
+        CliEvalError::Message(message) => LoadFileError::Message(message),
+        CliEvalError::RuntimeFailure {
+            stdout,
+            stderr,
+            exit_code,
+        } => {
+            emit_runtime_failure_output(&stdout, &stderr);
+            LoadFileError::Message(format!("program exited with status {exit_code}"))
+        }
+    }
+}
+
 struct CheckedProgram {
     kind: InputKind,
     program: hew_parser::ast::Program,
@@ -97,6 +115,11 @@ enum EvalCheckFailure {
         errors: Vec<hew_types::TypeError>,
         module_source_map: Box<crate::diagnostic::ModuleSourceMap>,
     },
+}
+
+enum TypeQueryFailure {
+    Check(EvalCheckFailure),
+    NoTypeInfo,
 }
 
 enum CompiledEvalError {
@@ -141,11 +164,54 @@ fn typecheck_program(
     checker.check_program(program)
 }
 
+pub(crate) fn find_type_query_expr_type(
+    source: &str,
+    expr_types: &HashMap<hew_types::check::SpanKey, hew_types::Ty>,
+) -> Option<hew_types::Ty> {
+    let marker_pos = source.find(TYPE_QUERY_MARKER)?;
+    let expr_start = marker_pos + TYPE_QUERY_MARKER.len();
+    let expr_end = source[expr_start..]
+        .rfind(";\n}")
+        .map_or(source.len(), |pos| expr_start + pos);
+
+    let mut best_ty = None;
+    let mut best_span_len = 0usize;
+    for (span, ty) in expr_types {
+        if span.start >= expr_start && span.end <= expr_end {
+            let span_len = span.end.saturating_sub(span.start);
+            if best_ty.is_none() || span_len > best_span_len {
+                best_ty = Some(ty.clone());
+                best_span_len = span_len;
+            }
+        }
+    }
+
+    best_ty
+}
+
+fn generator_description(ty: &hew_types::Ty) -> Option<String> {
+    let (yield_ty, return_ty) = ty.as_generator()?;
+    Some(format!(
+        "<generator yielding {}, returning {}>",
+        yield_ty.user_facing(),
+        return_ty.user_facing()
+    ))
+}
+
 fn program_has_imports(program: &hew_parser::ast::Program) -> bool {
     program
         .items
         .iter()
         .any(|(item, _)| matches!(item, hew_parser::ast::Item::Import(_)))
+}
+
+fn program_defines_main(program: &hew_parser::ast::Program) -> bool {
+    program.items.iter().any(|(item, _)| {
+        matches!(
+            item,
+            hew_parser::ast::Item::Function(function) if function.name == "main"
+        )
+    })
 }
 
 fn render_eval_parse_diagnostics(
@@ -194,6 +260,47 @@ fn render_eval_type_diagnostics(
             &original,
             module_source_map,
         );
+    }
+}
+
+fn type_query_failure_messages(error: TypeQueryFailure) -> Vec<String> {
+    match error {
+        TypeQueryFailure::Check(EvalCheckFailure::Parse { errors, .. }) => {
+            errors.into_iter().map(|error| error.message).collect()
+        }
+        TypeQueryFailure::Check(EvalCheckFailure::Type { errors, .. }) => {
+            errors.into_iter().map(|error| error.message).collect()
+        }
+        TypeQueryFailure::NoTypeInfo => vec![TYPE_QUERY_NO_INFO.to_string()],
+    }
+}
+
+fn render_type_query_failure(input_name: &str, error: TypeQueryFailure) -> CliEvalError {
+    match error {
+        TypeQueryFailure::Check(EvalCheckFailure::Parse {
+            source,
+            diagnostic_view,
+            errors,
+        }) => {
+            render_eval_parse_diagnostics(&source, input_name, diagnostic_view.as_ref(), &errors);
+            CliEvalError::DiagnosticsRendered
+        }
+        TypeQueryFailure::Check(EvalCheckFailure::Type {
+            source,
+            diagnostic_view,
+            errors,
+            module_source_map,
+        }) => {
+            render_eval_type_diagnostics(
+                &source,
+                input_name,
+                diagnostic_view.as_ref(),
+                &errors,
+                &module_source_map,
+            );
+            CliEvalError::DiagnosticsRendered
+        }
+        TypeQueryFailure::NoTypeInfo => CliEvalError::Message(TYPE_QUERY_NO_INFO.to_string()),
     }
 }
 
@@ -380,6 +487,11 @@ impl ReplSession {
         self.jit_mode = mode;
     }
 
+    #[cfg(test)]
+    pub(crate) fn add_binding_for_test(&mut self, source: &str) {
+        self.session.add_binding(source);
+    }
+
     fn is_wasm_target(&self) -> bool {
         self.eval_target.as_deref().is_some_and(|t| {
             crate::target::TargetSpec::from_requested(Some(t)).is_ok_and(|spec| spec.is_wasm())
@@ -409,6 +521,26 @@ impl ReplSession {
         // Handle commands.
         if let InputKind::Command(cmd) = &kind {
             return self.handle_command(cmd);
+        }
+
+        if matches!(kind, InputKind::Expression) {
+            match self.generator_display_override(trimmed) {
+                Ok(Some(output)) => {
+                    return EvalResult {
+                        output,
+                        had_errors: false,
+                        errors: Vec::new(),
+                    };
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return EvalResult {
+                        output: String::new(),
+                        had_errors: true,
+                        errors: type_query_failure_messages(error),
+                    };
+                }
+            }
         }
 
         // Build the synthetic program.
@@ -492,6 +624,14 @@ impl ReplSession {
             return self.handle_cli_command(cmd, input_name);
         }
 
+        if matches!(kind, InputKind::Expression) {
+            match self.generator_display_override(trimmed) {
+                Ok(Some(output)) => return Ok(output),
+                Ok(None) => {}
+                Err(error) => return Err(render_type_query_failure(input_name, error)),
+            }
+        }
+
         let checked_program = match self.prepare_program(trimmed, kind) {
             Ok(program) => program,
             Err(EvalCheckFailure::Parse {
@@ -568,6 +708,14 @@ impl ReplSession {
             return self.handle_cli_command(cmd, input_name);
         }
 
+        if matches!(kind, InputKind::Expression) {
+            match self.generator_display_override(trimmed) {
+                Ok(Some(output)) => return Ok(output),
+                Ok(None) => {}
+                Err(error) => return Err(render_type_query_failure(input_name, error)),
+            }
+        }
+
         let synthetic_program = self.session.build_program_with_kind(trimmed, kind.clone());
         let parse_result = hew_parser::parse(&synthetic_program.source);
         if !parse_result.errors.is_empty() {
@@ -633,77 +781,55 @@ impl ReplSession {
     pub fn type_of(&mut self, expr: &str) -> Result<String, Vec<String>> {
         match self.type_of_checked(expr) {
             Ok(ty) => Ok(ty),
-            Err(EvalCheckFailure::Parse { errors, .. }) => {
-                Err(errors.into_iter().map(|error| error.message).collect())
-            }
-            Err(EvalCheckFailure::Type { errors, .. }) => {
-                Err(errors.into_iter().map(|error| error.message).collect())
-            }
+            Err(error) => Err(type_query_failure_messages(error)),
         }
     }
 
-    fn type_of_checked(&mut self, expr: &str) -> Result<String, EvalCheckFailure> {
-        let source = self.session.build_type_query(expr);
-        let parse_result = hew_parser::parse(&source);
+    fn type_of_checked(&mut self, expr: &str) -> Result<String, TypeQueryFailure> {
+        Ok(self.type_of_ty_checked(expr)?.user_facing().to_string())
+    }
+
+    fn type_of_ty_checked(&mut self, expr: &str) -> Result<hew_types::Ty, TypeQueryFailure> {
+        let synthetic_program = self.session.build_type_query_program(expr);
+        let diagnostic_view = synthetic_program.diagnostic_view.clone();
+        let parse_result = hew_parser::parse(&synthetic_program.source);
         if !parse_result.errors.is_empty() {
-            return Err(EvalCheckFailure::Parse {
-                source,
-                diagnostic_view: None,
+            return Err(TypeQueryFailure::Check(EvalCheckFailure::Parse {
+                source: synthetic_program.source,
+                diagnostic_view,
                 errors: parse_result.errors,
-            });
+            }));
         }
 
         let tco = typecheck_program(&parse_result.program, self.is_wasm_target());
         let module_source_map = crate::diagnostic::build_module_source_map(&parse_result.program);
+        let query_ty = find_type_query_expr_type(&synthetic_program.source, &tco.expr_types);
         if !tco.errors.is_empty() {
-            return Err(EvalCheckFailure::Type {
-                source,
-                diagnostic_view: None,
+            if query_ty.is_none()
+                && tco
+                    .errors
+                    .iter()
+                    .any(|error| error.kind == hew_types::error::TypeErrorKind::InferenceFailed)
+            {
+                return Err(TypeQueryFailure::NoTypeInfo);
+            }
+            return Err(TypeQueryFailure::Check(EvalCheckFailure::Type {
+                source: synthetic_program.source,
+                diagnostic_view,
                 errors: tco.errors,
                 module_source_map: Box::new(module_source_map),
-            });
+            }));
         }
 
-        // Find the type of `__repl_type_query` in the fn_sigs or expr_types.
-        // We look for the expression type of the RHS of the let binding.
-        // The query variable name won't be in fn_sigs, so search expr_types
-        // for the expression at the right byte offset.
-        // As a simpler approach, look for the binding in the source and find
-        // the expression type at that span.
-        if let Some(sig) = tco.fn_sigs.get("main") {
-            // Search through expr_types for any expression spanning the
-            // query expression area.
-            let query_marker = "__repl_type_query = ";
-            if let Some(marker_pos) = source.find(query_marker) {
-                let expr_start = marker_pos + query_marker.len();
-                let expr_end = source[expr_start..]
-                    .find(';')
-                    .map_or(source.len(), |p| expr_start + p);
+        query_ty.ok_or(TypeQueryFailure::NoTypeInfo)
+    }
 
-                // Find the best matching span in expr_types.
-                let mut best_ty = None;
-                let mut best_span_len = usize::MAX;
-                for (span, ty) in &tco.expr_types {
-                    if span.start >= expr_start && span.end <= expr_end {
-                        let span_len = span.end - span.start;
-                        // Pick the widest span that covers the whole expression.
-                        if best_ty.is_none() || span_len > best_span_len {
-                            best_ty = Some(ty.clone());
-                            best_span_len = span_len;
-                        }
-                    }
-                }
-
-                if let Some(ty) = best_ty {
-                    return Ok(ty.user_facing().to_string());
-                }
-            }
-
-            // Fallback: check the return type of main.
-            let _ = sig;
-        }
-
-        Ok("unknown".to_string())
+    fn generator_display_override(
+        &mut self,
+        expr: &str,
+    ) -> Result<Option<String>, TypeQueryFailure> {
+        let ty = self.type_of_ty_checked(expr)?;
+        Ok(generator_description(&ty).map(|description| format!("{description}\n")))
     }
 
     fn eval_type_command_cli(
@@ -719,34 +845,7 @@ impl ReplSession {
 
         match self.type_of_checked(expr) {
             Ok(ty) => Ok(format!("{ty}\n")),
-            Err(EvalCheckFailure::Parse {
-                source,
-                diagnostic_view,
-                errors,
-            }) => {
-                render_eval_parse_diagnostics(
-                    &source,
-                    input_name,
-                    diagnostic_view.as_ref(),
-                    &errors,
-                );
-                Err(CliEvalError::DiagnosticsRendered)
-            }
-            Err(EvalCheckFailure::Type {
-                source,
-                diagnostic_view,
-                errors,
-                module_source_map,
-            }) => {
-                render_eval_type_diagnostics(
-                    &source,
-                    input_name,
-                    diagnostic_view.as_ref(),
-                    &errors,
-                    &module_source_map,
-                );
-                Err(CliEvalError::DiagnosticsRendered)
-            }
+            Err(error) => Err(render_type_query_failure(input_name, error)),
         }
     }
 
@@ -760,20 +859,7 @@ impl ReplSession {
             .map_err(|e| LoadFileError::Message(format!("cannot read '{path}': {e}")))?;
         let before = self.session.counts();
 
-        let output =
-            self.eval_source_file_cli(&source, path, path)
-                .map_err(|error| match error {
-                    CliEvalError::DiagnosticsRendered => LoadFileError::DiagnosticsRendered,
-                    CliEvalError::Message(message) => LoadFileError::Message(message),
-                    CliEvalError::RuntimeFailure {
-                        stdout,
-                        stderr,
-                        exit_code,
-                    } => {
-                        emit_runtime_failure_output(&stdout, &stderr);
-                        LoadFileError::Message(format!("program exited with status {exit_code}"))
-                    }
-                })?;
+        let output = self.load_file_output_cli(&source, path)?;
 
         if !output.is_empty() {
             print!("{output}");
@@ -781,6 +867,18 @@ impl ReplSession {
 
         let added = session_count_delta(before, self.session.counts());
         Ok(format!("Loaded {path} ({})", describe_load_result(added)))
+    }
+
+    fn load_file_output_cli(&mut self, source: &str, path: &str) -> Result<String, LoadFileError> {
+        let parse_result = hew_parser::parse(source);
+        if parse_result.errors.is_empty() && program_defines_main(&parse_result.program) {
+            return self
+                .eval_parsed_source_file_cli(parse_result.program, source, path)
+                .map_err(load_file_error_from_cli);
+        }
+
+        self.eval_source_file_cli(source, path, path)
+            .map_err(load_file_error_from_cli)
     }
 
     /// Reset the session.
@@ -939,6 +1037,36 @@ impl ReplSession {
             InputKind::Item => self.session.add_item(input),
             InputKind::Statement => self.session.add_persistent_bindings_from_statement(input),
             InputKind::Expression | InputKind::Command(_) => {}
+        }
+    }
+
+    fn eval_parsed_source_file_cli(
+        &mut self,
+        program: hew_parser::ast::Program,
+        source: &str,
+        source_label: &str,
+    ) -> Result<String, CliEvalError> {
+        match run_eval_compiled(
+            program,
+            source,
+            source_label,
+            self.execution_timeout,
+            self.project_dir.clone(),
+            self.eval_target.as_deref(),
+            self.jit_mode,
+        ) {
+            Ok(output) => Ok(output),
+            Err(CompiledEvalError::DiagnosticsRendered) => Err(CliEvalError::DiagnosticsRendered),
+            Err(CompiledEvalError::Message(error)) => Err(CliEvalError::Message(error)),
+            Err(CompiledEvalError::RuntimeFailure {
+                stdout,
+                stderr,
+                exit_code,
+            }) => Err(CliEvalError::RuntimeFailure {
+                stdout,
+                stderr,
+                exit_code,
+            }),
         }
     }
 

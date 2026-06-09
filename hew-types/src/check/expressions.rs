@@ -5,6 +5,7 @@ use super::types::GenericLambdaSig;
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::BuiltinType;
 
 type DangerousRcBinding = (String, String);
 type DangerousRcScope = HashMap<String, Option<DangerousRcBinding>>;
@@ -15,12 +16,18 @@ impl Checker {
             Ty::Var(v) => generic_param_names.get(&v.0).map_or_else(
                 || ty.clone(),
                 |name| Ty::Named {
+                    builtin: None,
                     name: name.clone(),
                     args: vec![],
                 },
             ),
-            Ty::Named { name, args } => Ty::Named {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => Ty::Named {
                 name: name.clone(),
+                builtin: *builtin,
                 args: args
                     .iter()
                     .map(|arg| Self::lambda_generic_schema_ty(arg, generic_param_names))
@@ -149,6 +156,7 @@ impl Checker {
                     );
                 }
                 Ty::Named {
+                    builtin: None,
                     name: "regex.Pattern".to_string(),
                     args: vec![],
                 }
@@ -632,6 +640,7 @@ impl Checker {
             let k = TypeVar::fresh();
             let v = TypeVar::fresh();
             Ty::Named {
+                builtin: Some(BuiltinType::HashMap),
                 name: "HashMap".to_string(),
                 args: vec![Ty::Var(k), Ty::Var(v)],
             }
@@ -646,6 +655,7 @@ impl Checker {
             }
             self.validate_hashmap_key_value_types(&first_key_ty, &first_val_ty, span);
             Ty::Named {
+                builtin: Some(BuiltinType::HashMap),
                 name: "HashMap".to_string(),
                 args: vec![first_key_ty, first_val_ty],
             }
@@ -762,7 +772,7 @@ impl Checker {
         // without flipping the marker. The alias path's sender-side drop
         // suppression is unsafe for user destructors until receiver-side
         // coordination is in place, so any user `impl Drop` stays Copy.
-        if let Ty::Named { name, .. } = ty {
+        if let Ty::Named { name, builtin, .. } = ty {
             if self
                 .trait_impls_set
                 .contains(&(name.clone(), "Drop".to_string()))
@@ -779,7 +789,7 @@ impl Checker {
             // backing buffer.  Classify them as `Copy(StdlibDrop)` so the
             // legacy `deepCopyOwnedArgs` clone fires and the receiver
             // gets an independent copy.
-            if matches!(name.as_str(), "Vec" | "HashMap" | "HashSet") {
+            if builtin.is_some_and(BuiltinType::is_collection) {
                 return ActorSendAliasing::Copy(ActorSendCopyReason::StdlibDrop);
             }
         }
@@ -1071,7 +1081,11 @@ impl Checker {
                 self.check_against(&e.0, &e.1, &Ty::I64);
             }
             return match &obj_ty {
-                Ty::Named { name, args } if name == "Vec" && !args.is_empty() => obj_ty.clone(),
+                Ty::Named {
+                    builtin: Some(BuiltinType::Vec),
+                    args,
+                    ..
+                } if !args.is_empty() => obj_ty.clone(),
                 _ => {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -1116,11 +1130,15 @@ impl Checker {
             // Vec keeps the existing runtime-backed indexing ABI. The std
             // `Index` impl exposes the trait surface, but MIR still owns the
             // bounds-check + hew_vec_get_T lowering and that ABI takes i64.
-            Ty::Named { name, args } if name == "Vec" && !args.is_empty() => {
+            Ty::Named {
+                builtin: Some(BuiltinType::Vec),
+                args,
+                ..
+            } if !args.is_empty() => {
                 self.check_against(&index.0, &index.1, &Ty::I64);
                 args[0].clone()
             }
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 if self.type_satisfies_trait_bound(&resolved_obj, "Index") {
                     let expected_key = self
                         .lookup_named_method_sig(name, args, "at")
@@ -1714,11 +1732,12 @@ impl Checker {
                     op: op @ (BinaryOp::Range | BinaryOp::RangeInclusive),
                     right,
                 },
-                Ty::Named { name, args },
-            ) if name == "Range"
-                && args.len() == 1
-                && !matches!(&args[0], Ty::Error | Ty::Var(_)) =>
-            {
+                Ty::Named {
+                    builtin: Some(BuiltinType::Range),
+                    args,
+                    ..
+                },
+            ) if args.len() == 1 && !matches!(&args[0], Ty::Error | Ty::Var(_)) => {
                 let elem_ty = args[0].clone();
                 self.check_against(&left.0, &left.1, &elem_ty);
                 self.check_against(&right.0, &right.1, &elem_ty);
@@ -1788,7 +1807,14 @@ impl Checker {
             }
 
             // Array literal can coerce to Vec<T> when expected
-            (Expr::Array(elems), Ty::Named { name, args }) if name == "Vec" => {
+            (
+                Expr::Array(elems),
+                Ty::Named {
+                    builtin: Some(BuiltinType::Vec),
+                    args,
+                    ..
+                },
+            ) => {
                 let elem_ty = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
                 for elem in elems {
                     let (expr, sp) = (&elem.0, &elem.1);
@@ -1799,7 +1825,14 @@ impl Checker {
             }
 
             // Map literal can coerce to HashMap<K,V> when expected
-            (Expr::MapLiteral { entries }, Ty::Named { name, args }) if name == "HashMap" => {
+            (
+                Expr::MapLiteral { entries },
+                Ty::Named {
+                    builtin: Some(BuiltinType::HashMap),
+                    args,
+                    ..
+                },
+            ) => {
                 let key_ty = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
                 let val_ty = args.get(1).cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
                 for (k, v) in entries {
@@ -1811,9 +1844,13 @@ impl Checker {
             }
 
             // Empty block {} coerces to HashMap<K,V> when expected
-            (Expr::Block(block), Ty::Named { name, .. })
-                if name == "HashMap" && block.stmts.is_empty() && block.trailing_expr.is_none() =>
-            {
+            (
+                Expr::Block(block),
+                Ty::Named {
+                    builtin: Some(BuiltinType::HashMap),
+                    ..
+                },
+            ) if block.stmts.is_empty() && block.trailing_expr.is_none() => {
                 self.record_type(span, expected);
                 expected.clone()
             }
@@ -1936,6 +1973,7 @@ impl Checker {
                 Ty::Named {
                     name: expected_name,
                     args: expected_args,
+                    ..
                 },
             ) if name == expected_name => {
                 // If the literal carries explicit type args, validate that they agree
@@ -2001,6 +2039,7 @@ impl Checker {
                                     if !type_arg_map.contains_key(tp)
                                         && *declared_ty
                                             == (Ty::Named {
+                                                builtin: None,
                                                 name: tp.clone(),
                                                 args: vec![],
                                             })
@@ -2088,6 +2127,7 @@ impl Checker {
                 Ty::Named {
                     name: expected_enum_name,
                     args: expected_args,
+                    ..
                 },
             ) => {
                 // Fail-closed: explicit type args on enum variant struct forms are not
@@ -2148,6 +2188,7 @@ impl Checker {
                                             if !type_arg_map.contains_key(tp)
                                                 && declared_ty
                                                     == (Ty::Named {
+                                                        builtin: None,
                                                         name: tp.clone(),
                                                         args: vec![],
                                                     })
@@ -2232,6 +2273,45 @@ impl Checker {
                 ) {
                     actual
                 } else {
+                    let actual = self.synthesize(expr, span);
+                    let n = self.errors.len();
+                    self.expect_type(expected, &actual, span);
+                    if self.errors.len() > n {
+                        Ty::Error
+                    } else {
+                        actual
+                    }
+                }
+            }
+
+            // Unit enum-variant identifier under a known expected named type:
+            // when the identifier names a unit variant of the expected type,
+            // return the expected type directly (with its generic args already
+            // in place).  This is the generic-machine event arm: passing a bare
+            // `Initialise` to `step()` on `Machine<i64>` must produce
+            // `MachineEvent<i64>`, not `MachineEvent<>` (which synthesize returns
+            // from `resolve_identifier_variant`, which has no expected-type context).
+            //
+            // Guard: only fire when the expected type is a user-defined enum/machine
+            // event type that actually contains the named unit variant.  The check is
+            // purely additive — the existing synthesize+unify fallback handles all
+            // other shapes.
+            (
+                Expr::Identifier(name),
+                Ty::Named {
+                    name: expected_type_name,
+                    ..
+                },
+            ) => {
+                let is_unit_variant = self
+                    .lookup_type_def(expected_type_name)
+                    .and_then(|td| td.variants.get(name.as_str()).cloned())
+                    .is_some_and(|v| matches!(v, VariantDef::Unit));
+                if is_unit_variant {
+                    self.record_type(span, expected);
+                    expected.clone()
+                } else {
+                    // Not a unit variant of this type — synthesize and unify.
                     let actual = self.synthesize(expr, span);
                     let n = self.errors.len();
                     self.expect_type(expected, &actual, span);
@@ -2590,7 +2670,13 @@ impl Checker {
             .iter()
             .filter_map(|p| {
                 let ty = self.resolve_type_expr(&p.ty);
-                if matches!(ty, Ty::Named { ref name, .. } if name == "Rc") {
+                if matches!(
+                    ty,
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Rc),
+                        ..
+                    }
+                ) {
                     return Some((p.name.clone(), Some((p.name.clone(), "Rc".to_string()))));
                 }
                 None
@@ -3467,10 +3553,41 @@ impl Checker {
         field: &str,
         span: &Span,
     ) -> Ty {
+        // Pre-dispatch: module-qualified value-constructor reference, e.g.
+        // `m.Type::Variant` (unit or tuple-naked).  This must run BEFORE
+        // `synthesize(object)` because `module` is not bound in `self.env`
+        // — without the early dispatch the synthesize call would emit the
+        // leaky "undefined variable `module`" diagnostic.
+        //
+        // Mirrors the `module_fn_exports` guard pattern at
+        // `check_method_call` (methods.rs).  Gated on:
+        //   - object is a bare `Expr::Identifier`
+        //   - `field` contains `::` (the type-variant separator)
+        //   - the identifier is neither a value binding nor a known type
+        // The neither-binding-nor-type guard preserves all existing
+        // field-on-value access semantics — only shapes that could only be a
+        // module-qualified reference take the new path.  Nested-module paths
+        // (`a.b.Type::Variant`) are out of scope for v0.5.
+        if let Expr::Identifier(name) = &object.0 {
+            if let Some(pos) = field.find("::") {
+                let receiver_is_binding = self.env.lookup_ref(name).is_some();
+                let receiver_is_known_type = self.type_defs.contains_key(name);
+                if !receiver_is_binding && !receiver_is_known_type {
+                    let type_name = &field[..pos];
+                    let variant_name = &field[pos + 2..];
+                    return self.check_module_qualified_variant_ref(
+                        name,
+                        type_name,
+                        variant_name,
+                        span,
+                    );
+                }
+            }
+        }
         let obj_ty = self.synthesize(&object.0, &object.1);
         let resolved = self.subst.resolve(&obj_ty);
         match &resolved {
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 // Named supervisor child access: sup.child_name → LocalPid<ChildType>
                 // Accepts local actor handles via as_actor_handle().
                 if let Some(Ty::Named { name: sup_name, .. }) = resolved.as_actor_handle() {
@@ -3525,6 +3642,7 @@ impl Checker {
                             self.supervisor_child_slots
                                 .insert(SpanKey::from(span), slot);
                             return Ty::local_pid(Ty::Named {
+                                builtin: None,
                                 name: child_type,
                                 args: vec![],
                             });
@@ -3928,6 +4046,121 @@ impl Checker {
         }
     }
 
+    /// Resolve a module-qualified value-constructor reference of the form
+    /// `module.Type::Variant` to its result type.  Emits a fail-closed
+    /// diagnostic for each of the four error shapes (unknown module alias,
+    /// no exported type, no such variant, struct-variant without braces)
+    /// — never falls through to the leaky "undefined variable" /
+    /// "undefined type" surface.  Called only from the
+    /// `check_field_access` pre-dispatch arm.
+    pub(super) fn check_module_qualified_variant_ref(
+        &mut self,
+        module_short: &str,
+        type_name: &str,
+        variant_name: &str,
+        span: &Span,
+    ) -> Ty {
+        if !self.modules.contains(module_short) {
+            let similar =
+                crate::error::find_similar(module_short, self.modules.iter().map(String::as_str));
+            self.report_error_with_suggestions(
+                TypeErrorKind::UndefinedVariable,
+                span,
+                format!("unknown module alias `{module_short}`"),
+                similar,
+            );
+            return Ty::Error;
+        }
+        self.used_modules.borrow_mut().insert(ImportKey::new(
+            self.current_module.clone(),
+            module_short.to_string(),
+        ));
+        let Some(td) = self.resolve_module_type(module_short, type_name) else {
+            let similar = self
+                .module_type_exports
+                .get(module_short)
+                .map(|set| crate::error::find_similar(type_name, set.iter().map(String::as_str)))
+                .unwrap_or_default();
+            self.report_error_with_suggestions(
+                TypeErrorKind::UndefinedType,
+                span,
+                format!("module `{module_short}` has no exported type `{type_name}`"),
+                similar,
+            );
+            return Ty::Error;
+        };
+        let Some((_td_again, variant)) =
+            self.resolve_module_variant(module_short, type_name, variant_name)
+        else {
+            let similar =
+                crate::error::find_similar(variant_name, td.variants.keys().map(String::as_str));
+            self.report_error_with_suggestions(
+                TypeErrorKind::UndefinedField,
+                span,
+                format!("type `{module_short}.{type_name}` has no variant `{variant_name}`"),
+                similar,
+            );
+            return Ty::Error;
+        };
+        let qualified_type = format!("{module_short}.{type_name}");
+        match variant {
+            VariantDef::Unit => {
+                // Instantiate type params with fresh inference vars so generic
+                // enums (e.g. `Option<T>::None`) unify against later annotations.
+                // Mirrors the unit-variant path in `resolve_identifier_variant`.
+                let args: Vec<Ty> = td
+                    .type_params
+                    .iter()
+                    .map(|_| Ty::Var(TypeVar::fresh()))
+                    .collect();
+                Ty::normalize_named(qualified_type, args)
+            }
+            VariantDef::Tuple(params) => {
+                // Tuple-variant naked reference (no call): treat as a function
+                // value, matching the bare-identifier function-value path at
+                // expressions.rs (resolve_identifier).  The call form
+                // `m.Type::V(args)` is handled by `check_method_call` via
+                // `lookup_variant_constructor`.
+                let args: Vec<Ty> = td
+                    .type_params
+                    .iter()
+                    .map(|_| Ty::Var(TypeVar::fresh()))
+                    .collect();
+                let subst_params: Vec<Ty> = params
+                    .iter()
+                    .map(|p| {
+                        let mut substituted = p.clone();
+                        for (tp, replacement) in td.type_params.iter().zip(args.iter()) {
+                            substituted = substituted.substitute_named_param(tp, replacement);
+                        }
+                        substituted
+                    })
+                    .collect();
+                let ret = Ty::normalize_named(qualified_type, args);
+                Ty::Function {
+                    params: subst_params,
+                    ret: Box::new(ret),
+                }
+            }
+            VariantDef::Struct(_) => {
+                // Struct variants require the braced initialiser; parse never
+                // reaches this arm in the StructInit shape (that goes through
+                // `check_struct_init`).  A naked `m.E::V` for a struct variant
+                // is a user error — emit a hint rather than silently typing it.
+                self.report_error(
+                    TypeErrorKind::UndefinedField,
+                    span,
+                    format!(
+                        "variant `{module_short}.{type_name}::{variant_name}` is a struct \
+                         variant; use `{module_short}.{type_name}::{variant_name} {{ ... }}` \
+                         to construct it"
+                    ),
+                );
+                Ty::Error
+            }
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "trait impl checking requires many cases"
@@ -3940,6 +4173,65 @@ impl Checker {
         base: Option<&Spanned<Expr>>,
         span: &Span,
     ) -> Ty {
+        // Module-qualified diagnostic pre-pass: when `name` has the shape
+        // `module.Type::Variant` and `module` is a known module alias, route
+        // the failure modes (no exported type / no such variant) through the
+        // same fail-closed diagnostics used by `check_field_access`'s
+        // module-qualified pre-dispatch.  Without this pre-pass the
+        // enum-variant fallback in the main body falls through to
+        // "undefined type `module.Type::Variant`" which leaks the
+        // qualified-name layout into the diagnostic and gives the user no
+        // actionable signal.  Success cases (both type and variant exist) fall
+        // through to the existing struct/enum-variant init logic.
+        if let Some(dot) = name.find('.') {
+            let module_short = &name[..dot];
+            if self.modules.contains(module_short) {
+                let after_dot = &name[dot + 1..];
+                if let Some(colon) = after_dot.find("::") {
+                    let type_name = &after_dot[..colon];
+                    let variant_name = &after_dot[colon + 2..];
+                    self.used_modules.borrow_mut().insert(ImportKey::new(
+                        self.current_module.clone(),
+                        module_short.to_string(),
+                    ));
+                    let Some(td) = self.resolve_module_type(module_short, type_name) else {
+                        let similar = self
+                            .module_type_exports
+                            .get(module_short)
+                            .map(|set| {
+                                crate::error::find_similar(
+                                    type_name,
+                                    set.iter().map(String::as_str),
+                                )
+                            })
+                            .unwrap_or_default();
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedType,
+                            span,
+                            format!("module `{module_short}` has no exported type `{type_name}`"),
+                            similar,
+                        );
+                        return Ty::Error;
+                    };
+                    if !td.variants.contains_key(variant_name) {
+                        let similar = crate::error::find_similar(
+                            variant_name,
+                            td.variants.keys().map(String::as_str),
+                        );
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedField,
+                            span,
+                            format!(
+                                "type `{module_short}.{type_name}` has no variant `{variant_name}`"
+                            ),
+                            similar,
+                        );
+                        return Ty::Error;
+                    }
+                    // Both type and variant exist — fall through.
+                }
+            }
+        }
         if let Some(td) = self.lookup_type_def(name) {
             // Track inferred type arguments for generic structs.
             // If the caller supplied explicit type args (e.g. `Wrapper<String> { ... }`),
@@ -3981,6 +4273,7 @@ impl Checker {
                         !type_arg_map.contains_key(tp)
                             && expected
                                 == (Ty::Named {
+                                    builtin: None,
                                     name: tp.clone(),
                                     args: vec![],
                                 })
@@ -3996,6 +4289,7 @@ impl Checker {
                         if !type_arg_map.contains_key(tp)
                             && *declared_ty
                                 == (Ty::Named {
+                                    builtin: None,
                                     name: tp.clone(),
                                     args: vec![],
                                 })
@@ -4073,6 +4367,7 @@ impl Checker {
             // `validate_record_init_type_args_output_contract` in `admissibility.rs`.
             self.record_concrete_record_init_type_args(span, &type_args);
             Ty::Named {
+                builtin: None,
                 name: name.to_string(),
                 args: type_args,
             }
@@ -4134,6 +4429,7 @@ impl Checker {
                         !type_arg_map.contains_key(tp)
                             && expected
                                 == (Ty::Named {
+                                    builtin: None,
                                     name: tp.clone(),
                                     args: vec![],
                                 })
@@ -4149,6 +4445,7 @@ impl Checker {
                         if !type_arg_map.contains_key(tp)
                             && *declared_ty
                                 == (Ty::Named {
+                                    builtin: None,
                                     name: tp.clone(),
                                     args: vec![],
                                 })
@@ -4193,6 +4490,7 @@ impl Checker {
             // boundary-prune rationale and validator location.
             self.record_concrete_record_init_type_args(span, &type_args);
             Ty::Named {
+                builtin: None,
                 name: enum_name,
                 args: type_args,
             }
@@ -4246,7 +4544,11 @@ impl Checker {
                 let ty_raw = self.synthesize(arg, as_);
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
             }
-            Ty::local_pid(Ty::Named { name, args: vec![] })
+            Ty::local_pid(Ty::Named {
+                builtin: None,
+                name,
+                args: vec![],
+            })
         } else {
             Ty::local_pid(Ty::Error)
         }
@@ -4615,14 +4917,14 @@ impl Checker {
 
             // Named types: actor handles, collection builtins, and any user
             // `TypeDef` whose kind carries heap/reference identity.
-            Ty::Named { name, .. } => {
+            Ty::Named { name, builtin, .. } => {
                 // Actor handles (`ActorRef<T>` / `Actor<T>`).
                 if ty.as_actor_handle().is_some() {
                     return true;
                 }
                 // Heap-backed builtin collections — kept name-keyed since they
                 // have no `TypeDef` entry.
-                if matches!(name.as_str(), "Vec" | "HashMap" | "HashSet") {
+                if builtin.is_some_and(BuiltinType::is_collection) {
                     return true;
                 }
                 // User type declarations: machines, actors, and user
@@ -4655,12 +4957,6 @@ impl Checker {
     /// Used by [`synthesize_identifier`](Self::synthesize_identifier) to add a
     /// targeted suggestion when a `UseAfterMove` fires on a substrate binding.
     fn ty_is_substrate_handle(ty: &Ty) -> bool {
-        let Ty::Named { name, .. } = ty else {
-            return false;
-        };
-        matches!(
-            name.as_str(),
-            "Duplex" | "Sink" | "Stream" | "SendHalf" | "RecvHalf"
-        )
+        matches!(ty, Ty::Named { builtin: Some(builtin), .. } if builtin.is_substrate_handle())
     }
 }

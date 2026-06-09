@@ -1,0 +1,4 @@
+fn main() {
+    let n = random_u32();
+    println(n);
+}

@@ -4,9 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HEW="${ROOT}/target/debug/hew"
 
-# hew-emit is the out-of-process object emitter required by `hew compile`.
 # libhew.a is the combined runtime+stdlib static library linked into native outputs.
-cargo build -q -p hew-codegen-rs --bin hew-emit
 cargo build -q -p hew-lib
 cargo build -q -p hew-cli
 
@@ -130,6 +128,10 @@ run_accept_expect_status "supervised_ingest_race" 42
 # the void-return (dest: None) MIR + codegen path.
 run_accept_expect_status "supervisor_stop_basic" 0
 
+# Discarded link()/monitor() calls lower to hew_actor_link / hew_actor_monitor
+# with dest=None and reach codegen.
+run_accept_expect_status "link_monitor_discarded" 0
+
 # on(crash) handler attachment: Crasher actor declares #[on(crash)]; codegen emits
 # a non-null on_crash fn-pointer in HewChildSpec; supervisor boots and main returns 42.
 # The crash path is not triggered at runtime — handler-fire observability is covered
@@ -137,7 +139,7 @@ run_accept_expect_status "supervisor_stop_basic" 0
 run_accept_expect_status "on_crash_basic" 42
 
 # on(crash) with info.code field access: verifies the full HIR → MIR → codegen path
-# for reading PanicInfo.code inside an on(crash) body.  PanicInfo is loaded from
+# for reading CrashInfo.code inside an on(crash) body.  CrashInfo is loaded from
 # std/failure.hew via the module graph walk, so record_field_orders is populated and
 # FieldAccess lowering succeeds.  The supervisor boots and main returns 42.
 run_accept_expect_status "on_crash_info_code" 42
@@ -296,20 +298,15 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/spawn_lambda_removed.hew"
 fi
 grep -q 'E_SPAWN_LAMBDA_SYNTAX_REMOVED' "${reject_output}"
 
-# Reject: link/monitor/unlink pending cluster-runtime composite-return spine.
-# Runtime symbols (hew_actor_link, hew_actor_monitor) and codegen arms exist,
-# but Result<(),LinkError> / MonitorRef construction requires cluster-runtime.
-# The diagnostic must be NotYetImplemented with owning_pass "cluster-runtime",
-# NOT UnresolvedSymbol (which would look like a user typo).
+# Reject: value-needed monitor() still needs Cluster 2 MonitorRef construction.
+# Discarded statement-position calls compile, but expression contexts remain
+# fail-closed at the MIR producer boundary.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/link_monitor_pending_cluster2.hew" >"${reject_output}" 2>&1; then
   echo "expected link/monitor fixture to fail" >&2
   exit 1
 fi
 grep -q 'NotYetImplemented' "${reject_output}"
-grep -q 'cluster-runtime' "${reject_output}"
-# The verifier emits a secondary UnresolvedSymbol for the unresolved callee
-# (consistent with all unresolved-builtin-callee paths); the primary and
-# informative diagnostic is NotYetImplemented — verified above.
+grep -q 'MonitorRef' "${reject_output}"
 
 # ---------------------------------------------------------------------------
 # scope{} / fork — fail-closed surface pins

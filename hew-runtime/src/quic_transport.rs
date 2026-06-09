@@ -9,6 +9,16 @@
 //! 4-byte LE length-prefixed framing used by the TCP transport is layered on
 //! top for HBF wire-format compatibility.
 //!
+//! # Deprecation notice
+//!
+//! This module is **legacy**. It lacks mTLS peer authentication and per-actor-pair
+//! stream multiplexing. The replacement is `HEW_TRANSPORT=quic-mesh` (the
+//! `quic_mesh` module), which provides fail-closed mTLS and HOL-free multiplexing.
+//!
+//! To start this legacy transport you must set `HEW_QUIC_ALLOW_INSECURE=1`
+//! explicitly, acknowledging the fail-open security posture. Once `quic_mesh`
+//! is available this module will be deleted.
+//!
 //! # Certificate Management
 //!
 //! By default, a self-signed certificate is generated for mesh-internal
@@ -22,7 +32,7 @@
 )]
 
 use std::ffi::{c_char, c_int, c_void, CStr};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use quinn::{ClientConfig, Endpoint, ServerConfig};
@@ -61,12 +71,21 @@ const DEFAULT_SERVER_NAME: &str = "hew-mesh.local";
 ///
 /// The stream is established lazily: the connecting side opens it on first
 /// send/recv, and the accepting side accepts it on first send/recv.
+///
+/// `close_reason` is populated by the background close-future task (spawned in
+/// `spawn_close_watcher`) when Quinn signals that the peer closed or the
+/// connection was lost. Once set, `framed_send_quic` and `framed_recv_quic`
+/// short-circuit to an error immediately, avoiding the 30-second idle-timeout
+/// wait that would otherwise delay partition detection.
 struct QuicConn {
     connection: quinn::Connection,
     send: Option<quinn::SendStream>,
     recv: Option<quinn::RecvStream>,
     /// Whether this side initiated the connection (true) or accepted it (false).
     is_initiator: bool,
+    /// Populated by the close-watcher task when the Quinn connection closes.
+    /// A set value means "connection is closed; do not attempt further I/O".
+    close_reason: Arc<OnceLock<String>>,
 }
 
 impl QuicConn {
@@ -340,6 +359,32 @@ fn framed_recv_quic(rt: &Runtime, recv: &mut quinn::RecvStream, buf: &mut [u8]) 
 }
 
 // ---------------------------------------------------------------------------
+// Close-future watcher
+// ---------------------------------------------------------------------------
+
+/// Spawn a tokio task that awaits `conn.closed()` and writes a formatted error
+/// string into `close_reason` when the connection terminates.
+///
+/// Once the `OnceLock` is populated, `framed_send_quic` and `framed_recv_quic`
+/// will return -1 immediately on the next call rather than blocking until the
+/// 30-second idle timeout fires.
+///
+/// The task holds a clone of `conn` (a cheap Quinn handle) and `close_reason`
+/// (an `Arc<OnceLock<String>>`). Both are dropped when the task completes.
+fn spawn_close_watcher(
+    rt: &tokio::runtime::Runtime,
+    conn: quinn::Connection,
+    close_reason: Arc<OnceLock<String>>,
+) {
+    rt.spawn(async move {
+        let err = conn.closed().await;
+        // OnceLock::set fails silently if already set — that is correct; we only
+        // want the *first* close reason (peer close wins over local close).
+        let _ = close_reason.set(format!("quic connection closed: {err}"));
+    });
+}
+
+// ---------------------------------------------------------------------------
 // VTable callback implementations
 // ---------------------------------------------------------------------------
 
@@ -385,16 +430,22 @@ unsafe extern "C" fn quic_connect(impl_ptr: *mut c_void, address: *const c_char)
     let ep = endpoint.clone();
     let result = qt.rt.block_on(async {
         let conn = ep.connect(addr, DEFAULT_SERVER_NAME)?.await?;
-        Ok::<_, Box<dyn std::error::Error>>(QuicConn {
-            connection: conn,
-            send: None,
-            recv: None,
-            is_initiator: true,
-        })
+        Ok::<_, Box<dyn std::error::Error>>(conn)
     });
 
     match result {
-        Ok(qc) => qt.store_conn(qc),
+        Ok(conn) => {
+            let close_reason = Arc::new(OnceLock::new());
+            spawn_close_watcher(&qt.rt, conn.clone(), Arc::clone(&close_reason));
+            let qc = QuicConn {
+                connection: conn,
+                send: None,
+                recv: None,
+                is_initiator: true,
+                close_reason,
+            };
+            qt.store_conn(qc)
+        }
         Err(e) => {
             set_last_error(format!("quic connect: {e}"));
             HEW_CONN_INVALID
@@ -406,6 +457,21 @@ unsafe extern "C" fn quic_listen(impl_ptr: *mut c_void, address: *const c_char) 
     if impl_ptr.is_null() || address.is_null() {
         return -1;
     }
+
+    // Fail-closed fence: this legacy transport has no mTLS peer authentication
+    // and no per-actor-pair stream multiplexing. The replacement is
+    // `HEW_TRANSPORT=quic-mesh`. Require explicit opt-in to acknowledge the
+    // fail-open security posture.
+    if std::env::var("HEW_QUIC_ALLOW_INSECURE").as_deref() != Ok("1") {
+        set_last_error(
+            "quic_transport: legacy QUIC transport is disabled. \
+             Set HEW_QUIC_ALLOW_INSECURE=1 to acknowledge the fail-open security \
+             posture, or migrate to HEW_TRANSPORT=quic-mesh (the authenticated, \
+             HOL-free replacement).",
+        );
+        return -1;
+    }
+
     // SAFETY: impl_ptr checked non-null above; points to the QuicTransport
     // allocated by `hew_transport_quic_new`. Exclusive access is sound because
     // the vtable contract requires single-threaded listen setup.
@@ -489,11 +555,23 @@ unsafe extern "C" fn quic_listen(impl_ptr: *mut c_void, address: *const c_char) 
             let Ok(conn) = incoming.await else {
                 continue;
             };
+            let close_reason = Arc::new(OnceLock::new());
+            // Spawn the close-future watcher from within the tokio context.
+            // When the connection closes (peer initiated or idle timeout), the
+            // watcher populates `close_reason` so the sync send/recv path can
+            // short-circuit without waiting for the 30-second idle timeout.
+            let watcher_conn = conn.clone();
+            let watcher_reason = Arc::clone(&close_reason);
+            tokio::spawn(async move {
+                let err = watcher_conn.closed().await;
+                let _ = watcher_reason.set(format!("quic connection closed: {err}"));
+            });
             let qc = QuicConn {
                 connection: conn,
                 send: None,
                 recv: None,
                 is_initiator: false,
+                close_reason,
             };
             if tx.send(qc).is_err() {
                 break;
@@ -564,6 +642,14 @@ unsafe extern "C" fn quic_send(
         return -1;
     };
 
+    // Short-circuit if the close-watcher has signalled that the connection is
+    // gone. This prevents blocking in framed_send_quic until the 30-second
+    // idle timeout fires.
+    if let Some(reason) = qc.close_reason.get() {
+        set_last_error(reason.clone());
+        return -1;
+    }
+
     if let Err(e) = qc.ensure_stream(&qt.rt) {
         set_last_error(e);
         return -1;
@@ -600,6 +686,14 @@ unsafe extern "C" fn quic_recv(
     let Some(qc) = guard.as_mut() else {
         return -1;
     };
+
+    // Short-circuit if the close-watcher has signalled that the connection is
+    // gone. This prevents blocking in framed_recv_quic until the 30-second
+    // idle timeout fires.
+    if let Some(reason) = qc.close_reason.get() {
+        set_last_error(reason.clone());
+        return -1;
+    }
 
     if let Err(e) = qc.ensure_stream(&qt.rt) {
         set_last_error(e);
@@ -760,6 +854,10 @@ mod tests {
     use super::*;
     use std::ffi::CString;
 
+    // Serialises tests that mutate HEW_QUIC_ALLOW_INSECURE so that env-var
+    // mutations from `TestTransport::listen` do not race with the fence test.
+    static FENCE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     // -- Helper: set up a server+client loopback pair -------------------------
 
     /// Wrapper for safe cleanup in tests.
@@ -801,6 +899,27 @@ mod tests {
 
         fn listen(&self, addr: &str) -> c_int {
             let c_addr = CString::new(addr).unwrap();
+            // Acquire FENCE_LOCK so this is mutually exclusive with
+            // `listen_fence_absent` below. Holds the lock across set_var + vtable
+            // call, preventing the fence test from racing on the env var.
+            let _guard = FENCE_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::env::set_var("HEW_QUIC_ALLOW_INSECURE", "1");
+            // SAFETY: impl_ptr and ops are valid; c_addr is a valid NUL-terminated C string.
+            unsafe { (self.ops().listen.unwrap())(self.impl_ptr(), c_addr.as_ptr()) }
+        }
+
+        /// Call `quic_listen` with the env var explicitly absent. Used by the
+        /// fence test to verify that the guard fires.
+        fn listen_fence_absent(&self, addr: &str) -> c_int {
+            let c_addr = CString::new(addr).unwrap();
+            // Acquire the same lock used by `listen` so that no concurrent test
+            // can set HEW_QUIC_ALLOW_INSECURE while this check runs.
+            let _guard = FENCE_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::env::remove_var("HEW_QUIC_ALLOW_INSECURE");
             // SAFETY: impl_ptr and ops are valid; c_addr is a valid NUL-terminated C string.
             unsafe { (self.ops().listen.unwrap())(self.impl_ptr(), c_addr.as_ptr()) }
         }
@@ -1484,5 +1603,66 @@ mod tests {
         drop(server);
 
         drop(client);
+    }
+
+    // -- Fence tests ---------------------------------------------------------
+
+    /// Verify that calling `quic_listen` without `HEW_QUIC_ALLOW_INSECURE=1`
+    /// fails with a structured deprecation message naming the replacement
+    /// (`HEW_TRANSPORT=quic-mesh`).
+    #[test]
+    fn listen_without_insecure_flag_returns_error() {
+        let t = TestTransport::new();
+        // `listen_fence_absent` holds FENCE_LOCK, removes the env var, and
+        // calls the vtable directly — mutually exclusive with `listen()` callers
+        // that set the var before calling.
+        let result = t.listen_fence_absent("127.0.0.1:0");
+        assert_eq!(
+            result, -1,
+            "listen without HEW_QUIC_ALLOW_INSECURE must return -1"
+        );
+    }
+
+    // -- Close-future plumbing test ------------------------------------------
+
+    /// A peer-initiated `connection.close(...)` must make `send()` return -1
+    /// within 100 ms — not after the 30-second idle timeout.
+    ///
+    /// This validates the close-watcher plumbing: when the server closes its
+    /// endpoint the client's `close_reason` `OnceLock` is populated by the
+    /// background task, and the next `send` short-circuits to -1 without
+    /// blocking.
+    #[test]
+    fn peer_close_detected_within_100ms() {
+        let (server, client, _sc, cc) = setup_loopback();
+
+        // Close the server endpoint — this causes a CONNECTION_CLOSE on the
+        // Quinn wire. The client's close-watcher task will populate close_reason.
+        server
+            .qt()
+            .endpoint
+            .as_ref()
+            .unwrap()
+            .close(quinn::VarInt::from_u32(1), b"test shutdown");
+
+        // Give the close-watcher task time to fire. We poll in short steps up
+        // to 100 ms total (the gate limit).
+        let deadline = std::time::Instant::now() + Duration::from_millis(100);
+        let mut close_detected = false;
+        while std::time::Instant::now() < deadline {
+            // Attempt a send. Once close_reason is populated the call returns -1.
+            let data = b"probe";
+            if client.send(cc, data) == -1 {
+                close_detected = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        assert!(
+            close_detected,
+            "peer connection close must be detected within 100 ms via close-watcher, \
+             not after the 30-second idle timeout"
+        );
     }
 }

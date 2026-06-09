@@ -121,6 +121,11 @@ macro_rules! cabi_guard {
 pub(crate) mod lifetime;
 pub(crate) mod util;
 
+/// CBOR wire envelope types — the Rust-native representation of the Hew wire
+/// protocol. Codec (encode/decode) is added in W2; this module is type-shape
+/// only.
+pub mod envelope;
+
 #[cfg(test)]
 pub(crate) struct RuntimeTestGuard {
     _lock_guard: Option<std::sync::MutexGuard<'static, ()>>,
@@ -257,6 +262,11 @@ pub mod bytes;
 mod channel_common;
 pub mod duration;
 pub mod machine_emit;
+pub use machine_emit::{
+    hew_machine_emit_push, hew_machine_emit_step_enter, hew_machine_emit_step_exit,
+    DrainError as MachineEmitDrainError, EmitEvent, EmitQueue, EmitQueueAppend,
+    MachineEmitReentrancyExceeded,
+};
 pub mod parse_error_slot;
 
 pub mod internal;
@@ -494,6 +504,8 @@ pub mod link;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod monitor;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod phi_accrual;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod pid;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pool;
@@ -519,6 +531,9 @@ pub mod encryption;
 
 #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
 pub mod quic_transport;
+
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+pub mod quic_mesh;
 
 // OTel exporter: background thread + OTLP/HTTP, activated by HEW_OTEL_ENDPOINT.
 // Not available on WASM (no OS threads for the background exporter).

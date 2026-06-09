@@ -262,7 +262,7 @@ impl ResolvedTy {
             Ty::Tuple(elems) => Ok(ResolvedTy::Tuple(Self::convert_vec(elems)?)),
             Ty::Array(elem, size) => Ok(ResolvedTy::Array(Box::new(Self::from_ty(elem)?), *size)),
             Ty::Slice(elem) => Ok(ResolvedTy::Slice(Box::new(Self::from_ty(elem)?))),
-            Ty::Named { name, args } => Ok(ResolvedTy::Named {
+            Ty::Named { name, args, .. } => Ok(ResolvedTy::Named {
                 name: name.clone(),
                 args: Self::convert_vec(args)?,
             }),
@@ -351,6 +351,7 @@ impl ResolvedTy {
             ResolvedTy::Slice(elem) => Ty::Slice(Box::new(elem.to_ty())),
             ResolvedTy::Named { name, args } => Ty::Named {
                 name: name.clone(),
+                builtin: crate::lookup_builtin_type(name),
                 args: args.iter().map(Self::to_ty).collect(),
             },
             ResolvedTy::Function { params, ret } => Ty::Function {
@@ -459,6 +460,7 @@ mod tests {
     fn from_ty_rejects_nested_inference_variable_in_named_args() {
         let var = TypeVar::fresh();
         let ty = Ty::Named {
+            builtin: None,
             name: "Vec".into(),
             args: vec![Ty::Var(var)],
         };
@@ -503,6 +505,7 @@ mod tests {
     #[test]
     fn from_ty_accepts_fully_concrete_named() {
         let ty = Ty::Named {
+            builtin: None,
             name: "Foo".into(),
             args: vec![Ty::I32, Ty::String],
         };
@@ -602,6 +605,7 @@ mod tests {
             Ty::String,
             Ty::Tuple(vec![Ty::I64, Ty::Unit]),
             Ty::Named {
+                builtin: Some(crate::BuiltinType::Vec),
                 name: "Vec".into(),
                 args: vec![Ty::I32],
             },
@@ -619,6 +623,7 @@ mod tests {
     #[test]
     fn user_facing_display_matches_ty_user_facing() {
         let ty = Ty::Named {
+            builtin: None,
             name: "Option".into(),
             args: vec![Ty::I64],
         };

@@ -174,6 +174,22 @@ pub fn link_executable(
 
     cmd.arg(object_path).arg(&hew_lib);
 
+    // ── Stdlib staticlibs the user may reference via `extern "rt"` ────
+    // Pull in sibling stdlib crate archives (e.g. hew-std-time-datetime)
+    // so direct extern declarations naming `hew_datetime_*` and similar
+    // stable-stdlib symbols resolve at link time. Missing archives are
+    // ignored (best-effort) so users who never reach for stdlib FFI from
+    // a source build that skipped those crates still link plain programs.
+    if let Ok(exe) = std::env::current_exe() {
+        let exe_dir = exe.parent().expect("exe should have a parent directory");
+        let triple = target.normalized_triple();
+        for archive in NATIVE_STDLIB_ARCHIVES {
+            if let Some(path) = find_optional_hew_lib(exe_dir, archive, triple) {
+                cmd.arg(path);
+            }
+        }
+    }
+
     cmd.arg("-o").arg(&safe_output);
 
     if debug {
@@ -450,6 +466,12 @@ const WASM_LINK_ARCHIVES: [&str; 3] = [
     "libhew_std_encoding_yaml.a",
     "libhew_runtime.a",
 ];
+
+/// Sibling stdlib staticlibs the native linker pulls in (best-effort) so
+/// `extern "rt"` declarations naming `stable-stdlib` symbols resolve.
+/// Keep in sync with the `stable-stdlib` block in
+/// `scripts/jit-symbol-classification.toml`.
+const NATIVE_STDLIB_ARCHIVES: &[&str] = &["libhew_std_time_datetime.a"];
 
 fn find_wasm_link_libs(target: &str) -> Vec<String> {
     let Ok(exe) = std::env::current_exe() else {

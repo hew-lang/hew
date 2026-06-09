@@ -224,13 +224,14 @@ impl Checker {
 
         let (_, outer_type, first_inner_type) = param;
 
-        // Expected: outer = "LocalPid", inner = expected_sibling_type.
-        // RemotePid is intentionally rejected here: supervisors are local, and a
+        // Expected: outer has the supervisor-local pid role, inner = expected_sibling_type.
+        // RemotePid is intentionally rejected here by role: supervisors are local, and a
         // wired_to child param typed `RemotePid<Sibling>` is semantically invalid.
-        let type_ok = outer_type == "LocalPid"
-            && first_inner_type
-                .as_deref()
-                .is_some_and(|t| t == expected_sibling_type);
+        let type_ok = crate::lookup_builtin_type(outer_type).is_some_and(|builtin| {
+            builtin.has_role(crate::builtin_type::BuiltinTypeRole::SupervisorLocalPid)
+        }) && first_inner_type
+            .as_deref()
+            .is_some_and(|t| t == expected_sibling_type);
 
         if !type_ok {
             let actual_type = if first_inner_type.is_some() {
@@ -401,6 +402,7 @@ impl Checker {
             if i == 0 && self.is_receiver_param(p) {
                 if let Some((self_name, self_args)) = &self.current_self_type {
                     ty = Ty::Named {
+                        builtin: None,
                         name: self_name.clone(),
                         args: self_args.clone(),
                     };
@@ -539,6 +541,7 @@ impl Checker {
 
     pub(super) fn check_actor(&mut self, ad: &ActorDecl) {
         let actor_ty = Ty::Named {
+            builtin: None,
             name: ad.name.clone(),
             args: vec![],
         };
@@ -638,7 +641,7 @@ impl Checker {
             }
 
             // `#[on(crash)]` diverges from start/stop signature-wise:
-            // crash takes a `PanicInfo` parameter and returns `CrashAction`.
+            // crash takes a `CrashInfo` parameter and returns `CrashAction`.
             match hook_kind_str {
                 "crash" => {
                     self.check_crash_hook(&ad.name, method, &ad.fields);
@@ -887,14 +890,14 @@ impl Checker {
     /// Type-check an actor `#[on(crash)]` hook.
     ///
     /// Signature shape (failure-philosophy plan E2, Q45/A22, Q46/A23):
-    /// - exactly one parameter `info: PanicInfo` (the runtime supplies
+    /// - exactly one parameter `info: CrashInfo` (the runtime supplies
     ///   the int-tag payload — string fields wait on the spine-widening
     ///   lane).
     /// - return type `CrashAction` (variants `Restart | Escalate | Kill`;
     ///   the supervisor consults but honours its own budget rules).
     /// - not `pure`, no type parameters, no `where` clause.
     ///
-    /// `PanicInfo` and `CrashAction` are provided by `std/failure.hew`
+    /// `CrashInfo` and `CrashAction` are provided by `std/failure.hew`
     /// (also pre-bound via `register_builtin_failure_surface` for inline
     /// tests).  Body type-checking binds actor fields as bare names in
     /// scope, same idiom as `init { }` / `#[on(start)]` / `#[on(stop)]`.
@@ -945,23 +948,27 @@ impl Checker {
     }
 
     /// Validate the parameter list of a `#[on(crash)]` hook: exactly one
-    /// parameter typed `PanicInfo`.  Diagnostics live here rather than in
+    /// parameter typed `CrashInfo`.  Diagnostics live here rather than in
     /// `check_crash_hook` to keep that entry under the clippy line limit.
     fn check_crash_hook_param(&mut self, actor_name: &str, hook: &FnDecl, hook_kind: &str) {
         match hook.params.as_slice() {
             [p] => {
                 let pty = self.resolve_type_expr(&p.ty);
-                let is_panic_info = matches!(
+                let is_crash_info = matches!(
                     &pty,
-                    Ty::Named { name, args } if name == "PanicInfo" && args.is_empty()
+                    Ty::Named {
+                        builtin: Some(crate::BuiltinType::CrashInfo),
+                        args,
+                        ..
+                    } if args.is_empty()
                 );
-                if !is_panic_info {
+                if !is_crash_info {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
                         p.ty.1.clone(),
                         format!(
                             "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` parameter \
-                             must have type `PanicInfo` (from `std::failure`)",
+                             must have type `CrashInfo` (from `std::failure`)",
                             hook.name
                         ),
                     ));
@@ -973,7 +980,7 @@ impl Checker {
                     hook.decl_span.clone(),
                     format!(
                         "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must take \
-                         exactly one parameter `info: PanicInfo`; got {} parameter(s)",
+                         exactly one parameter `info: CrashInfo`; got {} parameter(s)",
                         hook.name,
                         other.len()
                     ),
@@ -994,8 +1001,14 @@ impl Checker {
     ) -> Ty {
         if let Some(rt) = &hook.return_type {
             let ty = self.resolve_type_expr(rt);
-            if !matches!(&ty, Ty::Named { name, args } if name == "CrashAction" && args.is_empty())
-            {
+            if !matches!(
+                &ty,
+                Ty::Named {
+                    builtin: Some(crate::BuiltinType::CrashAction),
+                    args,
+                    ..
+                } if args.is_empty()
+            ) {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::InvalidOperation,
                     rt.1.clone(),
@@ -1018,6 +1031,7 @@ impl Checker {
                 ),
             ));
             Ty::Named {
+                builtin: None,
                 name: "CrashAction".to_string(),
                 args: vec![],
             }
@@ -1192,6 +1206,7 @@ impl Checker {
                 generic_bindings.insert(
                     tp.name.clone(),
                     Ty::Named {
+                        builtin: None,
                         name: tp.name.clone(),
                         args: vec![],
                     },
@@ -1336,6 +1351,7 @@ impl Checker {
                     generic_bindings.insert(
                         tp.name.clone(),
                         Ty::Named {
+                            builtin: None,
                             name: tp.name.clone(),
                             args: vec![],
                         },

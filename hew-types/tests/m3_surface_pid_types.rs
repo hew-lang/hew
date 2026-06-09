@@ -54,7 +54,7 @@ fn spawn_returns_local_pid() {
             .unwrap_or(Ty::Unit)
     });
     assert!(
-        matches!(&ty, Ty::Named { name, args } if name == "LocalPid" && args.len() == 1),
+        matches!(&ty, Ty::Named { name, args, .. } if name == "LocalPid" && args.len() == 1),
         "expected LocalPid<Counter>, got {ty:?}"
     );
 }
@@ -66,6 +66,7 @@ fn local_pid_is_send_sync_copy() {
     use hew_types::traits::{MarkerTrait, TraitRegistry};
     let reg = TraitRegistry::new();
     let ty = Ty::local_pid(Ty::Named {
+        builtin: None,
         name: "Counter".into(),
         args: vec![],
     });
@@ -91,6 +92,7 @@ fn remote_pid_is_send_sync_copy() {
     use hew_types::traits::{MarkerTrait, TraitRegistry};
     let reg = TraitRegistry::new();
     let ty = Ty::remote_pid(Ty::Named {
+        builtin: None,
         name: "Counter".into(),
         args: vec![],
     });
@@ -116,6 +118,7 @@ fn localpid_actorref_no_longer_unify() {
     use hew_types::ty::Substitution;
     use hew_types::unify::unify;
     let actor = Ty::Named {
+        builtin: None,
         name: "Worker".into(),
         args: vec![],
     };
@@ -147,10 +150,12 @@ fn remote_pid_does_not_unify_with_actor_ref() {
     use hew_types::unify::unify;
     let mut subst = Substitution::new();
     let actor_ref = Ty::actor_ref(Ty::Named {
+        builtin: None,
         name: "Counter".into(),
         args: vec![],
     });
     let remote_pid = Ty::remote_pid(Ty::Named {
+        builtin: None,
         name: "Counter".into(),
         args: vec![],
     });
@@ -186,6 +191,7 @@ fn remote_pid_registered_in_builtin_names() {
 #[test]
 fn ty_local_pid_helper() {
     let inner = Ty::Named {
+        builtin: None,
         name: "Msg".into(),
         args: vec![],
     };
@@ -197,6 +203,7 @@ fn ty_local_pid_helper() {
 #[test]
 fn ty_remote_pid_helper() {
     let inner = Ty::Named {
+        builtin: None,
         name: "Msg".into(),
         args: vec![],
     };

@@ -107,6 +107,13 @@ pub struct TypeCheckOutput {
     /// consume a single authoritative contract instead of re-resolving C
     /// symbols from receiver types or the module registry.
     pub method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Checker-owned numeric method lowering decisions keyed by method-call span.
+    ///
+    /// Populated for accepted integer opt-out methods:
+    /// `.wrapping_{add,sub,mul}`, `.checked_{add,sub,mul}`, and
+    /// `.saturating_{add,sub,mul}`. HIR/MIR must consume this table instead of
+    /// re-matching method-name strings downstream.
+    pub numeric_method_lowerings: HashMap<SpanKey, NumericMethodLowering>,
     /// Checker-owned actor mailbox dispatch decisions keyed by the method call span.
     ///
     /// Populated only when a method call resolves to an actor `receive fn`.
@@ -596,6 +603,7 @@ impl Default for TypeCheckOutput {
             lowering_facts: HashMap::new(),
             actor_handler_state_guards: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: Vec::new(),
@@ -806,15 +814,62 @@ pub enum MethodCallReceiverKind {
 pub enum MethodCallRewrite {
     /// Rewrite a receiver-based method call to a runtime function and inject
     /// the receiver as the first argument.
+    ///
+    /// `elem_ty` is a forward-compatible carry-channel for the element type
+    /// of generic containers (e.g. `Vec<T>`). It is currently always `None`
+    /// — the per-suffix C symbol (`hew_vec_get_f64`) still encodes the
+    /// element type. A later slice will collapse those per-suffix symbols
+    /// to a single generic symbol (`hew_vec_get_generic`) and route the
+    /// element type through this field instead.
     RewriteToFunction {
         c_symbol: String,
+        elem_ty: Option<crate::resolved_ty::ResolvedTy>,
     },
     /// Rewrite a module-qualified stdlib call directly to a runtime function
     /// without injecting the receiver/module identifier as an argument.
+    ///
+    /// See `RewriteToFunction::elem_ty` for the semantics of `elem_ty`.
     RewriteModuleQualifiedToFunction {
         c_symbol: String,
+        elem_ty: Option<crate::resolved_ty::ResolvedTy>,
     },
     DeferToLowering,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NumericMethodFamily {
+    Wrapping,
+    Checked,
+    Saturating,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NumericMethodOp {
+    Add,
+    Sub,
+    Mul,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NumericSignedness {
+    Signed,
+    Unsigned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NumericWidth {
+    Bits(u32),
+    Pointer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NumericMethodLowering {
+    pub family: NumericMethodFamily,
+    pub op: NumericMethodOp,
+    pub result_ty: Ty,
+    pub operand_ty: Ty,
+    pub signedness: NumericSignedness,
+    pub width: NumericWidth,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1300,6 +1355,7 @@ pub struct Checker {
     /// same variable every time).
     pub(super) deferred_channel_rewrites: HashMap<SpanKey, DeferredChannelMethodRewrite>,
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    pub(super) numeric_method_lowerings: HashMap<SpanKey, NumericMethodLowering>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     /// Machine method dispatch side-table. Mirrors [`TypeCheckOutput::machine_method_dispatch`].
     pub(super) machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
@@ -1434,6 +1490,13 @@ pub struct Checker {
     /// through a module surface. Keeps module-qualified calls from resolving
     /// against private helper signatures that exist only for body checking/codegen.
     pub(super) module_fn_exports: HashSet<String>,
+    /// Per-imported-module set of exported type/actor names. Mirrors the
+    /// `module_fn_exports` precedent but for `module.Type` references. Drives
+    /// the pre-dispatch in `check_field_access` for module-qualified value
+    /// constructors (`m.Type::Variant`) so the diagnostic surface can name the
+    /// failure precisely (e.g. `module 'm' has no exported type 'T'`) instead of
+    /// leaking through to the bare-identifier "undefined variable" fallback.
+    pub(super) module_type_exports: HashMap<String, HashSet<String>>,
     /// Maps (`owner_module`, `unqualified_name`) to the module short name the name
     /// was imported from.  Used to mark the owning import as used when an
     /// unqualified function/type is referenced.
@@ -1461,6 +1524,8 @@ pub struct Checker {
     pub(super) current_module: Option<String>,
     /// Tracks which types are defined locally (in the current compilation unit).
     pub(super) local_type_defs: HashSet<String>,
+    /// Tracks source-authored type definitions that can shadow builtin names.
+    pub(super) source_type_defs: HashSet<String>,
     /// Tracks which traits are defined locally (in the current compilation unit).
     pub(super) local_trait_defs: HashSet<String>,
     /// The type name and args of the current impl block target (for resolving `Self`).
@@ -1597,6 +1662,7 @@ impl Checker {
             deferred_vec_admission: HashMap::new(),
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
@@ -1645,6 +1711,7 @@ impl Checker {
             used_modules: RefCell::new(HashSet::new()),
             user_modules: HashSet::new(),
             module_fn_exports: HashSet::new(),
+            module_type_exports: HashMap::new(),
             unqualified_to_module: HashMap::new(),
             call_graph: HashMap::new(),
             current_function: None,
@@ -1655,6 +1722,7 @@ impl Checker {
             in_unsafe: false,
             current_module: None,
             local_type_defs: HashSet::new(),
+            source_type_defs: HashSet::new(),
             local_trait_defs: HashSet::new(),
             current_self_type: None,
             current_actor_type: None,

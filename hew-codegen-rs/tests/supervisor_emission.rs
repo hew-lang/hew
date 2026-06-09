@@ -57,6 +57,7 @@ fn supervisor_pipeline() -> IrPipeline {
         on_stop_symbols: vec![],
         on_crash_symbol: None,
         max_heap_bytes: None,
+        cycle_capable: false,
         handlers: vec![],
     };
 
@@ -129,6 +130,7 @@ fn supervisor_pipeline() -> IrPipeline {
             spawn_order: 0,
             on_crash_symbol: None,
             max_heap_bytes: None,
+            cycle_capable: false,
         }],
     };
 
@@ -148,6 +150,8 @@ fn supervisor_pipeline() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 
@@ -252,6 +256,7 @@ fn on_crash_pipeline() -> IrPipeline {
         on_stop_symbols: vec![],
         on_crash_symbol: Some(on_crash_symbol.clone()),
         max_heap_bytes: None,
+        cycle_capable: false,
         handlers: vec![],
     };
 
@@ -328,6 +333,7 @@ fn on_crash_pipeline() -> IrPipeline {
             spawn_order: 0,
             on_crash_symbol: Some(on_crash_symbol.clone()),
             max_heap_bytes: None,
+            cycle_capable: false,
         }],
     };
 
@@ -343,6 +349,8 @@ fn on_crash_pipeline() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 
@@ -350,7 +358,7 @@ fn on_crash_pipeline() -> IrPipeline {
 /// a non-null pointer to `{actor_name}__on_crash` in the `on_crash` slot.
 ///
 /// The assertion targets a `store ptr @CrasherActor__on_crash` into the child
-/// spec alloca (field index 8), which is the GEP store path emitted by
+/// spec alloca (field index 9), which is the GEP store path emitted by
 /// `emit_supervisor_child_spec_and_register` when `on_crash_symbol` is `Some`.
 #[test]
 fn supervisor_bootstrap_populates_on_crash_fn_pointer() {
@@ -359,7 +367,7 @@ fn supervisor_bootstrap_populates_on_crash_fn_pointer() {
         ir.contains("@CrasherActor__on_crash"),
         "expected on_crash function symbol in emitted IR; got:\n{ir}"
     );
-    // The store into the child spec's on_crash slot (field 8) must reference
+    // The store into the child spec's on_crash slot (field 9) must reference
     // the function symbol, not a null pointer.
     assert!(
         ir.contains("store ptr @CrasherActor__on_crash"),
@@ -386,10 +394,26 @@ fn supervisor_bootstrap_on_crash_null_when_no_hook() {
     );
     // The child spec store for the on_crash slot must use null.
     // Since the Worker actor has no on_crash_symbol, the field_values loop
-    // stores ptr_ty.const_null() for field index 8.
+    // stores ptr_ty.const_null() for field index 9.
     assert!(
         !ir.contains("Worker__on_crash"),
         "Worker actor has no #[on(crash)]; IR must not reference Worker__on_crash; got:\n{ir}"
+    );
+}
+
+#[test]
+fn supervisor_bootstrap_populates_cycle_capable_child_spec_bit() {
+    let mut pipeline = supervisor_pipeline();
+    pipeline.supervisor_layouts[0].children[0].cycle_capable = true;
+
+    let ir = emit_to_string(&pipeline, "cycle-capable-child");
+    assert!(
+        ir.contains("child_spec_0_f8"),
+        "expected child spec field 8 GEP for cycle_capable; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("store i32 1, ptr %child_spec_0_f8"),
+        "expected child spec cycle_capable store to be 1; got:\n{ir}"
     );
 }
 

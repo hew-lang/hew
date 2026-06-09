@@ -94,6 +94,138 @@ fn freshen_inner_recurses_into_trait_object_bound_args() {
 }
 
 #[test]
+fn local_pid_actor_dispatch_uses_builtin_discriminator() {
+    let output = check_source(
+        r"
+        actor Worker {
+            receive fn ping() {}
+        }
+
+        fn main() {
+            let worker = spawn Worker;
+            worker.ping();
+        }
+        ",
+    );
+
+    assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
+    assert!(
+        output.actor_method_dispatch.values().any(
+            |dispatch| matches!(dispatch, ActorMethodKind::Fire(method) if method == "Worker::ping")
+        ),
+        "LocalPid<Worker> actor dispatch must be recorded by typed builtin discriminator: {:?}",
+        output.actor_method_dispatch
+    );
+}
+
+#[test]
+fn remote_pid_does_not_fall_through_to_local_actor_dispatch() {
+    let output = check_source(
+        r"
+        actor Worker {
+            receive fn ping() {}
+        }
+
+        fn main() {
+            let remote: RemotePid<Worker>;
+            remote.ping();
+        }
+        ",
+    );
+
+    assert!(
+        output.actor_method_dispatch.is_empty(),
+        "RemotePid<Worker> must not be treated as a local actor dispatch receiver: {:?}",
+        output.actor_method_dispatch
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UndefinedMethod),
+        "remote actor receive dispatch should be rejected as an undefined method; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_wired_to_rejects_remote_pid_by_role() {
+    let output = check_source(
+        r"
+        actor Db {
+            receive fn query() {}
+        }
+
+        actor Api {
+            init(db: RemotePid<Db>) {}
+        }
+
+        supervisor App {
+            child db: Db;
+            child api: Api wired_to: { db };
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::InvalidOperation
+                && error
+                    .message
+                    .contains("E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH")
+                && error.message.contains("RemotePid<Db>")
+        }),
+        "wired_to must reject RemotePid<Db> rather than accepting actor-pid spelling: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
+    let output = check_source(
+        r"
+        machine MachineState {
+            state Idle;
+            state Running;
+
+            event Tick;
+
+            on Tick: Idle -> Running {
+                Running
+            }
+            on Tick: Running -> Idle {
+                Idle
+            }
+        }
+
+        fn main() {
+            var m = Idle;
+            m.step(Tick);
+        }
+        ",
+    );
+
+    assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
+    assert!(
+        output
+            .machine_method_dispatch
+            .values()
+            .any(|dispatch| matches!(dispatch, MachineMethodKind::Step { machine_name } if machine_name == "MachineState")),
+        "user machine named MachineState must still register as a nominal machine: {:?}",
+        output.machine_method_dispatch
+    );
+    assert_eq!(
+        Ty::normalize_named("MachineState".to_string(), vec![]),
+        Ty::Named {
+            builtin: Some(crate::BuiltinType::MachineState),
+            name: "MachineState".to_string(),
+            args: vec![],
+        },
+        "the builtin handle marker remains available separately"
+    );
+}
+
+#[test]
 fn register_type_decl_marks_transitive_handle_bearing_structs() {
     let mut registry = ModuleRegistry::new(vec![]);
     registry.insert_handle_type_for_test("regex.Pattern".to_string());
@@ -210,6 +342,7 @@ fn centralized_hashset_admissibility_rejects_nested_rc_elements() {
         .register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I64)]);
 
     let holder_ty = Ty::Named {
+        builtin: None,
         name: "Holder".to_string(),
         args: vec![],
     };
@@ -252,6 +385,7 @@ fn centralized_hashset_admissibility_rejects_named_enum_with_rc_payload() {
         .register_rcfree_members("MaybeHolder".to_string(), vec![Ty::rc(Ty::I64)]);
 
     let enum_ty = Ty::Named {
+        builtin: None,
         name: "MaybeHolder".to_string(),
         args: vec![],
     };
@@ -262,10 +396,12 @@ fn centralized_hashset_admissibility_rejects_named_enum_with_rc_payload() {
 fn centralized_hashset_admissibility_rejects_recursive_rcfree_cycle() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let a_ty = Ty::Named {
+        builtin: None,
         name: "A".to_string(),
         args: vec![],
     };
     let b_ty = Ty::Named {
+        builtin: None,
         name: "B".to_string(),
         args: vec![],
     };
@@ -295,6 +431,7 @@ fn centralized_hashset_admissibility_rejects_module_qualified_named_rc_payload()
         .register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I64)]);
 
     let holder_ty = Ty::Named {
+        builtin: None,
         name: "widgets.Holder".to_string(),
         args: vec![],
     };
@@ -349,6 +486,7 @@ fn concrete_vec_validation_reaches_function_wrapped_vec() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let ty = Ty::Function {
         params: vec![Ty::Named {
+            builtin: Some(crate::BuiltinType::Vec),
             name: "Vec".to_string(),
             args: vec![Ty::Array(Box::new(Ty::I64), 4)],
         }],
@@ -368,6 +506,7 @@ fn concrete_hashset_validation_reaches_pointer_wrapped_hashset() {
     let ty = Ty::Pointer {
         is_mutable: false,
         pointee: Box::new(Ty::Named {
+            builtin: Some(crate::BuiltinType::HashSet),
             name: "HashSet".to_string(),
             args: vec![Ty::Bool],
         }),
@@ -384,6 +523,7 @@ fn concrete_hashmap_validation_reaches_tuple_wrapped_hashmap() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let ty = Ty::Tuple(vec![
         Ty::Named {
+            builtin: Some(crate::BuiltinType::HashMap),
             name: "HashMap".to_string(),
             args: vec![Ty::I64, Ty::String],
         },
@@ -467,6 +607,7 @@ fn actor_decl_registers_rcfree_members_for_collection_checks() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let _ = checker.check_program(&parsed.program);
     let actor_ref_ty = Ty::actor_ref(Ty::Named {
+        builtin: None,
         name: "Worker".to_string(),
         args: vec![],
     });
@@ -530,6 +671,7 @@ fn expr_output_contract_rechecks_normalized_unresolved_subset() {
         span.clone(),
         Ty::Tuple(vec![
             Ty::Named {
+                builtin: None,
                 name: "Sender".to_string(),
                 args: vec![Ty::Var(sender_var)],
             },
@@ -628,6 +770,7 @@ fn checker_output_contract_prunes_orphaned_method_call_metadata() {
         SpanKey { start: 30, end: 40 },
         MethodCallRewrite::RewriteToFunction {
             c_symbol: "hew_bar_method".to_string(),
+            elem_ty: None,
         },
     );
 
@@ -784,7 +927,7 @@ fn main() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol }
+            MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }
                 if c_symbol == "hew_file_read"
         )),
         "expected checker-owned module-qualified rewrite metadata, got: {:?}",
@@ -1192,6 +1335,7 @@ fn test_actor_stream_name_no_longer_aliases_stream() {
     assert_eq!(
         output.fn_sigs["bar"].return_type,
         Ty::Named {
+            builtin: None,
             name: "ActorStream".to_string(),
             args: vec![Ty::I32],
         },
@@ -1280,7 +1424,11 @@ fn test_qualified_builtin_type_names_canonicalize_in_signatures() {
     assert_eq!(output.fn_sigs["stream_id"].return_type, Ty::stream(Ty::I64));
     assert!(matches!(
         &output.fn_sigs["close_sender"].params[0],
-        Ty::Named { name, args } if name == "Sender" && args.len() == 1
+        Ty::Named {
+            builtin: Some(crate::BuiltinType::Sender),
+            args,
+            ..
+        } if args.len() == 1
     ));
 }
 
@@ -2060,6 +2208,7 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
     assert_eq!(
         sig.params[0],
         Ty::Named {
+            builtin: None,
             name: "Result".to_string(),
             args: vec![],
         }
@@ -4124,6 +4273,7 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
     assert_eq!(
         inferred,
         &vec![Ty::Named {
+            builtin: None,
             name: "Label".to_string(),
             args: vec![],
         }]
@@ -6743,7 +6893,7 @@ fn test_self_with_generics_in_impl() {
         .fn_sigs
         .get("Pair::new")
         .expect("Pair::new should exist");
-    if let Ty::Named { name, args } = &new_sig.return_type {
+    if let Ty::Named { name, args, .. } = &new_sig.return_type {
         assert_eq!(name, "Pair", "return type should be Pair");
         assert_eq!(args.len(), 1, "Pair should have one type argument");
     } else {
@@ -7209,6 +7359,7 @@ fn typecheck_await_close_actor_ref() {
     checker.env.define(
         "g".to_string(),
         Ty::actor_ref(Ty::Named {
+            builtin: None,
             name: "Greeter".to_string(),
             args: vec![],
         }),
@@ -7246,6 +7397,7 @@ fn typecheck_await_close_lambda_actor() {
     checker.env.define(
         "worker".to_string(),
         Ty::Named {
+            builtin: Some(crate::BuiltinType::Actor),
             name: "Actor".to_string(),
             args: vec![Ty::I64],
         },
@@ -7996,6 +8148,7 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
                 (
                     "first".to_string(),
                     Ty::Named {
+                        builtin: None,
                         name: "T".to_string(),
                         args: vec![],
                     },
@@ -8003,6 +8156,7 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
                 (
                     "second".to_string(),
                     Ty::Named {
+                        builtin: None,
                         name: "U".to_string(),
                         args: vec![],
                     },
@@ -8030,6 +8184,7 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
             ],
         },
         &Ty::Named {
+            builtin: None,
             name: "Pair".to_string(),
             args: vec![Ty::I64, Ty::Bool],
         },
@@ -8088,6 +8243,7 @@ fn struct_pattern_missing_type_def_emits_diagnostic() {
             }],
         },
         &Ty::Named {
+            builtin: None,
             name: "Ghost".to_string(),
             args: vec![],
         },
@@ -8120,6 +8276,7 @@ fn register_generic_wrapper(checker: &mut Checker) {
     fields.insert(
         "value".to_string(),
         Ty::Named {
+            builtin: None,
             name: "T".to_string(),
             args: vec![],
         },
@@ -8155,6 +8312,7 @@ fn struct_init_coerces_literal_to_expected_type_arg() {
         0..20,
     );
     let expected = Ty::Named {
+        builtin: None,
         name: "Wrapper".to_string(),
         args: vec![Ty::I32],
     };
@@ -8187,6 +8345,7 @@ fn struct_init_infers_type_param_from_literal() {
     assert_eq!(
         ty,
         Ty::Named {
+            builtin: None,
             name: "Wrapper".to_string(),
             args: vec![Ty::IntLiteral],
         }
@@ -8214,6 +8373,7 @@ fn struct_init_overflow_in_expected_type() {
         0..20,
     );
     let expected = Ty::Named {
+        builtin: None,
         name: "Wrapper".to_string(),
         args: vec![Ty::U8],
     };
@@ -8386,6 +8546,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
         VariantDef::Struct(vec![(
             "value".to_string(),
             Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             },
@@ -8421,6 +8582,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
         base: None,
     };
     let expected = Ty::Named {
+        builtin: None,
         name: "Keeper".to_string(),
         args: vec![Ty::I64],
     };
@@ -8444,6 +8606,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
         VariantDef::Struct(vec![(
             "value".to_string(),
             Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             },
@@ -8596,6 +8759,7 @@ fn record_init_type_args_generic_in_generic_user_user() {
     assert_eq!(
         entries[0],
         vec![Ty::Named {
+            builtin: None,
             name: "Inner".to_string(),
             args: vec![Ty::I64],
         }]
@@ -9983,6 +10147,7 @@ fn trait_method_where_clause_bound_enforced_positive() {
     assert!(
         output.call_type_args.values().any(|args| args
             == &vec![crate::ty::Ty::Named {
+                builtin: None,
                 name: "Page".to_string(),
                 args: vec![]
             }]),
@@ -10034,6 +10199,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
             param_names: vec!["index".to_string()],
             params: vec![Ty::I64],
             return_type: Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             },
@@ -10047,6 +10213,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
     checker.env.define(
         "boxy".to_string(),
         Ty::Named {
+            builtin: None,
             name: "Boxy".to_string(),
             args: vec![Ty::String],
         },
@@ -10090,6 +10257,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
             param_names: vec!["index".to_string()],
             params: vec![Ty::I64],
             return_type: Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             },
@@ -10099,6 +10267,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
     checker.env.define(
         "wrapper".to_string(),
         Ty::Named {
+            builtin: None,
             name: "Wrapper".to_string(),
             args: vec![Ty::String],
         },
@@ -10137,8 +10306,10 @@ fn hashmap_bracket_index_is_a_compile_error() {
     // Register HashMap with a string-keyed .get() method (as the stdlib defines it).
     // Return type is Option<V>, represented as the Named form.
     let option_v = Ty::Named {
+        builtin: Some(crate::BuiltinType::Option),
         name: "Option".to_string(),
         args: vec![Ty::Named {
+            builtin: None,
             name: "V".to_string(),
             args: vec![],
         }],
@@ -10160,6 +10331,7 @@ fn hashmap_bracket_index_is_a_compile_error() {
     checker.env.define(
         "m".to_string(),
         Ty::Named {
+            builtin: None,
             name: "HashMap".to_string(),
             args: vec![Ty::String, Ty::I64],
         },
@@ -10267,10 +10439,12 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
         FnSig {
             param_names: vec!["next".to_string()],
             params: vec![Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             }],
             return_type: Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             },
@@ -10930,6 +11104,7 @@ fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
     checker.enforce_type_param_bounds(
         &sig,
         &[Ty::Named {
+            builtin: None,
             name: "Thing".to_string(),
             args: vec![],
         }],
@@ -15516,6 +15691,7 @@ mod for_loop_iterable_fail_closed {
     #[test]
     fn vec_with_empty_type_args_emits_diagnostic_not_fresh_var() {
         let errors = check_for_over(Ty::Named {
+            builtin: Some(crate::BuiltinType::Vec),
             name: "Vec".to_string(),
             args: vec![],
         });
@@ -15532,6 +15708,7 @@ mod for_loop_iterable_fail_closed {
     #[test]
     fn stream_with_empty_type_args_emits_diagnostic_not_fresh_var() {
         let errors = check_for_over(Ty::Named {
+            builtin: None,
             name: "Stream".to_string(),
             args: vec![],
         });
@@ -15548,6 +15725,7 @@ mod for_loop_iterable_fail_closed {
     #[test]
     fn vec_with_type_arg_is_valid() {
         let errors = check_for_over(Ty::Named {
+            builtin: Some(crate::BuiltinType::Vec),
             name: "Vec".to_string(),
             args: vec![Ty::I64],
         });
@@ -15571,6 +15749,7 @@ mod for_loop_iterable_fail_closed {
     #[test]
     fn range_iterable_is_valid() {
         let errors = check_for_over(Ty::Named {
+            builtin: Some(crate::BuiltinType::Range),
             name: "Range".to_string(),
             args: vec![Ty::I64],
         });
@@ -17762,6 +17941,69 @@ mod assoc_types_slice2 {
         );
     }
 
+    // ── gen{} / await in machine transition bodies (Machine Lane B S6) ─────
+
+    #[test]
+    fn genblock_inside_machine_transition_is_rejected() {
+        let output = check_source(
+            r"
+            machine Door {
+                state Closed;
+                state Open;
+
+                event Toggle;
+
+                on Toggle: Closed -> Open {
+                    gen { yield Open; }
+                }
+                on Toggle: Open -> Closed {
+                    Closed
+                }
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::GenBlockInMachineTransition),
+            "gen{{}} inside machine transition must emit GenBlockInMachineTransition; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn await_inside_machine_transition_is_rejected() {
+        let output = check_source(
+            r"
+            machine Door {
+                state Closed;
+                state Open;
+
+                event Toggle;
+
+                on Toggle: Closed -> Open {
+                    await pending;
+                    Open
+                }
+                on Toggle: Open -> Closed {
+                    Closed
+                }
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::AwaitInMachineTransition),
+            "await inside machine transition must emit AwaitInMachineTransition; got: {:?}",
+            output.errors
+        );
+    }
+
     // ── gen{} Return-component inference ───────────────────────────────────
 
     /// `gen { 1 }` has a tail expression but no yield.  The Return component
@@ -18465,6 +18707,147 @@ fn foo(s: Shape) -> i64 {
             crate::error::TypeErrorKind::UnsupportedPayloadSubpattern { .. }
         )),
         "binding and wildcard payload subpatterns must not emit UnsupportedPayloadSubpattern; \
+         got errors: {:#?}",
+        output.errors
+    );
+}
+
+// ── Generic machine transition-body inference (Lane B S8 prerequisite) ────
+
+/// Bare struct-state constructor in a generic machine transition body must
+/// type-check when the machine has type params and the state has a generic
+/// field.  `Faulted { error: event.error }` must resolve without errors.
+#[test]
+fn generic_machine_struct_state_bare_constructor_infers() {
+    let output = check_source(
+        r"
+        machine Work<T> {
+            state Running { handle: T; }
+            state Faulted { code: i64; }
+
+            event Crash { code: i64; }
+
+            on Crash: Running -> Faulted {
+                Faulted { code: event.code }
+            }
+            on Crash: Faulted -> Faulted {
+                state
+            }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "bare struct-state constructor in generic machine transition must type-check; \
+         got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Qualified struct-state constructor `Machine::State { … }` inside a
+/// generic machine transition body must also type-check.
+#[test]
+fn generic_machine_struct_state_qualified_constructor_infers() {
+    let output = check_source(
+        r"
+        machine Work<T> {
+            state Running { handle: T; }
+            state Faulted { code: i64; }
+
+            event Crash { code: i64; }
+
+            on Crash: Running -> Faulted {
+                Work::Faulted { code: event.code }
+            }
+            on Crash: Faulted -> Faulted {
+                state
+            }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "qualified struct-state constructor in generic machine transition must type-check; \
+         got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Non-generic machine struct-state constructors must continue to work
+/// (regression guard for the `synthesize`→`check_against` change).
+#[test]
+fn non_generic_machine_struct_state_constructor_regression_free() {
+    let output = check_source(
+        r"
+        machine Door {
+            state Closed;
+            state Opened { handle: i64; }
+
+            event OpenDoor { id: i64; }
+            event CloseDoor;
+
+            on OpenDoor: Closed -> Opened {
+                Door::Opened { handle: event.id }
+            }
+            on CloseDoor: Opened -> Closed {
+                Closed
+            }
+            on OpenDoor: Opened -> Opened {
+                state
+            }
+            on CloseDoor: Closed -> Closed {
+                state
+            }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "non-generic machine struct-state constructor must stay green (regression); \
+         got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// `step()` on a concretely-typed generic machine instance must accept a
+/// bare event name — the receiver's generic args must substitute through the
+/// registered event param.
+#[test]
+fn generic_machine_step_bare_event_propagates_receiver_args() {
+    let output = check_source(
+        r"
+        machine Work<T> {
+            state Created;
+            state Running { handle: T; }
+
+            event Initialise;
+            event Started { handle: T; }
+
+            on Initialise: Created -> Created {
+                Created
+            }
+            on Initialise: Running -> Running {
+                state
+            }
+            on Started: Created -> Running {
+                Running { handle: event.handle }
+            }
+            on Started: Running -> Running {
+                state
+            }
+        }
+        fn main() {
+            var w: Work<i64> = Created;
+            w.step(Initialise);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "step() with bare unit event on generic machine must type-check; \
          got errors: {:#?}",
         output.errors
     );

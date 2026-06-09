@@ -717,6 +717,25 @@ fn curated_playground_manifest_smoke() {
     );
 
     let valid_wasi = ["runnable", "unsupported"];
+    // Sandbox bytecode export has no implicit default: every manifest entry
+    // must declare one of these tiers, and future tiers should be added here
+    // before use so tests fail closed as coverage changes.
+    let valid_sandbox = ["runnable", "simulated", "unsupported_native_only"];
+
+    let validate_sandbox_capability = |id: &str, sandbox_cap: &str| -> Result<(), String> {
+        if valid_sandbox.contains(&sandbox_cap) {
+            Ok(())
+        } else {
+            Err(format!(
+                "manifest entry {id}: capabilities.sandbox must be one of {valid_sandbox:?}, got {sandbox_cap:?}"
+            ))
+        }
+    };
+
+    assert!(
+        validate_sandbox_capability("negative-fixture", "analysis-only").is_err(),
+        "sandbox capability schema must reject hew-wasm's analysis-only tier"
+    );
 
     for entry in entries {
         let id = entry
@@ -747,6 +766,11 @@ fn curated_playground_manifest_smoke() {
             valid_wasi.contains(&wasi_cap),
             "manifest entry {id}: capabilities.wasi must be one of {valid_wasi:?}, got {wasi_cap:?}"
         );
+        let sandbox_cap = caps
+            .get("sandbox")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("manifest entry {id} missing capabilities.sandbox"));
+        validate_sandbox_capability(id, sandbox_cap).unwrap_or_else(|err| panic!("{err}"));
 
         let source_path_rel = entry
             .get("source_path")

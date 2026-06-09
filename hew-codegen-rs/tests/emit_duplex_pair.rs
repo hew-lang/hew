@@ -2,11 +2,8 @@
 //! of `hew_duplex_pair` + `hew_duplex_send`, plus the `Instr::Drop`
 //! ritual for `hew_duplex_close`.
 //!
-//! Every assertion targets the textual LLVM IR (`.ll`) — the
-//! in-process build half is safe to drive from a unit test; only the
-//! back-half object emission requires the `hew-emit` helper, and
-//! these tests pass `native: false, wasm: false` so the helper is
-//! never invoked.
+//! Every assertion targets the textual LLVM IR (`.ll`), so these tests pass
+//! `native: false, wasm: false` and do not emit object files.
 //!
 //! LESSONS: boundary-fail-closed, exhaustive-traversal-and-lowering,
 //! cleanup-all-exits, raii-null-after-move, dedup-semantic-boundary.
@@ -142,6 +139,8 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 

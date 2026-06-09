@@ -3,6 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::BuiltinType;
 
 /// Embedded source for `std/io/closable.hew`.
 ///
@@ -57,7 +58,7 @@ extern "C" {
 /// Embedded source for `std/failure.hew`.
 ///
 /// Parsed at import-registration time for `std::failure` so the
-/// `PanicInfo` struct and `CrashAction` enum used in `#[on(crash)]` hook
+/// `CrashInfo` struct and `CrashAction` enum used in `#[on(crash)]` hook
 /// signatures are visible in the checker even in programs that were not
 /// loaded through the module-graph path (e.g. inline programs in tests).
 ///
@@ -66,7 +67,7 @@ extern "C" {
 /// not flow through the import resolver, so the embedded snippet omits
 /// any top-of-file imports the file itself does not need (none today).
 const FAILURE_HEW: &str = r"
-pub type PanicInfo {
+pub type CrashInfo {
     code: i64;
 }
 
@@ -83,12 +84,17 @@ pub enum CrashAction {
 const JIT_CLASSIFICATION_TOML: &str =
     include_str!("../../../scripts/jit-symbol-classification.toml");
 
-/// Parse the `stable = [ ... ]` block from `JIT_CLASSIFICATION_TOML`.
+/// Parse the `stable = [ ... ]` and `stable-stdlib = [ ... ]` blocks from
+/// `JIT_CLASSIFICATION_TOML` and return their union.
 ///
 /// Returns a `HashSet<&'static str>` so membership checks are O(1).
 /// The parsing is line-based (no full TOML dep): each quoted string inside
-/// `stable = [` ... `]` is extracted. The `codegen-stable` and `internal`
-/// blocks are excluded — those tiers are not user-callable via `extern "rt"`.
+/// either block is extracted. The `codegen-stable` and `internal` blocks
+/// are excluded — those tiers are not user-callable via `extern "rt"`.
+///
+/// `stable` covers runtime exports; `stable-stdlib` covers sibling stdlib
+/// crate exports (e.g. `hew_datetime_*`) that user code is permitted to
+/// name from an `extern "rt"` block and that the native linker pulls in.
 ///
 /// WHY no dep: the block format is simple and has been stable since the file
 /// was introduced; adding a toml dep to hew-types for a single string-list
@@ -97,21 +103,23 @@ fn jit_stable_symbols() -> &'static std::collections::HashSet<&'static str> {
     static SET: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
     SET.get_or_init(|| {
         let mut set = std::collections::HashSet::new();
-        let mut inside = false;
-        for line in JIT_CLASSIFICATION_TOML.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("stable = [") {
-                inside = true;
-                continue;
-            }
-            if inside && trimmed == "]" {
-                break;
-            }
-            if inside {
-                if let Some(rest) = trimmed.strip_prefix('"') {
-                    if let Some(sym) = rest.split('"').next() {
-                        if !sym.is_empty() {
-                            set.insert(sym);
+        for header in ["stable = [", "stable-stdlib = ["] {
+            let mut inside = false;
+            for line in JIT_CLASSIFICATION_TOML.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with(header) {
+                    inside = true;
+                    continue;
+                }
+                if inside && trimmed == "]" {
+                    break;
+                }
+                if inside {
+                    if let Some(rest) = trimmed.strip_prefix('"') {
+                        if let Some(sym) = rest.split('"').next() {
+                            if !sym.is_empty() {
+                                set.insert(sym);
+                            }
                         }
                     }
                 }
@@ -181,7 +189,7 @@ impl Checker {
             Ty::Array(element_ty, _) | Ty::Slice(element_ty) => {
                 self.ty_contains_owned_handle(element_ty, visiting)
             }
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 self.canonical_owned_handle_type_name(name).is_some()
                     || args
                         .iter()
@@ -289,6 +297,7 @@ impl Checker {
             vec!["T".to_string()],
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
             vec![Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             }],
@@ -299,6 +308,7 @@ impl Checker {
             vec!["T".to_string()],
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
             vec![Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             }],
@@ -320,6 +330,7 @@ impl Checker {
             vec!["T".to_string()],
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
             vec![Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             }],
@@ -384,10 +395,12 @@ impl Checker {
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
             vec![
                 Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
                 Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
@@ -400,10 +413,12 @@ impl Checker {
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
             vec![
                 Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
                 Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
@@ -421,6 +436,7 @@ impl Checker {
             "Vec::new",
             vec![],
             Ty::Named {
+                builtin: Some(BuiltinType::Vec),
                 name: "Vec".to_string(),
                 args: vec![Ty::Var(TypeVar::fresh())],
             },
@@ -429,6 +445,7 @@ impl Checker {
             "Vec::with_capacity",
             vec![Ty::I64],
             Ty::Named {
+                builtin: Some(BuiltinType::Vec),
                 name: "Vec".to_string(),
                 args: vec![Ty::Var(TypeVar::fresh())],
             },
@@ -437,6 +454,7 @@ impl Checker {
             "HashMap::new",
             vec![],
             Ty::Named {
+                builtin: Some(BuiltinType::HashMap),
                 name: "HashMap".to_string(),
                 args: vec![Ty::Var(TypeVar::fresh()), Ty::Var(TypeVar::fresh())],
             },
@@ -445,6 +463,7 @@ impl Checker {
             "HashSet::new",
             vec![],
             Ty::Named {
+                builtin: Some(BuiltinType::HashSet),
                 name: "HashSet".to_string(),
                 args: vec![Ty::Var(TypeVar::fresh())],
             },
@@ -475,6 +494,7 @@ impl Checker {
             "string_split",
             vec![Ty::String, Ty::String],
             Ty::Named {
+                builtin: Some(BuiltinType::Vec),
                 name: "Vec".to_string(),
                 args: vec![Ty::String],
             },
@@ -569,20 +589,24 @@ impl Checker {
             Ty::Tuple(vec![
                 Ty::duplex(
                     Ty::Named {
+                        builtin: None,
                         name: "S".to_string(),
                         args: vec![],
                     },
                     Ty::Named {
+                        builtin: None,
                         name: "R".to_string(),
                         args: vec![],
                     },
                 ),
                 Ty::duplex(
                     Ty::Named {
+                        builtin: None,
                         name: "R".to_string(),
                         args: vec![],
                     },
                     Ty::Named {
+                        builtin: None,
                         name: "S".to_string(),
                         args: vec![],
                     },
@@ -604,10 +628,12 @@ impl Checker {
             vec![Ty::I64],
             Ty::duplex(
                 Ty::Named {
+                    builtin: None,
                     name: "S".to_string(),
                     args: vec![],
                 },
                 Ty::Named {
+                    builtin: None,
                     name: "R".to_string(),
                     args: vec![],
                 },
@@ -623,10 +649,12 @@ impl Checker {
             vec![Ty::I64],
             Ty::Tuple(vec![
                 Ty::sink(Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 }),
                 Ty::stream(Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 }),
@@ -793,7 +821,7 @@ impl Checker {
         }
     }
 
-    /// Register the built-in `PanicInfo` / `CrashAction` surface so
+    /// Register the built-in `CrashInfo` / `CrashAction` surface so
     /// `#[on(crash)]` lifecycle hooks can name them in their signatures
     /// without `import std::failure;`.  Inline tests (no stdlib search
     /// path) rely on this; on-disk programs reach the same types via
@@ -903,16 +931,43 @@ impl Checker {
                     // inside field type resolution does not inject fresh type vars
                     // on handle types from this module.
                     let saved_local_type_defs = self.local_type_defs.clone();
+                    let saved_source_type_defs = self.source_type_defs.clone();
                     for (item, _) in &module.items {
-                        if let Item::TypeDecl(td) = item {
-                            self.local_type_defs.insert(td.name.clone());
+                        match item {
+                            Item::TypeDecl(td) => {
+                                self.local_type_defs.insert(td.name.clone());
+                                self.source_type_defs.insert(td.name.clone());
+                            }
+                            Item::Machine(md) => {
+                                // Pre-seed the machine name so that resolve_type_expr
+                                // inside state/event field resolution sees the machine
+                                // as locally-non-generic instead of injecting a fresh var.
+                                self.local_type_defs.insert(md.name.clone());
+                                self.source_type_defs.insert(md.name.clone());
+                            }
+                            _ => {}
                         }
                     }
                     let err_before = self.errors.len();
                     let warn_before = self.warnings.len();
                     for (item, _) in &module.items {
-                        if let Item::TypeDecl(td) = item {
-                            self.pre_register_type_decl(td);
+                        match item {
+                            Item::TypeDecl(td) => {
+                                self.pre_register_type_decl(td);
+                            }
+                            // Register machine state/event binding tables for the
+                            // non-root module path, mirroring the root-loop arm at
+                            // line ~1029. Deliberately skips
+                            // `register_machine_type_namespace_names` (which claims
+                            // `type_def_spans`) because the import-surface path
+                            // handles namespace dedup for exported names; claiming
+                            // spans here would cause false duplicate-definition
+                            // errors when the import path later registers the same
+                            // machine. Idempotency guard matches `pre_register_type_decl`.
+                            Item::Machine(md) if !self.type_defs.contains_key(&md.name) => {
+                                self.register_machine_decl(md);
+                            }
+                            _ => {}
                         }
                     }
                     for e in &mut self.errors[err_before..] {
@@ -926,6 +981,7 @@ impl Checker {
                         }
                     }
                     self.local_type_defs = saved_local_type_defs;
+                    self.source_type_defs = saved_source_type_defs;
                 }
             }
         }
@@ -940,18 +996,21 @@ impl Checker {
                     }
                     self.register_type_decl(td);
                     self.local_type_defs.insert(td.name.clone());
+                    self.source_type_defs.insert(td.name.clone());
                 }
                 Item::Actor(ad) => {
                     if !self.register_type_namespace_name(&ad.name, span) {
                         continue;
                     }
                     self.register_actor_decl(ad);
+                    self.source_type_defs.insert(ad.name.clone());
                 }
                 Item::Wire(wd) => {
                     if !self.register_type_namespace_name(&wd.name, span) {
                         continue;
                     }
                     self.register_wire_decl(wd);
+                    self.source_type_defs.insert(wd.name.clone());
                 }
                 Item::TypeAlias(ta) => {
                     if !self.register_type_namespace_name(&ta.name, span) {
@@ -961,6 +1020,7 @@ impl Checker {
                     let resolved = self.resolve_type_expr_tracking_holes(&ta.ty, &mut hole_vars);
                     self.type_aliases.insert(ta.name.clone(), resolved);
                     self.record_type_def_inference_holes(&ta.name, hole_vars);
+                    self.source_type_defs.insert(ta.name.clone());
                 }
                 Item::Trait(td) => {
                     if !self.register_type_namespace_name(&td.name, span) {
@@ -1004,6 +1064,7 @@ impl Checker {
                     }
                     self.register_machine_decl(md);
                     self.local_type_defs.insert(md.name.clone());
+                    self.source_type_defs.insert(md.name.clone());
                 }
                 Item::Record(rd) => {
                     if !self.register_type_namespace_name(&rd.name, span) {
@@ -1011,6 +1072,7 @@ impl Checker {
                     }
                     self.register_record_decl(rd);
                     self.local_type_defs.insert(rd.name.clone());
+                    self.source_type_defs.insert(rd.name.clone());
                 }
                 Item::Import(_)
                 | Item::Const(_)
@@ -1070,6 +1132,7 @@ impl Checker {
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::Named {
+                builtin: None,
                 name: name.clone(),
                 args: vec![],
             })
@@ -1083,6 +1146,7 @@ impl Checker {
                 }
                 TypeBodyItem::Variant(variant) => {
                     let return_type = Ty::Named {
+                        builtin: None,
                         name: td.name.clone(),
                         args: enum_return_args.clone(),
                     };
@@ -1241,6 +1305,7 @@ impl Checker {
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::Named {
+                builtin: None,
                 name: name.clone(),
                 args: vec![],
             })
@@ -1254,6 +1319,7 @@ impl Checker {
                 }
                 TypeBodyItem::Variant(variant) => {
                     let return_type = Ty::Named {
+                        builtin: None,
                         name: td.name.clone(),
                         args: enum_return_args.clone(),
                     };
@@ -1382,11 +1448,13 @@ impl Checker {
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::Named {
+                builtin: None,
                 name: name.clone(),
                 args: vec![],
             })
             .collect();
         let return_type = Ty::Named {
+            builtin: None,
             name: rd.name.clone(),
             args: enum_return_args,
         };
@@ -1469,6 +1537,7 @@ impl Checker {
     /// - Wire enums expose JSON/YAML helpers.
     pub(super) fn register_wire_methods(&mut self, type_name: &str) {
         let self_ty = Ty::Named {
+            builtin: None,
             name: type_name.to_string(),
             args: vec![],
         };
@@ -1560,6 +1629,7 @@ impl Checker {
     /// expected kind for the format.
     pub(super) fn register_encode_methods(&mut self, type_name: &str) {
         let self_ty = Ty::Named {
+            builtin: None,
             name: type_name.to_string(),
             args: vec![],
         };
@@ -1713,19 +1783,22 @@ impl Checker {
         let machine_generic_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::Named {
+                builtin: None,
                 name: name.clone(),
                 args: vec![],
             })
             .collect();
-        let machine_ty = Ty::normalize_named(md.name.clone(), machine_generic_args);
+        let machine_ty = Ty::Named {
+            builtin: None,
+            name: md.name.clone(),
+            args: machine_generic_args.clone(),
+        };
 
         let event_type_name = format!("{}Event", md.name);
-        // The companion event enum is always non-generic: v0.5 generic machine
-        // values are not codegen-supported (see MachineDecl.type_params doc
-        // comment). Events carry concrete payload fields only.
         let event_ty = Ty::Named {
+            builtin: None,
             name: event_type_name.clone(),
-            args: vec![],
+            args: machine_generic_args.clone(),
         };
 
         // Build state variants
@@ -1767,7 +1840,7 @@ impl Checker {
         let type_def = TypeDef {
             kind: TypeDefKind::Machine,
             name: md.name.clone(),
-            type_params: type_param_names,
+            type_params: type_param_names.clone(),
             fields: HashMap::new(),
             variants,
             methods: HashMap::new(),
@@ -1813,7 +1886,7 @@ impl Checker {
         let event_type_def = TypeDef {
             kind: TypeDefKind::Enum,
             name: event_type_name.clone(),
-            type_params: vec![],
+            type_params: type_param_names.clone(),
             fields: HashMap::new(),
             variants: event_variants,
             methods: HashMap::new(),
@@ -1848,6 +1921,359 @@ impl Checker {
         }
     }
 
+    fn report_machine_transition_forbidden_exprs(
+        &mut self,
+        machine_name: &str,
+        transition: &hew_parser::ast::MachineTransition,
+    ) -> bool {
+        let mut hits = Vec::new();
+        Self::collect_machine_transition_forbidden_exprs(
+            &transition.body.0,
+            &transition.body.1,
+            &mut hits,
+        );
+        for (kind, span, label) in &hits {
+            let message = match kind {
+                TypeErrorKind::GenBlockInMachineTransition => format!(
+                    "E_GENBLOCK_IN_MACHINE_TRANSITION: `gen {{ }}` blocks are forbidden inside \
+                     machine `{machine_name}` transition `{}`: {} -> {}; transition bodies \
+                     must be pure and cannot suspend",
+                    transition.event_name, transition.source_state, transition.target_state
+                ),
+                TypeErrorKind::AwaitInMachineTransition => format!(
+                    "E_AWAIT_IN_MACHINE_TRANSITION: `{label}` is forbidden inside machine \
+                     `{machine_name}` transition `{}`: {} -> {}; transition bodies must be pure \
+                     and cannot suspend",
+                    transition.event_name, transition.source_state, transition.target_state
+                ),
+                _ => unreachable!("machine transition purity scanner only emits its own kinds"),
+            };
+            self.report_error(kind.clone(), span, message);
+        }
+        !hits.is_empty()
+    }
+
+    fn collect_machine_transition_forbidden_block(
+        block: &Block,
+        hits: &mut Vec<(TypeErrorKind, Span, &'static str)>,
+    ) {
+        for (stmt, span) in &block.stmts {
+            Self::collect_machine_transition_forbidden_stmt(stmt, span, hits);
+        }
+        if let Some(expr) = &block.trailing_expr {
+            Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "fail-closed transition purity scanner must cover every AST expression shape"
+    )]
+    fn collect_machine_transition_forbidden_stmt(
+        stmt: &Stmt,
+        span: &Span,
+        hits: &mut Vec<(TypeErrorKind, Span, &'static str)>,
+    ) {
+        match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::Var { value, .. }
+            | Stmt::Break { value, .. }
+            | Stmt::Return(value) => {
+                if let Some((expr, expr_span)) = value {
+                    Self::collect_machine_transition_forbidden_exprs(expr, expr_span, hits);
+                }
+            }
+            Stmt::Assign { target, value, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&target.0, &target.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(&value.0, &value.1, hits);
+            }
+            Stmt::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&condition.0, &condition.1, hits);
+                Self::collect_machine_transition_forbidden_block(then_block, hits);
+                if let Some(else_block) = else_block {
+                    if let Some(if_stmt) = &else_block.if_stmt {
+                        Self::collect_machine_transition_forbidden_stmt(
+                            &if_stmt.0, &if_stmt.1, hits,
+                        );
+                    }
+                    if let Some(block) = &else_block.block {
+                        Self::collect_machine_transition_forbidden_block(block, hits);
+                    }
+                }
+            }
+            Stmt::IfLet {
+                expr,
+                body,
+                else_body,
+                ..
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+                Self::collect_machine_transition_forbidden_block(body, hits);
+                if let Some(block) = else_body {
+                    Self::collect_machine_transition_forbidden_block(block, hits);
+                }
+            }
+            Stmt::Match { scrutinee, arms } => {
+                Self::collect_machine_transition_forbidden_exprs(&scrutinee.0, &scrutinee.1, hits);
+                for arm in arms {
+                    if let Some((guard, guard_span)) = &arm.guard {
+                        Self::collect_machine_transition_forbidden_exprs(guard, guard_span, hits);
+                    }
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &arm.body.0,
+                        &arm.body.1,
+                        hits,
+                    );
+                }
+            }
+            Stmt::Loop { body, .. } | Stmt::While { body, .. } => {
+                Self::collect_machine_transition_forbidden_block(body, hits);
+            }
+            Stmt::For {
+                is_await,
+                iterable,
+                body,
+                ..
+            } => {
+                if *is_await {
+                    hits.push((
+                        TypeErrorKind::AwaitInMachineTransition,
+                        span.clone(),
+                        "for await",
+                    ));
+                }
+                Self::collect_machine_transition_forbidden_exprs(&iterable.0, &iterable.1, hits);
+                Self::collect_machine_transition_forbidden_block(body, hits);
+            }
+            Stmt::WhileLet { expr, body, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+                Self::collect_machine_transition_forbidden_block(body, hits);
+            }
+            Stmt::Defer(expr) => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+            }
+            Stmt::Expression(expr) => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+            }
+            Stmt::Continue { .. } => {}
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "fail-closed transition purity scanner must cover every AST expression shape"
+    )]
+    fn collect_machine_transition_forbidden_exprs(
+        expr: &Expr,
+        span: &Span,
+        hits: &mut Vec<(TypeErrorKind, Span, &'static str)>,
+    ) {
+        match expr {
+            Expr::GenBlock { body } => {
+                hits.push((
+                    TypeErrorKind::GenBlockInMachineTransition,
+                    span.clone(),
+                    "gen",
+                ));
+                Self::collect_machine_transition_forbidden_block(body, hits);
+            }
+            Expr::Await(inner) => {
+                hits.push((
+                    TypeErrorKind::AwaitInMachineTransition,
+                    span.clone(),
+                    "await",
+                ));
+                Self::collect_machine_transition_forbidden_exprs(&inner.0, &inner.1, hits);
+            }
+            Expr::Binary { left, right, .. }
+            | Expr::Is {
+                lhs: left,
+                rhs: right,
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&left.0, &left.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(&right.0, &right.1, hits);
+            }
+            Expr::Unary { operand, .. }
+            | Expr::ForkChild { expr: operand, .. }
+            | Expr::PostfixTry(operand)
+            | Expr::Yield(Some(operand)) => {
+                Self::collect_machine_transition_forbidden_exprs(&operand.0, &operand.1, hits);
+            }
+            Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
+                for (expr, expr_span) in exprs {
+                    Self::collect_machine_transition_forbidden_exprs(expr, expr_span, hits);
+                }
+            }
+            Expr::ArrayRepeat { value, count } => {
+                Self::collect_machine_transition_forbidden_exprs(&value.0, &value.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(&count.0, &count.1, hits);
+            }
+            Expr::MapLiteral { entries } => {
+                for ((key, key_span), (value, value_span)) in entries {
+                    Self::collect_machine_transition_forbidden_exprs(key, key_span, hits);
+                    Self::collect_machine_transition_forbidden_exprs(value, value_span, hits);
+                }
+            }
+            Expr::Block(block) | Expr::Scope { body: block } | Expr::ForkBlock { body: block } => {
+                Self::collect_machine_transition_forbidden_block(block, hits);
+            }
+            Expr::UnsafeBlock(block) => {
+                Self::collect_machine_transition_forbidden_block(block, hits);
+            }
+            Expr::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&condition.0, &condition.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(
+                    &then_block.0,
+                    &then_block.1,
+                    hits,
+                );
+                if let Some(else_block) = else_block {
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &else_block.0,
+                        &else_block.1,
+                        hits,
+                    );
+                }
+            }
+            Expr::IfLet {
+                expr,
+                body,
+                else_body,
+                ..
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+                Self::collect_machine_transition_forbidden_block(body, hits);
+                if let Some(block) = else_body {
+                    Self::collect_machine_transition_forbidden_block(block, hits);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                Self::collect_machine_transition_forbidden_exprs(&scrutinee.0, &scrutinee.1, hits);
+                for arm in arms {
+                    if let Some((guard, guard_span)) = &arm.guard {
+                        Self::collect_machine_transition_forbidden_exprs(guard, guard_span, hits);
+                    }
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &arm.body.0,
+                        &arm.body.1,
+                        hits,
+                    );
+                }
+            }
+            Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&body.0, &body.1, hits);
+            }
+            Expr::Spawn { target, args } => {
+                Self::collect_machine_transition_forbidden_exprs(&target.0, &target.1, hits);
+                for (_, (arg, arg_span)) in args {
+                    Self::collect_machine_transition_forbidden_exprs(arg, arg_span, hits);
+                }
+            }
+            Expr::ScopeDeadline { duration, body } => {
+                Self::collect_machine_transition_forbidden_exprs(&duration.0, &duration.1, hits);
+                Self::collect_machine_transition_forbidden_block(body, hits);
+            }
+            Expr::InterpolatedString(parts) => {
+                for part in parts {
+                    if let StringPart::Expr((expr, expr_span)) = part {
+                        Self::collect_machine_transition_forbidden_exprs(expr, expr_span, hits);
+                    }
+                }
+            }
+            Expr::Call { function, args, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&function.0, &function.1, hits);
+                for arg in args {
+                    let (arg_expr, arg_span) = arg.expr();
+                    Self::collect_machine_transition_forbidden_exprs(arg_expr, arg_span, hits);
+                }
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&receiver.0, &receiver.1, hits);
+                for arg in args {
+                    let (arg_expr, arg_span) = arg.expr();
+                    Self::collect_machine_transition_forbidden_exprs(arg_expr, arg_span, hits);
+                }
+            }
+            Expr::StructInit { fields, base, .. } => {
+                for (_, (field, field_span)) in fields {
+                    Self::collect_machine_transition_forbidden_exprs(field, field_span, hits);
+                }
+                if let Some(base) = base {
+                    Self::collect_machine_transition_forbidden_exprs(&base.0, &base.1, hits);
+                }
+            }
+            Expr::Select { arms, timeout } => {
+                for arm in arms {
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &arm.source.0,
+                        &arm.source.1,
+                        hits,
+                    );
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &arm.body.0,
+                        &arm.body.1,
+                        hits,
+                    );
+                }
+                if let Some(timeout) = timeout {
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &timeout.duration.0,
+                        &timeout.duration.1,
+                        hits,
+                    );
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &timeout.body.0,
+                        &timeout.body.1,
+                        hits,
+                    );
+                }
+            }
+            Expr::Timeout { expr, duration } => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(&duration.0, &duration.1, hits);
+            }
+            Expr::FieldAccess { object, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&object.0, &object.1, hits);
+            }
+            Expr::Index { object, index } => {
+                Self::collect_machine_transition_forbidden_exprs(&object.0, &object.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(&index.0, &index.1, hits);
+            }
+            Expr::Cast { expr, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+            }
+            Expr::Range { start, end, .. } => {
+                if let Some(start) = start {
+                    Self::collect_machine_transition_forbidden_exprs(&start.0, &start.1, hits);
+                }
+                if let Some(end) = end {
+                    Self::collect_machine_transition_forbidden_exprs(&end.0, &end.1, hits);
+                }
+            }
+            Expr::MachineEmit { fields, .. } => {
+                for (_, (field, field_span)) in fields {
+                    Self::collect_machine_transition_forbidden_exprs(field, field_span, hits);
+                }
+            }
+            Expr::Literal(_)
+            | Expr::Identifier(_)
+            | Expr::Yield(None)
+            | Expr::Cooperate
+            | Expr::This
+            | Expr::RegexLiteral(_)
+            | Expr::ByteStringLiteral(_)
+            | Expr::ByteArrayLiteral(_) => {}
+        }
+    }
+
     /// Check that the machine's state × event matrix is fully covered.
     #[expect(
         clippy::too_many_lines,
@@ -1878,6 +2304,9 @@ impl Checker {
         let mut wildcard_events: HashSet<String> = HashSet::new();
 
         for transition in &md.transitions {
+            let transition_has_forbidden_expr =
+                self.report_machine_transition_forbidden_exprs(&md.name, transition);
+
             // Fix 2: Reject unknown event names
             if !event_names.contains(&transition.event_name.as_str()) {
                 self.errors.push(TypeError::new(
@@ -1959,13 +2388,18 @@ impl Checker {
                 .type_params
                 .iter()
                 .map(|name| Ty::Named {
+                    builtin: None,
                     name: name.clone(),
                     args: vec![],
                 })
                 .collect();
             self.env.define(
                 "state".to_string(),
-                Ty::normalize_named(md.name.clone(), transition_machine_args),
+                Ty::Named {
+                    builtin: None,
+                    name: md.name.clone(),
+                    args: transition_machine_args,
+                },
                 false,
             );
             // Bind `event` as the event companion enum type so that
@@ -1974,8 +2408,17 @@ impl Checker {
             self.env.define(
                 "event".to_string(),
                 Ty::Named {
+                    builtin: None,
                     name: event_type_name,
-                    args: vec![],
+                    args: md
+                        .type_params
+                        .iter()
+                        .map(|name| Ty::Named {
+                            builtin: None,
+                            name: name.clone(),
+                            args: vec![],
+                        })
+                        .collect(),
                 },
                 false,
             );
@@ -1996,7 +2439,28 @@ impl Checker {
             if let Some((guard_expr, guard_span)) = &transition.guard {
                 self.check_against(guard_expr, guard_span, &Ty::Bool);
             }
-            self.synthesize(&transition.body.0, &transition.body.1);
+            if !transition_has_forbidden_expr {
+                // Check the transition body against the machine type so that the
+                // expected-type context flows into struct-variant pre-seeding
+                // (expressions.rs enum-struct-variant arm).  Without an expected
+                // type, `synthesize` cannot seed the type-params for generic
+                // machines and bare state constructors like `Faulted { error: … }`
+                // fail to resolve when the state has a generic field.
+                let expected_machine_ty = Ty::Named {
+                    builtin: None,
+                    name: md.name.clone(),
+                    args: md
+                        .type_params
+                        .iter()
+                        .map(|name| Ty::Named {
+                            builtin: None,
+                            name: name.clone(),
+                            args: vec![],
+                        })
+                        .collect(),
+                };
+                self.check_against(&transition.body.0, &transition.body.1, &expected_machine_ty);
+            }
             self.current_machine_transition = None;
             self.env.pop_scope();
         }
@@ -2087,6 +2551,7 @@ impl Checker {
         let mut fields = HashMap::new();
         for field in &wd.fields {
             let ty = Ty::from_name(&field.ty).unwrap_or_else(|| Ty::Named {
+                builtin: None,
                 name: field.ty.clone(),
                 args: vec![],
             });
@@ -2501,9 +2966,11 @@ impl Checker {
                     // like Receiver, and locally_non_generic suppresses
                     // fresh-var injection for handle types like Sender.
                     let saved_local_type_defs = self.local_type_defs.clone();
+                    let saved_source_type_defs = self.source_type_defs.clone();
                     for (item, _) in &module.items {
                         if let Item::TypeDecl(td) = item {
                             self.local_type_defs.insert(td.name.clone());
+                            self.source_type_defs.insert(td.name.clone());
                         }
                     }
 
@@ -2531,6 +2998,7 @@ impl Checker {
                     }
 
                     self.local_type_defs = saved_local_type_defs;
+                    self.source_type_defs = saved_source_type_defs;
                 }
             }
         }
@@ -2652,6 +3120,7 @@ impl Checker {
                                 self.register_trait_method_sig(&tb.name, &m, span);
                                 let trait_method_key = format!("{}::{}", tb.name, m.name);
                                 let concrete_self = Ty::Named {
+                                    builtin: None,
                                     name: type_name.clone(),
                                     args: self_type_args.clone(),
                                 };
@@ -3201,9 +3670,13 @@ impl Checker {
         if let Some(canonical) = ty.canonical_lowering_name() {
             return Some(canonical.to_string());
         }
-        if let Ty::Named { name, .. } = ty {
-            if matches!(name.as_str(), "Vec" | "HashMap" | "HashSet") {
-                return Some(name.clone());
+        if let Ty::Named {
+            builtin: Some(builtin),
+            ..
+        } = ty
+        {
+            if builtin.is_collection() {
+                return Some(builtin.canonical_name().to_string());
             }
         }
         None
@@ -3218,7 +3691,7 @@ impl Checker {
         if let Some(prim) = Ty::from_name(name) {
             return Self::canonical_primitive_or_builtin_key(&prim);
         }
-        if matches!(name, "Vec" | "HashMap" | "HashSet") {
+        if crate::lookup_builtin_type(name).is_some_and(crate::BuiltinType::is_collection) {
             return Some(name.to_string());
         }
         None
@@ -3273,6 +3746,7 @@ impl Checker {
                 generic_bindings.insert(
                     tp.name.clone(),
                     Ty::Named {
+                        builtin: None,
                         name: tp.name.clone(),
                         args: vec![],
                     },
@@ -3442,6 +3916,7 @@ impl Checker {
         }
 
         let receiver_ty = Ty::Named {
+            builtin: None,
             name: "Receiver".to_string(),
             args: vec![],
         };
@@ -3744,9 +4219,11 @@ impl Checker {
         // (module_graph traversal) use bare Sender — causing a type mismatch
         // when body-checking the non-root module.
         let saved_local_type_defs = self.local_type_defs.clone();
+        let saved_source_type_defs = self.source_type_defs.clone();
         for (item, _) in items {
             if let Item::TypeDecl(td) = item {
                 self.local_type_defs.insert(td.name.clone());
+                self.source_type_defs.insert(td.name.clone());
             }
         }
 
@@ -3873,14 +4350,17 @@ impl Checker {
                         continue;
                     }
                     self.register_qualified_type_alias(module_short, &td.name);
+                    self.record_module_type_export(module_short, &td.name);
                 }
                 Item::Actor(ad) => {
                     self.register_qualified_type_alias(module_short, &ad.name);
+                    self.record_module_type_export(module_short, &ad.name);
                 }
                 _ => {}
             }
         }
         self.local_type_defs = saved_local_type_defs;
+        self.source_type_defs = saved_source_type_defs;
     }
 
     /// Register items from a file-based import as top-level names (no module namespace).
@@ -4090,9 +4570,11 @@ impl Checker {
         // suppresses fresh-var injection for handle types defined in this
         // module, matching the resolution context used during collect_functions.
         let saved_local_type_defs = self.local_type_defs.clone();
+        let saved_source_type_defs = self.source_type_defs.clone();
         for (item, _) in items {
             if let Item::TypeDecl(td) = item {
                 self.local_type_defs.insert(td.name.clone());
+                self.source_type_defs.insert(td.name.clone());
             }
         }
 
@@ -4129,6 +4611,7 @@ impl Checker {
                     }
                     self.register_type_decl(td);
                     self.register_qualified_type_alias(module_short, &td.name);
+                    self.record_module_type_export(module_short, &td.name);
                     self.known_types.insert(td.name.clone());
                 }
                 Item::Trait(tr) => {
@@ -4246,6 +4729,7 @@ impl Checker {
                     }
                     self.register_actor_base(ad);
                     self.register_qualified_type_alias(module_short, &ad.name);
+                    self.record_module_type_export(module_short, &ad.name);
                     // If named import or glob, also register unqualified
                     if Self::should_import_name(&ad.name, spec) {
                         let binding_name = Self::resolve_import_name(spec, &ad.name)
@@ -4260,6 +4744,7 @@ impl Checker {
             }
         }
         self.local_type_defs = saved_local_type_defs;
+        self.source_type_defs = saved_source_type_defs;
     }
 
     /// Build a `FnSig` from a function declaration (used for user module registration).
@@ -4325,5 +4810,20 @@ impl Checker {
             }
             self.handle_bearing_dirty = true;
         }
+    }
+
+    /// Record that an imported module exports a type/actor name.
+    ///
+    /// Mirrors the `module_fn_exports` precedent (`register_builtin_sig` /
+    /// `register_user_module` `Item::Function` arm) for type names.  Drives the
+    /// module-qualified value-constructor pre-dispatch in `check_field_access`
+    /// and `check_struct_init` so we can emit a precise "module `m` has no
+    /// exported type `T`" diagnostic instead of leaking through to the
+    /// "undefined variable" / "undefined type" fallbacks.
+    pub(super) fn record_module_type_export(&mut self, module_short: &str, name: &str) {
+        self.module_type_exports
+            .entry(module_short.to_string())
+            .or_default()
+            .insert(name.to_string());
     }
 }

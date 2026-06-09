@@ -412,6 +412,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
     assert_eq!(
         inferred,
         &vec![Ty::Named {
+            builtin: None,
             name: "Label".to_string(),
             args: vec![],
         }]

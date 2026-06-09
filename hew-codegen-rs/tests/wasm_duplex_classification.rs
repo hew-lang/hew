@@ -107,6 +107,8 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 
@@ -170,6 +172,8 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 
@@ -237,6 +241,8 @@ fn pipeline_no_duplex() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 
@@ -322,15 +328,18 @@ fn duplex_pair_native_only_succeeds_without_wasm_emit() {
     let options = EmitOptions {
         module_name: "duplex_native_only",
         out_dir: &dir,
-        native: false, // native object emission requires hew-emit helper binary
+        native: true,
         wasm: false,
     };
-    // The .ll (textual IR) must be produced; wasm emission is skipped.
     let artefacts =
         emit_module(&pipeline, &options).expect("duplex pipeline with wasm: false must succeed");
     assert!(
         artefacts.ll_path.is_some(),
         "ll_path must be populated even when wasm: false"
+    );
+    assert!(
+        artefacts.native_obj_path.is_some(),
+        "native_obj_path must be populated when native: true"
     );
     assert!(
         artefacts.wasm_path.is_none(),
@@ -342,9 +351,6 @@ fn duplex_pair_native_only_succeeds_without_wasm_emit() {
 /// the duplex gate must not interfere with programs that don't use the duplex
 /// substrate.  This is the regression guard for the non-duplex smoke path.
 ///
-/// We skip native and object emission to avoid depending on `hew-emit`
-/// being in PATH, but WASM-path detection runs before those helper invocations,
-/// so we can test the gate in isolation by checking the absence of the error.
 /// The full WASM link would require `wasm-ld`; use `native: false, wasm: false`
 /// with an assertion that the error is NOT `WasmUnsupportedSubstrate`.
 #[test]

@@ -1,0 +1,565 @@
+{
+  "capabilities": [
+    {
+      "disposition": "allowed",
+      "id": "core.stdout",
+      "reason": "stdout is captured by the educational sandbox trace",
+      "required_by": [
+        "sym:core.stdout.println"
+      ]
+    },
+    {
+      "disposition": "reserved",
+      "id": "std.text.regex.compile",
+      "reason": "regex execution waits for the sandbox-safe regex shim",
+      "required_by": [
+        "sym:std.text.regex.compile",
+        "sym:std.text.regex.find",
+        "sym:std.text.regex.free"
+      ]
+    }
+  ],
+  "compiler_version": "hew-sandbox-wasm-0.5.0-pre",
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": "block:entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": "[0-9]+"
+                }
+              ],
+              "dst": "local:main.0",
+              "op": "const.string",
+              "span": "span:61-69"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.0"
+                }
+              ],
+              "dst": "local:main.1",
+              "op": "regex.compile",
+              "span": "span:51-70"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.2"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.1"
+                }
+              ],
+              "dst": null,
+              "op": "local.set",
+              "span": "span:42-76"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.2"
+                }
+              ],
+              "dst": "local:main.3",
+              "op": "local.get",
+              "span": "span:84-86"
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": "abc123"
+                }
+              ],
+              "dst": "local:main.4",
+              "op": "const.string",
+              "span": "span:92-100"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.3"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.4"
+                }
+              ],
+              "dst": "local:main.5",
+              "op": "regex.find",
+              "span": "span:84-101"
+            },
+            {
+              "args": [
+                {
+                  "kind": "symbol",
+                  "value": "sym:core.stdout.println"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.5"
+                }
+              ],
+              "dst": null,
+              "op": "call.stdlib",
+              "span": "span:76-102"
+            },
+            {
+              "args": [],
+              "dst": "local:main.6",
+              "op": "const.unit",
+              "span": "span:76-102"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.2"
+                }
+              ],
+              "dst": "local:main.7",
+              "op": "local.get",
+              "span": "span:108-110"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.7"
+                }
+              ],
+              "dst": null,
+              "op": "regex.free",
+              "span": "span:108-117"
+            },
+            {
+              "args": [],
+              "dst": "local:main.8",
+              "op": "const.unit",
+              "span": "span:108-117"
+            },
+            {
+              "args": [],
+              "dst": "local:main.9",
+              "op": "const.unit",
+              "span": "span:26-0"
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [
+              {
+                "kind": "local",
+                "value": "local:main.9"
+              }
+            ],
+            "op": "return",
+            "span": "span:26-0"
+          }
+        }
+      ],
+      "id": "fn:main",
+      "locals": [
+        {
+          "id": "local:main.0",
+          "mutable": false,
+          "name": null,
+          "span": "span:61-69",
+          "type": "type:string"
+        },
+        {
+          "id": "local:main.1",
+          "mutable": false,
+          "name": null,
+          "span": "span:51-70",
+          "type": "type:Regex"
+        },
+        {
+          "id": "local:main.2",
+          "mutable": false,
+          "name": "re",
+          "span": "span:46-49",
+          "type": "type:regex.Pattern"
+        },
+        {
+          "id": "local:main.3",
+          "mutable": false,
+          "name": null,
+          "span": "span:84-86",
+          "type": "type:regex.Pattern"
+        },
+        {
+          "id": "local:main.4",
+          "mutable": false,
+          "name": null,
+          "span": "span:92-100",
+          "type": "type:string"
+        },
+        {
+          "id": "local:main.5",
+          "mutable": false,
+          "name": null,
+          "span": "span:84-101",
+          "type": "type:string"
+        },
+        {
+          "id": "local:main.6",
+          "mutable": false,
+          "name": null,
+          "span": "span:76-102",
+          "type": "type:unit"
+        },
+        {
+          "id": "local:main.7",
+          "mutable": false,
+          "name": null,
+          "span": "span:108-110",
+          "type": "type:regex.Pattern"
+        },
+        {
+          "id": "local:main.8",
+          "mutable": false,
+          "name": null,
+          "span": "span:108-117",
+          "type": "type:unit"
+        },
+        {
+          "id": "local:main.9",
+          "mutable": false,
+          "name": null,
+          "span": "span:26-0",
+          "type": "type:unit"
+        }
+      ],
+      "module": "mod:main",
+      "name": "main",
+      "params": [],
+      "result": "type:unit",
+      "span": "span:26-0"
+    }
+  ],
+  "hew_version": "0.5.0-pre",
+  "layouts": {
+    "actors": [],
+    "enums": [],
+    "machines": [],
+    "records": [],
+    "supervisors": [],
+    "types": [
+      {
+        "id": "type:LocalPid",
+        "kind": "record",
+        "name": "LocalPid"
+      },
+      {
+        "id": "type:Regex",
+        "kind": "regex",
+        "name": "Regex"
+      },
+      {
+        "id": "type:RemotePid",
+        "kind": "record",
+        "name": "RemotePid"
+      },
+      {
+        "id": "type:SendError",
+        "kind": "enum",
+        "name": "SendError"
+      },
+      {
+        "id": "type:bool",
+        "kind": "bool",
+        "name": "bool"
+      },
+      {
+        "id": "type:char",
+        "kind": "string",
+        "name": "char"
+      },
+      {
+        "id": "type:duration",
+        "kind": "integer",
+        "name": "duration"
+      },
+      {
+        "id": "type:f64",
+        "kind": "float",
+        "name": "f64"
+      },
+      {
+        "id": "type:i64",
+        "kind": "integer",
+        "name": "i64"
+      },
+      {
+        "id": "type:never",
+        "kind": "never",
+        "name": "never"
+      },
+      {
+        "id": "type:regex",
+        "kind": "regex",
+        "name": "regex"
+      },
+      {
+        "id": "type:regex.Pattern",
+        "kind": "record",
+        "name": "regex.Pattern"
+      },
+      {
+        "id": "type:string",
+        "kind": "string",
+        "name": "string"
+      },
+      {
+        "id": "type:u64",
+        "kind": "integer",
+        "name": "u64"
+      },
+      {
+        "id": "type:unit",
+        "kind": "unit",
+        "name": "unit"
+      }
+    ]
+  },
+  "module_graph": {
+    "entry": "mod:main",
+    "modules": [
+      {
+        "functions": [
+          "fn:main"
+        ],
+        "id": "mod:main",
+        "imports": [
+          {
+            "path": "std::text::regex",
+            "resolved_module": "mod:std.text.regex"
+          }
+        ],
+        "path": "main",
+        "source_id": "src:main"
+      }
+    ]
+  },
+  "package_id": "pkg:4c455687e2cde6bf",
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "schema_version": "hew.sandbox.bytecode.v0",
+  "source_map": {
+    "sources": [
+      {
+        "content_sha256": "afe800e889db7b9645606b853ea32a910d9c4c07f26fbbfb7442499173c875a1",
+        "id": "src:main",
+        "path": "main.hew"
+      }
+    ],
+    "spans": [
+      {
+        "end": {
+          "byte_offset": 0,
+          "column": 1,
+          "line": 1
+        },
+        "id": "span:26-0",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 26,
+          "column": 1,
+          "line": 3
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 76,
+          "column": 5,
+          "line": 5
+        },
+        "id": "span:42-76",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 42,
+          "column": 5,
+          "line": 4
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 49,
+          "column": 12,
+          "line": 4
+        },
+        "id": "span:46-49",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 46,
+          "column": 9,
+          "line": 4
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 70,
+          "column": 33,
+          "line": 4
+        },
+        "id": "span:51-70",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 51,
+          "column": 14,
+          "line": 4
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 69,
+          "column": 32,
+          "line": 4
+        },
+        "id": "span:61-69",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 61,
+          "column": 24,
+          "line": 4
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 102,
+          "column": 31,
+          "line": 5
+        },
+        "id": "span:76-102",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 76,
+          "column": 5,
+          "line": 5
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 86,
+          "column": 15,
+          "line": 5
+        },
+        "id": "span:84-86",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 84,
+          "column": 13,
+          "line": 5
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 101,
+          "column": 30,
+          "line": 5
+        },
+        "id": "span:84-101",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 84,
+          "column": 13,
+          "line": 5
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 100,
+          "column": 29,
+          "line": 5
+        },
+        "id": "span:92-100",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 92,
+          "column": 21,
+          "line": 5
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 110,
+          "column": 7,
+          "line": 6
+        },
+        "id": "span:108-110",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 108,
+          "column": 5,
+          "line": 6
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 117,
+          "column": 14,
+          "line": 6
+        },
+        "id": "span:108-117",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 108,
+          "column": 5,
+          "line": 6
+        }
+      }
+    ]
+  },
+  "stdlib_symbols": [
+    {
+      "admission": "allowed",
+      "capability": "core.stdout",
+      "id": "sym:core.stdout.println",
+      "module": "core.stdout",
+      "name": "println",
+      "params": [
+        "type:string"
+      ],
+      "result": "type:unit"
+    },
+    {
+      "admission": "reserved",
+      "capability": "std.text.regex.compile",
+      "id": "sym:std.text.regex.compile",
+      "module": "std.text.regex",
+      "name": "compile",
+      "params": [],
+      "result": "type:regex"
+    },
+    {
+      "admission": "reserved",
+      "capability": "std.text.regex.compile",
+      "id": "sym:std.text.regex.find",
+      "module": "std.text.regex",
+      "name": "find",
+      "params": [],
+      "result": "type:string"
+    },
+    {
+      "admission": "reserved",
+      "capability": "std.text.regex.compile",
+      "id": "sym:std.text.regex.free",
+      "module": "std.text.regex",
+      "name": "free",
+      "params": [],
+      "result": "type:unit"
+    }
+  ]
+}

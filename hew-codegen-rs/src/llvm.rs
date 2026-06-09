@@ -28,20 +28,12 @@
 //! `rust-lld -flavor wasm`) to produce a standalone module that
 //! `wasmtime --invoke main` can instantiate directly.
 //!
-//! ## Two-stage emission (front-half / back-half split)
+//! ## Emission
 //!
-//! IR construction runs in-process via inkwell. Object emission via
-//! `TargetMachine::write_to_file` is **not** safe in that same process:
-//! LLVM's legacy PassManager scheduler (which the C codegen API still
-//! routes through) can hit an `addLowerLevelRequiredPass` trap after
-//! earlier in-process LLVM setup has pre-touched the global
-//! `PassRegistry`. The fix is structural — the back half runs in its own
-//! process. `emit_module` writes the textual `.ll` in-process, then
-//! spawns the sibling `hew-emit` helper binary to compile each
-//! requested triple to a relocatable object. The helper process starts
-//! with a clean `libLLVM` global-state footprint, so the legacy PM
-//! scheduler finds its analyses and `write_to_file` succeeds.
-//! See `src/bin/hew_emit.rs` for the helper's own module docs.
+//! IR construction and object emission run in one process. `emit_module`
+//! still writes a textual `.ll` artefact for diagnostics, but native and
+//! WebAssembly objects are emitted directly from target-configured LLVM
+//! modules using `TargetMachine::write_to_file`.
 //!
 //! ## Side-table audit
 //!
@@ -56,6 +48,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy, PrintKind};
 use hew_hir::{mangle, HirRestartPolicy, HirSupervisorStrategy};
@@ -66,13 +59,16 @@ use hew_mir::{
     MachineVariantLayout, Place, RawMirFunction, RecordLayout, RegexLiteral, SupervisorChildLayout,
     SupervisorLayout, Terminator, TrapKind,
 };
-use hew_types::ResolvedTy;
+use hew_types::{NumericWidth, ResolvedTy};
 
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
-use inkwell::targets::{InitializationConfig, Target, TargetData, TargetMachine};
+use inkwell::targets::{
+    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetData, TargetMachine,
+    TargetTriple,
+};
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
@@ -195,18 +191,15 @@ pub struct EmitArtefacts {
 /// Emit native + wasm artefacts for `pipeline`'s raw MIR. Returns the paths
 /// of every artefact produced. Fail-closed on any verification failure.
 ///
-/// The textual LLVM IR (`<name>.ll`) is built in-process — the
-/// IR-construction path is safe under the `hew` driver's normal in-process
-/// LLVM setup. Object emission shells out to
-/// the `hew-emit` helper (see the helper's module docs for why), so the
-/// caller's binary must ship `hew-emit` alongside `hew` in the same
-/// directory (the workspace `cargo build` produces both into `target/<profile>/`).
+/// The textual LLVM IR (`<name>.ll`) is built in-process for forensics. Object
+/// emission also runs in-process, using a target-configured `TargetMachine`
+/// and a fresh LLVM `Context` per requested object.
 ///
 /// # Errors
 ///
 /// Returns `CodegenError` if any function declares an unsupported construct,
-/// `Module::verify()` rejects the emitted IR, the helper binary cannot be
-/// located, the helper exits non-zero, or `wasm-ld` fails.
+/// `Module::verify()` rejects the emitted IR, LLVM object emission fails, or
+/// `wasm-ld` fails.
 pub fn emit_module(
     pipeline: &IrPipeline,
     options: &EmitOptions<'_>,
@@ -225,7 +218,7 @@ pub fn emit_module(
         let obj_path = options.out_dir.join(format!("{}.o", options.module_name));
         let host_triple = TargetMachine::get_default_triple();
         let triple_str = host_triple.as_str().to_string_lossy().into_owned();
-        run_emit_helper(&ll_path, &triple_str, &obj_path)?;
+        emit_object_in_process(pipeline, options.module_name, &triple_str, &obj_path)?;
         artefacts.native_obj_path = Some(obj_path);
     }
 
@@ -245,7 +238,12 @@ pub fn emit_module(
         let wasm_obj_path = options
             .out_dir
             .join(format!("{}.wasm.o", options.module_name));
-        run_emit_helper(&ll_path, "wasm32-unknown-unknown", &wasm_obj_path)?;
+        emit_object_in_process(
+            pipeline,
+            options.module_name,
+            "wasm32-unknown-unknown",
+            &wasm_obj_path,
+        )?;
         let wasm_path = options
             .out_dir
             .join(format!("{}.wasm", options.module_name));
@@ -353,60 +351,56 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
     None
 }
 
-/// Locate the `hew-emit` helper binary sibling to the currently running
-/// executable, then invoke it to compile `ll_path` for `triple` into
-/// `out_path`.
-///
-/// The rustc-driver-style discovery (sibling of `current_exe`) handles both
-/// the dev layout (`target/debug/hew` next to `target/debug/hew-emit`)
-/// and any future install layout where the two binaries share a `bin/`.
-fn run_emit_helper(ll_path: &Path, triple: &str, out_path: &Path) -> CodegenResult<()> {
-    let helper = locate_emit_helper()?;
-    let output = Command::new(&helper)
-        .arg("--triple")
-        .arg(triple)
-        .arg("--in")
-        .arg(ll_path)
-        .arg("--out")
-        .arg(out_path)
-        .output()
-        .map_err(|e| CodegenError::Llvm(format!("spawn {}: {e}", helper.display())))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(CodegenError::Llvm(format!(
-            "hew-emit ({:?}) failed for triple={triple} out={}: {}",
-            output.status,
-            out_path.display(),
-            stderr.trim()
-        )));
-    }
+fn emit_object_in_process(
+    pipeline: &IrPipeline,
+    module_name: &str,
+    triple: &str,
+    out_path: &Path,
+) -> CodegenResult<()> {
+    let _guard = llvm_codegen_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let machine = target_machine_for_triple(triple)?;
+    let ctx = Context::create();
+    let llvm_mod = build_module_for_target(&ctx, pipeline, module_name, Some(&machine))?;
+    machine
+        .write_to_file(&llvm_mod, FileType::Object, out_path)
+        .map_err(|e| {
+            CodegenError::Llvm(format!(
+                "write object for triple={triple} out={}: {e:?}",
+                out_path.display()
+            ))
+        })?;
     Ok(())
 }
 
-fn locate_emit_helper() -> CodegenResult<std::path::PathBuf> {
-    let exe =
-        std::env::current_exe().map_err(|e| CodegenError::Llvm(format!("current_exe: {e}")))?;
-    let dir = exe.parent().ok_or_else(|| {
-        CodegenError::Llvm(format!(
-            "current exe `{}` has no parent directory",
-            exe.display()
-        ))
-    })?;
-    let name = if cfg!(windows) {
-        "hew-emit.exe"
-    } else {
-        "hew-emit"
-    };
-    let candidate = dir.join(name);
-    if !candidate.exists() {
-        return Err(CodegenError::Llvm(format!(
-            "helper binary `{}` not found next to `{}`; \
-             ensure `cargo build -p hew-codegen-rs --bin hew-emit` has run",
-            candidate.display(),
-            exe.display()
-        )));
-    }
-    Ok(candidate)
+fn llvm_codegen_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn target_machine_for_triple(triple: &str) -> CodegenResult<TargetMachine> {
+    initialise_llvm_targets();
+    let target_triple = TargetTriple::create(triple);
+    let target = Target::from_triple(&target_triple)
+        .map_err(|e| CodegenError::Llvm(format!("from_triple({triple}): {e:?}")))?;
+    target
+        .create_target_machine(
+            &target_triple,
+            "generic",
+            "",
+            inkwell::OptimizationLevel::Default,
+            RelocMode::PIC,
+            CodeModel::Default,
+        )
+        .ok_or_else(|| CodegenError::Llvm(format!("create_target_machine for {triple}")))
+}
+
+fn initialise_llvm_targets() {
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        Target::initialize_all(&InitializationConfig::default());
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -886,6 +880,21 @@ fn intern_runtime_decl<'ctx>(
         // Emitted by MIR at arm-body exit (success path) and on the partial-failure
         // cleanup paths (captures[0..j] already allocated when capture[j] is null).
         "hew_regex_free_capture" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_gen_yield(ctx: *mut HewGenCtx, value: *mut c_void, size: usize) -> bool
+        // (`hew-runtime/src/generator.rs:229`). Sends a yielded value on the
+        // generator's yield channel, deep-copying `size` bytes from `value`,
+        // then blocks until the consumer either resumes (returns `true`) or
+        // cancels (returns `false`). Codegen emits this from the
+        // `Terminator::Yield` arm of the gen-body lowering. The body fn must
+        // declare its `ctx` parameter as `Local(1)` (per the lower_gen_block
+        // contract); the codegen arm loads the pointer from that slot.
+        // `value` is the address of the yielded value's slot (taken via
+        // `actor_payload_ptr_size`); `size` is its byte length. The runtime
+        // copies `size` bytes by value, so the lifetime of the original slot
+        // ends at the call and the caller may keep using the slot afterwards.
+        "hew_gen_yield" => ctx
+            .bool_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false),
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "intern_runtime_decl: codegen has no LLVM signature for runtime \
@@ -1018,6 +1027,59 @@ fn predeclare_stdlib_catalog<'ctx>(
     Ok(())
 }
 
+/// Predeclare every user-authored `extern "<abi>" { fn ...; }` symbol as an
+/// LLVM external function so `Terminator::Call` lookups by name resolve
+/// transparently. The symbol is satisfied at link time — by `hew-runtime`
+/// for stable JIT-ABI symbols, or by a sibling stdlib staticlib that the
+/// driver adds to the native link line.
+///
+/// Must run BEFORE user-fn declaration so that an extern fn whose name
+/// happens to collide with a user fn (a checker-rejected case in practice)
+/// would still get a deterministic registration order; in normal flow the
+/// two sets are disjoint and the insertion order does not matter.
+fn predeclare_extern_decls<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    fn_symbols: &mut FnSymbolMap<'ctx>,
+    extern_decls: &[hew_mir::model::ExternDecl],
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<()> {
+    for decl in extern_decls {
+        if fn_symbols.contains_key(&decl.name) {
+            // Already registered as a stdlib-catalog shim (e.g. user redeclares
+            // a runtime symbol that the catalog already wired with the correct
+            // signature). Skip to preserve the catalog's typed FnSymbol entry.
+            continue;
+        }
+        let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(decl.param_tys.len());
+        for ty in &decl.param_tys {
+            param_tys.push(metadata_type_from_basic(resolve_ty(
+                ctx,
+                ty,
+                record_layouts,
+            )?));
+        }
+        let return_ty = if matches!(decl.return_ty, ResolvedTy::Unit) {
+            None
+        } else {
+            Some(resolve_ty(ctx, &decl.return_ty, record_layouts)?)
+        };
+        let fn_ty = fn_type_for_return(ctx, return_ty, &param_tys);
+        let value = llvm_mod
+            .get_function(&decl.name)
+            .unwrap_or_else(|| llvm_mod.add_function(&decl.name, fn_ty, Some(Linkage::External)));
+        fn_symbols.insert(
+            decl.name.clone(),
+            FnSymbol::Real {
+                value,
+                return_ty: return_ty.unwrap_or_else(|| ctx.i8_type().into()),
+                returns_unit: return_ty.is_none(),
+            },
+        );
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Type mapping
 // ---------------------------------------------------------------------------
@@ -1086,9 +1148,12 @@ fn register_record_layouts<'ctx>(
 // drop-elaborator, and forthcoming `m.step(ev)` ABI all rely on these):
 //
 // 1. The outer machine struct is a non-packed LLVM struct
-//    `{ tag: iW, payload: [N x i8] }` where:
+//    `{ tag: iN, payload: [N x iA] }` where:
+//      - `tag` is `i8` for up to 256 variants and `i16` for up to
+//        65,536 variants. Larger machines fail closed with
+//        `CodegenError::Unsupported`.
 //      - `tag` is at struct field index 0 (offset 0 bytes — natural
-//        alignment for an integer of width `W = layout.tag_width`).
+//        alignment for the selected tag integer width).
 //      - `payload` is a fixed-size byte array sized to fit the largest
 //        per-variant payload struct. The byte size is `TargetData::get_abi_size`
 //        of the variant's LLVM struct — ABI-correct, including inter-field
@@ -1104,13 +1169,11 @@ fn register_record_layouts<'ctx>(
 //    `variant_struct.field_idx` through the bitcast payload pointer.
 //
 // **Sizing**: `build_tagged_union_layout` constructs each variant's LLVM
-// struct type first, then calls `host_target_data().get_abi_size(variant_struct)`
-// to obtain the ABI-correct byte count including inter-field padding.
-// `host_target_data()` initialises the native LLVM target once (via `OnceLock`)
-// and builds a `TargetData` from the host data-layout string. The wasm32 emit
-// path runs in a separate process (`hew_emit`) with its own data layout set
-// after IR generation; sizing at IR-build time uses the host layout, which
-// matches the native target. WASM-TODO(#1451): wasm32 variant layout accuracy.
+// struct type first, then calls the active target's
+// `TargetData::get_abi_size(variant_struct)` to obtain the ABI-correct byte
+// count including inter-field padding. Tests that inspect IR without selecting
+// an object target fall back to the host data layout; real native/WASM object
+// emission passes the `TargetMachine` data layout into module construction.
 //
 // **Alignment**: the outer payload field is `[K x iA]` where `A` is the
 // max ABI alignment across all variant payload structs (in bytes) and
@@ -1139,7 +1202,8 @@ struct MachineCodegenLayout<'ctx> {
     /// (payload).
     outer_struct: StructType<'ctx>,
     /// LLVM integer type for the discriminant tag (`iW` where
-    /// `W = layout.tag_width`). Cached so `Place::MachineTag` loads use
+    /// `i8`/`i16` selected from the declared variant count. Cached so
+    /// `Place::MachineTag` loads use
     /// the same type the alloca was declared with.
     tag_int_ty: inkwell::types::IntType<'ctx>,
     /// Per-variant anonymous struct types in declaration order. Index
@@ -1160,8 +1224,8 @@ struct MachineCodegenLayout<'ctx> {
     state_name_table: Option<inkwell::values::GlobalValue<'ctx>>,
 }
 
-/// Return the native host data-layout string, initialising LLVM's native
-/// target exactly once per process (guarded by `OnceLock`).
+/// Return the native host data-layout string, initialising LLVM's native target
+/// exactly once per process (guarded by `OnceLock`).
 ///
 /// `TargetData` wraps a raw pointer and is not `Sync`, so we cache the
 /// layout *string* (which is `Sync`) and construct a fresh `TargetData`
@@ -1169,21 +1233,9 @@ struct MachineCodegenLayout<'ctx> {
 /// cheap — it only parses the layout string into target-description tables;
 /// it does not allocate LLVM IR or touch the global PassManager.
 ///
-/// The in-process LLVM limitation that motivated the `hew_emit` split
-/// applies only to `TargetMachine::write_to_file` (legacy PassManager
-/// global). Initialising the native target for layout queries has no
-/// conflicting side effects.
-///
-/// **Multi-target portability**: this function returns the *host* data layout.
-/// `emit_module` builds a single target-agnostic textual IR that `hew-emit`
-/// re-parses for both native and wasm32 in separate processes — there is no
-/// single "current target" at IR-build time. The primitive ABI alignments
-/// Hew currently lowers (i8/i16/i32/i64/ptr) agree across native and wasm32
-/// data layouts, so querying the host's `TargetData` for variant ABI size and
-/// alignment in `build_tagged_union_layout` yields the same answers as
-/// querying the wasm32 target would. The wider-integer payload element type
-/// computed there makes per-target alignment moot — the IR is naturally
-/// aligned under either target's data layout.
+/// Object emission passes target-specific `TargetData` into module
+/// construction. This host helper is only for target-agnostic IR inspection
+/// tests and the debug `.ll` artefact.
 fn host_data_layout_string() -> &'static str {
     use std::sync::OnceLock;
     static HOST_DL: OnceLock<String> = OnceLock::new();
@@ -1242,6 +1294,7 @@ fn register_machine_layouts<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     machine_layouts: &[MachineLayout],
     record_layout_map: &mut RecordLayoutMap<'ctx>,
+    target_data: Option<&TargetData>,
 ) -> CodegenResult<MachineLayoutMap<'ctx>> {
     let mut map: MachineLayoutMap<'ctx> = HashMap::new();
     for layout in machine_layouts {
@@ -1249,9 +1302,9 @@ fn register_machine_layouts<'ctx>(
         let mut machine_cg = build_tagged_union_layout(
             ctx,
             &layout.name,
-            layout.tag_width,
             &layout.variants,
             record_layout_map,
+            target_data,
         )?;
         // Build the per-machine state-name string table. Each entry is a
         // pointer to a private NUL-terminated read-only global; the table
@@ -1272,18 +1325,13 @@ fn register_machine_layouts<'ctx>(
 
         // The companion event enum: `<Name>Event` with event-variant
         // payloads. Tag bit width is derived from the event count
-        // identically to `lower_hir_module`'s machine-tag derivation —
-        // a single source for the same invariant means a future change
-        // in tag-width policy lands in one place.
-        let event_count = u32::try_from(layout.events.len().max(1)).unwrap_or(u32::MAX);
-        let event_tag_width = u32::max(1, event_count.next_power_of_two().trailing_zeros());
         let event_name = format!("{}Event", layout.name);
         let event_cg = build_tagged_union_layout(
             ctx,
             &event_name,
-            event_tag_width,
             &layout.events,
             record_layout_map,
+            target_data,
         )?;
         record_layout_map.insert(event_name.clone(), event_cg.outer_struct);
         map.insert(event_name, event_cg);
@@ -1309,6 +1357,7 @@ fn register_enum_layouts<'ctx>(
     enum_layouts: &[EnumLayout],
     record_layout_map: &mut RecordLayoutMap<'ctx>,
     machine_layout_map: &mut MachineLayoutMap<'ctx>,
+    target_data: Option<&TargetData>,
 ) -> CodegenResult<()> {
     for layout in enum_layouts {
         // Convert `EnumLayout.variants` (which are `MachineVariantLayout`)
@@ -1316,9 +1365,9 @@ fn register_enum_layouts<'ctx>(
         let enum_cg = build_tagged_union_layout(
             ctx,
             &layout.name,
-            layout.tag_width,
             &layout.variants,
             record_layout_map,
+            target_data,
         )?;
         // Register the outer struct so `resolve_ty` resolves
         // `ResolvedTy::Named { name: "<EnumName>" }` the same way as a
@@ -1342,9 +1391,9 @@ fn register_enum_layouts<'ctx>(
 fn build_tagged_union_layout<'ctx>(
     ctx: &'ctx Context,
     outer_name: &str,
-    tag_width: u32,
     variants: &[MachineVariantLayout],
     record_layout_map: &RecordLayoutMap<'ctx>,
+    target_data: Option<&TargetData>,
 ) -> CodegenResult<MachineCodegenLayout<'ctx>> {
     // Build each variant's LLVM struct type first, then query its ABI size.
     // This order is required: `get_abi_size` operates on a completed LLVM
@@ -1378,7 +1427,13 @@ fn build_tagged_union_layout<'ctx>(
     // across native and wasm32 data layouts, so this single IR shape is
     // valid on every target Hew lowers to. See the "Alignment" note in the
     // layout-invariants block above.
-    let td = host_target_data();
+    let host_td;
+    let td = if let Some(td) = target_data {
+        td
+    } else {
+        host_td = host_target_data();
+        &host_td
+    };
     let mut max_bytes: u64 = 0;
     let mut max_align: u32 = 0;
     for vs in &variant_struct_tys {
@@ -1430,15 +1485,7 @@ fn build_tagged_union_layout<'ctx>(
         .custom_width_int_type(element_bits_nz)
         .map_err(|e| CodegenError::Llvm(format!("custom_width_int_type({element_bits}): {e}")))?;
 
-    let tag_width_nz = std::num::NonZeroU32::new(tag_width).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "machine `{outer_name}` has zero tag_width — lower_hir_module guarantees \
-             tag_width >= 1; this indicates substrate corruption"
-        ))
-    })?;
-    let tag_int_ty = ctx
-        .custom_width_int_type(tag_width_nz)
-        .map_err(|e| CodegenError::Llvm(format!("custom_width_int_type({tag_width}): {e}")))?;
+    let tag_int_ty = tag_int_type_for_variant_count(ctx, outer_name, variants.len())?;
     let payload_arr_ty = payload_element_int_ty.array_type(element_count_u32);
 
     let outer_struct = ctx.opaque_struct_type(outer_name);
@@ -1451,6 +1498,22 @@ fn build_tagged_union_layout<'ctx>(
         variant_field_tys,
         state_name_table: None,
     })
+}
+
+fn tag_int_type_for_variant_count<'ctx>(
+    ctx: &'ctx Context,
+    _outer_name: &str,
+    variant_count: usize,
+) -> CodegenResult<inkwell::types::IntType<'ctx>> {
+    if variant_count <= 256 {
+        Ok(ctx.i8_type())
+    } else if variant_count <= 65_536 {
+        Ok(ctx.i16_type())
+    } else {
+        Err(CodegenError::Unsupported(
+            "machine tagged-union layout supports at most 65,536 variants",
+        ))
+    }
 }
 
 /// Emit a private `[N x ptr]` LLVM global containing pointers to each
@@ -1625,13 +1688,7 @@ fn primitive_to_llvm<'ctx>(
         ResolvedTy::I32 | ResolvedTy::U32 => Ok(ctx.i32_type().into()),
         ResolvedTy::I64 | ResolvedTy::U64 => Ok(ctx.i64_type().into()),
         // Platform-sized integers: 32-bit on WASM32, 64-bit on native
-        // (Q42 ratification; B-D1).  The spine currently targets native
-        // only (see llvm.rs `intern_runtime_decl` comment at line ~394);
-        // WASM32 lowers separately via the `hew_emit` binary's
-        // `--target wasm32-unknown-unknown` path, which calls back into
-        // this same function.  The target data layout recorded on the
-        // LLVM module by `hew_emit.rs:107` ensures `i32` is
-        // pointer-sized on wasm32 and `i64` on native.
+        // (Q42 ratification; B-D1).
         //
         // SHIM: pointer-width selection here is compile-time via the Rust
         // usize width.  Replace with target-triple inspection once a
@@ -1647,9 +1704,9 @@ fn primitive_to_llvm<'ctx>(
         #[cfg(not(target_pointer_width = "32"))]
         ResolvedTy::Isize | ResolvedTy::Usize => Ok(ctx.i64_type().into()),
         ResolvedTy::Bool => Ok(ctx.i8_type().into()),
-        // `Unit` lowers to a zero-sized stand-in (i8); the binary that
-        // consumes it never observes the value (returning unit on Unix
-        // simply discards the call result).
+        // `Unit` lowers to a zero-sized stand-in (i8). Unit-returning
+        // functions return the canonical zero value rather than reading
+        // from the MIR return slot.
         ResolvedTy::Unit => Ok(ctx.i8_type().into()),
         ResolvedTy::F32 => Ok(ctx.f32_type().into()),
         ResolvedTy::F64 => Ok(ctx.f64_type().into()),
@@ -1893,6 +1950,16 @@ fn place_pointer<'ctx>(
                 })?;
             Ok((field_ptr, field_llvm_ty))
         }
+        // Generator state-record projection. The S3b MIR pass produces
+        // these places at every cross-yield bookend Move; S4 wires the
+        // LLVM struct GEP path that backs them. Until then, fail-closed
+        // matches the existing `Terminator::Yield` rejection so generator
+        // codegen stays gated on the S4 state-machine substrate.
+        Place::GenState { local, field } => Err(CodegenError::FailClosed(format!(
+            "Place::GenState {{ local: {local}, field: {field} }} — generator state-record \
+             projection codegen lands in S4 (state-machine LLVM lowering); S3b emits these \
+             places in MIR but codegen rejects them until the state-machine prologue exists"
+        ))),
     }
 }
 
@@ -1960,7 +2027,7 @@ fn place_resolved_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, place: Place) -> CodegenResu
                         return Err(CodegenError::FailClosed(format!(
                             "Place::MachineVariant references local {local} which is not a \
                          machine-typed local"
-                        )))
+                        )));
                     }
                 })
                 .ok_or_else(|| {
@@ -1983,6 +2050,15 @@ fn place_resolved_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, place: Place) -> CodegenResu
                 ))
             })
         }
+        // Generator state-record projection: see `place_pointer` for the
+        // matching surface. Type resolution for the LLVM struct fields
+        // lands alongside S4's state-machine substrate; until then,
+        // codegen rejects the place via `Unsupported` (mirrors the
+        // existing `Terminator::Yield` rejection).
+        Place::GenState { local, field } => Err(CodegenError::FailClosed(format!(
+            "Place::GenState {{ local: {local}, field: {field} }} — generator state-record \
+             type lookup lands in S4 (state-machine LLVM lowering)"
+        ))),
     }
 }
 
@@ -2318,6 +2394,7 @@ fn emit_spawn_actor(
     init_args: &[Place],
     dest: Place,
     max_heap_bytes: Option<u64>,
+    cycle_capable: bool,
 ) -> CodegenResult<()> {
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
     let i32_ty = fn_ctx.ctx.i32_type();
@@ -2362,13 +2439,13 @@ fn emit_spawn_actor(
         .map_err(|e| CodegenError::Llvm(format!("hew_sched_init call: {e:?}")))?;
     emit_wasm_actor_metadata_registration(fn_ctx, actor_name)?;
 
-    let spawned = if let Some(cap) = max_heap_bytes {
-        // `#[max_heap(N)]` is set — route through `hew_actor_spawn_opts` so
-        // the runtime applies the per-dispatch arena cap. The `HewActorOpts`
-        // struct is stack-allocated, populated with the minimal fields, and
-        // passed by pointer.
+    let spawned = if max_heap_bytes.is_some() || cycle_capable {
+        // `#[max_heap(N)]` and/or `cycle_capable` is set — route through
+        // `hew_actor_spawn_opts` so the runtime applies all spawn policy bits.
+        // The `HewActorOpts` struct is stack-allocated, populated with the
+        // minimal fields, and passed by pointer.
         //
-        // `HewActorOpts` `#[repr(C)]` field order (hew-runtime/src/actor.rs:1418):
+        // `HewActorOpts` `#[repr(C)]` field order (hew-runtime/src/actor.rs:1456):
         //   0  init_state:       *mut c_void   → ptr
         //   1  state_size:       usize         → i64
         //   2  dispatch:         Option<fn>    → ptr
@@ -2378,6 +2455,9 @@ fn emit_spawn_actor(
         //   6  coalesce_fallback: i32          → i32
         //   7  budget:           i32           → i32
         //   8  arena_cap_bytes:  usize         → i64
+        //   9  cycle_capable:    i32           → i32
+        let arena_cap = max_heap_bytes.unwrap_or(0);
+        let cycle_flag = if cycle_capable { 1 } else { 0 };
         let opts_ty = fn_ctx.ctx.struct_type(
             &[
                 ptr_ty.into(), // init_state
@@ -2389,6 +2469,7 @@ fn emit_spawn_actor(
                 i32_ty.into(), // coalesce_fallback
                 i32_ty.into(), // budget
                 i64_ty.into(), // arena_cap_bytes
+                i32_ty.into(), // cycle_capable
             ],
             false,
         );
@@ -2396,7 +2477,7 @@ fn emit_spawn_actor(
             .builder
             .build_alloca(opts_ty, "actor_spawn_opts")
             .map_err(|e| CodegenError::Llvm(format!("HewActorOpts alloca: {e:?}")))?;
-        let opts_fields: [(u32, BasicValueEnum<'_>); 9] = [
+        let opts_fields: [(u32, BasicValueEnum<'_>); 10] = [
             (0, state_ptr.into()),
             (1, state_size.into()),
             (2, dispatch.as_global_value().as_pointer_value().into()),
@@ -2405,7 +2486,8 @@ fn emit_spawn_actor(
             (5, ptr_ty.const_null().into()),
             (6, i32_ty.const_zero().into()),
             (7, i32_ty.const_zero().into()),
-            (8, i64_ty.const_int(cap, false).into()),
+            (8, i64_ty.const_int(arena_cap, false).into()),
+            (9, i32_ty.const_int(cycle_flag, false).into()),
         ];
         for (field_idx, value) in opts_fields {
             let gep = fn_ctx
@@ -2505,7 +2587,7 @@ fn restart_policy_to_int(policy: HirRestartPolicy) -> i32 {
 /// Build the LLVM struct type for `HewChildSpec`.
 ///
 /// The struct mirrors the `#[repr(C)]` Rust layout at
-/// `hew-runtime/src/supervisor.rs:409-422` exactly. Field order MUST match;
+/// `hew-runtime/src/supervisor.rs::HewChildSpec` exactly. Field order MUST match;
 /// drift here is wrong-code at the FFI boundary.
 ///
 /// Field map (Rust → LLVM):
@@ -2517,10 +2599,12 @@ fn restart_policy_to_int(policy: HirRestartPolicy) -> i32 {
 /// - `mailbox_capacity: c_int`              → `i32`
 /// - `overflow: c_int`                      → `i32`
 /// - `arena_cap_bytes: usize`               → `i64`
+/// - `cycle_capable: c_int`                 → `i32`
+/// - `on_crash: Option<HewOnCrashFn>`       → `ptr`
 ///
-/// The three consecutive `i32` fields followed by `i64` produce 4 bytes of
-/// natural padding before `arena_cap_bytes` under `#[repr(C)]`; LLVM's
-/// default (non-packed) struct alignment generates the same padding.
+/// The three consecutive `i32` fields followed by `i64`, and the trailing
+/// `cycle_capable: i32` followed by a pointer, produce natural padding under
+/// `#[repr(C)]`; LLVM's default (non-packed) struct alignment matches it.
 fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i32_ty = ctx.i32_type();
@@ -2535,6 +2619,7 @@ fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
             i32_ty.into(), // mailbox_capacity
             i32_ty.into(), // overflow
             i64_ty.into(), // arena_cap_bytes (alignment introduces 4B pad after `overflow`)
+            i32_ty.into(), // cycle_capable
             ptr_ty.into(), // on_crash fn-pointer: null when child's actor has no #[on(crash)]; otherwise pointer to `{actor_name}__on_crash`
         ],
         false,
@@ -2732,9 +2817,11 @@ fn emit_supervisor_bootstrap_body<'ctx>(
 ///   helper. Fail-closed if missing.
 /// - `restart_policy` — child's policy via `restart_policy_to_int`; `None`
 ///   defaults to `RESTART_PERMANENT` (`0`) to match runtime defaults.
-/// - `mailbox_capacity` / `overflow` / `arena_cap_bytes` — `0` for all,
-///   which the runtime maps to its bounded defaults. Richer per-child
-///   overrides are deferred.
+/// - `mailbox_capacity` / `overflow` — `0` for both, which the runtime maps
+///   to its bounded defaults. Richer per-child overrides are deferred.
+/// - `arena_cap_bytes` / `cycle_capable` — mirrored from the child's
+///   `ActorLayout` through `SupervisorChildLayout` so restarts preserve the
+///   same spawn policy bits as direct spawn.
 #[allow(clippy::too_many_arguments)]
 fn emit_supervisor_child_spec_and_register<'ctx>(
     ctx: &'ctx Context,
@@ -2799,8 +2886,9 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     // annotation (mirrored into SupervisorChildLayout.max_heap_bytes by the
     // MIR post-loop pass). Zero means unbounded — matches runtime default.
     let arena_cap = child.max_heap_bytes.unwrap_or(0);
+    let cycle_flag = if child.cycle_capable { 1 } else { 0 };
 
-    let field_values: [(u32, BasicValueEnum<'ctx>); 9] = [
+    let field_values: [(u32, BasicValueEnum<'ctx>); 10] = [
         (0, name_ptr.into()),
         (1, ptr_ty.const_null().into()),
         (2, i64_ty.const_zero().into()),
@@ -2809,7 +2897,8 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         (5, i32_ty.const_zero().into()),
         (6, i32_ty.const_zero().into()),
         (7, i64_ty.const_int(arena_cap, false).into()), // arena_cap_bytes from #[max_heap(N)]
-        (8, on_crash_ptr), // on_crash: fn-pointer when child's actor has #[on(crash)], null otherwise
+        (8, i32_ty.const_int(cycle_flag, false).into()), // cycle_capable from checker side-table
+        (9, on_crash_ptr), // on_crash: fn-pointer when child's actor has #[on(crash)], null otherwise
     ];
     for (field_idx, value) in field_values {
         let gep = builder
@@ -3228,6 +3317,95 @@ fn emit_spawn_task_closure(
     Ok(())
 }
 
+fn overflow_intrinsic_name(op: IntArithOp, signed: IntSignedness) -> &'static str {
+    match (op, signed) {
+        (IntArithOp::Add, IntSignedness::Signed) => "llvm.sadd.with.overflow",
+        (IntArithOp::Add, IntSignedness::Unsigned) => "llvm.uadd.with.overflow",
+        (IntArithOp::Sub, IntSignedness::Signed) => "llvm.ssub.with.overflow",
+        (IntArithOp::Sub, IntSignedness::Unsigned) => "llvm.usub.with.overflow",
+        (IntArithOp::Mul, IntSignedness::Signed) => "llvm.smul.with.overflow",
+        (IntArithOp::Mul, IntSignedness::Unsigned) => "llvm.umul.with.overflow",
+    }
+}
+
+fn validate_numeric_method_width(
+    width: NumericWidth,
+    int_ty: inkwell::types::IntType<'_>,
+    construct: &str,
+) -> CodegenResult<()> {
+    match width {
+        NumericWidth::Bits(bits) if bits == int_ty.get_bit_width() => Ok(()),
+        NumericWidth::Bits(bits) => Err(CodegenError::FailClosed(format!(
+            "{construct} width side-table mismatch: checker recorded {bits} bits, LLVM operand is {} bits",
+            int_ty.get_bit_width()
+        ))),
+        NumericWidth::Pointer => Err(CodegenError::FailClosed(format!(
+            "{construct} on isize/usize requires target pointer-width layout; no target layout was provided to this instruction"
+        ))),
+    }
+}
+
+fn saturating_bound<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    op: IntArithOp,
+    signed: IntSignedness,
+    int_ty: inkwell::types::IntType<'ctx>,
+    lhs_v: IntValue<'ctx>,
+    rhs_v: IntValue<'ctx>,
+) -> CodegenResult<IntValue<'ctx>> {
+    let bits = int_ty.get_bit_width();
+    let zero = int_ty.const_zero();
+    match signed {
+        IntSignedness::Unsigned => Ok(match op {
+            IntArithOp::Sub => zero,
+            IntArithOp::Add | IntArithOp::Mul => int_ty.const_all_ones(),
+        }),
+        IntSignedness::Signed => {
+            let max = int_ty.const_int(((1u128 << (bits - 1)) - 1) as u64, false);
+            let min = int_ty.const_int((1u128 << (bits - 1)) as u64, false);
+            let choose_max = match op {
+                IntArithOp::Add => fn_ctx
+                    .builder
+                    .build_int_compare(IntPredicate::SGE, rhs_v, zero, "sat_add_positive")
+                    .map_err(|e| {
+                        CodegenError::Llvm(format!("saturating add sign compare: {e:?}"))
+                    })?,
+                IntArithOp::Sub => fn_ctx
+                    .builder
+                    .build_int_compare(IntPredicate::SLT, rhs_v, zero, "sat_sub_negative")
+                    .map_err(|e| {
+                        CodegenError::Llvm(format!("saturating sub sign compare: {e:?}"))
+                    })?,
+                IntArithOp::Mul => {
+                    let lhs_neg = fn_ctx
+                        .builder
+                        .build_int_compare(IntPredicate::SLT, lhs_v, zero, "sat_mul_lhs_neg")
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("saturating mul lhs sign compare: {e:?}"))
+                        })?;
+                    let rhs_neg = fn_ctx
+                        .builder
+                        .build_int_compare(IntPredicate::SLT, rhs_v, zero, "sat_mul_rhs_neg")
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("saturating mul rhs sign compare: {e:?}"))
+                        })?;
+                    fn_ctx
+                        .builder
+                        .build_int_compare(IntPredicate::EQ, lhs_neg, rhs_neg, "sat_mul_same_sign")
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("saturating mul same-sign compare: {e:?}"))
+                        })?
+                }
+            };
+            Ok(fn_ctx
+                .builder
+                .build_select(choose_max, max, min, "sat_signed_bound")
+                .map_err(|e| CodegenError::Llvm(format!("saturating bound select: {e:?}")))?
+                .into_int_value())
+        }
+    }
+}
+
 fn lower_instruction(
     fn_ctx: &FnCtx<'_, '_>,
     instr: &Instr,
@@ -3270,7 +3448,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
                         "ConstI64 dest is not an i64: dest_ty={dest_ty:?}"
-                    )))
+                    )));
                 }
             };
             // `value` is i64 in MIR. Truncate/extend at the LLVM level to
@@ -3345,7 +3523,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IntDiv/IntRem lhs is not an i64".into(),
-                    ))
+                    ));
                 }
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
@@ -3477,7 +3655,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IntBitwise lhs is not an i64".into(),
-                    ))
+                    ));
                 }
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
@@ -3537,7 +3715,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IntArithChecked lhs is not an i64".into(),
-                    ))
+                    ));
                 }
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
@@ -3550,7 +3728,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IntArithChecked overflow_flag is not an i64".into(),
-                    ))
+                    ));
                 }
             };
             // Choose the intrinsic family by op + signedness. Six
@@ -3627,6 +3805,205 @@ fn lower_instruction(
                 .build_store(flag_ptr, of_widened)
                 .map_err(|e| CodegenError::Llvm(format!("checked flag store: {e:?}")))?;
             let _ = ctx;
+        }
+        Instr::IntArithCheckedOption {
+            op,
+            signed,
+            width,
+            dest,
+            lhs,
+            rhs,
+        } => {
+            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
+            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            let lhs_int = match lhs_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntArithCheckedOption lhs is not an integer".into(),
+                    ));
+                }
+            };
+            if rhs_ty != lhs_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntArithCheckedOption operands must share the same integer type".into(),
+                ));
+            }
+            validate_numeric_method_width(*width, lhs_int, "IntArithCheckedOption")?;
+            let Place::Local(dest_local) = dest else {
+                return Err(CodegenError::FailClosed(
+                    "IntArithCheckedOption destination must be a local enum slot".into(),
+                ));
+            };
+            let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(*dest_local))?;
+            let tag_int = match tag_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntArithCheckedOption enum tag is not an integer".into(),
+                    ));
+                }
+            };
+            let some_payload = Place::EnumVariant {
+                local: *dest_local,
+                variant_idx: 0,
+                field_idx: 0,
+            };
+            let (payload_ptr, payload_ty) = place_pointer(fn_ctx, some_payload)?;
+            if payload_ty != lhs_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntArithCheckedOption Some payload type must match operand type".into(),
+                ));
+            }
+            let intrinsic_name = overflow_intrinsic_name(*op, *signed);
+            let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
+                CodegenError::Llvm(format!(
+                    "with-overflow intrinsic `{intrinsic_name}` not found in LLVM build"
+                ))
+            })?;
+            let intrinsic_fn = intrinsic
+                .get_declaration(fn_ctx.llvm_mod, &[lhs_int.into()])
+                .ok_or_else(|| {
+                    CodegenError::Llvm(format!(
+                        "with-overflow intrinsic `{intrinsic_name}` declaration failed for width {lhs_int:?}"
+                    ))
+                })?;
+            let lhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, lhs_ptr, "checked_option_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("checked-option lhs load: {e:?}")))?
+                .into_int_value();
+            let rhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, rhs_ptr, "checked_option_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("checked-option rhs load: {e:?}")))?
+                .into_int_value();
+            let call_site = fn_ctx
+                .builder
+                .build_call(
+                    intrinsic_fn,
+                    &[lhs_v.into(), rhs_v.into()],
+                    "checked_option_with_overflow",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("checked-option intrinsic call: {e:?}")))?;
+            let agg = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::Llvm(format!(
+                        "with-overflow intrinsic `{intrinsic_name}` returned void"
+                    ))
+                })?
+                .into_struct_value();
+            let result_v = fn_ctx
+                .builder
+                .build_extract_value(agg, 0, "checked_option_result")
+                .map_err(|e| CodegenError::Llvm(format!("checked-option result extract: {e:?}")))?
+                .into_int_value();
+            let of_bit = fn_ctx
+                .builder
+                .build_extract_value(agg, 1, "checked_option_overflow")
+                .map_err(|e| CodegenError::Llvm(format!("checked-option overflow extract: {e:?}")))?
+                .into_int_value();
+            let some_tag = tag_int.const_zero();
+            let none_tag = tag_int.const_int(1, false);
+            let tag_v = fn_ctx
+                .builder
+                .build_select(of_bit, none_tag, some_tag, "checked_option_tag")
+                .map_err(|e| CodegenError::Llvm(format!("checked-option tag select: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(tag_ptr, tag_v)
+                .map_err(|e| CodegenError::Llvm(format!("checked-option tag store: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(payload_ptr, result_v)
+                .map_err(|e| CodegenError::Llvm(format!("checked-option payload store: {e:?}")))?;
+        }
+        Instr::IntArithSaturating {
+            op,
+            signed,
+            width,
+            dest,
+            lhs,
+            rhs,
+        } => {
+            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
+            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let lhs_int = match lhs_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntArithSaturating lhs is not an integer".into(),
+                    ));
+                }
+            };
+            if rhs_ty != lhs_ty || dest_ty != lhs_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntArithSaturating operands and dest must share the same integer type".into(),
+                ));
+            }
+            validate_numeric_method_width(*width, lhs_int, "IntArithSaturating")?;
+            let intrinsic_name = overflow_intrinsic_name(*op, *signed);
+            let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
+                CodegenError::Llvm(format!(
+                    "with-overflow intrinsic `{intrinsic_name}` not found in LLVM build"
+                ))
+            })?;
+            let intrinsic_fn = intrinsic
+                .get_declaration(fn_ctx.llvm_mod, &[lhs_int.into()])
+                .ok_or_else(|| {
+                    CodegenError::Llvm(format!(
+                        "with-overflow intrinsic `{intrinsic_name}` declaration failed for width {lhs_int:?}"
+                    ))
+                })?;
+            let lhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, lhs_ptr, "saturating_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("saturating lhs load: {e:?}")))?
+                .into_int_value();
+            let rhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, rhs_ptr, "saturating_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("saturating rhs load: {e:?}")))?
+                .into_int_value();
+            let call_site = fn_ctx
+                .builder
+                .build_call(
+                    intrinsic_fn,
+                    &[lhs_v.into(), rhs_v.into()],
+                    "saturating_with_overflow",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("saturating intrinsic call: {e:?}")))?;
+            let agg = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::Llvm(format!(
+                        "with-overflow intrinsic `{intrinsic_name}` returned void"
+                    ))
+                })?
+                .into_struct_value();
+            let result_v = fn_ctx
+                .builder
+                .build_extract_value(agg, 0, "saturating_result")
+                .map_err(|e| CodegenError::Llvm(format!("saturating result extract: {e:?}")))?
+                .into_int_value();
+            let of_bit = fn_ctx
+                .builder
+                .build_extract_value(agg, 1, "saturating_overflow")
+                .map_err(|e| CodegenError::Llvm(format!("saturating overflow extract: {e:?}")))?
+                .into_int_value();
+            let bound = saturating_bound(fn_ctx, *op, *signed, lhs_int, lhs_v, rhs_v)?;
+            let final_v = fn_ctx
+                .builder
+                .build_select(of_bit, bound, result_v, "saturating_select")
+                .map_err(|e| CodegenError::Llvm(format!("saturating select: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, final_v)
+                .map_err(|e| CodegenError::Llvm(format!("saturating result store: {e:?}")))?;
         }
         Instr::IntCmp {
             dest,
@@ -3715,7 +4092,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IdentityCompare dest is not an i64".into(),
-                    ))
+                    ));
                 }
             };
             // Load the pointer/handle value from each alloca.
@@ -3746,7 +4123,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IdentityCompare lhs must be a pointer or integer value".into(),
-                    ))
+                    ));
                 }
             };
             let rhs_int = match rhs_val {
@@ -3761,7 +4138,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IdentityCompare rhs must be a pointer or integer value".into(),
-                    ))
+                    ));
                 }
             };
             let _ = (ptr_ty, lhs_ty, rhs_ty);
@@ -4015,7 +4392,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
                         "FloatLit dest is not a float type: dest_ty={dest_ty:?}"
-                    )))
+                    )));
                 }
             };
             // Reconstruct the IEEE 754 value from its stored bit pattern.
@@ -4050,7 +4427,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "float arithmetic lhs is not a float type".into(),
-                    ))
+                    ));
                 }
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
@@ -4104,7 +4481,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
                         "CharLit dest is not an i64: dest_ty={dest_ty:?}"
-                    )))
+                    )));
                 }
             };
             let v = int_ty.const_int(*value as u64, false);
@@ -4125,7 +4502,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
                         "UnitLit dest is not an i64 (expected i8 stand-in): dest_ty={dest_ty:?}"
-                    )))
+                    )));
                 }
             };
             let v = int_ty.const_int(0, false);
@@ -4144,7 +4521,7 @@ fn lower_instruction(
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
                         "DurationLit dest is not an i64: dest_ty={dest_ty:?}"
-                    )))
+                    )));
                 }
             };
             #[allow(clippy::cast_sign_loss)]
@@ -4203,6 +4580,7 @@ fn lower_instruction(
             init_args,
             dest,
             max_heap_bytes,
+            cycle_capable,
         } => {
             emit_spawn_actor(
                 fn_ctx,
@@ -4211,6 +4589,7 @@ fn lower_instruction(
                 init_args,
                 *dest,
                 *max_heap_bytes,
+                *cycle_capable,
             )?;
             let _ = ctx;
         }
@@ -4238,8 +4617,8 @@ fn lower_instruction(
         Instr::MachineEmitPlaceholder { event_idx, payload } => {
             // Lower a machine emit expression to a call to `hew_machine_emit_push`.
             //
-            // ABI: `hew_machine_emit_push(event_idx: u64, payload_ptr: *const u8,
-            //                             payload_len: u64) -> void`
+            // ABI: `hew_machine_emit_push(queue: *mut EmitQueue, tag: u32,
+            //                             payload_ptr: *const u8) -> i32`
             //
             // The per-thread emit queue (a `thread_local!` `EmitQueue` in
             // `hew-runtime/src/machine_emit.rs`) receives the push. After the
@@ -4265,34 +4644,23 @@ fn lower_instruction(
                     payload.len()
                 )));
             }
-            let i64_ty = fn_ctx.ctx.i64_type();
+            let i32_ty = fn_ctx.ctx.i32_type();
             let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-            // Intern (or reuse) the extern declaration for `hew_machine_emit_push`.
-            // ABI: (u64, *const u8, u64) -> void
-            let emit_push_fn = match fn_ctx.llvm_mod.get_function("hew_machine_emit_push") {
-                Some(fv) => fv,
-                None => {
-                    let fn_ty = fn_ctx
-                        .ctx
-                        .void_type()
-                        .fn_type(&[i64_ty.into(), ptr_ty.into(), i64_ty.into()], false);
-                    fn_ctx.llvm_mod.add_function(
-                        "hew_machine_emit_push",
-                        fn_ty,
-                        Some(Linkage::External),
-                    )
-                }
-            };
-            // event_idx as u64 constant.
-            let idx_val = i64_ty.const_int(*event_idx as u64, false);
-            // null payload pointer and zero length for unit events.
+            let emit_push_fn = get_or_declare_machine_emit_push(fn_ctx);
+            let queue_ptr = ptr_ty.const_null();
+            let tag = u32::try_from(*event_idx).map_err(|_| {
+                CodegenError::FailClosed(format!(
+                    "Instr::MachineEmitPlaceholder event_idx {event_idx} exceeds u32::MAX"
+                ))
+            })?;
+            let tag_val = i32_ty.const_int(u64::from(tag), false);
+            // Null payload pointer for unit events.
             let null_ptr = ptr_ty.const_null();
-            let zero_len = i64_ty.const_int(0, false);
             fn_ctx
                 .builder
                 .build_call(
                     emit_push_fn,
-                    &[idx_val.into(), null_ptr.into(), zero_len.into()],
+                    &[queue_ptr.into(), tag_val.into(), null_ptr.into()],
                     "machine_emit_push_call",
                 )
                 .map_err(|e| CodegenError::Llvm(format!("hew_machine_emit_push call: {e:?}")))?;
@@ -4588,7 +4956,7 @@ fn lower_record_field_load(
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "RecordFieldLoad record place has non-struct slot type: {other:?}"
-            )))
+            )));
         }
     };
     let idx = field_offset.0;
@@ -4772,7 +5140,7 @@ fn lower_make_closure(
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "MakeClosure dest must be the two-pointer closure pair, got {other:?}"
-            )))
+            )));
         }
     };
     let shim = fn_ctx
@@ -4991,7 +5359,7 @@ fn lower_call_closure(
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "CallClosure callee must be the two-pointer closure pair, got {other:?}"
-            )))
+            )));
         }
     };
     let pair = fn_ctx
@@ -5078,7 +5446,7 @@ fn lower_tuple_field_load(
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "TupleFieldLoad tuple place has non-struct slot type: {other:?}"
-            )))
+            )));
         }
     };
     let idx = field_index;
@@ -5265,9 +5633,9 @@ fn lower_call_runtime_abi(
                 )));
             }
             // arg0: parent actor handle (opaque ptr).
-            let parent = load_int_arg(fn_ctx, args[0], i64_ty, "link_parent")?;
+            let parent = load_duplex_handle(fn_ctx, args[0], "link_parent")?;
             // arg1: child actor handle (opaque ptr).
-            let child = load_int_arg(fn_ctx, args[1], i64_ty, "link_child")?;
+            let child = load_duplex_handle(fn_ctx, args[1], "link_child")?;
             let fv = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
@@ -5301,9 +5669,9 @@ fn lower_call_runtime_abi(
                 )));
             }
             // arg0: watcher actor handle (opaque ptr).
-            let watcher = load_int_arg(fn_ctx, args[0], i64_ty, "monitor_watcher")?;
+            let watcher = load_duplex_handle(fn_ctx, args[0], "monitor_watcher")?;
             // arg1: target actor handle (opaque ptr).
-            let target = load_int_arg(fn_ctx, args[1], i64_ty, "monitor_target")?;
+            let target = load_duplex_handle(fn_ctx, args[1], "monitor_target")?;
             let fv = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
@@ -6596,7 +6964,7 @@ fn emit_print_value_call<'ctx>(
             other => {
                 return Err(CodegenError::FailClosed(format!(
                     "print f64 payload must be a float value, got {other:?}"
-                )))
+                )));
             }
         },
         PrintKind::Str => match loaded {
@@ -6607,7 +6975,7 @@ fn emit_print_value_call<'ctx>(
             other => {
                 return Err(CodegenError::FailClosed(format!(
                     "print string payload must be a pointer value, got {other:?}"
-                )))
+                )));
             }
         },
     };
@@ -6693,6 +7061,75 @@ fn get_or_declare_free<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> FunctionValue<'ctx> {
     )
 }
 
+fn get_or_declare_machine_emit_push<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> FunctionValue<'ctx> {
+    if let Some(fv) = fn_ctx.llvm_mod.get_function("hew_machine_emit_push") {
+        return fv;
+    }
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    fn_ctx.llvm_mod.add_function(
+        "hew_machine_emit_push",
+        fn_ctx.ctx.i32_type().fn_type(
+            &[ptr_ty.into(), fn_ctx.ctx.i32_type().into(), ptr_ty.into()],
+            false,
+        ),
+        Some(Linkage::External),
+    )
+}
+
+fn get_or_declare_machine_emit_step_enter<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> FunctionValue<'ctx> {
+    if let Some(fv) = fn_ctx.llvm_mod.get_function("hew_machine_emit_step_enter") {
+        return fv;
+    }
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    fn_ctx.llvm_mod.add_function(
+        "hew_machine_emit_step_enter",
+        fn_ctx.ctx.i32_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::External),
+    )
+}
+
+fn get_or_declare_machine_emit_step_exit<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> FunctionValue<'ctx> {
+    if let Some(fv) = fn_ctx.llvm_mod.get_function("hew_machine_emit_step_exit") {
+        return fv;
+    }
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    fn_ctx.llvm_mod.add_function(
+        "hew_machine_emit_step_exit",
+        fn_ctx.ctx.i32_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::External),
+    )
+}
+
+fn emit_machine_step_enter_call<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    queue: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let step_enter_fn = get_or_declare_machine_emit_step_enter(fn_ctx);
+    fn_ctx
+        .builder
+        .build_call(step_enter_fn, &[queue.into()], "machine_emit_step_enter")
+        .map_err(|e| CodegenError::Llvm(format!("hew_machine_emit_step_enter call: {e:?}")))?;
+    Ok(())
+}
+
+fn emit_machine_step_exit_call<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    queue: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let step_exit_fn = get_or_declare_machine_emit_step_exit(fn_ctx);
+    fn_ctx
+        .builder
+        .build_call(step_exit_fn, &[queue.into()], "machine_emit_step_exit")
+        .map_err(|e| CodegenError::Llvm(format!("hew_machine_emit_step_exit call: {e:?}")))?;
+    Ok(())
+}
+
+fn is_machine_step_symbol(callee: &str) -> bool {
+    callee
+        .strip_suffix("__step")
+        .is_some_and(|prefix| !prefix.is_empty())
+}
+
 fn emit_trap_with_code(fn_ctx: &FnCtx<'_, '_>, code: u64, label: &str) -> CodegenResult<()> {
     let trap_with_code_fn = match fn_ctx.llvm_mod.get_function("hew_trap_with_code") {
         Some(fv) => fv,
@@ -6732,6 +7169,13 @@ fn lower_terminator<'ctx>(
 ) -> CodegenResult<()> {
     match term {
         Terminator::Return => {
+            if matches!(fn_ctx.return_resolved_ty, ResolvedTy::Unit) {
+                fn_ctx
+                    .builder
+                    .build_return(Some(&fn_ctx.ctx.i8_type().const_zero()))
+                    .map_err(|e| CodegenError::Llvm(format!("unit ret: {e:?}")))?;
+                return Ok(());
+            }
             let loaded = fn_ctx
                 .builder
                 .build_load(fn_ctx.return_ty, fn_ctx.return_slot, "ret_val")
@@ -6761,7 +7205,7 @@ fn lower_terminator<'ctx>(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "Branch cond is not an integer".into(),
-                    ))
+                    ));
                 }
             };
             let cond_loaded = fn_ctx
@@ -6822,6 +7266,13 @@ fn lower_terminator<'ctx>(
                     return_ty,
                     returns_unit,
                 } => {
+                    let machine_step_queue = if is_machine_step_symbol(callee) {
+                        let queue = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
+                        emit_machine_step_enter_call(fn_ctx, queue)?;
+                        Some(queue)
+                    } else {
+                        None
+                    };
                     let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
                         Vec::with_capacity(args.len());
                     for arg in args {
@@ -6864,6 +7315,9 @@ fn lower_terminator<'ctx>(
                             "Call to value-returning fn `{callee}` must carry a Terminator::Call dest"
                         )));
                     }
+                    if let Some(queue) = machine_step_queue {
+                        emit_machine_step_exit_call(fn_ctx, queue)?;
+                    }
                 }
             }
             let next_bb = *fn_ctx
@@ -6876,6 +7330,15 @@ fn lower_terminator<'ctx>(
                 .map_err(|e| CodegenError::Llvm(format!("call br: {e:?}")))?;
         }
         Terminator::Trap { kind } => {
+            if matches!(*kind, TrapKind::MachineDispatchUnreachable) {
+                // Machine step dispatch is HIR-exhaustive. The residual
+                // fallthrough block is therefore impossible in well-typed
+                // programs and must not surface as a user-visible trap code.
+                fn_ctx.builder.build_unreachable().map_err(|e| {
+                    CodegenError::Llvm(format!("machine dispatch unreachable: {e:?}"))
+                })?;
+                return Ok(());
+            }
             // The exit-code constants here MUST stay in lock-step
             // with canonical `HEW_TRAP_*` in
             // `hew-runtime/src/internal/types.rs`; the native supervisor
@@ -6900,14 +7363,111 @@ fn lower_terminator<'ctx>(
             };
             emit_trap_with_code(fn_ctx, code, "trap")?;
         }
-        Terminator::Yield { .. } => {
-            // The variant is declared so Checked MIR's borrow-liveness
-            // check has a suspension point to look for; the v0.5
-            // integer spine never constructs it. Generator lowering
-            // arrives with the construction surface in a later release.
-            return Err(CodegenError::Unsupported(
-                "Terminator::Yield — generator lowering not yet implemented",
-            ));
+        Terminator::Yield { value, next } => {
+            // Generator suspension (thread-based runtime, `hew-runtime/src/generator.rs`).
+            //
+            // Producer contract (`lower_gen_block`): the enclosing gen-body
+            // function has two leading pointer parameters — `Local(0)` is the
+            // body-argument copy (unused here) and `Local(1)` is the
+            // `*mut HewGenCtx` runtime context. The body fn signature matches
+            // the runtime's `body_fn: extern "C" fn(*mut c_void, *mut HewGenCtx)`
+            // that `hew_gen_ctx_create` expects.
+            //
+            // Lowering shape:
+            //   1. Load `ctx = *Local(1)` (the gen-context pointer).
+            //   2. Materialise `(payload_ptr, payload_size)` for `value`.
+            //   3. Call `hew_gen_yield(ctx, payload_ptr, payload_size) -> i1`.
+            //      The runtime deep-copies `payload_size` bytes from
+            //      `payload_ptr` (so the local slot may continue to be used
+            //      after the call) and blocks on the resume channel.
+            //   4. If the return is `true`, branch to `next` (resume point).
+            //      If `false`, the consumer cancelled / dropped the generator:
+            //      return immediately from the body function so the runtime
+            //      thread can hit its `catch_unwind`/done-sentinel path.
+            //
+            // `Local(1)` is the only place where the ctx pointer lives; the
+            // producer never writes to it after the prologue. The load type
+            // is `ptr` (opaque LLVM pointer) because the slot's resolved
+            // type is `ResolvedTy::Pointer { is_mutable: true, pointee: Unit }`
+            // which `primitive_to_llvm` lowers to an opaque pointer.
+            let (ctx_slot, _ctx_slot_ty) = fn_ctx.locals.get(&1).copied().ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "Terminator::Yield: gen-body function has no Local(1) \
+                         ctx-pointer parameter — the `lower_gen_block` producer \
+                         must prepend `*mut HewGenCtx` as the body fn's second \
+                         parameter before codegen runs"
+                        .to_string(),
+                )
+            })?;
+            let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+            let ctx_ptr = fn_ctx
+                .builder
+                .build_load(ptr_ty, ctx_slot, "gen_ctx_load")
+                .map_err(|e| CodegenError::Llvm(format!("gen ctx load: {e:?}")))?
+                .into_pointer_value();
+            let (payload_ptr, payload_size) =
+                actor_payload_ptr_size(fn_ctx, *value, "gen_yield_payload")?;
+            let yield_fn = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_gen_yield",
+            )?;
+            let keep_going = fn_ctx
+                .builder
+                .build_call(
+                    yield_fn,
+                    &[ctx_ptr.into(), payload_ptr.into(), payload_size.into()],
+                    "hew_gen_yield_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_gen_yield call: {e:?}")))?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_gen_yield returned void".into()))?
+                .into_int_value();
+
+            let parent_fn = fn_ctx
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .ok_or_else(|| CodegenError::Llvm("yield block has no parent function".into()))?;
+            let cancel_bb = fn_ctx
+                .ctx
+                .append_basic_block(parent_fn, "gen_yield_cancelled");
+            let next_bb = *fn_ctx
+                .blocks
+                .get(next)
+                .ok_or_else(|| CodegenError::FailClosed(format!("Yield next bb{next} missing")))?;
+            // `hew_gen_yield` returns `true` when the consumer asked for
+            // another value; `false` when the consumer cancelled (or the
+            // channel was dropped). Branch accordingly.
+            fn_ctx
+                .builder
+                .build_conditional_branch(keep_going, next_bb, cancel_bb)
+                .map_err(|e| CodegenError::Llvm(format!("yield cont branch: {e:?}")))?;
+
+            // Cancel path: return from the body function. The runtime thread
+            // unwraps the return at the catch_unwind boundary, frees the
+            // body_arg copy, and sends the done sentinel to the consumer.
+            // The return value is undef because the consumer never observes
+            // a body-completion value through the thread-based runtime
+            // (only yields propagate over the channel); the return slot is
+            // never reached on this cancel path. Returning unit/void would
+            // require declare_function to accept Unit returns, which is out
+            // of the current spine — fall back to an `unreachable` after a
+            // trap-style `return ConstNull` would be misleading. Use the
+            // return slot's existing alloca (which may be uninit) to
+            // satisfy LLVM's typing without changing the body fn signature
+            // contract.
+            fn_ctx.builder.position_at_end(cancel_bb);
+            let ret_val = fn_ctx
+                .builder
+                .build_load(fn_ctx.return_ty, fn_ctx.return_slot, "gen_cancel_ret")
+                .map_err(|e| CodegenError::Llvm(format!("gen cancel ret load: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_return(Some(&ret_val))
+                .map_err(|e| CodegenError::Llvm(format!("gen cancel ret: {e:?}")))?;
         }
         Terminator::Send {
             actor,
@@ -8374,7 +8934,7 @@ fn emit_cancel_trap_or_return(fn_ctx: &FnCtx<'_, '_>) -> CodegenResult<()> {
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "cancel exit cannot synthesize return for {other:?}"
-            )))
+            )));
         }
     }
     Ok(())
@@ -9057,7 +9617,26 @@ fn build_module<'ctx>(
     pipeline: &IrPipeline,
     name: &str,
 ) -> CodegenResult<LlvmModule<'ctx>> {
+    build_module_for_target(ctx, pipeline, name, None)
+}
+
+fn build_module_for_target<'ctx>(
+    ctx: &'ctx Context,
+    pipeline: &IrPipeline,
+    name: &str,
+    target_machine: Option<&TargetMachine>,
+) -> CodegenResult<LlvmModule<'ctx>> {
     let llvm_mod = ctx.create_module(name);
+    let target_data = if let Some(machine) = target_machine {
+        let triple = machine.get_triple();
+        llvm_mod.set_triple(&triple);
+        let data = machine.get_target_data();
+        let layout = data.get_data_layout();
+        llvm_mod.set_data_layout(&layout);
+        Some(data)
+    } else {
+        None
+    };
     // Register every named-form record from `pipeline.record_layouts` as an
     // LLVM named struct on `ctx` BEFORE any function declaration or body
     // lowering touches `resolve_ty`. Records can appear in function return
@@ -9077,6 +9656,7 @@ fn build_module<'ctx>(
         &llvm_mod,
         &pipeline.machine_layouts,
         &mut record_layouts,
+        target_data.as_ref(),
     )?;
     // Register user-defined enum layouts into the same `machine_layouts` map.
     // Enum-typed locals use the same `Place::MachineTag` / `Place::MachineVariant`
@@ -9088,9 +9668,17 @@ fn build_module<'ctx>(
         &pipeline.enum_layouts,
         &mut record_layouts,
         &mut machine_layouts,
+        target_data.as_ref(),
     )?;
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;
+    predeclare_extern_decls(
+        ctx,
+        &llvm_mod,
+        &mut fn_symbols,
+        &pipeline.extern_decls,
+        &record_layouts,
+    )?;
     for func in &pipeline.raw_mir {
         let sym = declare_function(ctx, &llvm_mod, func, &record_layouts)?;
         fn_symbols.insert(func.name.clone(), sym);
@@ -9472,6 +10060,8 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
         }
     }
 
@@ -9518,6 +10108,8 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -9582,6 +10174,8 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -9640,6 +10234,8 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
         };
         let ctx = Context::create();
         let m =
@@ -9683,6 +10279,8 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
         };
         let ctx = Context::create();
         let err =
@@ -9742,6 +10340,8 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
         }
     }
 
@@ -9935,6 +10535,8 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
         }
     }
 
@@ -10619,6 +11221,8 @@ mod tests {
             machine_layouts: Vec::new(),
             enum_layouts: vec![enum_layout],
             regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
         };
 
         let ctx = Context::create();
@@ -10628,6 +11232,81 @@ mod tests {
             m.verify().is_ok(),
             "emitted module must pass LLVM verify:\n{}",
             m.print_to_string().to_string()
+        );
+    }
+
+    /// Synthetic gen-body function (mirrors what `lower_gen_block` produces):
+    /// two leading pointer params (Local(0)=arg, Local(1)=ctx), one i64 local
+    /// for the yielded value, and a single Yield → Return chain. Asserts the
+    /// module verifies and that the emitted IR calls `hew_gen_yield`. This is
+    /// the codegen-side contract for `Terminator::Yield` — full e2e execution
+    /// of `g.next()` requires `.next()` HIR rewrite + `hew_gen_ctx_create`
+    /// emission from the enclosing fn, both of which are tracked separately.
+    #[test]
+    fn yield_terminator_emits_hew_gen_yield_call_and_module_verifies() {
+        let ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        let gen_body = RawMirFunction {
+            name: "__hew_gen_body_test_0".to_string(),
+            return_ty: ResolvedTy::I64,
+            call_conv: FunctionCallConv::Default,
+            // Local(0) = body arg ptr, Local(1) = *mut HewGenCtx — must match
+            // the runtime body_fn signature `extern "C" fn(*mut c_void, *mut HewGenCtx)`.
+            params: vec![ptr_ty.clone(), ptr_ty.clone()],
+            locals: vec![ptr_ty.clone(), ptr_ty.clone(), ResolvedTy::I64],
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: vec![Instr::ConstI64 {
+                        dest: Place::Local(2),
+                        value: 7,
+                    }],
+                    terminator: Terminator::Yield {
+                        value: Place::Local(2),
+                        next: 1,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: Vec::new(),
+                    instructions: vec![Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(2),
+                    }],
+                    terminator: Terminator::Return,
+                },
+            ],
+            decisions: Vec::new(),
+        };
+        let pipeline = IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![gen_body],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+        };
+        let ctx = Context::create();
+        let m = build_module(&ctx, &pipeline, "gen_yield_codegen_test")
+            .expect("Terminator::Yield must lower without error");
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("call i1 @hew_gen_yield"),
+            "Yield arm must emit a call to hew_gen_yield; got IR:\n{ir}"
+        );
+        assert!(
+            m.verify().is_ok(),
+            "gen-body module with Yield must pass LLVM verify:\n{ir}"
         );
     }
 }

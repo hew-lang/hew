@@ -7,10 +7,9 @@ use hew_parser::ast::{
     TypeExpr,
 };
 use hew_parser::ParseResult;
-use hew_types::builtin_names::{builtin_named_type, BuiltinNamedType};
 use hew_types::check::{FnSig, SpanKey, TypeDef, TypeDefKind};
 use hew_types::method_resolution;
-use hew_types::{ResolvedTy, Ty, TypeCheckOutput, VariantDef};
+use hew_types::{BuiltinType, ResolvedTy, Ty, TypeCheckOutput, VariantDef};
 
 use crate::db::SourceDatabase;
 use crate::{HoverResult, OffsetSpan};
@@ -735,6 +734,7 @@ fn find_pattern_binding_type(
                 .iter()
                 .find(|c| c.as_str() == word)
                 .map(|_| Ty::Named {
+                    builtin: None,
                     name: "string".to_string(),
                     args: vec![],
                 })
@@ -771,7 +771,7 @@ fn constructor_payload_tys(
     pattern_name: &str,
     type_defs: &HashMap<String, TypeDef>,
 ) -> Option<Vec<Ty>> {
-    let Ty::Named { name, args } = source_ty else {
+    let Ty::Named { name, args, .. } = source_ty else {
         return None;
     };
     let type_def = method_resolution::lookup_type_def(type_defs, name)?;
@@ -788,7 +788,7 @@ fn struct_pattern_field_ty(
     field_name: &str,
     type_defs: &HashMap<String, TypeDef>,
 ) -> Option<Ty> {
-    let Ty::Named { name, args } = source_ty else {
+    let Ty::Named { name, args, .. } = source_ty else {
         return None;
     };
     let type_def = method_resolution::lookup_type_def(type_defs, name)?;
@@ -826,19 +826,28 @@ fn apply_type_args_to_ty(ty: &Ty, type_params: &[String], type_args: &[Ty]) -> T
 fn iterable_element_type(iterable_ty: &Ty) -> Option<Ty> {
     match iterable_ty {
         Ty::Array(inner, _) | Ty::Slice(inner) => Some((**inner).clone()),
-        Ty::Named { name, args } if name == "Range" && args.len() == 1 => args.first().cloned(),
-        Ty::Named { name, args }
-            if builtin_named_type(name) == Some(BuiltinNamedType::Stream)
-                || builtin_named_type(name) == Some(BuiltinNamedType::Receiver)
-                || (name == "Generator" && !args.is_empty())
-                || (name == "AsyncGenerator" && args.len() == 1)
-                || name == "Vec" =>
-        {
-            args.first().cloned()
-        }
-        Ty::Named { name, args } if name == "HashMap" && args.len() >= 2 => {
-            Some(Ty::Tuple(vec![args[0].clone(), args[1].clone()]))
-        }
+        Ty::Named {
+            builtin: Some(BuiltinType::Range),
+            args,
+            ..
+        } if args.len() == 1 => args.first().cloned(),
+        Ty::Named {
+            builtin:
+                Some(
+                    BuiltinType::Stream
+                    | BuiltinType::Receiver
+                    | BuiltinType::Generator
+                    | BuiltinType::AsyncGenerator
+                    | BuiltinType::Vec,
+                ),
+            args,
+            ..
+        } => args.first().cloned(),
+        Ty::Named {
+            builtin: Some(BuiltinType::HashMap),
+            args,
+            ..
+        } if args.len() >= 2 => Some(Ty::Tuple(vec![args[0].clone(), args[1].clone()])),
         _ => None,
     }
 }
@@ -1252,6 +1261,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
@@ -1520,6 +1530,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
@@ -1610,6 +1621,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
@@ -1660,6 +1672,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
@@ -1764,6 +1777,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
@@ -1918,6 +1932,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),

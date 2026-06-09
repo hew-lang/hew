@@ -10,6 +10,7 @@ use crate::builtin_names::{builtin_named_type, builtin_type_def as builtin_named
 #[cfg(test)]
 use crate::check::TypeDefKind;
 use crate::check::{FnSig, TypeDef};
+use crate::BuiltinType;
 use crate::Ty;
 
 fn instantiate_named_method_sig(mut sig: FnSig, type_params: &[String], type_args: &[Ty]) -> FnSig {
@@ -59,10 +60,7 @@ fn merge_builtin_type_def(mut type_def: TypeDef, builtin: TypeDef) -> TypeDef {
 
 fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
     match ty {
-        Ty::Named { name, args } if name == "ActorRef" && args.len() == 1 => {
-            named_receiver_parts(&args[0])
-        }
-        // LocalPid<T> wraps an actor type T — unwrap to dispatch methods on T.
+        // ActorRef<T>/LocalPid<T> wrap an actor type T — unwrap to dispatch methods on T.
         // RemotePid<T> is intentionally NOT unwrapped here: its methods are
         // resolved against RemotePid itself, not T.
         // TODO: named_receiver_parts LocalPid own-methods (M3-S2 followup) —
@@ -70,10 +68,12 @@ fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
         // via `lookup_method_sig`) silently omit LocalPid's own impl methods
         // (`tell`, `to_remote_via`). The checker's explicit LocalPid arm in
         // methods.rs handles dispatch correctly, but LSP completion does not.
-        Ty::Named { name, args } if name == "LocalPid" && args.len() == 1 => {
-            named_receiver_parts(&args[0])
-        }
-        Ty::Named { name, args } => Some((name.as_str(), args.as_slice())),
+        Ty::Named {
+            builtin: Some(BuiltinType::ActorRef | BuiltinType::LocalPid),
+            args,
+            ..
+        } if args.len() == 1 => named_receiver_parts(&args[0]),
+        Ty::Named { name, args, .. } => Some((name.as_str(), args.as_slice())),
         _ => None,
     }
 }
@@ -83,15 +83,27 @@ fn lookup_collection_clone_method_sig(receiver_ty: &Ty, method: &str) -> Option<
         return None;
     }
     match receiver_ty {
-        Ty::Named { name, args } if name == "Vec" && args.len() == 1 => Some(FnSig {
+        Ty::Named {
+            builtin: Some(BuiltinType::Vec),
+            args,
+            ..
+        } if args.len() == 1 => Some(FnSig {
             return_type: receiver_ty.clone(),
             ..FnSig::default()
         }),
-        Ty::Named { name, args } if name == "HashMap" && args.len() == 2 => Some(FnSig {
+        Ty::Named {
+            builtin: Some(BuiltinType::HashMap),
+            args,
+            ..
+        } if args.len() == 2 => Some(FnSig {
             return_type: receiver_ty.clone(),
             ..FnSig::default()
         }),
-        Ty::Named { name, args } if name == "HashSet" && args.len() == 1 => Some(FnSig {
+        Ty::Named {
+            builtin: Some(BuiltinType::HashSet),
+            args,
+            ..
+        } if args.len() == 1 => Some(FnSig {
             return_type: receiver_ty.clone(),
             ..FnSig::default()
         }),
@@ -194,6 +206,7 @@ pub fn collect_method_sigs_for_named_type(
     let mut methods = Vec::new();
     let mut seen = HashSet::new();
     let receiver_ty = Ty::Named {
+        builtin: crate::lookup_builtin_type(type_name),
         name: type_name.to_string(),
         args: type_args.to_vec(),
     };
@@ -327,10 +340,12 @@ mod tests {
             FnSig {
                 param_names: vec!["next".to_string()],
                 params: vec![Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 }],
                 return_type: Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
@@ -426,6 +441,7 @@ mod tests {
         assert_eq!(
             type_def.methods["recv"].return_type,
             Ty::option(Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             })
@@ -438,14 +454,17 @@ mod tests {
         let fn_sigs = HashMap::new();
         for receiver_ty in [
             Ty::Named {
+                builtin: Some(BuiltinType::Vec),
                 name: "Vec".to_string(),
                 args: vec![Ty::String],
             },
             Ty::Named {
+                builtin: Some(BuiltinType::HashMap),
                 name: "HashMap".to_string(),
                 args: vec![Ty::String, Ty::I64],
             },
             Ty::Named {
+                builtin: Some(BuiltinType::HashSet),
                 name: "HashSet".to_string(),
                 args: vec![Ty::String],
             },
@@ -472,6 +491,7 @@ mod tests {
         assert_eq!(
             sig.return_type,
             Ty::Named {
+                builtin: Some(BuiltinType::HashSet),
                 name: "HashSet".to_string(),
                 args: vec![Ty::String],
             }

@@ -1,0 +1,4 @@
+fn main() {
+    let count: i64 = "not a number";
+    println(count);
+}

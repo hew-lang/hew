@@ -1,0 +1,7 @@
+fn main() {
+    let values: Vec<i64> = Vec::new();
+    values.push(10);
+    values.push(20);
+    println(values.len());
+    println(values.get(1));
+}

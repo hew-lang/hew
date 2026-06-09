@@ -36,6 +36,34 @@ fn pipeline(source: &str) -> IrPipeline {
     hew_mir::lower_hir_module(&output.module)
 }
 
+fn checked_pipeline(source: &str) -> IrPipeline {
+    use hew_hir::{lower_program, verify_hir, ResolutionCtx};
+    use hew_types::{module_registry::ModuleRegistry, Checker};
+
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type errors: {:?}",
+        tc_output.errors
+    );
+    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    assert!(
+        output.diagnostics.is_empty(),
+        "HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+    let verify = verify_hir(&output.module);
+    assert!(verify.is_empty(), "HIR verify: {verify:?}");
+    hew_mir::lower_hir_module(&output.module)
+}
+
 /// Assert the function's blocks contain exactly one `Instr::IntAdd` and
 /// no `IntArithChecked` or `Terminator::Trap { IntegerOverflow }`.
 fn assert_sole_int_add(blocks: &[BasicBlock]) {
@@ -131,6 +159,24 @@ fn wrapping_lowering_add_i64_emits_int_add_not_checked() {
         p.diagnostics
     );
     assert_sole_int_add(&p.raw_mir[0].blocks);
+}
+
+#[test]
+fn wrapping_method_add_i64_emits_int_add_not_checked_option() {
+    let p =
+        checked_pipeline("fn main() -> i64 { let a: i64 = 1; let b: i64 = 2; a.wrapping_add(b) }");
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    assert_sole_int_add(&p.raw_mir[0].blocks);
+    let checked_option_count = p.raw_mir[0]
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .filter(|i| matches!(i, Instr::IntArithCheckedOption { .. }))
+        .count();
+    assert_eq!(
+        checked_option_count, 0,
+        "wrapping method must not lower through checked-Option MIR"
+    );
 }
 
 #[test]

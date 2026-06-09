@@ -291,12 +291,114 @@ fn consume(s: Stream<string>) {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_stream_next"
         )),
         "expected checker-owned builtin rewrite metadata, got: {:?}",
         output.method_call_rewrites
     );
+}
+
+/// V0a: built-in Vec methods (`push`/`pop`/`get`/`set`/`len`/`clear`/
+/// `is_empty`/`contains`/`remove`/`append`/`clone`) must populate
+/// `method_call_rewrites` with the element-typed `hew_vec_*` runtime symbol
+/// so HIR lowering can rewrite the call to a free-function dispatch. Each
+/// assertion below corresponds to one arm in `check_vec_method`; together
+/// they exercise the full V0a surface.
+#[test]
+fn method_call_rewrites_record_vec_builtin_runtime_dispatch() {
+    fn has_rewrite(output: &hew_types::TypeCheckOutput, expected_symbol: &str) -> bool {
+        output.method_call_rewrites.values().any(|rewrite| {
+            matches!(
+                rewrite,
+                hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                    if c_symbol == expected_symbol
+            )
+        })
+    }
+
+    // i64 element: covers push/pop/get/set/contains/remove-by-index + the
+    // element-agnostic len/is_empty/clear/clone/append family in one program.
+    let output = typecheck_inline(
+        r"
+fn drive(v: Vec<i64>, other: Vec<i64>) {
+    v.push(1);
+    let _ = v.pop();
+    let _ = v.get(0);
+    v.set(0, 42);
+    let _ = v.contains(1);
+    let _ = v.is_empty();
+    let _ = v.len();
+    v.clear();
+    let _ = v.clone();
+    v.append(other);
+    v.remove(0);
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck for Vec<i64>, got: {:#?}",
+        output.errors
+    );
+    for expected in [
+        "hew_vec_push_i64",
+        "hew_vec_pop_i64",
+        "hew_vec_get_i64",
+        "hew_vec_set_i64",
+        "hew_vec_contains_i64",
+        "hew_vec_is_empty",
+        "hew_vec_clear",
+        "hew_vec_clone",
+        "hew_vec_append",
+        "hew_vec_remove_at",
+    ] {
+        assert!(
+            has_rewrite(&output, expected),
+            "expected method_call_rewrites to include `{expected}` for Vec<i64>, got: {:?}",
+            output.method_call_rewrites
+        );
+    }
+    // `len` is wired through the catalog overload key (`len_vec`), not a raw
+    // `hew_vec_*` symbol; assert that path too so a future refactor that
+    // moves it onto `resolve_vec_method` does not silently regress the
+    // catalog-driven dispatch.
+    assert!(
+        has_rewrite(&output, "len_vec"),
+        "expected `len_vec` catalog rewrite for `Vec::len`, got: {:?}",
+        output.method_call_rewrites
+    );
+
+    // String element: per-elem-type symbols differ for push/pop/get/set/contains.
+    let output_str = typecheck_inline(
+        r#"
+fn drive(v: Vec<string>) {
+    v.push("a");
+    let _ = v.pop();
+    let _ = v.get(0);
+    v.set(0, "b");
+    let _ = v.contains("a");
+}
+"#,
+    );
+    assert!(
+        output_str.errors.is_empty(),
+        "expected clean typecheck for Vec<string>, got: {:#?}",
+        output_str.errors
+    );
+    for expected in [
+        "hew_vec_push_str",
+        "hew_vec_pop_str",
+        "hew_vec_get_str",
+        "hew_vec_set_str",
+        "hew_vec_contains_str",
+    ] {
+        assert!(
+            has_rewrite(&output_str, expected),
+            "expected method_call_rewrites to include `{expected}` for Vec<string>, got: {:?}",
+            output_str.method_call_rewrites
+        );
+    }
 }
 
 #[test]
@@ -398,7 +500,7 @@ fn respond(req: http.Request) -> i64 {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_http_respond_text"
         )),
         "expected checker-owned handle rewrite metadata, got: {:?}",
@@ -425,7 +527,7 @@ fn main() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }
                 if c_symbol == "hew_file_read"
         )),
         "expected checker-owned module-qualified rewrite metadata, got: {:?}",
@@ -1921,7 +2023,7 @@ fn net_listener_close_resolves_via_fallback() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_tcp_listener_close"
         )),
         "expected net.Listener::close fallback rewrite, got: {:?}",
@@ -1948,7 +2050,7 @@ fn http_request_free_resolves_via_fallback() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_http_request_free"
         )),
         "expected http.Request::free fallback rewrite, got: {:?}",
@@ -2059,7 +2161,7 @@ fn process_child_methods_typecheck_and_preserve_rewrite_path() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_process_wait"
         )),
         "expected process.Child.wait rewrite, got: {:?}",
@@ -2068,7 +2170,7 @@ fn process_child_methods_typecheck_and_preserve_rewrite_path() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_process_kill"
         )),
         "expected process.Child.kill rewrite, got: {:?}",
@@ -5107,7 +5209,7 @@ fn deferred_channel_recv_int_constrained_after_call() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_channel_recv_int"
         )),
         "expected hew_channel_recv_int rewrite after deferred resolution, got: {:?}",
@@ -5117,7 +5219,7 @@ fn deferred_channel_recv_int_constrained_after_call() {
     assert!(
         !output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_channel_recv"
         )),
         "hew_channel_recv (string variant) must not be recorded for i64 channel: {:?}",
@@ -5149,7 +5251,7 @@ fn deferred_channel_recv_string_constrained_after_call() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_channel_recv"
         )),
         "expected hew_channel_recv rewrite after deferred resolution, got: {:?}",
@@ -5181,7 +5283,7 @@ fn deferred_channel_try_recv_int_constrained_after_call() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_channel_try_recv_int"
         )),
         "expected hew_channel_try_recv_int rewrite after deferred resolution, got: {:?}",
@@ -5215,7 +5317,7 @@ fn deferred_channel_send_int_constrained_after_call() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_channel_send_int"
         )),
         "expected hew_channel_send_int rewrite after deferred resolution, got: {:?}",
@@ -5251,7 +5353,7 @@ fn deferred_channel_unresolved_inner_fails_closed() {
     assert!(
         !output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol.contains("hew_channel_recv")
         )),
         "no recv rewrite should be recorded when inner type is unresolved: {:?}",

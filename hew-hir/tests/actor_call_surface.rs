@@ -46,10 +46,20 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
-        | HirExprKind::ForkBlock { body: block, .. } => visit_block(block, out),
+        | HirExprKind::ForkBlock { body: block, .. }
+        | HirExprKind::GenBlock { body: block, .. } => visit_block(block, out),
+        HirExprKind::Yield { value, .. } => {
+            if let Some(value) = value {
+                visit_expr(value, out);
+            }
+        }
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             visit_expr(left, out);
             visit_expr(right, out);
+        }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            visit_expr(receiver, out);
+            visit_expr(arg, out);
         }
         HirExprKind::If {
             condition,

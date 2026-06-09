@@ -1,24 +1,21 @@
 //! MIR lowering for machine declarations.
 //!
 //! Every `HirItem::Machine` produces a synthesised `<Name>__step` MIR
-//! function with the correct signature and a fail-closed single-block
-//! body. The state×event dispatch tree, transition body lowering, and
-//! `entry`/`exit`/`@reenter` semantics are grown into this seam once the
-//! tagged-union value layout is decided downstream.
-//!
-//! These tests pin the shape of the substrate. If a later change replaces
-//! the synthesised body with a real dispatch tree, the trap-only block
-//! assertion below must be updated alongside the codegen-side layout
-//! work that justifies the change.
+//! function with the correct signature and a fail-closed state×event
+//! dispatch shell. Transition bodies and lifecycle hooks lower into matched
+//! arms; transition-out drops are emitted for tag-dominated resource payloads.
 
 use hew_hir::{
-    HirExpr, HirExprKind, HirField, HirItem, HirLiteral, HirMachineDecl, HirMachineEvent,
-    HirMachineState, HirMachineTransition, HirModule, IntentKind, ValueClass,
+    BindingId, HirBlock, HirExpr, HirExprKind, HirField, HirItem, HirMachineDecl, HirMachineEvent,
+    HirMachineState, HirMachineTransition, HirModule, HirStmt, HirStmtKind, IntentKind,
+    ResolvedRef, ValueClass,
 };
 use hew_mir::{lower_hir_module, FunctionCallConv, Instr, Place, Terminator, TrapKind};
-use hew_parser::ast::ResourceMarker;
+use hew_parser::ast::ResourceMarker as AstResourceMarker;
 use hew_types::ResolvedTy;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+
+const MACHINE_SELF_BINDING: BindingId = BindingId(u32::MAX);
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
@@ -33,14 +30,93 @@ fn empty_module(items: Vec<HirItem>) -> HirModule {
     }
 }
 
-fn unit_literal_expr() -> HirExpr {
+fn machine_ctor_expr(machine_name: &str, state_idx: usize) -> HirExpr {
+    HirExpr {
+        node: hew_hir::HirNodeId(0),
+        site: hew_hir::SiteId(0),
+        ty: ResolvedTy::Named {
+            name: machine_name.to_string(),
+            args: vec![],
+        },
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::MachineVariantCtor {
+            machine_name: machine_name.to_string(),
+            state_idx,
+            payload: None,
+        },
+        span: 0..0,
+    }
+}
+
+fn machine_self_expr(machine_name: &str) -> HirExpr {
+    HirExpr {
+        node: hew_hir::HirNodeId(0),
+        site: hew_hir::SiteId(0),
+        ty: ResolvedTy::Named {
+            name: machine_name.to_string(),
+            args: vec![],
+        },
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: "self".to_string(),
+            resolved: ResolvedRef::Binding(MACHINE_SELF_BINDING),
+        },
+        span: 0..0,
+    }
+}
+
+fn machine_emit_expr(event_idx: usize) -> HirExpr {
     HirExpr {
         node: hew_hir::HirNodeId(0),
         site: hew_hir::SiteId(0),
         ty: ResolvedTy::Unit,
         value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
-        kind: HirExprKind::Literal(HirLiteral::Unit),
+        kind: HirExprKind::MachineEmit {
+            event_idx,
+            fields: Vec::new(),
+        },
+        span: 0..0,
+    }
+}
+
+fn machine_emit_stmt(event_idx: usize) -> HirStmt {
+    HirStmt {
+        node: hew_hir::HirNodeId(0),
+        kind: HirStmtKind::Expr(machine_emit_expr(event_idx)),
+        span: 0..0,
+    }
+}
+
+fn hir_block(statements: Vec<HirStmt>, tail: Option<HirExpr>, ty: ResolvedTy) -> HirBlock {
+    HirBlock {
+        node: hew_hir::HirNodeId(0),
+        scope: hew_hir::ScopeId(0),
+        statements,
+        tail: tail.map(Box::new),
+        ty,
+        span: 0..0,
+    }
+}
+
+fn transition_body(machine_name: &str, target_idx: usize, emits: &[usize]) -> HirExpr {
+    let machine_ty = ResolvedTy::Named {
+        name: machine_name.to_string(),
+        args: vec![],
+    };
+    HirExpr {
+        node: hew_hir::HirNodeId(0),
+        site: hew_hir::SiteId(0),
+        ty: machine_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::Block(hir_block(
+            emits.iter().copied().map(machine_emit_stmt).collect(),
+            Some(machine_ctor_expr(machine_name, target_idx)),
+            machine_ty,
+        )),
         span: 0..0,
     }
 }
@@ -59,6 +135,20 @@ fn make_state(name: &str) -> HirMachineState {
     }
 }
 
+fn make_state_with_fields(name: &str, fields: Vec<HirField>) -> HirMachineState {
+    HirMachineState {
+        name: name.to_string(),
+        fields,
+        has_entry: false,
+        has_exit: false,
+        entry_writes: Vec::new(),
+        exit_writes: Vec::new(),
+        entry: None,
+        exit: None,
+        span: 0..0,
+    }
+}
+
 fn make_event(name: &str) -> HirMachineEvent {
     HirMachineEvent {
         name: name.to_string(),
@@ -67,7 +157,20 @@ fn make_event(name: &str) -> HirMachineEvent {
     }
 }
 
-fn make_transition(event_name: &str, source: &str, target: &str) -> HirMachineTransition {
+fn named_ty(name: &str) -> ResolvedTy {
+    ResolvedTy::Named {
+        name: name.to_string(),
+        args: vec![],
+    }
+}
+
+fn make_transition(
+    machine_name: &str,
+    event_name: &str,
+    source: &str,
+    target: &str,
+    target_idx: usize,
+) -> HirMachineTransition {
     HirMachineTransition {
         event_name: event_name.to_string(),
         source_state: source.to_string(),
@@ -77,7 +180,7 @@ fn make_transition(event_name: &str, source: &str, target: &str) -> HirMachineTr
         reenter: false,
         body_writes: Vec::new(),
         body_emits: Vec::new(),
-        body: unit_literal_expr(),
+        body: machine_ctor_expr(machine_name, target_idx),
         span: 0..0,
     }
 }
@@ -91,8 +194,25 @@ fn traffic_light_machine() -> HirMachineDecl {
         states: vec![make_state("Red"), make_state("Green")],
         events: vec![make_event("Tick")],
         transitions: vec![
-            make_transition("Tick", "Red", "Green"),
-            make_transition("Tick", "Green", "Red"),
+            make_transition("TrafficLight", "Tick", "Red", "Green", 1),
+            make_transition("TrafficLight", "Tick", "Green", "Red", 0),
+        ],
+        has_default: false,
+        span: 0..0,
+    }
+}
+
+fn traffic_light_with_wildcard_machine() -> HirMachineDecl {
+    HirMachineDecl {
+        id: hew_hir::ItemId(0),
+        node: hew_hir::HirNodeId(0),
+        name: "TrafficLight".to_string(),
+        type_params: Vec::new(),
+        states: vec![make_state("Red"), make_state("Green")],
+        events: vec![make_event("Tick"), make_event("Timeout")],
+        transitions: vec![
+            make_transition("TrafficLight", "Tick", "Red", "Green", 1),
+            make_transition("TrafficLight", "Timeout", "_", "Red", 0),
         ],
         has_default: false,
         span: 0..0,
@@ -107,10 +227,477 @@ fn generic_lifecycle_machine() -> HirMachineDecl {
         type_params: vec!["T".to_string()],
         states: vec![make_state("Idle"), make_state("Running")],
         events: vec![make_event("Start")],
-        transitions: vec![make_transition("Start", "Idle", "Running")],
+        transitions: vec![make_transition("Lifecycle", "Start", "Idle", "Running", 1)],
         has_default: false,
         span: 0..0,
     }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "single snapshot-style test covers real, self, and @reenter hook ordering"
+)]
+fn transition_bodies_entry_exit_reenter() {
+    const EXIT_IDLE: usize = 3;
+    const BODY_REAL: usize = 4;
+    const ENTRY_ACTIVE: usize = 5;
+    const BODY_SELF: usize = 6;
+    const EXIT_ACTIVE: usize = 7;
+    const BODY_REENTER: usize = 8;
+
+    let machine_ty = ResolvedTy::Named {
+        name: "Lifecycle".to_string(),
+        args: vec![],
+    };
+    let idle = HirMachineState {
+        name: "Idle".to_string(),
+        fields: Vec::new(),
+        has_entry: false,
+        has_exit: true,
+        entry_writes: Vec::new(),
+        exit_writes: Vec::new(),
+        entry: None,
+        exit: Some(hir_block(
+            vec![machine_emit_stmt(EXIT_IDLE)],
+            None,
+            ResolvedTy::Unit,
+        )),
+        span: 0..0,
+    };
+    let active = HirMachineState {
+        name: "Active".to_string(),
+        fields: Vec::new(),
+        has_entry: true,
+        has_exit: true,
+        entry_writes: Vec::new(),
+        exit_writes: Vec::new(),
+        entry: Some(hir_block(
+            vec![machine_emit_stmt(ENTRY_ACTIVE)],
+            None,
+            ResolvedTy::Unit,
+        )),
+        exit: Some(hir_block(
+            vec![machine_emit_stmt(EXIT_ACTIVE)],
+            None,
+            ResolvedTy::Unit,
+        )),
+        span: 0..0,
+    };
+    let mut real = make_transition("Lifecycle", "Start", "Idle", "Active", 1);
+    real.body = transition_body("Lifecycle", 1, &[BODY_REAL]);
+    real.body_emits = vec!["BodyReal".to_string()];
+
+    let mut self_no_reenter = make_transition("Lifecycle", "Stay", "Active", "Active", 1);
+    self_no_reenter.body = transition_body("Lifecycle", 1, &[BODY_SELF]);
+    self_no_reenter.body_emits = vec!["BodySelf".to_string()];
+
+    let mut self_reenter = make_transition("Lifecycle", "Pulse", "Active", "Active", 1);
+    self_reenter.reenter = true;
+    self_reenter.body = transition_body("Lifecycle", 1, &[BODY_REENTER]);
+    self_reenter.body_emits = vec!["BodyReenter".to_string()];
+
+    let machine = HirMachineDecl {
+        id: hew_hir::ItemId(0),
+        node: hew_hir::HirNodeId(0),
+        name: "Lifecycle".to_string(),
+        type_params: Vec::new(),
+        states: vec![idle, active],
+        events: vec![
+            make_event("Start"),
+            make_event("Stay"),
+            make_event("Pulse"),
+            make_event("ExitIdle"),
+            make_event("BodyReal"),
+            make_event("EntryActive"),
+            make_event("BodySelf"),
+            make_event("ExitActive"),
+            make_event("BodyReenter"),
+        ],
+        transitions: vec![real, self_no_reenter, self_reenter],
+        has_default: false,
+        span: 0..0,
+    };
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Machine(machine)]));
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "machine body lowering should not produce diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let step_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "Lifecycle__step")
+        .expect("Lifecycle__step synthesised");
+    assert_eq!(step_fn.return_ty, machine_ty);
+
+    let block_emit_indices = |needle| {
+        step_fn
+            .blocks
+            .iter()
+            .find_map(|block| {
+                let emits = block
+                    .instructions
+                    .iter()
+                    .filter_map(|instr| {
+                        if let Instr::MachineEmitPlaceholder { event_idx, .. } = instr {
+                            Some(*event_idx)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                emits.contains(&needle).then_some(emits)
+            })
+            .unwrap_or_else(|| panic!("return block containing emit event_idx={needle}"))
+    };
+    let block_tag_write_index = |needle| {
+        let block = step_fn
+            .blocks
+            .iter()
+            .find(|block| {
+                block.instructions.iter().any(|instr| {
+                    matches!(
+                        instr,
+                        Instr::MachineEmitPlaceholder {
+                            event_idx,
+                            ..
+                        } if *event_idx == needle
+                    )
+                })
+            })
+            .unwrap_or_else(|| panic!("block containing emit event_idx={needle}"));
+        block
+            .instructions
+            .iter()
+            .position(|instr| {
+                matches!(
+                    instr,
+                    Instr::Move {
+                        dest: Place::MachineTag(_),
+                        ..
+                    }
+                )
+            })
+            .unwrap_or_else(|| panic!("block containing emit event_idx={needle} writes target tag"))
+    };
+    let block_emit_instr_index = |needle| {
+        let block = step_fn
+            .blocks
+            .iter()
+            .find(|block| {
+                block.instructions.iter().any(|instr| {
+                    matches!(
+                        instr,
+                        Instr::MachineEmitPlaceholder {
+                            event_idx,
+                            ..
+                        } if *event_idx == needle
+                    )
+                })
+            })
+            .unwrap_or_else(|| panic!("block containing emit event_idx={needle}"));
+        block
+            .instructions
+            .iter()
+            .position(|instr| {
+                matches!(
+                    instr,
+                    Instr::MachineEmitPlaceholder {
+                        event_idx,
+                        ..
+                    } if *event_idx == needle
+                )
+            })
+            .unwrap_or_else(|| panic!("emit event_idx={needle} present"))
+    };
+
+    let real_emits = block_emit_indices(BODY_REAL);
+    assert_eq!(
+        real_emits,
+        vec![EXIT_IDLE, BODY_REAL, ENTRY_ACTIVE],
+        "real transition fires source exit, then body, then target entry"
+    );
+    assert!(
+        block_tag_write_index(BODY_REAL) > block_emit_instr_index(BODY_REAL),
+        "real transition constructs target after body side effects"
+    );
+    assert!(
+        block_tag_write_index(BODY_REAL) < block_emit_instr_index(ENTRY_ACTIVE),
+        "real transition invokes entry after target construction"
+    );
+
+    let self_emits = block_emit_indices(BODY_SELF);
+    assert_eq!(
+        self_emits,
+        vec![BODY_SELF],
+        "self-transition without @reenter runs only the body"
+    );
+
+    let reenter_emits = block_emit_indices(BODY_REENTER);
+    assert_eq!(
+        reenter_emits,
+        vec![EXIT_ACTIVE, BODY_REENTER, ENTRY_ACTIVE],
+        "@reenter self-transition fires exit, then body, then entry"
+    );
+    assert!(
+        block_tag_write_index(BODY_REENTER) > block_emit_instr_index(BODY_REENTER),
+        "@reenter transition constructs target after body side effects"
+    );
+    assert!(
+        block_tag_write_index(BODY_REENTER) < block_emit_instr_index(ENTRY_ACTIVE),
+        "@reenter transition invokes entry after target construction"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "matrix test covers resource transition-out, self persistence, reenter, and non-resource states"
+)]
+fn resource_field_transition_out_drops() {
+    const BODY_TO_IDLE: usize = 4;
+    const BODY_REENTER: usize = 5;
+    const BODY_FINISH: usize = 6;
+
+    let handle_ty = named_ty("FileHandle");
+    let holding = make_state_with_fields(
+        "Holding",
+        vec![HirField {
+            name: "handle".to_string(),
+            ty: handle_ty.clone(),
+            span: 0..0,
+        }],
+    );
+    let idle = make_state("Idle");
+    let done = make_state("Done");
+
+    let mut to_idle = make_transition("ResourceMachine", "ToIdle", "Holding", "Idle", 1);
+    to_idle.body = transition_body("ResourceMachine", 1, &[BODY_TO_IDLE]);
+
+    let mut stay = make_transition("ResourceMachine", "Stay", "Holding", "Holding", 0);
+    stay.body = machine_self_expr("ResourceMachine");
+
+    let mut reenter = make_transition("ResourceMachine", "Reenter", "Holding", "Holding", 0);
+    reenter.reenter = true;
+    reenter.body = transition_body("ResourceMachine", 0, &[BODY_REENTER]);
+
+    let mut finish = make_transition("ResourceMachine", "Finish", "Idle", "Done", 2);
+    finish.body = transition_body("ResourceMachine", 2, &[BODY_FINISH]);
+
+    let machine = HirMachineDecl {
+        id: hew_hir::ItemId(0),
+        node: hew_hir::HirNodeId(0),
+        name: "ResourceMachine".to_string(),
+        type_params: Vec::new(),
+        states: vec![holding.clone(), idle, done],
+        events: vec![
+            make_event("ToIdle"),
+            make_event("Stay"),
+            make_event("Reenter"),
+            make_event("Finish"),
+            make_event("BodyToIdle"),
+            make_event("BodyReenter"),
+            make_event("BodyFinish"),
+        ],
+        transitions: vec![to_idle, stay, reenter, finish],
+        has_default: false,
+        span: 0..0,
+    };
+
+    let mut module = empty_module(vec![HirItem::Machine(machine.clone())]);
+    module.type_classes.insert(
+        "FileHandle".to_string(),
+        (AstResourceMarker::Resource, Some("close".to_string())),
+    );
+
+    let pipeline = lower_hir_module(&module);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "machine resource transition lowering should not produce diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let step_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "ResourceMachine__step")
+        .expect("ResourceMachine__step synthesised");
+
+    let block_containing_emit = |needle| {
+        step_fn
+            .blocks
+            .iter()
+            .find(|block| {
+                block.instructions.iter().any(|instr| {
+                    matches!(
+                        instr,
+                        Instr::MachineEmitPlaceholder {
+                            event_idx,
+                            ..
+                        } if *event_idx == needle
+                    )
+                })
+            })
+            .unwrap_or_else(|| panic!("block containing emit event_idx={needle}"))
+    };
+    let drops_in_block = |needle| -> BTreeSet<String> {
+        block_containing_emit(needle)
+            .instructions
+            .iter()
+            .filter_map(|instr| match instr {
+                Instr::Drop { place, .. } => Some(format!("{place:?}")),
+                _ => None,
+            })
+            .collect()
+    };
+    let drop_summaries = |needle| -> Vec<String> {
+        block_containing_emit(needle)
+            .instructions
+            .iter()
+            .filter_map(|instr| match instr {
+                Instr::Drop { place, drop_fn, .. } => Some(format!(
+                    "{place:?} via {}",
+                    drop_fn.as_deref().unwrap_or("<none>")
+                )),
+                _ => None,
+            })
+            .collect()
+    };
+    let expected_source_resource_places = |source_variant_idx: usize| -> BTreeSet<String> {
+        let self_local = 0;
+        machine.states[source_variant_idx]
+            .fields
+            .iter()
+            .enumerate()
+            .filter_map(|(field_idx, field)| {
+                (ValueClass::of_ty(&field.ty, &module.type_classes) == ValueClass::AffineResource)
+                    .then_some(format!(
+                        "{:?}",
+                        Place::MachineVariant {
+                            local: self_local,
+                            variant_idx: u32::try_from(source_variant_idx)
+                                .expect("variant index fits u32"),
+                            field_idx: u32::try_from(field_idx).expect("field index fits u32"),
+                        }
+                    ))
+            })
+            .collect()
+    };
+    let first_drop_index = |needle| {
+        block_containing_emit(needle)
+            .instructions
+            .iter()
+            .position(|instr| matches!(instr, Instr::Drop { .. }))
+            .unwrap_or_else(|| panic!("block containing emit event_idx={needle} has a Drop"))
+    };
+    let first_tag_write_index = |needle| {
+        block_containing_emit(needle)
+            .instructions
+            .iter()
+            .position(|instr| {
+                matches!(
+                    instr,
+                    Instr::Move {
+                        dest: Place::MachineTag(_),
+                        ..
+                    }
+                )
+            })
+            .unwrap_or_else(|| panic!("block containing emit event_idx={needle} writes target tag"))
+    };
+
+    let holding_resource_places = expected_source_resource_places(0);
+    assert_eq!(
+        drops_in_block(BODY_TO_IDLE),
+        holding_resource_places,
+        "lattice-correct: dropped places equal source variant @resource fields"
+    );
+    assert!(
+        first_drop_index(BODY_TO_IDLE) < first_tag_write_index(BODY_TO_IDLE),
+        "transition-out drop precedes target tag write"
+    );
+    assert_eq!(
+        drops_in_block(BODY_REENTER),
+        expected_source_resource_places(0),
+        "@reenter self-transition drops source variant resources"
+    );
+    assert!(
+        first_drop_index(BODY_REENTER) < first_tag_write_index(BODY_REENTER),
+        "@reenter drop precedes re-construction tag write"
+    );
+    assert!(
+        drops_in_block(BODY_FINISH).is_empty(),
+        "transition between non-resource states emits no drops"
+    );
+
+    let self_persist_blocks: Vec<_> = step_fn
+        .blocks
+        .iter()
+        .filter(|block| {
+            matches!(block.terminator, Terminator::Return)
+                && block.instructions.iter().any(|instr| {
+                    matches!(
+                        instr,
+                        Instr::Move {
+                            dest: Place::ReturnSlot,
+                            src: Place::Local(0),
+                        }
+                    )
+                })
+        })
+        .collect();
+    assert_eq!(
+        self_persist_blocks.len(),
+        1,
+        "self-transition default {{ self }} arm is present exactly once"
+    );
+    assert!(
+        self_persist_blocks[0]
+            .instructions
+            .iter()
+            .all(|instr| !matches!(instr, Instr::Drop { .. })),
+        "self-transition without @reenter emits zero drops"
+    );
+
+    let snapshot = vec![
+        format!("Holding->Idle drops: {:?}", drop_summaries(BODY_TO_IDLE)),
+        format!(
+            "Holding->Idle dropped-set: {:?}",
+            drops_in_block(BODY_TO_IDLE)
+        ),
+        format!("Holding @resource-set: {holding_resource_places:?}"),
+        format!(
+            "Holding->Idle order: drop@{} < tag@{}",
+            first_drop_index(BODY_TO_IDLE),
+            first_tag_write_index(BODY_TO_IDLE)
+        ),
+        "Holding->Holding default { self } drops: []".to_string(),
+        format!(
+            "Holding->Holding @reenter drops: {:?}",
+            drop_summaries(BODY_REENTER)
+        ),
+        format!(
+            "Holding->Holding @reenter order: drop@{} < tag@{}",
+            first_drop_index(BODY_REENTER),
+            first_tag_write_index(BODY_REENTER)
+        ),
+        format!("Idle->Done drops: {:?}", drop_summaries(BODY_FINISH)),
+    ];
+    assert_eq!(
+        snapshot,
+        vec![
+            "Holding->Idle drops: [\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 } via FileHandle::close\"]",
+            "Holding->Idle dropped-set: {\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 }\"}",
+            "Holding @resource-set: {\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 }\"}",
+            "Holding->Idle order: drop@0 < tag@3",
+            "Holding->Holding default { self } drops: []",
+            "Holding->Holding @reenter drops: [\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 } via FileHandle::close\"]",
+            "Holding->Holding @reenter order: drop@0 < tag@3",
+            "Idle->Done drops: []",
+        ],
+        "machine transition-out resource-drop snapshot"
+    );
 }
 
 #[test]
@@ -175,11 +762,9 @@ fn synthesised_step_signature_is_self_event_returning_self() {
 
 #[test]
 fn synthesised_step_body_contains_dispatch_tree_with_trap_fallthrough() {
-    // Slice 4b: the step function dispatch tree contains one trap block as
-    // the default fall-through (undeclared (state, event) pairs), and at
-    // least one block per state-check. TrafficLight has 2 states + 1 event
-    // + 2 transitions, producing entry + 2 state-checks + 2 state-bodies +
-    // 2 arm-checks + 2 arm-bodies + trap = 10 blocks.
+    // Slice 4a: the step function dispatch shell contains one trap block as
+    // the default fall-through (undeclared (state, event) pairs) and return
+    // blocks for matched transition placeholders.
     let pipeline = lower_hir_module(&empty_module(vec![HirItem::Machine(
         traffic_light_machine(),
     )]));
@@ -192,7 +777,7 @@ fn synthesised_step_body_contains_dispatch_tree_with_trap_fallthrough() {
 
     assert!(
         step_fn.blocks.len() > 1,
-        "Slice 4b dispatch tree spans multiple blocks; got {}",
+        "Slice 4a dispatch shell spans multiple blocks; got {}",
         step_fn.blocks.len()
     );
     assert!(
@@ -209,7 +794,7 @@ fn synthesised_step_body_contains_dispatch_tree_with_trap_fallthrough() {
             .blocks
             .iter()
             .any(|b| matches!(b.terminator, Terminator::Return)),
-        "dispatch arms return the next-state value via Terminator::Return"
+        "dispatch arms return target-state placeholders via Terminator::Return"
     );
 }
 
@@ -227,9 +812,7 @@ fn synthesised_step_locals_match_parameter_prologue_convention() {
 
     // Parameter locals occupy the low indices in declaration order; codegen
     // emits one alloca per parameter and stores `get_nth_param(i)` into
-    // `Place::Local(i)` before the first user instruction. Slice 4b adds
-    // body-local slots for the state/event tag scratch and per-arm
-    // comparison locals, so total locals exceed 2.
+    // `Place::Local(i)` before the first user instruction.
     assert!(
         step_fn.locals.len() >= 2,
         "at least two parameter slots are present"
@@ -298,28 +881,18 @@ fn synthesised_step_function_emitted_once_per_machine_decl() {
     assert_eq!(lifecycle_step_count, 1, "exactly one step fn per machine");
 }
 
-/// Slice 4a substrate test: verifies the step function has the correct
-/// signature shape AND that `IrPipeline.machine_layouts` carries a layout
-/// entry for the machine with the correct name and state-count-derived
-/// `tag_width`. This test is the anchor for the three missing items from
-/// Slice 4a (plan §3–5):
-///
-/// - `Place::MachineTag` / `Place::MachineVariant` are declared in the
-///   model and the layout entry's `variants` naming confirms the plan
-///   ordered them correctly. Slice 5 populates `field_tys`.
-/// - `IrPipeline.machine_layouts` carries one entry per machine declaration.
-///
-/// The "switch shape" in the name refers to the step function's dispatch
-/// shell — currently a single-block trap (the fail-closed seam). Slice 4b
-/// replaces the trap with a real state×event switch; at that point this
-/// test must be updated to assert the switch structure. For now, asserting
-/// the signature + layout entry is the correct Slice 4a verification target.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "single substrate test asserts signature, dispatch ordering, and layout together"
+)]
 fn step_shell_signature_and_switch_shape() {
-    // TrafficLight: 2 states (Red, Green), 1 event (Tick).
+    // TrafficLight: 2 states (Red, Green), 2 events (Tick, Timeout). Red has
+    // a specific Tick arm followed by a wildcard Timeout arm; the test asserts
+    // that specific arms remain higher priority than wildcard/default arms.
     // tag_width = max(1, ceil(log2(2))) = 1.
     let pipeline = lower_hir_module(&empty_module(vec![HirItem::Machine(
-        traffic_light_machine(),
+        traffic_light_with_wildcard_machine(),
     )]));
 
     assert!(
@@ -358,11 +931,11 @@ fn step_shell_signature_and_switch_shape() {
         "step uses Default call conv"
     );
 
-    // Slice 4b dispatch tree: multiple blocks; at least one trap (default
-    // fall-through) and at least one Return (matched arm).
+    // Slice 4a dispatch shell: multiple blocks; at least one trap (default
+    // fall-through) and placeholder Return arms for matched transitions.
     assert!(
         step_fn.blocks.len() > 1,
-        "Slice 4b dispatch tree has multiple blocks; got {}",
+        "Slice 4a dispatch shell has multiple blocks; got {}",
         step_fn.blocks.len()
     );
     assert!(
@@ -373,6 +946,137 @@ fn step_shell_signature_and_switch_shape() {
             }
         )),
         "fail-closed default arm: undeclared (state, event) pairs trap"
+    );
+    assert!(
+        step_fn
+            .blocks
+            .iter()
+            .any(|b| matches!(b.terminator, Terminator::Return)),
+        "matched arms return target-state placeholders"
+    );
+    assert!(
+        step_fn.blocks.iter().any(|b| {
+            b.instructions.iter().any(|i| {
+                matches!(
+                    i,
+                    Instr::Move {
+                        src: Place::MachineTag(_),
+                        ..
+                    }
+                )
+            })
+        }),
+        "outer switch shell reads state via Place::MachineTag"
+    );
+    assert!(
+        step_fn.blocks.iter().any(|b| {
+            b.instructions
+                .iter()
+                .any(|i| matches!(i, Instr::EnumTagLoad { .. }))
+        }),
+        "inner switch shell reads event via Instr::EnumTagLoad"
+    );
+    assert!(
+        step_fn.blocks.iter().any(|b| {
+            b.instructions.iter().any(|i| {
+                matches!(
+                    i,
+                    Instr::Move {
+                        dest: Place::MachineTag(_),
+                        ..
+                    }
+                )
+            })
+        }),
+        "placeholder return writes the target state tag through Place::MachineTag"
+    );
+    assert!(
+        !step_fn.blocks.iter().any(|b| {
+            b.instructions
+                .iter()
+                .any(|i| matches!(i, Instr::Drop { .. }))
+        }),
+        "Slice 4a emits no transition-out drop elaboration"
+    );
+
+    let block = |id| {
+        step_fn
+            .blocks
+            .iter()
+            .find(|b| b.id == id)
+            .unwrap_or_else(|| panic!("block {id} present"))
+    };
+    let event_check_value = |id| {
+        block(id)
+            .instructions
+            .iter()
+            .find_map(|instr| {
+                if let Instr::ConstI64 { value, .. } = instr {
+                    Some(*value)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| panic!("event-check block {id} has ConstI64"))
+    };
+    let Terminator::Goto {
+        target: first_state_check,
+    } = block(0).terminator
+    else {
+        panic!("entry block should goto first state check");
+    };
+    let Terminator::Branch {
+        then_target: red_state_body,
+        ..
+    } = block(first_state_check).terminator
+    else {
+        panic!("first state check should branch to Red state body");
+    };
+    let Terminator::Goto {
+        target: red_first_event_check,
+    } = block(red_state_body).terminator
+    else {
+        panic!("Red state body should goto first event check");
+    };
+    assert_eq!(
+        event_check_value(red_first_event_check),
+        0,
+        "specific Tick arm (event_idx=0) is checked before wildcard arms"
+    );
+    let Terminator::Branch {
+        else_target: red_second_event_check,
+        ..
+    } = block(red_first_event_check).terminator
+    else {
+        panic!("first Red event check should branch");
+    };
+    assert_eq!(
+        event_check_value(red_second_event_check),
+        1,
+        "wildcard Timeout arm (event_idx=1) is slotted after specific arms"
+    );
+    let trap_block = step_fn
+        .blocks
+        .iter()
+        .find(|b| {
+            matches!(
+                b.terminator,
+                Terminator::Trap {
+                    kind: TrapKind::MachineDispatchUnreachable
+                }
+            )
+        })
+        .expect("default trap block present");
+    let Terminator::Branch {
+        else_target: wildcard_else,
+        ..
+    } = block(red_second_event_check).terminator
+    else {
+        panic!("wildcard Red event check should branch");
+    };
+    assert_eq!(
+        wildcard_else, trap_block.id,
+        "default trap is the lowest-priority event arm"
     );
 
     // machine_layouts carries one entry for TrafficLight.
@@ -391,284 +1095,22 @@ fn step_shell_signature_and_switch_shape() {
         layout.tag_width, 1,
         "2-state machine needs 1-bit tag (2^1 = 2 encodings)"
     );
-    // Slice 4a: variants are present (one per state) but field_tys are empty.
-    // Slice 5 populates field_tys when it walks HirMachineState.fields.
+    // Variants and events are present in declaration order for downstream
+    // tagged-union layout consumers.
     assert_eq!(layout.variants.len(), 2, "one variant per declared state");
+    assert_eq!(
+        layout.events.len(),
+        2,
+        "one event variant per declared event"
+    );
     assert_eq!(layout.variants[0].name, "Red", "first state name preserved");
     assert_eq!(
         layout.variants[1].name, "Green",
         "second state name preserved"
     );
-    assert!(
-        layout.variants[0].field_tys.is_empty(),
-        "Slice 4a: field_tys empty; Slice 5 populates from HirMachineState.fields"
-    );
-    assert!(
-        layout.variants[1].field_tys.is_empty(),
-        "Slice 4a: field_tys empty; Slice 5 populates from HirMachineState.fields"
-    );
-}
-
-/// Slice 4c: verifies that `@resource`-bearing machine state payload fields
-/// receive an `Instr::Drop` targeting `Place::MachineVariant` when a true
-/// cross-state transition leaves the state. The drop must appear in the arm
-/// body block BEFORE the transition body's value instructions.
-///
-/// Fixture machine `Conn`:
-///   - State `Open { handle: ConnHandle }` where `ConnHandle` is `@resource`.
-///   - State `Closed` (zero-field state; no drops expected).
-///   - Event `Close` with transition `Open → Closed` (true transition; drop fires).
-///   - Event `Ping` with self-transition `Open → Open`, no `@reenter`
-///     (no-op self-transition; drop must NOT fire).
-///
-/// `type_classes` seeds `"ConnHandle" → (Resource, Some("close"))` so
-/// `ValueClass::of_ty` returns `AffineResource` for `ConnHandle` fields.
-///
-/// Assert invariants:
-/// 1. The `Close` arm emits exactly one `Instr::Drop` with
-///    `Place::MachineVariant { variant_idx: 0, field_idx: 0, .. }` (Open is
-///    state 0, `handle` is field 0).
-/// 2. The drop appears BEFORE the body result instruction in the same block.
-/// 3. The `Ping` arm (self-transition, no `@reenter`) emits NO
-///    `Instr::Drop` targeting the Open variant's field.
-/// 4. No diagnostics on the well-formed module.
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "test function with multiple fixture builders and assertion groups"
-)]
-fn resource_field_transition_out_drops() {
-    // Build a `ConnHandle` type reference.
-    let conn_handle_ty = ResolvedTy::Named {
-        name: "ConnHandle".to_string(),
-        args: vec![],
-    };
-
-    // State 0: Open { handle: ConnHandle } — one @resource field.
-    let open_state = HirMachineState {
-        name: "Open".to_string(),
-        fields: vec![HirField {
-            name: "handle".to_string(),
-            ty: conn_handle_ty.clone(),
-            span: 0..0,
-        }],
-        has_entry: false,
-        has_exit: false,
-        entry_writes: vec![],
-        exit_writes: vec![],
-        entry: None,
-        exit: None,
-        span: 0..0,
-    };
-
-    // State 1: Closed — zero fields; no drops should ever emit for this state.
-    let closed_state = HirMachineState {
-        name: "Closed".to_string(),
-        fields: vec![],
-        has_entry: false,
-        has_exit: false,
-        entry_writes: vec![],
-        exit_writes: vec![],
-        entry: None,
-        exit: None,
-        span: 0..0,
-    };
-
-    // Unit-typed body for both transitions (no self-field writes needed).
-    let unit_body = HirExpr {
-        node: hew_hir::HirNodeId(0),
-        site: hew_hir::SiteId(0),
-        ty: ResolvedTy::Unit,
-        value_class: ValueClass::BitCopy,
-        intent: IntentKind::Read,
-        kind: HirExprKind::Literal(HirLiteral::Unit),
-        span: 0..0,
-    };
-
-    // `Close`: true cross-state transition Open → Closed. Drop fires.
-    let close_transition = HirMachineTransition {
-        event_name: "Close".to_string(),
-        source_state: "Open".to_string(),
-        target_state: "Closed".to_string(),
-        has_guard: false,
-        is_self_transition: false,
-        reenter: false,
-        body_writes: vec![],
-        body_emits: vec![],
-        body: unit_body.clone(),
-        span: 0..0,
-    };
-
-    // `Ping`: self-transition Open → Open, no @reenter. Drop must NOT fire.
-    let ping_transition = HirMachineTransition {
-        event_name: "Ping".to_string(),
-        source_state: "Open".to_string(),
-        target_state: "Open".to_string(),
-        has_guard: false,
-        is_self_transition: true,
-        reenter: false,
-        body_writes: vec![],
-        body_emits: vec![],
-        body: unit_body.clone(),
-        span: 0..0,
-    };
-
-    let machine = HirMachineDecl {
-        id: hew_hir::ItemId(0),
-        node: hew_hir::HirNodeId(0),
-        name: "Conn".to_string(),
-        type_params: vec![],
-        states: vec![open_state, closed_state],
-        events: vec![
-            HirMachineEvent {
-                name: "Close".to_string(),
-                fields: vec![],
-                span: 0..0,
-            },
-            HirMachineEvent {
-                name: "Ping".to_string(),
-                fields: vec![],
-                span: 0..0,
-            },
-        ],
-        transitions: vec![close_transition, ping_transition],
-        has_default: false,
-        span: 0..0,
-    };
-
-    // Seed the type_classes table: `ConnHandle` is @resource with close method
-    // `"close"`. The drop_fn will be formatted as `"ConnHandle::close"`.
-    let mut type_classes = HashMap::new();
-    type_classes.insert(
-        "ConnHandle".to_string(),
-        (ResourceMarker::Resource, Some("close".to_string())),
-    );
-
-    let module = HirModule {
-        items: vec![HirItem::Machine(machine)],
-        type_classes,
-        monomorphisations: vec![],
-        call_site_type_args: HashMap::default(),
-        record_layouts: vec![],
-        enum_layouts: vec![],
-        supervisor_child_slots: HashMap::default(),
-        regex_literals: vec![],
-    };
-
-    let pipeline = lower_hir_module(&module);
-
-    assert!(
-        pipeline.diagnostics.is_empty(),
-        "well-formed @resource machine must produce no diagnostics: {:?}",
-        pipeline.diagnostics
-    );
-
-    let step_fn = pipeline
-        .raw_mir
-        .iter()
-        .find(|f| f.name == "Conn__step")
-        .expect("Conn__step synthesised");
-
-    // Collect all Drop instructions across all blocks, recording (block_id,
-    // instr_position, place).
-    let all_drops: Vec<(u32, usize, &Place)> = step_fn
-        .blocks
-        .iter()
-        .flat_map(|b| {
-            b.instructions
-                .iter()
-                .enumerate()
-                .filter_map(move |(pos, instr)| {
-                    if let Instr::Drop { place, .. } = instr {
-                        Some((b.id, pos, place))
-                    } else {
-                        None
-                    }
-                })
-        })
-        .collect();
-
-    // Assert 1: exactly one Drop targets the Open variant (variant_idx=0,
-    // field_idx=0). This comes from the `Close` arm.
-    let open_field_drops: Vec<_> = all_drops
-        .iter()
-        .filter(|(_, _, place)| {
-            matches!(
-                place,
-                Place::MachineVariant {
-                    variant_idx: 0,
-                    field_idx: 0,
-                    ..
-                }
-            )
-        })
-        .collect();
-
+    assert_eq!(layout.events[0].name, "Tick", "first event name preserved");
     assert_eq!(
-        open_field_drops.len(),
-        1,
-        "exactly one Drop for Open.handle (variant_idx=0, field_idx=0); \
-         found {}: {:#?}",
-        open_field_drops.len(),
-        all_drops
-    );
-
-    // Assert 2: the Drop appears before the body result Move in the same block.
-    // The transition body for a unit literal emits a ConstI64(0) (unit
-    // representation). The Drop must precede any ConstI64 in the arm block.
-    let (drop_block_id, drop_pos, _) = open_field_drops[0];
-    let drop_block = step_fn
-        .blocks
-        .iter()
-        .find(|b| b.id == *drop_block_id)
-        .expect("drop block present");
-
-    // Find the first instruction that is NOT a tag/eq comparison setup
-    // (ConstI64 for state/event tag comparisons happen in check blocks, not
-    // arm body blocks). Any ConstI64 in the arm body block is the unit-literal
-    // body value. The drop must appear before it.
-    let first_body_instr_pos = drop_block
-        .instructions
-        .iter()
-        .enumerate()
-        .position(|(_, i)| matches!(i, Instr::ConstI64 { .. }));
-
-    if let Some(body_pos) = first_body_instr_pos {
-        assert!(
-            *drop_pos < body_pos,
-            "Drop (pos {drop_pos}) must precede body ConstI64 (pos {body_pos}) \
-             in the same arm block — exit→drop→body ordering violated"
-        );
-    }
-
-    // Assert 3: no Drop targets the Closed variant (variant_idx=1). It has no
-    // fields, so no drops should ever appear for it.
-    let closed_variant_drops: Vec<_> = all_drops
-        .iter()
-        .filter(|(_, _, place)| matches!(place, Place::MachineVariant { variant_idx: 1, .. }))
-        .collect();
-
-    assert!(
-        closed_variant_drops.is_empty(),
-        "Closed state has no @resource fields; no drops expected for variant_idx=1: \
-         {closed_variant_drops:#?}"
-    );
-
-    // Assert 4: the `Ping` arm (self-transition, no @reenter) emits no Drop.
-    // Since the Ping and Close arms are in the same state body (Open, state_idx=0),
-    // and we've already verified only one Drop for Open.handle exists total,
-    // the single Drop must be from Close and not from Ping.
-    // Additionally verify the drop_fn is correctly derived.
-    let (_, confirmed_drop_pos, _) = open_field_drops[0];
-    let drop_instr = &drop_block.instructions[*confirmed_drop_pos];
-    assert!(
-        matches!(
-            drop_instr,
-            Instr::Drop {
-                drop_fn: Some(name),
-                ..
-            } if name == "ConnHandle::close"
-        ),
-        "Drop must carry drop_fn = Some(\"ConnHandle::close\"); got: {drop_instr:?}"
+        layout.events[1].name, "Timeout",
+        "second event name preserved"
     );
 }

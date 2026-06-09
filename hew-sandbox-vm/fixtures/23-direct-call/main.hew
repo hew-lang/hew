@@ -1,0 +1,7 @@
+fn id<T>(value: T) -> T {
+    value
+}
+
+fn main() {
+    println(id(42));
+}

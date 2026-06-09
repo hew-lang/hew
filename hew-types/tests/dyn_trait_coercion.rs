@@ -508,6 +508,7 @@ fn structural_impl_populates_method_table_for_dyn_named() {
     assert_eq!(
         entry.concrete_type,
         Ty::Named {
+            builtin: None,
             name: "Widget".to_string(),
             args: vec![],
         }

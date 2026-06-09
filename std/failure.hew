@@ -5,13 +5,13 @@
 //! migration are explicitly deferred, so v0.5 programs must not treat it as
 //! an available hook.
 //!
-//! Import `std::failure` to name `PanicInfo` or `CrashAction` explicitly
+//! Import `std::failure` to name `CrashInfo` or `CrashAction` explicitly
 //! in a `#[on(crash)]` hook's signature.  Both types are also pre-bound
 //! in the inline-test checker (no `std` search path required) via
 //! `register_builtin_failure_surface` so isolated fixtures can pin the
 //! hook signature without importing.
 //!
-//! ## `PanicInfo` is i64-tag only for v0.5
+//! ## `CrashInfo` is i64-tag only for v0.5
 //!
 //! WHY: the codegen-rs spine does not yet accept `string` / `Function` /
 //! `Closure` types as struct fields (S9 in the spine-widening registry).
@@ -29,7 +29,7 @@
 /// `CrashAction`, but the canonical reading is "any non-zero code is a
 /// real fault — the hook's job is to choose between Restart, Escalate,
 /// and Kill".  See `JOURNEY.md` for the per-code assignment plan.
-pub type PanicInfo {
+pub type CrashInfo {
     code: i64;
 }
 
@@ -38,7 +38,7 @@ pub type PanicInfo {
 /// v0.5 honours each child's `restart_policy`; the crash handler is
 /// side-effects-only in this edition and the returned variant is ignored.
 /// The variants remain in the public type so the hook ABI can be spelled as
-/// `(PanicInfo) -> CrashAction`; using this return value as a supervisor
+/// `(CrashInfo) -> CrashAction`; using this return value as a supervisor
 /// control surface is deferred to v0.6 with the Cluster 2 composite-return
 /// spine.
 ///
@@ -60,7 +60,7 @@ pub enum CrashAction {
 /// crashed actor's identity and the class of crash — nothing else.
 ///
 /// WHY (shape): the linked actor must not gain access to the crashed
-/// actor's `PanicInfo` payload (signal number, fault address); cross-
+/// actor's `CrashInfo` payload (signal number, fault address); cross-
 /// actor visibility into another actor's fault details would couple
 /// linked actors to each other's failure internals.  Identity + class
 /// is sufficient for supervisor-style decisions ("the upstream link

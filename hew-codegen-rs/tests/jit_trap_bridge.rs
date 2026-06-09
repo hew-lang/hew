@@ -14,8 +14,8 @@
 //! 1. Compile a Hew source through the full pipeline (HIR → MIR → codegen)
 //!    to a textual `.ll` file via `emit_module`.
 //! 2. Parse the `.ll` back into an inkwell `Module` with
-//!    `Context::create_module_from_ir` — the same roundtrip that
-//!    `hew-emit` uses for the object-emission back half.
+//!    `Context::create_module_from_ir`, matching the diagnostic roundtrip
+//!    used by these JIT tests.
 //! 3. Create an MCJIT `ExecutionEngine` on the module.
 //! 4. Register a test-local `extern "C"` trap recorder via
 //!    `ExecutionEngine::add_global_mapping`. The recorder stores the

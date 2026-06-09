@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use hew_hir::{BindingId, IntentKind, SiteId, ValueClass};
-use hew_types::ResolvedTy;
+use hew_types::{NumericWidth, ResolvedTy};
 
 pub use crate::runtime_symbols::UnknownRuntimeSymbol;
 
@@ -94,6 +94,35 @@ pub struct IrPipeline {
     /// substrate boundary; codegen does not re-read HIR. WHEN-OBSOLETE: never
     /// — the pipeline-field pattern is established for all layout descriptors.
     pub regex_literals: Vec<RegexLiteral>,
+    /// State-record layouts synthesised by the S3b cross-yield-liveness
+    /// pass, one entry per gen-block body function in the module. Codegen
+    /// (S4) consumes this to emit the tagged-union LLVM struct that backs
+    /// `Place::GenState { local, field }` projection. The layout's `name`
+    /// matches the gen-body's `RawMirFunction.name`, so codegen resolves a
+    /// state place by looking up the layout by the enclosing function's
+    /// name and indexing into `fields` by the place's `field` ordinal.
+    ///
+    /// Empty when the module contains no `gen { … }` blocks; the field is
+    /// always present so codegen + tests can index it uniformly.
+    pub gen_state_layouts: Vec<GenStateLayout>,
+    /// User-declared `extern "<abi>" { fn ...; }` functions lowered from HIR.
+    ///
+    /// Populated by `lower_hir_module` from `HirItem::ExternFn`. Codegen
+    /// pre-declares each entry as an LLVM external symbol BEFORE walking user
+    /// functions so `Terminator::Call` lookups by name resolve transparently.
+    /// The symbol itself is satisfied at link time — by `hew-runtime` for
+    /// `extern "rt"` symbols on the stable JIT ABI, or by a sibling stdlib
+    /// staticlib that the driver adds to the native link line.
+    pub extern_decls: Vec<ExternDecl>,
+}
+
+/// One user-declared extern fn — see [`IrPipeline::extern_decls`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternDecl {
+    pub name: String,
+    pub abi: String,
+    pub param_tys: Vec<ResolvedTy>,
+    pub return_ty: ResolvedTy,
 }
 
 /// A regex literal compiled at module-init time.
@@ -113,6 +142,118 @@ pub struct RegexLiteral {
     /// The validated regex pattern string. Embedded in the module as a
     /// NUL-terminated i8 constant; passed to `hew_regex_compile` at init.
     pub pattern: String,
+}
+
+/// State-record layout for one generator body function, synthesised by
+/// the S3b cross-yield-liveness pass.
+///
+/// One entry per `__hew_gen_body_*` raw MIR function in the module.
+/// `function_name` matches the body's `RawMirFunction.name`; codegen
+/// resolves a `Place::GenState { local, field }` by looking up the body's
+/// layout and indexing `fields[field as usize]`.
+///
+/// **Field order is load-bearing.** The S3b synthesis pass emits fields
+/// in this fixed order so codegen, drop elaboration (S3b2), and the
+/// state-machine prologue (S4) all agree on which ordinal addresses
+/// which slot:
+///
+/// 1. `field == 0` — `tag` (`u32`). State discriminant. `0` is the
+///    initial pre-first-yield state; `1..=yield_count` are resume points
+///    in source yield-site order; `yield_count + 1` is the terminal
+///    `Ended` state.
+/// 2. `field == 1` — `init_mask` (`u64`). Per-cross-yield-local
+///    initialisation bitmap. Bit `i` is set when the local in
+///    `live_locals[i]` is currently held in the state record (i.e.
+///    checkpointed at the most recent yield and not yet reloaded by
+///    the matching resume). The S3b2 set/clear discipline writes
+///    `init_mask = SITE_MASK` immediately before every `Terminator::Yield`
+///    (after the per-site checkpoint Moves) and writes `init_mask = 0`
+///    at every resume entry (after the per-site reload Moves), so the
+///    `__drop_in_state` shim invoked from any suspension drops exactly
+///    the fields that hold valid data.
+/// 3. `field >= 2` — the cross-yield-live locals in deterministic
+///    ascending order by their original body-local `u32` id. Index `i`
+///    of `live_locals` corresponds to `field == i + 2`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GenStateLayout {
+    /// Name of the generator body `RawMirFunction` this layout backs.
+    /// Matches the `__hew_gen_body_<owner>_<id>` mint produced by
+    /// `lower_gen_block`.
+    pub function_name: String,
+    /// Cross-yield-live locals in deterministic ascending-id order.
+    /// `live_locals[i]` is the original body-local `u32` id whose value
+    /// is mirrored into `Place::GenState { local: state_local, field: i + 2 }`
+    /// at every yield site and reloaded at every resume.
+    pub live_locals: Vec<GenStateLiveLocal>,
+    /// Number of `Terminator::Yield` sites in the body, in source order.
+    /// Used by codegen (S4) to size the entry-block switch and to index
+    /// per-state metadata such as `drop_tables`.
+    pub yield_count: u32,
+    /// Name of the synthesised `__drop_in_state` MIR function for this
+    /// generator (one shim per gen-block). The shim is reachable as
+    /// `RawMirFunction { name: drop_shim_name, .. }` in
+    /// `IrPipeline.raw_mir`. Codegen (S4) wires the End / Cancelled /
+    /// Panic / Drop exit paths through this single shim.
+    ///
+    /// **S3b2 status.** S3b2 emits a fail-closed Trap-only shim body and
+    /// surfaces the load-bearing per-state drop information via
+    /// `drop_tables` below; S4 replaces the Trap with the cascade-on-tag
+    /// dispatch that consumes `drop_tables` (each table entry becomes a
+    /// per-state drop block in the regenerated shim). The function name
+    /// is stable across S3b2 → S4 so downstream wiring does not move.
+    pub drop_shim_name: String,
+    /// Per-state drop manifest, keyed by state-tag value. Entry
+    /// `drop_tables[k]` lists the `live_locals` indices that hold valid
+    /// data when the generator is suspended at state `k`, in
+    /// reverse-init drop order (highest index drops first → mirrors
+    /// LIFO drop discipline for affine resources). Index identity:
+    /// `state_tag == 0` is the initial pre-first-yield state (no lifted
+    /// locals valid); `state_tag == j` for `j` in `1..=yield_count` is
+    /// the suspension at the `j`-th `Terminator::Yield` in source
+    /// order; `state_tag == yield_count + 1` is the terminal `Ended`
+    /// state. `drop_tables.len()` is therefore always
+    /// `yield_count + 2`.
+    ///
+    /// Codegen (S4) consumes this to emit the `__drop_in_state` shim's
+    /// per-state drop blocks; the runtime calls the shim from the four
+    /// exit paths and the shim dispatches on the live state tag.
+    pub drop_tables: Vec<GenStateDropTable>,
+}
+
+/// One per-state drop manifest entry in `GenStateLayout.drop_tables`.
+///
+/// The field carries the `live_locals` indices (NOT the field ordinals)
+/// in reverse-init drop order. Codegen translates each index `i` to a
+/// `Place::GenState { local: state_local, field: i + 2 }` drop in the
+/// shim body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenStateDropTable {
+    /// State-tag value this drop table applies to. Range
+    /// `0..=yield_count + 1`. The element is its own index into
+    /// `GenStateLayout.drop_tables` (i.e. `drop_tables[k].state_tag == k`),
+    /// duplicated here so debugging dumps are self-describing without a
+    /// containing index.
+    pub state_tag: u32,
+    /// `live_locals` indices to drop in this state, in reverse-init
+    /// (LIFO) order. Empty for the initial state (`state_tag == 0`) and
+    /// for the terminal `Ended` state (`state_tag == yield_count + 1`)
+    /// because no lifted locals are live in either. For intermediate
+    /// suspension states, the set is exactly the per-site checkpoint
+    /// set at the corresponding `Terminator::Yield`, reversed.
+    pub fields_in_drop_order: Vec<u32>,
+}
+
+/// One cross-yield-live local entry in a `GenStateLayout`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GenStateLiveLocal {
+    /// Original MIR-local id in the body function. The S3b pass
+    /// preserves this so codegen can address the bookend Move's `src`
+    /// (at the yield) and `dest` (at the resume) through the same
+    /// `Place::Local(original_local)` shape.
+    pub original_local: u32,
+    /// Resolved type of the original local. Codegen consults this when
+    /// emitting the LLVM struct field type at `field == 2 + i`.
+    pub ty: ResolvedTy,
 }
 
 /// Layout descriptor for a named-form `record` declaration. The codegen
@@ -163,6 +304,10 @@ pub struct ActorLayout {
     /// `arena_cap_bytes = N` (Some). Mirrored into `SupervisorChildLayout`
     /// for the supervisor restart path.
     pub max_heap_bytes: Option<u64>,
+    /// Whether the checker determined this actor participates in an actor-ref
+    /// cycle. Codegen serializes this into spawn opts for the future
+    /// cycle-detection / Machine Lane B runtime consumer.
+    pub cycle_capable: bool,
     /// Receive handlers in message-type order.
     pub handlers: Vec<ActorHandlerLayout>,
 }
@@ -296,6 +441,10 @@ pub struct SupervisorChildLayout {
     /// Codegen populates `HewChildSpec.arena_cap_bytes` from this field so
     /// the supervisor restart path preserves the cap across crashes.
     pub max_heap_bytes: Option<u64>,
+    /// Mirrored from `ActorLayout.cycle_capable` for supervised-child spawn
+    /// planning. Codegen serializes this into `HewChildSpec` so the runtime
+    /// preserves the bit across supervisor restarts.
+    pub cycle_capable: bool,
 }
 
 /// Layout descriptor for one state variant in a `machine` declaration.
@@ -951,11 +1100,11 @@ pub enum Place {
     /// a zero-based ordinal matching the declaration order in the machine's
     /// `states` list.
     ///
-    /// **Tag-dominance authority**: the drop-elaborator (Slice 4c) reads
-    /// `MachineTag` places to determine which variant is live before
-    /// emitting entry/exit hooks and field drops. Any `Place::MachineVariant`
-    /// access is only legal when the corresponding `MachineTag` dominates
-    /// the use site.
+    /// **Tag-dominance authority**: machine payload slots are active only
+    /// under a matching tag. Keeping machine tags and payload fields as
+    /// dedicated places prevents generic struct-field dataflow from treating
+    /// inactive payload bytes as live, and gives the later drop-elaborator a
+    /// transition-out hook.
     ///
     /// **Drop semantics**: machine values are `BitCopy` by value-class
     /// (the tag itself carries no heap resources). Dropping a machine
@@ -967,11 +1116,9 @@ pub enum Place {
     /// MIR local. Keying the place on the local id directly mirrors the
     /// existing handle places (`DuplexHandle(u32)`, `SendHalf(u32)`, …)
     /// and makes codegen consume it the same way as `Place::Local(u32)`.
-    /// WHY declared here: Slice 4b (transition body lowering) emits
-    /// `MachineTag` stores to update the discriminant after a transition.
-    /// Slice 4c (drop-elaboration) reads `MachineTag` to drive
-    /// tag-dominant drop. Neither can express machine dispatch in MIR
-    /// without this place primitive.
+    /// WHY declared here: Slice 4a's step shell reads and writes machine
+    /// state tags without reusing struct-field places; later transition-body
+    /// and drop-elaboration slices extend the same primitive.
     /// WHEN-OBSOLETE: never — permanent MIR primitive once tagged-union
     /// machine layout lands in Slice 5.
     MachineTag(u32),
@@ -987,9 +1134,10 @@ pub enum Place {
     ///
     /// **Dominance invariant**: a `MachineVariant` load or store is only
     /// legal when `Place::MachineTag(local)` is known to carry
-    /// `variant_idx` at the use site (i.e. the tag-dominance CFG
-    /// property holds). Slice 4c enforces this during drop-elaboration;
-    /// Slice 4b enforces it during transition body lowering.
+    /// `variant_idx` at the use site (i.e. the tag-dominance CFG property
+    /// holds). Slice 4a preserves that relationship in the shell; later
+    /// transition-body and drop-elaboration slices enforce it for real
+    /// payload movement.
     ///
     /// WHY declared here: Slice 4b needs to materialise next-state field
     /// values without going through codegen-specific layout. Storing into
@@ -1044,6 +1192,47 @@ pub enum Place {
         local: u32,
         variant_idx: u32,
         field_idx: u32,
+    },
+    /// Field of a generator's state record (the per-gen-block resume struct
+    /// synthesised by the S3b cross-yield-liveness pass).
+    ///
+    /// `local` identifies the MIR-local that holds the state-record value
+    /// inside the generator body function. The pass allocates a single
+    /// `Place::Local(state_local)` of type `ResolvedTy::Named { name:
+    /// "Gen$state$<owner>:<id>", .. }` at the top of the body's locals
+    /// vector; `local` is that local id, and every `GenState` Place in the
+    /// body addresses into the same backing local. `field` is the 0-based
+    /// declaration-order ordinal into the corresponding `GenStateLayout`
+    /// owned by `IrPipeline.gen_state_layouts`.
+    ///
+    /// **Layout authority.** The field-to-ordinal mapping is the
+    /// `GenStateLayout` keyed by the body function's name. Field 0 is the
+    /// state tag (`u32` discriminant), field 1 is the init-mask
+    /// (`u64` per-field initialisation bitmap, populated by the S3b2 drop
+    /// elaboration), and fields 2..N are the cross-yield-live locals in
+    /// the deterministic order chosen by the S3b synthesis pass (by
+    /// ascending local id of the original body local).
+    ///
+    /// **Dominance.** A `GenState` load is well-formed exactly when the
+    /// generator state-tag at the dominating yield site identifies a
+    /// resume point that initialised the field. The S3b synthesis pass
+    /// emits `Move { dest: GenState{local, field}, src: Local(N) }`
+    /// immediately before the corresponding `Terminator::Yield` for
+    /// every cross-yield-live local, and the symmetric reload
+    /// `Move { dest: Local(N), src: GenState{local, field} }` at the
+    /// top of the resume block. S3b2 will additionally validate the
+    /// init-mask via the per-state drop shim.
+    ///
+    /// WHY symmetric with `MachineVariant { local, .. }`: the addressing
+    /// shape mirrors the existing tagged-union place primitives — a
+    /// state record IS a tagged-union over per-resume-point variants —
+    /// so codegen reuses the same layout-keyed GEP discipline.
+    /// WHEN-OBSOLETE: never — permanent MIR primitive once S4 lowers it.
+    /// Codegen rejects this place with `CodegenError::Unsupported` until
+    /// S4 wires the LLVM struct GEP path.
+    GenState {
+        local: u32,
+        field: u32,
     },
 }
 
@@ -1292,6 +1481,32 @@ pub enum Instr {
         rhs: Place,
         overflow_flag: Place,
     },
+    /// Checked integer opt-out method lowering: `dest = Some(lhs op rhs)`
+    /// when the arithmetic does not overflow, otherwise `dest = None`.
+    ///
+    /// Unlike `IntArithChecked`, this instruction does not branch or trap.
+    /// Codegen must keep the intrinsic's arithmetic result and overflow bit
+    /// together long enough to construct the destination `Option<W>`
+    /// explicitly.
+    IntArithCheckedOption {
+        op: IntArithOp,
+        signed: IntSignedness,
+        width: NumericWidth,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+    },
+    /// Saturating integer opt-out method lowering: `dest = lhs op rhs`,
+    /// clamped to the signed/unsigned min/max boundary for `dest`'s width
+    /// when overflow is reported by the arithmetic intrinsic.
+    IntArithSaturating {
+        op: IntArithOp,
+        signed: IntSignedness,
+        width: NumericWidth,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+    },
     /// `dest = (lhs <pred> rhs)` on integers. The result is written into
     /// `dest` as an integer truth value: `1` for true, `0` for false. The
     /// dest's local type controls the result width (today every cmp dest
@@ -1413,6 +1628,10 @@ pub enum Instr {
         /// routes `Some(N)` through `hew_actor_spawn_opts`; `None` uses
         /// the plain `hew_actor_spawn` path.
         max_heap_bytes: Option<u64>,
+        /// Checker-derived cycle capability from the target actor layout.
+        /// Codegen routes `true` through spawn opts even without `#[max_heap]`
+        /// so the runtime receives the Machine Lane B policy bit.
+        cycle_capable: bool,
     },
     /// Call a first-class callable pair. Codegen loads the function pointer and
     /// environment pointer from `callee`, then emits an indirect call with the

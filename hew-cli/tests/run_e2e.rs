@@ -1,6 +1,7 @@
 mod support;
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use support::{hew_binary, repo_root, require_codegen};
 
@@ -179,4 +180,59 @@ fn run_program_with_simple_arithmetic_succeeds() {
         String::from_utf8_lossy(&output.stderr),
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
+}
+
+/// Stdin round-trip through `std::io`. Guards against the regression that
+/// shipped before this test existed: extern declarations in imported stdlib
+/// modules failed to register in HIR's `fn_registry`, so any program that did
+/// `import std::io; io.read_line()` errored at HIR with `UnresolvedSymbol`.
+/// The fix wired the imported-module pre-pass and fourth pass to lower
+/// `Item::ExternBlock` entries (`hew-hir/src/lower.rs`); this test compiles
+/// AND RUNS a program that exercises both `read_line` and `write`, asserting
+/// the byte-level round-trip, not just that the IR contains the declarations.
+#[test]
+fn run_imports_std_io_and_round_trips_stdin_to_stdout() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("echo_stdin.hew");
+    std::fs::write(
+        &hew_src,
+        "import std::io;\n\
+         \n\
+         fn main() {\n\
+         \x20   let line = io.read_line();\n\
+         \x20   io.write(\"echo: \");\n\
+         \x20   io.write(line);\n\
+         \x20   io.write(\"\\n\");\n\
+         }\n",
+    )
+    .unwrap();
+
+    let mut child = Command::new(hew_binary())
+        .arg("run")
+        .arg(&hew_src)
+        .current_dir(repo_root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    {
+        let mut stdin = child.stdin.take().expect("stdin should be piped");
+        stdin.write_all(b"hello from stdin\n").unwrap();
+    }
+
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "echo: hello from stdin\n",
+    );
 }

@@ -1,0 +1,4 @@
+fn main() {
+    let denominator = 0;
+    println(1 / denominator);
+}

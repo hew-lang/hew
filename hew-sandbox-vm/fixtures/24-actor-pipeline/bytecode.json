@@ -1,0 +1,386 @@
+{
+  "capabilities": [
+    {
+      "disposition": "allowed",
+      "id": "core.stdout",
+      "reason": "page stdout shim",
+      "required_by": [
+        "sym:core.stdout.println"
+      ]
+    }
+  ],
+  "compiler_version": "handcrafted-pending-actor-message-emitter",
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": "block:sink.collect.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "symbol",
+                  "value": "sym:core.stdout.println"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:sink.value"
+                }
+              ],
+              "dst": null,
+              "op": "call.stdlib",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:sink.collect",
+      "locals": [
+        {
+          "id": "local:sink.reply",
+          "mutable": false,
+          "name": "reply",
+          "span": null,
+          "type": "type:reply"
+        },
+        {
+          "id": "local:sink.value",
+          "mutable": false,
+          "name": "value",
+          "span": null,
+          "type": "type:i64"
+        }
+      ],
+      "module": "mod:main",
+      "name": "Sink.collect",
+      "params": [
+        "local:sink.reply",
+        "local:sink.value"
+      ],
+      "result": "type:unit",
+      "span": null
+    },
+    {
+      "blocks": [
+        {
+          "id": "block:doubler.process.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 2
+                }
+              ],
+              "dst": "local:doubler.two",
+              "op": "const.i64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:doubler.value"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:doubler.two"
+                }
+              ],
+              "dst": "local:doubler.out",
+              "op": "i64.mul",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:doubler.next"
+                },
+                {
+                  "kind": "symbol",
+                  "value": "collect"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:doubler.out"
+                }
+              ],
+              "dst": null,
+              "op": "actor.send",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:doubler.process",
+      "locals": [
+        {
+          "id": "local:doubler.reply",
+          "mutable": false,
+          "name": "reply",
+          "span": null,
+          "type": "type:reply"
+        },
+        {
+          "id": "local:doubler.next",
+          "mutable": false,
+          "name": "next",
+          "span": null,
+          "type": "type:Sink"
+        },
+        {
+          "id": "local:doubler.value",
+          "mutable": false,
+          "name": "value",
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:doubler.two",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:doubler.out",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        }
+      ],
+      "module": "mod:main",
+      "name": "Doubler.process",
+      "params": [
+        "local:doubler.reply",
+        "local:doubler.next",
+        "local:doubler.value"
+      ],
+      "result": "type:unit",
+      "span": null
+    },
+    {
+      "blocks": [
+        {
+          "id": "block:main.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "type",
+                  "value": "type:Sink"
+                }
+              ],
+              "dst": "local:main.sink",
+              "op": "actor.spawn",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "type",
+                  "value": "type:Doubler"
+                }
+              ],
+              "dst": "local:main.doubler",
+              "op": "actor.spawn",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 21
+                }
+              ],
+              "dst": "local:main.value",
+              "op": "const.i64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.doubler"
+                },
+                {
+                  "kind": "symbol",
+                  "value": "process"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.sink"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.value"
+                }
+              ],
+              "dst": null,
+              "op": "actor.send",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:main",
+      "locals": [
+        {
+          "id": "local:main.sink",
+          "mutable": false,
+          "name": "sink",
+          "span": null,
+          "type": "type:Sink"
+        },
+        {
+          "id": "local:main.doubler",
+          "mutable": false,
+          "name": "doubler",
+          "span": null,
+          "type": "type:Doubler"
+        },
+        {
+          "id": "local:main.value",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        }
+      ],
+      "module": "mod:main",
+      "name": "main",
+      "params": [],
+      "result": "type:unit",
+      "span": null
+    }
+  ],
+  "hew_version": "0.5.0-pre",
+  "layouts": {
+    "actors": [
+      {
+        "handlers": [
+          {
+            "function": "fn:sink.collect",
+            "name": "collect"
+          }
+        ],
+        "id": "type:Sink",
+        "max_mailbox": 4,
+        "name": "Sink",
+        "state_fields": []
+      },
+      {
+        "handlers": [
+          {
+            "function": "fn:doubler.process",
+            "name": "process"
+          }
+        ],
+        "id": "type:Doubler",
+        "max_mailbox": 4,
+        "name": "Doubler",
+        "state_fields": []
+      }
+    ],
+    "enums": [],
+    "machines": [],
+    "records": [],
+    "supervisors": [],
+    "types": [
+      {
+        "id": "type:unit",
+        "kind": "unit",
+        "name": "()"
+      },
+      {
+        "id": "type:i64",
+        "kind": "integer",
+        "name": "i64"
+      },
+      {
+        "id": "type:string",
+        "kind": "string",
+        "name": "String"
+      },
+      {
+        "id": "type:actor",
+        "kind": "actor",
+        "name": "Actor"
+      },
+      {
+        "id": "type:reply",
+        "kind": "opaque",
+        "name": "ReplyToken"
+      },
+      {
+        "id": "type:Sink",
+        "kind": "actor",
+        "name": "Sink"
+      },
+      {
+        "id": "type:Doubler",
+        "kind": "actor",
+        "name": "Doubler"
+      }
+    ]
+  },
+  "module_graph": {
+    "entry": "mod:main",
+    "modules": [
+      {
+        "functions": [
+          "fn:sink.collect",
+          "fn:doubler.process",
+          "fn:main"
+        ],
+        "id": "mod:main",
+        "imports": [],
+        "path": "main.hew",
+        "source_id": "src:main"
+      }
+    ]
+  },
+  "package_id": "pkg:actor-pipeline",
+  "profile": "sandbox.educational.v0",
+  "schema_version": "hew.sandbox.bytecode.v0",
+  "source_map": {
+    "sources": [],
+    "spans": []
+  },
+  "stdlib_symbols": [
+    {
+      "admission": "allowed",
+      "capability": "core.stdout",
+      "id": "sym:core.stdout.println",
+      "module": "core.stdout",
+      "name": "println",
+      "params": [
+        "type:any"
+      ],
+      "result": "type:unit"
+    }
+  ]
+}

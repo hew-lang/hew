@@ -1,0 +1,260 @@
+{
+  "capabilities": [
+    {
+      "disposition": "allowed",
+      "id": "core.stdout",
+      "reason": "page stdout shim",
+      "required_by": [
+        "sym:core.stdout.println"
+      ]
+    }
+  ],
+  "compiler_version": "handcrafted-pending-actor-ask-await-emitter",
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": "block:echo.echo.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:echo.reply"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:echo.text"
+                }
+              ],
+              "dst": null,
+              "op": "actor.reply",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:echo.echo",
+      "locals": [
+        {
+          "id": "local:echo.reply",
+          "mutable": false,
+          "name": "reply",
+          "span": null,
+          "type": "type:reply"
+        },
+        {
+          "id": "local:echo.text",
+          "mutable": false,
+          "name": "text",
+          "span": null,
+          "type": "type:string"
+        }
+      ],
+      "module": "mod:main",
+      "name": "Echo.echo",
+      "params": [
+        "local:echo.reply",
+        "local:echo.text"
+      ],
+      "result": "type:unit",
+      "span": null
+    },
+    {
+      "blocks": [
+        {
+          "id": "block:main.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "type",
+                  "value": "type:Echo"
+                }
+              ],
+              "dst": "local:main.echo",
+              "op": "actor.spawn",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": "pong"
+                }
+              ],
+              "dst": "local:main.text",
+              "op": "const.string",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.echo"
+                },
+                {
+                  "kind": "symbol",
+                  "value": "echo"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.text"
+                }
+              ],
+              "dst": "local:main.reply",
+              "op": "actor.ask",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "symbol",
+                  "value": "sym:core.stdout.println"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.reply"
+                }
+              ],
+              "dst": null,
+              "op": "call.stdlib",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:main",
+      "locals": [
+        {
+          "id": "local:main.echo",
+          "mutable": false,
+          "name": "echo",
+          "span": null,
+          "type": "type:Echo"
+        },
+        {
+          "id": "local:main.text",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:string"
+        },
+        {
+          "id": "local:main.reply",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:string"
+        }
+      ],
+      "module": "mod:main",
+      "name": "main",
+      "params": [],
+      "result": "type:unit",
+      "span": null
+    }
+  ],
+  "hew_version": "0.5.0-pre",
+  "layouts": {
+    "actors": [
+      {
+        "handlers": [
+          {
+            "function": "fn:echo.echo",
+            "name": "echo"
+          }
+        ],
+        "id": "type:Echo",
+        "max_mailbox": 4,
+        "name": "Echo",
+        "state_fields": []
+      }
+    ],
+    "enums": [],
+    "machines": [],
+    "records": [],
+    "supervisors": [],
+    "types": [
+      {
+        "id": "type:unit",
+        "kind": "unit",
+        "name": "()"
+      },
+      {
+        "id": "type:i64",
+        "kind": "integer",
+        "name": "i64"
+      },
+      {
+        "id": "type:string",
+        "kind": "string",
+        "name": "String"
+      },
+      {
+        "id": "type:actor",
+        "kind": "actor",
+        "name": "Actor"
+      },
+      {
+        "id": "type:reply",
+        "kind": "opaque",
+        "name": "ReplyToken"
+      },
+      {
+        "id": "type:Echo",
+        "kind": "actor",
+        "name": "Echo"
+      }
+    ]
+  },
+  "module_graph": {
+    "entry": "mod:main",
+    "modules": [
+      {
+        "functions": [
+          "fn:echo.echo",
+          "fn:main"
+        ],
+        "id": "mod:main",
+        "imports": [],
+        "path": "main.hew",
+        "source_id": "src:main"
+      }
+    ]
+  },
+  "package_id": "pkg:actor-ask-reply",
+  "profile": "sandbox.educational.v0",
+  "schema_version": "hew.sandbox.bytecode.v0",
+  "source_map": {
+    "sources": [],
+    "spans": []
+  },
+  "stdlib_symbols": [
+    {
+      "admission": "allowed",
+      "capability": "core.stdout",
+      "id": "sym:core.stdout.println",
+      "module": "core.stdout",
+      "name": "println",
+      "params": [
+        "type:any"
+      ],
+      "result": "type:unit"
+    }
+  ]
+}

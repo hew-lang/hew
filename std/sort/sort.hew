@@ -65,12 +65,10 @@ fn sort_ints_in_place(v: Vec<i64>) {
     let n = v.len();
     for i in 0 .. n {
         var min_idx = i;
-        var j = i + 1;
-        while j < n {
+        for j in i + 1 .. n {
             if v.get(j) < v.get(min_idx) {
                 min_idx = j;
             }
-            j = j + 1;
         }
         if min_idx != i {
             swap_ints(v, i, min_idx);
@@ -82,12 +80,10 @@ fn sort_strings_in_place(v: Vec<string>) {
     let n = v.len();
     for i in 0 .. n {
         var min_idx = i;
-        var j = i + 1;
-        while j < n {
+        for j in i + 1 .. n {
             if v.get(j) < v.get(min_idx) {
                 min_idx = j;
             }
-            j = j + 1;
         }
         if min_idx != i {
             swap_strings(v, i, min_idx);

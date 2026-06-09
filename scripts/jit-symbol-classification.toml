@@ -750,6 +750,26 @@ stable = [
   "hew_wire_zigzag_encode",
 ]
 
+# jit: stable-stdlib — handle-oriented user-visible ABI exported by sibling
+# stdlib staticlibs (NOT hew-runtime). Listed separately so `verify-ffi-symbols`
+# does not count them as "extra" runtime classifications, and so the native
+# linker knows which stdlib archives to pull in. User `extern "rt"` blocks
+# may name these directly; the checker treats them identically to `stable`.
+stable-stdlib = [
+  "hew_datetime_day",
+  "hew_datetime_format",
+  "hew_datetime_hour",
+  "hew_datetime_last_error",
+  "hew_datetime_minute",
+  "hew_datetime_month",
+  "hew_datetime_now_ms",
+  "hew_datetime_now_nanos",
+  "hew_datetime_parse",
+  "hew_datetime_second",
+  "hew_datetime_weekday",
+  "hew_datetime_year",
+]
+
 # jit: codegen-stable — symbols the Hew compiler emits into generated IR for
 # non-trivial actor programs. NOT user-callable via `extern "rt"` (the checker
 # enforces this). JIT hosts must expose these in the same symbol map as `stable`.

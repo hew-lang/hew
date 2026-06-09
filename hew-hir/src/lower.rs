@@ -10,7 +10,8 @@ use hew_parser::ast::{
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildSlot,
     ClosureCaptureFact, ExecutionContextReader, LoweringFact, MethodCallReceiverKind,
-    MethodCallRewrite, PatternKind, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
+    MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, PatternKind, ResolvedTy,
+    SpanKey, Ty, TypeCheckOutput,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -37,6 +38,46 @@ type ScopeBinding = (BindingId, ResolvedTy, std::ops::Range<usize>);
 type ScopeMap = HashMap<String, ScopeBinding>;
 type OuterClosureBinding = (String, ResolvedTy, std::ops::Range<usize>);
 type ClosureCaptureCandidate = (BindingId, String, std::ops::Range<usize>);
+const SYNTHETIC_OPTION_ITEM: ItemId = ItemId(u32::MAX - 1);
+const SYNTHETIC_RESULT_ITEM: ItemId = ItemId(u32::MAX - 2);
+
+/// Bare-name variants of built-in tagged unions. Counted into the pre-pass's
+/// `bare_counts` so a user enum that redeclares one of them correctly marks
+/// the bare form as ambiguous.
+const BUILTIN_ENUM_VARIANT_BARE_NAMES: &[&str] = &["Some", "None", "Ok", "Err"];
+
+/// Description of a built-in tagged union for the HIR pre-pass that seeds
+/// the same registries user enums populate (`machine_ctor_registry`,
+/// `enum_variants_by_name`, `enum_type_params`, `enum_item_ids`). Variant
+/// payload type-parameter names index into `type_params`.
+struct BuiltinEnumSpec {
+    type_name: &'static str,
+    item_id: ItemId,
+    type_params: &'static [&'static str],
+    variant_names: &'static [&'static str],
+    /// Per-variant payload, listed as the type-parameter names that appear
+    /// in the variant. Empty inner slice means a unit variant.
+    variant_payloads: &'static [&'static [&'static str]],
+}
+
+fn builtin_enum_specs() -> &'static [BuiltinEnumSpec] {
+    &[
+        BuiltinEnumSpec {
+            type_name: "Option",
+            item_id: SYNTHETIC_OPTION_ITEM,
+            type_params: &["T"],
+            variant_names: &["Some", "None"],
+            variant_payloads: &[&["T"], &[]],
+        },
+        BuiltinEnumSpec {
+            type_name: "Result",
+            item_id: SYNTHETIC_RESULT_ITEM,
+            type_params: &["T", "E"],
+            variant_names: &["Ok", "Err"],
+            variant_payloads: &[&["T"], &["E"]],
+        },
+    ]
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct ResolutionCtx;
@@ -165,15 +206,29 @@ pub fn lower_program_with_mono_cap(
             Item::Function(func) => {
                 ctx.register_fn_entry(&func.name, func);
             }
-            Item::Impl(impl_decl)
-                if impl_decl
-                    .trait_bound
-                    .as_ref()
-                    .is_some_and(|bound| bound.name == "Index") =>
-            {
+            Item::ExternBlock(block) => {
+                // Register extern fn signatures so call sites resolve them
+                // to a `BindingRef::Item` like any other top-level function.
+                // Codegen pre-declares the LLVM symbol with external linkage
+                // (see `predeclare_extern_decls` in hew-codegen-rs).
+                for extern_fn in &block.functions {
+                    ctx.register_extern_fn_entry(extern_fn);
+                }
+            }
+            Item::Impl(impl_decl) => {
+                // Register methods of any V0b-acceptable impl block under the
+                // qualified `<SelfType>::<method>` name so call sites can
+                // resolve them in the second pass. The Index special-case is
+                // a subset of this — its methods landed in `fn_registry`
+                // historically via the same key shape.
                 if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
-                    for method in &impl_decl.methods {
-                        ctx.register_fn_entry(&format!("{name}::{}", method.name), method);
+                    if impl_decl.where_clause.is_none() {
+                        for method in &impl_decl.methods {
+                            ctx.register_fn_entry(
+                                &crate::node::HirImplBlock::method_symbol(name, &method.name),
+                                method,
+                            );
+                        }
                     }
                 }
             }
@@ -234,6 +289,18 @@ pub fn lower_program_with_mono_cap(
                                     fields,
                                 },
                             );
+                        }
+                        // Register extern fn signatures declared by imported
+                        // modules so call sites in user code resolve them
+                        // through `BindingRef::Item` like any other top-level
+                        // function. Without this, `import std::io; io.write(s)`
+                        // fails with `UnresolvedSymbol("hew_io_write")` because
+                        // the std/io.hew `extern "C" { fn hew_io_write(...); }`
+                        // block never reaches `fn_registry`.
+                        Item::ExternBlock(block) => {
+                            for extern_fn in &block.functions {
+                                ctx.register_extern_fn_entry(extern_fn);
+                            }
                         }
                         _ => {}
                     }
@@ -316,7 +383,18 @@ pub fn lower_program_with_mono_cap(
         // First scan: count bare-name occurrences across machines' states,
         // machine events, and user enum unit variants. A bare name with
         // count > 1 is ambiguous and only the qualified form is registered.
+        //
+        // Built-in tagged unions (`Option<T>`, `Result<T, E>`) participate
+        // in the same registry so `Ok(42)`, `None`, etc. lower through the
+        // same `MachineVariantCtor` / match-arm path as user enums. Each
+        // builtin variant contributes one count, so a user enum that
+        // redeclares `Some` or `Ok` will correctly mark the bare name as
+        // ambiguous (qualified forms still resolve via `Option::Some`,
+        // `Result::Ok`).
         let mut bare_counts: HashMap<String, usize> = HashMap::new();
+        for name in BUILTIN_ENUM_VARIANT_BARE_NAMES {
+            *bare_counts.entry((*name).to_string()).or_insert(0) += 1;
+        }
         for (item, _) in &program.items {
             match item {
                 Item::Machine(md) => {
@@ -392,6 +470,69 @@ pub fn lower_program_with_mono_cap(
                 _ => {}
             }
         }
+        // Register built-in tagged unions (`Option<T>`, `Result<T, E>`).
+        // These have no `Item::TypeDecl` in user source — the checker treats
+        // them as primitive — but the HIR lowering pipeline routes their
+        // constructors (`Some/None/Ok/Err`) and match arms through the same
+        // `machine_ctor_registry` / `enum_variants_by_name` registries as
+        // user enums. Without these entries, `Ok(42)` would lower as an
+        // unresolved identifier and `match r { Ok(n) => ... }` would emit
+        // `match arm variant not registered in machine/enum ctor registry`.
+        for spec in builtin_enum_specs() {
+            for (variant_idx, variant_name) in spec.variant_names.iter().enumerate() {
+                let qualified = format!("{}::{}", spec.type_name, variant_name);
+                ctx.machine_ctor_registry
+                    .insert(qualified, (spec.type_name.to_string(), variant_idx));
+                if bare_counts.get(*variant_name).copied().unwrap_or(0) == 1 {
+                    ctx.machine_ctor_registry.insert(
+                        (*variant_name).to_string(),
+                        (spec.type_name.to_string(), variant_idx),
+                    );
+                }
+            }
+        }
+    }
+
+    // Seed `enum_variants_by_name`, `enum_type_params`, and `enum_item_ids`
+    // for the built-in tagged unions. These mirror what the type-decl second
+    // pass below populates for user enums; the variant payload types reference
+    // the generic type-parameter names (e.g. `Named { name: "T", args: [] }`)
+    // so `substitute_type_params` in `try_register_enum_instantiation`
+    // produces correctly substituted per-instantiation layouts that flow into
+    // MIR via `module.enum_layouts`.
+    for spec in builtin_enum_specs() {
+        let variants: Vec<HirVariant> = spec
+            .variant_names
+            .iter()
+            .zip(spec.variant_payloads.iter())
+            .map(|(name, payload_params)| {
+                let kind = if payload_params.is_empty() {
+                    HirVariantKind::Unit
+                } else {
+                    HirVariantKind::Tuple(
+                        payload_params
+                            .iter()
+                            .map(|p| ResolvedTy::Named {
+                                name: (*p).to_string(),
+                                args: Vec::new(),
+                            })
+                            .collect(),
+                    )
+                };
+                HirVariant {
+                    name: (*name).to_string(),
+                    kind,
+                }
+            })
+            .collect();
+        ctx.enum_variants_by_name
+            .insert(spec.type_name.to_string(), variants);
+        ctx.enum_type_params.insert(
+            spec.type_name.to_string(),
+            spec.type_params.iter().map(|s| (*s).to_string()).collect(),
+        );
+        ctx.enum_item_ids
+            .insert(spec.type_name.to_string(), spec.item_id);
     }
 
     // Discard pre-pass diagnostics from `lower_type`; the third pass re-emits
@@ -490,22 +631,8 @@ pub fn lower_program_with_mono_cap(
                     items.push(HirItem::Function(ctx.lower_fn(func, span.clone())));
                 }
             }
-            Item::Impl(impl_decl)
-                if impl_decl
-                    .trait_bound
-                    .as_ref()
-                    .is_some_and(|bound| bound.name == "Index") =>
-            {
-                if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
-                    for method in &impl_decl.methods {
-                        let fn_name = format!("{name}::{}", method.name);
-                        items.push(HirItem::Function(ctx.lower_fn_with_name(
-                            method,
-                            &fn_name,
-                            span.clone(),
-                        )));
-                    }
-                }
+            Item::Impl(impl_decl) => {
+                ctx.lower_impl_block(impl_decl, span.clone(), &mut items);
             }
             Item::Machine(machine) => {
                 if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
@@ -533,7 +660,31 @@ pub fn lower_program_with_mono_cap(
                 // `program.items` for diagnostic source-map attribution (removing
                 // it would require auditing every span consumer — out of scope).
             }
-            _ => ctx.unsupported(span.clone(), "top-level-item", "slice-2"),
+            Item::Const(_) | Item::TypeAlias(_) | Item::Trait(_) | Item::Wire(_) => {
+                ctx.unsupported(span.clone(), "top-level-item", "slice-2");
+            }
+            Item::ExternBlock(block) => {
+                for func in &block.functions {
+                    let param_tys = func
+                        .params
+                        .iter()
+                        .map(|p| ctx.lower_type(&p.ty))
+                        .collect::<Vec<_>>();
+                    let return_ty = func
+                        .return_type
+                        .as_ref()
+                        .map_or(ResolvedTy::Unit, |ret| ctx.lower_type(ret));
+                    items.push(HirItem::ExternFn(crate::node::HirExternFn {
+                        id: ctx.ids.item(),
+                        node: ctx.ids.node(),
+                        name: func.name.clone(),
+                        abi: block.abi.clone(),
+                        param_tys,
+                        return_ty,
+                        span: func.span.clone(),
+                    }));
+                }
+            }
         }
     }
 
@@ -573,6 +724,32 @@ pub fn lower_program_with_mono_cap(
                         }
                         Item::TypeDecl(decl) if decl.visibility.is_pub() => {
                             items.push(HirItem::TypeDecl(ctx.lower_type_decl(decl, span.clone())));
+                        }
+                        // Emit HirItem::ExternFn entries for extern declarations
+                        // in imported modules so MIR/codegen sees them in the
+                        // lowered item list. Mirrors the root-item arm at the
+                        // third pass.
+                        Item::ExternBlock(block) => {
+                            for func in &block.functions {
+                                let param_tys = func
+                                    .params
+                                    .iter()
+                                    .map(|p| ctx.lower_type(&p.ty))
+                                    .collect::<Vec<_>>();
+                                let return_ty = func
+                                    .return_type
+                                    .as_ref()
+                                    .map_or(ResolvedTy::Unit, |ret| ctx.lower_type(ret));
+                                items.push(HirItem::ExternFn(crate::node::HirExternFn {
+                                    id: ctx.ids.item(),
+                                    node: ctx.ids.node(),
+                                    name: func.name.clone(),
+                                    abi: block.abi.clone(),
+                                    param_tys,
+                                    return_ty,
+                                    span: func.span.clone(),
+                                }));
+                            }
                         }
                         _ => {}
                     }
@@ -766,6 +943,10 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
             collect_call_sites_in_expr(right, out);
         }
         HirExprKind::Block(b) => collect_call_sites_in_block(b, out),
+        HirExprKind::GenBlock { body, .. } => collect_call_sites_in_block(body, out),
+        HirExprKind::Yield {
+            value: Some(value), ..
+        } => collect_call_sites_in_expr(value, out),
         HirExprKind::If {
             condition,
             then_expr,
@@ -953,6 +1134,11 @@ struct LowerCtx {
     /// here and rewrites to `HirExprKind::Call` with the runtime symbol.
     /// A missing entry is a fail-closed diagnostic (`MethodCallNoRewrite`).
     method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Checker-owned integer opt-out method lowering decisions keyed by the
+    /// method-call expression span. HIR checks this before generic method-call
+    /// rewrites so numeric methods lower to a dedicated node without any
+    /// downstream method-name matching.
+    numeric_method_lowerings: HashMap<SpanKey, NumericMethodLowering>,
     /// Checker-owned actor receive dispatch decisions keyed by method-call span.
     /// HIR consumes these to choose `ActorSend` / `ActorAsk` without reclassifying
     /// receiver types.
@@ -989,6 +1175,9 @@ struct LowerCtx {
     /// literal span. HIR consumes this ledger fail-closed when materialising
     /// `HirExprKind::Closure`; it does not infer capture legality from syntax.
     closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+    /// Stack of checker-inferred generator Yield parameters while lowering
+    /// nested `gen {}` bodies. `Expr::Yield` consumes the innermost entry.
+    generator_yield_tys: Vec<ResolvedTy>,
     /// Depth counter for nested `scope{}` bodies. When > 0, statement-expression
     /// calls are inferred as child-task spawns (TI-1); outside any scope body
     /// all calls are synchronous (TI-3). Using a depth counter rather than a
@@ -1255,6 +1444,7 @@ impl LowerCtx {
             type_classes,
             diagnostics: Vec::new(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
+            numeric_method_lowerings: tc_output.numeric_method_lowerings.clone(),
             actor_method_dispatch: tc_output.actor_method_dispatch.clone(),
             machine_method_dispatch: tc_output.machine_method_dispatch.clone(),
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
@@ -1262,6 +1452,7 @@ impl LowerCtx {
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
+            generator_yield_tys: Vec::new(),
             scope_depth: 0,
             statement_position: false,
             current_actor_self: None,
@@ -1695,7 +1886,9 @@ impl LowerCtx {
                 id: ItemId(u32::MAX / 2),
                 return_ty: ResolvedTy::Unit,
                 param_tys: vec![ResolvedTy::Named {
-                    name: "LocalPid".to_string(),
+                    name: hew_types::BuiltinType::LocalPid
+                        .canonical_name()
+                        .to_string(),
                     args: vec![ResolvedTy::Unit],
                 }],
                 linkage: None,
@@ -1724,6 +1917,29 @@ impl LowerCtx {
                 param_tys,
                 linkage: None,
                 type_params,
+            },
+        );
+    }
+
+    /// Register an `extern "..." { fn ...; }` declaration in `fn_registry`
+    /// so call sites resolve the bare name to an item just like a regular
+    /// `fn`. Extern fns are monomorphic (no type params) and have no body
+    /// — codegen pre-declares the LLVM symbol with external linkage.
+    fn register_extern_fn_entry(&mut self, decl: &hew_parser::ast::ExternFnDecl) {
+        let id = self.ids.item();
+        let return_ty = decl
+            .return_type
+            .as_ref()
+            .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
+        let param_tys = decl.params.iter().map(|p| self.lower_type(&p.ty)).collect();
+        self.fn_registry.insert(
+            decl.name.clone(),
+            FnEntry {
+                id,
+                return_ty,
+                param_tys,
+                linkage: None,
+                type_params: Vec::new(),
             },
         );
     }
@@ -1857,6 +2073,120 @@ impl LowerCtx {
 
     fn lower_fn(&mut self, func: &FnDecl, span: std::ops::Range<usize>) -> HirFn {
         self.lower_fn_with_name(func, &func.name, span)
+    }
+
+    /// V0b: lower a top-level `impl [<TypeParams>] [Trait for] TargetType { ... }`
+    /// block. Methods are flattened into per-impl `HirItem::Function` entries
+    /// (named `<SelfType>::<method>`) so the existing MIR / codegen function
+    /// pipeline can pick them up unchanged; a metadata-only [`HirItem::Impl`]
+    /// is also pushed so checker-side reasoning has a single anchor for the
+    /// trait/self pair and the associated-type bindings.
+    ///
+    /// Fail-closed: any shape outside the V0b sufficient surface
+    /// (where-clauses, default-method bodies, non-nominal targets, blanket
+    /// impls) emits a named [`HirDiagnosticKind::ImplBlockShapeNotLowered`]
+    /// rather than falling through to the generic catch-all.
+    fn lower_impl_block(
+        &mut self,
+        decl: &hew_parser::ast::ImplDecl,
+        span: std::ops::Range<usize>,
+        items: &mut Vec<HirItem>,
+    ) {
+        // Pre-flight: classify the impl shape. Bail with a precise diagnostic
+        // on any unsupported variant before lowering bodies.
+        if decl.where_clause.is_some() {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::ImplBlockShapeNotLowered {
+                    shape: "impl with where-clause".to_string(),
+                },
+                span,
+                "impl-block shape not yet lowered: impl with where-clause; \
+                 V0b admits only un-bounded `impl<T> [Trait for] Target<T>` \
+                 forms — split the bound into a trait-supertype or remove it",
+            ));
+            return;
+        }
+        let TypeExpr::Named {
+            name: self_type_name,
+            ..
+        } = &decl.target_type.0
+        else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::ImplBlockShapeNotLowered {
+                    shape: "impl on non-nominal target".to_string(),
+                },
+                span,
+                "impl-block shape not yet lowered: impl target must be a named \
+                 nominal type (e.g. `impl Trait for VecIter<T>`); tuple, array, \
+                 function, and trait-object targets are not yet supported",
+            ));
+            return;
+        };
+        // Outer type-parameter names (e.g. `T` in `impl<T> Iterator for VecIter<T>`).
+        let type_params: Vec<String> = decl
+            .type_params
+            .as_ref()
+            .map(|ps| ps.iter().map(|p| p.name.clone()).collect())
+            .unwrap_or_default();
+        // Blanket-impl guard: reject `impl<T> Trait for T` (target name is
+        // itself one of the outer type parameters) — V0b does not handle the
+        // monomorphisation of blanket impls.
+        if type_params.iter().any(|p| p == self_type_name) {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::ImplBlockShapeNotLowered {
+                    shape: format!(
+                        "blanket impl `impl<{self_type_name}> ... for {self_type_name}`"
+                    ),
+                },
+                span,
+                "impl-block shape not yet lowered: blanket impls (target is a \
+                 bare type parameter) require specialisation infrastructure \
+                 that is not in V0b — restrict the target to a concrete \
+                 nominal type",
+            ));
+            return;
+        }
+        // V0b uses `FnDecl` for impl-block methods (per parser ast), which
+        // always carries a `Block` body — there is no body-less / default-method
+        // shape representable here. Trait-decl default methods live on
+        // `TraitMethod` and are a separate lowering surface (out of scope for
+        // V0b). No body-less guard needed.
+
+        // Lower methods through the standard `lower_fn_with_name` path. Each
+        // method becomes a top-level `HirItem::Function` keyed by
+        // `<SelfType>::<method>` — identical naming to the pre-V0b Index
+        // special-case, so downstream consumers (MIR / codegen / monomorph)
+        // see ordinary functions and need no new wiring per-method.
+        let mut method_symbols: Vec<String> = Vec::with_capacity(decl.methods.len());
+        for method in &decl.methods {
+            let symbol = crate::node::HirImplBlock::method_symbol(self_type_name, &method.name);
+            items.push(HirItem::Function(self.lower_fn_with_name(
+                method,
+                &symbol,
+                span.clone(),
+            )));
+            method_symbols.push(symbol);
+        }
+
+        // Lower associated-type bindings to `ResolvedTy`s. Recorded as
+        // metadata only — no runtime artefact (the type-erasure model in
+        // use treats `type Item = T;` as a checker-only projection).
+        let type_aliases: Vec<(String, ResolvedTy)> = decl
+            .type_aliases
+            .iter()
+            .map(|alias| (alias.name.clone(), self.lower_type(&alias.ty)))
+            .collect();
+
+        items.push(HirItem::Impl(crate::node::HirImplBlock {
+            id: self.ids.item(),
+            node: self.ids.node(),
+            trait_name: decl.trait_bound.as_ref().map(|b| b.name.clone()),
+            self_type_name: self_type_name.clone(),
+            type_params,
+            type_aliases,
+            method_symbols,
+            span,
+        }));
     }
 
     fn lower_fn_with_name(
@@ -2283,8 +2613,9 @@ impl LowerCtx {
             let body =
                 self.lower_machine_expr_filtered(&tr.body, &state_names, event_names.clone());
             self.current_machine_source_state = prev_source_state;
-            // body_emits is now derived from the lowered HIR body rather than
-            // the AST summary walk so that emit expressions nested inside
+            // body_emits is derived from the lowered HIR body by walking
+            // `HirExprKind::MachineEmit { event_idx, .. }` rather than the
+            // AST summary shape, so emit expressions nested inside
             // conditionals or match arms are correctly detected.
             let body_emits = collect_hir_emitted_events(&body, &event_names);
             hir_transitions.push(HirMachineTransition {
@@ -2529,6 +2860,7 @@ impl LowerCtx {
         walk_expr_for_machine_allowlist(body, state_names, &mut allowlist);
         let diag_snapshot = self.diagnostics.len();
         self.push_scope();
+        self.bind_machine_transition_implicits(body.1.clone());
         let prev_events = self.current_machine_events.replace(event_names);
         let expr = self.lower_expr(body, IntentKind::Read);
         self.current_machine_events = prev_events;
@@ -3336,6 +3668,25 @@ impl LowerCtx {
                 };
                 HirStmtKind::Expr(for_expr)
             }
+            Stmt::Match { scrutinee, arms } => {
+                // `match scrut { ... }` in statement position. The parser
+                // produces `Stmt::Match` distinct from `Stmt::Expression(Expr::Match)`,
+                // so we route through the same `lower_match_expr` builder used by
+                // expression-position match and wrap the result as a Unit-typed
+                // statement-expression. The match's result type is discarded —
+                // a statement-position match's value is unused.
+                let (kind, ty) = self.lower_match_expr(scrutinee, arms, &span);
+                let match_expr = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                    ty,
+                    intent: IntentKind::Read,
+                    kind,
+                    span: span.clone(),
+                };
+                HirStmtKind::Expr(match_expr)
+            }
             _ => {
                 self.unsupported(span.clone(), "statement", "slice-2");
                 HirStmtKind::Expr(self.unsupported_expr(span.clone(), "unsupported statement"))
@@ -3543,41 +3894,20 @@ impl LowerCtx {
                                 ResolvedTy::Unit,
                             )
                         }
-                    } else if matches!(name.as_str(), "link" | "unlink" | "monitor") {
-                        // `link`, `unlink`, and `monitor` are checker-registered
-                        // actor-lifecycle builtins.  The runtime substrate
-                        // (`hew_actor_link`, `hew_actor_monitor`) and the codegen
-                        // arms in `hew-codegen-rs/src/llvm.rs` both exist, but
-                        // wiring the MIR producer requires the Cluster 2
-                        // composite-return spine: `link` returns
-                        // `Result<(), LinkError>` and `monitor` returns
-                        // `MonitorRef { ref_id }`, neither of which can be
-                        // constructed by the current scalar-only codegen.
-                        //
-                        // Fail-closed here so the pipeline never reaches
-                        // `lower_regular_call` → `lower_identifier` →
-                        // `UnresolvedSymbol` (which would look like a typo, not a
-                        // known-pending substrate gap).
-                        //
-                        // WHEN obsolete: when the Cluster 2 spine lands
-                        // enum-variant and struct-literal construction in
-                        // `hew-codegen-rs`, the producer arm in
-                        // `hew-mir/src/lower.rs` can be wired and this intercept
-                        // removed.  At that point `lower_regular_call` reaches
-                        // `user_name_to_c_symbol` → `lower_runtime_call` naturally.
-                        // WHAT: add `"hew_actor_link"` and `"hew_actor_monitor"`
-                        // arms in `lower_runtime_call`; remove this block.
+                    } else if name == "unlink" {
+                        // `unlink` remains a checker-registered actor-lifecycle
+                        // builtin without a MIR producer arm. `link` and `monitor`
+                        // now pass through to MIR so statement-position calls can
+                        // emit `CallRuntimeAbi` while value-needed composite returns
+                        // fail closed at the producer boundary.
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::NotYetImplemented {
                                 construct: format!("builtin call `{name}`"),
                                 owning_pass: "cluster-runtime".to_string(),
                             },
                             span.clone(),
-                            "link/monitor/unlink require the Cluster 2 composite-return \
-                             spine (Result<(),LinkError> and MonitorRef construction); \
-                             runtime symbols hew_actor_link/hew_actor_monitor exist and \
-                             codegen arms are present — wire the MIR producer when \
-                             enum-variant + struct-literal lowering lands",
+                            "unlink requires a MIR producer arm before it can reach \
+                             the runtime substrate",
                         ));
                         let callee = self.unresolved_builtin_callee(name, function.1.clone());
                         (
@@ -4083,34 +4413,26 @@ impl LowerCtx {
                 body,
                 ..
             } => self.lower_closure(params, return_type.as_ref(), body, span.clone()),
-            Expr::GenBlock { .. } => {
-                // WHY: `gen { }` expression-position generator blocks are a
-                //      v0.5 surface that requires HIR/MIR coroutine support.
-                //      That support is not yet implemented.
-                // WHEN OBSOLETE: when generator lowering wires up
-                //      HirExprKind::GenResume and the coroutine scheduler.
-                // REAL SOLUTION: lower to HirExprKind::GenBlock carrying a
-                //      HirBlock body, yield points converted to
-                //      HirExprKind::GenYield nodes; the MIR scheduler then
-                //      desugars those into coroutine state machines.
-                //
-                // Fail-closed: emit a typed diagnostic and return Unit so
-                // the rest of the program continues to be lowered (diagnosing
-                // as many errors as possible in one pass).
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::UnresolvedSymbol {
-                        name: "E_GEN_BLOCK_PENDING: generator block lowering is not yet \
-                               implemented; generator blocks are parsed but cannot be compiled \
-                               in this version"
-                            .to_string(),
-                    },
-                    span.clone(),
-                    "gen {} blocks require coroutine lowering (not yet implemented)",
-                ));
-                (
-                    HirExprKind::Literal(crate::HirLiteral::Unit),
-                    ResolvedTy::Unit,
-                )
+            Expr::GenBlock { body } => self.lower_gen_block(body, span.clone()),
+            Expr::Yield(value) => {
+                let value = value
+                    .as_deref()
+                    .map(|value| Box::new(self.lower_expr(value, IntentKind::Read)));
+                let yield_ty = if let Some(yield_ty) = self.generator_yield_tys.last() {
+                    yield_ty.clone()
+                } else {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "yield".to_string(),
+                            reason: "yield expression lowered outside an enclosing gen block"
+                                .to_string(),
+                        },
+                        span.clone(),
+                        "yield expression has no enclosing generator yield type",
+                    ));
+                    ResolvedTy::Unit
+                };
+                (HirExprKind::Yield { value, yield_ty }, ResolvedTy::Unit)
             }
             Expr::MethodCall {
                 receiver,
@@ -4759,6 +5081,76 @@ impl LowerCtx {
             .into_iter()
             .map(|(name, (id, ty, span))| (id, (name, ty, span)))
             .collect()
+    }
+
+    fn lower_gen_block(
+        &mut self,
+        body: &Block,
+        span: std::ops::Range<usize>,
+    ) -> (HirExprKind, ResolvedTy) {
+        let checker_key = SpanKey::from(&span);
+        let gen_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+            match ResolvedTy::from_ty(&ty) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "gen block".to_string(),
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "gen block type failed checker-boundary conversion",
+                    ));
+                    ResolvedTy::Named {
+                        name: "Generator".to_string(),
+                        args: vec![ResolvedTy::Unit, ResolvedTy::Unit],
+                    }
+                }
+            }
+        } else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "gen block".to_string(),
+                    reason: "expr_types has no entry for gen block site".to_string(),
+                },
+                span.clone(),
+                "checker did not provide a Generator<Yield, Return> type for this gen block",
+            ));
+            ResolvedTy::Named {
+                name: "Generator".to_string(),
+                args: vec![ResolvedTy::Unit, ResolvedTy::Unit],
+            }
+        };
+
+        let (yield_ty, return_ty) = match &gen_ty {
+            ResolvedTy::Named { name, args } if name == "Generator" && args.len() == 2 => {
+                (args[0].clone(), args[1].clone())
+            }
+            other => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "gen block".to_string(),
+                        reason: format!("expected Generator<Yield, Return>, got {other:?}"),
+                    },
+                    span.clone(),
+                    "gen block checker type did not have Generator<Yield, Return> shape",
+                ));
+                (ResolvedTy::Unit, ResolvedTy::Unit)
+            }
+        };
+
+        self.generator_yield_tys.push(yield_ty.clone());
+        let lowered_body = self.lower_block(body, &return_ty);
+        self.generator_yield_tys.pop();
+
+        (
+            HirExprKind::GenBlock {
+                body: lowered_body,
+                yield_ty,
+                return_ty,
+            },
+            gen_ty,
+        )
     }
 
     fn lower_closure(
@@ -5520,7 +5912,62 @@ impl LowerCtx {
         }
     }
 
-    /// Lower `receiver.method(args)` using the checker's `method_call_rewrites` side-table.
+    fn resolve_numeric_method_ty(
+        &mut self,
+        ty: &Ty,
+        span: &Span,
+        label: &str,
+    ) -> Option<ResolvedTy> {
+        match ResolvedTy::from_ty(ty) {
+            Ok(ty) => Some(ty),
+            Err(err) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: label.to_string(),
+                        reason: err.to_string(),
+                    },
+                    span.clone(),
+                    "checker-authoritative numeric method lowering type failed boundary conversion",
+                ));
+                None
+            }
+        }
+    }
+
+    fn register_numeric_checked_option_layout(&mut self, operand_ty: &ResolvedTy, span: &Span) {
+        let key = EnumMonoKey {
+            origin: SYNTHETIC_OPTION_ITEM,
+            origin_name: "Option".to_string(),
+            type_args: vec![operand_ty.clone()],
+        };
+        if self
+            .enum_layout_registry
+            .insert(
+                key,
+                vec![
+                    EnumVariantLayout {
+                        name: "Some".to_string(),
+                        field_tys: vec![operand_ty.clone()],
+                    },
+                    EnumVariantLayout {
+                        name: "None".to_string(),
+                        field_tys: Vec::new(),
+                    },
+                ],
+            )
+            .is_err()
+        {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::EnumLayoutCapExceeded {
+                    cap: self.enum_layout_registry.cap(),
+                },
+                span.clone(),
+                "enum monomorphisation cap exceeded while registering checked numeric method Option layout",
+            ));
+        }
+    }
+
+    /// Lower `receiver.method(args)` using the checker's method-call side-tables.
     ///
     /// Fail-closed per `checker-output-boundary` (LESSONS P0): a missing entry for
     /// this call site's span is a hard diagnostic — HIR never re-infers the runtime
@@ -5542,6 +5989,67 @@ impl LowerCtx {
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         let key = SpanKey::from(&span);
+        if let Some(lowering) = self.numeric_method_lowerings.get(&key).cloned() {
+            if args.len() != 1 {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: format!("numeric method `.{method}`"),
+                        reason: format!(
+                            "checker side-table expected one argument, found {}",
+                            args.len()
+                        ),
+                    },
+                    span.clone(),
+                    "numeric method lowering requires exactly one checked argument",
+                ));
+                return (
+                    HirExprKind::Unsupported(format!(
+                        "numeric method `.{method}` has invalid arity"
+                    )),
+                    ResolvedTy::Unit,
+                );
+            }
+            let Some(result_ty) =
+                self.resolve_numeric_method_ty(&lowering.result_ty, &span, "numeric method result")
+            else {
+                return (
+                    HirExprKind::Unsupported(format!(
+                        "numeric method `.{method}` has poisoned result type"
+                    )),
+                    ResolvedTy::Unit,
+                );
+            };
+            let Some(operand_ty) = self.resolve_numeric_method_ty(
+                &lowering.operand_ty,
+                &span,
+                "numeric method operand",
+            ) else {
+                return (
+                    HirExprKind::Unsupported(format!(
+                        "numeric method `.{method}` has poisoned operand type"
+                    )),
+                    ResolvedTy::Unit,
+                );
+            };
+            if lowering.family == NumericMethodFamily::Checked {
+                self.register_numeric_checked_option_layout(&operand_ty, &span);
+            }
+            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            let lowered_arg = self.lower_expr(args[0].expr(), IntentKind::Read);
+            return (
+                HirExprKind::NumericMethod {
+                    receiver: Box::new(lowered_receiver),
+                    arg: Box::new(lowered_arg),
+                    family: lowering.family,
+                    op: lowering.op,
+                    result_ty: result_ty.clone(),
+                    operand_ty,
+                    signedness: lowering.signedness,
+                    width: lowering.width,
+                },
+                result_ty,
+            );
+        }
         if let Some(dispatch) = self.actor_method_dispatch.get(&key).cloned() {
             let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
             let lowered_args: Vec<HirExpr> = args
@@ -5703,7 +6211,7 @@ impl LowerCtx {
         }
         let rewrite = self.method_call_rewrites.get(&key).cloned();
         match rewrite {
-            Some(MethodCallRewrite::RewriteToFunction { c_symbol }) => {
+            Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. }) => {
                 // Lower receiver + args, then prepend receiver as first argument.
                 let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
                 let mut lowered_args = vec![lowered_receiver];
@@ -5744,7 +6252,7 @@ impl LowerCtx {
                     ret_ty,
                 )
             }
-            Some(MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol }) => {
+            Some(MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }) => {
                 // Module-qualified direct call: the receiver expression is the
                 // module identifier, not a value.  Lower the args only — do
                 // NOT prepend the receiver (LESSONS
@@ -6251,6 +6759,22 @@ impl LowerCtx {
                 span: span.clone(),
             })
         }
+    }
+
+    fn bind_machine_transition_implicits(&mut self, span: std::ops::Range<usize>) {
+        let Some(machine_name) = self.current_machine_name.clone() else {
+            return;
+        };
+        let machine_ty = ResolvedTy::Named {
+            name: machine_name.clone(),
+            args: Vec::new(),
+        };
+        let event_ty = ResolvedTy::Named {
+            name: format!("{machine_name}Event"),
+            args: Vec::new(),
+        };
+        let _state = self.bind("state".to_string(), machine_ty, false, span.clone());
+        let _event = self.bind("event".to_string(), event_ty, false, span);
     }
 
     fn missing_stdlib_module_import(&self, name: &str) -> Option<&'static str> {
@@ -6844,6 +7368,10 @@ fn collect_captures_walk(
             collect_captures_walk(left, param_ids, seen, captures, self_id);
             collect_captures_walk(right, param_ids, seen, captures, self_id);
         }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
+            collect_captures_walk(arg, param_ids, seen, captures, self_id);
+        }
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_captures_walk(callee, param_ids, seen, captures, self_id);
             for arg in args {
@@ -6865,8 +7393,14 @@ fn collect_captures_walk(
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
-        | HirExprKind::ForkBlock { body: block, .. } => {
+        | HirExprKind::ForkBlock { body: block, .. }
+        | HirExprKind::GenBlock { body: block, .. } => {
             collect_captures_walk_block(block, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::Yield { value, .. } => {
+            if let Some(value) = value {
+                collect_captures_walk(value, param_ids, seen, captures, self_id);
+            }
         }
         HirExprKind::ScopeDeadline { duration, body } => {
             collect_captures_walk(duration, param_ids, seen, captures, self_id);
@@ -7056,6 +7590,10 @@ fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk(left, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(right, outer_bindings, seen, captures);
         }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
+        }
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_general_closure_captures_walk(callee, outer_bindings, seen, captures);
             for arg in args {
@@ -7077,8 +7615,14 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
-        | HirExprKind::ForkBlock { body: block, .. } => {
+        | HirExprKind::ForkBlock { body: block, .. }
+        | HirExprKind::GenBlock { body: block, .. } => {
             collect_general_closure_captures_walk_block(block, outer_bindings, seen, captures);
+        }
+        HirExprKind::Yield { value, .. } => {
+            if let Some(value) = value {
+                collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
+            }
         }
         HirExprKind::ScopeDeadline { duration, body } => {
             collect_general_closure_captures_walk(duration, outer_bindings, seen, captures);
@@ -7608,6 +8152,27 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                 collect_hir_emitted_events_walk(tail, event_names, out);
             }
         }
+        HirExprKind::GenBlock { body, .. } => {
+            for stmt in &body.statements {
+                match &stmt.kind {
+                    HirStmtKind::Expr(e)
+                    | HirStmtKind::Let(_, Some(e))
+                    | HirStmtKind::Return(Some(e)) => {
+                        collect_hir_emitted_events_walk(e, event_names, out);
+                    }
+                    HirStmtKind::Assign { value, .. } => {
+                        collect_hir_emitted_events_walk(value, event_names, out);
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(tail) = &body.tail {
+                collect_hir_emitted_events_walk(tail, event_names, out);
+            }
+        }
+        HirExprKind::Yield {
+            value: Some(value), ..
+        } => collect_hir_emitted_events_walk(value, event_names, out),
         HirExprKind::If {
             condition,
             then_expr,
@@ -7755,6 +8320,37 @@ mod tests {
         assert_eq!(hir_capture.binding, k_binding.id);
         assert_eq!(hir_capture.mode, checker_fact.mode);
         assert_eq!(hir_capture.is_send, checker_fact.is_send);
+    }
+
+    #[test]
+    fn synthesized_actor_handle_lowering_uses_builtin_type_marker() {
+        let (_program, _tco, lowered) = parse_typecheck_and_lower(
+            r"
+            actor Worker {
+                receive fn ping() {}
+            }
+
+            fn main() {
+                let worker = spawn Worker;
+            }
+            ",
+        );
+
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "lower diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+        let body = main_function_body(&lowered);
+        let HirStmtKind::Let(binding, Some(init)) = &body.statements[0].kind else {
+            panic!("expected first statement to bind worker");
+        };
+        assert_eq!(binding.name, "worker");
+        assert_eq!(
+            init.value_class,
+            ValueClass::AffineResource,
+            "LocalPid<Worker> must resolve through the builtin type marker registry"
+        );
     }
 
     #[test]

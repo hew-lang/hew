@@ -18,7 +18,7 @@
 // Runtime invocation is covered by hew-runtime/tests/on_crash_invocation.rs.
 actor Crasher {
     #[on(crash)]
-    fn handle_crash(info: PanicInfo) -> CrashAction {
+    fn handle_crash(info: CrashInfo) -> CrashAction {
         panic("handled")
     }
 }

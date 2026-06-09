@@ -9,8 +9,28 @@ use crate::method_resolution::{
     collect_method_sigs_for_receiver, lookup_builtin_method_sig,
     lookup_named_method_sig as shared_lookup_named_method_sig,
 };
+use crate::BuiltinType;
 
 impl Checker {
+    fn numeric_method_signedness(ty: &Ty) -> Option<NumericSignedness> {
+        match ty {
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::Isize => Some(NumericSignedness::Signed),
+            Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize => Some(NumericSignedness::Unsigned),
+            _ => None,
+        }
+    }
+
+    fn numeric_method_width(ty: &Ty) -> Option<NumericWidth> {
+        match ty {
+            Ty::I8 | Ty::U8 => Some(NumericWidth::Bits(8)),
+            Ty::I16 | Ty::U16 => Some(NumericWidth::Bits(16)),
+            Ty::I32 | Ty::U32 => Some(NumericWidth::Bits(32)),
+            Ty::I64 | Ty::U64 => Some(NumericWidth::Bits(64)),
+            Ty::Isize | Ty::Usize => Some(NumericWidth::Pointer),
+            _ => None,
+        }
+    }
+
     pub(super) fn record_hashset_lowering_fact(&mut self, span: &Span, elem_ty: &Ty) {
         let key = SpanKey::from(span);
         // If deferred admission was already recorded for this span, the
@@ -371,6 +391,7 @@ impl Checker {
                     span_key,
                     MethodCallRewrite::RewriteToFunction {
                         c_symbol: c_symbol.to_string(),
+                        elem_ty: None,
                     },
                 );
             } else {
@@ -492,6 +513,7 @@ impl Checker {
             span,
             MethodCallRewrite::RewriteToFunction {
                 c_symbol: c_symbol.into(),
+                elem_ty: None,
             },
         );
     }
@@ -547,6 +569,7 @@ impl Checker {
             span,
             MethodCallRewrite::RewriteModuleQualifiedToFunction {
                 c_symbol: c_symbol.into(),
+                elem_ty: None,
             },
         );
     }
@@ -649,9 +672,15 @@ impl Checker {
     }
 
     fn reject_if_wasm_native_only_handle(&mut self, receiver_ty: &Ty, span: &Span) {
-        let Ty::Named { name, .. } = receiver_ty else {
+        let Ty::Named { name, builtin, .. } = receiver_ty else {
             return;
         };
+        if builtin.is_some_and(|builtin| {
+            builtin.has_role(crate::builtin_type::BuiltinTypeRole::WasmNativeOnlyHandle)
+        }) {
+            self.reject_wasm_feature(span, WasmUnsupportedFeature::TcpNetworking);
+            return;
+        }
         let Some(module_name) = name.split('.').next() else {
             return;
         };
@@ -744,6 +773,46 @@ impl Checker {
         self.type_defs.get_mut(unqualified)
     }
 
+    /// Resolve a `(module, type)` pair to its `TypeDef`, gated on the type being
+    /// in the imported module's exported set.  Returns `None` if the module is
+    /// not a known alias, the type is not exported, or the qualified type alias
+    /// was not registered (latter would be a registration bug — callers should
+    /// treat as "type not exported" for diagnostic purposes).
+    ///
+    /// Mirrors the `module_fn_exports` guard pattern used by
+    /// `check_method_call` for module-qualified function dispatch.
+    pub(super) fn resolve_module_type(
+        &self,
+        module_short: &str,
+        type_name: &str,
+    ) -> Option<TypeDef> {
+        if !self.modules.contains(module_short) {
+            return None;
+        }
+        let exports = self.module_type_exports.get(module_short)?;
+        if !exports.contains(type_name) {
+            return None;
+        }
+        let qualified = format!("{module_short}.{type_name}");
+        self.type_defs.get(&qualified).cloned()
+    }
+
+    /// Resolve a `(module, type, variant)` triple to its `VariantDef`, gated on
+    /// the type being exported by the module.  Returns `None` if the module
+    /// alias is unknown, the type is not exported, or the variant does not
+    /// exist on the type.  The caller is responsible for emitting the
+    /// fail-closed diagnostic in each failure case.
+    pub(super) fn resolve_module_variant(
+        &self,
+        module_short: &str,
+        type_name: &str,
+        variant_name: &str,
+    ) -> Option<(TypeDef, VariantDef)> {
+        let td = self.resolve_module_type(module_short, type_name)?;
+        let v = td.variants.get(variant_name).cloned()?;
+        Some((td, v))
+    }
+
     /// Look up a non-builtin named method via `type_defs` first, then `fn_sigs`.
     pub(super) fn lookup_named_method_sig(
         &self,
@@ -777,6 +846,7 @@ impl Checker {
         let Ty::Named {
             name,
             args: type_args,
+            ..
         } = receiver_ty
         else {
             return None;
@@ -1636,6 +1706,7 @@ impl Checker {
                     return Ty::Error;
                 }
                 Ty::Named {
+                    builtin: Some(BuiltinType::HashMap),
                     name: "HashMap".to_string(),
                     args: vec![key_ty.clone(), val_ty.clone()],
                 }
@@ -1656,6 +1727,7 @@ impl Checker {
                 // Receiver kind for impl table lookup: bare `HashMap` (the
                 // canonical_primitive_or_builtin_key strips type args).
                 let receiver = Ty::Named {
+                    builtin: Some(BuiltinType::HashMap),
                     name: "HashMap".to_string(),
                     args: vec![],
                 };
@@ -1723,6 +1795,7 @@ impl Checker {
                 }
                 self.record_hashset_lowering_fact(span, &elem_ty);
                 Ty::Named {
+                    builtin: Some(BuiltinType::HashSet),
                     name: "HashSet".to_string(),
                     args: vec![elem_ty.clone()],
                 }
@@ -1750,6 +1823,7 @@ impl Checker {
             }
             _ => {
                 let receiver = Ty::Named {
+                    builtin: Some(BuiltinType::HashSet),
                     name: "HashSet".to_string(),
                     args: vec![],
                 };
@@ -1859,11 +1933,19 @@ impl Checker {
                     self.check_against(expr, sp, &elem_ty);
                 }
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("push", &resolved_elem) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 Ty::Unit
             }
             "pop" => {
                 self.check_arity(args, 0, "`Vec::pop`", span);
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("pop", &resolved_elem) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 elem_ty.clone()
             }
             "len" => {
@@ -1877,6 +1959,10 @@ impl Checker {
                     self.check_against(expr, sp, &Ty::I64);
                 }
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method(method, &resolved_elem) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 elem_ty.clone()
             }
             "contains" => {
@@ -1884,15 +1970,32 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &elem_ty);
                 }
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if let Some(c_symbol) =
+                    crate::stdlib::resolve_vec_method("contains", &resolved_elem)
+                {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 Ty::Bool
             }
-            "is_empty" => Ty::Bool,
+            "is_empty" => {
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("is_empty", &elem_ty) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
+                Ty::Bool
+            }
             "clear" => {
                 self.check_arity(args, 0, "`Vec::clear`", span);
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("clear", &elem_ty) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 Ty::Unit
             }
             "clone" => {
                 self.check_arity(args, 0, "`Vec::clone`", span);
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("clone", &elem_ty) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 resolved.clone()
             }
             "set" => {
@@ -1905,6 +2008,10 @@ impl Checker {
                     self.check_against(expr, sp, &elem_ty);
                 }
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("set", &resolved_elem) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 Ty::Unit
             }
             "append" | "extend" => {
@@ -1913,6 +2020,9 @@ impl Checker {
                     self.check_against(expr, sp, receiver_ty);
                 }
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
+                if let Some(c_symbol) = crate::stdlib::resolve_vec_method(method, &elem_ty) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 Ty::Unit
             }
             "join" => {
@@ -1983,6 +2093,7 @@ impl Checker {
             }
             _ => {
                 let receiver = Ty::Named {
+                    builtin: Some(BuiltinType::Vec),
                     name: "Vec".to_string(),
                     args: vec![],
                 };
@@ -2341,33 +2452,38 @@ impl Checker {
             // Vec methods
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Vec),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if name == "Vec" => {
-                self.check_vec_method(type_args, &receiver_ty, &resolved, method, args, span)
-            }
+            ) => self.check_vec_method(type_args, &receiver_ty, &resolved, method, args, span),
             // HashMap methods
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::HashMap),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if name == "HashMap" => self.check_hashmap_method(type_args, method, args, span),
+            ) => self.check_hashmap_method(type_args, method, args, span),
             // HashSet methods
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::HashSet),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if name == "HashSet" => {
+            ) => {
                 // Preserve the receiver's original inference vars so a later non-literal insert
                 // can refine an earlier `IntLiteral` element before we validate lowerability.
                 let original_type_args = match &receiver_ty {
-                    Ty::Named { name, args } if name == "HashSet" => args.as_slice(),
+                    Ty::Named {
+                        builtin: Some(BuiltinType::HashSet),
+                        args,
+                        ..
+                    } => args.as_slice(),
                     _ => type_args,
                 };
                 self.check_hashset_method(original_type_args, method, args, span)
@@ -2375,11 +2491,12 @@ impl Checker {
             // Rc<T> methods
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Rc),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if name == "Rc" => self.check_rc_method(type_args, method, args, span),
+            ) => self.check_rc_method(type_args, method, args, span),
             // bytes methods (ref-counted byte buffer)
             (Ty::Bytes, _) => match method {
                 "push" => {
@@ -2732,6 +2849,13 @@ impl Checker {
             {
                 let is_wrapping = method.starts_with("wrapping_");
                 let is_checked = method.starts_with("checked_");
+                let family = if is_wrapping {
+                    NumericMethodFamily::Wrapping
+                } else if is_checked {
+                    NumericMethodFamily::Checked
+                } else {
+                    NumericMethodFamily::Saturating
+                };
                 let op_name = if is_wrapping {
                     &method["wrapping_".len()..]
                 } else if is_checked {
@@ -2746,7 +2870,39 @@ impl Checker {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, resolved);
                         }
-                        if is_checked {
+                        let op = match op_name {
+                            "add" => NumericMethodOp::Add,
+                            "sub" => NumericMethodOp::Sub,
+                            "mul" => NumericMethodOp::Mul,
+                            _ => unreachable!("op_name matched add/sub/mul above"),
+                        };
+                        if let (Some(signedness), Some(width)) = (
+                            Self::numeric_method_signedness(resolved),
+                            Self::numeric_method_width(resolved),
+                        ) {
+                            let result_ty = if is_checked {
+                                Ty::option(resolved.clone())
+                            } else {
+                                resolved.clone()
+                            };
+                            let prior = self.numeric_method_lowerings.insert(
+                                SpanKey::from(span),
+                                NumericMethodLowering {
+                                    family,
+                                    op,
+                                    result_ty: result_ty.clone(),
+                                    operand_ty: resolved.clone(),
+                                    signedness,
+                                    width,
+                                },
+                            );
+                            debug_assert!(
+                                prior.is_none(),
+                                "duplicate numeric method lowering for span {:?}",
+                                SpanKey::from(span)
+                            );
+                            result_ty
+                        } else if is_checked {
                             Ty::option(resolved.clone())
                         } else {
                             resolved.clone()
@@ -2794,9 +2950,11 @@ impl Checker {
                     ..
                 } = resolved
                 {
-                    if let Some(sig) =
-                        self.lookup_named_method_sig("LocalPid", receiver_args, method)
-                    {
+                    if let Some(sig) = self.lookup_named_method_sig(
+                        crate::BuiltinType::LocalPid.canonical_name(),
+                        receiver_args,
+                        method,
+                    ) {
                         let applied_sig = self.apply_instantiated_call_signature(
                             &sig,
                             None,
@@ -2866,9 +3024,11 @@ impl Checker {
                     ..
                 } = resolved
                 {
-                    if let Some(sig) =
-                        self.lookup_named_method_sig("RemotePid", receiver_args, method)
-                    {
+                    if let Some(sig) = self.lookup_named_method_sig(
+                        crate::BuiltinType::RemotePid.canonical_name(),
+                        receiver_args,
+                        method,
+                    ) {
                         let applied_sig = self.apply_instantiated_call_signature(
                             &sig,
                             None,
@@ -2962,47 +3122,45 @@ impl Checker {
             // runtime symbol (`hew_duplex_send`).
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Duplex),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if name == "Duplex" => {
-                self.check_duplex_method(type_args, &receiver_ty, receiver, method, args, span)
-            }
+            ) => self.check_duplex_method(type_args, &receiver_ty, receiver, method, args, span),
             // SendHalf<S>: send-direction half of a split Duplex<S, R>.
             //
             // Methods: .send(msg) / .close()
             // Produced by `Duplex<S, R>::send_half()`.
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::SendHalf),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if name == "SendHalf" => {
-                self.check_send_half_method(type_args, receiver, method, args, span)
-            }
+            ) => self.check_send_half_method(type_args, receiver, method, args, span),
             // RecvHalf<R>: receive-direction half of a split Duplex<S, R>.
             //
             // Methods: .recv() / .close()
             // Produced by `Duplex<S, R>::recv_half()`.
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::RecvHalf),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if name == "RecvHalf" => {
-                self.check_recv_half_method(type_args, receiver, method, args, span)
-            }
+            ) => self.check_recv_half_method(type_args, receiver, method, args, span),
             // Named types that have built-in methods (Actor<T> from lambda actors)
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Actor),
                     args: type_args,
+                    ..
                 },
                 "send",
-            ) if name == "Actor" => {
+            ) => {
                 for arg in args {
                     let (expr, sp) = arg.expr();
                     let ty = if let Some(param_ty) = type_args.first() {
@@ -3020,11 +3178,12 @@ impl Checker {
             // .next() returns Option<yielded type>.
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
                     args: type_args,
+                    ..
                 },
                 "next",
-            ) if name == "Generator" || name == "AsyncGenerator" => Ty::option(
+            ) => Ty::option(
                 type_args
                     .first()
                     .cloned()
@@ -3041,11 +3200,12 @@ impl Checker {
             // now codegen will fail if the type is actually used.
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Stream),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if builtin_named_type(name) == Some(BuiltinNamedType::Stream) => {
+            ) => {
                 // Stream<T> methods are not supported on wasm32: the stream
                 // runtime module is not compiled for wasm32.
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Streams);
@@ -3054,11 +3214,12 @@ impl Checker {
             // Sink<T> methods
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Sink),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if builtin_named_type(name) == Some(BuiltinNamedType::Sink) => {
+            ) => {
                 let Some(inner) = self.validate_stream_sink_element_type(
                     type_args,
                     BuiltinNamedType::Sink.canonical_name(),
@@ -3173,11 +3334,12 @@ impl Checker {
             // Sender<T> methods
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Sender),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if builtin_named_type(name) == Some(BuiltinNamedType::Sender) => {
+            ) => {
                 let inner = type_args
                     .first()
                     .cloned()
@@ -3277,11 +3439,12 @@ impl Checker {
             // Receiver<T> methods
             (
                 Ty::Named {
-                    name,
+                    builtin: Some(BuiltinType::Receiver),
                     args: type_args,
+                    ..
                 },
                 _,
-            ) if builtin_named_type(name) == Some(BuiltinNamedType::Receiver) => {
+            ) => {
                 let inner = type_args
                     .first()
                     .cloned()
@@ -3414,6 +3577,7 @@ impl Checker {
                 Ty::Named {
                     name,
                     args: type_args,
+                    ..
                 },
                 _,
             ) => {
@@ -3476,15 +3640,16 @@ impl Checker {
                                 // r-value and non-identifier receivers are also
                                 // rejected because store-back (slice 6) cannot
                                 // target them.
-                                let receiver_is_mutable = match &receiver.0 {
-                                    Expr::Identifier(binding_name) => self
-                                        .env
-                                        .lookup_ref(binding_name)
-                                        .is_some_and(|b| b.is_mutable),
-                                    _ => false,
+                                let receiver_binding_name = match &receiver.0 {
+                                    Expr::Identifier(n) => Some(n.clone()),
+                                    _ => None,
                                 };
+                                let receiver_is_mutable = receiver_binding_name
+                                    .as_deref()
+                                    .and_then(|n| self.env.lookup_ref(n))
+                                    .is_some_and(|b| b.is_mutable);
                                 if !receiver_is_mutable {
-                                    let receiver_name = if let Expr::Identifier(n) = &receiver.0 {
+                                    let receiver_name = if let Some(n) = &receiver_binding_name {
                                         format!("`{n}`")
                                     } else {
                                         "this expression".to_string()
@@ -3497,6 +3662,13 @@ impl Checker {
                                              {receiver_name} is not declared with `var`"
                                         ),
                                     );
+                                } else if let Some(n) = &receiver_binding_name {
+                                    // `.step()` semantically reassigns the binding via the
+                                    // synthesised store-back primitive (slice 6). Mark the
+                                    // binding as written so the unused-mut analysis does
+                                    // not flag `var lc = ...; lc.step(...)` as a
+                                    // never-reassigned mutable binding.
+                                    self.env.mark_written(n);
                                 }
                                 self.machine_method_dispatch.insert(
                                     SpanKey::from(span),
@@ -3742,6 +3914,7 @@ mod tests {
         );
         assert_eq!(
             Checker::runtime_stream_element_name(&Ty::Named {
+                builtin: None,
                 name: "string".into(),
                 args: vec![],
             }),
@@ -3749,6 +3922,7 @@ mod tests {
         );
         assert_eq!(
             Checker::runtime_stream_element_name(&Ty::Named {
+                builtin: None,
                 name: "str".into(),
                 args: vec![],
             }),
@@ -3762,6 +3936,7 @@ mod tests {
         assert_eq!(Checker::stream_receiver_element_kind(&Ty::Bytes), "bytes");
         assert_eq!(
             Checker::stream_receiver_element_kind(&Ty::Named {
+                builtin: None,
                 name: "String".into(),
                 args: vec![],
             }),
@@ -3989,6 +4164,7 @@ mod tests {
         // Nest Ty::Error inside a Vec element to exercise the contains_error() path,
         // not just a bare Ty::Error match.
         let elem_ty = Ty::Named {
+            builtin: None,
             name: "Result".into(),
             args: vec![Ty::Error, Ty::I64],
         };

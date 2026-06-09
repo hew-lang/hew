@@ -1,0 +1,10 @@
+actor Echo {
+    receive fn echo(text: string) -> string {
+        text
+    }
+}
+
+fn main() {
+    let echo = spawn Echo;
+    println(await echo.echo("pong"));
+}

@@ -1,302 +1,243 @@
-//! Machine emit queue: synchronous per-step emit drain with reentrancy cap.
+//! Machine emit queue: synchronous FIFO drain at the outermost `step()` frame.
 //!
-//! # Design
-//!
-//! Each call to a machine's `step()` executes inside a drain scope
-//! ([`EmitQueue::drain`]).  Transition bodies push events via
-//! [`EmitQueue::push`]; after each event is processed the handler may push
-//! additional events via the [`EmitQueueAppend`] argument supplied to the
-//! handler — newly pushed events are appended to the tail and processed in the
-//! same drain call (FIFO).
-//!
-//! The reentrancy depth counter prevents unbounded recursion in codegen-wired
-//! paths where the drain handler can invoke the machine runtime again (e.g.,
-//! via a `thread_local` borrow of the same queue).  Via the safe API alone,
-//! nested drain is impossible (`drain` requires `&mut self`), so the cap
-//! guards codegen-wired re-entry only.
-//!
-//! # Ownership model
-//!
-//! `EmitQueue` is an explicit struct whose reference flows through generated
-//! code.  Whether it is passed as an explicit `&mut EmitQueue` parameter or
-//! accessed through a `thread_local` is a codegen concern.  This file
-//! owns only the substrate.
-//!
-//! # WASM parity
-//!
-//! No platform-specific code.  `VecDeque` and the reentrancy counter are both
-//! single-threaded constructs — correct on native, wasm32-wasip1, and
-//! browser-analysis WASM.
+//! The queue is intentionally single-threaded. Generated code either receives an
+//! explicit `*mut EmitQueue` from codegen or passes null to use the calling
+//! thread's owner. There is no scheduler, executor, or cross-thread sharing in
+//! this substrate.
 
 use std::collections::VecDeque;
 use std::marker::PhantomData;
+use std::panic;
 
-// ── Types ────────────────────────────────────────────────────────────────────
+/// Default maximum nested `step()`/drain depth.
+pub const DEFAULT_REENTRANCY_CAP: usize = 64;
 
-/// Opaque identity for a machine instance.
-///
-/// The concrete meaning of the `u64` is determined by the codegen path that
-/// invokes push.  Typically a pointer-derived integer identifying which machine
-/// value the event belongs to.
-///
-/// WHY a newtype: keeps the type system honest when multiple integer arguments
-/// appear at a call site (`machine_id` vs `event_idx` vs payload len).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MachineId(pub u64);
+/// Compile-time override for [`DEFAULT_REENTRANCY_CAP`].
+const CAP_ENV: Option<&str> = option_env!("HEW_MACHINE_EMIT_REENTRANCY_CAP");
 
-/// A single enqueued emit.
-///
-/// The `payload` bytes are opaque to the queue; their encoding is determined
-/// by the codegen path that invokes push (typically MessagePack-serialised
-/// event fields).
-///
-/// WHY `Vec<u8>`: the runtime cannot know the event shape without reflecting
-/// the compile-time MIR — a byte buffer is the substrate-correct choice.
-/// The codegen path encodes; the `drives` subscription layer decodes.
-/// WHEN-OBSOLETE: if a future slice introduces a typed event ABI at the
-/// runtime boundary, replace with a typed enum.
-#[derive(Debug, Clone)]
-pub struct EmitEvent {
-    /// Identity of the machine that fired this emit.
-    pub machine_id: MachineId,
-    /// Zero-based index into the machine's event declaration list (matches
-    /// `HirMachineDecl.events` order and the event index from the instruction
-    /// that produced this emit).
-    pub event_idx: usize,
-    /// Serialised payload bytes.  Empty for unit events (no fields).
-    pub payload: Vec<u8>,
+fn configured_reentrancy_cap() -> usize {
+    CAP_ENV
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_REENTRANCY_CAP)
 }
 
-/// Error returned when the emit queue detects a constraint violation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EmitQueueError {
-    /// The reentrancy depth exceeded the configured cap.
-    ///
-    /// A codegen-wired drain caller re-entered before the outer drain
-    /// completed, and the nesting depth reached `cap`.
-    /// The depth counter is decremented on all exits (normal, error, unwind).
-    ReentrancyCapExceeded {
-        /// Depth at the time of the violation.
-        depth: usize,
-        /// The maximum permitted depth.
-        cap: usize,
-    },
+/// Typed runtime panic payload for an indirect machine emit cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineEmitReentrancyExceeded {
+    /// Depth reached by the attempted nested entry.
+    pub depth: usize,
+    /// Configured maximum depth.
+    pub cap: usize,
 }
 
-impl std::fmt::Display for EmitQueueError {
+impl std::fmt::Display for MachineEmitReentrancyExceeded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ReentrancyCapExceeded { depth, cap } => write!(
-                f,
-                "machine emit queue reentrancy cap exceeded: depth {depth} > cap {cap}"
-            ),
+        write!(
+            f,
+            "MachineEmitReentrancyExceeded: depth {} exceeded cap {}",
+            self.depth, self.cap
+        )
+    }
+}
+
+impl std::error::Error for MachineEmitReentrancyExceeded {}
+
+fn panic_reentrancy_exceeded(depth: usize, cap: usize) -> ! {
+    panic::panic_any(MachineEmitReentrancyExceeded { depth, cap });
+}
+
+/// One pending machine emit.
+///
+/// `payload` is an opaque borrowed pointer. Slice 7 only lowers unit events and
+/// passes null. Future payload serialization must either point at storage that
+/// remains valid until the outermost step drain completes, or extend the ABI
+/// with ownership/length so this substrate can copy bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmitEvent {
+    /// Zero-based event tag from the machine event declaration order.
+    pub tag: u32,
+    /// Back-compat alias for earlier tests and callers.
+    pub event_idx: usize,
+    /// Opaque borrowed payload pointer; null for unit events in this slice.
+    pub payload: *const u8,
+}
+
+/// Append-only view used by drain handlers to enqueue nested emits.
+#[derive(Debug)]
+pub struct EmitQueueAppend<'a> {
+    queue: *mut EmitQueue,
+    _borrow: PhantomData<&'a mut EmitQueue>,
+}
+
+impl EmitQueueAppend<'_> {
+    /// Append a nested emit to the same FIFO drain.
+    pub fn push(&mut self, tag: u32, payload: *const u8) {
+        // SAFETY: `EmitQueueAppend` is only constructed by `EmitQueue::drain`
+        // for the queue currently being drained on this thread.
+        unsafe {
+            (*self.queue).push(tag, payload);
         }
     }
 }
 
-impl std::error::Error for EmitQueueError {}
-
-// ── EmitQueue ────────────────────────────────────────────────────────────────
-
-/// Default maximum nesting depth for `EmitQueue::drain`.
-///
-/// 16 concurrent drain frames is generous for all known machine topologies
-/// in v0.5 and provides an explicit bound on stack growth.  Override via
-/// `EmitQueue::with_cap`.
-pub const DEFAULT_REENTRANCY_CAP: usize = 16;
-
-/// Append-only view into an [`EmitQueue`] given to the drain handler.
-///
-/// The handler receives this view alongside each event so it can enqueue
-/// additional events without re-entering `drain` (which requires `&mut
-/// EmitQueue` and is therefore impossible while a drain is active via the
-/// safe API).  Newly pushed events are appended to the tail of the live
-/// drain loop and processed in FIFO order.
-///
-/// # Design
-///
-/// This is Option A of the re-enqueue API: a borrow-disjoint view that can
-/// only push.  The split is safe because `drain` holds `&mut depth` through
-/// [`DepthGuard`] and drives the queue directly; the handler receives
-/// `&mut queue` through this view.  Rust's disjoint field borrows make it
-/// well-formed.
-#[derive(Debug)]
-pub struct EmitQueueAppend<'a> {
-    queue: &'a mut VecDeque<EmitEvent>,
+/// Error returned by [`EmitQueue::drain`] when the handler fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DrainError<E> {
+    /// The per-event handler returned an error.
+    Handler(E),
 }
 
-impl EmitQueueAppend<'_> {
-    /// Enqueue an additional event during drain.
-    ///
-    /// The event is appended to the tail; the currently-executing `drain`
-    /// loop will process it before returning.
-    pub fn push(&mut self, machine_id: MachineId, event_idx: usize, payload: Vec<u8>) {
-        self.queue.push_back(EmitEvent {
-            machine_id,
-            event_idx,
-            payload,
-        });
+impl<E: std::fmt::Display> std::fmt::Display for DrainError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Handler(e) => write!(f, "machine emit drain handler error: {e}"),
+        }
     }
 }
 
-/// Synchronous per-step emit queue.
-///
-/// # Lifecycle
-///
-/// 1. Create once per actor (or per `step()` entry point, depending on the
-///    codegen wiring strategy).
-/// 2. Call [`EmitQueue::push`] from generated transition bodies.
-/// 3. Call [`EmitQueue::drain`] at the outermost `step()` boundary to process
-///    all enqueued events in FIFO order.
-/// 4. `Drop` clears the queue and resets the depth counter — safe across
-///    panics and early returns.
-///
-/// # Thread safety
-///
-/// `EmitQueue` is `!Send` and `!Sync` by design.  Each actor thread owns its
-/// own queue; sharing across thread boundaries would violate the per-actor
-/// isolation invariant that the scheduler enforces.  The `PhantomData<*const
-/// ()>` field makes this a hard type-level guarantee rather than a
-/// documentation-only note.
+impl<E: std::error::Error + 'static> std::error::Error for DrainError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Handler(e) => Some(e),
+        }
+    }
+}
+
+/// Single-threaded machine emit queue.
 #[derive(Debug)]
+#[repr(C)]
 pub struct EmitQueue {
-    /// Pending emits in arrival order.
     queue: VecDeque<EmitEvent>,
-    /// Current drain-call nesting depth.
-    depth: usize,
-    /// Maximum permitted nesting depth.
+    reentrancy_depth: usize,
+    drain_depth: usize,
     cap: usize,
-    /// Marker that makes `EmitQueue` `!Send` and `!Sync`.
-    ///
-    /// WHY: per-actor isolation is a hard invariant enforced at the type
-    /// level, not by documentation alone.  Raw pointers are `!Send + !Sync`
-    /// by definition; `PhantomData<*const ()>` propagates that to the struct
-    /// without adding any runtime cost or alignment overhead.
-    /// WHEN-OBSOLETE: if the scheduler gains a different per-actor ownership
-    /// primitive, remove this marker and replace with the correct trait bound.
+    draining: bool,
     _not_send_sync: PhantomData<*const ()>,
 }
 
 impl EmitQueue {
-    /// Create a new `EmitQueue` with the default reentrancy cap ([`DEFAULT_REENTRANCY_CAP`]).
+    /// Create a queue using the default or build-env configured cap.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            queue: VecDeque::new(),
-            depth: 0,
-            cap: DEFAULT_REENTRANCY_CAP,
-            _not_send_sync: PhantomData,
-        }
+        Self::with_cap(configured_reentrancy_cap())
     }
 
-    /// Create a new `EmitQueue` with a custom reentrancy cap.
-    ///
-    /// Useful in tests or contexts where the default 16 is too permissive or
-    /// too restrictive.
+    /// Create a queue with a caller-specified reentrancy cap.
     #[must_use]
     pub fn with_cap(cap: usize) -> Self {
         Self {
             queue: VecDeque::new(),
-            depth: 0,
+            reentrancy_depth: 0,
+            drain_depth: 0,
             cap,
+            draining: false,
             _not_send_sync: PhantomData,
         }
     }
 
-    /// Enqueue an emit event for delivery in the next drain.
-    ///
-    /// May be called before `drain` starts.  To push events from inside a
-    /// drain handler, use the [`EmitQueueAppend`] argument provided to the
-    /// handler instead.
-    pub fn push(&mut self, machine_id: MachineId, event_idx: usize, payload: Vec<u8>) {
+    /// Push an event onto the FIFO tail.
+    pub fn push(&mut self, tag: u32, payload: *const u8) {
         self.queue.push_back(EmitEvent {
-            machine_id,
-            event_idx,
+            tag,
+            event_idx: tag as usize,
             payload,
         });
     }
 
-    /// Process all enqueued emits synchronously in FIFO order.
+    /// Enter a generated `step()` frame.
     ///
-    /// For each event dequeued, `handler` is called with the event and an
-    /// [`EmitQueueAppend`] view.  The handler may enqueue additional events
-    /// via the append view; newly pushed events are appended to the tail and
-    /// processed in the same drain call.
-    ///
-    /// # Reentrancy cap
-    ///
-    /// Each call to `drain` increments an internal depth counter.  The counter
-    /// is decremented on all exit paths — normal completion, handler error,
-    /// and panic unwind — via a [`DepthGuard`].  If the counter exceeds `cap`,
-    /// `drain` returns [`EmitQueueError::ReentrancyCapExceeded`] immediately.
-    ///
-    /// Via the safe API alone, nested drain is impossible (`drain` requires
-    /// `&mut self`).  The cap guards codegen-wired re-entry paths where the
-    /// same queue may be accessed through a `thread_local` or similar.
-    ///
-    /// # Panic safety
-    ///
-    /// If the handler panics, [`DepthGuard::drop`] decrements the depth
-    /// counter and clears the queue.  This prevents a corrupted depth counter
-    /// or stale events from poisoning subsequent drain calls on the same
-    /// `EmitQueue` instance after a caught panic.
+    /// Exceeding the cap raises a typed [`MachineEmitReentrancyExceeded`] panic.
+    pub fn enter_step(&mut self) {
+        self.reentrancy_depth = self.reentrancy_depth.saturating_add(1);
+        if self.reentrancy_depth > self.cap {
+            let depth = self.reentrancy_depth;
+            self.reentrancy_depth = self.reentrancy_depth.saturating_sub(1);
+            panic_reentrancy_exceeded(depth, self.cap);
+        }
+    }
+
+    /// Exit a generated `step()` frame and drain only if it was outermost.
     ///
     /// # Errors
     ///
-    /// Returns `Err(DrainError::ReentrancyCapExceeded)` if the reentrancy
-    /// cap is breached.  Returns `Err(DrainError::Handler(e))` if the handler
-    /// returns an error for a specific event.
+    /// Returns [`DrainError::Handler`] if the supplied drain handler rejects an
+    /// event during the outermost-frame drain.
+    pub fn exit_step<E>(
+        &mut self,
+        handler: impl FnMut(&EmitEvent, &mut EmitQueueAppend<'_>) -> Result<(), E>,
+    ) -> Result<(), DrainError<E>> {
+        if self.reentrancy_depth == 0 {
+            return Ok(());
+        }
+
+        let was_outermost = self.reentrancy_depth == 1;
+        let was_draining = self.draining;
+        self.reentrancy_depth -= 1;
+        if was_outermost && !was_draining {
+            self.drain(handler)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Drain all pending events in FIFO order.
+    ///
+    /// `Drop` on the internal guard clears remaining events if the handler
+    /// unwinds, so a caught panic cannot leave stale queue state behind.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DrainError::Handler`] if the supplied handler rejects an event.
     pub fn drain<E>(
         &mut self,
         mut handler: impl FnMut(&EmitEvent, &mut EmitQueueAppend<'_>) -> Result<(), E>,
     ) -> Result<(), DrainError<E>> {
-        self.depth += 1;
-        let cap = self.cap;
-        // Guard decrements depth on all exits (normal, cap-exceeded early
-        // return, handler error, and panic unwind).  On panic it also clears
-        // the queue so stale events don't persist after a caught panic.
-        let guard = DepthGuard::new(&mut self.depth, &mut self.queue);
-
-        if *guard.depth > cap {
-            // Depth already incremented; guard decrements it on drop.
-            let depth = *guard.depth;
-            drop(guard);
-            return Err(DrainError::ReentrancyCapExceeded(
-                EmitQueueError::ReentrancyCapExceeded { depth, cap },
-            ));
+        self.drain_depth = self.drain_depth.saturating_add(1);
+        if self.drain_depth > self.cap {
+            let depth = self.drain_depth;
+            self.drain_depth = self.drain_depth.saturating_sub(1);
+            panic_reentrancy_exceeded(depth, self.cap);
         }
 
-        // Drive the drain loop through the guard's queue reference.
-        // `self.depth` is already borrowed by `guard`; `self.queue` is
-        // disjoint and accessible here through the guard.
-        while let Some(event) = guard.queue.pop_front() {
-            let mut append = EmitQueueAppend { queue: guard.queue };
-            if let Err(e) = handler(&event, &mut append) {
-                // Guard drops here, decrementing depth + clearing queue.
-                drop(guard);
-                return Err(DrainError::Handler(e));
+        self.draining = true;
+        let queue_ptr = self as *mut EmitQueue;
+        let _guard = DrainGuard { queue: queue_ptr };
+
+        while let Some(event) = self.queue.pop_front() {
+            let mut append = EmitQueueAppend {
+                queue: queue_ptr,
+                _borrow: PhantomData,
+            };
+            if let Err(error) = handler(&event, &mut append) {
+                return Err(DrainError::Handler(error));
             }
         }
 
-        // Guard drops here, decrementing depth.  Queue is already empty.
         Ok(())
     }
 
-    /// Returns the number of events currently waiting in the queue.
+    /// Remove every pending event and reset active counters.
+    pub fn clear(&mut self) {
+        self.queue.clear();
+        self.reentrancy_depth = 0;
+        self.drain_depth = 0;
+        self.draining = false;
+    }
+
+    /// Number of events waiting to drain.
     #[must_use]
     pub fn pending(&self) -> usize {
         self.queue.len()
     }
 
-    /// Returns the current drain-call nesting depth.
-    ///
-    /// Zero when no `drain` call is active.
+    /// Current nested `step()` depth.
     #[must_use]
-    pub fn depth(&self) -> usize {
-        self.depth
+    pub fn reentrancy_depth(&self) -> usize {
+        self.reentrancy_depth
     }
 
-    /// Returns the configured reentrancy cap.
+    /// Configured cap.
     #[must_use]
     pub fn cap(&self) -> usize {
         self.cap
@@ -310,622 +251,174 @@ impl Default for EmitQueue {
 }
 
 impl Drop for EmitQueue {
-    /// Clear the queue and reset the depth counter on all exits.
-    ///
-    /// Runs on normal drop, early return, and panic unwind — satisfying the
-    /// `cleanup-all-exits` invariant.
     fn drop(&mut self) {
-        self.queue.clear();
-        self.depth = 0;
+        self.clear();
     }
 }
 
-// ── Error type for drain ─────────────────────────────────────────────────────
-
-/// Error returned by [`EmitQueue::drain`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DrainError<E> {
-    /// Reentrancy cap exceeded.
-    ReentrancyCapExceeded(EmitQueueError),
-    /// The handler returned an error for a specific event.
-    Handler(E),
+struct DrainGuard {
+    queue: *mut EmitQueue,
 }
 
-impl<E: std::fmt::Display> std::fmt::Display for DrainError<E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ReentrancyCapExceeded(e) => write!(f, "{e}"),
-            Self::Handler(e) => write!(f, "emit drain handler error: {e}"),
-        }
-    }
-}
-
-impl<E: std::error::Error + 'static> std::error::Error for DrainError<E> {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::ReentrancyCapExceeded(e) => Some(e),
-            Self::Handler(e) => Some(e),
-        }
-    }
-}
-
-// ── Internal drain guard ─────────────────────────────────────────────────────
-
-/// RAII guard that decrements the depth counter on all exit paths.
-///
-/// Constructed at the top of `EmitQueue::drain`; dropped at every exit:
-/// - normal completion (end of function)
-/// - cap-exceeded early return (explicit `drop(guard)` before `return`)
-/// - handler error early return (explicit `drop(guard)` before `return`)
-/// - panic unwind (Rust drop glue)
-///
-/// On panic (`std::thread::panicking()`), the guard also clears the queue so
-/// stale events do not accumulate after a caught panic returns the queue to
-/// its caller.
-struct DepthGuard<'a> {
-    depth: &'a mut usize,
-    queue: &'a mut VecDeque<EmitEvent>,
-}
-
-impl<'a> DepthGuard<'a> {
-    fn new(depth: &'a mut usize, queue: &'a mut VecDeque<EmitEvent>) -> Self {
-        Self { depth, queue }
-    }
-}
-
-impl Drop for DepthGuard<'_> {
+impl Drop for DrainGuard {
     fn drop(&mut self) {
-        *self.depth = self.depth.saturating_sub(1);
-        // On panic unwind, clear remaining queued events so the queue is
-        // not in a partially-drained state if the panic is caught and the
-        // EmitQueue is reused.
+        // SAFETY: the guard is created from a live `&mut EmitQueue` and never
+        // outlives the drain call that owns that borrow.
+        let queue = unsafe { &mut *self.queue };
+        queue.drain_depth = queue.drain_depth.saturating_sub(1);
+        queue.draining = queue.drain_depth != 0;
         if std::thread::panicking() {
-            self.queue.clear();
+            queue.queue.clear();
+            queue.draining = false;
         }
     }
 }
 
-// ── Thread-local emit queue and C-ABI push/drain surface ─────────────────────
-//
-// Codegen-wired transition bodies call `hew_machine_emit_push` to record unit
-// emit events from inside a `<Name>__step` call.  The caller — either the Hew
-// runtime scheduler or a JIT-exec test harness — calls `hew_machine_emit_drain`
-// to process accumulated events after each step boundary.
-//
-// WHY thread-local: `EmitQueue` is `!Send + !Sync` by design (one queue per
-// actor thread); a thread-local gives the generated C-ABI push function access
-// without requiring a pointer argument that the current codegen substrate cannot
-// supply (no per-instance machine ID at the `__step` call site in Slice 7).
-//
-// WHEN-OBSOLETE: when per-actor scheduler integration installs a per-actor
-// queue reference — likely by passing it as an explicit parameter through the
-// actor handler ABI — the thread-local can be replaced by a pointer derived
-// from the execution context.
-//
-// SHIM: payload bytes are not yet serialised.  `hew_machine_emit_push` accepts
-// `payload_ptr` and `payload_len` arguments for ABI stability but the caller
-// (codegen) always passes `null` + `0` for unit events.  Non-unit event
-// payloads require a serialisation scheme (likely MessagePack) to be defined
-// in a follow-on slice; until then the codegen arm for non-empty payloads
-// fails closed with a diagnostic.
-use std::cell::RefCell;
-
-thread_local! {
-    /// Per-thread emit queue.  All generated `hew_machine_emit_push` calls on
-    /// this thread append to this queue.  The queue is drained by the actor
-    /// scheduler (in production) or the test harness (in tests) by calling
-    /// `hew_machine_emit_drain`.
-    static THREAD_EMIT_QUEUE: RefCell<EmitQueue> = RefCell::new(EmitQueue::new());
+struct ThreadEmitOwner {
+    queue: *mut EmitQueue,
 }
 
-/// Push one unit emit event onto the calling thread's emit queue.
+impl ThreadEmitOwner {
+    fn new() -> Self {
+        Self {
+            queue: Box::into_raw(Box::new(EmitQueue::new())),
+        }
+    }
+}
+
+impl Drop for ThreadEmitOwner {
+    fn drop(&mut self) {
+        if !self.queue.is_null() {
+            // SAFETY: `queue` was allocated by `ThreadEmitOwner::new` and is
+            // owned by this thread-local owner until thread teardown.
+            unsafe {
+                drop(Box::from_raw(self.queue));
+            }
+            self.queue = std::ptr::null_mut();
+        }
+    }
+}
+
+std::thread_local! {
+    static THREAD_EMIT_OWNER: ThreadEmitOwner = ThreadEmitOwner::new();
+}
+
+fn thread_queue_ptr() -> *mut EmitQueue {
+    THREAD_EMIT_OWNER.with(|owner| owner.queue)
+}
+
+fn resolve_queue(queue: *mut EmitQueue) -> *mut EmitQueue {
+    if queue.is_null() {
+        thread_queue_ptr()
+    } else {
+        queue
+    }
+}
+
+/// Push one machine emit.
 ///
 /// # ABI
 ///
 /// ```text
-/// hew_machine_emit_push(event_idx: u64, payload_ptr: *const u8, payload_len: u64) -> void
+/// hew_machine_emit_push(queue: *mut EmitQueue, tag: u32, payload: *const u8) -> i32
 /// ```
 ///
-/// `event_idx` is the zero-based index into the emitting machine's event
-/// declaration list (matches `HirMachineDecl.events` order).
-///
-/// `payload_ptr` / `payload_len` are reserved for serialised event-field
-/// bytes.  The current codegen always passes `null` + `0` (unit events only;
-/// see SHIM above).
-///
-/// The machine identity (`MachineId`) is recorded as `0` — a sentinel that
-/// signals "no per-instance identity available at this call site".  A
-/// follow-on slice that carries the execution context through the `__step`
-/// ABI will replace this with a meaningful address-derived ID.
+/// `queue == null` selects the calling thread's queue. `tag` is the event
+/// declaration index. `payload` is borrowed and never dereferenced by this
+/// function; it must remain valid until the outermost `step()` drain completes
+/// if a downstream handler dereferences it. Slice 7 codegen passes null.
 ///
 /// # Safety
 ///
-/// `payload_ptr` must be valid for `payload_len` bytes if `payload_len > 0`.
-/// Passing a null pointer with `payload_len == 0` is safe and is the only
-/// shape currently emitted by codegen.
+/// A non-null `queue` must point to a live [`EmitQueue`] owned by the current
+/// thread. The pointer must not be shared across threads.
 #[no_mangle]
 pub unsafe extern "C" fn hew_machine_emit_push(
-    event_idx: u64,
-    payload_ptr: *const u8,
-    payload_len: u64,
-) {
-    let payload = if payload_len == 0 || payload_ptr.is_null() {
-        Vec::new()
-    } else {
-        // Convert u64 → usize safely: on 32-bit targets (wasm32) payload_len
-        // may exceed usize::MAX; clamp to zero so the push is a no-op rather
-        // than unsound. The codegen SHIM note above explains why this branch
-        // is currently unreachable (all emits are unit events).
-        let len = usize::try_from(payload_len).unwrap_or(0);
-        if len == 0 {
-            Vec::new()
-        } else {
-            // SAFETY: caller guarantees payload_ptr is valid for payload_len bytes;
-            // len <= payload_len so the slice is within bounds.
-            unsafe { std::slice::from_raw_parts(payload_ptr, len).to_vec() }
-        }
-    };
-    // Convert event_idx u64 → usize; clamp on overflow (32-bit targets).
-    let event_idx_usize = usize::try_from(event_idx).unwrap_or(usize::MAX);
-    THREAD_EMIT_QUEUE.with(|cell| {
-        // `try_borrow_mut` fails if a drain is already in progress on this
-        // thread.  Failing closed is correct: a push from inside a drain
-        // handler must go through the `EmitQueueAppend` argument supplied to
-        // the handler — it is a programming error if generated code reaches
-        // this path from inside a drain.
-        //
-        // WHY not panic: a double-borrow abort would be hard to diagnose;
-        // silently dropping the push is wrong (violates reliability tenet);
-        // eprintln is the right fail-closed signal for a runtime interior
-        // error that the user's program cannot catch.
-        match cell.try_borrow_mut() {
-            Ok(mut q) => q.push(MachineId(0), event_idx_usize, payload),
-            Err(_) => {
-                eprintln!(
-                    "hew_machine_emit_push: push while drain is active on this thread \
-                     (event_idx={event_idx}); event dropped — use EmitQueueAppend inside drain"
-                );
-            }
-        }
-    });
+    queue: *mut EmitQueue,
+    tag: u32,
+    payload: *const u8,
+) -> i32 {
+    let queue = resolve_queue(queue);
+    if queue.is_null() {
+        return -1;
+    }
+    // SAFETY: caller supplied a valid queue pointer or we resolved the current
+    // thread's owner.
+    unsafe {
+        (*queue).push(tag, payload);
+    }
+    0
 }
 
-/// Drain all pending emits from the calling thread's emit queue, invoking
-/// `handler` for each event in FIFO order.
+/// Mark entry to a generated `step()` frame.
 ///
-/// This is the Rust-callable drain companion to the C-ABI push surface.
-/// Test harnesses and scheduler integration call this after each step
-/// boundary to process accumulated emits.
+/// # Safety
+///
+/// Same pointer contract as [`hew_machine_emit_push`].
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_machine_emit_step_enter(queue: *mut EmitQueue) -> i32 {
+    let queue = resolve_queue(queue);
+    if queue.is_null() {
+        return -1;
+    }
+    // SAFETY: pointer contract documented above.
+    unsafe {
+        (*queue).enter_step();
+    }
+    0
+}
+
+/// Mark exit from a generated `step()` frame.
+///
+/// The C ABI drain sink is intentionally scheduler-free in Slice 7: events are
+/// drained and discarded. Rust tests and future stdlib lifecycle dispatch use
+/// [`thread_emit_drain`] / [`EmitQueue::exit_step`] with an explicit handler.
+///
+/// # Safety
+///
+/// Same pointer contract as [`hew_machine_emit_push`].
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_machine_emit_step_exit(queue: *mut EmitQueue) -> i32 {
+    let queue = resolve_queue(queue);
+    if queue.is_null() {
+        return -1;
+    }
+    // SAFETY: pointer contract documented above.
+    unsafe {
+        let result = (*queue).exit_step(|_, _| Ok::<(), ()>(()));
+        if result.is_err() {
+            return -1;
+        }
+    }
+    0
+}
+
+/// Drain the calling thread's queue with a Rust handler.
 ///
 /// # Errors
 ///
-/// Returns `Err(DrainError::ReentrancyCapExceeded(_))` if the reentrancy
-/// depth limit is exceeded (recursive drain from inside a drain handler via
-/// a separate code path), or `Err(DrainError::Handler(e))` if the handler
-/// returns `Err(e)` for an event.
+/// Returns [`DrainError::Handler`] if the supplied handler rejects an event.
 pub fn thread_emit_drain<E>(
-    mut handler: impl FnMut(&EmitEvent, &mut EmitQueueAppend<'_>) -> Result<(), E>,
+    handler: impl FnMut(&EmitEvent, &mut EmitQueueAppend<'_>) -> Result<(), E>,
 ) -> Result<(), DrainError<E>> {
-    THREAD_EMIT_QUEUE.with(|cell| cell.borrow_mut().drain(&mut handler))
+    let queue = thread_queue_ptr();
+    // SAFETY: returned pointer is owned by the current thread.
+    unsafe { (*queue).drain(handler) }
 }
 
-/// Return the number of pending events in the calling thread's emit queue.
-///
-/// Intended for test assertions; not part of the stable C ABI.
+/// Number of pending events on the calling thread's queue.
 #[must_use]
 pub fn thread_emit_pending() -> usize {
-    THREAD_EMIT_QUEUE.with(|cell| cell.borrow().pending())
+    let queue = thread_queue_ptr();
+    // SAFETY: returned pointer is owned by the current thread.
+    unsafe { (*queue).pending() }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Helper to build a unit emit (no payload).
-    fn unit_event(id: u64, idx: usize) -> (MachineId, usize, Vec<u8>) {
-        (MachineId(id), idx, vec![])
-    }
-
-    // ── Type-level invariants ─────────────────────────────────────────────────
-
-    /// `EmitQueue` is `!Send` and `!Sync` by construction via
-    /// `PhantomData<*const ()>`.
-    ///
-    /// The static assertion is expressed as a compile-time `trait_assert`
-    /// check: `EmitQueue` does not implement `Send` or `Sync`.  Attempting to
-    /// send it across a thread boundary is a compile error.
-    ///
-    /// To verify: remove the `_not_send_sync` field and try to pass an
-    /// `EmitQueue` to `std::thread::spawn` — the compiler will accept it
-    /// (wrong).  With the field present it will reject it (correct).
-    #[test]
-    fn emit_queue_is_not_send_sync() {
-        // Positive assertion: the queue can be created and used on one thread.
-        let q = EmitQueue::new();
-        drop(q);
-        // Negative: the following line would be a compile error because
-        // EmitQueue is !Send (leave commented to keep the test compilable):
-        // std::thread::spawn(move || drop(EmitQueue::new()));
-    }
-
-    // ── Happy-path push + drain ───────────────────────────────────────────────
-
-    /// push then drain delivers events to the handler.
-    #[test]
-    fn push_drain_delivers_events() {
-        let mut q = EmitQueue::new();
-        let m = MachineId(1);
-        q.push(m, 0, vec![10, 20]);
-        q.push(m, 1, vec![30]);
-
-        let mut received = Vec::new();
-        q.drain(|ev: &EmitEvent, _append| -> Result<(), ()> {
-            received.push((ev.event_idx, ev.payload.clone()));
-            Ok(())
-        })
-        .unwrap();
-
-        assert_eq!(received, vec![(0, vec![10, 20]), (1, vec![30])]);
-    }
-
-    /// drain on an empty queue is a no-op.
-    #[test]
-    fn drain_empty_queue_is_noop() {
-        let mut q = EmitQueue::new();
-        let mut called = 0usize;
-        q.drain(|_: &EmitEvent, _append| -> Result<(), ()> {
-            called += 1;
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(called, 0);
-        assert_eq!(q.pending(), 0);
-    }
-
-    // ── FIFO ordering ────────────────────────────────────────────────────────
-
-    /// Events are delivered strictly in push order (FIFO).
-    #[test]
-    fn drain_fifo_ordering() {
-        let mut q = EmitQueue::new();
-        for (idx, id) in (0u64..8).enumerate() {
-            q.push(MachineId(id), idx, vec![u8::try_from(id).unwrap()]);
-        }
-
-        let mut order = Vec::new();
-        q.drain(|ev: &EmitEvent, _append| -> Result<(), ()> {
-            order.push(ev.event_idx);
-            Ok(())
-        })
-        .unwrap();
-
-        assert_eq!(order, (0..8).collect::<Vec<_>>());
-    }
-
-    // ── Re-enqueue during drain ───────────────────────────────────────────────
-
-    /// Events pushed via the append view inside the handler are appended and
-    /// drained in the same call, in FIFO order.
-    ///
-    /// Sequence: push(0), push(1) → drain starts → handle(0), append(42) →
-    /// handle(1) → handle(42).  Order must be [0, 1, 42].
-    #[test]
-    fn drain_handler_reenqueue_fifo() {
-        let mut q = EmitQueue::new();
-        q.push(MachineId(0), 0, vec![]);
-        q.push(MachineId(0), 1, vec![]);
-
-        let mut seen = Vec::new();
-        q.drain(|ev: &EmitEvent, append| -> Result<(), ()> {
-            seen.push(ev.event_idx);
-            // On the first event, enqueue an additional event.
-            if ev.event_idx == 0 {
-                append.push(MachineId(0), 42, vec![]);
-            }
-            Ok(())
-        })
-        .unwrap();
-
-        // 0 was first, then 1 (pre-pushed), then 42 (appended during handling of 0).
-        assert_eq!(seen, vec![0, 1, 42]);
-        assert_eq!(q.pending(), 0);
-    }
-
-    /// After drain, no events remain pending.
-    #[test]
-    fn drain_clears_queue() {
-        let mut q = EmitQueue::new();
-        q.push(MachineId(42), 3, vec![1, 2, 3]);
-        q.drain(|_: &EmitEvent, _append| Ok::<(), ()>(())).unwrap();
-        assert_eq!(q.pending(), 0);
-    }
-
-    // ── Reentrancy cap enforcement ────────────────────────────────────────────
-
-    /// A single drain at depth 1 is within the cap.
-    #[test]
-    fn single_drain_within_cap() {
-        let mut q = EmitQueue::with_cap(1);
-        q.push(MachineId(1), 0, vec![]);
-        let result = q.drain(|_: &EmitEvent, _append| Ok::<(), ()>(()));
-        assert!(result.is_ok());
-    }
-
-    /// Calling drain twice sequentially (not nested) is fine; depth resets
-    /// between calls.
-    #[test]
-    fn sequential_drains_reset_depth() {
-        let mut q = EmitQueue::with_cap(1);
-        q.push(MachineId(1), 0, vec![]);
-        q.drain(|_: &EmitEvent, _append| Ok::<(), ()>(())).unwrap();
-        assert_eq!(q.depth(), 0);
-
-        q.push(MachineId(1), 1, vec![]);
-        q.drain(|_: &EmitEvent, _append| Ok::<(), ()>(())).unwrap();
-        assert_eq!(q.depth(), 0);
-    }
-
-    /// Exceeding the reentrancy cap returns `ReentrancyCapExceeded`.
-    ///
-    /// Via the safe API, nested drain is impossible (`drain` requires `&mut
-    /// self`).  The cap guards codegen-wired re-entry paths — e.g. a
-    /// `thread_local`-accessed queue called from inside a handler.
-    ///
-    /// This test stands in for codegen-wired re-entry by directly setting
-    /// depth to simulate an outer frame already active, then calling drain.
-    #[test]
-    fn cap_exceeded_via_simulated_outer_frame() {
-        // Use cap=1 and simulate that one drain frame is already active by
-        // setting depth directly (permitted from the same module).
-        let mut q = EmitQueue::with_cap(1);
-        q.push(MachineId(1), 0, vec![]);
-
-        q.depth = 1; // simulates an outer codegen-wired drain frame
-        let result = q.drain(|_: &EmitEvent, _append| Ok::<(), ()>(()));
-        assert!(matches!(
-            result,
-            Err(DrainError::ReentrancyCapExceeded(
-                EmitQueueError::ReentrancyCapExceeded { depth: 2, cap: 1 }
-            ))
-        ));
-        // Depth is decremented by the guard even on the early cap return.
-        assert_eq!(q.depth(), 1); // back to 1 (the simulated outer frame)
-    }
-
-    /// After a cap-exceeded error, a subsequent drain (within cap) succeeds.
-    ///
-    /// Verifies that P1-B is fixed: the depth decrement on the cap-exceeded
-    /// path is real, not just documented.
-    ///
-    /// A cap-exceeded drain does NOT consume events — they remain pending.
-    /// The caller (or the outer frame once it completes) is responsible for
-    /// draining the queue when depth is back within cap.
-    #[test]
-    fn drain_succeeds_after_cap_exceeded_error() {
-        let mut q = EmitQueue::with_cap(2);
-
-        // Simulate two outer frames, hitting the cap.
-        q.depth = 2;
-        q.push(MachineId(1), 0, vec![]);
-        let err = q.drain(|_: &EmitEvent, _append| Ok::<(), ()>(()));
-        assert!(matches!(err, Err(DrainError::ReentrancyCapExceeded(_))));
-        // After the failed drain, depth is decremented back to the
-        // outer-frame level (depth was 2+1=3 briefly, guard brings it to 2).
-        assert_eq!(q.depth(), 2);
-        // The event is still pending — cap-exceeded does not consume events.
-        assert_eq!(q.pending(), 1);
-
-        // Reset depth to simulate the outer frames completing.
-        q.depth = 0;
-
-        // A fresh drain succeeds and delivers all pending events.
-        let mut seen = Vec::new();
-        q.drain(|ev, _append| -> Result<(), ()> {
-            seen.push(ev.event_idx);
-            Ok(())
-        })
-        .unwrap();
-        // Event 0 was retained from the failed drain.
-        assert_eq!(seen, vec![0]);
-    }
-
-    /// An even simpler cap-exceeded test: cap=0 means every drain is forbidden.
-    #[test]
-    fn cap_zero_forbids_all_drains() {
-        let mut q = EmitQueue::with_cap(0);
-        q.push(MachineId(1), 0, vec![]);
-        let result = q.drain(|_: &EmitEvent, _append| Ok::<(), ()>(()));
-        assert!(matches!(
-            result,
-            Err(DrainError::ReentrancyCapExceeded(
-                EmitQueueError::ReentrancyCapExceeded { depth: 1, cap: 0 }
-            ))
-        ));
-        // Depth decremented by guard: back to 0.
-        assert_eq!(q.depth(), 0);
-    }
-
-    // ── Nested drain is impossible by construction ────────────────────────────
-
-    /// `drain` requires `&mut self`, so it cannot be called recursively via
-    /// the safe API while a drain is active.  The cap guards codegen-wired
-    /// re-entry only.
-    ///
-    /// This test documents the invariant: we verify that trying to call drain
-    /// inside a handler is a compile error by inspection (the handler receives
-    /// `&EmitEvent` + `&mut EmitQueueAppend`, not `&mut EmitQueue`).
-    /// The append view has no `drain` method; calling `drain` inside the
-    /// handler is statically impossible.
-    #[test]
-    fn nested_drain_impossible_via_safe_api() {
-        // Structural assertion: EmitQueueAppend has no drain method.
-        // The handler can only call append.push(...), not append.drain(...).
-        // This test passes by existing — its value is documentation.
-        let mut q = EmitQueue::new();
-        q.push(MachineId(0), 0, vec![]);
-        q.drain(|_ev, _append: &mut EmitQueueAppend<'_>| -> Result<(), ()> {
-            // _append.drain(...) would be a compile error here.
-            Ok(())
-        })
-        .unwrap();
-    }
-
-    // ── Drop clears queue on panic ────────────────────────────────────────────
-
-    /// `cleanup-all-exits`: the drain guard clears the queue and decrements
-    /// depth when the handler panics.  This validates panic safety — the queue
-    /// must not retain stale events or a corrupted depth counter after a
-    /// caught panic returns the queue to its caller.
-    ///
-    /// We use a thread-local to share the queue across the `catch_unwind`
-    /// boundary without requiring `Send`.  The handler panic unwinds through
-    /// `drain`, which runs `DepthGuard::drop` (decrement + clear) before the
-    /// panic propagates to `catch_unwind`.
-    #[test]
-    fn drain_guard_clears_queue_on_handler_panic() {
-        use std::cell::RefCell;
-        use std::panic::AssertUnwindSafe;
-
-        thread_local! {
-            static TL_QUEUE: RefCell<EmitQueue> = RefCell::new(EmitQueue::new());
-        }
-
-        TL_QUEUE.with(|cell| {
-            let mut q = cell.borrow_mut();
-            q.push(MachineId(1), 0, vec![1, 2, 3]);
-            q.push(MachineId(2), 1, vec![4, 5, 6]);
-        });
-
-        // Drive a drain that panics inside the handler.  The closure captures
-        // nothing that is `!Send`; `TL_QUEUE` is accessed via thread-local.
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            TL_QUEUE.with(|cell| {
-                cell.borrow_mut()
-                    .drain(|_ev, _append: &mut EmitQueueAppend<'_>| -> Result<(), ()> {
-                        panic!("simulated handler panic");
-                    })
-                    .ok();
-            });
-        }));
-
-        assert!(result.is_err(), "expected panic to be caught");
-
-        // After the caught panic, the drain guard must have cleared the queue
-        // and decremented depth.
-        TL_QUEUE.with(|cell| {
-            let q = cell.borrow();
-            assert_eq!(q.pending(), 0, "queue must be cleared after handler panic");
-            assert_eq!(q.depth(), 0, "depth must be 0 after handler panic");
-        });
-    }
-
-    /// `cleanup-all-exits` (variant 2): dropping `EmitQueue` from a panicking
-    /// context clears the queue and resets depth.
-    #[test]
-    fn drop_on_panic_clears_queue() {
-        use std::panic::AssertUnwindSafe;
-
-        let mut q = EmitQueue::new();
-        q.push(MachineId(1), 0, vec![1, 2, 3]);
-        q.push(MachineId(2), 1, vec![4, 5, 6]);
-
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            let mut inner = EmitQueue::new();
-            inner.push(MachineId(99), 7, vec![0xff]);
-            inner.depth = 3; // simulate active drain frame
-
-            // Panic while the queue has events and a non-zero depth.
-            panic!("simulated transition-body panic");
-        }));
-
-        assert!(result.is_err(), "expected panic to be caught");
-        // The queue was dropped during unwind; Drop ran.
-
-        // Verify our outer queue is unaffected.
-        assert_eq!(q.pending(), 2);
-    }
-
-    /// `cleanup-all-exits` (variant 3): Drop on a queue that holds the
-    /// only reference to its events does not double-free or leak.
-    #[test]
-    fn drop_clears_pending_events() {
-        let mut q = EmitQueue::new();
-        for (idx, id) in (0u64..5).enumerate() {
-            let (machine_id, _, payload) = unit_event(id, idx);
-            q.push(machine_id, idx, payload);
-        }
-        assert_eq!(q.pending(), 5);
-        drop(q);
-        // No leak — passes under Miri.
-    }
-
-    // ── Handler error propagation ─────────────────────────────────────────────
-
-    /// A handler returning `Err` short-circuits the drain loop.
-    #[test]
-    fn handler_error_short_circuits_drain() {
-        let mut q = EmitQueue::new();
-        q.push(MachineId(1), 0, vec![]);
-        q.push(MachineId(1), 1, vec![]);
-        q.push(MachineId(1), 2, vec![]);
-
-        let mut seen = Vec::new();
-        let result = q.drain(|ev: &EmitEvent, _append| {
-            seen.push(ev.event_idx);
-            if ev.event_idx == 1 {
-                return Err("stop");
-            }
-            Ok(())
-        });
-
-        assert!(matches!(result, Err(DrainError::Handler("stop"))));
-        // Only events 0 and 1 were delivered.
-        assert_eq!(seen, vec![0, 1]);
-        // Remaining event (idx 2) is still in the queue (handler error
-        // does not clear remaining events — only panics do).
-        assert_eq!(q.pending(), 1);
-        // Depth is back to 0 after handler error.
-        assert_eq!(q.depth(), 0);
-    }
-
-    // ── Accessors ────────────────────────────────────────────────────────────
-
-    /// `pending()` reflects the queue length.
-    #[test]
-    fn pending_reflects_queue_length() {
-        let mut q = EmitQueue::new();
-        assert_eq!(q.pending(), 0);
-        q.push(MachineId(1), 0, vec![]);
-        assert_eq!(q.pending(), 1);
-        q.push(MachineId(2), 0, vec![]);
-        assert_eq!(q.pending(), 2);
-    }
-
-    /// `depth()` is 0 outside a drain call.
-    #[test]
-    fn depth_is_zero_outside_drain() {
-        let q = EmitQueue::new();
-        assert_eq!(q.depth(), 0);
-    }
-
-    /// `cap()` returns the configured cap.
-    #[test]
-    fn cap_accessor_returns_configured_cap() {
-        let q = EmitQueue::with_cap(4);
-        assert_eq!(q.cap(), 4);
-
-        let q2 = EmitQueue::new();
-        assert_eq!(q2.cap(), DEFAULT_REENTRANCY_CAP);
-    }
-
-    /// `Default` impl creates an empty queue with default cap.
-    #[test]
-    fn default_creates_empty_queue() {
-        let q = EmitQueue::default();
-        assert_eq!(q.pending(), 0);
-        assert_eq!(q.depth(), 0);
-        assert_eq!(q.cap(), DEFAULT_REENTRANCY_CAP);
+/// Clear the calling thread's queue and active counters.
+pub fn thread_emit_clear() {
+    let queue = thread_queue_ptr();
+    // SAFETY: returned pointer is owned by the current thread.
+    unsafe {
+        (*queue).clear();
     }
 }

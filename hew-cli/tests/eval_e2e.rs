@@ -231,6 +231,114 @@ fn statement_replay_repl_does_not_repeat_one_shot_statement() {
     assert!(stdout.contains("2\n"), "stdout: {stdout}");
 }
 
+#[test]
+fn repl_loads_and_runs_hello_world_file() {
+    require_codegen();
+
+    let output = run_eval_with_stdin(
+        &["eval"],
+        ":load examples/playground/basics/hello_world.hew\n:quit\n",
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Hello, World!\n"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("Loaded examples/playground/basics/hello_world.hew"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn repl_accepts_multiline_function_and_keeps_it_in_session() {
+    require_codegen();
+
+    let output = run_eval_with_stdin(
+        &["eval"],
+        "fn foo() -> i64 {\n    41\n}\nfoo() + 1\n:quit\n",
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("42\n"), "stdout: {stdout}");
+}
+
+#[test]
+fn repl_type_command_reads_interactive_session_binding() {
+    require_codegen();
+
+    let output = run_eval_with_stdin(&["eval"], "var x = 10;\n:type x\n:quit\n");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("i64\n"), "stdout: {stdout}");
+}
+
+#[test]
+fn repl_displays_typed_generator_description() {
+    let output = run_eval_with_stdin(&["eval"], "gen { yield 1; yield 2; }\n:quit\n");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("<generator yielding i64, returning ()>\n"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("<generator>\n"),
+        "stdout must include typed generator details, not a placeholder: {stdout}"
+    );
+}
+
+#[test]
+fn repl_type_command_surfaces_diagnostic_when_no_type_info() {
+    let output = run_eval_with_stdin(&["eval"], ":type None\n:quit\n");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("could not determine type: no type information for expression"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("could not determine type"),
+        "diagnostic must be emitted on stderr, not stdout: {stdout}"
+    );
+    assert!(!stdout.contains("unknown"), "stdout: {stdout}");
+    assert!(!stderr.contains("unknown"), "stderr: {stderr}");
+}
+
 #[ignore = "v0.5 native eval route is live, but this fixture still uses unsupported HIR/MIR/runtime surface"]
 #[test]
 fn eval_timeout_exit_code_is_non_zero() {
@@ -1965,5 +2073,111 @@ fn eval_repl_jit_worker_flag_accepted_by_clap() {
         "hew eval --jit=worker exited non-zero\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// End-to-end: a user function that returns `Result<i64, string>` constructs
+/// `Ok` / `Err`, and a match-statement on the result binds each variant's
+/// payload and dispatches per-arm bodies. Guards against the substrate gap
+/// that produced `UnresolvedSymbol("Ok")` at HIR resolution and `match arm
+/// variant not registered in machine/enum ctor registry` for the arms.
+///
+/// The fix registered built-in `Option<T>` / `Result<T, E>` in HIR's
+/// `machine_ctor_registry` + `enum_variants_by_name` pre-pass, and added a
+/// `Stmt::Match` lowering arm so statement-position `match` reaches the
+/// match builder. We run the program end-to-end (not just inspect IR) and
+/// assert the byte-level stdout so codegen runs the right branch per match.
+#[test]
+fn run_result_ok_err_ctors_and_match_arms_dispatch_per_variant() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("result_match.hew");
+    std::fs::write(
+        &hew_src,
+        "fn parse_positive(n: i64) -> Result<i64, string> {\n\
+         \x20   if n == 42 {\n\
+         \x20       Ok(42)\n\
+         \x20   } else {\n\
+         \x20       Err(\"not the answer\")\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let r1 = parse_positive(42);\n\
+         \x20   let r2 = parse_positive(7);\n\
+         \x20   match r1 {\n\
+         \x20       Ok(n) => println(n),\n\
+         \x20       Err(_) => println(0),\n\
+         \x20   }\n\
+         \x20   match r2 {\n\
+         \x20       Ok(n) => println(n),\n\
+         \x20       Err(msg) => println(msg),\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&hew_src)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "42\nnot the answer\n",
+    );
+}
+
+/// Negative probe: matching an `Option<T>` pattern (`Some` / `None`) against
+/// a `Result<T, E>` scrutinee must be rejected at type-check time, not
+/// silently miscompiled. Guards against the failure mode where the HIR
+/// match-arm lowering would have happily accepted any registered variant
+/// name regardless of the scrutinee's enum type.
+///
+/// Asserts a non-zero exit code with a stderr message that mentions the
+/// offending variant and the scrutinee enum. The check is by substring to
+/// avoid coupling to the exact diagnostic phrasing.
+#[test]
+fn match_wrong_variant_against_result_scrutinee_is_compile_time_type_error() {
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("result_wrong_variant.hew");
+    std::fs::write(
+        &hew_src,
+        "fn main() {\n\
+         \x20   let r: Result<i64, string> = Ok(1);\n\
+         \x20   match r {\n\
+         \x20       Some(x) => println(x),\n\
+         \x20       None => println(0),\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&hew_src)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "hew run should fail on wrong-variant match; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("Some") && stderr.contains("Result"),
+        "stderr should name the offending variant `Some` and the scrutinee enum `Result`; got: {stderr}"
     );
 }

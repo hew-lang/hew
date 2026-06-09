@@ -1,4 +1,7 @@
 use hew_parser::ast::ResourceMarker as AstResourceMarker;
+use hew_types::builtin_type::{
+    BuiltinHandleFamily, BuiltinType, BuiltinTypeMarker, BuiltinTypeRole as BuiltinRegistrationRole,
+};
 use hew_types::ResolvedTy;
 
 use crate::value_class::{ResourceMarker, TypeClassTable};
@@ -37,77 +40,87 @@ pub enum BuiltinTypeShape {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuiltinTypeRegistration {
+    pub builtin: BuiltinType,
     pub name: &'static str,
     pub marker: ResourceMarker,
     pub close_method: Option<&'static str>,
     pub shape: BuiltinTypeShape,
     pub role: Option<BuiltinTypeRole>,
+    pub handle_family: Option<BuiltinHandleFamily>,
+    pub arity: usize,
+    pub roles: &'static [BuiltinRegistrationRole],
 }
 
-const PANIC_INFO_FIELDS: &[BuiltinTypeField] = &[BuiltinTypeField {
+impl BuiltinTypeRegistration {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        self.builtin.canonical_name()
+    }
+
+    #[must_use]
+    pub fn has_role(self, role: BuiltinRegistrationRole) -> bool {
+        self.roles.contains(&role)
+    }
+}
+
+const CRASH_INFO_FIELDS: &[BuiltinTypeField] = &[BuiltinTypeField {
     name: "code",
     ty: BuiltinFieldTy::I64,
 }];
 
 const CRASH_ACTION_VARIANTS: &[&str] = &["Restart", "Escalate", "Kill"];
 
+const fn marker(marker: BuiltinTypeMarker) -> ResourceMarker {
+    match marker {
+        BuiltinTypeMarker::None => ResourceMarker::None,
+        BuiltinTypeMarker::BitCopy => ResourceMarker::BitCopy,
+        BuiltinTypeMarker::Resource => ResourceMarker::Resource,
+        BuiltinTypeMarker::Linear => ResourceMarker::Linear,
+    }
+}
+
+const fn legacy_role(builtin: BuiltinType) -> Option<BuiltinTypeRole> {
+    match builtin {
+        BuiltinType::CrashInfo => Some(BuiltinTypeRole::CrashInfo),
+        _ => None,
+    }
+}
+
+macro_rules! registration {
+    ($builtin:ident, $shape:expr) => {
+        BuiltinTypeRegistration {
+            builtin: BuiltinType::$builtin,
+            name: BuiltinType::$builtin.canonical_name(),
+            marker: marker(BuiltinType::$builtin.marker()),
+            close_method: BuiltinType::$builtin.close_method(),
+            shape: $shape,
+            role: legacy_role(BuiltinType::$builtin),
+            handle_family: BuiltinType::$builtin.handle_family(),
+            arity: BuiltinType::$builtin.arity(),
+            roles: BuiltinType::$builtin.roles(),
+        }
+    };
+}
+
 const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
-    BuiltinTypeRegistration {
-        name: "Duplex",
-        marker: ResourceMarker::Resource,
-        close_method: Some("close"),
-        shape: BuiltinTypeShape::Opaque,
-        role: None,
-    },
-    BuiltinTypeRegistration {
-        name: "Sink",
-        marker: ResourceMarker::Resource,
-        close_method: Some("close"),
-        shape: BuiltinTypeShape::Opaque,
-        role: None,
-    },
-    BuiltinTypeRegistration {
-        name: "Stream",
-        marker: ResourceMarker::Resource,
-        close_method: Some("close"),
-        shape: BuiltinTypeShape::Opaque,
-        role: None,
-    },
-    BuiltinTypeRegistration {
-        name: "LambdaActorHandle",
-        marker: ResourceMarker::Resource,
-        close_method: Some("close"),
-        shape: BuiltinTypeShape::Opaque,
-        role: None,
-    },
-    BuiltinTypeRegistration {
-        name: "SendHalf",
-        marker: ResourceMarker::Resource,
-        close_method: Some("close"),
-        shape: BuiltinTypeShape::Opaque,
-        role: None,
-    },
-    BuiltinTypeRegistration {
-        name: "RecvHalf",
-        marker: ResourceMarker::Resource,
-        close_method: Some("close"),
-        shape: BuiltinTypeShape::Opaque,
-        role: None,
-    },
-    BuiltinTypeRegistration {
-        name: "PanicInfo",
-        marker: ResourceMarker::BitCopy,
-        close_method: None,
-        shape: BuiltinTypeShape::Struct(PANIC_INFO_FIELDS),
-        role: Some(BuiltinTypeRole::CrashInfo),
-    },
-    BuiltinTypeRegistration {
-        name: "CrashAction",
-        marker: ResourceMarker::None,
-        close_method: None,
-        shape: BuiltinTypeShape::Enum(CRASH_ACTION_VARIANTS),
-        role: None,
-    },
+    registration!(Duplex, BuiltinTypeShape::Opaque),
+    registration!(Sink, BuiltinTypeShape::Opaque),
+    registration!(Stream, BuiltinTypeShape::Opaque),
+    registration!(Pid, BuiltinTypeShape::Opaque),
+    registration!(LocalPid, BuiltinTypeShape::Opaque),
+    registration!(RemotePid, BuiltinTypeShape::Opaque),
+    registration!(HewActor, BuiltinTypeShape::Opaque),
+    registration!(HewDuplex, BuiltinTypeShape::Opaque),
+    registration!(HewSendHalf, BuiltinTypeShape::Opaque),
+    registration!(HewRecvHalf, BuiltinTypeShape::Opaque),
+    registration!(BoxedActor, BuiltinTypeShape::Opaque),
+    registration!(ActorState, BuiltinTypeShape::Opaque),
+    registration!(MachineState, BuiltinTypeShape::Opaque),
+    registration!(LambdaActorHandle, BuiltinTypeShape::Opaque),
+    registration!(SendHalf, BuiltinTypeShape::Opaque),
+    registration!(RecvHalf, BuiltinTypeShape::Opaque),
+    registration!(CrashInfo, BuiltinTypeShape::Struct(CRASH_INFO_FIELDS)),
+    registration!(CrashAction, BuiltinTypeShape::Enum(CRASH_ACTION_VARIANTS)),
 ];
 
 #[must_use]
@@ -119,7 +132,7 @@ pub fn builtin_type_registrations() -> &'static [BuiltinTypeRegistration] {
 pub fn builtin_type_registration(name: &str) -> Option<&'static BuiltinTypeRegistration> {
     BUILTIN_TYPE_REGISTRATIONS
         .iter()
-        .find(|registration| registration.name == name)
+        .find(|registration| registration.name() == name)
 }
 
 /// Return the compiler-known crash-info payload registration.
@@ -167,7 +180,7 @@ pub fn seed_builtin_type_classes(type_classes: &mut TypeClassTable) {
             "BitCopy builtin types must not register close methods"
         );
         type_classes.insert(
-            registration.name.to_string(),
+            registration.name().to_string(),
             (
                 registration
                     .marker
@@ -258,33 +271,33 @@ mod tests {
     }
 
     #[test]
-    fn panic_info_is_seeded_as_bitcopy_marker() {
+    fn crash_info_is_seeded_as_bitcopy_marker() {
         let mut table: TypeClassTable = HashMap::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
-            crate::lookup_type_marker("PanicInfo", &table),
+            crate::lookup_type_marker("CrashInfo", &table),
             Some(ResourceMarker::BitCopy),
-            "PanicInfo must be BitCopy so crash-hook payload lowering is marker-driven"
+            "CrashInfo must be BitCopy so crash-hook payload lowering is marker-driven"
         );
     }
 
     #[test]
-    fn panic_info_named_ty_resolves_to_bitcopy() {
+    fn crash_info_named_ty_resolves_to_bitcopy() {
         let mut table: TypeClassTable = HashMap::default();
         seed_builtin_type_classes(&mut table);
         let ty = ResolvedTy::Named {
-            name: "PanicInfo".to_string(),
+            name: "CrashInfo".to_string(),
             args: vec![],
         };
         assert_eq!(ValueClass::of_ty(&ty, &table), ValueClass::BitCopy);
     }
 
     #[test]
-    fn panic_info_shape_is_registered_as_crash_info_payload() {
+    fn crash_info_shape_is_registered_as_crash_info_payload() {
         let registration = crash_info_type_registration();
-        assert_eq!(registration.name, "PanicInfo");
+        assert_eq!(registration.name(), "CrashInfo");
         assert_eq!(registration.marker, ResourceMarker::BitCopy);
-        assert_eq!(registration.role, Some(BuiltinTypeRole::CrashInfo));
+        assert!(registration.has_role(BuiltinRegistrationRole::CrashInfoPayload));
         assert_eq!(
             registration.shape,
             BuiltinTypeShape::Struct(&[BuiltinTypeField {
@@ -306,12 +319,12 @@ mod tests {
     }
 
     #[test]
-    fn panic_info_named_ty_is_known_to_type_classes() {
+    fn crash_info_named_ty_is_known_to_type_classes() {
         let mut table: TypeClassTable = HashMap::default();
         seed_builtin_type_classes(&mut table);
         assert!(
-            table.contains_key("PanicInfo"),
-            "PanicInfo absent from TypeClassTable; on(crash) hook params would fire UnknownType"
+            table.contains_key("CrashInfo"),
+            "CrashInfo absent from TypeClassTable; on(crash) hook params would fire UnknownType"
         );
     }
 
@@ -323,5 +336,123 @@ mod tests {
             table.contains_key("CrashAction"),
             "CrashAction absent from TypeClassTable; on(crash) hook return type would fire UnknownType"
         );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "table-driven registry coverage keeps each handle fact visible"
+    )]
+    fn handle_and_project_cap_registrations_carry_shape_marker_and_roles() {
+        let expected = [
+            (
+                BuiltinType::Pid,
+                ResourceMarker::None,
+                None,
+                BuiltinTypeShape::Opaque,
+                Some(BuiltinHandleFamily::ActorPid),
+                0,
+                &[][..],
+            ),
+            (
+                BuiltinType::LocalPid,
+                ResourceMarker::Resource,
+                None,
+                BuiltinTypeShape::Opaque,
+                Some(BuiltinHandleFamily::ActorPid),
+                1,
+                &[
+                    BuiltinRegistrationRole::ActorDispatchLocal,
+                    BuiltinRegistrationRole::SupervisorLocalPid,
+                ][..],
+            ),
+            (
+                BuiltinType::RemotePid,
+                ResourceMarker::Resource,
+                None,
+                BuiltinTypeShape::Opaque,
+                Some(BuiltinHandleFamily::ActorPid),
+                1,
+                &[BuiltinRegistrationRole::ActorDispatchRemote][..],
+            ),
+            (
+                BuiltinType::HewActor,
+                ResourceMarker::Resource,
+                Some("close"),
+                BuiltinTypeShape::Opaque,
+                Some(BuiltinHandleFamily::ActorRuntime),
+                0,
+                &[BuiltinRegistrationRole::WasmNativeOnlyHandle][..],
+            ),
+            (
+                BuiltinType::HewDuplex,
+                ResourceMarker::Resource,
+                Some("close"),
+                BuiltinTypeShape::Opaque,
+                Some(BuiltinHandleFamily::Duplex),
+                2,
+                &[BuiltinRegistrationRole::WasmNativeOnlyHandle][..],
+            ),
+            (
+                BuiltinType::HewSendHalf,
+                ResourceMarker::Resource,
+                Some("close"),
+                BuiltinTypeShape::Opaque,
+                Some(BuiltinHandleFamily::DuplexHalf),
+                0,
+                &[BuiltinRegistrationRole::WasmNativeOnlyHandle][..],
+            ),
+            (
+                BuiltinType::HewRecvHalf,
+                ResourceMarker::Resource,
+                Some("close"),
+                BuiltinTypeShape::Opaque,
+                Some(BuiltinHandleFamily::DuplexHalf),
+                0,
+                &[BuiltinRegistrationRole::WasmNativeOnlyHandle][..],
+            ),
+            (
+                BuiltinType::BoxedActor,
+                ResourceMarker::Resource,
+                Some("close"),
+                BuiltinTypeShape::Opaque,
+                Some(BuiltinHandleFamily::ActorRuntime),
+                0,
+                &[BuiltinRegistrationRole::WasmNativeOnlyHandle][..],
+            ),
+            (
+                BuiltinType::ActorState,
+                ResourceMarker::Linear,
+                None,
+                BuiltinTypeShape::Opaque,
+                Some(BuiltinHandleFamily::ActorState),
+                1,
+                &[BuiltinRegistrationRole::ActorStatePayload][..],
+            ),
+            (
+                BuiltinType::MachineState,
+                ResourceMarker::Linear,
+                None,
+                BuiltinTypeShape::Opaque,
+                Some(BuiltinHandleFamily::MachineState),
+                1,
+                &[BuiltinRegistrationRole::MachineStatePayload][..],
+            ),
+        ];
+
+        for (kind, marker, close_method, shape, family, arity, roles) in expected {
+            let registration = builtin_type_registration(kind.canonical_name())
+                .unwrap_or_else(|| panic!("missing HIR registration for {kind:?}"));
+            assert_eq!(registration.builtin, kind);
+            assert_eq!(registration.marker, marker, "{kind:?} marker");
+            assert_eq!(
+                registration.close_method, close_method,
+                "{kind:?} close method"
+            );
+            assert_eq!(registration.shape, shape, "{kind:?} shape");
+            assert_eq!(registration.handle_family, family, "{kind:?} family");
+            assert_eq!(registration.arity, arity, "{kind:?} arity");
+            assert_eq!(registration.roles, roles, "{kind:?} roles");
+        }
     }
 }

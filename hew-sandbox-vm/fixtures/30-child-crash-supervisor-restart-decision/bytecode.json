@@ -1,0 +1,351 @@
+{
+  "capabilities": [
+    {
+      "disposition": "allowed",
+      "id": "core.stdout",
+      "reason": "page stdout shim",
+      "required_by": [
+        "sym:core.stdout.println"
+      ]
+    }
+  ],
+  "compiler_version": "handcrafted-pending-supervisor-source-fixture",
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": "block:worker.explode.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": "boom"
+                }
+              ],
+              "dst": "local:explode.msg",
+              "op": "const.string",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:explode.msg"
+                }
+              ],
+              "dst": null,
+              "op": "panic",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:worker.explode",
+      "locals": [
+        {
+          "id": "local:explode.reply",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:reply"
+        },
+        {
+          "id": "local:explode.msg",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:string"
+        }
+      ],
+      "module": "mod:main",
+      "name": "Worker.explode",
+      "params": [
+        "local:explode.reply"
+      ],
+      "result": "type:unit",
+      "span": null
+    },
+    {
+      "blocks": [
+        {
+          "id": "block:worker.crash.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": "crash hook"
+                }
+              ],
+              "dst": "local:crash.text",
+              "op": "const.string",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "symbol",
+                  "value": "sym:core.stdout.println"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:crash.text"
+                }
+              ],
+              "dst": null,
+              "op": "call.stdlib",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": "restart"
+                }
+              ],
+              "dst": "local:crash.decision",
+              "op": "const.string",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [
+              {
+                "kind": "local",
+                "value": "local:crash.decision"
+              }
+            ],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:worker.crash",
+      "locals": [
+        {
+          "id": "local:crash.failure",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:string"
+        },
+        {
+          "id": "local:crash.text",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:string"
+        },
+        {
+          "id": "local:crash.decision",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:string"
+        }
+      ],
+      "module": "mod:main",
+      "name": "Worker.on_crash",
+      "params": [
+        "local:crash.failure"
+      ],
+      "result": "type:string",
+      "span": null
+    },
+    {
+      "blocks": [
+        {
+          "id": "block:main.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "type",
+                  "value": "type:Sup"
+                }
+              ],
+              "dst": "local:sup",
+              "op": "supervisor.spawn",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:sup"
+                },
+                {
+                  "kind": "literal",
+                  "value": "worker"
+                }
+              ],
+              "dst": "local:child",
+              "op": "supervisor.child",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:child"
+                },
+                {
+                  "kind": "symbol",
+                  "value": "explode"
+                }
+              ],
+              "dst": null,
+              "op": "actor.send",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:main",
+      "locals": [
+        {
+          "id": "local:sup",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:Sup"
+        },
+        {
+          "id": "local:child",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:Worker"
+        }
+      ],
+      "module": "mod:main",
+      "name": "main",
+      "params": [],
+      "result": "type:unit",
+      "span": null
+    }
+  ],
+  "hew_version": "0.5.0-pre",
+  "layouts": {
+    "actors": [
+      {
+        "handlers": [
+          {
+            "function": "fn:worker.explode",
+            "name": "explode"
+          },
+          {
+            "function": "fn:worker.crash",
+            "name": "on(crash)"
+          }
+        ],
+        "id": "type:Worker",
+        "max_mailbox": 4,
+        "name": "Worker",
+        "state_fields": []
+      }
+    ],
+    "enums": [],
+    "machines": [],
+    "records": [],
+    "supervisors": [
+      {
+        "child_specs": [
+          {
+            "id": "worker",
+            "restart": "permanent",
+            "start_spec": {
+              "actor": "type:Worker",
+              "args": []
+            }
+          }
+        ],
+        "id": "type:Sup",
+        "name": "Sup",
+        "restart_intensity": 1,
+        "restart_window_ms": 60000,
+        "strategy": "one_for_one"
+      }
+    ],
+    "types": [
+      {
+        "id": "type:unit",
+        "kind": "unit",
+        "name": "()"
+      },
+      {
+        "id": "type:string",
+        "kind": "string",
+        "name": "String"
+      },
+      {
+        "id": "type:reply",
+        "kind": "opaque",
+        "name": "ReplyToken"
+      },
+      {
+        "id": "type:Worker",
+        "kind": "actor",
+        "name": "Worker"
+      },
+      {
+        "id": "type:Sup",
+        "kind": "supervisor",
+        "name": "Sup"
+      }
+    ]
+  },
+  "module_graph": {
+    "entry": "mod:main",
+    "modules": [
+      {
+        "functions": [
+          "fn:worker.explode",
+          "fn:worker.crash",
+          "fn:main"
+        ],
+        "id": "mod:main",
+        "imports": [],
+        "path": "main.hew",
+        "source_id": "src:main"
+      }
+    ]
+  },
+  "package_id": "pkg:child-crash-supervisor-restart-decision",
+  "profile": "sandbox.educational.v0",
+  "schema_version": "hew.sandbox.bytecode.v0",
+  "source_map": {
+    "sources": [],
+    "spans": []
+  },
+  "stdlib_symbols": [
+    {
+      "admission": "allowed",
+      "capability": "core.stdout",
+      "id": "sym:core.stdout.println",
+      "module": "core.stdout",
+      "name": "println",
+      "params": [
+        "type:any"
+      ],
+      "result": "type:unit"
+    }
+  ]
+}

@@ -4273,13 +4273,13 @@ added in later editions without growing the annotation vocabulary.
 | ---------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `#[on(start)]`   | `fn name()`                               | Once, after the actor's fields are initialized and before any message is dispatched.            |
 | `#[on(stop)]`    | `fn name()`                               | Once per actor instance, on normal exit, cancellation by an enclosing `fork{}`, or supervisor `Shutdown`. |
-| `#[on(crash)]`   | `fn name(info: PanicInfo) -> CrashAction` | After a child trap is classified and before v0.5 restart-policy handling.                       |
+| `#[on(crash)]`   | `fn name(info: CrashInfo) -> CrashAction` | After a child trap is classified and before v0.5 restart-policy handling.                       |
 | `#[on(upgrade)]` | reserved                                  | Reserved for v0.6 hot-upgrade machinery; not a usable v0.5 hook.                               |
 
 Unknown hook kinds (e.g. `#[on(restart)]`) are rejected with a diagnostic listing the valid set.
 
 `#[on(crash)]` is live in v0.5 as of `373b95ea`. The v0.5 handler ABI is
-`(PanicInfo) -> CrashAction`, but the returned `CrashAction` is ignored in this
+`(CrashInfo) -> CrashAction`, but the returned `CrashAction` is ignored in this
 edition; supervisors honour each child's `restart_policy` instead. `#[on(upgrade)]`
 is a reserved spelling for v0.6, when hot-upgrade invocation and state migration
 are expected to land.
@@ -4288,7 +4288,7 @@ are expected to land.
 
 1. A hook is a plain `fn` declaration inside an actor body carrying exactly one `#[on(...)]` annotation whose kind is `start`, `stop`, `crash`, or the reserved `upgrade`.
 2. `#[on(start)]` and `#[on(stop)]` hooks take **no parameters**. Actor fields are in scope by bare name (the same convention as `init { }` and ordinary actor methods).
-3. `#[on(crash)]` hooks take exactly one `PanicInfo` parameter and declare `CrashAction` as the return type. The return value is side-effects-only in v0.5 and becomes a control surface no earlier than v0.6.
+3. `#[on(crash)]` hooks take exactly one `CrashInfo` parameter and declare `CrashAction` as the return type. The return value is side-effects-only in v0.5 and becomes a control surface no earlier than v0.6.
 4. `#[on(upgrade)]` is rejected during v0.5 lowering; source that needs hot upgrade must wait for the v0.6 upgrade machinery.
 5. `#[on(start)]` and `#[on(stop)]` hooks return `()`.
 6. A hook is **not** `pure`, **not** generic, and has no `where` clause.

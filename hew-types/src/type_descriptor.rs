@@ -86,8 +86,8 @@ impl ResolvedTy {
             ResolvedTy::Slice(elem) => {
                 format!("[{}]", elem.canonical_string())
             }
-            ResolvedTy::Named { name, args } if args.is_empty() => name.clone(),
-            ResolvedTy::Named { name, args } => {
+            ResolvedTy::Named { name, args, .. } if args.is_empty() => name.clone(),
+            ResolvedTy::Named { name, args, .. } => {
                 let arg_strs: Vec<String> = args.iter().map(Self::canonical_string).collect();
                 format!("{}<{}>", name, arg_strs.join(","))
             }

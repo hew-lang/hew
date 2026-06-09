@@ -254,6 +254,7 @@ fn is_native_wire_false_for_non_native_types() {
 #[test]
 fn strict_generic_args_accepts_matching_arity() {
     let ty = Ty::Named {
+        builtin: None,
         name: "Pair".into(),
         args: vec![Ty::I64, Ty::String],
     };
@@ -270,6 +271,7 @@ fn strict_generic_args_accepts_matching_arity() {
 #[test]
 fn strict_generic_args_rejects_too_few_args() {
     let ty = Ty::Named {
+        builtin: None,
         name: "Pair".into(),
         args: vec![],
     };
@@ -286,6 +288,7 @@ fn strict_generic_args_rejects_too_few_args() {
 #[test]
 fn strict_generic_args_rejects_too_many_args() {
     let ty = Ty::Named {
+        builtin: None,
         name: "Box".into(),
         args: vec![Ty::I32, Ty::Bool],
     };
@@ -316,6 +319,7 @@ fn strict_generic_args_passes_through_non_named_types() {
 fn strict_generic_args_propagates_boundary_errors_from_args() {
     let var = TypeVar::fresh();
     let ty = Ty::Named {
+        builtin: None,
         name: "Box".into(),
         args: vec![Ty::Var(var)],
     };

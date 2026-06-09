@@ -1,0 +1,24 @@
+{
+  "name": "@hew-lang/sandbox-vm-spec",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Specification and validation scaffold for the Hew educational sandbox VM.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --project src/tsconfig.json && node scaffolding/scripts/validate-sandbox-vm.mjs",
+    "parity:run": "node dist/interpreter/parity-runner.js",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "validate": "node scaffolding/scripts/validate-sandbox-vm.mjs",
+    "conformance:m3": "npm run build && node --test test/m3-conformance.test.mjs",
+    "conformance:m4": "npm run build && node --test test/m4-conformance.test.mjs",
+    "conformance:m5": "npm run build && node --test test/m5-conformance.test.mjs",
+    "conformance:m6": "npm run build && node --test test/m6-conformance.test.mjs",
+    "conformance:m7": "npm run build && node --test test/m7-conformance.test.mjs",
+    "conformance": "npm run build && node --test test/m3-conformance.test.mjs test/m4-conformance.test.mjs test/m5-conformance.test.mjs test/m6-conformance.test.mjs test/m7-conformance.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.10",
+    "ajv": "^8.17.1",
+    "typescript": "^5.7.2"
+  }
+}

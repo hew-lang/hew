@@ -8,6 +8,7 @@
     "expected_path": "basics/hello_world.expected",
     "capabilities": {
       "browser": "analysis-only",
+      "sandbox": "runnable",
       "wasi": "runnable"
     }
   },
@@ -20,6 +21,7 @@
     "expected_path": "basics/fibonacci.expected",
     "capabilities": {
       "browser": "analysis-only",
+      "sandbox": "unsupported_native_only",
       "wasi": "runnable"
     }
   },
@@ -32,6 +34,7 @@
     "expected_path": "basics/higher_order_functions.expected",
     "capabilities": {
       "browser": "analysis-only",
+      "sandbox": "unsupported_native_only",
       "wasi": "runnable"
     }
   },
@@ -44,6 +47,7 @@
     "expected_path": "basics/string_interpolation.expected",
     "capabilities": {
       "browser": "analysis-only",
+      "sandbox": "runnable",
       "wasi": "runnable"
     }
   },
@@ -56,6 +60,7 @@
     "expected_path": "concurrency/actor_pipeline.expected",
     "capabilities": {
       "browser": "analysis-only",
+      "sandbox": "unsupported_native_only",
       "wasi": "runnable"
     }
   },
@@ -68,6 +73,7 @@
     "expected_path": "concurrency/async_await.expected",
     "capabilities": {
       "browser": "analysis-only",
+      "sandbox": "unsupported_native_only",
       "wasi": "runnable"
     }
   },
@@ -80,6 +86,7 @@
     "expected_path": "concurrency/counter_actor.expected",
     "capabilities": {
       "browser": "analysis-only",
+      "sandbox": "unsupported_native_only",
       "wasi": "runnable"
     }
   },
@@ -92,6 +99,20 @@
     "expected_path": "concurrency/supervisor.expected",
     "capabilities": {
       "browser": "analysis-only",
+      "sandbox": "unsupported_native_only",
+      "wasi": "unsupported"
+    }
+  },
+  {
+    "id": "machines/traffic_light",
+    "category": "machines",
+    "name": "Traffic Light",
+    "description": "A traffic signal state machine",
+    "source_path": "machines/traffic_light.hew",
+    "expected_path": "machines/traffic_light.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "unsupported_native_only",
       "wasi": "unsupported"
     }
   },
@@ -104,6 +125,7 @@
     "expected_path": "types/collections.expected",
     "capabilities": {
       "browser": "analysis-only",
+      "sandbox": "unsupported_native_only",
       "wasi": "runnable"
     }
   },
@@ -116,6 +138,7 @@
     "expected_path": "types/pattern_matching.expected",
     "capabilities": {
       "browser": "analysis-only",
+      "sandbox": "unsupported_native_only",
       "wasi": "runnable"
     }
   },
@@ -128,6 +151,7 @@
     "expected_path": "types/wire_types.expected",
     "capabilities": {
       "browser": "analysis-only",
+      "sandbox": "unsupported_native_only",
       "wasi": "runnable"
     }
   },
@@ -140,6 +164,7 @@
     "expected_path": "types/structural_bounds.expected",
     "capabilities": {
       "browser": "analysis-only",
+      "sandbox": "unsupported_native_only",
       "wasi": "runnable"
     }
   }

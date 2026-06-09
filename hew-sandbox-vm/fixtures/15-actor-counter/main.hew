@@ -1,0 +1,13 @@
+actor Counter {
+    let count: i64;
+
+    receive fn increment(n: i64) -> i64 {
+        count = count + n;
+        count
+    }
+}
+
+fn main() {
+    let counter = spawn Counter(count: 0);
+    println(await counter.increment(5));
+}

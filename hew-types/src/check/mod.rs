@@ -39,8 +39,9 @@ pub use self::types::{
     ArmResolution, AssignTargetKind, AssignTargetShape, Checker, ChildKind, ChildSlot,
     ClosureCaptureFact, ClosureCaptureMode, DynAssocBinding, DynCoercion, DynMethodCall,
     DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig, MachineMethodKind,
-    MethodCallReceiverKind, MethodCallRewrite, PatternKind, PayloadBinding, SpanKey, StackHint,
-    TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch,
+    MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily, NumericMethodLowering,
+    NumericMethodOp, NumericSignedness, NumericWidth, PatternKind, PayloadBinding, SpanKey,
+    StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch,
 };
 use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,
@@ -166,11 +167,20 @@ impl Checker {
                     // this module so orphan-rule checks see module-local
                     // definitions and locally_non_generic works correctly.
                     let saved_local_type_defs = self.local_type_defs.clone();
+                    let saved_source_type_defs = self.source_type_defs.clone();
                     let saved_local_trait_defs = self.local_trait_defs.clone();
                     for (item, _) in &module.items {
                         match item {
                             Item::TypeDecl(td) => {
                                 self.local_type_defs.insert(td.name.clone());
+                                self.source_type_defs.insert(td.name.clone());
+                            }
+                            Item::Machine(md) => {
+                                // Parallel to the TypeDecl arm: seed the machine's
+                                // name so orphan-rule and locally_non_generic checks
+                                // inside the body pass see it as locally-defined.
+                                self.local_type_defs.insert(md.name.clone());
+                                self.source_type_defs.insert(md.name.clone());
                             }
                             Item::Trait(tr) => {
                                 self.local_trait_defs.insert(tr.name.clone());
@@ -204,6 +214,7 @@ impl Checker {
                     }
 
                     self.local_type_defs = saved_local_type_defs;
+                    self.source_type_defs = saved_source_type_defs;
                     self.local_trait_defs = saved_local_trait_defs;
                 }
             }
@@ -384,6 +395,7 @@ impl Checker {
             supervisor_child_slots: std::mem::take(&mut self.supervisor_child_slots),
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
+            numeric_method_lowerings: std::mem::take(&mut self.numeric_method_lowerings),
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),

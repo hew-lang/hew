@@ -1,0 +1,15 @@
+record PairState {
+  left: i64,
+  right: i64,
+}
+
+actor Pair(left: i64, right: i64) {
+  on bad() -> PairState {
+    PairState { left: 1 }
+  }
+}
+
+fn main() {
+  let pair = spawn Pair(0, 0)
+  pair <- bad()
+}

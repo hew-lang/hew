@@ -1,0 +1,4 @@
+fn main() {
+    let name = read_line();
+    println(f"hello {name}");
+}

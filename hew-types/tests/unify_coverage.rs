@@ -39,6 +39,7 @@ fn bind_occurs_check_through_named_type() {
     let mut subst = fresh_subst();
     let v = TypeVar::fresh();
     let ty = Ty::Named {
+        builtin: None,
         name: "Vec".into(),
         args: vec![Ty::Var(v)],
     };
@@ -263,10 +264,12 @@ fn unify_trait_objects_different_assoc_bindings_rejects() {
 fn unify_machine_types_different_names() {
     let mut subst = fresh_subst();
     let a = Ty::Named {
+        builtin: None,
         name: "TrafficLight".into(),
         args: vec![],
     };
     let b = Ty::Named {
+        builtin: None,
         name: "DoorLock".into(),
         args: vec![],
     };
@@ -281,10 +284,12 @@ fn unify_machine_with_named_same_name_no_args() {
     // Machine interops with bare Named of the same name (no type args).
     let mut subst = fresh_subst();
     let machine = Ty::Named {
+        builtin: None,
         name: "Sensor".into(),
         args: vec![],
     };
     let named = Ty::Named {
+        builtin: None,
         name: "Sensor".into(),
         args: vec![],
     };
@@ -297,10 +302,12 @@ fn unify_machine_with_named_same_name_no_args() {
 fn unify_machine_with_named_different_name() {
     let mut subst = fresh_subst();
     let machine = Ty::Named {
+        builtin: None,
         name: "Sensor".into(),
         args: vec![],
     };
     let named = Ty::Named {
+        builtin: None,
         name: "Actuator".into(),
         args: vec![],
     };
@@ -312,10 +319,12 @@ fn unify_machine_with_named_with_args_fails() {
     // Machine only matches Named with empty args.
     let mut subst = fresh_subst();
     let machine = Ty::Named {
+        builtin: None,
         name: "Sensor".into(),
         args: vec![],
     };
     let named = Ty::Named {
+        builtin: None,
         name: "Sensor".into(),
         args: vec![Ty::I32],
     };
@@ -331,10 +340,12 @@ fn unify_qualified_and_bare_named() {
     // "json.Value" should unify with "Value"
     let mut subst = fresh_subst();
     let a = Ty::Named {
+        builtin: None,
         name: "json.Value".into(),
         args: vec![],
     };
     let b = Ty::Named {
+        builtin: None,
         name: "Value".into(),
         args: vec![],
     };
@@ -346,10 +357,12 @@ fn unify_qualified_different_modules_same_bare_name_fails() {
     // "auth.User" vs "billing.User" — both qualified, different modules.
     let mut subst = fresh_subst();
     let a = Ty::Named {
+        builtin: None,
         name: "auth.User".into(),
         args: vec![],
     };
     let b = Ty::Named {
+        builtin: None,
         name: "billing.User".into(),
         args: vec![],
     };
@@ -361,10 +374,12 @@ fn unify_qualified_with_type_args() {
     let mut subst = fresh_subst();
     let v = TypeVar::fresh();
     let a = Ty::Named {
+        builtin: None,
         name: "collections.Map".into(),
         args: vec![Ty::String, Ty::Var(v)],
     };
     let b = Ty::Named {
+        builtin: None,
         name: "Map".into(),
         args: vec![Ty::String, Ty::I64],
     };
@@ -380,10 +395,12 @@ fn unify_qualified_with_type_args() {
 fn unify_named_type_arity_mismatch() {
     let mut subst = fresh_subst();
     let a = Ty::Named {
+        builtin: None,
         name: "Result".into(),
         args: vec![Ty::I32, Ty::String],
     };
     let b = Ty::Named {
+        builtin: None,
         name: "Result".into(),
         args: vec![Ty::I32],
     };
@@ -618,10 +635,7 @@ fn resolve_var_in_nested_structure() {
     let mut subst = fresh_subst();
     let v = TypeVar::fresh();
     subst.insert(v, &Ty::I64).unwrap();
-    let ty = Ty::Named {
-        name: "Option".into(),
-        args: vec![Ty::Var(v)],
-    };
+    let ty = Ty::option(Ty::Var(v));
     let resolved = subst.resolve(&ty);
     assert_eq!(resolved, Ty::option(Ty::I64));
 }
@@ -662,6 +676,7 @@ fn unify_function_with_tuple_fails() {
 fn unify_named_with_primitive_fails() {
     let mut subst = fresh_subst();
     let named = Ty::Named {
+        builtin: None,
         name: "Vec".into(),
         args: vec![Ty::I32],
     };

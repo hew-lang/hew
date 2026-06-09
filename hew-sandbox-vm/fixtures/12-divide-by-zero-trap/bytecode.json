@@ -1,0 +1,397 @@
+{
+  "capabilities": [
+    {
+      "disposition": "allowed",
+      "id": "core.stdout",
+      "reason": "stdout is captured by the educational sandbox trace",
+      "required_by": [
+        "sym:core.stdout.println"
+      ]
+    }
+  ],
+  "compiler_version": "hew-sandbox-wasm-0.5.0-pre",
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": "block:entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 0
+                }
+              ],
+              "dst": "local:main.0",
+              "op": "const.i64",
+              "span": "span:34-35"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.1"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.0"
+                }
+              ],
+              "dst": null,
+              "op": "local.set",
+              "span": "span:16-41"
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 1
+                }
+              ],
+              "dst": "local:main.2",
+              "op": "const.i64",
+              "span": "span:49-51"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.1"
+                }
+              ],
+              "dst": "local:main.3",
+              "op": "local.get",
+              "span": "span:53-64"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.2"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.3"
+                }
+              ],
+              "dst": "local:main.4",
+              "op": "i64.checked_div",
+              "span": "span:49-64"
+            },
+            {
+              "args": [
+                {
+                  "kind": "symbol",
+                  "value": "sym:core.stdout.println"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.4"
+                }
+              ],
+              "dst": null,
+              "op": "call.stdlib",
+              "span": "span:41-65"
+            },
+            {
+              "args": [],
+              "dst": "local:main.5",
+              "op": "const.unit",
+              "span": "span:41-65"
+            },
+            {
+              "args": [],
+              "dst": "local:main.6",
+              "op": "const.unit",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [
+              {
+                "kind": "local",
+                "value": "local:main.6"
+              }
+            ],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:main",
+      "locals": [
+        {
+          "id": "local:main.0",
+          "mutable": false,
+          "name": null,
+          "span": "span:34-35",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.1",
+          "mutable": false,
+          "name": "denominator",
+          "span": "span:20-32",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.2",
+          "mutable": false,
+          "name": null,
+          "span": "span:49-51",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.3",
+          "mutable": false,
+          "name": null,
+          "span": "span:53-64",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.4",
+          "mutable": false,
+          "name": null,
+          "span": "span:49-64",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.5",
+          "mutable": false,
+          "name": null,
+          "span": "span:41-65",
+          "type": "type:unit"
+        },
+        {
+          "id": "local:main.6",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:unit"
+        }
+      ],
+      "module": "mod:main",
+      "name": "main",
+      "params": [],
+      "result": "type:unit",
+      "span": null
+    }
+  ],
+  "hew_version": "0.5.0-pre",
+  "layouts": {
+    "actors": [],
+    "enums": [],
+    "machines": [],
+    "records": [],
+    "supervisors": [],
+    "types": [
+      {
+        "id": "type:LocalPid",
+        "kind": "record",
+        "name": "LocalPid"
+      },
+      {
+        "id": "type:RemotePid",
+        "kind": "record",
+        "name": "RemotePid"
+      },
+      {
+        "id": "type:SendError",
+        "kind": "enum",
+        "name": "SendError"
+      },
+      {
+        "id": "type:bool",
+        "kind": "bool",
+        "name": "bool"
+      },
+      {
+        "id": "type:char",
+        "kind": "string",
+        "name": "char"
+      },
+      {
+        "id": "type:duration",
+        "kind": "integer",
+        "name": "duration"
+      },
+      {
+        "id": "type:f64",
+        "kind": "float",
+        "name": "f64"
+      },
+      {
+        "id": "type:i64",
+        "kind": "integer",
+        "name": "i64"
+      },
+      {
+        "id": "type:never",
+        "kind": "never",
+        "name": "never"
+      },
+      {
+        "id": "type:regex",
+        "kind": "regex",
+        "name": "regex"
+      },
+      {
+        "id": "type:string",
+        "kind": "string",
+        "name": "string"
+      },
+      {
+        "id": "type:u64",
+        "kind": "integer",
+        "name": "u64"
+      },
+      {
+        "id": "type:unit",
+        "kind": "unit",
+        "name": "unit"
+      }
+    ]
+  },
+  "module_graph": {
+    "entry": "mod:main",
+    "modules": [
+      {
+        "functions": [
+          "fn:main"
+        ],
+        "id": "mod:main",
+        "imports": [],
+        "path": "main",
+        "source_id": "src:main"
+      }
+    ]
+  },
+  "package_id": "pkg:2aaee30bea8c983f",
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "schema_version": "hew.sandbox.bytecode.v0",
+  "source_map": {
+    "sources": [
+      {
+        "content_sha256": "ec23971c73eea51354eaa8db6c1df9cac72c7839fb891376b85fb226b1d53e7a",
+        "id": "src:main",
+        "path": "main.hew"
+      }
+    ],
+    "spans": [
+      {
+        "end": {
+          "byte_offset": 41,
+          "column": 5,
+          "line": 3
+        },
+        "id": "span:16-41",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 16,
+          "column": 5,
+          "line": 2
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 32,
+          "column": 21,
+          "line": 2
+        },
+        "id": "span:20-32",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 20,
+          "column": 9,
+          "line": 2
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 35,
+          "column": 24,
+          "line": 2
+        },
+        "id": "span:34-35",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 34,
+          "column": 23,
+          "line": 2
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 65,
+          "column": 29,
+          "line": 3
+        },
+        "id": "span:41-65",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 41,
+          "column": 5,
+          "line": 3
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 51,
+          "column": 15,
+          "line": 3
+        },
+        "id": "span:49-51",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 49,
+          "column": 13,
+          "line": 3
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 64,
+          "column": 28,
+          "line": 3
+        },
+        "id": "span:49-64",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 49,
+          "column": 13,
+          "line": 3
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 64,
+          "column": 28,
+          "line": 3
+        },
+        "id": "span:53-64",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 53,
+          "column": 17,
+          "line": 3
+        }
+      }
+    ]
+  },
+  "stdlib_symbols": [
+    {
+      "admission": "allowed",
+      "capability": "core.stdout",
+      "id": "sym:core.stdout.println",
+      "module": "core.stdout",
+      "name": "println",
+      "params": [
+        "type:string"
+      ],
+      "result": "type:unit"
+    }
+  ]
+}

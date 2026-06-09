@@ -1,0 +1,723 @@
+{
+  "capabilities": [
+    {
+      "disposition": "allowed",
+      "id": "core.stdout",
+      "reason": "stdout is captured by the educational sandbox trace",
+      "required_by": [
+        "sym:core.stdout.println"
+      ]
+    }
+  ],
+  "compiler_version": "hew-sandbox-wasm-0.5.0-pre",
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": "block:entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "type",
+                  "value": "type:i64"
+                }
+              ],
+              "dst": "local:main.0",
+              "op": "vector.new",
+              "span": "span:39-49"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.1"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.0"
+                }
+              ],
+              "dst": null,
+              "op": "local.set",
+              "span": "span:16-55"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.1"
+                }
+              ],
+              "dst": "local:main.2",
+              "op": "local.get",
+              "span": "span:55-61"
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 10
+                }
+              ],
+              "dst": "local:main.3",
+              "op": "const.i64",
+              "span": "span:67-69"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.2"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.3"
+                }
+              ],
+              "dst": null,
+              "op": "vector.push",
+              "span": "span:55-70"
+            },
+            {
+              "args": [],
+              "dst": "local:main.4",
+              "op": "const.unit",
+              "span": "span:55-70"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.1"
+                }
+              ],
+              "dst": "local:main.5",
+              "op": "local.get",
+              "span": "span:76-82"
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 20
+                }
+              ],
+              "dst": "local:main.6",
+              "op": "const.i64",
+              "span": "span:88-90"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.5"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.6"
+                }
+              ],
+              "dst": null,
+              "op": "vector.push",
+              "span": "span:76-91"
+            },
+            {
+              "args": [],
+              "dst": "local:main.7",
+              "op": "const.unit",
+              "span": "span:76-91"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.1"
+                }
+              ],
+              "dst": "local:main.8",
+              "op": "local.get",
+              "span": "span:105-111"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.8"
+                }
+              ],
+              "dst": "local:main.9",
+              "op": "vector.len",
+              "span": "span:105-117"
+            },
+            {
+              "args": [
+                {
+                  "kind": "symbol",
+                  "value": "sym:core.stdout.println"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.9"
+                }
+              ],
+              "dst": null,
+              "op": "call.stdlib",
+              "span": "span:97-118"
+            },
+            {
+              "args": [],
+              "dst": "local:main.10",
+              "op": "const.unit",
+              "span": "span:97-118"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.1"
+                }
+              ],
+              "dst": "local:main.11",
+              "op": "local.get",
+              "span": "span:132-138"
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 1
+                }
+              ],
+              "dst": "local:main.12",
+              "op": "const.i64",
+              "span": "span:143-144"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.11"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.12"
+                }
+              ],
+              "dst": "local:main.13",
+              "op": "vector.get",
+              "span": "span:132-145"
+            },
+            {
+              "args": [
+                {
+                  "kind": "symbol",
+                  "value": "sym:core.stdout.println"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.13"
+                }
+              ],
+              "dst": null,
+              "op": "call.stdlib",
+              "span": "span:124-146"
+            },
+            {
+              "args": [],
+              "dst": "local:main.14",
+              "op": "const.unit",
+              "span": "span:124-146"
+            },
+            {
+              "args": [],
+              "dst": "local:main.15",
+              "op": "const.unit",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [
+              {
+                "kind": "local",
+                "value": "local:main.15"
+              }
+            ],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:main",
+      "locals": [
+        {
+          "id": "local:main.0",
+          "mutable": false,
+          "name": null,
+          "span": "span:39-49",
+          "type": "type:Vec.type.i64"
+        },
+        {
+          "id": "local:main.1",
+          "mutable": false,
+          "name": "values",
+          "span": "span:20-26",
+          "type": "type:Vec.type.i64"
+        },
+        {
+          "id": "local:main.2",
+          "mutable": false,
+          "name": null,
+          "span": "span:55-61",
+          "type": "type:Vec.type.i64"
+        },
+        {
+          "id": "local:main.3",
+          "mutable": false,
+          "name": null,
+          "span": "span:67-69",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.4",
+          "mutable": false,
+          "name": null,
+          "span": "span:55-70",
+          "type": "type:unit"
+        },
+        {
+          "id": "local:main.5",
+          "mutable": false,
+          "name": null,
+          "span": "span:76-82",
+          "type": "type:Vec.type.i64"
+        },
+        {
+          "id": "local:main.6",
+          "mutable": false,
+          "name": null,
+          "span": "span:88-90",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.7",
+          "mutable": false,
+          "name": null,
+          "span": "span:76-91",
+          "type": "type:unit"
+        },
+        {
+          "id": "local:main.8",
+          "mutable": false,
+          "name": null,
+          "span": "span:105-111",
+          "type": "type:Vec.type.i64"
+        },
+        {
+          "id": "local:main.9",
+          "mutable": false,
+          "name": null,
+          "span": "span:105-117",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.10",
+          "mutable": false,
+          "name": null,
+          "span": "span:97-118",
+          "type": "type:unit"
+        },
+        {
+          "id": "local:main.11",
+          "mutable": false,
+          "name": null,
+          "span": "span:132-138",
+          "type": "type:Vec.type.i64"
+        },
+        {
+          "id": "local:main.12",
+          "mutable": false,
+          "name": null,
+          "span": "span:143-144",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.13",
+          "mutable": false,
+          "name": null,
+          "span": "span:132-145",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.14",
+          "mutable": false,
+          "name": null,
+          "span": "span:124-146",
+          "type": "type:unit"
+        },
+        {
+          "id": "local:main.15",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:unit"
+        }
+      ],
+      "module": "mod:main",
+      "name": "main",
+      "params": [],
+      "result": "type:unit",
+      "span": null
+    }
+  ],
+  "hew_version": "0.5.0-pre",
+  "layouts": {
+    "actors": [],
+    "enums": [],
+    "machines": [],
+    "records": [],
+    "supervisors": [],
+    "types": [
+      {
+        "id": "type:LocalPid",
+        "kind": "record",
+        "name": "LocalPid"
+      },
+      {
+        "id": "type:RemotePid",
+        "kind": "record",
+        "name": "RemotePid"
+      },
+      {
+        "id": "type:SendError",
+        "kind": "enum",
+        "name": "SendError"
+      },
+      {
+        "id": "type:Vec.type.i64",
+        "kind": "vector",
+        "name": "Vec",
+        "parameters": [
+          "type:i64"
+        ]
+      },
+      {
+        "id": "type:bool",
+        "kind": "bool",
+        "name": "bool"
+      },
+      {
+        "id": "type:char",
+        "kind": "string",
+        "name": "char"
+      },
+      {
+        "id": "type:duration",
+        "kind": "integer",
+        "name": "duration"
+      },
+      {
+        "id": "type:f64",
+        "kind": "float",
+        "name": "f64"
+      },
+      {
+        "id": "type:i64",
+        "kind": "integer",
+        "name": "i64"
+      },
+      {
+        "id": "type:never",
+        "kind": "never",
+        "name": "never"
+      },
+      {
+        "id": "type:regex",
+        "kind": "regex",
+        "name": "regex"
+      },
+      {
+        "id": "type:string",
+        "kind": "string",
+        "name": "string"
+      },
+      {
+        "id": "type:u64",
+        "kind": "integer",
+        "name": "u64"
+      },
+      {
+        "id": "type:unit",
+        "kind": "unit",
+        "name": "unit"
+      }
+    ]
+  },
+  "module_graph": {
+    "entry": "mod:main",
+    "modules": [
+      {
+        "functions": [
+          "fn:main"
+        ],
+        "id": "mod:main",
+        "imports": [],
+        "path": "main",
+        "source_id": "src:main"
+      }
+    ]
+  },
+  "package_id": "pkg:fc503e6d40bada67",
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "schema_version": "hew.sandbox.bytecode.v0",
+  "source_map": {
+    "sources": [
+      {
+        "content_sha256": "95c1ce5010aa10515514c68d56df09ebf40c0d4b17abbb4ad9e91ea1136d6991",
+        "id": "src:main",
+        "path": "main.hew"
+      }
+    ],
+    "spans": [
+      {
+        "end": {
+          "byte_offset": 55,
+          "column": 5,
+          "line": 3
+        },
+        "id": "span:16-55",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 16,
+          "column": 5,
+          "line": 2
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 26,
+          "column": 15,
+          "line": 2
+        },
+        "id": "span:20-26",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 20,
+          "column": 9,
+          "line": 2
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 49,
+          "column": 38,
+          "line": 2
+        },
+        "id": "span:39-49",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 39,
+          "column": 28,
+          "line": 2
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 61,
+          "column": 11,
+          "line": 3
+        },
+        "id": "span:55-61",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 55,
+          "column": 5,
+          "line": 3
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 70,
+          "column": 20,
+          "line": 3
+        },
+        "id": "span:55-70",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 55,
+          "column": 5,
+          "line": 3
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 69,
+          "column": 19,
+          "line": 3
+        },
+        "id": "span:67-69",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 67,
+          "column": 17,
+          "line": 3
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 82,
+          "column": 11,
+          "line": 4
+        },
+        "id": "span:76-82",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 76,
+          "column": 5,
+          "line": 4
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 91,
+          "column": 20,
+          "line": 4
+        },
+        "id": "span:76-91",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 76,
+          "column": 5,
+          "line": 4
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 90,
+          "column": 19,
+          "line": 4
+        },
+        "id": "span:88-90",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 88,
+          "column": 17,
+          "line": 4
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 118,
+          "column": 26,
+          "line": 5
+        },
+        "id": "span:97-118",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 97,
+          "column": 5,
+          "line": 5
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 111,
+          "column": 19,
+          "line": 5
+        },
+        "id": "span:105-111",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 105,
+          "column": 13,
+          "line": 5
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 117,
+          "column": 25,
+          "line": 5
+        },
+        "id": "span:105-117",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 105,
+          "column": 13,
+          "line": 5
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 146,
+          "column": 27,
+          "line": 6
+        },
+        "id": "span:124-146",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 124,
+          "column": 5,
+          "line": 6
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 138,
+          "column": 19,
+          "line": 6
+        },
+        "id": "span:132-138",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 132,
+          "column": 13,
+          "line": 6
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 145,
+          "column": 26,
+          "line": 6
+        },
+        "id": "span:132-145",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 132,
+          "column": 13,
+          "line": 6
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 144,
+          "column": 25,
+          "line": 6
+        },
+        "id": "span:143-144",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 143,
+          "column": 24,
+          "line": 6
+        }
+      }
+    ]
+  },
+  "stdlib_symbols": [
+    {
+      "admission": "allowed",
+      "capability": "core.stdout",
+      "id": "sym:core.stdout.println",
+      "module": "core.stdout",
+      "name": "println",
+      "params": [
+        "type:string"
+      ],
+      "result": "type:unit"
+    }
+  ]
+}

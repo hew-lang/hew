@@ -284,6 +284,7 @@ fn supervised_actor_crash_and_restart() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
+            cycle_capable: 0,
             on_crash: None,
         };
         assert_eq!(
@@ -379,6 +380,7 @@ fn circuit_breaker_trips_on_repeated_crashes() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
+            cycle_capable: 0,
             on_crash: None,
         };
         assert_eq!(
@@ -588,6 +590,7 @@ fn linked_actor_receives_exit_before_supervisor_restarts() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
+            cycle_capable: 0,
             on_crash: None,
         };
         assert_eq!(
@@ -949,6 +952,7 @@ fn supervisor_restart_runs_state_drop_on_new_actor() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
+            cycle_capable: 0,
             on_crash: None,
         };
         assert_eq!(
@@ -1034,6 +1038,7 @@ fn dynamic_child_restart_runs_state_drop() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
+            cycle_capable: 0,
             on_crash: None,
         };
 
@@ -1112,6 +1117,7 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
+            cycle_capable: 0,
             on_crash: None,
         };
         assert_eq!(
@@ -1131,6 +1137,7 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
+            cycle_capable: 0,
             on_crash: None,
         };
         assert_eq!(

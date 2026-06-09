@@ -105,6 +105,8 @@ fn colour_red_pipeline() -> IrPipeline {
         machine_layouts: Vec::new(),
         enum_layouts: vec![enum_layout],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 

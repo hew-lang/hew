@@ -5,26 +5,22 @@
 
 /// Check if a `Vec<i32>` contains `val`. Returns `true` if found.
 pub fn contains_i32(v: Vec<i32>, val: i32) -> bool { // INTERNAL-ABI: typed for 32-bit integer vector storage
-    var i = 0;
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return true;
         }
-        i = i + 1;
     }
     false
 }
 
 /// Check if a `Vec<i64>` contains `val`.
 pub fn contains_i64(v: Vec<i64>, val: i64) -> bool { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<i64> in Hew
-    var i = 0;
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return true;
         }
-        i = i + 1;
     }
     false
 }
@@ -40,13 +36,11 @@ pub fn contains_i64(v: Vec<i64>, val: i64) -> bool { // INTERNAL-ABI: legacy typ
 /// println(vec.contains_f64(v, 0.0));   // false
 /// ```
 pub fn contains_f64(v: Vec<f64>, val: f64) -> bool {
-    var i = 0;
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return true;
         }
-        i = i + 1;
     }
     false
 }
@@ -62,13 +56,11 @@ pub fn contains_f64(v: Vec<f64>, val: f64) -> bool {
 /// println(vec.contains_str(v, "world"));  // false
 /// ```
 pub fn contains_str(v: Vec<string>, val: string) -> bool {
-    var i = 0;
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return true;
         }
-        i = i + 1;
     }
     false
 }
@@ -76,26 +68,22 @@ pub fn contains_str(v: Vec<string>, val: string) -> bool {
 // ── index_of ──────────────────────────────────────────────────────────────
 /// Return the index of `val` in a `Vec<i32>`, or `-1` if not found.
 pub fn index_of_i32(v: Vec<i32>, val: i32) -> i64 { // INTERNAL-ABI: typed for 32-bit integer vector storage
-    var i = 0;
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return i;
         }
-        i = i + 1;
     }
     -1
 }
 
 /// Return the index of `val` in a `Vec<i64>`, or `-1` if not found.
 pub fn index_of_i64(v: Vec<i64>, val: i64) -> i64 { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<i64> in Hew
-    var i = 0;
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return i;
         }
-        i = i + 1;
     }
     -1
 }
@@ -113,13 +101,11 @@ pub fn index_of_i64(v: Vec<i64>, val: i64) -> i64 { // INTERNAL-ABI: legacy type
 /// println(vec.index_of_f64(v, 9.9));  // -1
 /// ```
 pub fn index_of_f64(v: Vec<f64>, val: f64) -> i64 {
-    var i = 0;
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return i;
         }
-        i = i + 1;
     }
     -1
 }
@@ -136,13 +122,11 @@ pub fn index_of_f64(v: Vec<f64>, val: f64) -> i64 {
 /// println(vec.index_of_str(v, "z"));   // -1
 /// ```
 pub fn index_of_str(v: Vec<string>, val: string) -> i64 {
-    var i = 0;
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return i;
         }
-        i = i + 1;
     }
     -1
 }
@@ -218,14 +202,12 @@ pub fn min_i32(v: Vec<i32>) -> Option<i64> { // INTERNAL-ABI: typed for 32-bit i
         return None;
     }
     var m = v.get(0);
-    var i = 1;
     let n = v.len();
-    while i < n {
+    for i in 1 .. n {
         let val = v.get(i);
         if val < m {
             m = val;
         }
-        i = i + 1;
     }
     Some(m)
 }
@@ -236,14 +218,12 @@ pub fn min_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed alias
         return None;
     }
     var m = v.get(0);
-    var i = 1;
     let n = v.len();
-    while i < n {
+    for i in 1 .. n {
         let val = v.get(i);
         if val < m {
             m = val;
         }
-        i = i + 1;
     }
     Some(m)
 }
@@ -255,14 +235,12 @@ pub fn min_f64(v: Vec<f64>) -> Option<f64> {
         return None;
     }
     var m = v.get(0);
-    var i = 1;
     let n = v.len();
-    while i < n {
+    for i in 1 .. n {
         let val = v.get(i);
         if val < m {
             m = val;
         }
-        i = i + 1;
     }
     Some(m)
 }
@@ -273,14 +251,12 @@ pub fn max_i32(v: Vec<i32>) -> Option<i64> { // INTERNAL-ABI: typed for 32-bit i
         return None;
     }
     var m = v.get(0);
-    var i = 1;
     let n = v.len();
-    while i < n {
+    for i in 1 .. n {
         let val = v.get(i);
         if val > m {
             m = val;
         }
-        i = i + 1;
     }
     Some(m)
 }
@@ -291,14 +267,12 @@ pub fn max_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed alias
         return None;
     }
     var m = v.get(0);
-    var i = 1;
     let n = v.len();
-    while i < n {
+    for i in 1 .. n {
         let val = v.get(i);
         if val > m {
             m = val;
         }
-        i = i + 1;
     }
     Some(m)
 }
@@ -310,14 +284,12 @@ pub fn max_f64(v: Vec<f64>) -> Option<f64> {
         return None;
     }
     var m = v.get(0);
-    var i = 1;
     let n = v.len();
-    while i < n {
+    for i in 1 .. n {
         let val = v.get(i);
         if val > m {
             m = val;
         }
-        i = i + 1;
     }
     Some(m)
 }

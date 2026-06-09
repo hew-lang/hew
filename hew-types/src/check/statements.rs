@@ -4,6 +4,7 @@
 )]
 use super::*;
 use crate::builtin_names::BuiltinNamedType;
+use crate::BuiltinType;
 
 impl Checker {
     fn iterator_trait_item_ty(&mut self, iter_ty: &Ty, span: &Span) -> Option<Ty> {
@@ -30,17 +31,20 @@ impl Checker {
             }
         }
 
-        if let Ty::Named { name, args } = &resolved {
-            if name == "Generator" || name == "AsyncGenerator" {
-                return args.first().cloned().or_else(|| {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!("`for` over a {name} requires a resolved yield type"),
-                    );
-                    Some(Ty::Error)
-                });
-            }
+        if let Ty::Named {
+            name,
+            args,
+            builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
+        } = &resolved
+        {
+            return args.first().cloned().or_else(|| {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!("`for` over a {name} requires a resolved yield type"),
+                );
+                Some(Ty::Error)
+            });
         }
 
         if !self.type_satisfies_trait_bound(&resolved, "Iterator") {
@@ -765,7 +769,11 @@ impl Checker {
                         }
                         (**inner).clone()
                     }
-                    Ty::Named { name, args } if name == "Range" && args.len() == 1 => {
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Range),
+                        args,
+                        ..
+                    } if args.len() == 1 => {
                         if *is_await {
                             self.report_error(
                                 TypeErrorKind::InvalidOperation,
@@ -777,9 +785,11 @@ impl Checker {
                         }
                         args[0].clone()
                     }
-                    Ty::Named { name, args }
-                        if builtin_named_type(name) == Some(BuiltinNamedType::Stream) =>
-                    {
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Stream),
+                        args,
+                        ..
+                    } => {
                         let inner_opt = args.first().cloned();
                         if *is_await {
                             if args.is_empty() {
@@ -858,7 +868,11 @@ impl Checker {
                             Ty::Error
                         }
                     }
-                    Ty::Named { name, args } if name == "Vec" => {
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Vec),
+                        args,
+                        ..
+                    } => {
                         if *is_await {
                             self.report_error(
                                 TypeErrorKind::InvalidOperation,
@@ -879,7 +893,11 @@ impl Checker {
                             Ty::Error
                         }
                     }
-                    Ty::Named { name, args } if name == "HashMap" && args.len() >= 2 => {
+                    Ty::Named {
+                        builtin: Some(BuiltinType::HashMap),
+                        args,
+                        ..
+                    } if args.len() >= 2 => {
                         if *is_await {
                             self.report_error(
                                 TypeErrorKind::InvalidOperation,
@@ -891,16 +909,16 @@ impl Checker {
                         }
                         Ty::Tuple(vec![args[0].clone(), args[1].clone()])
                     }
-                    Ty::Named { name, args }
-                        if (name == "Generator" && !args.is_empty())
-                            || (name == "AsyncGenerator" && args.len() == 1) =>
-                    {
-                        args[0].clone()
-                    }
-                    Ty::Named { name, args }
-                        if builtin_named_type(name) == Some(BuiltinNamedType::Receiver)
-                            && !args.is_empty() =>
-                    {
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
+                        args,
+                        ..
+                    } if !args.is_empty() => args[0].clone(),
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Receiver),
+                        args,
+                        ..
+                    } if !args.is_empty() => {
                         let inner = args[0].clone();
                         if *is_await {
                             self.check_receiver_element_type_for_await(&inner, &iterable.1);

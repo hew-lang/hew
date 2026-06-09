@@ -220,6 +220,38 @@ pub fn dump_hir(module: &HirModule) -> String {
             HirItem::Supervisor(sup) => {
                 writeln!(out, "supervisor {} {}", sup.id, sup.name).expect("write to string");
             }
+            HirItem::Impl(block) => {
+                writeln!(
+                    out,
+                    "impl {} {} for {} [methods: {}]",
+                    block.id,
+                    block.trait_name.as_deref().unwrap_or("<inherent>"),
+                    block.self_type_name,
+                    block.method_symbols.join(", "),
+                )
+                .expect("write to string");
+                for (name, ty) in &block.type_aliases {
+                    writeln!(out, "  type {} = {}", name, ty.user_facing())
+                        .expect("write to string");
+                }
+            }
+            HirItem::ExternFn(ef) => {
+                let params = ef
+                    .param_tys
+                    .iter()
+                    .map(|ty| ty.user_facing().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                writeln!(
+                    out,
+                    "extern \"{}\" fn {}({}) -> {}",
+                    ef.abi,
+                    ef.name,
+                    params,
+                    ef.return_ty.user_facing(),
+                )
+                .expect("write to string");
+            }
         }
     }
     out
@@ -568,6 +600,27 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             }
             dump_expr(out, body, indent + 4);
         }
+        HirExprKind::GenBlock {
+            body,
+            yield_ty,
+            return_ty,
+        } => {
+            writeln!(
+                out,
+                "{pad}  gen-block yield_ty={} return_ty={}",
+                yield_ty.user_facing(),
+                return_ty.user_facing()
+            )
+            .expect("write to string");
+            dump_block(out, body, indent + 4);
+        }
+        HirExprKind::Yield { value, yield_ty } => {
+            writeln!(out, "{pad}  yield yield_ty={}", yield_ty.user_facing())
+                .expect("write to string");
+            if let Some(value) = value {
+                dump_expr(out, value, indent + 4);
+            }
+        }
         HirExprKind::TupleIndex { tuple, index } => {
             writeln!(out, "{pad}  tuple-index .{index}").expect("write to string");
             dump_expr(out, tuple, indent + 4);
@@ -637,6 +690,30 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             for arg in args {
                 dump_expr(out, arg, indent + 4);
             }
+        }
+        HirExprKind::NumericMethod {
+            receiver,
+            arg,
+            family,
+            op,
+            result_ty,
+            operand_ty,
+            signedness,
+            width,
+        } => {
+            writeln!(
+                out,
+                "{pad}  numeric-method {:?} {:?} {} -> {} ({:?}, {:?})",
+                family,
+                op,
+                operand_ty.user_facing(),
+                result_ty.user_facing(),
+                signedness,
+                width
+            )
+            .expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+            dump_expr(out, arg, indent + 4);
         }
         HirExprKind::MachineEmit { event_idx, fields } => {
             writeln!(out, "{pad}  machine-emit event_idx={event_idx}").expect("write to string");

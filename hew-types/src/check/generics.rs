@@ -52,8 +52,13 @@ impl Checker {
                     resolved
                 }
             }
-            Ty::Named { name, args } => Ty::Named {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => Ty::Named {
                 name: name.clone(),
+                builtin: *builtin,
                 args: args
                     .iter()
                     .map(|a| self.freshen_inner(a, mapping))
@@ -349,6 +354,7 @@ impl Checker {
         }
 
         let concrete_ty = Ty::Named {
+            builtin: None,
             name: type_name.clone(),
             args: vec![],
         };
@@ -421,13 +427,11 @@ impl Checker {
 
     pub(super) fn type_satisfies_trait_bound(&mut self, ty: &Ty, trait_name: &str) -> bool {
         match ty {
-            Ty::Named { name, args }
-                if trait_name == "Iterator"
-                    && ((name == "Generator" && !args.is_empty())
-                        || (name == "AsyncGenerator" && args.len() == 1)) =>
-            {
-                true
-            }
+            Ty::Named {
+                builtin: Some(crate::BuiltinType::Generator | crate::BuiltinType::AsyncGenerator),
+                args,
+                ..
+            } if trait_name == "Iterator" && !args.is_empty() => true,
             Ty::Named { name, .. } => {
                 let name = name.clone();
                 if self.type_implements_trait(&name, trait_name)
@@ -742,6 +746,7 @@ impl Checker {
 
         // The concrete type, used for Self substitution in trait signatures.
         let concrete_ty = Ty::Named {
+            builtin: None,
             name: type_name.clone(),
             args: vec![],
         };
@@ -875,7 +880,7 @@ fn substitute_trait_object_assoc_bindings(
         } if projected_trait.as_ref() == trait_name
             && matches!(
                 base.as_ref(),
-                Ty::Named { name, args } if name == "Self" && args.is_empty()
+                Ty::Named { name, args, .. } if name == "Self" && args.is_empty()
             ) =>
         {
             bound

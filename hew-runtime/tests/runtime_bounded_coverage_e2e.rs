@@ -230,6 +230,7 @@ fn single_worker_message_budget_and_restart_budget_bound_execution() {
             mailbox_capacity: -1,
             overflow: 1,
             arena_cap_bytes: 0,
+            cycle_capable: 0,
             on_crash: None,
         };
         assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);

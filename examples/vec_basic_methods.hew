@@ -1,0 +1,9 @@
+fn main() {
+    let v: Vec<i64> = Vec::new();
+    v.push(1);
+    v.push(42);
+    v.push(3);
+    println(v.len());
+    println(v.get(1));
+    println(v.contains(42));
+}

@@ -5395,56 +5395,14 @@ impl<'src> Parser<'src> {
                 if explicit_type_args.is_some() || self.peek() == Some(&Token::LeftBrace) {
                     // Look ahead to disambiguate struct init vs block (only when no
                     // explicit type args; with type args we already know it's a struct).
-                    let is_struct_init = if explicit_type_args.is_some() {
-                        true
-                    } else {
-                        let saved_pos = self.save_pos();
-                        self.advance(); // consume {
-                        let probe = if self.peek() == Some(&Token::RightBrace) {
-                            // Empty struct literal: Foo {}
-                            true
-                        } else if self.peek() == Some(&Token::DotDot) {
-                            // Functional-update-only form: `Foo { ..base }`.
-                            true
-                        } else if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
-                            self.advance();
-                            self.peek() == Some(&Token::Colon)
-                        } else {
-                            false
-                        };
-                        self.restore_pos(saved_pos);
-                        probe
-                    };
+                    // Uses the shared probe helper — identical disambiguation at every
+                    // call site including the dot-postfix struct-literal arm.
+                    let is_struct_init =
+                        explicit_type_args.is_some() || self.probe_struct_init_brace();
 
                     if is_struct_init {
                         self.advance(); // consume {
-                        let mut fields = Vec::new();
-                        let mut base: Option<Box<Spanned<Expr>>> = None;
-                        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                            if self.peek() == Some(&Token::DotDot) {
-                                // `..base_expr` — must be the last item in the list.
-                                self.advance(); // consume `..`
-                                let base_expr = self.parse_expr()?;
-                                base = Some(Box::new(base_expr));
-                                // Allow an optional trailing comma before `}`.
-                                self.eat(&Token::Comma);
-                                if self.peek() != Some(&Token::RightBrace) {
-                                    self.error(
-                                        "functional-update `..base` must be the last item in the field list".to_string(),
-                                    );
-                                }
-                                break;
-                            }
-                            let field_name = self.expect_ident()?;
-                            self.expect(&Token::Colon)?;
-                            let value = self.parse_expr()?;
-                            fields.push((field_name, value));
-
-                            if !self.eat(&Token::Comma) {
-                                break;
-                            }
-                        }
-                        self.expect(&Token::RightBrace)?;
+                        let (fields, base) = self.parse_struct_init_body()?;
                         Expr::StructInit {
                             name,
                             fields,
@@ -6253,6 +6211,71 @@ impl<'src> Parser<'src> {
                 },
                 start..end,
             ))
+        } else if self.peek() == Some(&Token::LeftBrace) && method.contains("::") {
+            // Module-qualified struct literal: `module.Type::Variant { fields }`.
+            //
+            // Gate: `::` must have been consumed above — `method` carries the
+            // full `Type::Variant` path segment.  A plain field access like
+            // `obj.field { ... }` does NOT enter this arm (no `::` in field),
+            // preserving the existing parse error / block interpretation for that
+            // shape.
+            //
+            // The receiver (`lhs`) must be a bare `Ident` (single-level module
+            // alias).  Nested-module paths (`a.b.Type::Variant`) fall through to
+            // FieldAccess; that limit is deferred to v0.5.1.
+            //
+            // Disambiguate via the shared probe: `{ field: val }` → struct init;
+            // `{ stmt; }` or `{ expr }` → not a struct literal, fall through.
+            //
+            // Known parser-substrate gap (not introduced here): Hew has no
+            // no-struct-literal expression mode for `if`/`while` conditions, so
+            // `if m.E::V { x: 1 }` is ambiguous in the same way it would be in
+            // Rust without the brace-suppression mode.  That is a pre-existing
+            // condition; no fix in this slice.
+            if self.probe_struct_init_brace() {
+                // Build the qualified type name: `module.Type::Variant`.
+                // `lhs` is the module identifier; `method` is `Type::Variant`.
+                // Non-identifier receivers (e.g. chained `a.b.C::D { }`) fall
+                // through to FieldAccess — nested-module paths are out of scope
+                // for v0.5; the checker surfaces an error via the field-access
+                // path rather than a misleading struct-literal attempt.
+                let module_name = if let Expr::Identifier(n) = &lhs.0 {
+                    n.clone()
+                } else {
+                    let end = self.peek_span().start;
+                    return Some((
+                        Expr::FieldAccess {
+                            object: Box::new(lhs),
+                            field: method,
+                        },
+                        start..end,
+                    ));
+                };
+                let qualified_name = format!("{module_name}.{method}");
+                self.advance(); // consume {
+                let (fields, base) = self.parse_struct_init_body()?;
+                let end = self.peek_span().start;
+                Some((
+                    Expr::StructInit {
+                        name: qualified_name,
+                        fields,
+                        type_args: None,
+                        base,
+                    },
+                    start..end,
+                ))
+            } else {
+                // Brace begins a block, not a struct literal — fall through to
+                // FieldAccess.  The brace will be parsed as the next statement.
+                let end = self.peek_span().start;
+                Some((
+                    Expr::FieldAccess {
+                        object: Box::new(lhs),
+                        field: method,
+                    },
+                    start..end,
+                ))
+            }
         } else {
             // Field access (method == field when no :: was consumed; otherwise a
             // unit-variant or bare type-path reference — preserved as FieldAccess).
@@ -6706,6 +6729,90 @@ impl<'src> Parser<'src> {
             source,
             body,
         })
+    }
+
+    // ── Struct-literal disambiguation helpers ──────────────────────────────
+
+    /// Speculatively probe whether the `{` at the current position begins a
+    /// struct literal rather than a block statement.
+    ///
+    /// Contract: caller must have peeked `Token::LeftBrace` but NOT yet
+    /// consumed it. This method saves, consumes `{`, inspects one token of
+    /// lookahead, then restores position — so the caller's position is
+    /// unchanged on return.
+    ///
+    /// Returns `true` when:
+    ///   - the brace is immediately followed by `}` (empty struct literal)
+    ///   - the brace is followed by `..` (functional-update-only form)
+    ///   - the brace is followed by `ident :` (named field)
+    ///
+    /// Returns `false` otherwise (block beginning with a statement, expression,
+    /// keyword, etc.).
+    fn probe_struct_init_brace(&mut self) -> bool {
+        let saved_pos = self.save_pos();
+        self.advance(); // consume {
+        let probe = if self.peek() == Some(&Token::RightBrace) {
+            // Empty struct literal: Foo {}
+            true
+        } else if self.peek() == Some(&Token::DotDot) {
+            // Functional-update-only form: `Foo { ..base }`.
+            true
+        } else if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
+            self.advance();
+            self.peek() == Some(&Token::Colon)
+        } else {
+            false
+        };
+        self.restore_pos(saved_pos);
+        probe
+    }
+
+    /// Parse the body of a struct literal after the opening `{` has been
+    /// consumed.  Handles named fields, an optional trailing comma, and the
+    /// functional-update `..base` tail.
+    ///
+    /// Returns `(fields, base)` where `fields` is a vec of `(name, expr)`
+    /// pairs and `base` is `Some(expr)` when a `..base` suffix was present.
+    ///
+    /// Returns `None` if parsing fails (error is recorded on `self`).
+    #[allow(
+        clippy::type_complexity,
+        reason = "return tuple encodes (fields, base) for struct literal body; extracting a named type would require a public struct in a private-helper context"
+    )]
+    fn parse_struct_init_body(
+        &mut self,
+    ) -> Option<(Vec<(String, Spanned<Expr>)>, Option<Box<Spanned<Expr>>>)> {
+        let mut fields = Vec::new();
+        let mut base: Option<Box<Spanned<Expr>>> = None;
+
+        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            if self.peek() == Some(&Token::DotDot) {
+                // `..base_expr` — must be the last item in the list.
+                self.advance(); // consume `..`
+                let base_expr = self.parse_expr()?;
+                base = Some(Box::new(base_expr));
+                // Allow an optional trailing comma before `}`.
+                self.eat(&Token::Comma);
+                if self.peek() != Some(&Token::RightBrace) {
+                    self.error(
+                        "functional-update `..base` must be the last item in the field list"
+                            .to_string(),
+                    );
+                }
+                break;
+            }
+            let field_name = self.expect_ident()?;
+            self.expect(&Token::Colon)?;
+            let value = self.parse_expr()?;
+            fields.push((field_name, value));
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+        self.expect(&Token::RightBrace)?;
+
+        Some((fields, base))
     }
 }
 

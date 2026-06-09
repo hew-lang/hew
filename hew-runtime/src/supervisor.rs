@@ -419,6 +419,9 @@ pub struct HewChildSpec {
     /// re-applies this cap to every restarted child so `#[max_heap(N)]`
     /// actors retain their cap across crashes.
     pub arena_cap_bytes: usize,
+    /// Non-zero when the child actor participates in an actor-ref cycle.
+    /// Future consumer: cycle-detection / Machine Lane B cycle handling.
+    pub cycle_capable: c_int,
     /// Optional crash handler invoked before the restart policy is applied.
     /// Called with the execution context, trap-kind code, and actor state
     /// pointer when the child exits with `HewActorState::Crashed`.
@@ -577,6 +580,9 @@ struct InternalChildSpec {
     /// applied by every restart path so restarted actors keep the cap
     /// originally set by `#[max_heap(N)]`.
     arena_cap_bytes: usize,
+    /// Copied from `HewChildSpec::cycle_capable` and forwarded into
+    /// `HewActorOpts` for every restart.
+    cycle_capable: c_int,
     /// Crash handler copied from `HewChildSpec::on_crash`. Invoked from
     /// `apply_restart` before the restart policy is consulted when the child
     /// exits with `HewActorState::Crashed`. `None` means no handler.
@@ -620,6 +626,7 @@ impl Default for InternalChildSpec {
             next_restart_time_ns: 0,
             circuit_breaker: CircuitBreakerState::default(),
             arena_cap_bytes: 0,
+            cycle_capable: 0,
             on_crash: None,
             state_drop_fn: None,
         }
@@ -1192,6 +1199,7 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             coalesce_fallback: HewOverflowPolicy::DropOld as c_int,
             budget: 0,
             arena_cap_bytes: spec.arena_cap_bytes,
+            cycle_capable: spec.cycle_capable,
         };
         (opts, spec.state_drop_fn)
     };
@@ -1819,6 +1827,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         next_restart_time_ns: 0,
         circuit_breaker: CircuitBreakerState::default(),
         arena_cap_bytes: sp.arena_cap_bytes,
+        cycle_capable: sp.cycle_capable,
         on_crash: sp.on_crash,
         // Registered by hew_supervisor_set_child_state_drop after this call.
         state_drop_fn: None,
@@ -2062,6 +2071,7 @@ mod tests {
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
+                cycle_capable: 0,
                 on_crash: None,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
@@ -3110,6 +3120,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         next_restart_time_ns: 0,
         circuit_breaker: CircuitBreakerState::default(),
         arena_cap_bytes: sp.arena_cap_bytes,
+        cycle_capable: sp.cycle_capable,
         on_crash: sp.on_crash,
         // Registered by the caller via hew_supervisor_set_child_state_drop
         // immediately after this call returns. See the function doc comment

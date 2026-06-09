@@ -380,10 +380,8 @@ fn wasm_target_compile_shares_frontend_with_check() {
     );
 
     // `hew compile --target wasm32-unknown-unknown` must also not produce any
-    // frontend-layer diagnostics for this fixture.  (It may fail at codegen
-    // if `hew-emit` is absent; that is a tooling concern, not a frontend
-    // parity concern.  We only inspect the absence of `: error:` / `: warning:`
-    // lines that reference the fixture path.)
+    // frontend-layer diagnostics for this fixture. We only inspect the absence
+    // of `: error:` / `: warning:` lines that reference the fixture path.
     let (compile_out, _emit_dir) = run_compile_with_target(path, "wasm32-unknown-unknown");
 
     let compile_stderr = strip_ansi(&String::from_utf8_lossy(&compile_out.stderr));

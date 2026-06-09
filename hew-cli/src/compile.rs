@@ -1,7 +1,6 @@
 //! Frontend helpers for check/eval paths that still need parser/typechecker
 //! diagnostics while execution subcommands are cut over to Rust codegen.
 
-use std::fmt;
 #[cfg(test)]
 use std::fs;
 #[cfg(test)]
@@ -11,10 +10,7 @@ use std::path::PathBuf;
 #[cfg(test)]
 use std::collections::{HashMap, HashSet};
 
-use hew_compile::{
-    compile_program_to_msgpack as frontend_compile_program_to_msgpack, FrontendDiagnostic,
-    FrontendDiagnosticKind, FrontendOptions,
-};
+use hew_compile::{FrontendDiagnostic, FrontendDiagnosticKind, FrontendOptions};
 
 #[cfg(test)]
 use hew_compile::{
@@ -30,8 +26,6 @@ use hew_compile::{
 use hew_parser::ast::{ImportDecl, Item, Spanned};
 
 use crate::target::TargetSpec;
-
-const EXECUTION_SUBSTRATE_UNAVAILABLE: &str = "`hew run`, `hew eval`, `hew test`, and `hew debug` are unavailable during the v0.5 compiler cutover; only `hew compile` is currently backed by the Rust MIR/codegen-rs pipeline";
 
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
@@ -68,21 +62,6 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
         enable_wasm_target: false,
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CompileFromSourceError {
-    DiagnosticsRendered,
-    Message(String),
-}
-
-impl fmt::Display for CompileFromSourceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::DiagnosticsRendered => f.write_str("diagnostics already rendered"),
-            Self::Message(message) => message.fmt(f),
-        }
     }
 }
 
@@ -264,48 +243,6 @@ pub(crate) fn check_explain_cow(
             Err(failure.message)
         }
     }
-}
-
-#[allow(
-    dead_code,
-    reason = "R42 owns the full legacy compile.rs removal; R30 has removed its call sites"
-)]
-pub(crate) fn compile_from_source_checked(
-    program: hew_parser::ast::Program,
-    source: &str,
-    source_label: &str,
-    output_path: &str,
-    options: &CompileOptions,
-) -> Result<(), CompileFromSourceError> {
-    let _ = output_path;
-    let target = TargetSpec::from_requested(options.target.as_deref())
-        .map_err(CompileFromSourceError::Message)?;
-    let frontend_options = frontend_options(&target, options);
-
-    let frontend =
-        match frontend_compile_program_to_msgpack(program, source, source_label, &frontend_options)
-        {
-            Ok(frontend) => frontend,
-            Err(failure) => {
-                render_frontend_diagnostics(&failure.diagnostics);
-                return Err(if failure.diagnostics.is_empty() {
-                    CompileFromSourceError::Message(failure.message)
-                } else {
-                    CompileFromSourceError::DiagnosticsRendered
-                });
-            }
-        };
-    render_frontend_diagnostics(&frontend.diagnostics);
-
-    if !target.can_link_with_host_tools() {
-        return Err(CompileFromSourceError::Message(
-            target.unsupported_native_link_error(),
-        ));
-    }
-
-    Err(CompileFromSourceError::Message(
-        EXECUTION_SUBSTRATE_UNAVAILABLE.to_owned(),
-    ))
 }
 
 #[cfg(test)]

@@ -4,8 +4,7 @@
 //! Each test drives `emit_module` with a hand-built `IrPipeline` containing
 //! a `Instr::CallRuntimeAbi` for one of the new symbols and asserts the
 //! emitted LLVM IR contains the expected `declare` signature. Passing
-//! `native: false, wasm: false` skips the `hew-emit` back-half so
-//! these run purely in-process.
+//! `native: false, wasm: false` keeps these focused on textual IR only.
 //!
 //! Direct `RuntimeCall` emission for `hew_task_spawn_thread` remains
 //! fail-closed; spawned task producers use dedicated MIR instructions that
@@ -91,6 +90,8 @@ fn pipeline_with_task_abi_call(
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 
@@ -173,6 +174,8 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 
@@ -246,6 +249,8 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 
@@ -341,6 +346,8 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
     }
 }
 

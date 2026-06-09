@@ -8,7 +8,10 @@ use hew_hir::{
     HirSupervisorDecl, IntentKind, ResolvedRef, ResourceMarker, ScopeId, SiteId, ValueClass,
 };
 use hew_parser::ast::BinaryOp;
-use hew_types::{ChildKind, ChildSlot, ExecutionContextReader, ResolvedTy};
+use hew_types::{
+    ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily, NumericMethodOp,
+    NumericSignedness, ResolvedTy,
+};
 
 use crate::dataflow;
 use crate::model::{
@@ -82,6 +85,21 @@ fn integer_signedness(ty: &ResolvedTy) -> Option<IntSignedness> {
         | ResolvedTy::U64
         | ResolvedTy::Usize => Some(IntSignedness::Unsigned),
         _ => None,
+    }
+}
+
+fn numeric_method_op(op: NumericMethodOp) -> IntArithOp {
+    match op {
+        NumericMethodOp::Add => IntArithOp::Add,
+        NumericMethodOp::Sub => IntArithOp::Sub,
+        NumericMethodOp::Mul => IntArithOp::Mul,
+    }
+}
+
+fn numeric_method_signedness(signedness: NumericSignedness) -> IntSignedness {
+    match signedness {
+        NumericSignedness::Signed => IntSignedness::Signed,
+        NumericSignedness::Unsigned => IntSignedness::Unsigned,
     }
 }
 
@@ -343,6 +361,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     let mut supervisor_layouts: Vec<crate::model::SupervisorLayout> = Vec::new();
     let mut machine_layouts: Vec<crate::model::MachineLayout> = Vec::new();
     let mut enum_layouts: Vec<crate::model::EnumLayout> = Vec::new();
+    let mut gen_state_layouts: Vec<crate::model::GenStateLayout> = Vec::new();
     for item in &module.items {
         match item {
             HirItem::Record(decl) => {
@@ -486,6 +505,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         .find(|hook| hook.kind == HirLifecycleHookKind::Crash)
                         .map(|_| mangle_actor_crash_handler(&actor.name)),
                     max_heap_bytes: actor.max_heap_bytes,
+                    cycle_capable: actor.cycle_capable,
                     handlers: lower_actor_handler_layouts(actor),
                 });
             }
@@ -590,8 +610,9 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         .map(|layout| (layout.name.clone(), layout))
         .collect();
 
-    // Post-loop pass: populate on_crash_symbol and max_heap_bytes on each
-    // SupervisorChildLayout using the now-complete actor_layout_map.
+    // Post-loop pass: populate on_crash_symbol, max_heap_bytes, and
+    // cycle_capable on each SupervisorChildLayout using the now-complete
+    // actor_layout_map.
     // build_supervisor_layout runs inside the single-pass item loop, so actor
     // declarations that follow a supervisor in source order would not have been
     // visible yet. Deferring the lookup here makes ordering irrelevant.
@@ -600,6 +621,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             let al = actor_layout_map.get(&child.actor_name);
             child.on_crash_symbol = al.and_then(|al| al.on_crash_symbol.clone());
             child.max_heap_bytes = al.and_then(|al| al.max_heap_bytes);
+            child.cycle_capable = al.is_some_and(|al| al.cycle_capable);
         }
     }
 
@@ -673,6 +695,12 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 module_fn_names.insert(f.name.clone());
             }
         }
+        if let HirItem::ExternFn(ef) = item {
+            // Extern fns participate in direct-call dispatch: `Expr::Call` of
+            // an extern symbol lowers through the `Terminator::Call` arm,
+            // not the runtime-ABI fail-closed path.
+            module_fn_names.insert(ef.name.clone());
+        }
     }
     for mono in &module.monomorphisations {
         module_fn_names.insert(mono.mangled_name.clone());
@@ -721,6 +749,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 checked_mir.push(lowered.checked);
                 elaborated_mir.push(lowered.elaborated);
                 record_layouts.extend(lowered.record_layouts);
+                gen_state_layouts.extend(lowered.gen_state_layouts.clone());
                 for generated in lowered.generated {
                     thir.push(generated.thir);
                     raw_mir.push(generated.raw);
@@ -728,6 +757,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     elaborated_mir.push(generated.elaborated);
                     diagnostics.extend(generated.diagnostics);
                     record_layouts.extend(generated.record_layouts);
+                    gen_state_layouts.extend(generated.gen_state_layouts.clone());
                 }
                 diagnostics.extend(lowered.diagnostics);
             }
@@ -750,6 +780,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     checked_mir.push(lowered.checked);
                     elaborated_mir.push(lowered.elaborated);
                     record_layouts.extend(lowered.record_layouts);
+                    gen_state_layouts.extend(lowered.gen_state_layouts.clone());
                     for generated in lowered.generated {
                         thir.push(generated.thir);
                         raw_mir.push(generated.raw);
@@ -757,6 +788,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         elaborated_mir.push(generated.elaborated);
                         diagnostics.extend(generated.diagnostics);
                         record_layouts.extend(generated.record_layouts);
+                        gen_state_layouts.extend(generated.gen_state_layouts.clone());
                     }
                     diagnostics.extend(lowered.diagnostics);
                 }
@@ -780,6 +812,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     checked_mir.push(lowered.checked);
                     elaborated_mir.push(lowered.elaborated);
                     record_layouts.extend(lowered.record_layouts);
+                    gen_state_layouts.extend(lowered.gen_state_layouts.clone());
                     for generated in lowered.generated {
                         thir.push(generated.thir);
                         raw_mir.push(generated.raw);
@@ -787,13 +820,26 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         elaborated_mir.push(generated.elaborated);
                         diagnostics.extend(generated.diagnostics);
                         record_layouts.extend(generated.record_layouts);
+                        gen_state_layouts.extend(generated.gen_state_layouts.clone());
                     }
                     diagnostics.extend(lowered.diagnostics);
                 }
             }
-            HirItem::Record(_) | HirItem::TypeDecl(_) => {
+            HirItem::Record(_) | HirItem::TypeDecl(_) | HirItem::Impl(_) | HirItem::ExternFn(_) => {
                 // Type declarations have no executable MIR bodies. TypeDecl
                 // markers are consumed via `HirModule.type_classes`.
+                //
+                // V0b: `HirItem::Impl` is metadata-only — its method bodies
+                // are emitted as sibling `HirItem::Function` entries
+                // (named `<SelfType>::<method>`) by the HIR lowering pass
+                // and are picked up through the `HirItem::Function` arm
+                // above. Nothing to do here.
+                //
+                // Extern fns have no body to lower; they are registered
+                // into `module_fn_names` above so `Call` lowering dispatches
+                // them as `Terminator::Call`, and the
+                // `IrPipeline.extern_decls` table populated below carries
+                // the signature to codegen for symbol predeclaration.
             }
             HirItem::Machine(md) => {
                 // Synthesise the public `<Name>__step(self, event) -> Name`
@@ -908,6 +954,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         checked_mir.push(lowered.checked);
         elaborated_mir.push(lowered.elaborated);
         record_layouts.extend(lowered.record_layouts);
+        gen_state_layouts.extend(lowered.gen_state_layouts.clone());
         for generated in lowered.generated {
             thir.push(generated.thir);
             raw_mir.push(generated.raw);
@@ -915,6 +962,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             elaborated_mir.push(generated.elaborated);
             diagnostics.extend(generated.diagnostics);
             record_layouts.extend(generated.record_layouts);
+            gen_state_layouts.extend(generated.gen_state_layouts.clone());
         }
         diagnostics.extend(lowered.diagnostics);
     }
@@ -932,6 +980,20 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         })
         .collect();
 
+    let extern_decls: Vec<crate::model::ExternDecl> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::ExternFn(ef) => Some(crate::model::ExternDecl {
+                name: ef.name.clone(),
+                abi: ef.abi.clone(),
+                param_tys: ef.param_tys.clone(),
+                return_ty: ef.return_ty.clone(),
+            }),
+            _ => None,
+        })
+        .collect();
+
     IrPipeline {
         thir,
         raw_mir,
@@ -944,6 +1006,8 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         machine_layouts,
         enum_layouts,
         regex_literals,
+        gen_state_layouts,
+        extern_decls,
     }
 }
 
@@ -1540,25 +1604,6 @@ fn mangle_machine_step(name: &str) -> String {
 /// Synthesise the `<Name>__step(self, event) -> Name` MIR function for a
 /// machine declaration.
 ///
-/// # Substrate seam
-///
-/// This is the seam between machine declarations and executable MIR. It
-/// lands the function symbol, signature, and a fail-closed single-block
-/// body. The state×event dispatch tree, transition body lowering, and
-/// `entry`/`exit`/`@reenter` semantics are grown into this seam once the
-/// tagged-union value layout is decided downstream. Until then, any
-/// synthesised dispatch would make load-bearing claims about a layout
-/// that does not yet exist — `TypeDefKind::Machine` is already registered
-/// by the type checker but its MIR/codegen representation is not.
-///
-/// The body is a single block terminating in
-/// `Terminator::Trap { kind: TrapKind::MachineDispatchUnreachable }`.
-/// HIR exhaustiveness checks already guarantee this code is dead in
-/// well-typed programs; the trap is the substrate's fail-closed surface
-/// (LESSONS P0 `fail-closed-not-pretend`). Once the dispatch tree lowering
-/// lands, the trap becomes the default arm proving exhaustiveness at
-/// runtime.
-///
 /// # Signature
 ///
 /// - `self: <Name>` — the machine value, passed by value. Mutation is
@@ -1575,12 +1620,9 @@ fn mangle_machine_step(name: &str) -> String {
 /// emitted once per machine declaration (not per monomorphisation);
 /// monomorphisation-aware codegen for generic machines arrives with the
 /// stdlib machine catalogue.
-/// Synthesise the `<Name>__step(self, event) -> Name` MIR function for a
-/// machine declaration with the full state×event dispatch tree.
+/// # Dispatch shell and transition bodies (Slice 4b)
 ///
-/// # Dispatch shape (Slice 4b)
-///
-/// The entry block loads the state tag (`Place::MachineTag(self_binding)`)
+/// The entry block loads the state tag (`Place::MachineTag(self)`)
 /// and event tag (`Instr::EnumTagLoad` from the event parameter), then
 /// cascades a chain of state-equality checks. Each matched state-block
 /// cascades event-equality checks for that state's declared transitions
@@ -1592,41 +1634,12 @@ fn mangle_machine_step(name: &str) -> String {
 /// surfacing it is the fail-closed runtime backstop (LESSONS P0
 /// `fail-closed-not-pretend`).
 ///
-/// # Transition body lowering
-///
-/// Each matched arm lowers the transition's HIR body via the shared
-/// `Builder::lower_value` path. Bodies typed `Ty::Named { machine_name }`
-/// reach the `HirExprKind::MachineVariantCtor` producer arm, which writes
-/// the next-state tag and payload fields via `Place::MachineTag` /
-/// `Place::MachineVariant`. The arm writes the produced value into the
-/// `ReturnSlot` and emits `Terminator::Return`.
-///
-/// `self.field` reads inside the body resolve via `HirExprKind::MachineFieldAccess`
-/// against `Builder::current_machine_self_binding`, addressing
-/// `Place::MachineVariant { binding: self_binding, variant_idx: source_state_idx,
-/// field_idx }`.
-///
-/// # Entry/exit hooks
-///
-/// `HirMachineState.entry` / `.exit` blocks fire as follows:
-///
-/// - Non-self transitions: emit `source_state.exit` before the transition
-///   body, then `target_state.entry` after the body constructs the next
-///   value. Both blocks are HIR-lowered through the same `Builder` walk
-///   used for the body itself.
-/// - Self-transitions: hooks fire only when `transition.reenter` is true.
-///   Non-reenter self-transitions do not fire entry/exit (Moore semantics).
-/// - Wildcard source (`_`): the source state is resolved per concrete arm
-///   that matches; the wildcard's expanded arm uses the dispatching state
-///   as the source for hook firing.
-///
-/// Self-field writes inside entry/exit blocks (`self.field = X`) are
-/// not yet lowered — Slice 4c (drop-elaboration / hook side effects)
-/// owns that path; for now a `MirDiagnostic` surfaces at lowering time
-/// rather than silently dropping the write. The Lane A fixtures
-/// `traffic_light.hew` and `tcp_handshake.hew` only use `println` in
-/// entry/exit blocks, which falls through the standard call lowering
-/// path.
+/// Matched arms lower the transition body in-place and return the machine
+/// value produced by that HIR body. Real transitions (state tag changes)
+/// invoke source `exit` before the body and target `entry` after the body has
+/// constructed the target value. Self-transitions skip hooks and transition-out
+/// drops unless the HIR transition carries `@reenter`, in which case exit,
+/// source-payload drops, and entry all fire.
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -1679,11 +1692,10 @@ fn synthesize_machine_step_fn(
     let self_binding = BindingId(u32::MAX);
     let event_binding = BindingId(u32::MAX - 1);
 
-    // Construct a Builder with full module context so transition bodies
-    // can reach the same lowering surface (HirExprKind::Call, FieldAccess,
-    // StructInit, etc.) as user functions. `current_machine_self_binding`
-    // is set before each transition body is lowered so MachineFieldAccess
-    // resolves to Place::MachineVariant.
+    // Construct a Builder with full module context for parity with user
+    // functions. Slice 4a does not lower transition bodies; the context is
+    // retained so the function shape plugs into the same MIR containers as
+    // every other lowered function.
     let mut builder = Builder {
         type_classes: type_classes.clone(),
         record_field_orders: record_field_orders.clone(),
@@ -1694,7 +1706,6 @@ fn synthesize_machine_step_fn(
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
         current_function_symbol: emit_name.clone(),
-        current_machine_self_binding: Some(self_binding),
         ..Builder::default()
     };
 
@@ -1819,7 +1830,7 @@ fn synthesize_machine_step_fn(
             target: first_arm_check,
         });
 
-        for (arm_idx, (ev_idx, transition, is_wildcard)) in arms.iter().enumerate() {
+        for (arm_idx, (ev_idx, transition, _is_wildcard)) in arms.iter().enumerate() {
             // ── arm_check_j: compare event_tag against this arm's event_idx.
             builder.start_block(arm_check_blocks[arm_idx]);
             let ev_const = builder.alloc_local(ResolvedTy::I64);
@@ -1844,80 +1855,16 @@ fn synthesize_machine_step_fn(
                 else_target: next_arm,
             });
 
-            // ── arm_body_j: lower the transition body and return.
+            // ── arm_body_j: run hooks/body and return the next state.
             builder.start_block(arm_body_blocks[arm_idx]);
-
-            // Resolve the effective source state index for HIR-side
-            // `self.field` reads. For non-wildcard arms, it's this state;
-            // for wildcard expansions it's also this state (the dispatching
-            // state at runtime). The HIR lowerer already resolved the field's
-            // (state_idx, field_idx) on MachineFieldAccess nodes inside the
-            // body using `current_machine_source_state` — but for wildcard
-            // transitions, HIR set `current_machine_source_state = None`,
-            // which means `self.field` inside a wildcard body would have been
-            // rejected by HIR's MachineFieldAccess resolution. So we never
-            // see MachineFieldAccess in a wildcard body; the only reads
-            // through `self` in a wildcard body are well-typed by
-            // construction.
-            let _ = is_wildcard;
-
-            // Lower source-state exit hook (non-self-transition, or
-            // self-transition with @reenter).
-            let fires_exit = !transition.is_self_transition || transition.reenter;
-            if fires_exit && state.has_exit {
-                lower_machine_hook_block(&mut builder, state, /*is_exit=*/ true);
-            }
-
-            // Drop @resource payload fields of the source state before the
-            // transition body writes the new-state value. This is the
-            // exit→drop→entry ordering: exit hook fires first (above), then
-            // field drops, then the body (which constructs the next-state
-            // value), then the entry hook (below).
-            //
-            // Only fires on true transitions and @reenter self-transitions —
-            // the same predicate that guards entry/exit hooks. Plain self-
-            // transitions (`fires_exit == false`) leave the source state
-            // intact; its @resource fields are not dropped.
-            //
-            // For wildcard arms (`source_state == "_"`) `state` is the
-            // dispatching outer state, which is correct: the variant live
-            // under the tag at runtime IS `state_idx`, regardless of whether
-            // the transition was declared as a concrete or wildcard arm.
-            if fires_exit {
-                emit_machine_resource_field_drops(&mut builder, state, state_idx, self_local);
-            }
-
-            // Lower the transition body. For wildcard arms the HIR-side
-            // source-state context was None when lowering the body — so the
-            // body cannot reference self.field. The MIR-side
-            // current_machine_self_binding remains set so the dispatching
-            // state's tag dominance still holds for any (defensively
-            // accepted) self.field read.
-            let body_place = builder.lower_value(&transition.body);
-
-            // Fire target-state entry hook (non-self-transition, or
-            // self-transition with @reenter). For wildcard transitions the
-            // target is a literal state name in source — resolve via name.
-            if fires_exit {
-                if let Some(target_state) =
-                    md.states.iter().find(|s| s.name == transition.target_state)
-                {
-                    if target_state.has_entry {
-                        lower_machine_hook_block(
-                            &mut builder,
-                            target_state,
-                            /*is_exit=*/ false,
-                        );
-                    }
-                }
-            }
-
-            if let Some(src) = body_place {
-                builder.instructions.push(Instr::Move {
-                    dest: Place::ReturnSlot,
-                    src,
-                });
-            }
+            emit_machine_step_transition_return(
+                &mut builder,
+                md,
+                state,
+                state_idx,
+                transition,
+                (self_binding, self_place),
+            );
             builder.finish_current_block(Terminator::Return);
         }
     }
@@ -1971,9 +1918,9 @@ fn synthesize_machine_step_fn(
         cooperate_sites: Vec::new(),
     };
 
-    // Elaborated: mirror raw blocks as Normal kind with no drops. The
-    // step fn has no @resource locals (machine values are BitCopy at this
-    // slice; payload-field drops are Slice 4c's responsibility).
+    // Elaborated: mirror raw blocks as Normal kind with no owned-local drops.
+    // Machine transition-out resource drops are emitted directly into the raw
+    // arm body because their liveness is tag-dominated by the source state.
     let elab_blocks: Vec<ElabBlock> = blocks
         .iter()
         .map(|b| ElabBlock {
@@ -2002,141 +1949,155 @@ fn synthesize_machine_step_fn(
         diagnostics,
         generated: Vec::new(),
         record_layouts: Vec::new(),
+        gen_state_layouts: Vec::new(),
     }
 }
 
-/// Lower a machine state's entry or exit hook block in-place into the
-/// builder's current basic block. Hooks fire alongside transitions; their
-/// HIR is a `HirBlock` whose statements are walked through the standard
-/// `Builder::stmt` path, and whose tail (if any) is evaluated for
-/// side-effects only — hook blocks have a Unit-typed result.
-///
-/// Self-field writes (`self.field = X`) inside hook blocks are not yet
-/// lowered — Slice 4c (drop-elaboration / hook side effects) owns that
-/// path. Lane A fixtures `traffic_light.hew` and `tcp_handshake.hew` only
-/// use `println` in entry/exit blocks, which falls through the standard
-/// call lowering path.
-fn lower_machine_hook_block(
+fn emit_machine_step_transition_return(
     builder: &mut Builder,
+    md: &HirMachineDecl,
     state: &hew_hir::HirMachineState,
-    is_exit: bool,
+    state_idx: usize,
+    transition: &HirMachineTransition,
+    self_info: (BindingId, Place),
 ) {
-    let block = if is_exit { &state.exit } else { &state.entry };
-    let Some(block) = block.as_ref() else {
+    let (self_binding, self_place) = self_info;
+
+    let target_idx = md
+        .states
+        .iter()
+        .position(|s| s.name == transition.target_state)
+        .unwrap_or(state_idx);
+    let invokes_lifecycle_hooks = target_idx != state_idx || transition.reenter;
+
+    if invokes_lifecycle_hooks {
+        if let Some(exit) = &state.exit {
+            lower_machine_lifecycle_block(builder, self_binding, self_place, exit);
+        }
+        emit_machine_transition_out_drops(builder, state, state_idx, self_place);
+    }
+
+    let prev_machine_self = builder.current_machine_self_binding.replace(self_binding);
+    let prev_self_place = builder.binding_locals.insert(self_binding, self_place);
+    let next = builder.lower_value(&transition.body);
+    if let Some(place) = prev_self_place {
+        builder.binding_locals.insert(self_binding, place);
+    } else {
+        builder.binding_locals.remove(&self_binding);
+    }
+    builder.current_machine_self_binding = prev_machine_self;
+
+    let Some(next) = next else {
+        builder.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::UnsupportedNode {
+                reason: format!(
+                    "machine `{}` transition `on {}` from `{}` to `{}` did not produce \
+                     a next-state value",
+                    md.name,
+                    transition.event_name,
+                    transition.source_state,
+                    transition.target_state
+                ),
+            },
+            note: "transition bodies must lower to a machine state constructor before the \
+                   step arm can write the return slot"
+                .to_string(),
+        });
         return;
     };
+
+    let Place::Local(_) = next else {
+        builder.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::UnsupportedNode {
+                reason: format!(
+                    "machine `{}` transition `on {}` produced non-local next-state place {next:?}",
+                    md.name, transition.event_name
+                ),
+            },
+            note:
+                "machine transition bodies must materialise a local machine value so entry hooks \
+                   can observe the constructed target"
+                    .to_string(),
+        });
+        return;
+    };
+
+    if invokes_lifecycle_hooks {
+        if let Some(target_state) = md.states.get(target_idx) {
+            if let Some(entry) = &target_state.entry {
+                lower_machine_lifecycle_block(builder, self_binding, next, entry);
+            }
+        }
+    }
+
+    builder.instructions.push(Instr::Move {
+        dest: Place::ReturnSlot,
+        src: next,
+    });
+}
+
+fn emit_machine_transition_out_drops(
+    builder: &mut Builder,
+    state: &hew_hir::HirMachineState,
+    state_idx: usize,
+    self_place: Place,
+) {
+    let Place::Local(self_local) = self_place else {
+        builder.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::UnsupportedNode {
+                reason: format!(
+                    "machine state `{}` transition-out drop has non-local self place {self_place:?}",
+                    state.name
+                ),
+            },
+            note: "internal: machine step self parameter must be a Place::Local for \
+                   MachineVariant drop addressing"
+                .to_string(),
+        });
+        return;
+    };
+
+    let variant_idx = u32::try_from(state_idx).expect("state index exceeds u32::MAX");
+    // Enumerate only the fields of the source variant proven live by the arm's
+    // dominating MachineTag check; inactive union payload bytes are not touched.
+    for (field_idx, field) in state.fields.iter().enumerate().rev() {
+        if ValueClass::of_ty(&field.ty, &builder.type_classes) != ValueClass::AffineResource {
+            continue;
+        }
+        let field_idx = u32::try_from(field_idx).expect("field index exceeds u32::MAX");
+        let place = Place::MachineVariant {
+            local: self_local,
+            variant_idx,
+            field_idx,
+        };
+        builder.instructions.push(Instr::Drop {
+            place,
+            ty: field.ty.clone(),
+            drop_fn: resource_drop_fn(&field.ty, &builder.type_classes),
+        });
+    }
+}
+
+fn lower_machine_lifecycle_block(
+    builder: &mut Builder,
+    self_binding: BindingId,
+    self_place: Place,
+    block: &hew_hir::HirBlock,
+) {
+    let prev_machine_self = builder.current_machine_self_binding.replace(self_binding);
+    let prev_self_place = builder.binding_locals.insert(self_binding, self_place);
     for stmt in &block.statements {
         builder.stmt(stmt);
     }
     if let Some(tail) = &block.tail {
         let _ = builder.lower_value(tail);
     }
-}
-
-/// Emit `Instr::Drop` for every `@resource`-bearing payload field of
-/// `state` before the transition body overwrites the machine value.
-///
-/// Called from `synthesize_machine_step_fn` in the exit→drop→entry
-/// sequence: after the source state's exit hook fires and before
-/// `builder.lower_value(&transition.body)` constructs the next-state
-/// value. This ensures each `@resource` field is released exactly once —
-/// the old payload is gone before the new variant's fields are written.
-///
-/// `state_idx` is the zero-based index of `state` in
-/// `HirMachineDecl.states` (declaration order). `self_local` is the
-/// MIR-local id of the synthesised `self` parameter allocated by
-/// `synthesize_machine_step_fn` — it matches the local used in
-/// `Place::MachineTag(self_local)` and `Place::MachineVariant { local:
-/// self_local, .. }` throughout the synthesised step function.
-///
-/// **Fail-closed**: if a field's type is `ResolvedTy::Named` and the name
-/// is absent from `builder.type_classes`, a `MirDiagnostic` is recorded
-/// and the field is skipped rather than silently no-op'd. This surface
-/// should be unreachable for well-typed programs (the HIR checker rejects
-/// unknown named types before MIR lowering), but defence-in-depth requires
-/// the diagnostic path over a silent omission.
-///
-/// **Drop ordering**: fields are dropped in declaration order (field 0
-/// first). Reverse-declaration (LIFO) would also be correct for
-/// independent fields, but declaration order is more predictable for
-/// snapshot tests and aligns with how the codegen will lay out the struct.
-/// If inter-field dependencies exist (e.g. a `SendHalf` field and the
-/// `Duplex` it was split from), HIR's ownership checking has already
-/// rejected the program; MIR sees only independent resource fields.
-fn emit_machine_resource_field_drops(
-    builder: &mut Builder,
-    state: &hew_hir::HirMachineState,
-    state_idx: usize,
-    self_local: u32,
-) {
-    for (field_idx, field) in state.fields.iter().enumerate() {
-        match ValueClass::of_ty(&field.ty, &builder.type_classes) {
-            ValueClass::AffineResource => {
-                // Derive the close method name from the type_classes table.
-                // For `ResolvedTy::Named { name, .. }`, the table entry is
-                // `(ResourceMarker::Resource, Some(close_method_name))`.
-                // The HIR checker guarantees a close method is present for
-                // every `@resource` type (`E_RESOURCE_MISSING_CLOSE`), so
-                // `close.as_ref()` is structurally `Some(_)` here. We
-                // preserve the fail-soft `None` path to produce a named
-                // diagnostic rather than a panic if a future surface
-                // somehow bypasses the checker.
-                let drop_fn = match &field.ty {
-                    ResolvedTy::Named { name, .. } => builder
-                        .type_classes
-                        .get(name)
-                        .and_then(|(_, close)| close.as_ref())
-                        .map(|method| format!("{name}::{method}")),
-                    _ => None,
-                };
-                builder.instructions.push(Instr::Drop {
-                    place: Place::MachineVariant {
-                        local: self_local,
-                        variant_idx: u32::try_from(state_idx).unwrap_or(u32::MAX),
-                        field_idx: u32::try_from(field_idx).unwrap_or(u32::MAX),
-                    },
-                    ty: field.ty.clone(),
-                    drop_fn,
-                });
-            }
-            // @linear fields in a machine state are move-checker territory —
-            // they must be consumed by the transition body before the machine
-            // value is reassigned. No implicit drop; the move-checker upstream
-            // has already verified consumption or rejected the program with
-            // MirCheck::MustConsume.
-            // BitCopy, CowValue, PersistentShare, View have no implicit drop.
-            ValueClass::Linear
-            | ValueClass::BitCopy
-            | ValueClass::CowValue
-            | ValueClass::PersistentShare
-            | ValueClass::View => {}
-            ValueClass::Unknown => {
-                // A named type whose resource/linear marker is not in the
-                // type_classes table. This is structurally unreachable for
-                // well-typed programs (the HIR checker rejects unknown
-                // named types), but fail closed so a bypassed or buggy
-                // checker does not produce a silent resource leak.
-                builder.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::UnsupportedNode {
-                        reason: format!(
-                            "machine state `{}` field `{}` has unknown value class for type \
-                             `{:?}`; drop-elaboration requires the type to be in the \
-                             type_classes table (ResourceMarker::Resource, BitCopy, or None). \
-                             This indicates a checker/HIR invariant violation.",
-                            state.name, field.name, field.ty
-                        ),
-                    },
-                    note: format!(
-                        "field `{}` in state `{}` could not be classified; \
-                         drop omitted to prevent a double-drop, but this may \
-                         leak the resource. Fix: ensure the type's @resource \
-                         marker reaches the type_classes table before MIR lowering.",
-                        field.name, state.name
-                    ),
-                });
-            }
-        }
+    if let Some(place) = prev_self_place {
+        builder.binding_locals.insert(self_binding, place);
+    } else {
+        builder.binding_locals.remove(&self_binding);
     }
+    builder.current_machine_self_binding = prev_machine_self;
 }
 
 /// Topologically sort supervisor children by `wired_to:` dependencies via
@@ -2267,6 +2228,7 @@ fn build_supervisor_layout(
             // here so build_supervisor_layout needs no actor-layout parameter.
             on_crash_symbol: None,
             max_heap_bytes: None,
+            cycle_capable: false,
         })
         .collect();
 
@@ -2685,6 +2647,10 @@ fn collect_unknown_self_fields_in_expr(
             collect_unknown_self_fields_in_expr(left, state_fields, seen, unknown);
             collect_unknown_self_fields_in_expr(right, state_fields, seen, unknown);
         }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
+        }
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_unknown_self_fields_in_expr(callee, state_fields, seen, unknown);
             for arg in args {
@@ -2706,8 +2672,14 @@ fn collect_unknown_self_fields_in_expr(
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
-        | HirExprKind::ForkBlock { body: block, .. } => {
+        | HirExprKind::ForkBlock { body: block, .. }
+        | HirExprKind::GenBlock { body: block, .. } => {
             collect_unknown_self_fields_in_block(block, state_fields, seen, unknown);
+        }
+        HirExprKind::Yield { value, .. } => {
+            if let Some(value) = value {
+                collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
+            }
         }
         HirExprKind::If {
             condition,
@@ -2845,6 +2817,77 @@ struct LoweredFunction {
     diagnostics: Vec<MirDiagnostic>,
     generated: Vec<LoweredFunction>,
     record_layouts: Vec<crate::model::RecordLayout>,
+    /// Generator state-record layouts synthesised inside this function or
+    /// any of its `generated` children. `lower_hir_module` flattens these
+    /// into `IrPipeline.gen_state_layouts`. Empty on every function that
+    /// contains no `gen { … }` block.
+    gen_state_layouts: Vec<crate::model::GenStateLayout>,
+}
+
+/// Wrap a S3b2 drop-in-state shim `RawMirFunction` in a stub
+/// `LoweredFunction` so it surfaces through `lower_hir_module`'s
+/// generated-functions sweep. The shim's body is the fail-closed
+/// Trap-only placeholder produced by
+/// `gen_state::build_drop_shim_function`; the checked / elaborated
+/// views mirror that single-block shape with no diagnostics and an
+/// empty drop plan.
+///
+/// S4 regenerates the function from `GenStateLayout.drop_tables`, at
+/// which point the full check / elaborate / dataflow pass runs
+/// against the regenerated body. The stub views are only needed for
+/// the time window between MIR emission and S4 landing so that
+/// `lower_hir_module`'s `(thir, raw, checked, elaborated)` zip stays
+/// consistent.
+fn stub_lowered_for_drop_shim(raw: RawMirFunction) -> LoweredFunction {
+    let name = raw.name.clone();
+    let return_ty = raw.return_ty.clone();
+    let thir = ThirFunction {
+        name: name.clone(),
+        return_ty: return_ty.clone(),
+        statements: Vec::new(),
+    };
+    let checked = CheckedMirFunction {
+        name: name.clone(),
+        return_ty: return_ty.clone(),
+        blocks: raw.blocks.clone(),
+        decisions: Vec::new(),
+        checks: Vec::new(),
+        cooperate_sites: Vec::new(),
+    };
+    // The placeholder body is a single Trap block (id 0). Mirror it
+    // in the elaborated view with a single Normal block and no drops;
+    // S4 will replace both raw + elaborated together when it
+    // regenerates the cascade-on-tag shim from `drop_tables`.
+    let elab_block = ElabBlock {
+        id: 0,
+        kind: BlockKind::Normal,
+        drops: Vec::new(),
+        successor: None,
+    };
+    let elaborated = ElaboratedMirFunction {
+        name,
+        return_ty,
+        statements: Vec::new(),
+        decisions: Vec::new(),
+        blocks: vec![elab_block],
+        // `ExitPath::Return` is the conventional empty-drop-plan exit
+        // even though the Trap terminator does not actually return —
+        // codegen does not consume `drop_plans` for Trap-only blocks,
+        // so any non-empty plan would be the wrong signal.
+        drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
+        coroutine: None,
+        lambda_captures: Vec::new(),
+    };
+    LoweredFunction {
+        thir,
+        raw,
+        checked,
+        elaborated,
+        diagnostics: Vec::new(),
+        generated: Vec::new(),
+        record_layouts: Vec::new(),
+        gen_state_layouts: Vec::new(),
+    }
 }
 
 /// Insert execution-context carrier markers into a context-bearing CFG.
@@ -3066,6 +3109,7 @@ fn lower_function(
         diagnostics,
         generated: builder.generated_functions,
         record_layouts: builder.closure_record_layouts,
+        gen_state_layouts: builder.gen_state_layouts,
     }
 }
 
@@ -3121,6 +3165,14 @@ fn push_unknown_type_diagnostics(
             || builder.actor_layouts.contains_key(&name)
             || builder.supervisor_layout_map.contains_key(&name)
             || builder.machine_layout_names.contains(&name)
+            // `Generator<Y, R>` is the checker-supplied type for gen-block
+            // expressions. The S3a shell uses it as a placeholder; S3b/S4
+            // replace the shell with a real state-record type. Silence the
+            // UnknownType diagnostic so gen-block lowering compiles cleanly
+            // at S3a without requiring a full type-class registration.
+            // WHEN-OBSOLETE: when S3b synthesises the GenN nominal and
+            // registers it in the type-class table, this arm is unreachable.
+            || name == "Generator"
         {
             continue;
         }
@@ -3302,21 +3354,57 @@ struct Builder {
     generated_functions: Vec<LoweredFunction>,
     closure_record_layouts: Vec<crate::model::RecordLayout>,
     capture_env_sources: HashMap<BindingId, CaptureEnvSource>,
-    /// `Some(self_binding)` while lowering a machine transition body inside
-    /// the synthesised `<Name>__step` function. The `BindingId` identifies
-    /// the `self` parameter slot — used by `HirExprKind::MachineFieldAccess`
-    /// to address payload reads via `Place::MachineVariant { binding:
-    /// self_binding, variant_idx, field_idx }`.
+    /// Reserved context for the later transition-body lowering slice. When
+    /// set, the `BindingId` identifies the step function's `self` parameter
+    /// slot so `HirExprKind::MachineFieldAccess` can address payload reads
+    /// via `Place::MachineVariant`.
     ///
     /// `None` outside a machine step body. This is the MIR analogue of the
     /// HIR-side `current_machine_self_binding` / `current_machine_source_state`
     /// context — HIR already resolves the field's `state_idx` and `field_idx`
     /// at lowering time, so MIR only needs the addressing binding.
     ///
-    /// Set by the step-fn synthesiser before lowering each transition body;
-    /// restored on return. Slice 4b substrate; Slice 4c (drop-elaboration)
-    /// reads this through the emitted `Place::MachineVariant` places.
+    /// Slice 4a's step shell leaves this unset because transition bodies are
+    /// not lowered. Slice 4b sets it while walking transition bodies; Slice
+    /// 4c reads the emitted `Place::MachineVariant` places.
     current_machine_self_binding: Option<BindingId>,
+    /// Set to `true` inside a gen-block body builder to enable
+    /// `HirExprKind::Yield` → `Terminator::Yield` construction.
+    /// The parent builder's field stays `false` (the `Default`).
+    /// A `Yield` node encountered when `in_gen_body` is `false` is a
+    /// checker invariant violation (HIR should never surface `yield`
+    /// outside a gen block) — fail-closed with `UnsupportedNode`.
+    /// S3b will extend this context with the cross-yield live-set
+    /// accumulator once liveness analysis lands.
+    in_gen_body: bool,
+    /// State-record layouts synthesised by `lower_gen_block` while
+    /// lowering this function body. Each entry corresponds to one
+    /// generator body function pushed onto `generated_functions`.
+    /// `lower_hir_module` flattens them into `IrPipeline.gen_state_layouts`
+    /// so codegen consumes them by gen-body function name.
+    gen_state_layouts: Vec<crate::model::GenStateLayout>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeCallContext {
+    Discarded,
+    ValueNeeded,
+}
+
+fn runtime_symbol_for_call_expr(
+    expr: &HirExpr,
+) -> Option<(String, &[hew_hir::HirExpr], hew_hir::SiteId)> {
+    let HirExprKind::Call { callee, args } = &expr.kind else {
+        return None;
+    };
+    let HirExprKind::BindingRef { name, .. } = &callee.kind else {
+        return None;
+    };
+    if crate::runtime_symbols::is_known_runtime_symbol(name) {
+        return Some((name.clone(), args, expr.site));
+    }
+    crate::runtime_symbols::user_name_to_c_symbol(name)
+        .map(|symbol| (symbol.to_string(), args.as_slice(), expr.site))
 }
 
 #[derive(Debug, Clone)]
@@ -3489,6 +3577,12 @@ impl Builder {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "HIR statement dispatch keeps every kind's lowering in one match so the \
+                  fail-closed arms surface together; splitting per-kind helpers would \
+                  scatter the panic discipline across helper boundaries"
+    )]
     fn stmt(&mut self, stmt: &hew_hir::HirStmt) {
         match &stmt.kind {
             HirStmtKind::Let(binding, Some(value)) => {
@@ -3587,12 +3681,13 @@ impl Builder {
                         Place::MachineTag(_)
                         | Place::MachineVariant { .. }
                         | Place::EnumTag(_)
-                        | Place::EnumVariant { .. } => {
+                        | Place::EnumVariant { .. }
+                        | Place::GenState { .. } => {
                             panic!(
                                 "builder invariant: `Let` binding may not bind directly to a \
-                                 MachineTag / MachineVariant / EnumTag / EnumVariant place; \
-                                 these are projection primitives into a tagged-union value, \
-                                 not independent bindings. Binding {:?}, src {:?}",
+                                 MachineTag / MachineVariant / EnumTag / EnumVariant / GenState \
+                                 place; these are projection primitives into a tagged-union \
+                                 value, not independent bindings. Binding {:?}, src {:?}",
                                 binding.id, src
                             );
                         }
@@ -3601,7 +3696,7 @@ impl Builder {
             }
             HirStmtKind::Let(_, None) => {}
             HirStmtKind::Expr(expr) => {
-                let _ = self.lower_value(expr);
+                self.lower_expr_statement(expr);
                 self.statements.push(MirStatement::Evaluate {
                     site: expr.site,
                     ty: self.subst_ty(&expr.ty),
@@ -3635,6 +3730,14 @@ impl Builder {
                     ty: ResolvedTy::Unit,
                 });
             }
+        }
+    }
+
+    fn lower_expr_statement(&mut self, expr: &HirExpr) {
+        if let Some((symbol, args, site)) = runtime_symbol_for_call_expr(expr) {
+            let _ = self.lower_runtime_call(&symbol, args, site, RuntimeCallContext::Discarded);
+        } else {
+            let _ = self.lower_value(expr);
         }
     }
 
@@ -3785,39 +3888,72 @@ impl Builder {
                     _ => None,
                 }
             }
+            HirExprKind::NumericMethod {
+                receiver,
+                arg,
+                family,
+                op,
+                signedness,
+                width,
+                ..
+            } => {
+                let lhs = self.lower_value(receiver);
+                let rhs = self.lower_value(arg);
+                let (Some(lhs), Some(rhs)) = (lhs, rhs) else {
+                    return None;
+                };
+                let dest = self.alloc_local(expr.ty.clone());
+                let op = numeric_method_op(*op);
+                let signed = numeric_method_signedness(*signedness);
+                match *family {
+                    NumericMethodFamily::Wrapping => {
+                        let instr = match op {
+                            IntArithOp::Add => Instr::IntAdd { dest, lhs, rhs },
+                            IntArithOp::Sub => Instr::IntSub { dest, lhs, rhs },
+                            IntArithOp::Mul => Instr::IntMul { dest, lhs, rhs },
+                        };
+                        self.instructions.push(instr);
+                    }
+                    NumericMethodFamily::Checked => {
+                        self.instructions.push(Instr::IntArithCheckedOption {
+                            op,
+                            signed,
+                            width: *width,
+                            dest,
+                            lhs,
+                            rhs,
+                        });
+                    }
+                    NumericMethodFamily::Saturating => {
+                        self.instructions.push(Instr::IntArithSaturating {
+                            op,
+                            signed,
+                            width: *width,
+                            dest,
+                            lhs,
+                            rhs,
+                        });
+                    }
+                }
+                Some(dest)
+            }
             HirExprKind::Call { callee, args } => {
-                // SHIM(E2→checker): callee classification uses the callee name
-                // string rather than a checker-resolved `ResolvedRef`.
-                // WHY: the typecheck→HIR bridge (E1) emits `BindingRef { name:
-                //   c_symbol, resolved: ResolvedRef::Unresolved }` for every
-                //   runtime-symbol callee because the Rust MIR pipeline does not
-                //   thread `TypeCheckOutput.method_call_rewrites` resolver IDs
-                //   into HIR's `ResolvedRef`.  The name is the only available
-                //   discriminator at MIR time. User functions are identified by
-                //   membership in `module_fn_names` (collected in
-                //   `lower_hir_module` before any body is lowered).
-                // WHEN obsolete: when HIR emits `ResolvedRef::Item` for user-fn
-                //   callees and `ResolvedRef::Builtin` for runtime callees so MIR
-                //   can match on the resolved variant instead of name strings.
-                // WHAT: replace with variant-based dispatch; remove the
-                //   `is_known_runtime_symbol` and `module_fn_names` checks.
+                if let Some((symbol, args, site)) = runtime_symbol_for_call_expr(expr) {
+                    return self.lower_runtime_call(
+                        &symbol,
+                        args,
+                        site,
+                        RuntimeCallContext::ValueNeeded,
+                    );
+                }
+                // SHIM(E2→checker): user functions are still identified by
+                // callee name membership in `module_fn_names` until HIR threads
+                // resolved item/builtin variants through the bridge.
                 let callee_name = match &callee.kind {
                     HirExprKind::BindingRef { name, .. } => Some(name.as_str()),
                     _ => None,
                 };
                 if let Some(name) = callee_name {
-                    // Direct `hew_*` C-ABI name (from method-call rewrites).
-                    if crate::runtime_symbols::is_known_runtime_symbol(name) {
-                        return self.lower_runtime_call(name, args, expr.site);
-                    }
-                    // User-facing builtin name (e.g. `duplex_pair`) that maps
-                    // to a C-ABI symbol. HIR emits the source name because
-                    // checker-registered builtins do not appear in the AST
-                    // function-item registry (see `runtime_symbols::user_name_to_c_symbol`
-                    // for the shim rationale).
-                    if let Some(c_sym) = crate::runtime_symbols::user_name_to_c_symbol(name) {
-                        return self.lower_runtime_call(c_sym, args, expr.site);
-                    }
                     // Generic top-level user fn: HIR recorded
                     // `call_site_type_args[expr.site]` with the type
                     // arguments observed at this call site (possibly
@@ -4662,6 +4798,14 @@ impl Builder {
                         .to_string(),
                 });
                 None
+            }
+            HirExprKind::GenBlock {
+                body,
+                yield_ty,
+                return_ty,
+            } => Some(self.lower_gen_block(expr, body, yield_ty, return_ty)),
+            HirExprKind::Yield { value, yield_ty: _ } => {
+                self.lower_yield_expr(expr, value.as_deref())
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
@@ -7377,6 +7521,7 @@ impl Builder {
         symbol: &str,
         hir_args: &[hew_hir::HirExpr],
         site: hew_hir::SiteId,
+        context: RuntimeCallContext,
     ) -> Option<Place> {
         // Construction-time contract: the symbol must be in the allowlist.
         // This is the HIR-string-boundary gate: the caller dispatched this
@@ -7394,6 +7539,9 @@ impl Builder {
             "hew_duplex_pair" => self.lower_duplex_pair(hir_args, site),
             "hew_duplex_send" => self.lower_duplex_send(hir_args, site),
             "hew_supervisor_stop" => self.lower_supervisor_stop(hir_args, site),
+            "hew_actor_link" | "hew_actor_monitor" => {
+                self.lower_actor_link_or_monitor(symbol, hir_args, site, context)
+            }
             _ => {
                 // Known-allowlisted symbol but no producer arm yet.  Fail closed
                 // so the pipeline rejects the program before codegen runs.
@@ -7412,6 +7560,62 @@ impl Builder {
                 None
             }
         }
+    }
+
+    /// Emit `Instr::CallRuntimeAbi` for discarded `link` / `monitor` calls.
+    ///
+    /// Statement-position calls are authorised by `HirStmtKind::Expr` before
+    /// `lower_value` is entered. Value-needed calls still fail closed because
+    /// the current codegen spine cannot construct `Result<(), LinkError>` or
+    /// `MonitorRef`.
+    fn lower_actor_link_or_monitor(
+        &mut self,
+        symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        if hir_args.len() != 2 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("runtime call `{symbol}` arity"),
+                    site,
+                },
+                note: format!(
+                    "`{symbol}` expects exactly 2 actor-handle arguments, got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+
+        if context == RuntimeCallContext::ValueNeeded {
+            let return_shape = match symbol {
+                "hew_actor_link" => "Result<(), LinkError>",
+                "hew_actor_monitor" => "MonitorRef",
+                _ => unreachable!("only link/monitor symbols reach this helper"),
+            };
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("runtime call `{symbol}` value result"),
+                    site,
+                },
+                note: format!(
+                    "`{symbol}` requires {return_shape} construction in value-needed \
+                     context; discarded statement-position calls are wired with dest=None, \
+                     but composite return construction remains fail-closed"
+                ),
+            });
+            return None;
+        }
+
+        let arg0 = self.lower_value(&hir_args[0]);
+        let arg1 = self.lower_value(&hir_args[1]);
+        let (Some(arg0), Some(arg1)) = (arg0, arg1) else {
+            return None;
+        };
+        self.push_runtime_call(symbol, vec![arg0, arg1], None);
+        None
     }
 
     /// Emit `Instr::CallRuntimeAbi` for `hew_duplex_pair`.
@@ -8293,6 +8497,7 @@ impl Builder {
             init_args,
             dest,
             max_heap_bytes: layout.max_heap_bytes,
+            cycle_capable: layout.cycle_capable,
         });
         Some(dest)
     }
@@ -8695,6 +8900,7 @@ impl Builder {
             diagnostics,
             generated: builder.generated_functions,
             record_layouts: builder.closure_record_layouts,
+            gen_state_layouts: builder.gen_state_layouts,
         }
     }
 
@@ -8771,6 +8977,345 @@ impl Builder {
         handle
     }
 
+    /// Lower `HirExprKind::GenBlock { body, yield_ty, return_ty }` to a MIR
+    /// generator shell.
+    ///
+    /// The enclosing function receives a `Place::Local` typed as
+    /// `Generator<Y, R>` — this is a placeholder for S3b, which synthesises
+    /// the state-record struct and fills in cross-yield live fields.
+    ///
+    /// The gen-block body is lowered into a separate synthetic function
+    /// (name: `__hew_gen_body_{owner}_{id}`) and registered in
+    /// `self.generated_functions` so `lower_hir_module` surfaces it in the
+    /// `IrPipeline`. Inside the body, `HirExprKind::Yield { value }` lowers
+    /// to `Terminator::Yield { value: <place>, next: <resume_block> }`.
+    ///
+    /// # S3b cross-yield liveness stub
+    /// This function does NOT compute which locals are live across yield sites.
+    /// S3b adds the cross-yield liveness pass that lifts live locals to
+    /// state-record fields. The generated body's blocks contain the correct
+    /// CFG shape (yield terminators, resume blocks) for S3b to consume without
+    /// any re-lowering.
+    ///
+    /// # Fail-closed invariant
+    /// If the HIR `yield_ty` or `return_ty` is unreachable in the current
+    /// checker state, the lowering succeeds structurally (the placeholder
+    /// place still has type `Generator<Y, R>`) and S3b/S4 detect the
+    /// inconsistency when they interrogate the state-record.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "gen-block lowering keeps body-builder construction, S3b synthesis-pass \
+                  invocation, raw/checked/elaborated triple assembly, and dataflow \
+                  dispatch in one routine so the surface a regression touches is \
+                  contiguous; helper-splitting would scatter the gen-body invariants \
+                  across functions that each only see half of the contract"
+    )]
+    fn lower_gen_block(
+        &mut self,
+        expr: &HirExpr,
+        body: &HirBlock,
+        _yield_ty: &ResolvedTy,
+        return_ty: &ResolvedTy,
+    ) -> Place {
+        // Mint a unique generator-body function name via the shared closure
+        // id counter so multiple gen blocks in one function do not collide.
+        let gen_id = self.next_closure_id;
+        self.next_closure_id = self
+            .next_closure_id
+            .checked_add(1)
+            .expect("generator id overflow — closure id counter exhausted");
+        let owner = Self::sanitize_symbol_component(&self.current_function_symbol);
+        let body_name = format!("__hew_gen_body_{owner}_{gen_id}");
+
+        // Allocate a place in the ENCLOSING function typed as
+        // `Generator<yield_ty, return_ty>`.  S3b will replace this with the
+        // real state-record type; for S3a it is purely a checker-authority
+        // token so the binding in the enclosing scope has the right type.
+        let gen_place = self.alloc_local(expr.ty.clone());
+
+        // Build a child Builder that lowers the gen-block body.
+        // `in_gen_body: true` enables `HirExprKind::Yield` → `Terminator::Yield`
+        // construction inside the body.
+        let mut body_builder = Builder {
+            type_classes: self.type_classes.clone(),
+            record_field_orders: self.record_field_orders.clone(),
+            machine_layout_names: self.machine_layout_names.clone(),
+            module_fn_names: self.module_fn_names.clone(),
+            subst: self.subst.clone(),
+            call_site_type_args: self.call_site_type_args.clone(),
+            supervisor_child_slots: self.supervisor_child_slots.clone(),
+            current_function_symbol: body_name.clone(),
+            in_gen_body: true,
+            ..Builder::default()
+        };
+
+        // Prepend the thread-based generator runtime parameters:
+        //   Local(0) — `*mut c_void` body-argument pointer (unused by simple
+        //              capture-free gen blocks; reserved so the LLVM signature
+        //              matches `hew_gen_ctx_create`'s `body_fn` contract
+        //              `extern "C" fn(*mut c_void, *mut HewGenCtx)`).
+        //   Local(1) — `*mut HewGenCtx` runtime context pointer. Loaded by
+        //              the codegen `Terminator::Yield` arm to invoke
+        //              `hew_gen_yield(ctx, &value, sizeof(value))`.
+        // Subsequent user-statement local allocations naturally start at
+        // Local(2) because `alloc_local` indexes from `locals.len()`.
+        let gen_ctx_ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        body_builder.locals.push(gen_ctx_ptr_ty.clone());
+        body_builder.locals.push(gen_ctx_ptr_ty.clone());
+
+        // Lower all statements in the gen-block body. Yields inside the body
+        // call `lower_yield_expr` which emits `Terminator::Yield` and advances
+        // the cursor to a fresh resume block.
+        for stmt in &body.statements {
+            body_builder.stmt(stmt);
+        }
+        // Lower the tail expression (the implicit return value of the block).
+        if let Some(tail) = &body.tail {
+            if let Some(src) = body_builder.lower_value(tail) {
+                body_builder.instructions.push(Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src,
+                });
+            }
+        }
+
+        // Seal the last block with `Terminator::Return`. For a gen body
+        // this represents the generator completing (returns `return_ty` which
+        // S5 maps to `None` on the Iterator impl side).
+        let raw_blocks = body_builder.finalize_blocks(Terminator::Return);
+
+        // S3b cross-yield liveness + state-record synthesis pass. Runs on
+        // the sealed gen-body CFG; mutates the block list to insert
+        // bookend Move instructions around every yield/resume boundary
+        // and appends a synthetic state-record local at the end of the
+        // body's locals vector. Records a `GenStateLayout` on the
+        // enclosing builder so `lower_hir_module` surfaces it in the
+        // `IrPipeline.gen_state_layouts` vec.
+        let (blocks, body_locals_with_state, gen_state_layout_opt, drop_shim_opt) =
+            match crate::gen_state::synthesise(
+                &body_name,
+                raw_blocks.clone(),
+                body_builder.locals.clone(),
+            ) {
+                Some(synth) => (
+                    synth.blocks,
+                    synth.locals,
+                    Some(synth.layout),
+                    Some(synth.drop_shim),
+                ),
+                None => (raw_blocks, body_builder.locals.clone(), None, None),
+            };
+        if let Some(layout) = gen_state_layout_opt.clone() {
+            self.gen_state_layouts.push(layout);
+        }
+        // S3b2 drop-in-state shim. We surface it as a sibling
+        // `LoweredFunction` alongside the body so it reaches
+        // `IrPipeline.raw_mir` via the same generated-functions sweep
+        // that surfaces the body itself. The shim's checked /
+        // elaborated views are stub-shaped (no diagnostics, single
+        // Normal block, empty drop plan) because the body is a
+        // fail-closed Trap-only placeholder — S4 regenerates the
+        // shim's MIR from `GenStateLayout.drop_tables` and at that
+        // time the full check / elaborate pass runs against the
+        // regenerated body. See `gen_state::build_drop_shim_function`
+        // for the S3b2 / S4 split rationale.
+        if let Some(shim_raw) = drop_shim_opt {
+            self.generated_functions
+                .push(stub_lowered_for_drop_shim(shim_raw));
+        }
+
+        // Build the THIR/raw/checked/elaborated triple for the body function.
+        let thir_stmts: Vec<MirStatement> = blocks
+            .iter()
+            .flat_map(|b| b.statements.iter().cloned())
+            .collect();
+        let thir = ThirFunction {
+            name: body_name.clone(),
+            return_ty: return_ty.clone(),
+            statements: thir_stmts,
+        };
+
+        // The gen-body function's parameter is the generator state record
+        // (the state-record local synthesised by `gen_state::synthesise`
+        // sits at the END of `body_locals_with_state`; S4 will lift it
+        // into the formal parameter list when the state-machine prologue
+        // lands). The param list stays empty here so the raw function is
+        // self-consistent at the MIR level.
+        //
+        // WHY FunctionCallConv::Default: S4 adds GeneratorNext convention
+        // when the state-machine switch-prologue lands. Using Default here
+        // keeps hew-codegen-rs compiling (it sees Unsupported("Terminator::Yield")
+        // before reaching the call-conv check). S4 replaces this.
+        let raw = RawMirFunction {
+            name: body_name.clone(),
+            return_ty: return_ty.clone(),
+            call_conv: crate::model::FunctionCallConv::Default,
+            // Two leading pointer parameters matching the runtime contract for
+            // `hew_gen_ctx_create`'s `body_fn` (`extern "C" fn(*mut c_void,
+            // *mut HewGenCtx)`): `params[0]` is the body-argument copy,
+            // `params[1]` is the runtime context pointer. The codegen
+            // `Terminator::Yield` arm loads `Local(1)` to invoke
+            // `hew_gen_yield(ctx, &value, sizeof(value))`.
+            params: vec![
+                ResolvedTy::Pointer {
+                    is_mutable: true,
+                    pointee: Box::new(ResolvedTy::Unit),
+                },
+                ResolvedTy::Pointer {
+                    is_mutable: true,
+                    pointee: Box::new(ResolvedTy::Unit),
+                },
+            ],
+            locals: body_locals_with_state.clone(),
+            blocks: blocks.clone(),
+            decisions: body_builder.decisions.clone(),
+        };
+
+        // A synthetic HirFn shell so `check_function` has a valid fn descriptor.
+        // The body is empty — dataflow runs on the raw blocks directly.
+        let synthetic_fn = HirFn {
+            id: hew_hir::ItemId(0),
+            node: hew_hir::HirNodeId(0),
+            name: body_name.clone(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_ty: return_ty.clone(),
+            body: hew_hir::HirBlock {
+                node: hew_hir::HirNodeId(0),
+                scope: hew_hir::ScopeId(0),
+                statements: Vec::new(),
+                tail: None,
+                ty: return_ty.clone(),
+                span: expr.span.clone(),
+            },
+            span: expr.span.clone(),
+        };
+
+        let dataflow_result = check_function(&body_builder, &raw.blocks, &synthetic_fn);
+        let mut body_diagnostics: Vec<MirDiagnostic> = dataflow_result
+            .checks
+            .iter()
+            .filter_map(check_to_diagnostic)
+            .collect();
+        body_diagnostics.append(&mut body_builder.diagnostics);
+        collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
+
+        let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
+        let checked = CheckedMirFunction {
+            name: body_name.clone(),
+            return_ty: return_ty.clone(),
+            blocks: raw.blocks.clone(),
+            decisions: body_builder.decisions.clone(),
+            checks: dataflow_result.checks.clone(),
+            cooperate_sites,
+        };
+        let elaborated = elaborate(&checked, &body_builder, &thir.statements, &dataflow_result);
+
+        let body_lowered = LoweredFunction {
+            thir,
+            raw,
+            checked,
+            elaborated,
+            diagnostics: body_diagnostics,
+            generated: body_builder.generated_functions,
+            record_layouts: body_builder.closure_record_layouts,
+            // The state-record layout this body owns sits on the
+            // enclosing builder (pushed above); the LoweredFunction
+            // itself carries only nested layouts from any nested
+            // generated functions. Today gen bodies cannot nest
+            // gen-blocks (HIR rejects the construct), so this stays
+            // empty.
+            gen_state_layouts: body_builder.gen_state_layouts,
+        };
+        self.generated_functions.push(body_lowered);
+
+        // The gen-block expression evaluates to the generator-shell place in
+        // the enclosing function.  S3b replaces this with a real constructor
+        // call that allocates the state record.
+        gen_place
+    }
+
+    /// Lower `HirExprKind::Yield { value, yield_ty }` inside a gen-block body.
+    ///
+    /// Must only be called from a `Builder` with `in_gen_body = true`. If
+    /// `in_gen_body` is `false`, a `yield` expression appeared outside a
+    /// generator body — this is a checker invariant violation. Fail-closed:
+    /// emit `UnsupportedNode` and return `None` rather than fabricating a
+    /// value.
+    ///
+    /// Emits `Terminator::Yield { value: <place>, next: <resume_block_id> }` on
+    /// the CURRENT block, then advances the cursor to the fresh resume block.
+    /// The yield expression evaluates to unit in the body (the caller ignores
+    /// the `None` return).
+    ///
+    /// # S3b cross-yield liveness stub
+    /// After yielding, locally-defined values that are used again after the
+    /// resume point must be stored into (and reloaded from) the generator state
+    /// record. S3b's liveness pass identifies those locals and emits
+    /// store-before-yield / load-after-resume instructions. This function
+    /// intentionally leaves that gap as a comment at the yield site so S3b
+    /// has a clean insertion point.
+    fn lower_yield_expr(&mut self, expr: &HirExpr, value: Option<&HirExpr>) -> Option<Place> {
+        // Fail-closed: `yield` outside a gen-block body is a checker
+        // invariant violation. Emit a clear diagnostic rather than
+        // fabricating a value.
+        if !self.in_gen_body {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "HirExprKind::Yield outside gen-block body".to_string(),
+                    site: expr.site,
+                },
+                note: "yield is only valid inside a gen{} block; \
+                       the HIR checker should have rejected this program before MIR"
+                    .to_string(),
+            });
+            return None;
+        }
+
+        // Lower the yielded value to a Place.  If the value is absent (bare
+        // `yield;` — unit-typed generator), allocate a unit constant.
+        let value_place = if let Some(val_expr) = value {
+            self.decide(val_expr);
+            match self.lower_value(val_expr) {
+                Some(p) => p,
+                None => {
+                    // The value sub-expression failed to lower.  The child
+                    // diagnostic has already been pushed; propagate failure
+                    // by not emitting the Yield terminator.
+                    return None;
+                }
+            }
+        } else {
+            // `yield;` — allocate a unit local as the value carrier.
+            self.alloc_local(ResolvedTy::Unit)
+        };
+
+        // S3b insertion point: store cross-yield live locals to the state
+        // record HERE, before the Terminator::Yield. S3b's liveness pass
+        // identifies which locals are used after this resume point and emits
+        // the store instructions at this site.
+        // TODO(S3b): emit store-before-yield for cross-yield live locals.
+
+        // Allocate the resume block id and seal the current block with the
+        // Yield terminator.
+        let resume_block = self.alloc_block();
+        self.finish_current_block(Terminator::Yield {
+            value: value_place,
+            next: resume_block,
+        });
+        self.start_block(resume_block);
+
+        // S3b insertion point: reload cross-yield live locals from the state
+        // record HERE, at the top of the resume block.
+        // TODO(S3b): emit load-after-resume for cross-yield live locals.
+
+        // `yield` evaluates to unit in the gen body.
+        None
+    }
+
     fn decide(&mut self, expr: &HirExpr) {
         if self
             .decisions
@@ -8842,6 +9387,17 @@ impl Builder {
             {
                 true
             }
+            // `Generator<Y, R>` is the checker-supplied type for a gen-block
+            // expression. The S3a shell allocates a local of this type as a
+            // placeholder; S3b replaces it with the real state-record type.
+            // Classify as BitCopy so the decision-map check passes and the
+            // shell compiles. The state-record will carry its own drop
+            // semantics once S3b + S4 land.
+            // WHY BitCopy: the shell is a zero-size placeholder — it has no
+            // heap resources until S3b synthesises the state struct.
+            // WHEN-OBSOLETE: when S3b emits the state record type and S4
+            // wires the constructor; the real drop kind will replace this.
+            ResolvedTy::Named { name, .. } if name == "Generator" => true,
             ResolvedTy::Named { name, args } if args.is_empty() => {
                 self.actor_layouts.contains_key(name) || self.machine_layout_names.contains(name)
             }
@@ -9314,7 +9870,10 @@ fn duplex_parent_local(place: Place) -> Option<u32> {
         | Place::MachineTag(_)
         | Place::MachineVariant { .. }
         | Place::EnumTag(_)
-        | Place::EnumVariant { .. } => None,
+        | Place::EnumVariant { .. }
+        // GenState fields are generator state-record projections, not
+        // Duplex-family handles. They have no parent Duplex local.
+        | Place::GenState { .. } => None,
     }
 }
 
@@ -9771,6 +10330,8 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         Instr::IntAdd { dest, lhs, rhs }
         | Instr::IntSub { dest, lhs, rhs }
         | Instr::IntMul { dest, lhs, rhs }
+        | Instr::IntArithCheckedOption { dest, lhs, rhs, .. }
+        | Instr::IntArithSaturating { dest, lhs, rhs, .. }
         | Instr::IntDiv { dest, lhs, rhs, .. }
         | Instr::IntRem { dest, lhs, rhs, .. }
         | Instr::IntBitAnd { dest, lhs, rhs }
@@ -9924,11 +10485,8 @@ fn drop_kind_for(place: Place, ty: &ResolvedTy) -> DropKind {
         }
         // Machine tag and variant fields are sub-structure of a machine value,
         // not independent resources. Machine values are `BitCopy` by value
-        // class overall. `@resource` payload fields ARE dropped, but that is
-        // done inline at the transition site by
-        // `emit_machine_resource_field_drops` — which emits `Instr::Drop` with
-        // `Place::MachineVariant` directly, before the transition body runs.
-        // That path bypasses `drop_kind_for` entirely.
+        // class overall; tag-dominant transition-out drops are a later machine
+        // drop-elaboration slice and are not emitted by the Slice 4a step shell.
         //
         // THIS function is only called from the **end-of-function LIFO
         // elaboration path** (`build_lifo_drops`), which operates on
@@ -9948,7 +10506,25 @@ fn drop_kind_for(place: Place, ty: &ResolvedTy) -> DropKind {
         | Place::MachineTag(_)
         | Place::MachineVariant { .. }
         | Place::EnumTag(_)
-        | Place::EnumVariant { .. } => DropKind::Resource,
+        | Place::EnumVariant { .. }
+        // Generator state-record projections are not drop bindings on
+        // their own — drop discipline for the state record runs via the
+        // per-state `__drop_in_state` shim that S3b2 synthesises, not
+        // through the per-Place drop-kind dispatcher. Fail-closed to
+        // `Resource` so any accidental reach-through surfaces a
+        // diagnostic rather than a silent no-op.
+        | Place::GenState { .. } => DropKind::Resource,
+    }
+}
+
+fn resource_drop_fn(ty: &ResolvedTy, type_classes: &hew_hir::TypeClassTable) -> Option<String> {
+    match ty {
+        ResolvedTy::Named { name, .. } => type_classes
+            .get(name)
+            .and_then(|(_, close)| close.as_ref())
+            .map(|m| format!("{name}::{m}")),
+        // Task<T> and all other types have no user-visible close method.
+        _ => None,
     }
 }
 
@@ -9979,17 +10555,7 @@ fn build_lifo_drops(
                 // the pipeline upstream. The string form is preserved as a
                 // failsafe; codegen rejects `Some(_)` until runtime drop
                 // dispatch lands (`hew-codegen-rs/src/llvm.rs:471`).
-                let drop_fn = match ty {
-                    ResolvedTy::Named { name, .. } => type_classes
-                        .get(name)
-                        .and_then(|(_, close)| close.as_ref())
-                        .map(|m| format!("{name}::{m}")),
-                    // Task<T> and all other types have no user-visible close
-                    // method. Task<T> drop (hew_task_await_blocking +
-                    // hew_task_free) lands as a runtime ABI call in a later
-                    // slice (MIR/codegen glue); no close method name here.
-                    _ => None,
-                };
+                let drop_fn = resource_drop_fn(ty, type_classes);
                 // Resolve to the binding's real backend place. Falling
                 // back to `ReturnSlot` for an unmapped binding would
                 // drop the wrong slot — fail closed instead. The

@@ -1,6 +1,9 @@
 //! Tests for HIR machine lowering and static checks.
 
-use hew_hir::{lower_program, HirDiagnosticKind, HirExprKind, HirItem, ResolutionCtx};
+use hew_hir::{
+    lower_program, HirDiagnosticKind, HirExpr, HirExprKind, HirItem, HirLiteral, HirStmtKind,
+    ResolutionCtx,
+};
 use hew_types::TypeCheckOutput;
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
@@ -11,6 +14,36 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
         parsed.errors
     );
     lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx)
+}
+
+fn first_machine_emit(expr: &HirExpr) -> Option<(usize, &[(String, HirExpr)])> {
+    match &expr.kind {
+        HirExprKind::MachineEmit { event_idx, fields } => Some((*event_idx, fields.as_slice())),
+        HirExprKind::Block(block) | HirExprKind::GenBlock { body: block, .. } => {
+            for stmt in &block.statements {
+                let found = match &stmt.kind {
+                    HirStmtKind::Expr(expr)
+                    | HirStmtKind::Let(_, Some(expr))
+                    | HirStmtKind::Return(Some(expr)) => first_machine_emit(expr),
+                    HirStmtKind::Assign { value, .. } => first_machine_emit(value),
+                    _ => None,
+                };
+                if found.is_some() {
+                    return found;
+                }
+            }
+            block.tail.as_deref().and_then(first_machine_emit)
+        }
+        HirExprKind::Yield { value, .. } => value.as_deref().and_then(first_machine_emit),
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => first_machine_emit(condition)
+            .or_else(|| first_machine_emit(then_expr))
+            .or_else(|| else_expr.as_deref().and_then(first_machine_emit)),
+        _ => None,
+    }
 }
 
 /// A minimal two-state Moore machine with full coverage.
@@ -171,6 +204,44 @@ machine Cyclic {
     assert!(
         has_cycle_error,
         "expected emit-cycle diagnostic, got: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn accept_indirect_machine_emit_cycle_out_of_scope() {
+    // out-of-scope per spec §3.11.2: Lane A checks only direct self-emit
+    // (`on A` emits `A`), not graph cycles across multiple events.
+    let src = r"
+machine Indirect {
+    state Active;
+
+    event A;
+    event B;
+
+    on A: Active -> Active @reenter {
+        emit B {};
+        Active
+    }
+
+    on B: Active -> Active @reenter {
+        emit A {};
+        Active
+    }
+}
+";
+    let output = lower(src);
+    assert!(
+        !output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(&d.kind, HirDiagnosticKind::MachineEmitCycle { .. })),
+        "indirect emit cycle is intentionally not detected; got: {:?}",
+        output.diagnostics
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
         output.diagnostics
     );
 }
@@ -424,6 +495,77 @@ machine Counter {
 }
 
 #[test]
+fn transition_body_scopes_state_event_implicit_bindings() {
+    // Lane A reserves `state` and `event` as implicit transition-body bindings.
+    // HIR lowering should scope them while lowering the body so identifier reads
+    // produce normal BindingRef nodes instead of unresolved-symbol diagnostics.
+    let src = r"
+machine Counter {
+    state Running;
+
+    event Tick;
+
+    on Tick: Running -> Running @reenter {
+        state;
+        event;
+        Running
+    }
+}
+";
+    let output = lower(src);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        output.diagnostics
+    );
+    let machine = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| {
+            if let HirItem::Machine(m) = item {
+                Some(m)
+            } else {
+                None
+            }
+        })
+        .expect("expected Machine HirItem");
+    let tr = machine
+        .transitions
+        .iter()
+        .find(|t| t.event_name == "Tick")
+        .expect("expected Tick transition");
+    let HirExprKind::Block(block) = &tr.body.kind else {
+        panic!(
+            "expected lowered transition body block, got {:?}",
+            tr.body.kind
+        );
+    };
+    let binding_ref_names: Vec<&str> = block
+        .statements
+        .iter()
+        .filter_map(|stmt| {
+            if let hew_hir::HirStmtKind::Expr(expr) = &stmt.kind {
+                if let HirExprKind::BindingRef { name, .. } = &expr.kind {
+                    return Some(name.as_str());
+                }
+            }
+            None
+        })
+        .collect();
+    assert_eq!(
+        binding_ref_names,
+        vec!["state", "event"],
+        "implicit transition-body bindings should lower as BindingRef statements"
+    );
+    let snapshot = format!("{tr:#?}");
+    assert!(
+        snapshot.contains("body: HirExpr"),
+        "transition debug snapshot should include body field; got:\n{snapshot}"
+    );
+}
+
+#[test]
 fn entry_exit_blocks_lower_to_hir_block_substrate() {
     // The Door machine has an entry and exit block on `Closed`. Both should
     // appear as `Some(HirBlock)` on the lowered state. The blocks here use
@@ -525,6 +667,90 @@ machine Cyclic {
         unsupported_count, 0,
         "Slice 1 fences body-lowering diagnostics; saw: {:?}",
         output.diagnostics
+    );
+}
+
+#[test]
+fn transition_body_machine_emit_resolves_event_idx_and_payload_fields() {
+    let src = r#"
+machine Payloads {
+    state Active;
+
+    event First { code: Int; }
+    event Second { label: String; }
+
+    on First: Active -> Active @reenter {
+        emit Second { label: "ok" };
+        Active
+    }
+
+    on Second: Active -> Active @reenter {
+        emit First { code: 7 };
+        Active
+    }
+}
+"#;
+    let output = lower(src);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        output.diagnostics
+    );
+    let machine = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| {
+            if let HirItem::Machine(m) = item {
+                Some(m)
+            } else {
+                None
+            }
+        })
+        .expect("expected Machine HirItem");
+
+    let first_transition = machine
+        .transitions
+        .iter()
+        .find(|t| t.event_name == "First")
+        .expect("expected First transition");
+    let (second_event_idx, second_fields) =
+        first_machine_emit(&first_transition.body).expect("expected emit Second in First body");
+    assert_eq!(
+        second_event_idx, 1,
+        "Second is the second declared event, so it must lower to event_idx=1"
+    );
+    assert_eq!(second_fields.len(), 1);
+    assert_eq!(second_fields[0].0, "label");
+    assert!(
+        matches!(
+            &second_fields[0].1.kind,
+            HirExprKind::Literal(HirLiteral::String(value)) if value == "ok"
+        ),
+        "expected populated label payload field, got {:?}",
+        second_fields[0].1.kind
+    );
+
+    let second_transition = machine
+        .transitions
+        .iter()
+        .find(|t| t.event_name == "Second")
+        .expect("expected Second transition");
+    let (first_event_idx, first_fields) =
+        first_machine_emit(&second_transition.body).expect("expected emit First in Second body");
+    assert_eq!(
+        first_event_idx, 0,
+        "First is the first declared event, so it must lower to event_idx=0"
+    );
+    assert_eq!(first_fields.len(), 1);
+    assert_eq!(first_fields[0].0, "code");
+    assert!(
+        matches!(
+            &first_fields[0].1.kind,
+            HirExprKind::Literal(HirLiteral::Integer(7))
+        ),
+        "expected populated code payload field, got {:?}",
+        first_fields[0].1.kind
     );
 }
 

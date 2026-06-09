@@ -1,0 +1,1127 @@
+{
+  "capabilities": [
+    {
+      "disposition": "allowed",
+      "id": "core.stdout",
+      "reason": "stdout is captured by the educational sandbox trace",
+      "required_by": [
+        "sym:core.stdout.println"
+      ]
+    }
+  ],
+  "compiler_version": "hew-sandbox-wasm-0.5.0-pre",
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": "block:entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.0"
+                }
+              ],
+              "dst": "local:area.1",
+              "op": "local.get",
+              "span": "span:99-105"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.1"
+                }
+              ],
+              "dst": "local:area.3",
+              "op": "enum.tag",
+              "span": "span:99-105"
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "br",
+            "span": "span:93-179",
+            "target": "block:area.match_check_0.2"
+          }
+        },
+        {
+          "id": "block:area.match_exit.1",
+          "instructions": [],
+          "params": [],
+          "span": "span:93-179",
+          "terminator": {
+            "args": [
+              {
+                "kind": "trap",
+                "value": "internal_error"
+              }
+            ],
+            "op": "trap",
+            "span": "span:58-182",
+            "trap_kind": "internal_error"
+          }
+        },
+        {
+          "id": "block:area.match_check_0.2",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 0
+                }
+              ],
+              "dst": "local:area.4",
+              "op": "const.i64",
+              "span": "span:115-125"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.3"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:area.4"
+                }
+              ],
+              "dst": "local:area.5",
+              "op": "cmp.eq",
+              "span": "span:115-125"
+            }
+          ],
+          "params": [],
+          "span": "span:115-125",
+          "terminator": {
+            "args": [],
+            "condition": {
+              "kind": "local",
+              "value": "local:area.5"
+            },
+            "else_target": "block:area.match_check_1.4",
+            "op": "br_if",
+            "span": "span:115-125",
+            "target": "block:area.match_arm_0.3"
+          }
+        },
+        {
+          "id": "block:area.match_arm_0.3",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.1"
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                }
+              ],
+              "dst": "local:area.6",
+              "op": "enum.payload",
+              "span": "span:122-123"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.6"
+                }
+              ],
+              "dst": "local:area.7",
+              "op": "local.get",
+              "span": "span:128-130"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.6"
+                }
+              ],
+              "dst": "local:area.8",
+              "op": "local.get",
+              "span": "span:132-134"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.7"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:area.8"
+                }
+              ],
+              "dst": "local:area.9",
+              "op": "i64.checked_mul",
+              "span": "span:128-134"
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 3
+                }
+              ],
+              "dst": "local:area.10",
+              "op": "const.i64",
+              "span": "span:136-137"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.9"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:area.10"
+                }
+              ],
+              "dst": "local:area.11",
+              "op": "i64.checked_mul",
+              "span": "span:128-137"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.2"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:area.11"
+                }
+              ],
+              "dst": null,
+              "op": "local.set",
+              "span": "span:128-137"
+            }
+          ],
+          "params": [],
+          "span": "span:128-137",
+          "terminator": {
+            "args": [],
+            "op": "br",
+            "span": "span:128-137",
+            "target": "block:area.match_exit.1"
+          }
+        },
+        {
+          "id": "block:area.match_check_1.4",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 1
+                }
+              ],
+              "dst": "local:area.12",
+              "op": "const.i64",
+              "span": "span:147-163"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.3"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:area.12"
+                }
+              ],
+              "dst": "local:area.13",
+              "op": "cmp.eq",
+              "span": "span:147-163"
+            }
+          ],
+          "params": [],
+          "span": "span:147-163",
+          "terminator": {
+            "args": [],
+            "condition": {
+              "kind": "local",
+              "value": "local:area.13"
+            },
+            "else_target": "block:area.match_arm_1.5",
+            "op": "br_if",
+            "span": "span:147-163",
+            "target": "block:area.match_arm_1.5"
+          }
+        },
+        {
+          "id": "block:area.match_arm_1.5",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.1"
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                }
+              ],
+              "dst": "local:area.14",
+              "op": "enum.payload",
+              "span": "span:157-158"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.1"
+                },
+                {
+                  "kind": "literal",
+                  "value": 1
+                }
+              ],
+              "dst": "local:area.15",
+              "op": "enum.payload",
+              "span": "span:160-161"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.14"
+                }
+              ],
+              "dst": "local:area.16",
+              "op": "local.get",
+              "span": "span:166-168"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.15"
+                }
+              ],
+              "dst": "local:area.17",
+              "op": "local.get",
+              "span": "span:170-171"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.16"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:area.17"
+                }
+              ],
+              "dst": "local:area.18",
+              "op": "i64.checked_mul",
+              "span": "span:166-171"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:area.2"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:area.18"
+                }
+              ],
+              "dst": null,
+              "op": "local.set",
+              "span": "span:166-171"
+            }
+          ],
+          "params": [],
+          "span": "span:166-171",
+          "terminator": {
+            "args": [],
+            "op": "br",
+            "span": "span:166-171",
+            "target": "block:area.match_exit.1"
+          }
+        }
+      ],
+      "id": "fn:area",
+      "locals": [
+        {
+          "id": "local:area.0",
+          "mutable": false,
+          "name": "shape",
+          "span": "span:73-78",
+          "type": "type:Shape"
+        },
+        {
+          "id": "local:area.1",
+          "mutable": false,
+          "name": null,
+          "span": "span:99-105",
+          "type": "type:Shape"
+        },
+        {
+          "id": "local:area.2",
+          "mutable": true,
+          "name": null,
+          "span": "span:93-179",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:area.3",
+          "mutable": false,
+          "name": null,
+          "span": "span:99-105",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:area.4",
+          "mutable": false,
+          "name": null,
+          "span": "span:115-125",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:area.5",
+          "mutable": false,
+          "name": null,
+          "span": "span:115-125",
+          "type": "type:bool"
+        },
+        {
+          "id": "local:area.6",
+          "mutable": false,
+          "name": "r",
+          "span": "span:122-123",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:area.7",
+          "mutable": false,
+          "name": null,
+          "span": "span:128-130",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:area.8",
+          "mutable": false,
+          "name": null,
+          "span": "span:132-134",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:area.9",
+          "mutable": false,
+          "name": null,
+          "span": "span:128-134",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:area.10",
+          "mutable": false,
+          "name": null,
+          "span": "span:136-137",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:area.11",
+          "mutable": false,
+          "name": null,
+          "span": "span:128-137",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:area.12",
+          "mutable": false,
+          "name": null,
+          "span": "span:147-163",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:area.13",
+          "mutable": false,
+          "name": null,
+          "span": "span:147-163",
+          "type": "type:bool"
+        },
+        {
+          "id": "local:area.14",
+          "mutable": false,
+          "name": "w",
+          "span": "span:157-158",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:area.15",
+          "mutable": false,
+          "name": "h",
+          "span": "span:160-161",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:area.16",
+          "mutable": false,
+          "name": null,
+          "span": "span:166-168",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:area.17",
+          "mutable": false,
+          "name": null,
+          "span": "span:170-171",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:area.18",
+          "mutable": false,
+          "name": null,
+          "span": "span:166-171",
+          "type": "type:i64"
+        }
+      ],
+      "module": "mod:main",
+      "name": "area",
+      "params": [
+        "local:area.0"
+      ],
+      "result": "type:i64",
+      "span": "span:58-182"
+    },
+    {
+      "blocks": [
+        {
+          "id": "block:entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 4
+                }
+              ],
+              "dst": "local:main.0",
+              "op": "const.i64",
+              "span": "span:221-222"
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 6
+                }
+              ],
+              "dst": "local:main.1",
+              "op": "const.i64",
+              "span": "span:224-225"
+            },
+            {
+              "args": [
+                {
+                  "kind": "type",
+                  "value": "type:Shape"
+                },
+                {
+                  "kind": "literal",
+                  "value": 1
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.0"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.1"
+                }
+              ],
+              "dst": "local:main.2",
+              "op": "enum.new",
+              "span": "span:211-226"
+            },
+            {
+              "args": [
+                {
+                  "kind": "function",
+                  "value": "fn:area"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.2"
+                }
+              ],
+              "dst": "local:main.3",
+              "op": "call.direct",
+              "span": "span:206-227"
+            },
+            {
+              "args": [
+                {
+                  "kind": "symbol",
+                  "value": "sym:core.stdout.println"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.3"
+                }
+              ],
+              "dst": null,
+              "op": "call.stdlib",
+              "span": "span:198-228"
+            },
+            {
+              "args": [],
+              "dst": "local:main.4",
+              "op": "const.unit",
+              "span": "span:198-228"
+            },
+            {
+              "args": [],
+              "dst": "local:main.5",
+              "op": "const.unit",
+              "span": "span:182-0"
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [
+              {
+                "kind": "local",
+                "value": "local:main.5"
+              }
+            ],
+            "op": "return",
+            "span": "span:182-0"
+          }
+        }
+      ],
+      "id": "fn:main",
+      "locals": [
+        {
+          "id": "local:main.0",
+          "mutable": false,
+          "name": null,
+          "span": "span:221-222",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.1",
+          "mutable": false,
+          "name": null,
+          "span": "span:224-225",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.2",
+          "mutable": false,
+          "name": null,
+          "span": "span:211-226",
+          "type": "type:Shape"
+        },
+        {
+          "id": "local:main.3",
+          "mutable": false,
+          "name": null,
+          "span": "span:206-227",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.4",
+          "mutable": false,
+          "name": null,
+          "span": "span:198-228",
+          "type": "type:unit"
+        },
+        {
+          "id": "local:main.5",
+          "mutable": false,
+          "name": null,
+          "span": "span:182-0",
+          "type": "type:unit"
+        }
+      ],
+      "module": "mod:main",
+      "name": "main",
+      "params": [],
+      "result": "type:unit",
+      "span": "span:182-0"
+    }
+  ],
+  "hew_version": "0.5.0-pre",
+  "layouts": {
+    "actors": [],
+    "enums": [
+      {
+        "id": "type:Shape",
+        "name": "Shape",
+        "variants": [
+          {
+            "name": "Circle",
+            "payload": [
+              "type:i64"
+            ],
+            "tag": 0
+          },
+          {
+            "name": "Rectangle",
+            "payload": [
+              "type:i64",
+              "type:i64"
+            ],
+            "tag": 1
+          }
+        ]
+      }
+    ],
+    "machines": [],
+    "records": [],
+    "supervisors": [],
+    "types": [
+      {
+        "id": "type:LocalPid",
+        "kind": "record",
+        "name": "LocalPid"
+      },
+      {
+        "id": "type:RemotePid",
+        "kind": "record",
+        "name": "RemotePid"
+      },
+      {
+        "id": "type:SendError",
+        "kind": "enum",
+        "name": "SendError"
+      },
+      {
+        "id": "type:Shape",
+        "kind": "enum",
+        "name": "Shape"
+      },
+      {
+        "id": "type:bool",
+        "kind": "bool",
+        "name": "bool"
+      },
+      {
+        "id": "type:char",
+        "kind": "string",
+        "name": "char"
+      },
+      {
+        "id": "type:duration",
+        "kind": "integer",
+        "name": "duration"
+      },
+      {
+        "id": "type:f64",
+        "kind": "float",
+        "name": "f64"
+      },
+      {
+        "id": "type:i64",
+        "kind": "integer",
+        "name": "i64"
+      },
+      {
+        "id": "type:never",
+        "kind": "never",
+        "name": "never"
+      },
+      {
+        "id": "type:regex",
+        "kind": "regex",
+        "name": "regex"
+      },
+      {
+        "id": "type:string",
+        "kind": "string",
+        "name": "string"
+      },
+      {
+        "id": "type:u64",
+        "kind": "integer",
+        "name": "u64"
+      },
+      {
+        "id": "type:unit",
+        "kind": "unit",
+        "name": "unit"
+      }
+    ]
+  },
+  "module_graph": {
+    "entry": "mod:main",
+    "modules": [
+      {
+        "functions": [
+          "fn:area",
+          "fn:main"
+        ],
+        "id": "mod:main",
+        "imports": [],
+        "path": "main",
+        "source_id": "src:main"
+      }
+    ]
+  },
+  "package_id": "pkg:ab6ea7c2b03e4412",
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "schema_version": "hew.sandbox.bytecode.v0",
+  "source_map": {
+    "sources": [
+      {
+        "content_sha256": "08efba7ac2733b2fb423415e41dfaf3e251cd7f9ca4a5e8cc1bc0828bdae7c3a",
+        "id": "src:main",
+        "path": "main.hew"
+      }
+    ],
+    "spans": [
+      {
+        "end": {
+          "byte_offset": 182,
+          "column": 1,
+          "line": 13
+        },
+        "id": "span:58-182",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 58,
+          "column": 1,
+          "line": 6
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 78,
+          "column": 21,
+          "line": 6
+        },
+        "id": "span:73-78",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 73,
+          "column": 16,
+          "line": 6
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 179,
+          "column": 1,
+          "line": 11
+        },
+        "id": "span:93-179",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 93,
+          "column": 5,
+          "line": 7
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 105,
+          "column": 17,
+          "line": 7
+        },
+        "id": "span:99-105",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 99,
+          "column": 11,
+          "line": 7
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 125,
+          "column": 19,
+          "line": 8
+        },
+        "id": "span:115-125",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 115,
+          "column": 9,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 123,
+          "column": 17,
+          "line": 8
+        },
+        "id": "span:122-123",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 122,
+          "column": 16,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 130,
+          "column": 24,
+          "line": 8
+        },
+        "id": "span:128-130",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 128,
+          "column": 22,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 134,
+          "column": 28,
+          "line": 8
+        },
+        "id": "span:128-134",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 128,
+          "column": 22,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 137,
+          "column": 31,
+          "line": 8
+        },
+        "id": "span:128-137",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 128,
+          "column": 22,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 134,
+          "column": 28,
+          "line": 8
+        },
+        "id": "span:132-134",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 132,
+          "column": 26,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 137,
+          "column": 31,
+          "line": 8
+        },
+        "id": "span:136-137",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 136,
+          "column": 30,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 163,
+          "column": 25,
+          "line": 9
+        },
+        "id": "span:147-163",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 147,
+          "column": 9,
+          "line": 9
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 158,
+          "column": 20,
+          "line": 9
+        },
+        "id": "span:157-158",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 157,
+          "column": 19,
+          "line": 9
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 161,
+          "column": 23,
+          "line": 9
+        },
+        "id": "span:160-161",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 160,
+          "column": 22,
+          "line": 9
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 168,
+          "column": 30,
+          "line": 9
+        },
+        "id": "span:166-168",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 166,
+          "column": 28,
+          "line": 9
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 171,
+          "column": 33,
+          "line": 9
+        },
+        "id": "span:166-171",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 166,
+          "column": 28,
+          "line": 9
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 171,
+          "column": 33,
+          "line": 9
+        },
+        "id": "span:170-171",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 170,
+          "column": 32,
+          "line": 9
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 0,
+          "column": 1,
+          "line": 1
+        },
+        "id": "span:182-0",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 182,
+          "column": 1,
+          "line": 13
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 228,
+          "column": 35,
+          "line": 14
+        },
+        "id": "span:198-228",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 198,
+          "column": 5,
+          "line": 14
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 227,
+          "column": 34,
+          "line": 14
+        },
+        "id": "span:206-227",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 206,
+          "column": 13,
+          "line": 14
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 226,
+          "column": 33,
+          "line": 14
+        },
+        "id": "span:211-226",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 211,
+          "column": 18,
+          "line": 14
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 222,
+          "column": 29,
+          "line": 14
+        },
+        "id": "span:221-222",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 221,
+          "column": 28,
+          "line": 14
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 225,
+          "column": 32,
+          "line": 14
+        },
+        "id": "span:224-225",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 224,
+          "column": 31,
+          "line": 14
+        }
+      }
+    ]
+  },
+  "stdlib_symbols": [
+    {
+      "admission": "allowed",
+      "capability": "core.stdout",
+      "id": "sym:core.stdout.println",
+      "module": "core.stdout",
+      "name": "println",
+      "params": [
+        "type:string"
+      ],
+      "result": "type:unit"
+    }
+  ]
+}

@@ -32,11 +32,23 @@
 //! guard load-bearing post-P2b-maps:
 //!
 //! 1. **The vec getter retain must be drop-balanced.** The typed string getter
-//!    returns a retained owner. Emitting it without an owned binding drop would
+//!    returns a retained owner. Emitting it without a balancing release would
 //!    leak every accessed element; emitting a drop on a borrowed/aliased value
-//!    would double-free. The for-in lowering is therefore fail-closed: it emits
-//!    `hew_vec_get_str` only for the synthetic Vec iterator path and pairs the
-//!    per-iteration binding with `hew_string_drop`.
+//!    would double-free. The emitters are fail-closed per position:
+//!    - **for-in** pairs the per-iteration binding with one `hew_string_drop`
+//!      (escape-scanned: suppressed when the element is moved out of the body).
+//!    - **scalar `xs[i]` in DISCARD, BOUND, and NESTED positions** all route
+//!      through the same retained getter and are released exactly once by the
+//!      general owned-`string` temporary substrate:
+//!      `derive_cow_fresh_borrowed_owner` emits a scope-exit `CowHeap` drop for
+//!      the bound `let y = xs[i]; y.len()`, and `apply_nested_fresh_string_temp_drops`
+//!      splices an inline drop for `xs[i].len()` and the discarded `xs[i];`. The
+//!      exactly-once DROP BALANCE for those index shapes is proven in
+//!      `owned_string_temp_drop_canary.rs` (`index_*`); this file pins the
+//!      COMPLEMENTARY container-domain fact — that the index paths keep selecting
+//!      the retained getter `hew_vec_get_str`, never the borrow getter
+//!      `hew_vec_get_owned` (which would double-free against the substrate's
+//!      release).
 //! 2. **No map String-element accessor exists.** `get_layout` hands back a
 //!    BORROWED slot, not a retained owner; emitting a map string getter is a
 //!    P3+ change that must first wire retain-on-read, so this guard keeps the
@@ -370,5 +382,180 @@ fn vec_string_for_in_returned_binding_suppresses_drop() {
         "the returned binding's single retained reference escapes to the caller; \
          the body-end drop must be suppressed (leak-not-double-free), so no \
          hew_string_drop is emitted for the iteration binding",
+    );
+}
+
+/// SCALAR INDEX, BOUND form: `let y = xs[i]` over `Vec<string>` lowers through
+/// the SAME retained `hew_vec_get_str` getter the for-in, discard, and nested
+/// paths use — NOT the borrow getter `hew_vec_get_owned`. `hew_vec_get_str`
+/// returns a fresh refcount-bumped owner (`retain_string_element`) while the Vec
+/// keeps its own reference, so indexing does NOT move out of the Vec and the
+/// program may keep using the Vec afterwards.
+///
+/// This canary pins GETTER SELECTION for the bound path: routing String scalar
+/// index to `hew_vec_get_owned` (a borrow) would double-free against the
+/// retained owner's release. The bound owner's exactly-once release is the
+/// general owned-`string` temporary substrate's BOUND path
+/// (`derive_cow_fresh_borrowed_owner` → one scope-exit `CowHeap` drop), proven in
+/// `owned_string_temp_drop_canary.rs::index_bound_releases_exactly_once`; this
+/// canary deliberately scopes itself to the raw-MIR getter selection.
+#[test]
+fn vec_string_scalar_index_bound_lowers_through_retained_getter() {
+    let pl = pipeline_with_tc(
+        r"fn pick(xs: Vec<string>, i: i64) -> i64 {
+            let y = xs[i];
+            y.len()
+        }
+        fn main() {
+            let v: Vec<string> = Vec::new();
+            let _ = pick(v, 0);
+        }",
+    );
+
+    assert!(
+        !has_nyi(&pl),
+        "scalar Vec<string> index must not trip a MIR NotYetImplemented gate; diagnostics: {:?}",
+        pl.diagnostics,
+    );
+    assert!(
+        emits_vec_get_str(&pl),
+        "Vec<string> scalar index must lower through the real retained getter \
+         (hew_vec_get_str), not a borrow/pop/range workaround; symbols: {:?}",
+        emitted_runtime_symbols(&pl),
+    );
+}
+
+/// SCALAR INDEX, DISCARD form (the security-review follow-on): a discarded
+/// `Vec<string>` index — the bare statement `xs[i];`, and the `let _ = xs[i];`
+/// form HIR desugars to it — emits the retained `hew_vec_get_str` getter into a
+/// temporary that is never bound, read, or aliased. Left alone that retained
+/// owner leaks one reference per evaluation (one per loop iteration). The general
+/// owned-`string` temporary substrate's DISCARD path
+/// (`apply_nested_fresh_string_temp_drops`) splices exactly one inline
+/// `hew_string_drop` after the getter. (This subsumed the Vec-specific
+/// `release_discarded_vec_string_index` helper the lane carried before rebasing
+/// onto the substrate, which the lane removed to avoid a double drop.)
+#[test]
+fn vec_string_discarded_scalar_index_emits_balancing_drop() {
+    let pl = pipeline_with_tc(
+        r"fn touch(xs: Vec<string>, i: i64) {
+            xs[i];
+        }
+        fn main() {
+            let v: Vec<string> = Vec::new();
+            touch(v, 0);
+        }",
+    );
+
+    assert!(
+        !has_nyi(&pl),
+        "discarded Vec<string> index must not trip a MIR NotYetImplemented gate; diagnostics: {:?}",
+        pl.diagnostics,
+    );
+    assert!(
+        emits_vec_get_str(&pl),
+        "discarded Vec<string> index must lower through the real retained getter; symbols: {:?}",
+        emitted_runtime_symbols(&pl),
+    );
+    let drops = string_drop_count(&pl);
+    assert_eq!(
+        drops, 1,
+        "a discarded Vec<string> index leaks the hew_vec_get_str retain unless it \
+         is balanced by exactly one inline hew_string_drop; got {drops}; diagnostics: {:?}",
+        pl.diagnostics,
+    );
+}
+
+/// DISCARD in a LOOP — the case the security review flagged as the worst leak:
+/// the substrate's inline drop lands inside the loop body block, so it fires
+/// once per iteration at runtime. Raw MIR holds exactly ONE `Instr::Drop` site
+/// (drops are per-static-site, not per-iteration), proving the per-iteration
+/// leak is closed without a second, double-freeing drop.
+#[test]
+fn vec_string_discarded_scalar_index_in_loop_emits_one_drop_site() {
+    let pl = pipeline_with_tc(
+        r"fn churn(xs: Vec<string>, n: i64) {
+            for i in 0 .. n {
+                xs[i];
+            }
+        }
+        fn main() {
+            let v: Vec<string> = Vec::new();
+            churn(v, 0);
+        }",
+    );
+
+    assert!(
+        emits_vec_get_str(&pl),
+        "looped discarded Vec<string> index must lower through the real retained getter; symbols: {:?}",
+        emitted_runtime_symbols(&pl),
+    );
+    let drops = string_drop_count(&pl);
+    assert_eq!(
+        drops, 1,
+        "a looped discarded Vec<string> index must emit exactly one in-body \
+         hew_string_drop site (fires per iteration), not zero (leak) or two \
+         (double-free); got {drops}; diagnostics: {:?}",
+        pl.diagnostics,
+    );
+}
+
+/// `let _ = xs[i];` is the explicit-discard spelling; HIR desugars it to the
+/// same discarded expression statement as `xs[i];`, so it must be balanced
+/// identically — a single inline `hew_string_drop`.
+#[test]
+fn vec_string_let_underscore_index_emits_balancing_drop() {
+    let pl = pipeline_with_tc(
+        r"fn touch(xs: Vec<string>, i: i64) {
+            let _ = xs[i];
+        }
+        fn main() {
+            let v: Vec<string> = Vec::new();
+            touch(v, 0);
+        }",
+    );
+
+    assert!(
+        emits_vec_get_str(&pl),
+        "`let _ = xs[i]` must lower through the real retained getter; symbols: {:?}",
+        emitted_runtime_symbols(&pl),
+    );
+    let drops = string_drop_count(&pl);
+    assert_eq!(
+        drops, 1,
+        "`let _ = xs[i]` is a discard and must be balanced by exactly one inline \
+         hew_string_drop; got {drops}; diagnostics: {:?}",
+        pl.diagnostics,
+    );
+}
+
+/// NEGATIVE CONTROL: only the `String` element getter returns a fresh owner.
+/// A discarded `Vec<i64>` index borrows / bit-copies a scalar — no retained
+/// owner, so no `hew_string_drop` is owed. This pins that the discard-release
+/// fires for `String` elements ALONE; a spurious drop on a scalar element would
+/// be a type-confused free.
+#[test]
+fn vec_scalar_discarded_index_emits_no_string_drop() {
+    let pl = pipeline_with_tc(
+        r"fn touch(xs: Vec<i64>, i: i64) {
+            xs[i];
+        }
+        fn main() {
+            let v: Vec<i64> = Vec::new();
+            touch(v, 0);
+        }",
+    );
+
+    assert!(
+        !has_nyi(&pl),
+        "discarded Vec<i64> index must not trip a MIR NotYetImplemented gate; diagnostics: {:?}",
+        pl.diagnostics,
+    );
+    let drops = string_drop_count(&pl);
+    assert_eq!(
+        drops, 0,
+        "a discarded Vec<i64> index returns no retained string owner and must emit \
+         no hew_string_drop; got {drops}; diagnostics: {:?}",
+        pl.diagnostics,
     );
 }

@@ -1,0 +1,60 @@
+// vec-generic-index (security-review follow-on): BOUND-and-used
+// (`let y = xs[i]; y.len()`) and NESTED (`xs[i].len()`) `Vec<string>` scalar
+// index, over HEAP strings, is a NO-DOUBLE-FREE / NO-LEAK guard — the two shapes
+// the second security review required the general owned-`string` temporary
+// substrate to balance.
+//
+// `xs[i]` lowers to `hew_vec_get_str`, a FRESH retained owner (a real refcount
+// bump for heap strings — string LITERALS are immortal rodata whose retain/drop
+// are no-ops, so this fixture builds heap strings via interpolation to exercise
+// the real refcount path). The owner is released exactly once by the general
+// owned-`string` temporary substrate:
+//   * BOUND  `let y = xs[i]; ... y.len()` — scope-exit CowHeap drop
+//                                           (derive_cow_fresh_borrowed_owner).
+//   * NESTED `xs[i].len()`                — inline drop after the borrowing use
+//                                           (apply_nested_fresh_string_temp_drops).
+//
+// The P0 property under test is NO DOUBLE-FREE and NO CORRUPTION over a hot
+// loop: if either release over-decremented the refcount (double-free), the Vec's
+// own element reference would be freed underneath it and the post-loop reuse
+// would fault (the runtime's free_cstring header sentinel aborts on a double
+// free) or read garbage; if indexing moved out instead of cloning, the reuse
+// would read a hole. A clean, deterministic exit is the behavioural proof. The
+// structural exactly-one-drop proofs live in the MIR canaries
+// `owned_string_temp_drop_canary.rs::index_bound_releases_exactly_once` and
+// `::index_nested_in_loop_balances`.
+//
+// xs = ["item0".."item3"] (4 heap strings, each len 5). 1000 outer iterations ×
+// 4 indices × 2 shapes = 8000 retained-then-released owners. After the loop the
+// Vec is reused: a = xs[0] ("item0", len 5), c = xs[3] ("item3", len 5),
+// n = len (4).  a.len() + c.len() + n = 5 + 5 + 4 = 14  ->  exit 14
+fn main() -> i64 {
+    let xs: Vec<string> = Vec::new();
+    for k in 0 .. 4 {
+        xs.push(f"item{k}"); // heap strings: interpolation allocates a fresh buffer
+    }
+
+    var sink: i64 = 0;
+    for _r in 0 .. 1000 {
+        for j in 0 .. 4 {
+            // BOUND-and-used: the bound owner is released at scope exit.
+            let y = xs[j];
+            sink = sink + y.len();
+            // NESTED: the receiver temp is released inline after `.len()`.
+            sink = sink + xs[j].len();
+        }
+    }
+
+    // `sink` is non-zero iff every index read succeeded (guards the loop ran and
+    // the reads are real, not optimised away). It can never be zero here.
+    if sink == 0 {
+        return 70;
+    }
+
+    // The Vec must still be intact after 8000 clone-indexes: a double-free or
+    // move-out would corrupt these reads.
+    let a = xs[0];
+    let c = xs[3];
+    let n = xs.len();
+    a.len() + c.len() + n
+}

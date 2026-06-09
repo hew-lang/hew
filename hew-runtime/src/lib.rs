@@ -609,6 +609,10 @@ pub mod routing;
 pub mod session;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod stream;
+/// Single-owner stream/sink error channel. Ungated: it owns the `hew_stream_*`
+/// C ABI for the whole linked image (see the module docs for why this must be
+/// the only definition), so it is compiled on every target that links libhew.
+pub mod stream_error;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod swim_driver;
 pub mod tracing;

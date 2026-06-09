@@ -963,6 +963,45 @@ fn run_fn_local_string_is_dropped_bounded_memory() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
+/// W5.011 P3 owned-`string` temporary substrate double-free guard: a fresh-owned
+/// `string` produced by `+`/concat, `.to_uppercase()`, or the `Vec<string>`
+/// getter and then used in a borrowing context (`.len()`) — whether bound
+/// (`let y = <producer>; y.len()`), nested (`(<producer>).len()`), or discarded
+/// (`<producer>;`) — must be released exactly once. A regressed substrate that
+/// dropped such an owner twice would over-decrement the refcount and free early;
+/// the runtime's `free_cstring` header-sentinel check aborts the process
+/// (SIGABRT) on a double-free, so a clean exit with `done` across every
+/// iteration of the hot loop is the behavioural proof that each owner is freed
+/// exactly once (and the bounded-RSS leak proof — flat peak RSS at 40M
+/// iterations — is recorded in the lane's validation evidence). The structural
+/// single-drop proofs live in
+/// `hew-mir/tests/owned_string_temp_drop_canary.rs`.
+#[test]
+fn run_owned_string_temp_no_double_free() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/owned_string_temp_no_double_free.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/owned_string_temp_no_double_free.expected"),
+    )
+    .expect("read owned_string_temp_no_double_free.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    // A double-free aborts the process (SIGABRT) via the runtime's
+    // `free_cstring` sentinel check, so `success()` is itself the proof.
+    assert!(
+        output.status.success(),
+        "owned_string_temp_no_double_free should run cleanly (a double-free would \
+         abort); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
 #[test]
 fn run_user_record_string_field_is_dropped_once() {
     require_codegen();
@@ -3228,5 +3267,469 @@ fn clone_on_unsupported_scalar_fails_closed() {
     assert!(
         combined.contains("clone") && combined.contains("i64"),
         "expected a fail-closed `clone`-on-`i64` diagnostic; got: {combined}"
+    );
+}
+
+/// Regression for ecosystem Blocker 2 (file-import half): an actor defined in a
+/// sibling file pulled in with `import "counter.hew";` must spawn and answer
+/// `ask` calls exactly like a local actor. File imports flatten the imported
+/// items into the root program under their bare names, so the unqualified
+/// `spawn Counter()` is the correct surface.
+///
+/// This also guards the dedup path in the imported-module HIR walk: the
+/// file-import actor is already emitted by the source-order pass, and the walk
+/// must NOT emit a second `HirItem::Actor`. Before the dedup guard the
+/// duplicate collided at MIR (`ActorHandlerSymbolCollision`, the bare actor
+/// name keys the handler layout).
+#[test]
+fn run_file_imported_actor_spawns_and_calls() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    std::fs::write(
+        dir.path().join("counter.hew"),
+        "pub actor Counter {\n\
+         \x20   var n: i64 = 0;\n\
+         \x20   receive fn bump() -> i64 {\n\
+         \x20       n = n + 1;\n\
+         \x20       n\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import \"counter.hew\";\n\
+         fn main() {\n\
+         \x20   let c = spawn Counter();\n\
+         \x20   match await c.bump() {\n\
+         \x20       Ok(v) => println(f\"bumped: {v}\"),\n\
+         \x20       Err(_) => println(\"err\"),\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        output.status.success(),
+        "file-imported actor spawn/call should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "bumped: 1\n");
+}
+
+/// Regression for ecosystem Blocker 2 (package-import half): an actor exported
+/// from a separate compilation unit (`import hew::bank;`, resolved via the
+/// source-relative `hew/<pkg>/` layout) must spawn with `spawn bank.Account(...)`
+/// and answer `ask` calls like a local actor. Before the fix, package imports
+/// were registered only in the module graph and never lowered into the root
+/// program, so MIR had no actor layout and failed with
+/// `E_NOT_YET_IMPLEMENTED: MIR lowering for spawn of unknown actor`, while the
+/// module-qualified spawn result type failed HIR boundary conversion.
+///
+/// Exercises the full imported-actor surface: an `init` with a named arg,
+/// multiple `receive fn`s, state persisted across asks, and a *private*
+/// same-module free function (`clamp_nonneg`) called from the actor body —
+/// which forces the imported-private-fn closure to seed from actor bodies and
+/// the same-module call rewrites to reach into the imported actor body.
+#[test]
+fn run_package_module_actor_spawns_and_calls() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let pkg_dir = dir.path().join("hew").join("bank");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    std::fs::write(
+        pkg_dir.join("hew.toml"),
+        "[package]\nname = \"hew::bank\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        pkg_dir.join("bank.hew"),
+        "fn clamp_nonneg(x: i64) -> i64 {\n\
+         \x20   if x < 0 { 0 } else { x }\n\
+         }\n\
+         \n\
+         pub actor Account {\n\
+         \x20   var balance: i64 = 0;\n\
+         \x20   init(opening: i64) {\n\
+         \x20       balance = clamp_nonneg(opening);\n\
+         \x20   }\n\
+         \x20   receive fn deposit(amount: i64) -> i64 {\n\
+         \x20       balance = balance + clamp_nonneg(amount);\n\
+         \x20       balance\n\
+         \x20   }\n\
+         \x20   receive fn withdraw(amount: i64) -> i64 {\n\
+         \x20       let take = clamp_nonneg(amount);\n\
+         \x20       if take > balance {\n\
+         \x20           return balance;\n\
+         \x20       }\n\
+         \x20       balance = balance - take;\n\
+         \x20       balance\n\
+         \x20   }\n\
+         \x20   receive fn peek() -> i64 {\n\
+         \x20       balance\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import hew::bank;\n\
+         \n\
+         fn report(label: string, r: Result<i64, AskError>) {\n\
+         \x20   match r {\n\
+         \x20       Ok(v) => println(f\"{label}={v}\"),\n\
+         \x20       Err(_) => println(f\"{label}=ERR\"),\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let acct = spawn bank.Account(opening: 100);\n\
+         \x20   report(\"after_open\", await acct.peek());\n\
+         \x20   report(\"after_deposit\", await acct.deposit(50));\n\
+         \x20   report(\"after_overdraw\", await acct.withdraw(1000));\n\
+         \x20   report(\"after_withdraw\", await acct.withdraw(30));\n\
+         \x20   report(\"final\", await acct.peek());\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        output.status.success(),
+        "package-module actor spawn/call should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "after_open=100\n\
+         after_deposit=150\n\
+         after_overdraw=150\n\
+         after_withdraw=120\n\
+         final=120\n",
+    );
+}
+
+/// Fail-closed guard for Blocker 2: a *non-pub* actor in an imported package is
+/// not exported, so `spawn secret.Hidden()` must fail rather than silently
+/// resolve. The fix deliberately lowers `HirItem::Actor` only for `pub` imported
+/// actors; a private one is never emitted, so MIR rejects the spawn as an
+/// unknown actor. This proves the fix did not introduce a broad fallback that
+/// would spawn arbitrary unknown actors across the import boundary.
+#[test]
+fn run_non_pub_imported_actor_fails_closed() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let pkg_dir = dir.path().join("hew").join("secret");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    std::fs::write(
+        pkg_dir.join("secret.hew"),
+        "actor Hidden {\n\
+         \x20   var n: i64 = 0;\n\
+         \x20   receive fn bump() -> i64 {\n\
+         \x20       n = n + 1;\n\
+         \x20       n\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import hew::secret;\n\
+         fn main() {\n\
+         \x20   let c = spawn secret.Hidden();\n\
+         \x20   match await c.bump() {\n\
+         \x20       Ok(v) => println(f\"bumped: {v}\"),\n\
+         \x20       Err(_) => println(\"err\"),\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        !output.status.success(),
+        "non-pub imported actor must fail closed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("Hidden"),
+        "expected a fail-closed diagnostic naming the unknown actor `Hidden`; got: {combined}"
+    );
+}
+
+/// Security regression (a): two imported packages each exporting a `pub actor`
+/// with the same bare name (`Account`) must NOT silently route to one layout.
+/// Cross-module actor identity is bare-name-keyed throughout HIR/MIR/codegen,
+/// so `spawn bank.Account(...)` and `spawn store.Account(...)` cannot be told
+/// apart. The compile fails closed at graph-build time
+/// (`check_duplicate_actor_layout_names`) with a diagnostic naming the actor
+/// and both modules, rather than binding the wrong handlers/state/drop glue.
+#[test]
+fn run_two_packages_same_actor_name_fails_closed() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    for (pkg, tag) in [("bank", 1_i64), ("store", 2_i64)] {
+        let pkg_dir = dir.path().join("hew").join(pkg);
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(
+            pkg_dir.join(format!("{pkg}.hew")),
+            format!(
+                "pub actor Account {{\n\
+                 \x20   var n: i64 = 0;\n\
+                 \x20   receive fn who() -> i64 {{ {tag} }}\n\
+                 }}\n"
+            ),
+        )
+        .unwrap();
+    }
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import hew::bank;\n\
+         import hew::store;\n\
+         fn main() {\n\
+         \x20   let a = spawn bank.Account();\n\
+         \x20   let s = spawn store.Account();\n\
+         \x20   match await a.who() {\n\
+         \x20       Ok(v) => println(f\"a={v}\"),\n\
+         \x20       Err(_) => println(\"e\"),\n\
+         \x20   }\n\
+         \x20   match await s.who() {\n\
+         \x20       Ok(v) => println(f\"s={v}\"),\n\
+         \x20       Err(_) => println(\"e\"),\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        !output.status.success(),
+        "two packages with the same actor name must fail closed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("actor named `Account`")
+            && combined.contains("bank")
+            && combined.contains("store"),
+        "expected a duplicate-actor diagnostic naming `Account`, `bank` and `store`; got: {combined}"
+    );
+}
+
+/// Security regression (b): a root-local actor and an imported `pub actor` with
+/// the same bare name (`Account`) must NOT let `spawn bank.Account(...)`
+/// silently resolve to the root-local actor (the HIR bare-name dedup would
+/// otherwise suppress the package actor). The compile fails closed with a
+/// diagnostic naming the actor, the root program, and the module.
+#[test]
+fn run_root_and_package_same_actor_name_fails_closed() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let pkg_dir = dir.path().join("hew").join("bank");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    std::fs::write(
+        pkg_dir.join("bank.hew"),
+        "pub actor Account {\n\
+         \x20   var n: i64 = 0;\n\
+         \x20   receive fn who() -> i64 { 999 }\n\
+         }\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import hew::bank;\n\
+         actor Account {\n\
+         \x20   var n: i64 = 0;\n\
+         \x20   receive fn who() -> i64 { 111 }\n\
+         }\n\
+         fn main() {\n\
+         \x20   let a = spawn bank.Account();\n\
+         \x20   match await a.who() {\n\
+         \x20       Ok(v) => println(f\"a={v}\"),\n\
+         \x20       Err(_) => println(\"e\"),\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        !output.status.success(),
+        "root + package actor name collision must fail closed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Must NOT have run the local actor (would print `a=111`) — the compile
+    // must reject before codegen.
+    assert!(
+        !combined.contains("a=111") && !combined.contains("a=999"),
+        "collision must be rejected before any actor runs; got: {combined}"
+    );
+    assert!(
+        combined.contains("actor named `Account`")
+            && combined.contains("the root program")
+            && combined.contains("bank"),
+        "expected a duplicate-actor diagnostic naming `Account`, the root program and `bank`; \
+         got: {combined}"
+    );
+}
+
+/// Security regression (private-actor routing): a root/pub actor `Account` and
+/// a *private* (non-pub) imported actor `secret.Account` must NOT let
+/// `spawn secret.Account()` silently route to the root actor. Module-qualified
+/// actor identity is bare-name-keyed in HIR/MIR, and a private actor is not an
+/// export of its module, so the spawn must fail closed at type-check (before
+/// the qualifier is stripped to bare `Account`) rather than spawn the root
+/// `Account`. Verifies neither the root actor (`a=111`) nor the private actor
+/// (`a=999`) ever runs.
+#[test]
+fn run_private_imported_actor_does_not_route_to_root_actor() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let pkg_dir = dir.path().join("hew").join("secret");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    // Note: no `pub` — the actor is private to its module.
+    std::fs::write(
+        pkg_dir.join("secret.hew"),
+        "actor Account {\n\
+         \x20   var n: i64 = 0;\n\
+         \x20   receive fn id() -> i64 { 999 }\n\
+         }\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import hew::secret;\n\
+         actor Account {\n\
+         \x20   var n: i64 = 0;\n\
+         \x20   receive fn id() -> i64 { 111 }\n\
+         }\n\
+         fn main() {\n\
+         \x20   let a = spawn secret.Account();\n\
+         \x20   match await a.id() {\n\
+         \x20       Ok(v) => println(f\"a={v}\"),\n\
+         \x20       Err(_) => println(\"e\"),\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        !output.status.success(),
+        "spawn of a private imported actor must fail closed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Must NOT have run either actor — the compile must reject before codegen,
+    // and in particular must NOT silently route to the root `Account` (111).
+    assert!(
+        !combined.contains("a=111") && !combined.contains("a=999"),
+        "private imported actor spawn must be rejected before any actor runs; got: {combined}"
+    );
+    assert!(
+        combined.contains("has no exported actor `Account`") && combined.contains("secret"),
+        "expected a fail-closed diagnostic that `secret` has no exported actor `Account`; \
+         got: {combined}"
+    );
+}
+
+/// Security regression (non-actor export routing): an imported module that
+/// exports a *public non-actor type* named `Account` (e.g. `pub type Account`)
+/// must NOT satisfy a module-qualified spawn `spawn secret.Account()` and route
+/// to a same-named root actor. Module-qualified spawn is gated on the qualified
+/// definition being an actor (`TypeDefKind::Actor`), not merely a public type
+/// export, so the spawn fails closed at type-check before the qualifier is
+/// stripped to bare `Account`. Verifies the root actor (`a=111`) never runs.
+#[test]
+fn run_non_actor_export_does_not_route_to_root_actor() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let pkg_dir = dir.path().join("hew").join("secret");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    // `secret` exports a public *non-actor* type named `Account`.
+    std::fs::write(
+        pkg_dir.join("secret.hew"),
+        "pub type Account {\n\
+         \x20   balance: i64,\n\
+         }\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import hew::secret;\n\
+         actor Account {\n\
+         \x20   var n: i64 = 0;\n\
+         \x20   receive fn id() -> i64 { 111 }\n\
+         }\n\
+         fn main() {\n\
+         \x20   let a = spawn secret.Account();\n\
+         \x20   match await a.id() {\n\
+         \x20       Ok(v) => println(f\"a={v}\"),\n\
+         \x20       Err(_) => println(\"e\"),\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        !output.status.success(),
+        "spawn of a non-actor module export must fail closed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Must NOT have routed to the root actor (`a=111`) -- reject before codegen.
+    assert!(
+        !combined.contains("a=111"),
+        "non-actor export must not route to the root actor; got: {combined}"
+    );
+    assert!(
+        combined.contains("has no exported actor `Account`") && combined.contains("secret"),
+        "expected a fail-closed diagnostic that `secret` has no exported actor `Account`; \
+         got: {combined}"
     );
 }

@@ -3101,7 +3101,7 @@ mod tests {
             rc,
             0,
             "hew_node_start({node_id}) failed: {:?}",
-            hew_cabi::sink::take_last_error()
+            crate::stream_error::take_last_error()
         );
         // SAFETY: the node was started successfully and uses the default TCP transport in these tests.
         let port =
@@ -3808,7 +3808,7 @@ mod tests {
         assert!(
             !transport.is_null(),
             "quic_mesh transport allocation failed: {:?}",
-            hew_cabi::sink::take_last_error()
+            crate::stream_error::take_last_error()
         );
         // SAFETY: transport pointer was just allocated by the constructor.
         let rc =
@@ -3828,7 +3828,7 @@ mod tests {
             rc,
             0,
             "hew_node_start({node_id}) on quic_mesh failed: {:?}",
-            hew_cabi::sink::take_last_error()
+            crate::stream_error::take_last_error()
         );
         // SAFETY: node started successfully and is using the quic_mesh transport.
         let port = unsafe {

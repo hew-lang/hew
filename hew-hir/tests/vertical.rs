@@ -1393,6 +1393,63 @@ fn top_level_string_const_folds_literal() {
 }
 
 #[test]
+fn top_level_float_consts_fold_literals_and_resolve_references() {
+    let output = lower(
+        "const PI: f64 = 3.14; \
+         const HALF: f32 = 0.5; \
+         fn add_pi(x: f64) -> f64 { return x + PI; } \
+         fn main() -> f32 { return HALF + 1.0; }",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "float const program should lower without diagnostics, got: {:?}",
+        output.diagnostics
+    );
+    let verify = verify_hir(&output.module);
+    assert!(verify.is_empty(), "{verify:?}");
+
+    let values: std::collections::HashMap<_, _> = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            hew_hir::HirItem::Const(c) => Some((c.name.as_str(), c.value.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        values["PI"],
+        hew_hir::HirConstValue::Float("3.14".parse::<f64>().expect("valid fixture float"))
+    );
+    assert_eq!(values["HALF"], hew_hir::HirConstValue::Float(0.5));
+
+    let dump = dump_hir(&output.module);
+    assert!(
+        dump.contains("const i0 PI: f64 = 3.14"),
+        "dump was:\n{dump}"
+    );
+}
+
+#[test]
+fn top_level_negative_float_const_folds_literal() {
+    let output = lower("const NEG: f64 = -3.14; fn main() -> f64 { return NEG; }");
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let value = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Const(c) => Some(c.value.clone()),
+            _ => None,
+        })
+        .expect("module lowers one const item");
+    assert_eq!(
+        value,
+        hew_hir::HirConstValue::Float("-3.14".parse::<f64>().expect("valid fixture float"))
+    );
+}
+
+#[test]
 fn top_level_const_bitwise_initializer_fails_closed() {
     // Bitwise/wrapping ops are deliberately rejected by the shared
     // `const_eval` engine (NotConstant). The HIR fold must surface a
@@ -1410,6 +1467,23 @@ fn top_level_const_bitwise_initializer_fails_closed() {
     assert!(
         is_unsupported,
         "bitwise const initializer must emit a fail-closed NotYetImplemented, got: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn top_level_float_const_non_literal_initializer_fails_closed() {
+    let output = lower("const Z: f64 = 1.0 + 2.0; fn main() -> f64 { return Z; }");
+    let is_unsupported = output.diagnostics.iter().any(|d| match &d.kind {
+        HirDiagnosticKind::NotYetImplemented {
+            construct,
+            owning_pass,
+        } => construct.contains("unsupported const initializer") && owning_pass == "const-fold",
+        _ => false,
+    });
+    assert!(
+        is_unsupported,
+        "non-literal float const initializer must emit a fail-closed NotYetImplemented, got: {:?}",
         output.diagnostics
     );
 }

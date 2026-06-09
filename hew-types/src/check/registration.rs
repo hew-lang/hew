@@ -6330,6 +6330,18 @@ impl Checker {
                     }
                 }
                 Item::Actor(ad) => {
+                    // Skip non-pub actors (enforce visibility), matching every
+                    // other item kind in this loop. A private actor must never
+                    // become a module type export, qualified alias, or registered
+                    // base in the importer's view: otherwise `spawn module.Account()`
+                    // would accept a private target and -- after the qualifier is
+                    // stripped to the bare name in HIR -- silently route to a
+                    // same-named root/pub actor. This `Item::Actor` arm was the
+                    // lone exporter that ignored `pub`, recording private actors in
+                    // `module_type_exports` (the authoritative export registry).
+                    if !ad.visibility.is_pub() {
+                        continue;
+                    }
                     if !self.register_type_namespace_name(Some(module_short), &ad.name, span) {
                         continue;
                     }

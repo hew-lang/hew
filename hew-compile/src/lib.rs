@@ -773,6 +773,24 @@ fn build_module_graph_with_diagnostics(
         return Err(FrontendFailure::message_only(msg));
     }
 
+    // Reject programs where two distinct modules contribute an actor with the
+    // same bare type name to the lowered actor-layout set.  Cross-module actor
+    // identity is keyed by the BARE name everywhere downstream (MIR
+    // `actor_layouts`, the `LocalPid<Actor>` handle type, the receive-fn call
+    // path, and the `Actor__recv__*` handler-symbol mangling), and the
+    // type-checker admits duplicate bare type names across modules.  Without
+    // this guard `spawn bank.Account(...)` and `spawn store.Account(...)` (two
+    // packages each exporting `pub actor Account`) would race for one
+    // bare-keyed layout — binding the wrong handlers/state/drop glue — or a
+    // root-local `actor Account` would silently shadow an imported one.  Until
+    // qualified actor identity is plumbed through HIR/MIR/codegen this is an
+    // unsupported shape; fail closed rather than misroute.  Runs before
+    // `flatten_file_import_items`, so each actor still lives in exactly one
+    // module and the file-imported-actor happy path is not double-counted.
+    if let Err(msg) = check_duplicate_actor_layout_names(&graph) {
+        return Err(FrontendFailure::message_only(msg));
+    }
+
     Ok(graph)
 }
 
@@ -794,6 +812,66 @@ fn check_duplicate_short_module_names(
         }
     }
     Ok(())
+}
+
+/// Reject two distinct modules contributing an actor with the same bare type
+/// name to the program's lowered actor-layout set.
+///
+/// See the call site in `build_module_graph_with_diagnostics` for the full
+/// rationale: cross-module actor identity is bare-name-keyed throughout
+/// HIR/MIR/codegen, so two same-named actors from different modules cannot be
+/// told apart and `spawn <module>.Actor(...)` would misroute.  Root-local
+/// actors are always emitted; non-root modules export only their `pub` actors,
+/// so a private imported actor never enters the layout set and is exempt.  The
+/// guard runs at graph-build time (before file-import flattening), so each
+/// actor lives in exactly one module here — the file-imported-actor happy path
+/// (a single `pub actor` reachable via `import "x.hew"`) is counted once and is
+/// not flagged.
+fn check_duplicate_actor_layout_names(
+    graph: &hew_parser::module::ModuleGraph,
+) -> Result<(), String> {
+    let mut seen: HashMap<&str, &hew_parser::module::ModuleId> = HashMap::new();
+    for mod_id in &graph.topo_order {
+        let Some(module) = graph.modules.get(mod_id) else {
+            continue;
+        };
+        let is_root = *mod_id == graph.root;
+        for (item, _) in &module.items {
+            let Item::Actor(actor) = item else { continue };
+            // Only `pub` actors are exported from a non-root module into an
+            // importer's layout set; a module-private actor stays internal and
+            // cannot collide across the boundary.  Root-local actors are always
+            // emitted regardless of visibility.
+            if !is_root && !actor.visibility.is_pub() {
+                continue;
+            }
+            if let Some(existing) = seen.insert(actor.name.as_str(), mod_id) {
+                let first = describe_actor_module(existing, graph);
+                let second = describe_actor_module(mod_id, graph);
+                return Err(format!(
+                    "Error: two modules contribute an actor named `{}` to the \
+                     program: {first} and {second}. Cross-module actor layouts \
+                     are keyed by the bare actor name, so `spawn <module>.{}(...)` \
+                     cannot tell them apart. Rename one of the actors.",
+                    actor.name, actor.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Render a module id for the duplicate-actor diagnostic, naming the root
+/// program explicitly instead of the bare `(root)` placeholder.
+fn describe_actor_module(
+    id: &hew_parser::module::ModuleId,
+    graph: &hew_parser::module::ModuleGraph,
+) -> String {
+    if *id == graph.root {
+        "the root program".to_string()
+    } else {
+        format!("module `{id}`")
+    }
 }
 
 /// Resolve imports and build a module graph rooted at `source_file`.
@@ -1158,6 +1236,7 @@ fn build_resolved_import_internal(
             .filter(|path| {
                 path.extension().and_then(|ext| ext.to_str()) == Some("hew") && *path != canonical
             })
+            .filter(|path| !is_hew_test_file(path))
             .collect::<Vec<_>>();
         peers.sort();
         peers
@@ -1203,6 +1282,12 @@ fn build_resolved_import_internal(
         item_source_paths: import_item_source_paths,
         source_paths,
     })
+}
+
+fn is_hew_test_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with("_test.hew"))
 }
 
 fn parse_and_resolve_file_internal(
@@ -1472,11 +1557,49 @@ struct PackageSection {
     edition: String,
 }
 
+/// Table form of a `hew.toml` dependency: `{ version = "^1.0", path = "...",
+/// features = [...], optional = true }`. The field set mirrors adze's `DepTable`
+/// so the compiler parses exactly the manifests the package manager accepts.
+/// Only dependency *names* (the map keys) are used by the compiler, so these
+/// values are parsed for cross-tool compatibility and are otherwise unused.
+#[derive(Debug, Deserialize)]
+#[allow(
+    dead_code,
+    reason = "manifest compatibility fields are parsed but not all consumed by the compiler"
+)]
+struct DepTable {
+    version: String,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    features: Option<Vec<String>>,
+    #[serde(default)]
+    optional: Option<bool>,
+    #[serde(default)]
+    default_features: Option<bool>,
+    #[serde(default)]
+    registry: Option<String>,
+}
+
+/// A `hew.toml` dependency value: a bare version string (`"^1.0"`) or a detailed
+/// table. Untagged to match adze's `DepSpec` so the compiler no longer rejects
+/// table/path/feature dependencies that `adze install` accepts.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+#[allow(
+    dead_code,
+    reason = "manifest compatibility variants preserve adze-compatible dependency syntax"
+)]
+enum DepSpec {
+    Version(String),
+    Table(DepTable),
+}
+
 #[derive(Debug, Deserialize)]
 struct TomlManifest {
     package: Option<PackageSection>,
     #[serde(default)]
-    dependencies: BTreeMap<String, String>,
+    dependencies: BTreeMap<String, DepSpec>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1694,6 +1817,22 @@ mod tests {
             .expect("manifest should be present");
         deps.sort();
         assert_eq!(deps, vec!["math", "std_utils"]);
+    }
+
+    #[test]
+    fn manifest_with_table_deps_returns_keys() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        // Table / path / feature dependency forms are accepted by adze; the
+        // compiler must parse them too (it only needs the dependency names).
+        write_toml(
+            dir.path(),
+            "[dependencies]\n\"hew::math::stats\" = { version = \"^0.1.0\" }\nlocal = { version = \"0.1.0\", path = \"../local\" }\nweb = { version = \"1.0\", features = [\"tls\"], optional = true }\n",
+        );
+        let mut deps = load_dependencies(dir.path())
+            .expect("manifest should load")
+            .expect("manifest should be present");
+        deps.sort();
+        assert_eq!(deps, vec!["hew::math::stats", "local", "web"]);
     }
 
     #[test]
@@ -1921,6 +2060,271 @@ mod tests {
         // so reaching `Ok` proves the guard did not fire on distinct names.
         check_file(&input, &FrontendOptions::default())
             .expect("distinct short module names must be accepted");
+    }
+
+    #[test]
+    fn package_directory_import_excludes_adjacent_test_files_from_public_surface() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let pkg_root = dir.path().join("packages");
+        let sqlite_dir = pkg_root.join("db/sqlite");
+        fs::create_dir_all(&sqlite_dir).expect("create package directory");
+        write_source(&sqlite_dir, "sqlite.hew", "pub fn marker() -> i64 { 1 }\n");
+        write_source(
+            &sqlite_dir,
+            "sqlite_test.hew",
+            "import \"sqlite.hew\";\n\npub fn test_marker() -> i64 { sqlite.marker() }\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import hew::db::sqlite;\n\nfn main() -> i64 { sqlite.marker() }\n",
+        );
+
+        check_file(
+            &input,
+            &FrontendOptions {
+                pkg_path: Some(pkg_root),
+                ..Default::default()
+            },
+        )
+        .expect("package import should ignore adjacent _test.hew imports");
+    }
+
+    #[test]
+    fn explicit_file_import_of_test_file_still_resolves_relative_imports() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_source(dir.path(), "sqlite.hew", "pub fn marker() -> i64 { 1 }\n");
+        write_source(
+            dir.path(),
+            "sqlite_test.hew",
+            "import \"sqlite.hew\";\n\npub fn test_marker() -> i64 { 1 }\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import \"sqlite_test.hew\";\n\nfn main() -> i64 { 0 }\n",
+        );
+
+        check_file(&input, &FrontendOptions::default())
+            .expect("explicit file import should keep _test.hew semantics");
+    }
+
+    /// Two different modules each exporting a `pub actor` with the same bare
+    /// name must be REJECTED. Cross-module actor identity is keyed by the bare
+    /// name throughout HIR/MIR/codegen (the MIR `actor_layouts` map, the
+    /// `LocalPid<Actor>` handle type, and the `Actor__recv__*` handler symbols),
+    /// so admitting `bank::Account` and `store::Account` together would let
+    /// `spawn bank.Account(...)` bind the wrong layout/handlers/state. The guard
+    /// lives in `check_duplicate_actor_layout_names` (called from
+    /// `build_module_graph_with_diagnostics`).
+    #[test]
+    fn check_file_rejects_duplicate_exported_actor_names() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_source(
+            dir.path(),
+            "bank.hew",
+            "pub actor Account {\n    var n: i64 = 0;\n    \
+             receive fn who() -> i64 { 1 }\n}\n",
+        );
+        write_source(
+            dir.path(),
+            "store.hew",
+            "pub actor Account {\n    var n: i64 = 0;\n    \
+             receive fn who() -> i64 { 2 }\n}\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import bank;\nimport store;\n\nfn main() -> i64 { 0 }\n",
+        );
+
+        let failure = check_file(&input, &FrontendOptions::default())
+            .expect_err("duplicate exported actor names must fail closed");
+        assert!(
+            failure.message.contains("actor named `Account`"),
+            "expected a duplicate-actor diagnostic, got: {}",
+            failure.message
+        );
+        assert!(
+            failure.message.contains("bank") && failure.message.contains("store"),
+            "diagnostic should name both colliding modules, got: {}",
+            failure.message
+        );
+    }
+
+    /// A root-local actor colliding by bare name with an imported `pub actor`
+    /// must be REJECTED — otherwise `spawn bank.Account(...)` would silently
+    /// resolve to the root-local `Account` layout (the bare-name dedup in the
+    /// HIR imported-module walk would suppress the package actor). The guard
+    /// catches root-vs-import collisions because it does NOT skip the root
+    /// module (unlike the short-name guard).
+    #[test]
+    fn check_file_rejects_root_actor_colliding_with_imported_actor() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_source(
+            dir.path(),
+            "bank.hew",
+            "pub actor Account {\n    var n: i64 = 0;\n    \
+             receive fn who() -> i64 { 1 }\n}\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import bank;\n\nactor Account {\n    var n: i64 = 0;\n    \
+             receive fn who() -> i64 { 2 }\n}\n\nfn main() -> i64 { 0 }\n",
+        );
+
+        let failure = check_file(&input, &FrontendOptions::default())
+            .expect_err("root/imported actor name collision must fail closed");
+        assert!(
+            failure.message.contains("actor named `Account`"),
+            "expected a duplicate-actor diagnostic, got: {}",
+            failure.message
+        );
+        assert!(
+            failure.message.contains("the root program") && failure.message.contains("bank"),
+            "diagnostic should name the root program and module `bank`, got: {}",
+            failure.message
+        );
+    }
+
+    /// Negative control: two modules exporting actors with DISTINCT bare names
+    /// compile cleanly — the duplicate-actor guard must not over-reject.
+    #[test]
+    fn check_file_accepts_distinct_exported_actor_names() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_source(
+            dir.path(),
+            "bank.hew",
+            "pub actor Account {\n    var n: i64 = 0;\n    \
+             receive fn who() -> i64 { 1 }\n}\n",
+        );
+        write_source(
+            dir.path(),
+            "store.hew",
+            "pub actor Register {\n    var n: i64 = 0;\n    \
+             receive fn who() -> i64 { 2 }\n}\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import bank;\nimport store;\n\nfn main() -> i64 { 0 }\n",
+        );
+
+        check_file(&input, &FrontendOptions::default())
+            .expect("distinct exported actor names must be accepted");
+    }
+
+    /// Negative control for the file-import happy path: a single `pub actor`
+    /// reached via `import "counter.hew"` must NOT be flagged. The actor is
+    /// flattened into the root program AND present in its file-import graph
+    /// module, but the guard runs before flattening, so it is counted exactly
+    /// once and accepted.
+    #[test]
+    fn check_file_accepts_single_file_imported_actor() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_source(
+            dir.path(),
+            "counter.hew",
+            "pub actor Counter {\n    var n: i64 = 0;\n    \
+             receive fn bump() -> i64 { n = n + 1; n }\n}\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import \"counter.hew\";\n\nfn main() -> i64 { 0 }\n",
+        );
+
+        check_file(&input, &FrontendOptions::default())
+            .expect("a single file-imported actor must be accepted");
+    }
+
+    /// A *private* (non-pub) imported actor must not be spawnable via its
+    /// module qualifier, and in particular `spawn secret.Account()` must NOT
+    /// silently route to a same-named root actor. The duplicate-actor graph
+    /// guard deliberately ignores private actors (they never enter the layout
+    /// set), so the fail-closed behaviour here comes from the type checker:
+    /// module-qualified spawn is gated on the actor being a `pub` export of the
+    /// module (`module_type_exports`), which private actors are excluded from at
+    /// registration. Without the gate the qualifier is stripped to bare
+    /// `Account` and routes to the root actor -- a privacy and correctness hole.
+    #[test]
+    fn check_file_rejects_spawn_of_private_imported_actor() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_source(
+            dir.path(),
+            "secret.hew",
+            // No `pub`: the actor is private to its module.
+            "actor Account {\n    var n: i64 = 0;\n    \
+             receive fn id() -> i64 { 999 }\n}\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import secret;\n\nactor Account {\n    var n: i64 = 0;\n    \
+             receive fn id() -> i64 { 111 }\n}\n\n\
+             fn main() { let a = spawn secret.Account(); }\n",
+        );
+
+        let failure = check_file(&input, &FrontendOptions::default())
+            .expect_err("spawn of a private imported actor must fail closed");
+        // The detailed diagnostic is a typed error in `diagnostics`; the
+        // top-level `message` is the generic "type errors found" summary.
+        let has_export_diag = failure.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                FrontendDiagnosticKind::Type(error)
+                    if error.message.contains("has no exported actor `Account`")
+                        && error.message.contains("secret")
+            )
+        });
+        assert!(
+            has_export_diag,
+            "expected a fail-closed `has no exported actor `Account`` diagnostic \
+             naming `secret`, got: {:?}",
+            failure.diagnostics
+        );
+    }
+
+    /// A public *non-actor* type export (e.g. `pub type Account`) must not
+    /// satisfy a module-qualified spawn. `module_type_exports` membership is
+    /// insufficient -- it also holds public structs/enums/records -- so the
+    /// spawn gate requires the qualified definition to be `TypeDefKind::Actor`.
+    /// Without that, `spawn secret.Account()` would strip the qualifier to bare
+    /// `Account` and route to a same-named root actor.
+    #[test]
+    fn check_file_rejects_spawn_of_non_actor_module_export() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_source(
+            dir.path(),
+            "secret.hew",
+            // A public NON-actor type that shares the actor's bare name.
+            "pub type Account {\n    balance: i64,\n}\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import secret;\n\nactor Account {\n    var n: i64 = 0;\n    \
+             receive fn id() -> i64 { 111 }\n}\n\n\
+             fn main() { let a = spawn secret.Account(); }\n",
+        );
+
+        let failure = check_file(&input, &FrontendOptions::default())
+            .expect_err("spawn of a non-actor module export must fail closed");
+        let has_export_diag = failure.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                FrontendDiagnosticKind::Type(error)
+                    if error.message.contains("has no exported actor `Account`")
+                        && error.message.contains("secret")
+            )
+        });
+        assert!(
+            has_export_diag,
+            "expected a fail-closed `has no exported actor `Account`` diagnostic \
+             naming `secret`, got: {:?}",
+            failure.diagnostics
+        );
     }
 
     // ── check_program tests ───────────────────────────────────────────────

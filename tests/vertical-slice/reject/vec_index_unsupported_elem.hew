@@ -1,0 +1,15 @@
+// vec-generic-index negative: scalar `xs[i]` on `Vec<f32>` is fail-closed.
+//
+// Narrower scalars (i8/u8/i16/u16/f32/isize/usize) have no `hew_vec_get_T`
+// runtime getter yet, so the HIR element-type gate rejects them at compile
+// time (E_HIR VecIndexElementTypeUnsupported) rather than letting MIR emit
+// `NotYetImplemented` deep in lowering. `Vec<string>` and the bool/char/
+// i32/u32/i64/u64/f64 scalars are accepted; this fixture pins the remaining
+// fail-closed surface so the gate keeps its teeth.
+fn pick(xs: Vec<f32>, i: i64) -> f32 {
+    xs[i]
+}
+
+fn main() -> i64 {
+    0
+}

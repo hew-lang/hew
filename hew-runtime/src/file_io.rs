@@ -10,7 +10,7 @@
 )]
 
 use crate::cabi::str_to_malloc;
-use hew_cabi::sink::set_last_error_with_errno;
+use crate::stream_error::set_last_error_with_errno;
 use std::ffi::{c_char, CStr, CString};
 
 /// Read an entire file and return a `malloc`-allocated, NUL-terminated C string.
@@ -255,7 +255,7 @@ pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> *mut crate:
             // visible to callers that inspect hew_last_error() or
             // hew_stream_last_error() after a successful read.
             crate::hew_clear_error();
-            let _ = hew_cabi::sink::take_last_error();
+            let _ = crate::stream_error::take_last_error();
             // SAFETY: data slice is valid.
             unsafe { crate::vec::u8_to_hwvec(&data) }
         }

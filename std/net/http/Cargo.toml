@@ -14,10 +14,19 @@ crate-type = ["staticlib", "lib"]
 
 [dependencies]
 hew-cabi = { path = "../../../hew-cabi" }
-hew-runtime = { path = "../../../hew-runtime" }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 tiny_http = "0.12"
 libc.workspace = true
+
+# hew-runtime is a TEST-ONLY dependency. The shipped `libhew_std_net_http.a`
+# must not bundle the runtime (that re-defines libhew.a's `#[no_mangle]` exports
+# and collides at the final link — see src/lib.rs). The crate's own unit tests,
+# however, build a standalone executable that needs those runtime symbols
+# defined, so they force-link hew-runtime via `#[cfg(test)] extern crate` in
+# src/lib.rs. Dev-dependencies are excluded from normal `cargo build`, keeping
+# the staticlib a clean consumer.
+[dev-dependencies]
+hew-runtime = { path = "../../../hew-runtime" }
 
 [lints]
 workspace = true

@@ -1,0 +1,46 @@
+//! W5.011 P3 — owned-`string` temporary/drop substrate safety proof.
+//!
+//! A fresh-owned `string` result used in a non-consuming (borrowing) context
+//! must be released exactly once. `string` is refcounted; every fresh producer
+//! (`+`/concat, `.to_uppercase()`, the `Vec<string>` getter) hands the caller
+//! one drop obligation, and a borrowing use (`.len()`) reads the buffer without
+//! consuming the refcount. The substrate releases the owner once per use:
+//!
+//!   * BOUND `let y = <producer>; y.len()` — scope-exit `CowHeap` drop.
+//!   * NESTED `(<producer>).len()` and DISCARD `<producer>;` — inline drop
+//!     spliced after the borrowing use / producer.
+//!
+//! Each shape below is exercised many times in a hot loop. A regressed
+//! substrate that dropped a shared/aliased buffer twice would over-decrement
+//! the refcount and free early; the runtime's `free_cstring` header-sentinel
+//! check aborts the process (SIGABRT) on a double-free, so a clean exit with
+//! `done` across every iteration is the behavioural proof that each owner is
+//! freed exactly once. The structural single-drop proofs live in
+//! `hew-mir/tests/owned_string_temp_drop_canary.rs`.
+
+fn main() -> i64 {
+    let xs = ["alpha", "beta", "gamma"];
+    var i: i64 = 0;
+    while i < 20000 {
+        // BOUND concat (scope-exit drop).
+        let y1 = "left-" + "right";
+        let _a = y1.len();
+        // NESTED concat (inline drop after the borrowing `len`).
+        let _b = ("p-" + "q").len();
+        // BOUND transform (scope-exit drop).
+        let y2 = "lower".to_uppercase();
+        let _c = y2.len();
+        // NESTED transform (inline drop).
+        let _d = "more".to_uppercase().len();
+        // BOUND Vec<string> getter — retained owner, scope-exit drop.
+        let y3 = xs.get(0);
+        let _e = y3.len();
+        // NESTED Vec<string> getter — retained owner, inline drop.
+        let _f = xs.get(1).len();
+        // DISCARD producer — inline drop of the unused fresh owner.
+        "discard-" + "this";
+        i = i + 1;
+    }
+    println("done");
+    0
+}

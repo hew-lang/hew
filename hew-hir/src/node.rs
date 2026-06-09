@@ -198,9 +198,9 @@ pub enum HirItem {
     Const(HirConst),
 }
 
-/// Constant-folded value carried by a [`HirConst`]. v0.5 admits integer and
-/// string constants; floats, booleans, and aggregate consts are out of scope
-/// for this slice and fail closed at fold time.
+/// Constant-folded value carried by a [`HirConst`]. v0.5 admits integer,
+/// float, and string constants; booleans and aggregate consts are out of
+/// scope and fail closed at fold time.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirConstValue {
     /// Folded integer value. The declared width lives in [`HirConst::ty`]
@@ -209,6 +209,10 @@ pub enum HirConstValue {
     Integer(i64),
     /// Folded string literal value (UTF-8, as written in source).
     String(String),
+    /// Folded float literal value. The declared width lives in [`HirConst::ty`]
+    /// (`F32`/`F64`); this carries the parser value as `f64`, and downstream
+    /// codegen rounds to `f32` when the declared type is `f32`.
+    Float(f64),
 }
 
 /// Lowered module-level constant declaration — see [`HirItem::Const`].

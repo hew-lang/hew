@@ -6,16 +6,18 @@
 //! diagnostic instead of letting MIR emit `NotYetImplemented` deep in
 //! lowering.
 //!
-//! Scalar-index allowlist: bool, char, i32, u32, i64, u64, f64, tuples, and
-//! `Named { .. }` (user-defined types dispatched via `hew_vec_get_ptr` for
-//! heap handles or `hew_vec_get_layout` for `BitCopy` value records).
-//! Source-level scalar indexing still excludes `String` until the retained
-//! `hew_vec_get_str` owner is balanced outside the synthetic Vec for-in path.
+//! Scalar-index allowlist: bool, char, i32, u32, i64, u64, f64, `String`
+//! (retained/header-aware owner via `hew_vec_get_str`, balanced by the
+//! caller's scope-exit `hew_string_drop` — the same substrate the Vec
+//! for-in path uses), tuples, and `Named { .. }` (user-defined types
+//! dispatched via `hew_vec_get_ptr` for heap handles or
+//! `hew_vec_get_layout` for `BitCopy` value records). Narrower scalars
+//! (i8/u8/i16/u16/f32/isize/usize) remain fail-closed pending width
+//! normalisation.
 //! Range-slice allowlist: i32, u32, i64, u64, f64, `String`, and
 //! `Named { .. }` (`hew_vec_slice_range_str` copies header-aware elements into
-//! the fresh vec). Note the asymmetry: `String` is allowed for range-slice but
-//! not source-level scalar index, while bool/char scalar indexing is supported
-//! but range slicing is still fail-closed pending width normalisation.
+//! the fresh vec). Note bool/char scalar indexing is supported but range
+//! slicing for them is still fail-closed pending width normalisation.
 
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx, TargetArch};
 use hew_types::{module_registry::ModuleRegistry, Checker};
@@ -70,11 +72,13 @@ fn slice_diagnostics(out: &hew_hir::LowerOutput) -> Vec<String> {
 
 #[test]
 fn vec_index_unsupported_element_types_rejected() {
-    // Scalar index on Vec<String> must emit a VecIndexElementTypeUnsupported
-    // diagnostic. Bool and char are accepted by the Stage 2 ABI below.
+    // Scalar index on Vec<f32> must emit a VecIndexElementTypeUnsupported
+    // diagnostic. Narrower scalars (i8/u8/i16/u16/f32/isize/usize) have no
+    // `hew_vec_get_T` getter yet, so they stay fail-closed. bool/char/i32/
+    // i64/f64/String are accepted by the runtime ABI below.
     let out = lower(
         r"
-        fn pick_string(xs: Vec<string>, i: i64) -> string { xs[i] }
+        fn pick_f32(xs: Vec<f32>, i: i64) -> f32 { xs[i] }
         ",
     );
 
@@ -85,42 +89,27 @@ fn vec_index_unsupported_element_types_rejected() {
         "expected exactly 1 VecIndexElementTypeUnsupported diagnostic, got: {:#?}",
         out.diagnostics
     );
-    assert!(
-        diags.contains(&"String".to_string()),
-        "missing String: {diags:?}"
-    );
+    assert!(diags.contains(&"f32".to_string()), "missing f32: {diags:?}");
 
-    // All three diagnostic notes should enumerate the supported element-type
-    // allowlist so users know what works.
+    // The diagnostic note should enumerate the supported element-type
+    // allowlist — including String, which is now a supported scalar index
+    // element — so users know what works.
     for d in &out.diagnostics {
         if matches!(
             d.kind,
             HirDiagnosticKind::VecIndexElementTypeUnsupported { .. }
         ) {
             assert!(
-                d.note.contains("i32") && d.note.contains("i64") && d.note.contains("f64"),
-                "diagnostic note must enumerate supported element types: {:?}",
+                d.note.contains("i32")
+                    && d.note.contains("i64")
+                    && d.note.contains("f64")
+                    && d.note.contains("String"),
+                "diagnostic note must enumerate supported element types \
+                 (including String): {:?}",
                 d.note
             );
         }
     }
-
-    // The Vec<String> diagnostic should mention the range-slice workaround.
-    let string_diag = out
-        .diagnostics
-        .iter()
-        .find(|d| {
-            matches!(
-                &d.kind,
-                HirDiagnosticKind::VecIndexElementTypeUnsupported { element_ty } if element_ty == "String"
-            )
-        })
-        .expect("Vec<String> diagnostic must exist");
-    assert!(
-        string_diag.note.contains("range-slice") || string_diag.note.contains("i..i+1"),
-        "Vec<String> diagnostic should suggest range-slice workaround: {:?}",
-        string_diag.note
-    );
 
     assert!(
         out.into_result().is_err(),
@@ -179,9 +168,11 @@ fn vec_slice_unsupported_element_types_rejected() {
 
 #[test]
 fn vec_index_supported_element_types_accepted() {
-    // Scalar index on bool / char / i32 / i64 / f64 / tuple / user-defined
-    // Named type must NOT fire. Bool dispatches to hew_vec_get_bool; char
-    // reuses hew_vec_get_i32; tuples route through hew_vec_get_layout.
+    // Scalar index on bool / char / i32 / i64 / f64 / String / tuple /
+    // user-defined Named type must NOT fire. Bool dispatches to
+    // hew_vec_get_bool; char reuses hew_vec_get_i32; String routes to the
+    // retained hew_vec_get_str owner (balanced by scope-exit hew_string_drop);
+    // tuples route through hew_vec_get_layout.
     let out = lower(
         r"
         record UserRecord { x: i32 }
@@ -190,6 +181,7 @@ fn vec_index_supported_element_types_accepted() {
         fn pick_i32(xs: Vec<i32>, i: i64) -> i32 { xs[i] }
         fn pick_i64(xs: Vec<i64>, i: i64) -> i64 { xs[i] }
         fn pick_f64(xs: Vec<f64>, i: i64) -> f64 { xs[i] }
+        fn pick_string(xs: Vec<string>, i: i64) -> string { xs[i] }
         fn pick_named(xs: Vec<UserRecord>, i: i64) -> UserRecord { xs[i] }
         fn pick_tuple(xs: Vec<(i64, i64)>, i: i64) -> (i64, i64) { xs[i] }
         ",
@@ -261,12 +253,13 @@ fn vec_index_diag_for_elem(out: &hew_hir::LowerOutput, elem: &str) -> bool {
 
 #[test]
 fn vec_index_in_machine_transition_body_rejected() {
-    // Vec<String> scalar-indexed inside a transition body must trip the gate.
+    // Vec<f32> scalar-indexed inside a transition body must trip the gate.
     // Transition bodies are type-checked (registration.rs ~ check_against),
     // so `tc.expr_types` carries the container type at the indexing site.
+    // f32 is a still-unsupported element type (no hew_vec_get_f32 getter).
     let out = lower(
         r"
-        fn make_strings() -> Vec<string> { [] }
+        fn make_f32s() -> Vec<f32> { [] }
 
         machine M {
             events {
@@ -277,8 +270,8 @@ fn vec_index_in_machine_transition_body_rejected() {
             state Idle;
             state Done;
             on Go: Idle => Done {
-                let xs: Vec<string> = make_strings();
-                let _: string = xs[0];
+                let xs: Vec<f32> = make_f32s();
+                let _: f32 = xs[0];
                 Done
             }
             on Go: Done => Done;
@@ -289,8 +282,8 @@ fn vec_index_in_machine_transition_body_rejected() {
     );
 
     assert!(
-        vec_index_diag_for_elem(&out, "String"),
-        "expected VecIndexElementTypeUnsupported(String) inside transition body; got diagnostics: {:#?}",
+        vec_index_diag_for_elem(&out, "f32"),
+        "expected VecIndexElementTypeUnsupported(f32) inside transition body; got diagnostics: {:#?}",
         out.diagnostics
     );
     assert!(
@@ -301,13 +294,14 @@ fn vec_index_in_machine_transition_body_rejected() {
 
 #[test]
 fn vec_index_in_machine_transition_guard_rejected() {
-    // Vec<String> scalar-indexed inside a transition `when` guard must trip
+    // Vec<f32> scalar-indexed inside a transition `when` guard must trip
     // the gate. Guards are type-checked against `Ty::Bool`
     // (registration.rs:2663 check_against), so `tc.expr_types` carries
-    // the container type at the indexing site.
+    // the container type at the indexing site. f32 is a still-unsupported
+    // element type (no hew_vec_get_f32 getter).
     let out = lower(
-        r#"
-        fn make_strings() -> Vec<string> { [] }
+        r"
+        fn make_f32s() -> Vec<f32> { [] }
 
         machine M {
             events {
@@ -317,17 +311,17 @@ fn vec_index_in_machine_transition_guard_rejected() {
 
             state Idle;
             state Done;
-            on Go: Idle => Done when make_strings()[0] == "" { Done }
+            on Go: Idle => Done when make_f32s()[0] == 0.0 { Done }
             on Go: Done => Done;
             on Reset: Done => Idle;
             on Reset: Idle => Idle;
         }
-        "#,
+        ",
     );
 
     assert!(
-        vec_index_diag_for_elem(&out, "String"),
-        "expected VecIndexElementTypeUnsupported(String) inside transition guard; got diagnostics: {:#?}",
+        vec_index_diag_for_elem(&out, "f32"),
+        "expected VecIndexElementTypeUnsupported(f32) inside transition guard; got diagnostics: {:#?}",
         out.diagnostics
     );
     assert!(

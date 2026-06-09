@@ -11,8 +11,8 @@ A reference for writing correct idiomatic Hew. Every example below was executed 
 - Never mix integer widths in one expression; cast the narrower operand up first: `x as i64 + 1`.
 - Dispatch with `match`, not if/else chains — `match` on a closed enum enforces exhaustiveness.
 - Iterate counts with `for i in 0..n` (exclusive) or `0..=n` (inclusive); the binding must be a named identifier.
-- Read collection elements with `.get(i)` — universal across element types. `v[i]` works only for scalars/records/tuples.
-- `Vec<enum>` and `Vec<string>` must use `.get(i)` (index loop), not `v[i]` or `for-in`.
+- Read collection elements with `.get(i)` — universal across element types. `v[i]` works for scalars, strings, records, and tuples.
+- `Vec<string>` supports `v[i]` (returns a fresh owned `string`; the Vec stays usable), `.get(i)`, range-slices, and for-in. For `Vec<enum>`, prefer `.get(i)`.
 - Build maps/sets with `::new()` + `.insert()`; bind with `let` (interior mutability, not reassignment).
 - Look up `HashMap`/`Option`/`Result` with `match`, not subscript or `.unwrap()`.
 - Declare records with `type Name { field: T; }` (semicolons); enum variants are `;`-separated.
@@ -274,7 +274,7 @@ fn main() {
 
 `.get(i)` is the default accessor — it works for every element type including `Vec<string>` and `Vec<enum>`. Returns `T` directly; out-of-bounds panics. Guard with `i < v.len()` if the index may be invalid.
 
-### v[i] indexing (scalar / record / tuple)
+### v[i] indexing (scalar / string / record / tuple)
 
 ```hew
 type Point { x: i64; y: i64; }
@@ -287,7 +287,18 @@ fn main() {
 }
 ```
 
-Use `v[i]` for scalars, records, and tuples where it reads cleanest; it returns the value. For `Vec<string>` and `Vec<enum>` use `.get(i)` instead.
+```hew
+fn main() {
+    let names: Vec<string> = Vec::new();
+    names.push("ada");
+    names.push("alan");
+    let who = names[1];        // fresh owned string (a clone)
+    println(who);              // alan
+    println(names.get(0));     // ada — names is still usable
+}
+```
+
+Use `v[i]` for scalars, strings, records, and tuples where it reads cleanest; it returns the value. A `Vec<string>` index returns a fresh owned `string` (an element clone, not a move-out), so the Vec stays fully usable afterward. For `Vec<enum>`, prefer `.get(i)`.
 
 ### Range-slice v[a..b] returns a new Vec
 
@@ -301,7 +312,7 @@ fn main() {
 }
 ```
 
-`v[a..b]` yields a fresh `Vec<T>` (half-open, `b` exclusive) with its own `.len()`/`.get()`/for-in. Works even for `Vec<string>`, where `v[i..i+1]` is the single-element extraction idiom.
+`v[a..b]` yields a fresh `Vec<T>` (half-open, `b` exclusive) with its own `.len()`/`.get()`/for-in, for every element type including `Vec<string>`. (Single elements come straight from `v[i]`; the older `v[i..i+1]` slice is no longer required for that.)
 
 ### for-in over Vec (scalars / strings / records / tuples)
 
@@ -1346,7 +1357,7 @@ fn main() {
 }
 ```
 
-Read elements with `.get(i)` and iterate by index. (`for p in parts` over `Vec<string>` is not the access path — use the indexed loop.)
+Read elements with `.get(i)` or `parts[i]` and iterate by index — both clone the element and leave `parts` usable. (`for p in parts` also works but consumes the Vec, so use the indexed loop when you need `parts` again afterward.)
 
 ### .trim()
 

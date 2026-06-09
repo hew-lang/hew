@@ -2327,6 +2327,33 @@ pub fn lower_program_with_mono_cap(
     // `#[on(crash)]` bodies fail at MIR time because the payload record layout
     // is absent from `record_field_orders`.
     if let Some(ref mg) = program.module_graph {
+        // Actor names already emitted from the root program — root-local actors
+        // plus any FILE-import actors that `flatten_file_import_items` spliced
+        // into `program.items` (file imports register their items flat, under
+        // bare names, and emit a `HirItem::Actor` in the source-order pass
+        // above). The imported-module walk below ALSO sees those file-import
+        // modules in the graph; without this guard it would emit a second
+        // `HirItem::Actor` for the same actor, and because actor layouts are
+        // keyed by the actor's bare name the duplicate collides at MIR with
+        // `ActorHandlerSymbolCollision`. Package imports (`import hew::pkg;`)
+        // are NOT flattened, so their actors are absent here and are emitted by
+        // the walk exactly once.
+        //
+        // This dedup is by BARE NAME, which is only sound because
+        // `check_duplicate_actor_layout_names` (hew-compile, at graph-build
+        // time) has already failed the compile closed if two DISTINCT modules
+        // contribute a same-named actor. So a name shared between a graph
+        // module and `program.items` here is always the SAME actor reached via
+        // a file import — never a genuine cross-module collision that this skip
+        // could misroute.
+        let root_actor_names: HashSet<String> = program
+            .items
+            .iter()
+            .filter_map(|(item, _)| match item {
+                Item::Actor(actor) => Some(actor.name.clone()),
+                _ => None,
+            })
+            .collect();
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root {
                 continue;
@@ -2665,12 +2692,65 @@ pub fn lower_program_with_mono_cap(
                                 items.push(HirItem::Const(lowered));
                             }
                         }
-                        // Item::Record, Item::Actor, Item::Supervisor from
-                        // imported modules are intentionally not emitted in
-                        // this slice; their cross-module lowering semantics
-                        // are tracked as separate follow-ups.
+                        // Emit `HirItem::Actor` entries for imported pub actors
+                        // so MIR's actor-layout pass (which walks `module.items`)
+                        // builds a layout keyed by the actor's bare name. Without
+                        // it, `spawn module.Actor(...)` and the subsequent
+                        // `receive fn` calls fail closed at MIR with
+                        // `spawn of unknown actor` / `actor call on unknown actor`,
+                        // even though HIR/types resolved the cross-module
+                        // reference. Mirrors the `Item::Machine` arm above. The
+                        // receive-fn bodies lower with `same_module_fn_rewrites`
+                        // active (see `lower_imported_actor`) so bare same-module
+                        // calls resolve to their qualified symbols, exactly like
+                        // the imported free-fn path.
+                        Item::Actor(actor) if actor.visibility.is_pub() => {
+                            // Skip actors already emitted from the root program
+                            // (a file import flattened this actor under its bare
+                            // name in the source-order pass). Re-emitting it here
+                            // would duplicate the bare-name-keyed layout and
+                            // collide at MIR. A bare-name match is safe to skip
+                            // because `check_duplicate_actor_layout_names`
+                            // (hew-compile) has already rejected any genuine
+                            // cross-module same-name collision — so this is only
+                            // ever the same file-imported actor, never a package
+                            // actor being silently suppressed. Package-import
+                            // actors are not in `root_actor_names`, so they still
+                            // emit here.
+                            if root_actor_names.contains(&actor.name) {
+                                continue;
+                            }
+                            // Fail-closed target gate: actors require the actor
+                            // runtime ABI (x86_64/aarch64), same as the root-item
+                            // actor arm in the source-order emit pass.
+                            if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64)
+                            {
+                                ctx.diagnostics.push(HirDiagnostic::new(
+                                    HirDiagnosticKind::TargetCoroutineUnsupported {
+                                        target_arch: format!("{:?}", ctx.target_arch),
+                                        construct: "actor decl".to_string(),
+                                    },
+                                    span.clone(),
+                                    format!(
+                                        "actor '{}' requires the actor runtime ABI \
+                                         (x86_64/aarch64 only)",
+                                        actor.name
+                                    ),
+                                ));
+                            }
+                            let lowered = ctx.lower_imported_actor(
+                                actor,
+                                span.clone(),
+                                &same_module_fn_rewrites,
+                            );
+                            items.push(HirItem::Actor(lowered));
+                        }
+                        // Item::Record, Item::Supervisor and non-pub Item::Actor
+                        // from imported modules are intentionally not emitted in
+                        // this slice; their cross-module lowering semantics are
+                        // tracked as separate follow-ups.
                         //
-                        // Non-pub Function/TypeDecl/Machine fall here (not
+                        // Non-pub Function/TypeDecl/Machine/Actor fall here (not
                         // visible to importers). If a new Item variant is
                         // added, the compiler will force a conscious decision.
                         Item::Import(_)
@@ -3842,6 +3922,16 @@ struct LowerCtx {
     /// the lowered HIR carries `protocol_descriptor: None` and downstream
     /// MIR fails closed when it tries to derive a `msg_id`.
     actor_protocol_descriptors: HashMap<String, hew_types::ActorProtocolDescriptor>,
+    /// Names of every `TypeDefKind::Actor` declaration in the program, lifted
+    /// from `TypeCheckOutput.type_defs`. Consumed by `lower_actor` to recognise
+    /// an actor-state field whose annotated type is a bare actor name (e.g.
+    /// `let out: W;` where `W` is an actor): such a field holds an actor handle
+    /// (a `LocalPid`), never the actor's state by value, so its lowered type is
+    /// canonicalised to `LocalPid<W>`. That canonical form is the one the MIR
+    /// state-clone classifier and codegen already lower (bit-copyable Pid),
+    /// matching `spawn W`'s `LocalPid<W>` result. Without it the bare `W` field
+    /// reaches MIR as an unresolvable nested user record and fails closed.
+    actor_type_names: HashSet<String>,
     /// Distinct concrete instantiations of generic top-level user fns,
     /// accumulated as `Expr::Call` lowering walks the program. Drained
     /// into `HirModule.monomorphisations` at the end of `lower_program`.
@@ -4106,6 +4196,12 @@ impl LowerCtx {
             actor_handler_state_guards: tc_output.actor_handler_state_guards.clone(),
             cycle_capable_actors: tc_output.cycle_capable_actors.clone(),
             actor_protocol_descriptors: tc_output.actor_protocol_descriptors.clone(),
+            actor_type_names: tc_output
+                .type_defs
+                .iter()
+                .filter(|(_, td)| td.kind == hew_types::check::TypeDefKind::Actor)
+                .map(|(name, _)| name.clone())
+                .collect(),
             mono_registry: MonoRegistry::with_cap(mono_cap),
             mono_cap_diag_emitted: false,
             call_site_type_args: HashMap::new(),
@@ -4928,6 +5024,26 @@ fn collect_imported_private_fn_closure(
             // exists in the same module.
             Item::Impl(impl_decl) => {
                 for method in &impl_decl.methods {
+                    seed_from(&method.body, &mut reachable, &mut worklist);
+                }
+            }
+            // Pub actor bodies (init + receive fns + inherent methods) are
+            // importer-reachable entry points once the actor is spawned across
+            // a module boundary (see the `Item::Actor` arm in the imported-
+            // module walk). A private helper called only from a `receive fn` or
+            // `init` body — e.g. an `Account` actor whose `deposit` clamps via a
+            // module-private `clamp_nonneg` — must be pulled into the closure so
+            // the lowered actor body resolves it to the helper's qualified
+            // symbol. Without this seed the bare call fails closed with
+            // `UnresolvedSymbol`, even though the helper exists in the module.
+            Item::Actor(actor) if actor.visibility.is_pub() => {
+                if let Some(init) = &actor.init {
+                    seed_from(&init.body, &mut reachable, &mut worklist);
+                }
+                for receive_fn in &actor.receive_fns {
+                    seed_from(&receive_fn.body, &mut reachable, &mut worklist);
+                }
+                for method in &actor.methods {
                     seed_from(&method.body, &mut reachable, &mut worklist);
                 }
             }
@@ -6013,8 +6129,22 @@ impl LowerCtx {
         // the string primitive spells out as either `ResolvedTy::String` or
         // `ResolvedTy::Named { name: "String" }` depending on annotation form,
         // and the checker has already proven value/type agreement upstream.
-        if let Expr::Literal(Literal::String(s)) = expr {
-            return crate::node::HirConstValue::String(s.clone());
+        if let Expr::Literal(lit) = expr {
+            match lit {
+                Literal::String(s) => return crate::node::HirConstValue::String(s.clone()),
+                Literal::Float(value) if Self::is_float_ty(declared_ty) => {
+                    if Self::float_literal_fits_declared_ty(*value, declared_ty) {
+                        return crate::node::HirConstValue::Float(*value);
+                    }
+                    self.unsupported(
+                        span,
+                        "float const initializer exceeds the declared float range",
+                        "const-fold",
+                    );
+                    return crate::node::HirConstValue::Float(0.0);
+                }
+                _ => {}
+            }
         }
 
         if let Expr::Unary {
@@ -6022,6 +6152,20 @@ impl LowerCtx {
             operand,
         } = expr
         {
+            if let Expr::Literal(Literal::Float(value)) = &operand.0 {
+                if Self::is_float_ty(declared_ty) {
+                    let negated = -*value;
+                    if Self::float_literal_fits_declared_ty(negated, declared_ty) {
+                        return crate::node::HirConstValue::Float(negated);
+                    }
+                    self.unsupported(
+                        span,
+                        "negative float const initializer exceeds the declared float range",
+                        "const-fold",
+                    );
+                    return crate::node::HirConstValue::Float(0.0);
+                }
+            }
             if let Some(limit) = Self::signed_integer_negative_magnitude_limit(declared_ty) {
                 let env = hew_types::check::const_eval::ConstEnv::new();
                 match hew_types::check::const_eval::eval_const_expr(operand, &env) {
@@ -6092,6 +6236,8 @@ impl LowerCtx {
         // hold.
         if Self::is_string_ty(declared_ty) {
             crate::node::HirConstValue::String(String::new())
+        } else if Self::is_float_ty(declared_ty) {
+            crate::node::HirConstValue::Float(0.0)
         } else {
             crate::node::HirConstValue::Integer(0)
         }
@@ -6103,6 +6249,24 @@ impl LowerCtx {
     fn is_string_ty(ty: &ResolvedTy) -> bool {
         matches!(ty, ResolvedTy::String)
             || matches!(ty, ResolvedTy::Named { name, .. } if name == "String")
+    }
+
+    fn is_float_ty(ty: &ResolvedTy) -> bool {
+        matches!(ty, ResolvedTy::F32 | ResolvedTy::F64)
+    }
+
+    fn float_literal_fits_declared_ty(value: f64, ty: &ResolvedTy) -> bool {
+        match ty {
+            ResolvedTy::F32 => {
+                if value.is_infinite() || value.is_nan() {
+                    return true;
+                }
+                let abs = value.abs();
+                abs == 0.0 || (abs >= f64::from(f32::MIN_POSITIVE) && abs <= f64::from(f32::MAX))
+            }
+            ResolvedTy::F64 => true,
+            _ => false,
+        }
     }
 
     fn signed_integer_negative_magnitude_limit(ty: &ResolvedTy) -> Option<u64> {
@@ -6751,6 +6915,29 @@ impl LowerCtx {
     ) -> HirFn {
         let previous_rewrites = self.imported_fn_rewrites.replace(rewrites.clone());
         let lowered = self.lower_fn_with_name(func, name, span);
+        self.imported_fn_rewrites = previous_rewrites;
+        lowered
+    }
+
+    /// Lower an actor declared in an imported module.
+    ///
+    /// Identical to [`lower_actor`](Self::lower_actor) except that the actor's
+    /// `init`/`receive fn`/lifecycle-hook bodies lower with the module's
+    /// `same_module_fn_rewrites` active, so a bare call to a sibling pub (or
+    /// reachable private) function inside the actor body resolves to that
+    /// function's qualified, native-symbol-safe name — the same contract the
+    /// imported free-fn and impl-method paths use. State-field defaults and
+    /// types lower the same way as a local actor; the resulting `HirActorDecl`
+    /// is keyed by the actor's bare name so MIR's layout pass treats it exactly
+    /// like a locally-declared actor.
+    fn lower_imported_actor(
+        &mut self,
+        decl: &ActorDecl,
+        span: Span,
+        rewrites: &HashMap<String, String>,
+    ) -> HirActorDecl {
+        let previous_rewrites = self.imported_fn_rewrites.replace(rewrites.clone());
+        let lowered = self.lower_actor(decl, span);
         self.imported_fn_rewrites = previous_rewrites;
         lowered
     }
@@ -7940,20 +8127,54 @@ impl LowerCtx {
         }
     }
 
+    /// Canonicalise an actor-state field's lowered type: a field annotated with
+    /// a bare actor name (e.g. `let out: W;` where `W` is a `TypeDefKind::Actor`)
+    /// holds an actor *handle*, never the actor by value — actors are reference
+    /// types and cannot be embedded inline. Wrap such a field in `LocalPid<W>`,
+    /// the same canonical handle representation `spawn W` produces, so the MIR
+    /// state-clone classifier and codegen lower it as a bit-copyable Pid instead
+    /// of failing closed on an unresolvable nested user record. Non-actor field
+    /// types (records, enums, primitives, containers, real handle wrappers) are
+    /// returned unchanged. Bare actor names nested inside containers/records are
+    /// intentionally NOT rewritten here — that exotic shape stays fail-closed at
+    /// the MIR classifier rather than being silently reinterpreted.
+    fn canonicalize_actor_ref_field_ty(&self, ty: ResolvedTy) -> ResolvedTy {
+        if let ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } = &ty
+        {
+            if builtin.is_none() && args.is_empty() && self.actor_type_names.contains(name) {
+                return ResolvedTy::Named {
+                    name: BuiltinType::LocalPid.canonical_name().to_string(),
+                    args: vec![ty],
+                    builtin: Some(BuiltinType::LocalPid),
+                    is_opaque: false,
+                };
+            }
+        }
+        ty
+    }
+
     /// Lower an `actor` declaration into `HirActorDecl`, including executable
     /// bodies for init blocks, receive handlers, methods, and lifecycle hooks.
     fn lower_actor(&mut self, decl: &ActorDecl, span: Span) -> HirActorDecl {
         let state_fields: Vec<HirField> = decl
             .fields
             .iter()
-            .map(|f| HirField {
-                name: f.name.clone(),
-                ty: self.lower_type(&f.ty),
-                default: f
-                    .default
-                    .as_ref()
-                    .map(|default| self.lower_expr(default, IntentKind::Read)),
-                span: f.ty.1.clone(),
+            .map(|f| {
+                let lowered_ty = self.lower_type(&f.ty);
+                HirField {
+                    name: f.name.clone(),
+                    ty: self.canonicalize_actor_ref_field_ty(lowered_ty),
+                    default: f
+                        .default
+                        .as_ref()
+                        .map(|default| self.lower_expr(default, IntentKind::Read)),
+                    span: f.ty.1.clone(),
+                }
             })
             .collect();
 
@@ -11599,8 +11820,22 @@ impl LowerCtx {
         let actor_name = match &target.0 {
             Expr::Identifier(name) => Some(name.clone()),
             Expr::FieldAccess { object, field } => {
-                if let Expr::Identifier(module) = &object.0 {
-                    Some(format!("{module}.{field}"))
+                if let Expr::Identifier(_module) = &object.0 {
+                    // Module-qualified actor spawn (`spawn module.Actor(...)`).
+                    // The actor's MIR layout, the checker-authoritative spawn
+                    // result type (`LocalPid<Actor>`), and the receive-fn call
+                    // path (`actor_name_from_handle_ty`) are ALL keyed by the
+                    // actor's bare name. Use the bare field name so a
+                    // cross-module spawn lowers identically to a local one. The
+                    // checker has already verified `module` names an imported
+                    // module — a non-module receiver makes `spawn` fail type
+                    // resolution before MIR — so this branch only fires for a
+                    // resolved module-qualified actor. Dropping the module
+                    // qualifier is sound because
+                    // `check_duplicate_actor_layout_names` (hew-compile) fails
+                    // the compile closed when two modules export a same-named
+                    // actor, so the bare name resolves to exactly one layout.
+                    Some(field.clone())
                 } else {
                     None
                 }
@@ -21912,6 +22147,7 @@ fn check_vec_index_element_type(
                 | ResolvedTy::I64
                 | ResolvedTy::U64
                 | ResolvedTy::F64
+                | ResolvedTy::String
                 | ResolvedTy::Named { .. }
                 | ResolvedTy::Tuple(_)
         )
@@ -21941,25 +22177,12 @@ fn check_vec_index_element_type(
             HirDiagnosticKind::VecIndexElementTypeUnsupported {
                 element_ty: rendered.clone(),
             },
-            if matches!(elem_ty, ResolvedTy::String) {
-                format!(
-                    "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
-                     Supported element types for Vec scalar indexing are: \
-                     bool, char, i32, u32, i64, u64, f64, tuples, and user-defined types \
-                     (records, enums, Duplex, etc.). \
-                     Vec<String> requires the retained/header-aware getter's \
-                     owner to be balanced with hew_string_drop; as a workaround, use a \
-                     range-slice to extract a single-element Vec: \
-                     `let single = strings[i..i+1];`"
-                )
-            } else {
-                format!(
-                    "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
-                     Supported element types for Vec scalar indexing are: \
-                     bool, char, i32, u32, i64, u64, f64, tuples, and user-defined types \
-                     (records, enums, Duplex, etc.)."
-                )
-            },
+            format!(
+                "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
+                 Supported element types for Vec scalar indexing are: \
+                 bool, char, i32, u32, i64, u64, f64, String, tuples, and \
+                 user-defined types (records, enums, Duplex, etc.)."
+            ),
         )
     };
     diagnostics.push(HirDiagnostic::new(kind, index_expr_span.clone(), note));

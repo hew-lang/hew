@@ -5316,6 +5316,47 @@ impl Checker {
             Expr::FieldAccess { object, field } => {
                 if let Expr::Identifier(module) = &object.0 {
                     if self.modules.contains(module) {
+                        // Verify the qualifier resolves to an ACTOR that is a
+                        // public export of `module` before stripping it to the
+                        // bare name. `module_type_exports` membership alone is
+                        // insufficient: that set also holds public NON-actor
+                        // types, so it is true even when `secret.Account` is a
+                        // `pub type`/struct/enum (and a private actor is absent
+                        // from it entirely). Resolve the qualified definition and
+                        // require `TypeDefKind::Actor`; otherwise
+                        // `spawn secret.Account()` would lower to bare `Account`
+                        // and silently route to a same-named root/pub actor -- a
+                        // capability-boundary hole. `resolve_module_type` already
+                        // gates on `pub` export + the module-qualified `type_defs`
+                        // entry (which is copied from the module's own decl, so it
+                        // is not clobbered by a same-named root/other-module type).
+                        // Fail closed before HIR/MIR rather than misroute.
+                        let is_actor_export = self
+                            .resolve_module_type(module, field)
+                            .is_some_and(|td| td.kind == TypeDefKind::Actor);
+                        if !is_actor_export {
+                            let similar = self
+                                .module_type_exports
+                                .get(module)
+                                .map(|set| {
+                                    crate::error::find_similar(
+                                        field,
+                                        set.iter().map(String::as_str),
+                                    )
+                                })
+                                .unwrap_or_default();
+                            self.report_error_with_suggestions(
+                                TypeErrorKind::UndefinedType,
+                                span,
+                                format!("module `{module}` has no exported actor `{field}`"),
+                                similar,
+                            );
+                            // Return bare `Ty::Error` (not `LocalPid<Error>`) so a
+                            // subsequent `await handle.method()` is suppressed
+                            // (method calls on a `Ty::Error` receiver short-
+                            // circuit), keeping a single clear diagnostic.
+                            return Ty::Error;
+                        }
                         self.used_modules
                             .borrow_mut()
                             .insert(ImportKey::new(self.current_module.clone(), module.clone()));

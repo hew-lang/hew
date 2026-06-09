@@ -521,6 +521,129 @@ pub fn known_runtime_symbols() -> &'static [&'static str] {
     MIR_EMITTER_RUNTIME_SYMBOLS
 }
 
+/// W5.011 P3 — `true` when a runtime-ABI string call hands the caller a
+/// **fresh, solely-owned `string`** that must be balanced by exactly one
+/// `hew_string_drop`.
+///
+/// Two ownership shapes qualify, and both place an identical single-drop
+/// obligation on the caller (verified against `hew-runtime/src/string.rs` and
+/// `vec.rs`):
+///
+/// - **Fresh allocation** (`hew_string_concat`, `…_to_uppercase`,
+///   `hew_int_to_string`, …): the result is a brand-new `malloc_cstring` /
+///   `alloc_cstring_data` buffer at refcount 1, documented "released via
+///   `hew_string_drop`".
+/// - **Refcounted retain** (`hew_string_clone`, `hew_vec_get_str` →
+///   `retain_string_element` → `hew_string_clone`): the result aliases an
+///   existing buffer with its refcount bumped by one. `hew_string_drop`
+///   decrements; the buffer frees only at refcount zero. The caller still owes
+///   exactly one drop to balance the `+1`.
+///
+/// This is the **producer** half of the borrowing-read-aware owned-string
+/// cleanup. A binding whose backing local traces (through `Move`) to one of
+/// these dests is a proven sole owner that may earn a scope-exit
+/// `DropKind::CowHeap`, provided every use of it is a verified borrow
+/// ([`is_borrowing_string_use`]). Symbols absent here are treated as
+/// non-producers — the binding is not admitted, so the result leaks rather
+/// than risk a double-free (fail-closed).
+///
+/// The match is exhaustive-by-listing with a `false` default: a new string
+/// producer must be classified here explicitly (and verified to allocate or
+/// retain, never to alias an input without a refcount bump) before its result
+/// can be admitted to drop.
+#[must_use]
+pub fn is_fresh_owned_string_producer(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        // --- Fresh-allocation producers (rc == 1, released via hew_string_drop) ---
+        "hew_string_concat"
+            | "hew_string_to_lowercase"
+            | "hew_string_to_uppercase"
+            | "hew_string_trim"
+            | "hew_string_replace"
+            | "hew_string_slice"
+            | "hew_string_slice_codepoints"
+            | "hew_string_repeat"
+            | "hew_string_from_char"
+            | "hew_char_to_string"
+            | "hew_int_to_string"
+            | "hew_i64_to_string"
+            | "hew_uint_to_string"
+            | "hew_u64_to_string"
+            | "hew_float_to_string"
+            | "hew_bool_to_string"
+            // --- Refcounted-retain producers (+1 owner aliasing a live buffer) ---
+            | "hew_string_clone"
+            | "hew_vec_get_str"
+    )
+}
+
+/// W5.011 P3 — `true` when passing an owned `string` as an argument to this
+/// runtime-ABI symbol is a **borrowing read**: the callee inspects or copies
+/// the bytes but does NOT take ownership, so the caller retains its single
+/// `hew_string_drop` obligation.
+///
+/// This is the **use** half of the borrowing-read-aware cleanup. A fresh-owned
+/// string binding ([`is_fresh_owned_string_producer`]) is admitted to a
+/// scope-exit drop only when EVERY use of it is a verified borrow; any use that
+/// is not on this list (a container-insert move such as
+/// `hew_hashmap_insert_layout`, a user/closure/trait call, an unrecognised
+/// runtime symbol) is treated as an ownership-transferring escape and the
+/// binding is excluded (leak, never double-free).
+///
+/// Every symbol here was verified read-only / copy-in against
+/// `hew-runtime/src/string.rs` and `vec.rs`:
+/// - the scalar/`Vec`/`bytes`-returning inspectors (`hew_string_length`,
+///   `…_contains`, `…_find`, `…_to_bytes`, `…_split`, …) only read the input;
+/// - the `string`-returning transforms (`hew_string_concat`, `…_to_uppercase`,
+///   `hew_string_clone`, …) copy / refcount-bump the input and leave the
+///   argument's ownership with the caller;
+/// - `hew_vec_push_str` stores an independent `copy_string_element_in` copy, so
+///   the pushed argument is borrowed (the caller still owns and drops it).
+///
+/// Container-move sinks (`hew_hashmap_insert_layout`, `hew_hashset_insert*`)
+/// are deliberately ABSENT: they transfer ownership of the string into the
+/// container, so the caller must NOT also drop it.
+#[must_use]
+pub fn is_borrowing_string_use(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        // --- Scalar / bytes / Vec inspectors (read-only, scalar or fresh-container
+        //     return; the string argument is never retained) ---
+        "hew_string_length"
+            | "hew_string_char_count"
+            | "hew_string_char_at"
+            | "hew_string_char_at_utf8"
+            | "hew_string_index"
+            | "hew_string_starts_with"
+            | "hew_string_ends_with"
+            | "hew_string_contains"
+            | "hew_string_is_empty"
+            | "hew_string_is_digit"
+            | "hew_string_is_alpha"
+            | "hew_string_is_alphanumeric"
+            | "hew_string_find"
+            | "hew_string_index_of_start"
+            | "hew_string_to_bytes"
+            | "hew_string_split"
+            | "hew_string_lines"
+            | "hew_string_chars"
+            // --- string-returning transforms: copy / refcount-bump the input,
+            //     argument ownership stays with the caller ---
+            | "hew_string_concat"
+            | "hew_string_to_lowercase"
+            | "hew_string_to_uppercase"
+            | "hew_string_trim"
+            | "hew_string_replace"
+            | "hew_string_slice"
+            | "hew_string_slice_codepoints"
+            | "hew_string_repeat"
+            | "hew_string_clone"
+            // --- container copy-in (stores an independent copy; arg is borrowed) ---
+            | "hew_vec_push_str"
+    )
+}
+
 /// Map a user-facing builtin name to its C-ABI runtime symbol, if one
 /// exists.  Returns `None` for names that are not substrate builtins.
 ///

@@ -235,6 +235,22 @@ pub fn link_executable(
         cmd.arg(lib);
     }
 
+    // ── Re-list the runtime archive after the consumer archives ───────
+    // libhew.a appears once above (resolving the program object's *direct*
+    // runtime references) and again here, after the stdlib/native-package
+    // archives. Native packages and stdlib staticlibs reference runtime symbols
+    // (`hew_vec_*`, `hew_stream_*`, …) as *undefined* and resolve them against
+    // libhew.a at the final link rather than bundling their own copy — bundling
+    // is the duplicate-symbol failure this lane fixes. A single-pass archive
+    // linker (GNU ld / ld.lld on ELF) only pulls an archive member to satisfy an
+    // already-pending undefined symbol, so a consumer archive listed *after* the
+    // first libhew.a needs libhew.a repeated here for its backward references to
+    // resolve; the system libraries above are shared objects and stay globally
+    // available. Mach-O resolves archives as a set and is order-insensitive, so
+    // the repeat is a harmless no-op there. Repeating a static archive never
+    // double-defines a symbol — each member is pulled at most once.
+    cmd.arg(&hew_lib);
+
     let output = cmd
         .output()
         .map_err(|e| format!("Error: cannot invoke linker: {e}"))?;
@@ -765,6 +781,8 @@ fn find_hew_lib(name: &str, triple: &str) -> Result<String, String> {
 pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
     let mut seen: std::collections::BTreeSet<(&'static str, &'static str)> =
         std::collections::BTreeSet::new();
+    let mut dup_hew: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut dup_generic = false;
 
     for line in stderr.lines() {
         if let Some(sym) = extract_undefined_hew_symbol(line) {
@@ -772,16 +790,51 @@ pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
                 seen.insert(hint);
             }
         }
+        if let Some(sym) = extract_duplicate_symbol(line) {
+            // mach-o prefixes a leading underscore; normalise before classifying.
+            let norm = sym.strip_prefix('_').unwrap_or(sym);
+            if norm.starts_with("hew_") {
+                dup_hew.insert(norm.to_string());
+            } else {
+                dup_generic = true;
+            }
+        }
     }
 
-    seen.into_iter()
+    let mut hints: Vec<String> = seen
+        .into_iter()
         .map(|(module, feature)| {
             format!(
                 "hint: The `{module}` module requires the `{feature}` runtime feature.\n      \
                  Rebuild the runtime with: cargo build -p hew-runtime --features {feature}"
             )
         })
-        .collect()
+        .collect();
+
+    // Duplicate `hew_*` symbols mean a native library passed via --link-lib has
+    // statically embedded a runtime symbol that libhew.a already owns. This is a
+    // mis-shaped native package; emit the supported build recipe (fail-closed).
+    if !dup_hew.is_empty() {
+        let list = dup_hew.into_iter().collect::<Vec<_>>().join(", ");
+        hints.push(format!(
+            "hint: duplicate Hew runtime symbol(s): {list}\n      \
+             A library linked via --link-lib bundles its own copy of a symbol that libhew.a \
+             already provides. A native Hew package must depend on `hew-cabi` for shared ABI \
+             types (hew-cabi declares runtime symbols as imports) and must NOT statically embed \
+             hew-runtime or hew-lib.\n      \
+             Build the package as a `staticlib` with `panic = \"abort\"`, then link it with \
+             --link-lib; do not re-export or bundle the runtime."
+        ));
+    } else if dup_generic {
+        hints.push(
+            "hint: duplicate symbol(s) during link: two linked inputs define the same symbol. \
+             Ensure a library passed via --link-lib does not also embed a copy of a symbol \
+             already provided by another linked input (such as the Hew runtime)."
+                .to_string(),
+        );
+    }
+
+    hints
 }
 
 /// Extract a `hew_`-prefixed symbol name from a linker error line, or `None`
@@ -809,6 +862,46 @@ fn extract_undefined_hew_symbol(line: &str) -> Option<&str> {
             .find(|c: char| !c.is_alphanumeric() && c != '_')
             .unwrap_or(rest.len());
         return Some(&rest[..end]);
+    }
+    None
+}
+
+/// Extract the symbol name from a linker "duplicate symbol" / "multiple
+/// definition" error line, or `None` if the line is not such an error.
+///
+/// Handles three linker message shapes (SYM is the symbol):
+/// - lld (mach-o and ELF): `duplicate symbol: SYM`
+/// - Apple ld: `duplicate symbol 'SYM' in:`
+/// - GNU ld / gold: `multiple definition of SYM` (backtick + single-quote)
+///
+/// The returned name may carry a mach-o leading underscore; callers normalise it.
+fn extract_duplicate_symbol(line: &str) -> Option<&str> {
+    // lld (mach-o and ELF): "duplicate symbol: <sym>"
+    if let Some(pos) = line.find("duplicate symbol: ") {
+        let rest = line[pos + "duplicate symbol: ".len()..].trim_start();
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let sym = &rest[..end];
+        if !sym.is_empty() {
+            return Some(sym);
+        }
+    }
+    // Apple ld: "duplicate symbol '_sym' in:"
+    if let Some(pos) = line.find("duplicate symbol '") {
+        let rest = &line[pos + "duplicate symbol '".len()..];
+        if let Some(end) = rest.find('\'') {
+            return Some(&rest[..end]);
+        }
+    }
+    // GNU ld / gold: "multiple definition of `sym'" (backtick + single-quote)
+    if let Some(pos) = line.find("multiple definition of ") {
+        let rest = line[pos + "multiple definition of ".len()..]
+            .trim_start()
+            .trim_start_matches(['`', '\'', '"']);
+        let end = rest.find(['`', '\'', '"']).unwrap_or(rest.len());
+        let sym = &rest[..end];
+        if !sym.is_empty() {
+            return Some(sym);
+        }
     }
     None
 }
@@ -1168,6 +1261,82 @@ mod tests {
         let stderr = "foo.o: undefined reference to `hew_foobar_something'\n";
         let hints = diagnose_linker_errors(stderr);
         assert!(hints.is_empty());
+    }
+
+    // ── diagnose_linker_errors: duplicate symbols ─────────────────────
+
+    #[test]
+    fn diagnose_duplicate_hew_symbol_lld() {
+        // Exact format emitted by ld64.lld on this host.
+        let stderr = "ld64.lld: error: duplicate symbol: hew_stream_last_error\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("hew_stream_last_error"));
+        assert!(hints[0].contains("--link-lib"));
+        assert!(hints[0].contains("hew-cabi"));
+        assert!(hints[0].contains("panic = \"abort\""));
+    }
+
+    #[test]
+    fn diagnose_duplicate_hew_symbol_apple_ld() {
+        // Apple system ld: leading underscore + single quotes.
+        let stderr = "duplicate symbol '_hew_stream_last_errno' in:\n    a.o\n    b.o\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("hew_stream_last_errno"));
+        assert!(
+            !hints[0].contains("'_hew"),
+            "leading underscore must be normalised"
+        );
+    }
+
+    #[test]
+    fn diagnose_duplicate_hew_symbol_gnu_ld() {
+        let stderr =
+            "b.o: multiple definition of `hew_stream_last_error'; a.o: first defined here\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("hew_stream_last_error"));
+        assert!(hints[0].contains("hew-cabi"));
+    }
+
+    #[test]
+    fn diagnose_duplicate_generic_symbol_is_non_hew_note() {
+        let stderr = "ld64.lld: error: duplicate symbol: _my_app_thing\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("duplicate symbol"));
+        // Generic note, NOT the hew-specific recipe.
+        assert!(!hints[0].contains("hew-cabi"));
+    }
+
+    #[test]
+    fn diagnose_duplicate_folds_multiple_hew_symbols_into_one_hint() {
+        // lld prints one error per duplicate plus ">>> defined in" provenance
+        // lines, which must be ignored. Two hew dups fold into one recipe hint.
+        let stderr = "\
+            ld64.lld: error: duplicate symbol: hew_stream_last_error\n\
+            >>> defined in libhew.a\n\
+            >>> defined in libmod.a\n\
+            ld64.lld: error: duplicate symbol: hew_stream_last_errno\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1, "both hew dups fold into one recipe hint");
+        assert!(hints[0].contains("hew_stream_last_error"));
+        assert!(hints[0].contains("hew_stream_last_errno"));
+    }
+
+    #[test]
+    fn diagnose_duplicate_and_undefined_coexist() {
+        // A feature hint and a duplicate hint can both be present.
+        let stderr = "\
+            foo.o: undefined reference to `hew_json_parse'\n\
+            ld64.lld: error: duplicate symbol: hew_stream_last_error\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 2);
+        assert!(hints.iter().any(|h| h.contains("serialization")));
+        assert!(hints
+            .iter()
+            .any(|h| h.contains("duplicate Hew runtime symbol")));
     }
 
     // ── has_tool ──────────────────────────────────────────────────────

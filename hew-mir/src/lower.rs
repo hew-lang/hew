@@ -628,6 +628,10 @@ fn is_string_const_ty(ty: &ResolvedTy) -> bool {
         || matches!(ty, ResolvedTy::Named { name, .. } if name == "String")
 }
 
+fn is_float_const_ty(ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::F32 | ResolvedTy::F64)
+}
+
 /// Build the module-level constant descriptors from a lowered [`HirModule`],
 /// mirroring the regex-literal handle-array pattern: one [`MirConst`] per
 /// `HirItem::Const`, in declaration order, with `const_id` as the 0-based
@@ -695,6 +699,24 @@ pub fn build_const_descriptors(module: &HirModule) -> (Vec<MirConst>, Vec<MirDia
                     continue;
                 }
                 MirConstValue::Str(s.clone())
+            }
+            HirConstValue::Float(v) => {
+                if !is_float_const_ty(&c.ty) {
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "const `{}` folded to a float value but has \
+                                 non-float type `{:?}`",
+                                c.name, c.ty
+                            ),
+                        },
+                        note: "const descriptor build requires f32 or f64 for a \
+                               float value"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                MirConstValue::Float(*v)
             }
         };
         let Ok(const_id) = u32::try_from(consts.len()) else {
@@ -4365,6 +4387,14 @@ fn lower_function(
     if call_conv.carries_execution_context() {
         bracket_actor_handler_blocks(&mut blocks);
     }
+    // W5.011 P3 — release nested fresh-`string` temporaries (the bare-temp
+    // shapes `(a + b).len()`, `s.to_uppercase().len()`, `xs[i].len()`, and the
+    // discarded `a + b;`) that `derive_cow_fresh_borrowed_owner` (binding-scoped)
+    // cannot see. Runs BEFORE `check_function`/elaboration so the dataflow
+    // observes each inline drop as a read of its temp and codegen emits the
+    // release. Fail-closed: only provably fresh, borrow-only/discarded,
+    // single-predecessor-dominated temps earn an inline `hew_string_drop`.
+    apply_nested_fresh_string_temp_drops(&mut blocks, &builder.locals, &builder.binding_locals);
     // THIR's `statements` is the union of every block's checker stream
     // in CFG-construction order — the THIR snapshot's job is preserving
     // the pre-CFG flat-stream shape for diagnostic readers that haven't
@@ -6727,7 +6757,14 @@ impl Builder {
                 Some(&expr.ty),
             );
         } else {
-            let _ = self.lower_value(expr);
+            // Discarded expression. Any fresh-owned `string` temporary the
+            // expression produces — `xs[i]`/`xs.get(i)` over `Vec<string>`
+            // (`hew_vec_get_str`), `a + b`, `.to_uppercase()`, … — is released
+            // by the general owned-`string` temporary substrate's DISCARD path
+            // (`apply_nested_fresh_string_temp_drops`), which splices one inline
+            // `hew_string_drop` after the unused producer. No Vec-specific
+            // handling is owed here.
+            self.lower_value(expr);
         }
     }
 
@@ -18827,6 +18864,18 @@ fn elaborate(
         &builder.binding_locals,
         &builder.match_project_consumed_binder_locals,
     );
+    // W5.011 P3 — additively admit fresh-owned `string` locals used only in
+    // borrowing reads (`let y = a + b; y.len()`, `let y = s.to_uppercase();
+    // y.len()`, `let y = xs.get(i); y.len()`). `derive_cow_sole_owner` excludes
+    // every read local, so those proven-fresh sole owners would otherwise leak.
+    // The two allow-sets are disjoint by construction (never-read vs read-by-
+    // borrow); the union is gated by the same consume-exit filter below so a
+    // binding moved out on any path is still removed (fail-closed).
+    cow_drop_allowed.extend(derive_cow_fresh_borrowed_owner(
+        &checked.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+    ));
     for states in dataflow_result.exit_states.values() {
         for (binding, state) in states {
             if matches!(
@@ -20753,46 +20802,77 @@ fn derive_cow_sole_owner(
         }
     }
 
-    // 2. Projection-alias taint. Seed at every interior-pointer load dest,
-    //    then propagate forward through `Move` to a fixpoint — a value
-    //    copied from a tainted local is itself a parent-interior alias.
-    //
-    // Exception: a match-destructure binder whose scrutinee was consume-
-    // marked at the destructure site (`lower_match_project` populates
-    // `match_project_consumed_binder_locals`) is a sole owner — the
-    // parent's composite drop is dataflow-suppressed, so the projection-
-    // alias-as-double-free reasoning does not apply. Skipping the SEED is
-    // sufficient: the binder's slot is allocated by `alloc_local` and not
-    // a re-projection, so no later `Move`-fixpoint round can re-taint it
-    // unless something else writes into the same local (which would itself
-    // be a separate seed). The dataflow exit-state post-filter at the
-    // `derive_cow_sole_owner` call site still removes binders consumed by
-    // the arm body, so this never double-frees a moved-out payload.
+    // 2. Projection-alias taint — the interior-pointer-of-a-live-aggregate
+    //    exclusion. Computed by `compute_projection_alias_taint`, exempting the
+    //    consume-marked match-destructure binders this derivation is allowed to
+    //    admit. (See that helper for the full seed/propagation/exemption model.)
+    let tainted = compute_projection_alias_taint(blocks, match_project_consumed_binder_locals);
+
+    // 3. Allow-set: leaf `string` owned locals that are neither aliased out
+    //    (read) nor aliased in (projection-tainted). Fail-closed: a binding
+    //    without a resolvable `Place::Local` slot is excluded.
+    let mut allowed: HashSet<BindingId> = HashSet::new();
+    for (binding, _name, ty) in owned_locals {
+        if cow_value_leaf_drop_symbol(ty).is_none() {
+            continue;
+        }
+        let Some(place) = binding_locals.get(binding) else {
+            continue;
+        };
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        if read_locals.contains(&local) || tainted.contains(&local) {
+            continue;
+        }
+        allowed.insert(*binding);
+    }
+    allowed
+}
+
+/// Projection-alias taint set: locals that hold an *interior pointer* of a
+/// still-live aggregate, propagated forward through `Move` to a fixpoint.
+///
+/// Seeds:
+/// - every interior-pointer load dest (`projection_alias_dest` — the four
+///   `*FieldLoad` instrs: record / tuple / closure-env / actor-state field);
+/// - every `Move` whose `src` is an interior projection (an enum/machine
+///   payload destructure binder — `lower_match_enum_tag` / `lower_while_let` —
+///   which aliases parent storage with no retain; `projection_alias_dest` does
+///   not see these, so they are seeded directly).
+///
+/// Propagation: a value `Move`d from a tainted local is itself a parent-interior
+/// alias, so taint flows forward through `Move` to a fixpoint. Dropping any
+/// tainted local would free a buffer its parent aggregate still owns, so both
+/// `derive_cow_sole_owner` and the W5.011 P3 fresh-borrowed admission
+/// (`derive_cow_fresh_borrowed_owner`) exclude every tainted local.
+///
+/// `exempt_seed_locals` suppresses the SEED for match-destructure binders whose
+/// scrutinee was consume-marked at the destructure site
+/// (`match_project_consumed_binder_locals`): the parent's composite drop is
+/// dataflow-suppressed, so the projection-alias-as-double-free reasoning does
+/// not apply and the binder is itself the sole owner. Skipping the seed is
+/// sufficient — the binder's slot is `alloc_local`-fresh, not a re-projection,
+/// so no later `Move`-fixpoint round re-taints it. The exemption applies ONLY
+/// to the `*FieldLoad` seed (`lower_match_project`'s shape); the
+/// Move-from-interior seed (enum/machine destructures) is never exempted.
+/// Passing an empty set is the conservative choice — it taints strictly more,
+/// which only ever excludes more bindings (fail-closed).
+#[must_use]
+fn compute_projection_alias_taint(
+    blocks: &[BasicBlock],
+    exempt_seed_locals: &HashSet<u32>,
+) -> HashSet<u32> {
     let mut tainted: HashSet<u32> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
             if let Some(dest) = projection_alias_dest(instr) {
                 if let Some(l) = base_local(dest) {
-                    if !match_project_consumed_binder_locals.contains(&l) {
+                    if !exempt_seed_locals.contains(&l) {
                         tainted.insert(l);
                     }
                 }
             }
-            // A `Move` *from* an interior projection (enum/machine payload
-            // destructure binder — `lower_match_enum_tag`/`lower_while_let`)
-            // aliases parent storage with no retain. `projection_alias_dest`
-            // only sees the four `*FieldLoad` instrs, so seed the binder dest
-            // here. `base_local(src)` collapses the projection to the parent
-            // scrutinee (marking it read), but the binder dest is a fresh
-            // owned local that must itself be tainted or it is admitted to
-            // drop and double-frees the shared buffer.
-            //
-            // The match-destructure consumed-binder exemption does NOT apply
-            // here: the consume-mark suppression is for `*FieldLoad` dests
-            // populated by `lower_match_project`, which never emits a Move-
-            // from-interior-projection for its binders (it uses the
-            // dedicated `*FieldLoad` instructions instead). Enum/machine
-            // payload destructures continue to flow through this seed.
             if let Instr::Move { dest, src } = instr {
                 if place_is_interior_projection(*src) {
                     if let Some(dl) = base_local(*dest) {
@@ -20819,10 +20899,196 @@ fn derive_cow_sole_owner(
             break;
         }
     }
+    tainted
+}
 
-    // 3. Allow-set: leaf `string` owned locals that are neither aliased out
-    //    (read) nor aliased in (projection-tainted). Fail-closed: a binding
-    //    without a resolvable `Place::Local` slot is excluded.
+/// W5.011 P3 — the destination place of an instruction that produces a fresh,
+/// solely-owned `string` (a `+1` owner the caller must balance with exactly one
+/// `hew_string_drop`). Only the validated runtime-ABI producers
+/// (`runtime_symbols::is_fresh_owned_string_producer`) qualify; everything else
+/// returns `None` (the local is not seeded as fresh, so it is never admitted —
+/// fail-closed).
+fn fresh_string_producer_dest(instr: &Instr) -> Option<Place> {
+    match instr {
+        Instr::CallRuntimeAbi(call)
+            if crate::runtime_symbols::is_fresh_owned_string_producer(call.symbol()) =>
+        {
+            call.dest()
+        }
+        _ => None,
+    }
+}
+
+/// W5.011 P3 — the `Terminator::Call` analogue of [`fresh_string_producer_dest`]
+/// (string transforms like `to_uppercase` / `slice` and the `Vec<string>`
+/// getter `hew_vec_get_str` lower to block-terminating calls, not `Instr`s).
+fn fresh_string_producer_term_dest(term: &Terminator) -> Option<Place> {
+    match term {
+        Terminator::Call { callee, dest, .. }
+            if crate::runtime_symbols::is_fresh_owned_string_producer(callee) =>
+        {
+            *dest
+        }
+        _ => None,
+    }
+}
+
+/// W5.011 P3 — `true` when a `Terminator::Call`/`Instr` callee borrows (reads /
+/// copies) its `string` argument without taking ownership. Wraps the runtime-ABI
+/// borrow allowlist and folds in the non-`hew_*` print sinks, which read their
+/// argument for output and never retain it (the same set
+/// `retained_string_terminator_drop_safe` treats as drop-safe).
+fn is_borrowing_string_call_callee(callee: &str) -> bool {
+    crate::runtime_symbols::is_borrowing_string_use(callee)
+        || matches!(callee, "print" | "println" | "print_str" | "println_str")
+}
+
+/// W5.011 P3 — `true` when an instruction transfers ownership of a fresh-owned
+/// `string` `local` out of its slot, so a scope-exit drop of `local` would be a
+/// double-free (over-decrement of the shared refcount).
+///
+/// The base classifier is [`generator_yield_instr_escapes`], which is exhaustive
+/// over every `Instr` variant and already catches the ownership-transferring
+/// shapes (`Move`, aggregate stores, spawns, re-drops). It treats EVERY call
+/// (`CallRuntimeAbi` / `CallClosure` / `CallTraitMethod`) as a borrow — correct
+/// for a per-iteration generator yield, but too permissive for a function-scope
+/// owned string, which a consuming runtime call (`hew_hashmap_insert_layout`
+/// moves the string) or any user/closure/trait call may take ownership of.
+///
+/// This refinement re-classifies exactly those call arms: a call that references
+/// `local` as a source operand escapes UNLESS it is a verified borrowing string
+/// call ([`is_borrowing_string_call_callee`]). A closure/trait call has no
+/// visible ownership posture, so any reference is an escape (fail-closed: leak,
+/// never double-free).
+fn cow_owned_string_instr_escapes(instr: &Instr, local: u32) -> bool {
+    if generator_yield_instr_escapes(instr, local) {
+        return true;
+    }
+    match instr {
+        Instr::CallRuntimeAbi(call) => {
+            call.args().iter().any(|p| place_refs_local(*p, local))
+                && !is_borrowing_string_call_callee(call.symbol())
+        }
+        Instr::CallClosure { .. } | Instr::CallTraitMethod { .. } => instr_source_places(instr)
+            .into_iter()
+            .any(|p| place_refs_local(p, local)),
+        _ => false,
+    }
+}
+
+/// W5.011 P3 — the `Terminator` analogue of [`cow_owned_string_instr_escapes`].
+/// [`generator_yield_terminator_escapes`] is the exhaustive base (it catches
+/// `Return`-via-`Move`, `Send`/`Ask`/`Yield`, `Select`/`Join`); it treats a
+/// `Terminator::Call` as a borrow. This refines the `Call` arm: a call
+/// referencing `local` escapes unless its callee is a verified borrowing string
+/// call (covers user-fn calls and `hew_hashmap_insert_layout` → escape).
+fn cow_owned_string_terminator_escapes(term: &Terminator, local: u32) -> bool {
+    if generator_yield_terminator_escapes(term, local) {
+        return true;
+    }
+    match term {
+        Terminator::Call { callee, args, .. } => {
+            args.iter().any(|p| place_refs_local(*p, local))
+                && !is_borrowing_string_call_callee(callee)
+        }
+        _ => false,
+    }
+}
+
+/// W5.011 P3 — borrowing-read-aware owned-`string` cleanup. Returns the subset
+/// of `owned_locals` that hold a **proven fresh sole owner used only in
+/// borrowing reads**, which therefore earns a scope-exit
+/// `DropKind::CowHeap { drop_fn: "hew_string_drop" }`.
+///
+/// ## Why this exists (the leak `derive_cow_sole_owner` leaves behind)
+///
+/// `derive_cow_sole_owner` admits a `string` binding ONLY when its backing local
+/// is NEVER read as a source operand. That blunt rule excludes the overwhelmingly
+/// common shape `let y = a + b; y.len()` — `y` IS read (by `len`), so it leaks.
+/// Relaxing the base rule to "read only by borrows" is unsound on its own: a
+/// borrow-only-read local that ALIASES a caller-owned buffer (a `string`
+/// parameter, an interior projection, a user-call result) must NOT be dropped,
+/// or the shared refcount is over-decremented (premature free / use-after-free).
+///
+/// ## The ownership model (refcounted `string`, fail-closed)
+///
+/// `string` is refcounted: `hew_string_drop` decrements and frees at zero;
+/// `hew_string_clone` / `hew_vec_get_str` bump the count and alias the same
+/// buffer. Every producer in `is_fresh_owned_string_producer` hands the caller
+/// exactly ONE drop obligation (fresh `rc == 1`, or a `+1` retain). A binding is
+/// admitted here iff ALL of:
+///
+/// 1. it is a leaf `string` (`cow_value_leaf_drop_symbol` is `Some`);
+/// 2. its backing local is **proven fresh** — it traces, through `Move` rebinds,
+///    to the dest of a known fresh producer (rule keystone: this is what
+///    excludes parameter aliases, interior projections, and user-call results,
+///    none of which are fresh producers);
+/// 3. it is not projection-alias tainted (`compute_projection_alias_taint`);
+/// 4. **every** use of the local is a verified borrow
+///    (`cow_owned_string_*_escapes` is `false` everywhere) — any
+///    ownership-transferring escape (return, store, spawn, send, container-move
+///    insert, user/closure call) excludes it.
+///
+/// This is **additive** to `derive_cow_sole_owner`: the caller unions the two
+/// allow-sets. The base admits never-read sole owners; this admits read-only-by-
+/// borrow fresh owners. The sets are disjoint by construction (never-read vs
+/// read-by-borrow), and a `Move` chain's earlier owners are excluded (they appear
+/// as a `Move` source — an escape), so a single buffer is never admitted twice.
+///
+/// Fail-closed throughout: an unrecognised producer (rule 2), an unrecognised
+/// use (rule 4), or any taint (rule 3) leaves the binding out of the set — it
+/// leaks, exactly as before this lane, and can never double-free.
+///
+/// LESSONS: boundary-fail-closed (P0), cleanup-all-exits, raii-null-after-move.
+#[must_use]
+fn derive_cow_fresh_borrowed_owner(
+    blocks: &[BasicBlock],
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+) -> HashSet<BindingId> {
+    // 1. Fresh-owner locals: the dest of a known fresh `string` producer,
+    //    propagated forward through `Move` (a `let y = <producer temp>` rebind
+    //    transfers the single drop obligation from the temp to `y`).
+    let mut fresh: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Some(dest) = fresh_string_producer_dest(instr) {
+                if let Some(l) = base_local(dest) {
+                    fresh.insert(l);
+                }
+            }
+        }
+        if let Some(dest) = fresh_string_producer_term_dest(&block.terminator) {
+            if let Some(l) = base_local(dest) {
+                fresh.insert(l);
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if fresh.contains(&sl) && fresh.insert(dl) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // 2. Projection-alias taint — never admit an interior pointer of a live
+    //    aggregate even if it traced through a producer-shaped `Move`. No
+    //    consumed-binder exemption (conservative: taint strictly more).
+    let tainted = compute_projection_alias_taint(blocks, &HashSet::new());
+
+    // 3. Admit a leaf-`string` owned binding iff it is a proven fresh owner, not
+    //    a projection alias, and every use is a verified borrow.
     let mut allowed: HashSet<BindingId> = HashSet::new();
     for (binding, _name, ty) in owned_locals {
         if cow_value_leaf_drop_symbol(ty).is_none() {
@@ -20834,12 +21100,356 @@ fn derive_cow_sole_owner(
         let Some(local) = base_local(*place) else {
             continue;
         };
-        if read_locals.contains(&local) || tainted.contains(&local) {
+        if !fresh.contains(&local) || tainted.contains(&local) {
             continue;
         }
-        allowed.insert(*binding);
+        let all_uses_borrow = blocks.iter().all(|block| {
+            block
+                .instructions
+                .iter()
+                .all(|instr| !cow_owned_string_instr_escapes(instr, local))
+                && !cow_owned_string_terminator_escapes(&block.terminator, local)
+        });
+        if all_uses_borrow {
+            allowed.insert(*binding);
+        }
     }
     allowed
+}
+
+/// The single MIR site that produces a fresh-`string` temporary, used by
+/// [`collect_nested_fresh_string_temp_drops`]. Either an `Instr` (a
+/// `CallRuntimeAbi` producer like `hew_string_concat`) or the block's
+/// `Terminator::Call` (a transform like `to_uppercase` / the `Vec<string>`
+/// getter `hew_vec_get_str`).
+#[derive(Clone, Copy)]
+enum NestedDefSite {
+    Instr { block: u32, idx: usize },
+    Term { block: u32 },
+}
+
+/// A source-operand use site of a fresh-`string` temporary (deduplicated per
+/// instruction/terminator, so `f(t, t)` is one use site, not two).
+#[derive(Clone, Copy)]
+enum NestedUseSite {
+    Instr,
+    Term { block: u32 },
+}
+
+/// The `next` continuation of a `Terminator::Call`, else `None`. The only
+/// block-terminating shape a fresh-`string` producer or its borrowing use takes.
+fn call_terminator_next(term: &Terminator) -> Option<u32> {
+    match term {
+        Terminator::Call { next, .. } => Some(*next),
+        _ => None,
+    }
+}
+
+#[must_use]
+fn block_by_id(blocks: &[BasicBlock], id: u32) -> Option<&BasicBlock> {
+    blocks.iter().find(|b| b.id == id)
+}
+
+/// W5.011 P3 — nested fresh-`string` temporary release. The bare-temp analogue
+/// of [`derive_cow_fresh_borrowed_owner`]: it releases fresh-owned `string`
+/// results that flow straight into a borrowing use (or are discarded) WITHOUT a
+/// `let` binding, so the binding-scoped scope-exit derivation never sees them.
+///
+/// Shapes this releases exactly once (each leaked before this lane):
+///
+/// ```text
+///   (a + b).len()           // concat temp, borrowed by hew_string_length
+///   s.to_uppercase().len()  // to_uppercase temp, borrowed
+///   xs[i].len()             // hew_vec_get_str temp (a +1 retain), borrowed
+///   a + b;                  // discarded concat temp (zero uses)
+/// ```
+///
+/// ## Ownership model (the same refcount keystone as the binding path)
+///
+/// `string` is refcounted. Every `is_fresh_owned_string_producer` hands the
+/// caller exactly ONE drop obligation (fresh `rc == 1`, or a `+1` retain for
+/// `hew_vec_get_str` / `hew_string_clone`). A borrowing use
+/// (`is_borrowing_string_call_callee`) reads/copies the buffer WITHOUT consuming
+/// the refcount — verified in `hew-runtime/src/string.rs`: `hew_string_concat`,
+/// `hew_string_to_uppercase`, `hew_string_trim`, … all `CStr::from_ptr(input)`
+/// then allocate a FRESH result, never freeing the input. So a fresh temp used
+/// once by a borrow (or never used) still owns its single obligation afterwards;
+/// releasing it once balances the producer.
+///
+/// ## Fail-closed admission — a temp earns a drop iff ALL hold
+///
+/// 1. its local is a leaf `string` (`cow_value_leaf_drop_symbol` is `Some`);
+/// 2. it is NOT a `let`/parameter binding local (those are the province of the
+///    scope-exit `derive_cow_*` drops — the two sets are disjoint by
+///    construction, so a buffer is never claimed by both);
+/// 3. it has exactly ONE def, a known fresh producer (no instruction
+///    re-definition; a producer-terminator temp has no instruction writer);
+/// 4. it has AT MOST ONE source-use, and (if present) that use is a verified
+///    borrowing `Terminator::Call` — any other use (`Move`/store/return/send/
+///    user-call) excludes it (leak, never double-free);
+/// 5. the drop site is provably dominated by the def and entered exactly once
+///    (single-predecessor continuation), in one of these structural shapes:
+///      * discard, instr def → drop right after the producer instruction (same
+///        straight-line block);
+///      * discard, terminator def `Call(next = N)` → drop at the front of `N`
+///        (require `N` single-predecessor);
+///      * single borrowing use at the terminator `Call(next = T)` of block `U`,
+///        with the def either an instruction IN `U` (trivially precedes the
+///        terminator) or a terminator `Call(next = U)` of the immediately
+///        preceding block (require `U` single-predecessor) → drop at the front
+///        of `T` (require `T` single-predecessor).
+///
+/// Any other CFG shape fails closed (the temp leaks, as before this lane). The
+/// return is a list of `(block_id, insert_index, place, ty)` inline-drop
+/// insertions for the caller to splice in. Pure over `blocks` (no mutation) so
+/// it is unit-testable.
+///
+/// LESSONS: boundary-fail-closed (P0), cleanup-all-exits, raii-null-after-move.
+#[must_use]
+fn collect_nested_fresh_string_temp_drops(
+    blocks: &[BasicBlock],
+    locals: &[ResolvedTy],
+    binding_locals: &HashMap<BindingId, Place>,
+) -> Vec<(u32, usize, Place, ResolvedTy)> {
+    // A drop spliced at the FRONT of a block is sound only if that block is
+    // entered from exactly one place — otherwise it could fire on a path where
+    // the temp was never produced (free of an uninitialised slot / double-free).
+    let mut pred_count: HashMap<u32, usize> = HashMap::new();
+    for block in blocks {
+        for succ in block.successors() {
+            *pred_count.entry(succ).or_insert(0) += 1;
+        }
+    }
+
+    // Binding/parameter locals are released by the scope-exit `derive_cow_*`
+    // drops; never double-claim one here.
+    let binding_local_ids: HashSet<u32> = binding_locals
+        .values()
+        .filter_map(|p| base_local(*p))
+        .collect();
+
+    // Instruction writers per local (rule 3): the sole admissible writer of an
+    // instr-produced temp is its producer; a terminator-produced temp has none.
+    let mut instr_writers: HashMap<u32, Vec<(u32, usize)>> = HashMap::new();
+    for block in blocks {
+        for (idx, instr) in block.instructions.iter().enumerate() {
+            let (_, writes) = crate::dataflow::instr_reads_writes(instr);
+            for w in writes {
+                if let Some(l) = base_local(w) {
+                    instr_writers.entry(l).or_default().push((block.id, idx));
+                }
+            }
+        }
+    }
+
+    // Source-use sites per local (rule 4), deduplicated within each
+    // instruction/terminator so a temp referenced twice by one call counts once.
+    let mut source_uses: HashMap<u32, Vec<NestedUseSite>> = HashMap::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            let mut here: HashSet<u32> = HashSet::new();
+            for p in instr_source_places(instr) {
+                if let Some(l) = base_local(p) {
+                    here.insert(l);
+                }
+            }
+            for l in here {
+                source_uses.entry(l).or_default().push(NestedUseSite::Instr);
+            }
+        }
+        let mut here: HashSet<u32> = HashSet::new();
+        for p in terminator_source_places(&block.terminator) {
+            if let Some(l) = base_local(p) {
+                here.insert(l);
+            }
+        }
+        for l in here {
+            source_uses
+                .entry(l)
+                .or_default()
+                .push(NestedUseSite::Term { block: block.id });
+        }
+    }
+
+    let mut result: Vec<(u32, usize, Place, ResolvedTy)> = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        // Producer defs in this block: instruction producers first, then the
+        // block-terminating producer (transform / Vec getter).
+        let mut defs: Vec<(u32, NestedDefSite)> = Vec::new();
+        for (idx, instr) in block.instructions.iter().enumerate() {
+            if let Some(dest) = fresh_string_producer_dest(instr) {
+                if let Some(t) = base_local(dest) {
+                    defs.push((
+                        t,
+                        NestedDefSite::Instr {
+                            block: block.id,
+                            idx,
+                        },
+                    ));
+                }
+            }
+        }
+        if let Some(dest) = fresh_string_producer_term_dest(&block.terminator) {
+            if let Some(t) = base_local(dest) {
+                defs.push((t, NestedDefSite::Term { block: block.id }));
+            }
+        }
+        for (t, def) in defs {
+            if !seen.insert(t) {
+                continue;
+            }
+            if let Some(ins) = nested_fresh_string_temp_drop(
+                t,
+                def,
+                blocks,
+                locals,
+                &pred_count,
+                &binding_local_ids,
+                &instr_writers,
+                &source_uses,
+            ) {
+                result.push(ins);
+            }
+        }
+    }
+    result
+}
+
+/// Per-candidate admission for [`collect_nested_fresh_string_temp_drops`].
+/// Returns the inline-drop insertion `(block_id, insert_index, place, ty)` if
+/// the fresh-`string` temp `t` (defined at `def`) satisfies every fail-closed
+/// rule, else `None`.
+#[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "admission threads the precomputed CFG/dataflow tables (pred counts, \
+              binding locals, instr writers, source uses) needed to prove the temp \
+              is a single-def, borrow-only, dominated fresh-owned string"
+)]
+fn nested_fresh_string_temp_drop(
+    t: u32,
+    def: NestedDefSite,
+    blocks: &[BasicBlock],
+    locals: &[ResolvedTy],
+    pred_count: &HashMap<u32, usize>,
+    binding_local_ids: &HashSet<u32>,
+    instr_writers: &HashMap<u32, Vec<(u32, usize)>>,
+    source_uses: &HashMap<u32, Vec<NestedUseSite>>,
+) -> Option<(u32, usize, Place, ResolvedTy)> {
+    // 1. leaf `string` — bail unless this resolves to a leaf drop symbol.
+    let ty = locals.get(t as usize)?;
+    cow_value_leaf_drop_symbol(ty)?;
+    // 2. not a binding/parameter local.
+    if binding_local_ids.contains(&t) {
+        return None;
+    }
+    // 3. the sole instruction writer (if any) is the producer instruction.
+    let writers: &[(u32, usize)] = instr_writers.get(&t).map_or(&[][..], Vec::as_slice);
+    match def {
+        NestedDefSite::Instr { block, idx } => {
+            if !(writers.len() == 1 && writers[0] == (block, idx)) {
+                return None;
+            }
+        }
+        NestedDefSite::Term { .. } => {
+            if !writers.is_empty() {
+                return None;
+            }
+        }
+    }
+    // 4. at most one source-use.
+    let uses: &[NestedUseSite] = source_uses.get(&t).map_or(&[][..], Vec::as_slice);
+    if uses.len() > 1 {
+        return None;
+    }
+    let drop_place = Place::Local(t);
+    let drop_ty = ty.clone();
+
+    match (def, uses.first()) {
+        // Discarded instruction producer: drop right after it (straight-line).
+        (NestedDefSite::Instr { block, idx }, None) => Some((block, idx + 1, drop_place, drop_ty)),
+        // Discarded terminator producer `Call(next = N)`: drop at the front of
+        // its single-predecessor continuation.
+        (NestedDefSite::Term { block }, None) => {
+            let n = call_terminator_next(&block_by_id(blocks, block)?.terminator)?;
+            (pred_count.get(&n).copied().unwrap_or(0) == 1).then_some((n, 0, drop_place, drop_ty))
+        }
+        // Single use: it must be a borrowing terminator `Call`, and the def must
+        // dominate it (so the drop runs iff the temp was produced).
+        (_, Some(NestedUseSite::Term { block: use_block })) => {
+            let ub = *use_block;
+            let Terminator::Call {
+                callee, args, next, ..
+            } = &block_by_id(blocks, ub)?.terminator
+            else {
+                return None;
+            };
+            if !args.iter().any(|p| place_refs_local(*p, t)) {
+                return None;
+            }
+            if !is_borrowing_string_call_callee(callee) {
+                return None;
+            }
+            if pred_count.get(next).copied().unwrap_or(0) != 1 {
+                return None;
+            }
+            let def_dominates = match def {
+                // Instruction def in the use's own block precedes the terminator.
+                NestedDefSite::Instr { block, .. } => block == ub,
+                // Terminator def `Call(next = U)`: a single-predecessor `U` is
+                // reached only from the def block, so the def ran.
+                NestedDefSite::Term { block } => {
+                    call_terminator_next(&block_by_id(blocks, block)?.terminator) == Some(ub)
+                        && pred_count.get(&ub).copied().unwrap_or(0) == 1
+                }
+            };
+            def_dominates.then_some((*next, 0, drop_place, drop_ty))
+        }
+        // A single instruction use is not covered by the dominance reasoning
+        // above; fail closed (leak, never double-free).
+        (_, Some(NestedUseSite::Instr)) => None,
+    }
+}
+
+/// W5.011 P3 — splice the inline `hew_string_drop`s computed by
+/// [`collect_nested_fresh_string_temp_drops`] into `blocks`. Applied during
+/// lowering BEFORE `check_function` / drop elaboration so the dataflow observes
+/// each drop as a read of its temp (no use-after-free flag) and so codegen emits
+/// the release. Per-block insertions are applied in descending index order so an
+/// earlier splice does not shift a later (lower-index) one.
+fn apply_nested_fresh_string_temp_drops(
+    blocks: &mut [BasicBlock],
+    locals: &[ResolvedTy],
+    binding_locals: &HashMap<BindingId, Place>,
+) {
+    let insertions = collect_nested_fresh_string_temp_drops(blocks, locals, binding_locals);
+    if insertions.is_empty() {
+        return;
+    }
+    let mut by_block: HashMap<u32, Vec<(usize, Place, ResolvedTy)>> = HashMap::new();
+    for (bid, idx, place, ty) in insertions {
+        by_block.entry(bid).or_default().push((idx, place, ty));
+    }
+    for block in blocks.iter_mut() {
+        let Some(mut ins) = by_block.remove(&block.id) else {
+            continue;
+        };
+        // Apply in descending index order so an earlier splice does not shift
+        // the insertion point of a later (lower-index) one.
+        ins.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+        for (idx, place, ty) in ins {
+            let at = idx.min(block.instructions.len());
+            block.instructions.insert(
+                at,
+                Instr::Drop {
+                    place,
+                    ty,
+                    drop_fn: Some("hew_string_drop".to_string()),
+                },
+            );
+        }
+    }
 }
 
 /// W5.020 — fail-closed sole-owner derivation for **heap-owning enum
@@ -24291,20 +24901,30 @@ fn enumerate_exits(
                 DropPlan::default(),
             ),
             Terminator::Trap { .. } => {
-                // Cleanup block: same LIFO drop plan as the normal exit
-                // at this scope depth; no successor (trap is terminal).
+                // Cleanup block: same drop plan as the NORMAL exit at this scope
+                // depth — i.e. the init-aware `drops_for_exit` filter, NOT the
+                // raw template. A binding that is `Uninit` at the trap point
+                // (e.g. `let y = xs[i];` traps in the bounds check BEFORE the
+                // getter initialises `y`) must not be dropped: its slot holds no
+                // value, so an unfiltered `hew_string_drop`/record-drop would
+                // dereference uninitialised stack memory and turn a clean OOB
+                // trap (SIGTRAP, code 205) into a SIGSEGV. The filter also
+                // excludes `Consumed` bindings (no double-free on the panic
+                // path). `Live`/`MaybeConsumed`/`AliasedIntoAggregate` bindings
+                // still drop, preserving cleanup-all-exits. No successor (trap is
+                // terminal).
                 let cleanup_id = next_cleanup_id;
                 next_cleanup_id = next_cleanup_id.saturating_add(1);
                 elab_blocks.push(ElabBlock {
                     id: cleanup_id,
                     kind: BlockKind::Cleanup,
-                    drops: drops_template.clone(),
+                    drops: drops_for_exit(block_id),
                     successor: None,
                 });
                 (
                     ExitPath::Panic { block: block_id },
                     DropPlan {
-                        drops: drops_template.clone(),
+                        drops: drops_for_exit(block_id),
                     },
                 )
             }

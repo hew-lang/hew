@@ -48,8 +48,9 @@ fn allowlist_covers_vec_len() {
 #[test]
 fn allowlist_covers_vec_get_family() {
     // All five typed getters must be allowlisted so the MIR producer can
-    // emit them. hew_vec_get_str is allowlisted but not yet emitted by this
-    // slice (String element drop is a follow-on).
+    // emit them. hew_vec_get_str is emitted by both the Vec<string> for-in
+    // path and the scalar `xs[i]` index path (each balances the retained
+    // owner with hew_string_drop).
     let get_symbols = [
         "hew_vec_get_i32",
         "hew_vec_get_i64",

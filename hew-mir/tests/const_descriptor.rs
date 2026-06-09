@@ -83,6 +83,24 @@ fn string_const_builds_descriptor() {
 }
 
 #[test]
+fn float_consts_build_descriptors() {
+    let module = hir(r"const PI: f64 = 3.14; const HALF: f32 = 0.5; fn main() -> i64 { 0 }");
+    let (consts, diags) = build_const_descriptors(&module);
+    assert!(
+        diags.is_empty(),
+        "well-typed float consts must not raise diagnostics: {diags:?}"
+    );
+    assert_eq!(consts.len(), 2);
+    assert_eq!(consts[0].name, "PI");
+    assert_eq!(
+        consts[0].value,
+        MirConstValue::Float("3.14".parse::<f64>().expect("valid fixture float"))
+    );
+    assert_eq!(consts[1].name, "HALF");
+    assert_eq!(consts[1].value, MirConstValue::Float(0.5));
+}
+
+#[test]
 fn multiple_consts_take_sequential_slots() {
     let module =
         hir(r"const A: i64 = 1; const B: i64 = 2; const C: i64 = 3; fn main() -> i64 { 0 }");

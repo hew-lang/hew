@@ -58,14 +58,14 @@ use std::sync::{Arc, Mutex};
 // These are the shared ABI types that native packages (e.g. HTTP) also use.
 // Defining them in hew-cabi avoids pulling the full runtime into stdlib packages.
 
-pub use hew_cabi::sink::{
-    into_sink_ptr, into_write_sink_ptr, set_last_error, set_last_error_with_errno, take_last_error,
-    HewSink,
+pub use crate::stream_error::{
+    hew_stream_last_error, set_last_error, set_last_error_with_errno, take_last_error,
 };
+pub use hew_cabi::sink::{into_sink_ptr, into_write_sink_ptr, HewSink};
 
-// hew_stream_last_error is defined in hew-cabi::sink (with #[no_mangle])
-// so we re-export it here for Rust callers but don't redefine the C symbol.
-pub use hew_cabi::sink::hew_stream_last_error;
+// hew_stream_last_error / hew_stream_last_errno are defined in crate::stream_error
+// (the single owner of the C ABI); hew-cabi only declares them as imports so that
+// native packages resolve them against libhew.a at final link.
 
 use hew_cabi::vec::HewVec;
 
@@ -3358,7 +3358,7 @@ mod tests {
         let result = unsafe { hew_stream_from_file_read(path.as_ptr()) };
         assert!(result.is_null());
         // An error should have been recorded.
-        let err = hew_cabi::sink::take_last_error();
+        let err = crate::stream_error::take_last_error();
         assert!(err.is_some(), "missing file should set an error");
     }
 

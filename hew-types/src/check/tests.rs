@@ -20863,6 +20863,62 @@ mod assoc_types_slice2 {
         }
     }
 
+    /// The stream/sink error channel splits producer from consumer: the
+    /// `set_last_error` setters are `internal` (AOT-only, called by hew-cabi
+    /// forwarders in native packages) and MUST be rejected in `extern "rt"` — a
+    /// user could otherwise mutate the thread-local error channel and allocate
+    /// caller-sized strings. The read-side getters stay `stable` so user code
+    /// may inspect the last error.
+    #[test]
+    fn extern_rt_stream_error_setters_rejected_getters_accepted() {
+        for setter in [
+            "hew_stream_set_last_error",
+            "hew_stream_set_last_error_with_errno",
+        ] {
+            let extern_item = make_extern_rt_block(&[setter]);
+            let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+            let output = checker.check_program(&Program {
+                items: vec![(extern_item, 0..60)],
+                module_doc: None,
+                module_graph: None,
+            });
+            assert!(
+                output.errors.iter().any(|e| matches!(&e.kind,
+                    TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
+                    if symbol_name == setter
+                )),
+                "internal stream-error setter {setter} must be rejected in extern \"rt\"; \
+                 got: {:?}",
+                output.errors
+            );
+        }
+
+        for getter in ["hew_stream_last_error", "hew_stream_last_errno"] {
+            let extern_item = make_extern_rt_block(&[getter]);
+            let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+            let output = checker.check_program(&Program {
+                items: vec![(extern_item, 0..40)],
+                module_doc: None,
+                module_graph: None,
+            });
+            let rt_errors: Vec<_> = output
+                .errors
+                .iter()
+                .filter(|e| {
+                    matches!(&e.kind,
+                        TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
+                        if symbol_name == getter
+                    )
+                })
+                .collect();
+            assert!(
+                rt_errors.is_empty(),
+                "stable stream-error getter {getter} must be accepted in extern \"rt\"; \
+                 got: {rt_errors:?}"
+            );
+        }
+    }
+
     /// `extern "C"` blocks with any symbol name must NOT be validated against
     /// the stable list — that is raw user FFI surface.
     #[test]

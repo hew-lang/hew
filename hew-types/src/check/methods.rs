@@ -5492,30 +5492,76 @@ impl Checker {
                         },
                         true,
                     );
+                    // Actor receive-method dispatch on a bare actor-typed
+                    // receiver — e.g. an actor field holding a reference
+                    // (`let out: W; out.put(arg)`) or a `let target: Printer`
+                    // binding. `lookup_named_method_sig` finds the signature in
+                    // `fn_sigs` keyed `{Actor}::{method}`, but a value of bare
+                    // actor type `W` is still an actor handle, not a struct: the
+                    // call must cross the mailbox boundary exactly like the
+                    // `LocalPid<W>` / `ActorRef<W>` arms above. Route it through
+                    // the same send/ask dispatch machinery instead of falling
+                    // through to the synchronous `W::method(self, ...)`
+                    // `RewriteToFunction` path (which HIR cannot lower — there is
+                    // no standalone callable body for a receive handler, so it
+                    // surfaces as `IndirectCallUnsupported`). Non-receive
+                    // `methods {}` declared on the same actor (also keyed
+                    // `{Actor}::{method}` in `fn_sigs`) are NOT in
+                    // `actor_receive_methods`, so they stay on the direct path.
+                    let is_actor_receive_dispatch = self
+                        .type_defs
+                        .get(name)
+                        .is_some_and(|td| td.kind == TypeDefKind::Actor)
+                        && self
+                            .actor_receive_methods
+                            .contains(&format!("{name}::{method}"));
+                    if is_actor_receive_dispatch {
+                        self.record_method_call_receiver_kind(
+                            span,
+                            MethodCallReceiverKind::ActorInstance {
+                                actor_name: name.clone(),
+                            },
+                        );
+                        // Every arg crosses the mailbox boundary; record the
+                        // per-arg alias-vs-copy decision so the fail-closed
+                        // codegen consumer does not have to guess.
+                        self.enforce_actor_method_send_args(args);
+                        // Ask-without-await guard: an ask-shaped receive fn
+                        // (non-unit return, non-generator) must be invoked under
+                        // `await`. Mirrors the `LocalPid` / `ActorRef` arms.
+                        let method_key = format!("{name}::{method}");
+                        let resolved_ret = self.subst.resolve(&applied_sig.return_type);
+                        if !matches!(resolved_ret, Ty::Unit)
+                            && !self.receive_generator_methods.contains(&method_key)
+                            && !self.inside_await_expr
+                        {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "actor ask `{name}::{method}` requires `await`; \
+                                     write `let v? = await ref.{method}(...)` \
+                                     or `match await ref.{method}(...) {{ Ok(v) => ..., Err(e) => ... }}`",
+                                ),
+                            );
+                        }
+                        // Record the dispatch discriminator (Fire vs Ask). This
+                        // also marks the span as already-rewritten below, so the
+                        // synchronous `RewriteToFunction` path is skipped and the
+                        // call lowers to `ActorSend` / `ActorAsk` in HIR.
+                        self.record_actor_method_dispatch(
+                            span,
+                            method_key,
+                            applied_sig.return_type.clone(),
+                        );
+                        return applied_sig.return_type;
+                    }
                     self.record_method_call_receiver_kind(
                         span,
                         MethodCallReceiverKind::NamedTypeInstance {
                             type_name: name.clone(),
                         },
                     );
-                    // Actor receive-method dispatch on a bare actor-typed
-                    // receiver (e.g. `let target: Printer; target.foo(arg)`)
-                    // routes here: `lookup_named_method_sig` finds the
-                    // signature in `fn_sigs` keyed `{Actor}::{method}`.
-                    // Every arg crosses the mailbox boundary and must be
-                    // routed through `enforce_actor_boundary_send` so the
-                    // codegen consumer (fail-closed on missing entries)
-                    // sees an alias-vs-copy decision per arg.
-                    if self
-                        .type_defs
-                        .get(name)
-                        .is_some_and(|td| td.kind == TypeDefKind::Actor)
-                        && self
-                            .actor_receive_methods
-                            .contains(&format!("{name}::{method}"))
-                    {
-                        self.enforce_actor_method_send_args(args);
-                    }
                     // Machine method dispatch: `.step()` and `.state_name()` on a
                     // machine-typed receiver are recorded in the checker-owned
                     // `machine_method_dispatch` side-table so HIR lowering can

@@ -483,13 +483,15 @@ pub struct RegexLiteral {
 /// Constant-folded value carried by a [`MirConst`]. Mirrors
 /// `hew_hir::HirConstValue`; carried in the descriptor so codegen does not
 /// re-read HIR.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MirConstValue {
     /// Folded integer value. The declared width lives in [`MirConst::ty`];
     /// codegen truncates/zero-extends the `i64` payload to that width.
     Integer(i64),
     /// Folded UTF-8 string literal value.
     Str(String),
+    /// Folded float literal value. The declared width lives in [`MirConst::ty`].
+    Float(f64),
 }
 
 /// Module-level constant descriptor lowered from `hew_hir::HirItem::Const`.
@@ -500,7 +502,7 @@ pub enum MirConstValue {
 /// the descriptor back to the `ResolvedRef::Const(item_id)` that const
 /// references carry; the codegen global-load seam (wired in a4656a25) resolves
 /// a reference to its slot without re-reading HIR.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MirConst {
     /// 0-based index into the const-descriptor table and the codegen global
     /// slot.

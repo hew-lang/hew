@@ -735,14 +735,14 @@ pub enum HirDiagnosticKind {
     /// slepp A222 / A228: surface the unsupported case at compile time
     /// instead of letting MIR emit `NotYetImplemented` and codegen drop the
     /// expression. Supported scalar element types are `bool`, `char`, `i32`,
-    /// `u32`, `i64`, `u64`, `f64`, and any user-defined `Named` type (records, enums,
-    /// `Duplex`, `LambdaActorHandle`, etc., dispatched via
-    /// `hew_vec_get_ptr`). Source-level `Vec<String>` scalar indexing is
-    /// intentionally excluded until its retained/header-aware getter owner is
-    /// balanced outside the synthetic Vec for-in path.
+    /// `u32`, `i64`, `u64`, `f64`, `String` (retained/header-aware owner via
+    /// `hew_vec_get_str`, balanced by the caller's scope-exit `hew_string_drop`),
+    /// and any user-defined `Named` type (records, enums, `Duplex`,
+    /// `LambdaActorHandle`, etc., dispatched via `hew_vec_get_ptr` /
+    /// `hew_vec_get_layout` / `hew_vec_get_owned`).
     VecIndexElementTypeUnsupported {
         /// User-facing rendering of the unsupported element type
-        /// (e.g. `"bool"`, `"char"`, `"String"`, `"f32"`).
+        /// (e.g. `"i8"`, `"f32"`, `"u16"`).
         element_ty: String,
     },
     /// `Vec<T>` range-slice (`xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`,

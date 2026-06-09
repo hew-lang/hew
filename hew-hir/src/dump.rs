@@ -269,6 +269,7 @@ pub fn dump_hir(module: &HirModule) -> String {
                 let value = match &c.value {
                     crate::node::HirConstValue::Integer(v) => v.to_string(),
                     crate::node::HirConstValue::String(s) => format!("{s:?}"),
+                    crate::node::HirConstValue::Float(v) => v.to_string(),
                 };
                 writeln!(
                     out,

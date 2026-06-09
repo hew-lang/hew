@@ -652,6 +652,29 @@ run_accept_expect_stdout "lambda_log_collision"
 # stdout ordering is deterministic regardless of dispatch scheduling.
 run_accept_expect_stdout "lambda_small_msg"
 
+# Accept: actor receive-method dispatch through a struct-field receiver.
+# `actor B { let out: W; ... out.put(n) ... await out.get() }` — the field's
+# bare actor-name type holds an actor handle (canonicalised to LocalPid<W> in
+# HIR), so both the fire (`put`) and ask (`get`) calls route through the actor
+# mailbox. Regression for `E_HIR: indirect call ... has no MIR dispatch path`,
+# which fired before the field receiver was recognised as an actor send/ask.
+run_accept_expect_stdout "actor_field_method_dispatch"
+
+# Reject: an ask-shaped receive method called on a struct-field actor receiver
+# must be `await`ed. `actor B { let out: W; ... out.get() }` invokes W's
+# non-unit `get` without `await`; because the field receiver routes through the
+# actor ask machinery (not a sync struct call), the checker fires the
+# ask-without-await guard — fail-closed, never a silent sync call or an
+# indirect-dispatch error.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/actor_field_ask_without_await.hew" >"${reject_output}" 2>&1; then
+  echo "expected actor_field_ask_without_await fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks in the pattern are literal — they match
+# the CLI diagnostic's pretty-printed `Actor::method` / `await` names, not
+# command substitution.
+grep -qF 'actor ask `W::get` requires `await`' "${reject_output}"
+
 # Reject: non-Send message type (E_DUPLEX_NON_SEND).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/duplex_non_send.hew" >"${reject_output}" 2>&1; then
   echo "expected duplex-non-send fixture to fail" >&2
@@ -1034,6 +1057,53 @@ run_accept_expect_status "vec_range_slice_full" 3
 # Accept (S0): inclusive range slice `v[0..=2]` — three elements.
 # Exit 3 = length of the result.
 run_accept_expect_status "vec_range_slice_inclusive" 3
+
+# ---------------------------------------------------------------------------
+# vec-generic-index — scalar `xs[i]` on Vec<T> for any supported element type
+# ---------------------------------------------------------------------------
+
+# Accept (S0): scalar index on Vec<string>. `xs[i]` returns a fresh retained
+# owner (hew_vec_get_str refcount bump); the Vec keeps its own reference and is
+# re-read after indexing, proving indexing CLONES rather than moves out. Exit
+# 13 = "alpha".len() + "gamma".len() + xs.len() (5 + 5 + 3). Guards the
+# generic-Vec-index drop balance end-to-end (a double-free would abort, a
+# move-out would corrupt the re-read length).
+run_accept_expect_status "vec_string_index" 13
+
+# Accept (security-review follow-on): DISCARDED Vec<string> scalar index in a
+# loop over HEAP strings. `xs[j];` retains a fresh owner via hew_vec_get_str
+# each iteration; the general owned-string temp substrate's DISCARD path balances
+# it with an inline per-iteration hew_string_drop. 4000 retained-then-dropped
+# owners, then the Vec is reused. Exit 9 = xs[0].len() + xs.len() (5 + 4). A
+# double-free would abort/segfault on the reuse; the structural no-leak
+# (drop-emitted) proof is the MIR canary
+# vec_string_discarded_scalar_index_in_loop_emits_one_drop_site.
+run_accept_expect_status "vec_string_index_discard_loop" 9
+
+# Accept (security-review follow-on): BOUND-and-used (`let y = xs[j]; y.len()`)
+# and NESTED (`xs[j].len()`) Vec<string> scalar index in a loop over HEAP
+# strings — the two shapes the re-review required the general owned-string temp
+# substrate to balance (BOUND via a scope-exit CowHeap drop, NESTED via an inline
+# drop). 8000 retained-then-released owners, then the Vec is reused. Exit 14 =
+# xs[0].len() + xs[3].len() + xs.len() (5 + 5 + 4). A double-free would trip the
+# runtime free_cstring header sentinel (abort) on the reuse; the structural
+# exactly-one-drop proofs are the MIR canaries index_bound_releases_exactly_once
+# and index_nested_in_loop_balances.
+run_accept_expect_status "vec_string_index_use_loop" 14
+
+# Accept (S0): scalar index control on Vec<i64> (BitCopy scalar element). Same
+# bounds-checked lower_vec_index path, dispatching to hew_vec_get_i64. Exit 22
+# = xs[1] + xs[2] - xs[0] (20 + 12 - 10).
+run_accept_expect_status "vec_i64_index" 22
+
+# Reject: scalar index on Vec<f32> is fail-closed — narrower scalars
+# (i8/u8/i16/u16/f32/isize/usize) have no hew_vec_get_T getter yet, so the HIR
+# element-type gate surfaces it as a compile-time diagnostic instead of a deep
+# MIR NotYetImplemented.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/vec_index_unsupported_elem.hew" \
+  "Vec<f32> scalar index (xs[i]) is not yet supported" \
+  "vec_index_unsupported_elem"
 
 # Accept (S1): Vec::<i64>::new() turbofish syntax with type annotation. Exit 0.
 run_accept_expect_status "vec_new_turbofish_type" 0

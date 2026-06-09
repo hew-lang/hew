@@ -3541,6 +3541,33 @@ fn emit_const_globals<'ctx>(
                 global.set_constant(true);
                 (global, ptr_ty.into())
             }
+            MirConstValue::Float(value) => {
+                let llvm_ty = resolve_ty(ctx, &c.ty, record_layouts)?;
+                let float_ty = match llvm_ty {
+                    BasicTypeEnum::FloatType(float_ty) => float_ty,
+                    other => {
+                        return Err(CodegenError::FailClosed(format!(
+                            "const `{}` float value requires float LLVM type, got {other:?}",
+                            c.name
+                        )));
+                    }
+                };
+                let global = llvm_mod.add_global(float_ty, None, &symbol);
+                let initial = match c.ty {
+                    ResolvedTy::F32 => float_ty.const_float(f64::from(*value as f32)),
+                    ResolvedTy::F64 => float_ty.const_float(*value),
+                    _ => {
+                        return Err(CodegenError::FailClosed(format!(
+                            "const `{}` float value requires f32 or f64 type, got `{}`",
+                            c.name, c.ty
+                        )));
+                    }
+                };
+                global.set_initializer(&initial);
+                global.set_linkage(Linkage::Private);
+                global.set_constant(true);
+                (global, float_ty.into())
+            }
         };
         if globals
             .insert(
@@ -36142,6 +36169,42 @@ mod tests {
         assert!(
             ir.contains("load ptr, ptr @__hew_const__ANSWER__0"),
             "string const reference must load the pointer global:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn const_float_global_emits_and_loads() {
+        let ctx = Context::create();
+        let pipeline =
+            pipeline_with_user_const_load(ItemId(11), ResolvedTy::F64, MirConstValue::Float(1.25));
+        let module =
+            build_module(&ctx, &pipeline, "const_f64_test").expect("const module must build");
+        let ir = module.print_to_string().to_string();
+        assert!(
+            ir.contains("@__hew_const__ANSWER__0 = private constant double"),
+            "f64 const global missing:\n{ir}"
+        );
+        assert!(
+            ir.contains("load double, ptr @__hew_const__ANSWER__0"),
+            "f64 const reference must load from the global:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn const_f32_global_emits_and_loads() {
+        let ctx = Context::create();
+        let pipeline =
+            pipeline_with_user_const_load(ItemId(12), ResolvedTy::F32, MirConstValue::Float(0.5));
+        let module =
+            build_module(&ctx, &pipeline, "const_f32_test").expect("const module must build");
+        let ir = module.print_to_string().to_string();
+        assert!(
+            ir.contains("@__hew_const__ANSWER__0 = private constant float"),
+            "f32 const global missing:\n{ir}"
+        );
+        assert!(
+            ir.contains("load float, ptr @__hew_const__ANSWER__0"),
+            "f32 const reference must load from the global:\n{ir}"
         );
     }
 

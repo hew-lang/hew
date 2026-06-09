@@ -18752,6 +18752,35 @@ fn elaborate(
         }
     }
 
+    // Local `HashMap` / `HashSet` handle scope-exit drop allow-set. A local
+    // collection handle earns its `hew_hashmap_free_layout` /
+    // `hew_hashset_free_layout` release UNLESS the fail-closed escape-scan proves
+    // it leaves this scope's sole ownership — most importantly a handle moved
+    // into an actor's initial state (`spawn A(f: m)`), whose `AliasedIntoAggregate`
+    // dataflow state would otherwise keep it Live at the exit and double-free
+    // against the actor's `state_drop_fn`. The escape-scan is the primary
+    // authority (it removes escapers from the LIFO before the per-exit Live
+    // filter runs); the dataflow `Consumed` / `MaybeConsumed` removal below is
+    // the same belt-and-suspenders net the owned-Vec / cow arms use for a handle
+    // moved out by a by-value consume. Both directions only ever over-EXCLUDE
+    // (leak), never re-admit — a handle the prover did not clear is never
+    // double-freed (`boundary-fail-closed`, `cleanup-all-exits`).
+    let mut local_collection_drop_allowed = derive_local_collection_drop_allowed(
+        &checked.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+    );
+    for states in dataflow_result.exit_states.values() {
+        for (binding, state) in states {
+            if matches!(
+                state,
+                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+            ) {
+                local_collection_drop_allowed.remove(binding);
+            }
+        }
+    }
+
     // Value-class capstone — owned-aggregate-record scope-exit drop allow-set.
     // A by-value owned record (RC-4 bytes field / RC-6 string field / G12
     // Vec/HashMap/HashSet field) earns the tag-aware `DropKind::RecordInPlace`
@@ -18830,6 +18859,7 @@ fn elaborate(
         &builder.enum_layouts,
         &enum_composite_drop_allowed,
         &owned_vec_drop_allowed,
+        &local_collection_drop_allowed,
         &tuple_composite_drop_allowed,
         &returned_aggregate_members,
         &consumed_local_aggregate_members,
@@ -21350,6 +21380,253 @@ fn derive_owned_record_drop_allowed(
     allowed
 }
 
+/// Fail-closed sole-owner derivation for **local `HashMap` / `HashSet`** handle
+/// bindings. Returns the subset of `owned_locals` whose collection handle is
+/// proven to still be solely owned by this scope at every exit, and therefore
+/// earns a `DropKind::CowHeap` scope-exit drop (`hew_hashmap_free_layout` /
+/// `hew_hashset_free_layout`).
+///
+/// WHY a dedicated escape-scan and not the existing authorities:
+///   - `derive_cow_sole_owner` excludes ANY binding read as a source operand.
+///     Every useful map op (`m.insert(..)`, `m.get(..)`) reads the handle as
+///     the call receiver (arg[0]), so that scan would exclude every non-trivial
+///     map and the leak would persist. It cannot be reused.
+///   - A dataflow-only gate (the `owned_vec_drop_allowed` shape) is unsafe here:
+///     a handle moved into an actor's initial state record (`spawn A(f: m)`
+///     lowers to `RecordInit` → `SpawnActor`) is `AliasedIntoAggregate`, which
+///     `enumerate_exits`/`drops_for_exit` treats as Live (the drop fires) — so a
+///     spawn-moved map would be freed here AND again by the actor's synthesised
+///     `state_drop_fn`: a double free. The escape-scan is essential because it
+///     removes the escaper from the LIFO entirely, before the per-exit Live
+///     filter ever sees it.
+///
+/// The structure mirrors `derive_owned_record_drop_allowed` but is simpler: a
+/// collection handle is a LEAF (a single pointer), so there is no owned-field
+/// binder pass and no interior `RecordFieldLoad` read to exempt. The one
+/// interior (non-escape) read is the call RECEIVER (arg[0]) of a
+/// receiver-borrowing collection op (`is_collection_receiver_borrow_callee`):
+/// those calls borrow the handle in place and never free it, so arg[0] is a
+/// transient read, not an ownership escape. Every other read — a `Move` to a
+/// non-member slot / `ReturnSlot`, a `RecordInit` / `SpawnActor` / closure-env
+/// capture, an actor `Send` / `Ask`, a return — is an escape and excludes the
+/// root. A handle the prover does not positively clear LEAKS (as before this
+/// fix); it never double-frees. The default for any binding the prover did not
+/// clear is exclusion, so an un-enumerated future alias/escape producer cannot
+/// re-open a double-free.
+///
+/// SUBSTRATE INVARIANT (why one unconditional free per cleared binding is sound
+/// — current M-COW spine). A collection handle is `ValueClass::CowValue` by
+/// type, but every *share* of the handle lowers as a MOVE, not a refcounted
+/// retain:
+///   - `let m2 = m;` lowers to a bare `Move { dest, src }` (pointer bitcopy, NO
+///     retain) and the move-checker CONSUMES the source — a later use of `m` is a
+///     hard `E_MIR_CHECK` "used after an owned value move";
+///   - pass-by-value / `spawn A(f: m)` byte-copies the handle bits into the
+///     callee / actor state (`deep_copy_state` is `ptr::copy_nonoverlapping`, a
+///     shallow memcpy, NOT a deep clone) and likewise consumes the source;
+///   - `hew_hashmap_free_layout` / `hew_hashset_free_layout` is an UNCONDITIONAL
+///     dealloc (`drop_in_place` + `dealloc`; set: inner-map free + `libc::free`),
+///     NOT a refcount decrement — the handle carries no refcount.
+///
+/// The M-COW spine emits NO retain on share (the invariant repeated through this
+/// file; `model.rs`: "Until the M-COW spine emits retain-on-share"). Net: at
+/// every program point EXACTLY ONE live binding owns a given allocation, so this
+/// scan frees that one owner once — or excludes it when ownership escaped — and
+/// never double-frees. The only would-be second owner, surface `.clone()`, is
+/// fail-closed at HIR until M-COW P2 (`hew-hir/src/lower.rs`).
+///
+/// REVISIT TRIGGER. When M-COW grows retain-on-share for collection handles, a
+/// share stops consuming its source and TWO live bindings can own one
+/// allocation. This allow-set, the alias-root exclusion below, and the
+/// unconditional `*_free_layout` in `drop_kind_for` must then change in lockstep
+/// with the sibling string / record / tuple drop paths (which encode the same
+/// move-only assumption): the free must become refcount-aware and each retained
+/// binding must release once. Until then refcounted COW is deliberately NOT
+/// implemented here, and assigned copies are deliberately NOT converted to
+/// no-drop (that would leak, never double-free).
+///
+/// LESSONS: `drop-allowset-from-value-flow`, `boundary-fail-closed`,
+/// `container-ingress-ownership-is-per-container`, `cleanup-all-exits`,
+/// `raii-null-after-move`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "three sequential single-purpose passes (candidate collection, \
+              whole-value alias propagation, escape scan) sharing fixpoint \
+              state, mirroring derive_owned_record_drop_allowed; splitting \
+              scatters the fail-closed ordering the escape scan depends on"
+)]
+fn derive_local_collection_drop_allowed(
+    blocks: &[BasicBlock],
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+) -> HashSet<BindingId> {
+    // Candidate collection locals: base locals of owned HashMap / HashSet
+    // handle bindings.
+    let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
+    for (binding, _name, ty) in owned_locals {
+        if !ty_is_local_collection_handle(ty) {
+            continue;
+        }
+        let Some(place) = binding_locals.get(binding) else {
+            continue;
+        };
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        candidate_local_to_binding.insert(local, *binding);
+    }
+    if candidate_local_to_binding.is_empty() {
+        return HashSet::new();
+    }
+
+    // Whole-value alias set: each candidate plus every local reachable through
+    // forward-propagated whole-value `Move { dest: Local, src: Local }` copies
+    // (a rebind `let m2 = m;` hands the same handle to a new slot). The
+    // constructor temp → binding-slot `Move` does NOT extend the set: its src is
+    // the constructor temp, which is not a candidate, so it never seeds a root.
+    let mut alias_of: HashMap<u32, u32> = HashMap::new();
+    for &local in candidate_local_to_binding.keys() {
+        alias_of.insert(local, local);
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if matches!(src, Place::Local(_) | Place::ReturnSlot)
+                            && matches!(dest, Place::Local(_))
+                        {
+                            if let Some(&root) = alias_of.get(&sl) {
+                                if alias_of.insert(dl, root) != Some(root) {
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let mut excluded_roots: HashSet<u32> = HashSet::new();
+    let note_escape = |local: u32, excluded: &mut HashSet<u32>| {
+        if let Some(&root) = alias_of.get(&local) {
+            excluded.insert(root);
+        }
+    };
+
+    for block in blocks {
+        for instr in &block.instructions {
+            // A `Move` discriminates a benign whole-value hand-off (dest is
+            // another alias member — already folded into the alias set) from a
+            // real escape (dest is a non-member local or the `ReturnSlot`, which
+            // is never an alias member).
+            if let Instr::Move { dest, src } = instr {
+                if let Some(sl) = base_local(*src) {
+                    let src_is_member = alias_of.contains_key(&sl)
+                        && matches!(src, Place::Local(_) | Place::ReturnSlot);
+                    let dest_is_member = base_local(*dest).is_some_and(|dl| {
+                        alias_of.contains_key(&dl) && matches!(dest, Place::Local(_))
+                    });
+                    if src_is_member && !dest_is_member {
+                        note_escape(sl, &mut excluded_roots);
+                    }
+                }
+                continue;
+            }
+            // A `Drop` of the handle is its own release path (the for-in /
+            // loop-scope / break-continue inline release already emitted into the
+            // finalized MIR), never an escape — exempt so the scope-exit drop is
+            // not double-counted against an inline release.
+            if matches!(instr, Instr::Drop { .. }) {
+                continue;
+            }
+            // Every other instruction reading an alias member is an owning-sink
+            // escape (stored into a record field, captured into a closure env,
+            // moved into an aggregate via `RecordInit` / `SpawnActor`, …).
+            // Fail-closed: a leaf handle has no benign interior instruction read.
+            for p in instr_source_places(instr) {
+                if let Some(l) = base_local(p) {
+                    if alias_of.contains_key(&l) && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                    {
+                        note_escape(l, &mut excluded_roots);
+                    }
+                }
+            }
+        }
+        // Terminator reads. A receiver-borrowing collection op
+        // (`hew_hashmap_insert_layout`, `hew_hashset_contains_layout`, …) reads
+        // the handle as arg[0] but only borrows it — that is an interior read,
+        // not an escape — so scan only arg[1..] (the by-value key / element
+        // operands, which genuinely flow elsewhere). Every other terminator
+        // (a different `Call`, an actor `Send` / `Ask`, a return moving the
+        // handle to the `ReturnSlot`, …) is scanned in full: a member read there
+        // is an escape.
+        match &block.terminator {
+            Terminator::Call { callee, args, .. }
+                if is_collection_receiver_borrow_callee(callee) =>
+            {
+                for p in args.iter().skip(1) {
+                    if let Some(l) = base_local(*p) {
+                        if alias_of.contains_key(&l)
+                            && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                        {
+                            note_escape(l, &mut excluded_roots);
+                        }
+                    }
+                }
+            }
+            other => {
+                for p in terminator_source_places(other) {
+                    if let Some(l) = base_local(p) {
+                        if alias_of.contains_key(&l)
+                            && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                        {
+                            note_escape(l, &mut excluded_roots);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut allowed = HashSet::new();
+    for (&local, &binding) in &candidate_local_to_binding {
+        // Resolve the candidate to its whole-value alias ROOT before testing
+        // exclusion. Escapes are recorded by ROOT (`note_escape` inserts
+        // `alias_of[local]`), so a candidate that is itself an alias member —
+        // `let b = a;` makes `b`'s root `a`, and `b` is never its own root — is
+        // NEVER in `excluded_roots` under its own local even when its root `a`
+        // escaped. Testing the candidate local directly would therefore admit
+        // `b` for a producer-side drop of a handle an aggregate / the caller
+        // already owns (`spawn A(f: a)` / `return a`): a double free. Resolving
+        // to the root excludes the WHOLE alias group when any member escapes
+        // (fail-closed). A candidate that is its own root resolves to itself, so
+        // the common non-aliased case is unchanged.
+        //
+        // CONSERVATIVE / belt-and-suspenders under the current move-only
+        // substrate (see SUBSTRATE INVARIANT above): a whole-value share consumes
+        // its source, so the moved-from member is already dropped as a candidate
+        // (dataflow `Consumed`) before this scan runs — front-end-lowered MIR
+        // cannot present two live aliased candidates, and this root-resolution
+        // therefore changes no real program's admit/exclude outcome. It is
+        // load-bearing only for a directly-constructed multi-candidate CFG (the
+        // `..._excludes_aliased_member_when_root_escapes` unit test) and as
+        // fail-closed defense should a future lowering admit an un-consumed alias
+        // member. It becomes semantically load-bearing the day retain-on-share
+        // lands (see REVISIT TRIGGER above).
+        let root = alias_of.get(&local).copied().unwrap_or(local);
+        if !excluded_roots.contains(&root) {
+            allowed.insert(binding);
+        }
+    }
+    allowed
+}
+
 /// W5.021 — fail-closed sole-owner derivation for owned-aggregate **tuple**
 /// bindings (the tuple/record-of-owned-handles drop spine). Returns the subset
 /// of `owned_locals` whose tuple binding still owns its heap members at scope
@@ -23034,6 +23311,54 @@ fn drop_kind_for(
                 drop_fn: "hew_gen_free",
             }
         }
+        // A local `HashMap<K, V>` / `HashSet<E>` owned binding holds a single
+        // `*mut HewLayoutHashMap` / `*mut HewLayoutHashSet` handle (shared
+        // `Place::Local` storage, discriminated by the builtin type — like the
+        // `string` and `Generator` arms above). Its sole release is the
+        // layout-keyed `hew_hashmap_free_layout` / `hew_hashset_free_layout`,
+        // which walks the live entries through the embedded layout descriptor
+        // (per-record key/value drop) then frees the backing storage. CowHeap is
+        // the self-describing load-pointer / call-symbol / null-store release the
+        // codegen drop arm already wires for both symbols (`cow_heap_release_
+        // symbol` / `is_known_cow_heap_drop_symbol` / `emit_cow_heap_drop`);
+        // null-after-free guards a double free (raii-null-after-move). This arm
+        // is the single source of truth the drop-plan validator re-derives
+        // against, so `build_lifo_drops` must emit the identical kind. Dispatch
+        // on the `builtin` discriminant (NOT the name string) so a user
+        // `type HashMap { ... }` is never mistaken for the runtime handle.
+        //
+        // The release is an UNCONDITIONAL dealloc (the handle carries no
+        // refcount); it is sound because the current M-COW spine is move-only —
+        // exactly one live binding owns each handle, enforced by the move-checker
+        // consuming the source on every share (see the SUBSTRATE INVARIANT /
+        // REVISIT TRIGGER on `derive_local_collection_drop_allowed`). When
+        // retain-on-share lands this free must become refcount-aware in lockstep.
+        Place::Local(_) | Place::ReturnSlot
+            if matches!(
+                ty,
+                ResolvedTy::Named {
+                    builtin: Some(BuiltinType::HashMap),
+                    ..
+                }
+            ) =>
+        {
+            DropKind::CowHeap {
+                drop_fn: "hew_hashmap_free_layout",
+            }
+        }
+        Place::Local(_) | Place::ReturnSlot
+            if matches!(
+                ty,
+                ResolvedTy::Named {
+                    builtin: Some(BuiltinType::HashSet),
+                    ..
+                }
+            ) =>
+        {
+            DropKind::CowHeap {
+                drop_fn: "hew_hashset_free_layout",
+            }
+        }
         // Machine tag and variant fields are sub-structure of a machine value,
         // not independent resources. Machine values are `BitCopy` by value
         // class overall; tag-dominant transition-out drops are a later machine
@@ -23240,6 +23565,7 @@ fn build_lifo_drops(
     enum_layouts: &[crate::model::EnumLayout],
     enum_composite_drop_allowed: &HashSet<BindingId>,
     owned_vec_drop_allowed: &HashSet<BindingId>,
+    local_collection_drop_allowed: &HashSet<BindingId>,
     tuple_composite_drop_allowed: &HashSet<BindingId>,
     returned_aggregate_members: &HashSet<BindingId>,
     consumed_local_aggregate_members: &HashSet<BindingId>,
@@ -23293,6 +23619,43 @@ fn build_lifo_drops(
                 kind: DropKind::CowHeap {
                     drop_fn: "hew_vec_free_owned",
                 },
+            });
+            continue;
+        }
+        // Local `HashMap<K, V>` / `HashSet<E>` handle. A collection is
+        // `ValueClass::CowValue`, but `cow_value_leaf_drop_symbol` only handles
+        // the leaf `string` case, so a local map/set would otherwise fall through
+        // to the no-op `CowValue` arm and LEAK its layout-keyed backing storage
+        // on every normal-return AND cancel/cooperate path (the bug this lane
+        // fixes). Intercept BEFORE the value-class match (mirroring the owned-Vec
+        // arm above) and emit the `DropKind::CowHeap` runtime release
+        // (`hew_hashmap_free_layout` / `hew_hashset_free_layout`, selected by the
+        // builtin discriminant in `drop_kind_for`) ONLY when the fail-closed
+        // sole-owner derivation proved the handle still solely owns its storage
+        // at scope exit (`local_collection_drop_allowed`). A handle moved into an
+        // actor's initial state (`spawn A(f: m)`) or otherwise escaped is
+        // excluded by the escape-scan, so the actor's synthesised `state_drop_fn`
+        // remains the sole owner of that free — no double-drop. A binding the
+        // prover did not clear leaks (as before this lane); it never double-frees.
+        // The local guard here only confirms the binding's type is a collection
+        // handle so the `*_free_layout` ABI is correct; route the kind through
+        // `drop_kind_for` (the single source of truth the drop-plan validator
+        // re-derives against) so the emitted kind cannot drift.
+        // LESSONS: cleanup-all-exits, raii-null-after-move, boundary-fail-closed,
+        // container-ingress-ownership-is-per-container.
+        if local_collection_drop_allowed.contains(binding) && ty_is_local_collection_handle(ty) {
+            let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                panic!(
+                    "build_lifo_drops invariant: local collection binding {binding:?} is in \
+                     owned_locals but missing from binding_locals; lowering must wire a \
+                     Place before the drop-elaboration pass observes the binding"
+                )
+            });
+            drops.push(ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: drop_kind_for(place, ty, None),
             });
             continue;
         }
@@ -23566,6 +23929,61 @@ fn ty_is_vec(ty: &ResolvedTy) -> bool {
             builtin: Some(hew_types::BuiltinType::Vec),
             ..
         }
+    )
+}
+
+/// True when `ty` is a builtin `HashMap<K, V>` / `HashSet<E>` handle. Dispatches
+/// on the `builtin` discriminant (NOT the name string) so a user
+/// `type HashMap { ... }` is never mistaken for the runtime collection handle.
+/// This is the ABI-shape confirmation that the `hew_hashmap_free_layout` /
+/// `hew_hashset_free_layout` release is the correct release for the binding's
+/// single owned handle; the sole-owner / no-escape decision is the separate
+/// fail-closed authority `derive_local_collection_drop_allowed`.
+fn ty_is_local_collection_handle(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::HashMap | BuiltinType::HashSet),
+            ..
+        }
+    )
+}
+
+/// True when `callee` is a `HashMap` / `HashSet` runtime operation that BORROWS
+/// its receiver (arg[0]) — i.e. reads / mutates the handle in place without
+/// freeing it. The receiver of such a call is a transient interior read, NOT an
+/// ownership escape, so `derive_local_collection_drop_allowed` skips arg[0] when
+/// scanning these calls (it still scans arg[1..], which carry by-value keys /
+/// elements that genuinely flow elsewhere).
+///
+/// This is an EXPLICIT allow-list, deliberately NOT a `hew_hashmap_` /
+/// `hew_hashset_` prefix test (LESSONS: `boundary-fail-closed`). The consuming
+/// release `hew_hashmap_free_layout` / `hew_hashset_free_layout` and the
+/// constructors `*_new_with_layout` (which write a fresh handle, never read an
+/// existing one as arg[0]) are intentionally absent: a future runtime op that
+/// consumes its receiver must be classified here deliberately. An op left out of
+/// this list is treated as a receiver ESCAPE, which over-excludes the binding
+/// from its scope-exit drop — a leak, never a double-free. Every entry below is
+/// confirmed against the runtime signature to take the handle by shared/mutable
+/// borrow (`*const` / `*mut`, never freed): `hew-runtime/src/hashmap.rs`,
+/// `hew-runtime/src/hashset.rs`.
+fn is_collection_receiver_borrow_callee(callee: &str) -> bool {
+    matches!(
+        callee,
+        "hew_hashmap_insert_layout"
+            | "hew_hashmap_get_layout"
+            | "hew_hashmap_remove_layout"
+            | "hew_hashmap_contains_key_layout"
+            | "hew_hashmap_len_layout"
+            | "hew_hashmap_keys_layout"
+            | "hew_hashmap_values_layout"
+            | "hew_hashmap_clone_layout"
+            | "hew_hashset_insert_layout"
+            | "hew_hashset_remove_layout"
+            | "hew_hashset_contains_layout"
+            | "hew_hashset_len_layout"
+            | "hew_hashset_is_empty_layout"
+            | "hew_hashset_clone_layout"
     )
 }
 
@@ -27076,6 +27494,139 @@ mod f1_suspending_escape_poison {
         assert!(
             !escaped.contains(&callee),
             "the borrowed closure pair must NOT be poisoned"
+        );
+    }
+
+    // ---------- derive_local_collection_drop_allowed: alias-root exclusion ----------
+
+    /// A `HashMap<i64, i64>` handle `ResolvedTy` for synthetic collection
+    /// candidates. The escape scan dispatches on the `HashMap` builtin
+    /// discriminant; the arg detail is immaterial.
+    fn hashmap_i64_i64_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "HashMap".to_string(),
+            args: vec![ResolvedTy::I64, ResolvedTy::I64],
+            builtin: Some(BuiltinType::HashMap),
+            is_opaque: false,
+        }
+    }
+
+    /// Regression for the alias-root admission bug: two collection candidates
+    /// where `b` is a whole-value alias of `a` (`alias_of[b] == a`) and `b`
+    /// escapes into an aggregate (`RecordInit` — the `spawn Holder(f: b)`
+    /// shape). `note_escape` records the escape under the ROOT `a`, so a final
+    /// admission that tested the candidate's own local (`excluded_roots
+    /// .contains(&b)`) would still admit `b` — a producer-side
+    /// `hew_hashmap_free_layout` of the very handle the aggregate now owns: a
+    /// double free. Resolving each candidate to its alias root before the
+    /// exclusion test excludes the whole alias group. The escape-scan is the
+    /// sole authority here (the dataflow `Consumed` net runs separately), so
+    /// this pins the function's own contract independent of what the front end
+    /// can currently lower.
+    #[test]
+    fn derive_local_collection_drop_allowed_excludes_aliased_member_when_root_escapes() {
+        let map_ty = hashmap_i64_i64_ty();
+        let binding_a = BindingId(101);
+        let binding_b = BindingId(102);
+
+        // Block: `b = a` (whole-value alias), then `b` is placed into a record
+        // (the aggregate-ingress escape), then return.
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(1),
+                },
+                Instr::RecordInit {
+                    ty: ResolvedTy::Named {
+                        name: "Holder".to_string(),
+                        args: vec![],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    fields: vec![(FieldOffset(0), Place::Local(2))],
+                    dest: Place::Local(3),
+                },
+            ],
+            terminator: Terminator::Return,
+        };
+
+        let owned_locals = vec![
+            (binding_a, "a".to_string(), map_ty.clone()),
+            (binding_b, "b".to_string(), map_ty.clone()),
+        ];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(binding_a, Place::Local(1)), (binding_b, Place::Local(2))]
+                .into_iter()
+                .collect();
+
+        let allowed =
+            derive_local_collection_drop_allowed(&[block], &owned_locals, &binding_locals);
+
+        assert!(
+            !allowed.contains(&binding_b),
+            "the aliased ESCAPER `b` must not earn a scope-exit free — the \
+             aggregate it was moved into owns the handle now; admitting it \
+             double-frees (this is the alias-root bug). allowed: {allowed:?}"
+        );
+        assert!(
+            !allowed.contains(&binding_a),
+            "the alias root `a` shares `b`'s handle and must also be excluded; \
+             allowed: {allowed:?}"
+        );
+        assert!(
+            allowed.is_empty(),
+            "no handle in an escaped alias group may be freed here; allowed: {allowed:?}"
+        );
+    }
+
+    /// Companion positive control: the same `b = a` whole-value alias with NO
+    /// escape keeps both candidates admitted. The alias-root resolution must
+    /// only EXCLUDE on a real escape — it must not over-exclude a live,
+    /// non-escaping alias group (which would silently reintroduce the leak the
+    /// lane fixes). The per-exit liveness filter downstream still drops only the
+    /// one live member; admitting both here is correct at this layer.
+    #[test]
+    fn derive_local_collection_drop_allowed_admits_non_escaping_alias_group() {
+        let map_ty = hashmap_i64_i64_ty();
+        let binding_a = BindingId(201);
+        let binding_b = BindingId(202);
+
+        // `b = a` then a receiver-borrowing op on `b` (interior read) and return:
+        // no owning-sink escape anywhere.
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::Move {
+                dest: Place::Local(2),
+                src: Place::Local(1),
+            }],
+            terminator: Terminator::Call {
+                callee: "hew_hashmap_len_layout".to_string(),
+                args: vec![Place::Local(2)],
+                dest: Some(Place::Local(3)),
+                next: 1,
+            },
+        };
+
+        let owned_locals = vec![
+            (binding_a, "a".to_string(), map_ty.clone()),
+            (binding_b, "b".to_string(), map_ty.clone()),
+        ];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(binding_a, Place::Local(1)), (binding_b, Place::Local(2))]
+                .into_iter()
+                .collect();
+
+        let allowed =
+            derive_local_collection_drop_allowed(&[block], &owned_locals, &binding_locals);
+
+        assert!(
+            allowed.contains(&binding_a) && allowed.contains(&binding_b),
+            "a non-escaping alias group must stay admitted (root resolution must \
+             not over-exclude); allowed: {allowed:?}"
         );
     }
 }

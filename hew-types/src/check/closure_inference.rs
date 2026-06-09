@@ -204,7 +204,6 @@ fn body_visit_expr(expr: &Expr, out: &mut LambdaBodyFacts) {
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::This
-        | Expr::Cooperate
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}
@@ -617,7 +616,6 @@ fn esc_visit_expr(
         Expr::Unary { operand, .. } => esc_visit_expr(&operand.0, name, in_fork, acc, false),
         Expr::Literal(_)
         | Expr::This
-        | Expr::Cooperate
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}

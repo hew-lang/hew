@@ -259,7 +259,6 @@ Primary        = Literal
                | JoinExpr                            (* join { ... } *)
                | Fork                                (* fork { ... } structured-concurrency block *)
                | ForkChild                          (* fork name = expr or fork expr — only inside a Fork block *)
-               | CooperateExpr
                | YieldExpr ;
 
 FieldInitList  = FieldInit { "," FieldInit } ","? ;
@@ -301,7 +300,7 @@ JoinExpr       = "join" ("{" | "(") Expr { "," Expr } ","? ("}" | ")") ;
    child-form `fork` is a `ForkOutsideForkBlock` error. *)
 Fork           = "fork" Block ;
 ForkChild      = "fork" ( Ident "=" )? Expr ;
-CooperateExpr  = "cooperate" ;
+(* "cooperate" is reserved for compiler-internal safepoints; it is not a source expression. *)
 YieldExpr      = "yield" Expr? ;
 
 (* Types *)

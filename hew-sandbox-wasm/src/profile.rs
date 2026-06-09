@@ -631,7 +631,6 @@ impl<'a> ProfileChecker<'a> {
             | Expr::ScopeDeadline { .. }
             | Expr::Timeout { .. }
             | Expr::Yield(_)
-            | Expr::Cooperate
             | Expr::MachineEmit { .. } => self.reject(
                 span.clone(),
                 "reserved_runtime_feature",

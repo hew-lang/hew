@@ -819,7 +819,6 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             }
             Expr::Literal(_)
             | Expr::This
-            | Expr::Cooperate
             | Expr::Yield(None)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)

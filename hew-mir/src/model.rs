@@ -3846,11 +3846,9 @@ pub struct FieldOffset(pub u32);
 ///
 /// - `LoopBackEdge`: cooperate call emitted in the back-edge block —
 ///   the block whose terminator is `Goto { target }` where `target` is
-///   an ancestor block in the CFG. Armed but dormant in v0.5 because the
-///   current MIR lowering only produces acyclic CFGs (loop lowering is
-///   deferred). The field is populated by the analysis when synthetic
-///   back-edge CFGs are constructed in tests and fires automatically once
-///   loop lowering lands.
+///   an ancestor block in the CFG. Active in v0.5 since `8d878b8e`:
+///   loop lowering constructs back-edge `Goto` terminators for `for`,
+///   `while`, and `loop` bodies, and `is_back_edge_goto` detects them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CooperateKind {
     /// Inject cooperate at function entry (prologue).

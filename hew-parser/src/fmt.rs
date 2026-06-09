@@ -2116,7 +2116,6 @@ impl<'a> Formatter<'a> {
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
-            | Expr::Cooperate
             | Expr::This
             | Expr::Yield(None) => true,
             Expr::Tuple(exprs) | Expr::Array(exprs) => exprs
@@ -2997,7 +2996,6 @@ impl<'a> Formatter<'a> {
                     self.format_expr(&val.0);
                 }
             }
-            Expr::Cooperate => self.write("cooperate"),
             Expr::This => self.write("this"),
             Expr::FieldAccess { object, field } => {
                 self.format_expr(&object.0);

@@ -2820,8 +2820,8 @@ end of §4.9.
 A child task MUST yield at:
 
 - `await` expressions — suspends until the awaited task or actor is ready.
-- `cooperate` — reduction budget exhaustion; compiler inserts `cooperate`
-  calls at loop headers and function call sites.
+- compiler-inserted `cooperate` safepoints — reduction budget exhaustion;
+  the compiler inserts checks at function entry and loop back-edges.
 - IO operations — cancellation is observed at the syscall boundary.
 
 Yield points are also where cooperative cancellation is delivered (§4.5).
@@ -2918,7 +2918,7 @@ own body; cancellation is event-driven from child outcomes.
 The following points are safepoints where cancellation is checked automatically:
 
 - `await` expressions
-- `cooperate` calls (compiler-inserted at loop headers and function calls)
+- compiler-inserted `cooperate` safepoints at function entry and loop back-edges
 - IO operations (file read/write, network operations)
 
 When cancellation fires at a safepoint, the runtime initiates **stack unwinding** with a `Cancelled` payload. All `defer` blocks and `Drop` implementations run during unwinding, ensuring deterministic resource cleanup.
@@ -3128,12 +3128,12 @@ actor DataProcessor {
 
 **Yielding to the scheduler:**
 
-For long-running computations, `cooperate` yields the actor to the runtime scheduler. The compiler inserts `cooperate` calls automatically at loop headers and function call sites based on a reduction budget (see §9.0):
+For long-running computations, compiler-inserted `cooperate` safepoints yield the actor to the runtime scheduler. The compiler inserts these checks automatically at function entry and loop back-edges based on a reduction budget (see §9.0). `cooperate` is not a source-level expression:
 
 ```hew
 fn heavy_computation() {
     for i in 0..1000000 {
-        // cooperate is compiler-inserted at loop header
+        // cooperate is compiler-inserted on the loop back-edge
         process(i);
     }
 }
@@ -4195,8 +4195,8 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 **Fairness guarantees (3-level preemption hierarchy):**
 
 1. **Message budget (256 msgs/activation):** Coarse scheduler preemption — after processing 256 messages, the actor yields to the scheduler so other actors can run.
-2. **Reduction budget (4000/dispatch):** The compiler inserts `cooperate` calls at loop headers and function call sites. Each operation decrements a reduction counter; when exhausted, the actor yields to the scheduler.
-3. **Cooperative task yield:** When the runtime's coroutine layer is engaged (see §4.3 "Substrate" — internal to `hew-runtime`, not a source-level distinction), `await` and `cooperate` trigger `coro_switch` to the next ready coroutine within the actor.
+2. **Reduction budget (4000/dispatch):** The compiler inserts `cooperate` safepoints at function entry and loop back-edges. Each operation decrements a reduction counter; when exhausted, the actor yields to the scheduler.
+3. **Cooperative task yield:** When the runtime's coroutine layer is engaged (see §4.3 "Substrate" — internal to `hew-runtime`, not a source-level distinction), `await` and compiler-inserted `cooperate` safepoints trigger `coro_switch` to the next ready coroutine within the actor.
 
 - Round-robin within priority levels
 - Starvation prevention through queue aging

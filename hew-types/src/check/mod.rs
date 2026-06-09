@@ -1211,7 +1211,6 @@ impl Checker {
             Expr::Literal(_)
             | Expr::Identifier(_)
             | Expr::This
-            | Expr::Cooperate
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}
@@ -1599,7 +1598,6 @@ fn collect_lambda_spans_in_expr(
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::This
-        | Expr::Cooperate
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}

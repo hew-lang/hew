@@ -4218,40 +4218,15 @@ fn builtin_result_constructor_composite_output_type_fallbacks_materialize() {
 }
 
 #[test]
-fn cooperate_call_output_type_is_unit() {
+fn explicit_cooperate_expression_is_parse_error() {
     let source = "fn main() { cooperate(); }";
     let result = hew_parser::parse(source);
     assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
+        result.errors.iter().any(|error| error.message.contains(
+            "'cooperate' is compiler-internal; explicit cooperate expressions are not supported"
+        )),
+        "expected explicit cooperate parse rejection, got: {:?}",
         result.errors
-    );
-
-    let main_fn = result
-        .program
-        .items
-        .iter()
-        .find_map(|(item, _)| match item {
-            Item::Function(function) if function.name == "main" => Some(function),
-            _ => None,
-        })
-        .expect("main function should exist");
-    let Stmt::Expression((Expr::Call { .. }, call_span)) = &main_fn.body.stmts[0].0 else {
-        panic!("expected cooperate call statement");
-    };
-
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    assert!(
-        output.errors.is_empty(),
-        "unexpected errors: {:?}",
-        output.errors
-    );
-    assert_eq!(
-        output.expr_types.get(&SpanKey::from(call_span)),
-        Some(&Ty::Unit),
-        "expected `cooperate()` to remain unit-typed for serialization: {:?}",
-        output.expr_types
     );
 }
 

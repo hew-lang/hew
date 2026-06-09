@@ -6938,8 +6938,11 @@ impl<'src> Parser<'src> {
                 Expr::Yield(value)
             }
             Token::Cooperate => {
-                self.advance();
-                Expr::Cooperate
+                self.error(
+                    "'cooperate' is compiler-internal; explicit cooperate expressions are not supported"
+                        .to_string(),
+                );
+                return None;
             }
             Token::This => {
                 self.advance();

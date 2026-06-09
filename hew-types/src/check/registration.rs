@@ -2621,7 +2621,6 @@ impl Checker {
             Expr::Literal(_)
             | Expr::Identifier(_)
             | Expr::Yield(None)
-            | Expr::Cooperate
             | Expr::This
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)

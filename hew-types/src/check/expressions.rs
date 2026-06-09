@@ -486,9 +486,6 @@ impl Checker {
             // Yield
             Expr::Yield(value) => self.synthesize_yield(value.as_deref(), span),
 
-            // Cooperate
-            Expr::Cooperate => Ty::Unit,
-
             // Actor self-reference handle — returns LocalPid<Self>, not the actor type itself
             Expr::This => {
                 if let Some(actor_ty) = &self.current_actor_type {
@@ -3933,7 +3930,6 @@ impl Checker {
             | Expr::Timeout { .. }
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
-            | Expr::Cooperate
             | Expr::This
             | Expr::FieldAccess { .. }
             | Expr::Index { .. }

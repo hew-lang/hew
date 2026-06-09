@@ -1474,8 +1474,15 @@ fn fmt_scope_block_roundtrip() {
 }
 
 #[test]
-fn fmt_cooperate_roundtrip() {
-    exact_roundtrip("fn main() {\n    cooperate;\n}\n");
+fn parse_rejects_explicit_cooperate_expression() {
+    let result = parse("fn main() {\n    cooperate;\n}\n");
+    assert!(
+        result.errors.iter().any(|error| error.message.contains(
+            "'cooperate' is compiler-internal; explicit cooperate expressions are not supported"
+        )),
+        "expected explicit cooperate parse rejection, got: {:?}",
+        result.errors
+    );
 }
 
 #[test]

@@ -11,6 +11,7 @@ pub mod dyn_vtable_registry;
 pub mod gen_state;
 pub mod lower;
 pub mod model;
+pub mod runtime_call;
 pub mod runtime_symbols;
 pub mod state_clone;
 

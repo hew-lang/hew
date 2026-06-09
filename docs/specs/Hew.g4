@@ -28,7 +28,7 @@ grammar Hew;
 //  meaningful in specific syntactic positions and are not reserved.
 //
 //  Hard keywords (NOT valid as identifiers — omitted from this rule):
-//    receive, default
+//    receive, default, cooperate
 // ----------------------------------------------------------------
 
 ident
@@ -704,7 +704,6 @@ primary
     | selectExpr
     | joinExpr
     | forkExpr                              // fork { ... } block or fork [name '='] expr child
-    | cooperateExpr
     | yieldExpr
     ;
 
@@ -834,9 +833,8 @@ forkChild
     | 'fork' expr                           // bare child:    fork expr
     ;
 
-cooperateExpr
-    : 'cooperate'
-    ;
+// `cooperate` is a reserved compiler-internal safepoint token. It is injected
+// by the compiler and is not a source-level expression.
 
 yieldExpr
     : 'yield' expr?                             // yield with optional value
@@ -1038,6 +1036,10 @@ fragment ESC_SEQ
 // ----------------------------------------------------------------
 //  Identifiers  (must come after all keyword-like tokens)
 // ----------------------------------------------------------------
+
+COOPERATE
+    : 'cooperate'
+    ;
 
 IDENT
     : [a-zA-Z_] [a-zA-Z0-9_]*

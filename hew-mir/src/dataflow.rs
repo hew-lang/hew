@@ -1209,11 +1209,12 @@ fn is_yield_equivalent(block: &BasicBlock) -> bool {
 /// the caller checks its eligibility predicate and skips the call if
 /// ineligible. This keeps the analysis pure and testable in isolation.
 ///
-/// ## Acyclicity note (v0.5)
+/// ## Loop back-edges (v0.5)
 ///
-/// The v0.5 MIR lowering never constructs back-edges (loops are deferred).
-/// `LoopBackEdge` sites only appear for hand-built synthetic CFGs in tests.
-/// The code is armed and correct; it fires once the loop-lowering lane lands.
+/// Loop lowering has constructed production back-edges since `8d878b8e`.
+/// `LoopBackEdge` sites are live for `for`, `while`, and `loop` bodies:
+/// a back-edge `Goto` is detected by `is_back_edge_goto` and receives a
+/// cooperate check before control returns to the loop header.
 #[must_use]
 pub fn compute_cooperate_sites(blocks: &[BasicBlock]) -> Vec<CooperateSite> {
     if blocks.is_empty() || is_leaf_function(blocks) {

@@ -1,7 +1,8 @@
 //! Go-style text/template rendering.
 //!
-//! Render a template string against a `Ctx` value.  Directives inside
-//! `{{...}}` are substituted; all other text passes through verbatim.
+//! Parse a template string with `parse` / `try_parse`, then render the compiled
+//! `Template` against a `Ctx` value. Directives inside `{{...}}` are
+//! substituted; all other text passes through verbatim.
 //!
 //! # Supported directives
 //!
@@ -12,6 +13,20 @@
 //! | `{{if .key}}...{{end}}`               | Render body only when `key` is non-empty/non-zero    |
 //! | `{{if .key}}...{{else}}...{{end}}`    | Conditional with else branch                         |
 //! | `{{range .key}}...{{end}}`            | Iterate a list; inside the body `.` is the item      |
+//!
+//! # Errors
+//!
+//! `try_parse` and `render_try` return `TemplateError`:
+//! `UnclosedDirective`, `UnclosedBlock`, `UnexpectedTag`, `DotOutsideRange`,
+//! or `UnknownDirective`. `parse` and `render_template` panic with the same
+//! human-readable message.
+//!
+//! # Method-style rendering
+//!
+//! Method calls such as `t.render(ctx)` and `t.render_try(ctx)` are deferred
+//! pending cross-module trait-method dispatch support for imported stdlib user
+//! records. Use `template.render_template(t, ctx)` or
+//! `template.render_try(t, ctx)` instead.
 //!
 //! # Data model
 //!
@@ -50,7 +65,8 @@
 //!     items.push("green");
 //!     template.ctx_set_list(ctx, "colours", items);
 //!
-//!     let result = template.render("Hello {{.name}}, age {{.age}}!", ctx);
+//!     let t = template.parse("Hello {{.name}}, age {{.age}}!");
+//!     let result = template.render_try(t, ctx);
 //!     match result {
 //!         Ok(s) => println(s),
 //!         Err(e) => println(e),
@@ -96,6 +112,30 @@ pub type Ctx {
 pub type RenderPair {
     text: string;
     next_pos: i64;
+}
+
+/// Opaque compiled template.
+pub type Template {
+    src: string;
+}
+
+/// Structured template parse/render errors.
+pub enum TemplateError {
+    UnclosedDirective(string);
+    UnclosedBlock(string);
+    UnexpectedTag(string);
+    DotOutsideRange(string);
+    UnknownDirective(string);
+}
+
+fn template_error_message(e: TemplateError) -> string {
+    match e {
+        TemplateError::UnclosedDirective(message) => message,
+        TemplateError::UnclosedBlock(message) => message,
+        TemplateError::UnexpectedTag(message) => message,
+        TemplateError::DotOutsideRange(message) => message,
+        TemplateError::UnknownDirective(message) => message,
+    }
 }
 
 // ── Internal context helpers ──────────────────────────────────────────
@@ -178,7 +218,7 @@ fn range_key(tag: string) -> string {
 // Scans forward from `start` to the matching `{{end}}`, respecting nesting
 // depth.  Splits at an optional `{{else}}`.  Returns (rendered branch, pos
 // right after `{{end}}`).
-fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: string, in_range: bool, cond: bool) -> Result<RenderPair, string> {
+fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: string, in_range: bool, cond: bool) -> Result<RenderPair, TemplateError> {
     var pos = start;
     var depth = 0;
     var true_end = -1; // byte offset of the end of the "true" branch (exclusive)
@@ -188,13 +228,13 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
         let rest = tmpl.slice(pos, tlen);
         let open = rest.find("{{");
         if open < 0 {
-            return Err("template: unclosed `{{if}}` — missing `{{end}}`");
+            return Err(TemplateError::UnclosedBlock("template: unclosed `{{if}}` — missing `{{end}}`"));
         }
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
         let close = after_open.find("}}");
         if close < 0 {
-            return Err("template: unclosed `{{` inside `{{if}}` body");
+            return Err(TemplateError::UnclosedDirective("template: unclosed `{{` inside `{{if}}` body"));
         }
         let tag = tmpl.slice(tag_start, tag_start + close).trim();
         let next_pos = tag_start + close + 2;
@@ -223,7 +263,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
         }
     }
     if end_pos < 0 {
-        return Err("template: unclosed `{{if}}` — missing `{{end}}`");
+        return Err(TemplateError::UnclosedBlock("template: unclosed `{{if}}` — missing `{{end}}`"));
     }
     if cond {
         let branch = tmpl.slice(start, true_end);
@@ -256,7 +296,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
 //
 // Scans forward from `start` to the matching `{{end}}`.  Renders the body
 // once per item in the list bound to `key`, binding `{{.}}` each time.
-fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string) -> Result<RenderPair, string> {
+fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string) -> Result<RenderPair, TemplateError> {
     var pos = start;
     var depth = 0;
     var body_end = -1;
@@ -265,13 +305,13 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
         let rest = tmpl.slice(pos, tlen);
         let open = rest.find("{{");
         if open < 0 {
-            return Err("template: unclosed `{{range}}` — missing `{{end}}`");
+            return Err(TemplateError::UnclosedBlock("template: unclosed `{{range}}` — missing `{{end}}`"));
         }
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
         let close = after_open.find("}}");
         if close < 0 {
-            return Err("template: unclosed `{{` inside `{{range}}` body");
+            return Err(TemplateError::UnclosedDirective("template: unclosed `{{` inside `{{range}}` body"));
         }
         let tag = tmpl.slice(tag_start, tag_start + close).trim();
         let next_pos = tag_start + close + 2;
@@ -292,7 +332,7 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
         }
     }
     if end_pos < 0 {
-        return Err("template: unclosed `{{range}}` — missing `{{end}}`");
+        return Err(TemplateError::UnclosedBlock("template: unclosed `{{range}}` — missing `{{end}}`"));
     }
     let body = tmpl.slice(start, body_end);
     let list_start = lookup_list_start(ctx, key);
@@ -318,7 +358,7 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
 }
 
 // ── Core rendering pass ───────────────────────────────────────────────
-fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) -> Result<string, string> {
+fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) -> Result<string, TemplateError> {
     var out = "";
     var pos = 0;
     let tlen = tmpl.len();
@@ -335,13 +375,13 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
         let after_open = tmpl.slice(tag_start, tlen);
         let close = after_open.find("}}");
         if close < 0 {
-            return Err("template: unclosed `{{` directive");
+            return Err(TemplateError::UnclosedDirective("template: unclosed `{{` directive"));
         }
         let tag = tmpl.slice(tag_start, tag_start + close).trim();
         pos = tag_start + close + 2;
         if tag == "." {
             if !in_range {
-                return Err("template: `{{.}}` used outside `{{range}}`");
+                return Err(TemplateError::DotOutsideRange("template: `{{.}}` used outside `{{range}}`"));
             }
             out = out + range_elem;
         } else if tag_is_dot_key(tag) {
@@ -373,25 +413,120 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
                 },
             }
         } else if tag == "end" {
-            return Err("template: unexpected `{{end}}`");
+            return Err(TemplateError::UnexpectedTag("template: unexpected `{{end}}`"));
         } else if tag == "else" {
-            return Err("template: unexpected `{{else}}`");
+            return Err(TemplateError::UnexpectedTag("template: unexpected `{{else}}`"));
         } else {
-            return Err(f"template: unknown directive `{{
-                {
-                    {
-                        {
-                            tag
-                        }
-                    }
-                }
-            }}`");
+            return Err(TemplateError::UnknownDirective("template: unknown directive `{{" + tag + "}}`"));
         }
     }
     Ok(out)
 }
 
+fn unclosed_block_error(block: string) -> TemplateError {
+    if block == "if" {
+        TemplateError::UnclosedBlock("template: unclosed `{{if}}` — missing `{{end}}`")
+    } else {
+        TemplateError::UnclosedBlock("template: unclosed `{{range}}` — missing `{{end}}`")
+    }
+}
+
+fn validate(tmpl: string) -> Result<i64, TemplateError> {
+    let stack: Vec<string> = Vec::new();
+    var range_depth = 0;
+    var pos = 0;
+    let tlen = tmpl.len();
+    while pos < tlen {
+        let rest = tmpl.slice(pos, tlen);
+        let open = rest.find("{{");
+        if open < 0 {
+            if stack.len() > 0 {
+                let top = stack.get(stack.len() - 1);
+                return Err(unclosed_block_error(top));
+            }
+            return Ok(0);
+        }
+        let tag_start = pos + open + 2;
+        let after_open = tmpl.slice(tag_start, tlen);
+        let close = after_open.find("}}");
+        if close < 0 {
+            return Err(TemplateError::UnclosedDirective("template: unclosed `{{` directive"));
+        }
+        let tag = tmpl.slice(tag_start, tag_start + close).trim();
+        pos = tag_start + close + 2;
+        if tag == "." {
+            if range_depth <= 0 {
+                return Err(TemplateError::DotOutsideRange("template: `{{.}}` used outside `{{range}}`"));
+            }
+        } else if tag_is_dot_key(tag) {} else if tag_is_if(tag) {
+            stack.push("if");
+        } else if tag_is_range(tag) {
+            stack.push("range");
+            range_depth = range_depth + 1;
+        } else if tag == "else" {
+            if stack.len() == 0 {
+                return Err(TemplateError::UnexpectedTag("template: unexpected `{{else}}`"));
+            }
+            let top = stack.get(stack.len() - 1);
+            if top != "if" {
+                return Err(TemplateError::UnexpectedTag("template: unexpected `{{else}}`"));
+            }
+        } else if tag == "end" {
+            if stack.len() == 0 {
+                return Err(TemplateError::UnexpectedTag("template: unexpected `{{end}}`"));
+            }
+            let top = stack.pop();
+            if top == "range" {
+                range_depth = range_depth - 1;
+            }
+        } else {
+            return Err(TemplateError::UnknownDirective("template: unknown directive `{{" + tag + "}}`"));
+        }
+    }
+    if stack.len() > 0 {
+        let top = stack.get(stack.len() - 1);
+        Err(unclosed_block_error(top))
+    } else {
+        Ok(0)
+    }
+}
+
 // ── Public API ────────────────────────────────────────────────────────
+/// Parse and validate a template string.
+pub fn try_parse(src: string) -> Result<Template, TemplateError> {
+    match validate(src) {
+        Ok(_) => Ok(Template { src: src }),
+        Err(err) => Err(err),
+    }
+}
+
+/// Parse and validate a template string, panicking if it is malformed.
+pub fn parse(src: string) -> Template {
+    match try_parse(src) {
+        Ok(t) => t,
+        Err(err) => {
+            panic(template_error_message(err));
+            Template { src: "" }
+        },
+    }
+}
+
+/// Render a compiled template, returning a structured error on failure.
+pub fn render_try(t: Template, ctx: Ctx) -> Result<string, TemplateError> {
+    render_segment(t.src, ctx, "", false)
+}
+
+/// Render a compiled template, panicking if the template is malformed.
+pub fn render_template(t: Template, ctx: Ctx) -> string {
+    match render_segment(t.src, ctx, "", false) {
+        Ok(s) => s,
+        Err(err) => {
+            panic(template_error_message(err));
+            ""
+        },
+    }
+}
+
 /// Create an empty rendering context.
 ///
 /// # Examples
@@ -473,6 +608,7 @@ pub fn ctx_set_list(ctx: Ctx, key: string, items: Vec<string>) {
     }
 }
 
+// DEPRECATED: use `parse` + `render_try` for the typed compiled-template API.
 /// Render `tmpl` against `ctx`, returning the substituted string on success.
 ///
 /// Returns `Err(message)` if the template is malformed (unclosed `{{`,
@@ -486,13 +622,22 @@ pub fn ctx_set_list(ctx: Ctx, key: string, items: Vec<string>) {
 /// fn main() {
 ///     let ctx = template.new_ctx();
 ///     template.ctx_set_str(ctx, "who", "world");
-///     let r = template.render("hello {{.who}}!", ctx);
+///     let t = template.parse("hello {{.who}}!");
+///     let r = template.render_try(t, ctx);
 ///     match r {
 ///         Ok(s) => println(s),    // "hello world!"
-///         Err(e) => println(e),
+///         Err(_) => println("template error"),
 ///     }
 /// }
 /// ```
 pub fn render(tmpl: string, ctx: Ctx) -> Result<string, string> {
-    render_segment(tmpl, ctx, "", false)
+    match try_parse(tmpl) {
+        Ok(t) => {
+            match render_segment(t.src, ctx, "", false) {
+                Ok(s) => Ok(s),
+                Err(err) => Err(template_error_message(err)),
+            }
+        },
+        Err(err) => Err(template_error_message(err)),
+    }
 }

@@ -9,7 +9,10 @@
 #[cfg(test)]
 extern crate hew_runtime;
 
-use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use hew_cabi::{
+    cabi::{cstr_to_str, str_to_malloc},
+    vec::{hew_vec_new_str, hew_vec_push_str, HewVec},
+};
 use std::ffi::c_char;
 
 /// Opaque handle wrapping a compiled [`regex::Regex`].
@@ -87,6 +90,229 @@ pub unsafe extern "C" fn hew_regex_find(re: *const HewRegex, text: *const c_char
         Some(m) => str_to_malloc(m.as_str()),
         None => std::ptr::null_mut(),
     }
+}
+
+unsafe fn new_string_vec() -> *mut HewVec {
+    // SAFETY: runtime allocates a new Vec<string> handle owned by the caller.
+    unsafe { hew_vec_new_str() }
+}
+
+unsafe fn push_string(vec: *mut HewVec, value: &str) {
+    let cstr = str_to_malloc(value);
+    if cstr.is_null() {
+        return;
+    }
+    // SAFETY: `vec` is a live Vec<string> and `cstr` is a valid NUL-terminated string.
+    unsafe { hew_vec_push_str(vec, cstr) };
+    // SAFETY: `hew_vec_push_str` copies string contents into the vector.
+    unsafe { hew_cabi::cabi::free_cstring(cstr) };
+}
+
+unsafe fn push_optional_capture(vec: *mut HewVec, capture: Option<regex::Match<'_>>) {
+    // SAFETY: `vec` is a live Vec<string>; missing optional captures use Go-style "".
+    unsafe { push_string(vec, capture.map_or("", |m| m.as_str())) };
+}
+
+/// Find every non-overlapping match of the compiled regex in `text`.
+///
+/// Returns a newly allocated `Vec<string>` containing all matches. The caller
+/// owns the vector. Returns an empty vector for no matches, or null on invalid
+/// input.
+///
+/// # Safety
+///
+/// - `re` must be a valid pointer returned by [`hew_regex_new`].
+/// - `text` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_regex_find_all(
+    re: *const HewRegex,
+    text: *const c_char,
+) -> *mut HewVec {
+    if re.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: re is a valid HewRegex pointer per caller contract.
+    let regex = unsafe { &*re };
+    // SAFETY: text is a valid NUL-terminated C string per caller contract.
+    let Some(text_str) = (unsafe { cstr_to_str(text) }) else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: allocates a new Vec<string> owned by the caller.
+    let out = unsafe { new_string_vec() };
+    for m in regex.inner.find_iter(text_str) {
+        // SAFETY: `out` is a live Vec<string>.
+        unsafe { push_string(out, m.as_str()) };
+    }
+    out
+}
+
+/// Return one indexed capture from the first match.
+///
+/// Group 0 is the whole match. The returned `Vec<string>` has one element when
+/// the requested capture is present, otherwise zero elements. This preserves
+/// `Option<string>` semantics for empty-string captures.
+///
+/// # Safety
+///
+/// - `re` must be a valid pointer returned by [`hew_regex_new`].
+/// - `text` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_regex_capture_index_one(
+    re: *const HewRegex,
+    text: *const c_char,
+    group: i64,
+) -> *mut HewVec {
+    // SAFETY: allocates a new Vec<string> owned by the caller.
+    let out = unsafe { new_string_vec() };
+    if re.is_null() {
+        return out;
+    }
+    let Ok(idx) = usize::try_from(group) else {
+        return out;
+    };
+    // SAFETY: re is a valid HewRegex pointer per caller contract.
+    let regex = unsafe { &*re };
+    // SAFETY: text is a valid NUL-terminated C string per caller contract.
+    let Some(text_str) = (unsafe { cstr_to_str(text) }) else {
+        return out;
+    };
+    let Some(caps) = regex.inner.captures(text_str) else {
+        return out;
+    };
+    if let Some(m) = caps.get(idx) {
+        // SAFETY: `out` is a live Vec<string>.
+        unsafe { push_string(out, m.as_str()) };
+    }
+    out
+}
+
+/// Return one named capture from the first match.
+///
+/// The returned `Vec<string>` has one element when the requested capture is
+/// present, otherwise zero elements.
+///
+/// # Safety
+///
+/// - `re` must be a valid pointer returned by [`hew_regex_new`].
+/// - `text` and `name` must be valid NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn hew_regex_capture_name_one(
+    re: *const HewRegex,
+    text: *const c_char,
+    name: *const c_char,
+) -> *mut HewVec {
+    // SAFETY: allocates a new Vec<string> owned by the caller.
+    let out = unsafe { new_string_vec() };
+    if re.is_null() {
+        return out;
+    }
+    // SAFETY: re is a valid HewRegex pointer per caller contract.
+    let regex = unsafe { &*re };
+    // SAFETY: text is a valid NUL-terminated C string per caller contract.
+    let Some(text_str) = (unsafe { cstr_to_str(text) }) else {
+        return out;
+    };
+    // SAFETY: name is a valid NUL-terminated C string per caller contract.
+    let Some(name_str) = (unsafe { cstr_to_str(name) }) else {
+        return out;
+    };
+    let Some(caps) = regex.inner.captures(text_str) else {
+        return out;
+    };
+    if let Some(m) = caps.name(name_str) {
+        // SAFETY: `out` is a live Vec<string>.
+        unsafe { push_string(out, m.as_str()) };
+    }
+    out
+}
+
+/// Return first-match submatches in row-major flat form.
+///
+/// The returned vector contains group 0 followed by capture groups. Missing
+/// optional groups are represented as an empty string. No match returns an empty
+/// vector.
+///
+/// # Safety
+///
+/// - `re` must be a valid pointer returned by [`hew_regex_new`].
+/// - `text` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_regex_captures_flat(
+    re: *const HewRegex,
+    text: *const c_char,
+) -> *mut HewVec {
+    // SAFETY: allocates a new Vec<string> owned by the caller.
+    let out = unsafe { new_string_vec() };
+    if re.is_null() {
+        return out;
+    }
+    // SAFETY: re is a valid HewRegex pointer per caller contract.
+    let regex = unsafe { &*re };
+    // SAFETY: text is a valid NUL-terminated C string per caller contract.
+    let Some(text_str) = (unsafe { cstr_to_str(text) }) else {
+        return out;
+    };
+    let Some(caps) = regex.inner.captures(text_str) else {
+        return out;
+    };
+    for idx in 0..caps.len() {
+        // SAFETY: `out` is a live Vec<string>.
+        unsafe { push_optional_capture(out, caps.get(idx)) };
+    }
+    out
+}
+
+/// Return all matches' submatches in row-major flat form.
+///
+/// Each row has [`hew_regex_capture_width`] entries: group 0 followed by capture
+/// groups. Missing optional groups are represented as an empty string.
+///
+/// # Safety
+///
+/// - `re` must be a valid pointer returned by [`hew_regex_new`].
+/// - `text` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_regex_find_all_submatch_flat(
+    re: *const HewRegex,
+    text: *const c_char,
+) -> *mut HewVec {
+    // SAFETY: allocates a new Vec<string> owned by the caller.
+    let out = unsafe { new_string_vec() };
+    if re.is_null() {
+        return out;
+    }
+    // SAFETY: re is a valid HewRegex pointer per caller contract.
+    let regex = unsafe { &*re };
+    // SAFETY: text is a valid NUL-terminated C string per caller contract.
+    let Some(text_str) = (unsafe { cstr_to_str(text) }) else {
+        return out;
+    };
+    for caps in regex.inner.captures_iter(text_str) {
+        for idx in 0..caps.len() {
+            // SAFETY: `out` is a live Vec<string>.
+            unsafe { push_optional_capture(out, caps.get(idx)) };
+        }
+    }
+    out
+}
+
+/// Return the number of submatch groups per match row, including group 0.
+///
+/// # Safety
+///
+/// `re` must be a valid pointer returned by [`hew_regex_new`].
+#[no_mangle]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "regex capture count fits in i64 for Hew programs"
+)]
+pub unsafe extern "C" fn hew_regex_capture_width(re: *const HewRegex) -> i64 {
+    if re.is_null() {
+        return 0;
+    }
+    // SAFETY: re is a valid HewRegex pointer per caller contract.
+    let regex = unsafe { &*re };
+    regex.inner.captures_len() as i64
 }
 
 /// Replace all matches of the compiled regex in `text` with `replacement`.
@@ -326,7 +552,24 @@ pub unsafe extern "C" fn hew_regex_free(re: *mut HewRegex) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hew_cabi::vec::{hew_vec_free, hew_vec_get_str, hew_vec_len};
     use std::ffi::{CStr, CString};
+
+    unsafe fn vec_to_strings(vec: *mut HewVec) -> Vec<String> {
+        assert!(!vec.is_null());
+        // SAFETY: vec is a valid HewVec returned by the regex FFI under test.
+        let len = unsafe { hew_vec_len(vec) };
+        let mut out = Vec::new();
+        for i in 0..len {
+            // SAFETY: i is in bounds for vec.
+            let ptr = unsafe { hew_vec_get_str(vec, i) };
+            assert!(!ptr.is_null());
+            // SAFETY: hew_vec_get_str returns a valid borrowed C string pointer.
+            let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+            out.push(s);
+        }
+        out
+    }
 
     #[test]
     fn test_regex_is_match() {
@@ -368,6 +611,147 @@ mod tests {
         // SAFETY: re and text pointers are valid.
         let no_match = unsafe { hew_regex_find(re, text_no.as_ptr()) };
         assert!(no_match.is_null());
+
+        // SAFETY: re was returned by hew_regex_new.
+        unsafe { hew_regex_free(re) };
+    }
+
+    #[test]
+    fn find_all_returns_all_non_overlapping_matches() {
+        let pattern = CString::new(r"[a-z]+").unwrap();
+        // SAFETY: pattern is a valid NUL-terminated C string.
+        let re = unsafe { hew_regex_new(pattern.as_ptr()) };
+        assert!(!re.is_null());
+
+        let text = CString::new("12ab34cd").unwrap();
+        // SAFETY: re and text pointers are valid.
+        let matches = unsafe { hew_regex_find_all(re, text.as_ptr()) };
+        // SAFETY: matches is a valid Vec<string> returned by hew_regex_find_all.
+        assert_eq!(unsafe { vec_to_strings(matches) }, ["ab", "cd"]);
+        // SAFETY: matches was allocated by hew_vec_new_str.
+        unsafe { hew_vec_free(matches) };
+
+        let text_no = CString::new("1234").unwrap();
+        // SAFETY: re and text pointers are valid.
+        let empty = unsafe { hew_regex_find_all(re, text_no.as_ptr()) };
+        // SAFETY: empty is a valid Vec<string> returned by hew_regex_find_all.
+        assert_eq!(unsafe { hew_vec_len(empty) }, 0);
+        // SAFETY: empty was allocated by hew_vec_new_str.
+        unsafe { hew_vec_free(empty) };
+
+        // SAFETY: re was returned by hew_regex_new.
+        unsafe { hew_regex_free(re) };
+    }
+
+    #[test]
+    fn capture_index_one_preserves_empty_capture_and_absence() {
+        let pattern = CString::new(r"([a-z]*)([0-9]+)").unwrap();
+        // SAFETY: pattern is a valid NUL-terminated C string.
+        let re = unsafe { hew_regex_new(pattern.as_ptr()) };
+        assert!(!re.is_null());
+
+        let text = CString::new("123").unwrap();
+        // SAFETY: re and text pointers are valid; group 0 is the whole match.
+        let whole = unsafe { hew_regex_capture_index_one(re, text.as_ptr(), 0) };
+        // SAFETY: whole is a valid Vec<string> returned by the regex FFI.
+        assert_eq!(unsafe { vec_to_strings(whole) }, ["123"]);
+        // SAFETY: whole was allocated by hew_vec_new_str.
+        unsafe { hew_vec_free(whole) };
+
+        // SAFETY: re and text pointers are valid; group 1 captures an empty string.
+        let empty_capture = unsafe { hew_regex_capture_index_one(re, text.as_ptr(), 1) };
+        // SAFETY: empty_capture is a valid Vec<string> returned by the regex FFI.
+        assert_eq!(unsafe { vec_to_strings(empty_capture) }, [""]);
+        // SAFETY: empty_capture was allocated by hew_vec_new_str.
+        unsafe { hew_vec_free(empty_capture) };
+
+        // SAFETY: re and text pointers are valid; group 99 is absent.
+        let missing = unsafe { hew_regex_capture_index_one(re, text.as_ptr(), 99) };
+        // SAFETY: missing is a valid Vec<string> returned by the regex FFI.
+        assert_eq!(unsafe { hew_vec_len(missing) }, 0);
+        // SAFETY: missing was allocated by hew_vec_new_str.
+        unsafe { hew_vec_free(missing) };
+
+        // SAFETY: re was returned by hew_regex_new.
+        unsafe { hew_regex_free(re) };
+    }
+
+    #[test]
+    fn capture_name_one_returns_named_capture() {
+        let pattern = CString::new(r"(?P<word>[a-z]+)-(?P<num>[0-9]+)").unwrap();
+        // SAFETY: pattern is a valid NUL-terminated C string.
+        let re = unsafe { hew_regex_new(pattern.as_ptr()) };
+        assert!(!re.is_null());
+
+        let text = CString::new("abc-123").unwrap();
+        let name = CString::new("num").unwrap();
+        // SAFETY: re, text, and name pointers are valid.
+        let capture = unsafe { hew_regex_capture_name_one(re, text.as_ptr(), name.as_ptr()) };
+        // SAFETY: capture is a valid Vec<string> returned by the regex FFI.
+        assert_eq!(unsafe { vec_to_strings(capture) }, ["123"]);
+        // SAFETY: capture was allocated by hew_vec_new_str.
+        unsafe { hew_vec_free(capture) };
+
+        let missing_name = CString::new("missing").unwrap();
+        // SAFETY: re, text, and name pointers are valid.
+        let missing =
+            unsafe { hew_regex_capture_name_one(re, text.as_ptr(), missing_name.as_ptr()) };
+        // SAFETY: missing is a valid Vec<string> returned by the regex FFI.
+        assert_eq!(unsafe { hew_vec_len(missing) }, 0);
+        // SAFETY: missing was allocated by hew_vec_new_str.
+        unsafe { hew_vec_free(missing) };
+
+        // SAFETY: re was returned by hew_regex_new.
+        unsafe { hew_regex_free(re) };
+    }
+
+    #[test]
+    fn captures_flat_returns_first_match_row() {
+        let pattern = CString::new(r"([a-z]+)-([0-9]+)?").unwrap();
+        // SAFETY: pattern is a valid NUL-terminated C string.
+        let re = unsafe { hew_regex_new(pattern.as_ptr()) };
+        assert!(!re.is_null());
+
+        // SAFETY: re is valid.
+        assert_eq!(unsafe { hew_regex_capture_width(re) }, 3);
+
+        let text = CString::new("abc-").unwrap();
+        // SAFETY: re and text pointers are valid.
+        let captures = unsafe { hew_regex_captures_flat(re, text.as_ptr()) };
+        // SAFETY: captures is a valid Vec<string> returned by the regex FFI.
+        assert_eq!(unsafe { vec_to_strings(captures) }, ["abc-", "abc", ""]);
+        // SAFETY: captures was allocated by hew_vec_new_str.
+        unsafe { hew_vec_free(captures) };
+
+        let text_no = CString::new("123").unwrap();
+        // SAFETY: re and text pointers are valid.
+        let no_match = unsafe { hew_regex_captures_flat(re, text_no.as_ptr()) };
+        // SAFETY: no_match is a valid Vec<string> returned by the regex FFI.
+        assert_eq!(unsafe { hew_vec_len(no_match) }, 0);
+        // SAFETY: no_match was allocated by hew_vec_new_str.
+        unsafe { hew_vec_free(no_match) };
+
+        // SAFETY: re was returned by hew_regex_new.
+        unsafe { hew_regex_free(re) };
+    }
+
+    #[test]
+    fn find_all_submatch_flat_returns_row_major_groups() {
+        let pattern = CString::new(r"([a-z]+)([0-9]+)").unwrap();
+        // SAFETY: pattern is a valid NUL-terminated C string.
+        let re = unsafe { hew_regex_new(pattern.as_ptr()) };
+        assert!(!re.is_null());
+
+        let text = CString::new("a1 b22").unwrap();
+        // SAFETY: re and text pointers are valid.
+        let captures = unsafe { hew_regex_find_all_submatch_flat(re, text.as_ptr()) };
+        assert_eq!(
+            // SAFETY: captures is a valid Vec<string> returned by the regex FFI.
+            unsafe { vec_to_strings(captures) },
+            ["a1", "a", "1", "b22", "b", "22"]
+        );
+        // SAFETY: captures was allocated by hew_vec_new_str.
+        unsafe { hew_vec_free(captures) };
 
         // SAFETY: re was returned by hew_regex_new.
         unsafe { hew_regex_free(re) };

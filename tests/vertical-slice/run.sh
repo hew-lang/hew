@@ -374,6 +374,11 @@ run_accept_expect_stdout "print_f64"
 # `#[repr(C)] BytesTriple` passed by value). Asserts both exit-0 status
 # and exact stdout `Hi\n`.
 run_accept_expect_stdout "bytes_push_round_trip"
+run_accept_expect_stdout "regex_captures_find_all"
+run_accept_expect_stdout "template_compiled_free_function_p0"
+run_accept_expect_stdout "template_oracle_02_compiled_substitution"
+run_accept_expect_stdout "template_oracle_03_if_range"
+run_accept_expect_stdout "template_negative_try_errors"
 
 run_accept_expect_status "panic" 101
 grep -q 'panic fixture' "${stderr_output}"

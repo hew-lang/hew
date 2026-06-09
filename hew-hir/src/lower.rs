@@ -2539,14 +2539,15 @@ pub fn lower_program_with_mono_cap(
                                             && !same_module_fn_rewrites.contains_key(&callee)
                                             && !ctx.fn_registry.contains_key(&callee)
                                     });
-                                    // A dotted `module.Type` in a signature is
-                                    // safe iff its backing declaration was
-                                    // registered at the MIR boundary by the
-                                    // imported-module pre-pass (above): pub enums
-                                    // land in `enum_variants_by_name` /
-                                    // `type_classes`, pub records in
-                                    // `record_registry`, all under the dotted key.
-                                    let is_known_dotted_type = |name: &str| {
+                                    // A user type in a signature is safe iff its
+                                    // backing declaration was registered at the
+                                    // MIR boundary by the imported-module
+                                    // pre-pass (above): pub enums land in
+                                    // `enum_variants_by_name` / `type_classes`,
+                                    // pub records in `record_registry`. Dotted
+                                    // cross-module names and bare same-module
+                                    // names both consult those registries.
+                                    let is_known_registered_type = |name: &str| {
                                         ctx.enum_variants_by_name.contains_key(name)
                                             || ctx.type_classes.contains_key(name)
                                             || ctx.record_registry.contains_key(name)
@@ -2556,7 +2557,7 @@ pub fn lower_program_with_mono_cap(
                                             !imported_impl_signature_type_is_safe(
                                                 ty,
                                                 self_type_name,
-                                                &is_known_dotted_type,
+                                                &is_known_registered_type,
                                             )
                                         });
                                     if body_unresolvable || sig_unresolvable {
@@ -4709,15 +4710,14 @@ fn method_signature_type_exprs(method: &FnDecl) -> impl Iterator<Item = &TypeExp
 
 /// Whether a `TypeExpr` appearing in an imported impl-method signature is safe
 /// to lower cross-module: it must reference only primitives/builtins, the impl's
-/// own self type, or a cross-module dotted type whose backing declaration the
+/// own self type, or an imported public type whose backing declaration the
 /// imported-module pre-pass already registered at the MIR boundary. A user type
 /// or a user trait used as a generic argument is rejected, because lowering a
 /// method that names one trips `unknown type` / D10 at MIR time.
 ///
-/// `is_known_dotted_type` answers whether a dotted `module.Type` name resolves
-/// to a declaration the lowering context has registered (e.g. `fs.IoError`, the
-/// `pub enum` seeded into `enum_variants_by_name` / `type_classes` under both
-/// its bare and dotted keys by the imported-module pre-pass). This is the
+/// `is_known_registered_type` answers whether a type name resolves to a
+/// declaration the lowering context has registered (e.g. dotted `fs.IoError` or
+/// bare same-module records returned by stdlib receiver methods). This is the
 /// checker/lowering authority — the gate consults it rather than re-inferring
 /// safety from syntax alone.
 ///
@@ -4728,15 +4728,16 @@ fn method_signature_type_exprs(method: &FnDecl) -> impl Iterator<Item = &TypeExp
 fn imported_impl_signature_type_is_safe(
     ty: &TypeExpr,
     self_type_name: &str,
-    is_known_dotted_type: &impl Fn(&str) -> bool,
+    is_known_registered_type: &impl Fn(&str) -> bool,
 ) -> bool {
     match ty {
         TypeExpr::Named { name, type_args } => {
-            // A cross-module dotted reference (`fs.IoError`) is resolvable only
-            // when its backing declaration was registered at the MIR boundary by
-            // the imported-module pre-pass. Otherwise it is rejected.
-            if name.contains('.') {
-                if !is_known_dotted_type(name) {
+            // A user-type reference is resolvable only when its backing
+            // declaration was registered at the MIR boundary by the
+            // imported-module pre-pass. Otherwise it is rejected.
+            let known_registered_type = is_known_registered_type(name);
+            if name.contains('.') || known_registered_type {
+                if !known_registered_type {
                     return false;
                 }
                 return type_args.as_ref().is_none_or(|args| {
@@ -4744,7 +4745,7 @@ fn imported_impl_signature_type_is_safe(
                         imported_impl_signature_type_is_safe(
                             &arg.0,
                             self_type_name,
-                            is_known_dotted_type,
+                            is_known_registered_type,
                         )
                     })
                 });
@@ -4766,30 +4767,34 @@ fn imported_impl_signature_type_is_safe(
                     imported_impl_signature_type_is_safe(
                         &arg.0,
                         self_type_name,
-                        is_known_dotted_type,
+                        is_known_registered_type,
                     )
                 })
             })
         }
         TypeExpr::Option(inner) | TypeExpr::Slice(inner) | TypeExpr::Borrow(inner) => {
-            imported_impl_signature_type_is_safe(&inner.0, self_type_name, is_known_dotted_type)
+            imported_impl_signature_type_is_safe(&inner.0, self_type_name, is_known_registered_type)
         }
-        TypeExpr::Array { element, .. } => {
-            imported_impl_signature_type_is_safe(&element.0, self_type_name, is_known_dotted_type)
-        }
-        TypeExpr::Pointer { pointee, .. } => {
-            imported_impl_signature_type_is_safe(&pointee.0, self_type_name, is_known_dotted_type)
-        }
+        TypeExpr::Array { element, .. } => imported_impl_signature_type_is_safe(
+            &element.0,
+            self_type_name,
+            is_known_registered_type,
+        ),
+        TypeExpr::Pointer { pointee, .. } => imported_impl_signature_type_is_safe(
+            &pointee.0,
+            self_type_name,
+            is_known_registered_type,
+        ),
         TypeExpr::Result { ok, err } => {
-            imported_impl_signature_type_is_safe(&ok.0, self_type_name, is_known_dotted_type)
+            imported_impl_signature_type_is_safe(&ok.0, self_type_name, is_known_registered_type)
                 && imported_impl_signature_type_is_safe(
                     &err.0,
                     self_type_name,
-                    is_known_dotted_type,
+                    is_known_registered_type,
                 )
         }
         TypeExpr::Tuple(elems) => elems.iter().all(|elem| {
-            imported_impl_signature_type_is_safe(&elem.0, self_type_name, is_known_dotted_type)
+            imported_impl_signature_type_is_safe(&elem.0, self_type_name, is_known_registered_type)
         }),
         // Function-typed params, trait objects, and any other composite carry
         // user-type identity that the importer cannot resolve — reject.

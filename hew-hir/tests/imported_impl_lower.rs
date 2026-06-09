@@ -209,6 +209,73 @@ impl Foo {
 }
 
 #[test]
+fn imported_impl_signature_returning_same_module_record_is_emitted() {
+    // Regression for the imported-impl signature gate used by
+    // std::text::regex: methods such as `Pattern::captures` return a public
+    // record declared in the same imported module (`CaptureMatches`). Once the
+    // imported-module pre-pass has registered that record, the method signature
+    // is resolvable at the MIR boundary and must not be skipped.
+    let imported_src = r"
+pub type Foo {
+    n: i64;
+}
+pub type CaptureMatches {
+    groups: Vec<string>;
+    group_count: i64;
+}
+impl Foo {
+    pub fn captures(f: Foo) -> CaptureMatches {
+        CaptureMatches {
+            groups: Vec::<string>::new(),
+            group_count: f.n,
+        }
+    }
+}
+";
+    let program = build_imported_impl_program_src(imported_src);
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+
+    let captures_emitted = output
+        .module
+        .items
+        .iter()
+        .any(|item| matches!(item, HirItem::Function(f) if f.name == "Foo::captures"));
+    assert!(
+        captures_emitted,
+        "expected `Foo::captures` to be emitted: its return type is a public \
+         same-module record registered by the imported-module pre-pass; got: {:#?}",
+        output
+            .module
+            .items
+            .iter()
+            .filter_map(|i| if let HirItem::Function(f) = i {
+                Some(&f.name)
+            } else {
+                None
+            })
+            .collect::<Vec<_>>()
+    );
+
+    let capture_matches_emitted = output
+        .module
+        .items
+        .iter()
+        .any(|item| matches!(item, HirItem::TypeDecl(td) if td.name == "CaptureMatches"));
+    assert!(
+        capture_matches_emitted,
+        "expected imported same-module record `CaptureMatches` to be emitted"
+    );
+
+    let result = output.into_result();
+    assert!(
+        result.is_ok(),
+        "imported impl method returning a same-module registered record must \
+         compile cleanly. Got: {:#?}",
+        result.err()
+    );
+}
+
+#[test]
 fn imported_impl_body_calling_private_helper_is_emitted_via_closure() {
     // A method body that calls a private same-module helper is now lowered: the
     // helper is pulled into the imported private-fn closure because impl-method

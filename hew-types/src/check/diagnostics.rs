@@ -184,17 +184,17 @@ impl Checker {
             return;
         }
 
-        // Same-scope rebinding: hard error
-        if let Some(prev) = self.env.find_in_current_scope(name) {
-            let notes = prev
-                .map(|s| vec![(s, "previously defined here".to_string())])
-                .unwrap_or_default();
+        // Same-scope rebinding: hard error, but only for user-visible bindings
+        // (those with a source span). Synthetic bindings (def_span = None) are
+        // pre-populated by the actor-forward-bind mechanism and are expected to
+        // be overwritten by the real `define_with_span` call without an error.
+        if let Some(Some(prev_span)) = self.env.find_in_current_scope(name) {
             self.errors.push(TypeError {
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::Shadowing,
                 span: span.clone(),
                 message: format!("variable `{name}` is already defined in this scope"),
-                notes,
+                notes: vec![(prev_span, "previously defined here".to_string())],
                 suggestions: vec![format!(
                     "choose a different name, or prefix with underscore: `_{name}`"
                 )],

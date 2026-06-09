@@ -152,10 +152,57 @@ pub enum SelectArmKind {
 /// instruction stream. Cluster 1 needs only `Local(N)` and `ReturnSlot`;
 /// later clusters add `YieldSlot`, enum-payload projection, field
 /// projection, deref, etc.
+///
+/// ## M2 substrate variants (declared scaffold)
+///
+/// `DuplexHandle`, `LambdaActorHandle`, `SendHalf`, and `RecvHalf`
+/// are the M2 unified-concurrency substrate's MIR addressing surface.
+/// Each carries only a discriminator-pointer to a `Local(N)` so the
+/// enum stays `Copy`. The S/R type information lives on the parent
+/// local's `ResolvedTy` (`Named { name: "Duplex", args: [S, R] }`).
+///
+/// The half-handle aliases address direction-isolated ends of a
+/// `Duplex<S, R>`'s dual queue: `SendHalf(parent)` is the write-only
+/// end of the parent's S-direction; `RecvHalf(parent)` is the
+/// read-only end of the parent's R-direction. Dropping a half closes
+/// only that direction; the Duplex itself ceases when both halves
+/// (or the last unified handle) are gone.
+///
+/// The HIR currently has no construction surface for `LambdaActor` /
+/// `Duplex` (the parser flip lives in slice 1, the HIR-lower for it
+/// lands later). These variants exist so the drop-elaboration plan
+/// and codegen seam don't have to retrofit `Place` when the
+/// construction surface lands. The pattern matches the four other
+/// declared-but-never-constructed scaffold variants already in this
+/// model (`Terminator::Yield`/`Send`, `MirCheck::Aliasing` /
+/// `GeneratorBorrowAcrossYield` / `ActorSendEscape`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Place {
     Local(u32),
     ReturnSlot,
+    /// A `Duplex<S, R>` handle. The carried `u32` is the `Local(N)`
+    /// id whose `locals[N]` is `ResolvedTy::Named { name: "Duplex",
+    /// args: [S, R] }`. Drop semantics: dropping the last surviving
+    /// handle closes both directions (design §7.3).
+    DuplexHandle(u32),
+    /// A lambda-actor handle. The carried `u32` is the `Local(N)` id
+    /// whose `locals[N]` is the lambda-actor's `Duplex<Msg, Reply>`
+    /// (the surface call-syntax dispatches through this Duplex).
+    /// Drop semantics: stop-on-last-handle-drop with weak-ref body
+    /// capture (§5.9 ratification 2).
+    LambdaActorHandle(u32),
+    /// Write-only end of a `Duplex<S, R>`'s S-direction queue. The
+    /// carried `u32` is the parent Duplex's `Local(N)` id (the same
+    /// local that a `DuplexHandle` would address). Drop closes the
+    /// S-direction only; the R-direction stays open until the
+    /// matching `RecvHalf` (or last surviving `DuplexHandle`) drops.
+    SendHalf(u32),
+    /// Read-only end of a `Duplex<S, R>`'s R-direction queue. The
+    /// carried `u32` is the parent Duplex's `Local(N)` id (the same
+    /// local that a `DuplexHandle` would address). Drop closes the
+    /// R-direction only; the S-direction stays open until the
+    /// matching `SendHalf` (or last surviving `DuplexHandle`) drops.
+    RecvHalf(u32),
 }
 
 /// Integer comparison predicate. Maps 1:1 to LLVM `IntPredicate`. The
@@ -300,6 +347,18 @@ pub enum MirCheck {
         exit_site: SiteId,
         ty: ResolvedTy,
     },
+    /// Drop-elaboration could not determine the live-set at a `Return`
+    /// block — either the meet-lattice produced an ambiguous state
+    /// for an M2 substrate handle (`Duplex` / lambda-actor /
+    /// half-handle) or the structural invariant ("every drop in the
+    /// per-exit plan resolves to a `DuplexHandle` / `LambdaActorHandle`
+    /// / `SendHalf` / `RecvHalf` Place that has a recorded
+    /// `DropKind`") fails. The elaborator aborts with this finding
+    /// rather than emitting a partial drop plan (LESSONS:
+    /// boundary-fail-closed, cleanup-all-exits). The payload carries
+    /// the offending block id and a short reason so the diagnostic
+    /// surface can anchor the rejection.
+    DropPlanUndetermined { block: u32, reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -326,6 +385,67 @@ pub struct ElaboratedMirFunction {
     /// the field is a reserved slot for generator state-machine lowering.
     // DROP-TODO: populate when generator construction surface lands
     pub coroutine: Option<CoroutineSchema>,
+    /// Closure-capture metadata for every lambda-actor body in this
+    /// function. Empty on non-actor functions; one entry per
+    /// captured binding per lambda-actor literal. The codegen layer
+    /// (slice 5) consumes this to emit the right capture-strength
+    /// (strong refcount bump vs weak-handle allocation) so the
+    /// runtime's self-binding weak-ref discipline (§5.9
+    /// ratification 2) holds. Declared scaffold; HIR construction
+    /// surface for lambda-actor capture-set discovery lands later.
+    pub lambda_captures: Vec<LambdaCapture>,
+}
+
+/// One captured binding inside a lambda-actor body. The
+/// `capture_kind` discriminator is the structural fact codegen needs
+/// for the runtime to honour the self-binding weak-ref discipline:
+/// a `Weak` capture must NOT bump the actor's external strong
+/// refcount, so when external handles drop, the actor stops even
+/// though the body still references its own binding name.
+///
+/// See `CaptureKind::Weak` for the §5.9 ratification 2 narrative.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LambdaCapture {
+    /// The lambda-actor handle this capture belongs to. The Place
+    /// is the actor's `LambdaActorHandle(N)` — the spawn-site
+    /// binding. Codegen uses this to associate captures with the
+    /// right actor's body frame.
+    pub actor_handle: Place,
+    /// The captured binding's id from the enclosing scope.
+    pub captured: BindingId,
+    /// The captured binding's name (for diagnostics). The name is
+    /// load-bearing for the self-ref case: a `Weak` capture whose
+    /// name matches the lambda-actor's own let-binding-name is the
+    /// recursive-self case (§5.9 ratification 2).
+    pub name: String,
+    /// Capture-strength discriminator (Strong vs Weak).
+    pub capture_kind: CaptureKind,
+}
+
+/// Capture-strength selector for a lambda-actor body capture.
+///
+/// `Strong` is the default for every non-self capture: the captured
+/// value's refcount (for `@resource` types) is bumped so the actor
+/// body keeps the captured handle alive. `Weak` is the self-binding
+/// recursive case (§5.9 ratification 2): the actor's body
+/// references its own binding name, but the reference is held
+/// weakly so the body does NOT keep the actor alive past external
+/// refcount zero. When the last external handle drops, the actor
+/// stops; the body's weak self-ref upgrades fail and recursive
+/// self-sends surface as `SendError::ActorStopped` (the runtime
+/// contract lands in slice 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CaptureKind {
+    /// Strong capture: bumps the captured value's refcount; the
+    /// body keeps the captured handle alive for as long as the
+    /// body's own frame lives.
+    Strong,
+    /// Weak capture: does NOT bump the captured value's refcount.
+    /// The body holds a weak handle that upgrades only while the
+    /// captured value's strong refcount is non-zero. Used for the
+    /// lambda-actor's own self-binding-name to break the
+    /// body-keeps-self-alive cycle.
+    Weak,
 }
 
 /// A basic-block kind. `Normal` blocks carry user-level statements;
@@ -416,11 +536,74 @@ pub struct DropPlan {
 /// A single elaborated drop op. Either a `@resource` drop calling the
 /// type's `close` method (`drop_fn = Some(name)`), or a trivial drop
 /// for a value class with no side effect (`drop_fn = None`).
+///
+/// `kind` discriminates the M2 substrate's structural drop semantics:
+/// generic `@resource` close, Duplex-handle close-both-directions,
+/// half-handle close-one-direction, and lambda-actor stop-on-last.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElabDrop {
     pub place: Place,
     pub ty: ResolvedTy,
     pub drop_fn: Option<String>,
+    /// Drop-kind discriminator. Distinguishes the structural close
+    /// semantics that codegen (slice 5) and runtime (slice 4) need
+    /// to honour. Generic `@resource` drops use `DropKind::Resource`
+    /// (the existing path); M2-substrate drops use the specialised
+    /// variants. Defaults to `Resource` so existing call sites that
+    /// only populate the pre-M2 fields stay correct.
+    pub kind: DropKind,
+}
+
+/// Drop-kind discriminator for `ElabDrop`. Each variant pins a
+/// distinct structural close-protocol contract that the runtime
+/// (slice 4) and codegen (slice 5) layers must implement.
+///
+/// The pre-M2 path emits `DropKind::Resource` for every owned
+/// `@resource` binding — the existing close-method dispatch through
+/// `drop_fn = Some("Type::close")`. The three M2 variants encode the
+/// dual-queue Duplex protocol's three drop shapes (design §7.3-§7.4
+/// + §5.9 ratification 2):
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DropKind {
+    /// Generic `@resource` drop: call the type's `close` method (or
+    /// no-op if `drop_fn` is `None`). The pre-M2 default — every
+    /// owned `AffineResource` local lowers to this kind.
+    Resource,
+    /// `Duplex<S, R>` handle drop with close-both-directions. When
+    /// the last surviving handle for this Duplex drops, both the
+    /// S-direction and R-direction queues close. Codegen emits a
+    /// `hew_duplex_close(handle)` runtime call (slice 5); the
+    /// runtime's refcount + dual-queue protocol decides whether
+    /// this drop is the last-handle case (slice 4).
+    DuplexClose,
+    /// Half-handle drop that closes one direction of a Duplex's
+    /// dual queue. The carried `Direction` selects which queue
+    /// closes; the other direction stays open until the matching
+    /// half (or the last unified handle) drops. Codegen emits a
+    /// `hew_duplex_close_half(handle, direction)` runtime call
+    /// (slice 5).
+    DuplexHalfClose(Direction),
+    /// Lambda-actor stop-on-last-handle-drop. When the external
+    /// strong refcount reaches zero, the actor stops; the body's
+    /// recursive self-ref is held weakly so it does NOT keep the
+    /// actor alive past external refcount zero (§5.9 ratification
+    /// 2). Codegen emits a `hew_lambda_actor_release(handle)`
+    /// runtime call (slice 5); the runtime decides whether this
+    /// drop is the last-handle case (slice 4).
+    LambdaActorRelease,
+}
+
+/// Direction selector for `DropKind::DuplexHalfClose`. Mirrors the
+/// `SendHalf` / `RecvHalf` Place variants: `Send` closes the
+/// S-direction queue, `Recv` closes the R-direction queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Direction {
+    /// S-direction (send) queue: the write-end the `SendHalf`
+    /// addresses.
+    Send,
+    /// R-direction (recv) queue: the read-end the `RecvHalf`
+    /// addresses.
+    Recv,
 }
 
 /// Generator state-machine schema. Declared scaffold; constructed in
@@ -524,6 +707,12 @@ pub enum MirDiagnosticKind {
         name: String,
         site: SiteId,
     },
+    /// Drop-elaboration aborted because the M2 substrate's per-exit
+    /// drop plan could not be determined for a `Return` block. Surfaced
+    /// from `MirCheck::DropPlanUndetermined`; the elaborator never
+    /// emits a partial drop (fail-closed per LESSONS
+    /// `cleanup-all-exits` / `boundary-fail-closed`).
+    DropPlanUndetermined { block: u32, reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -83,7 +83,7 @@ stateDiagram-v2
 | ----------------- | -------------------------------------------- | ------------------------------------------------------------------ |
 | Message budget    | `HEW_MSG_BUDGET = 256` messages/activation   | Coarse scheduler preemption — yield after 256 messages             |
 | Reduction budget  | `HEW_DEFAULT_REDUCTIONS = 4000` per dispatch | Compiler-inserted `cooperate` calls at loop headers and call sites |
-| Cooperative yield | Per-coroutine                                | `coro_switch` on `await` within `s.launch` tasks                   |
+| Cooperative yield | Per-coroutine                                | `coro_switch` on `await` of a `fork`-spawned task in a `scope` block |
 
 **Actor dispatch signature** (§9.1.1):
 

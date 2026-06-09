@@ -931,14 +931,6 @@ endforeach()
 
 add_e2e_file_test(for_await_typed_receiver_param e2e_concurrency channel_for_await_typed_receiver_param)
 
-# quic_string_loopback uses send_string/recv_string which are only present in
-# this branch's std/net/quic/quic.hew.  Point HEW_STD at the worktree std so
-# both the module-registry and import-resolution paths find the right file.
-if(TEST e2e_quic_quic_string_loopback)
-  set_tests_properties(e2e_quic_quic_string_loopback PROPERTIES
-    ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
-endif()
-
 # *_try_parse exercises the branch's std/encoding/{json,toml,yaml}/*.hew typed
 # ParseError wrappers. Point HEW_STD at the worktree std so the focused
 # contract tests compile against the slice under review.
@@ -964,15 +956,6 @@ if(TEST e2e_yaml_yaml_try_parse)
 endif()
 if(TEST wasm_e2e_yaml_yaml_try_parse)
   set_tests_properties(wasm_e2e_yaml_yaml_try_parse PROPERTIES
-    ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
-endif()
-
-# http_try_respond_stream exercises the new IoError variants and the
-# hew_sink_is_valid null-check wired into try_respond_stream.  Point
-# HEW_STD at the worktree std so the new IoError network variants are
-# available.
-if(TEST e2e_http_server_http_try_respond_stream)
-  set_tests_properties(e2e_http_server_http_try_respond_stream PROPERTIES
     ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
 endif()
 
@@ -1773,7 +1756,6 @@ add_wasm_warn_test(timer_every e2e_actors wasm_every_warn "timers are cooperativ
 
 # WASM reject tests (verify unsupported ops produce compile errors)
 add_wasm_reject_test(supervisor  e2e_actors wasm_reject_supervisor "are not supported on WASM32")
-add_wasm_reject_test(scope       e2e_actors wasm_reject_scope      "are not supported on WASM32")
 add_wasm_reject_test(link        e2e_actors wasm_reject_link       "are not supported on WASM32")
 add_wasm_reject_test(monitor     e2e_actors wasm_reject_monitor    "are not supported on WASM32")
 add_wasm_reject_test(blocking_recv e2e_actors wasm_reject_blocking_recv "Blocking channel receive operations")

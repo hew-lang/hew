@@ -183,8 +183,8 @@ supervisor CounterSup {
 
 fn main() {
     let ref = spawn Counter {};
-    scope |s| {
-        let task = s.launch { 42 };
+    scope {
+        fork task = compute_42();
         select {
             msg from ref => {},
             after 1000ms => {},

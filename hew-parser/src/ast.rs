@@ -185,13 +185,19 @@ pub enum Expr {
         return_type: Option<Spanned<TypeExpr>>,
         body: Box<Spanned<Expr>>,
     },
+    /// Structured-concurrency block: `scope { ... }`.
+    ///
+    /// Establishes a lexical-lifetime boundary for any tasks spawned inside.
+    /// Statement-position call expressions become spawned tasks (TI-1);
+    /// `fork name = call(...)` statements introduce `Task<T>` bindings (TI-2).
+    /// All tasks are awaited at the closing brace.
     Scope {
-        binding: Option<String>,
         body: Block,
     },
-    Fork {
-        body: Block,
-    },
+    /// Child-task binding inside a `scope { ... }` block: `fork name = call(...)`
+    /// or bare `fork call(...)`.
+    ///
+    /// Outside a scope this is malformed and rejected during HIR lowering.
     ForkChild {
         binding: Option<String>,
         expr: Box<Spanned<Expr>>,
@@ -216,10 +222,6 @@ pub enum Expr {
         /// Absent when the user omits them and inference fills the gap.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         type_args: Option<Vec<Spanned<TypeExpr>>>,
-    },
-    Send {
-        target: Box<Spanned<Expr>>,
-        message: Box<Spanned<Expr>>,
     },
     Select {
         arms: Vec<SelectArm>,
@@ -253,9 +255,6 @@ pub enum Expr {
         inclusive: bool,
     },
     Await(Box<Spanned<Expr>>),
-    ScopeLaunch(Block),
-    ScopeSpawn(Block),
-    ScopeCancel,
 
     /// Regex literal, e.g. `re"pattern"`.
     RegexLiteral(String),
@@ -264,6 +263,14 @@ pub enum Expr {
     ByteStringLiteral(Vec<u8>),
     /// Byte array literal, e.g. `bytes [0x48, 0x65]`.
     ByteArrayLiteral(Vec<u8>),
+
+    /// `emit EventName { field: expr, ... }` — fire a machine event from a
+    /// transition body, `entry`, or `exit` block. Legality (must appear inside
+    /// a machine context) is checked at HIR lowering, not parsing.
+    MachineEmit {
+        event_name: String,
+        fields: Vec<(String, Spanned<Expr>)>,
+    },
 }
 
 // ── Statements ───────────────────────────────────────────────────────
@@ -414,7 +421,6 @@ pub enum BinaryOp {
     Shr,
     Range,
     RangeInclusive,
-    Send,
 }
 
 impl std::fmt::Display for BinaryOp {
@@ -440,7 +446,6 @@ impl std::fmt::Display for BinaryOp {
             Self::Shr => write!(f, ">>"),
             Self::Range => write!(f, ".."),
             Self::RangeInclusive => write!(f, "..="),
-            Self::Send => write!(f, "<-"),
         }
     }
 }
@@ -1228,6 +1233,12 @@ pub struct MachineDecl {
 pub struct MachineState {
     pub name: String,
     pub fields: Vec<(String, Spanned<TypeExpr>)>,
+    /// Optional `entry { ... }` lifecycle block executed when entering this state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<Block>,
+    /// Optional `exit { ... }` lifecycle block executed when leaving this state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<Block>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1244,4 +1255,12 @@ pub struct MachineTransition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,
+    /// When true, a self-transition (`source == target`) explicitly opts in to
+    /// Mealy re-entry semantics: the source `exit` block and target `entry` block
+    /// both run even though the state does not change.  Written as `@reenter`
+    /// after the target state name.  Without this annotation, a non-empty self-
+    /// transition body is a compile error (HIR enforces the Moore-style rule that
+    /// self-loops must be annotated or empty).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reenter: bool,
 }

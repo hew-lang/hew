@@ -344,10 +344,6 @@ pub struct Parser<'src> {
     pos: usize,
     errors: Vec<ParseError>,
     depth: Cell<usize>,
-    /// When inside a `scope |s| { ... }` block, this holds the binding name "s"
-    /// so that `s.launch`, `s.cancel()` can be desugared
-    /// to the corresponding AST nodes.
-    scope_binding: Option<String>,
     /// Stack of token mutations performed by `eat_closing_angle`, so they can
     /// be rolled back on speculative-parse backtrack.
     angle_mutations: Vec<(usize, (Token<'src>, Span))>,
@@ -450,7 +446,6 @@ impl<'src> Parser<'src> {
             pos: 0,
             errors,
             depth: Cell::new(0),
-            scope_binding: None,
             angle_mutations: Vec::new(),
         }
     }
@@ -810,6 +805,11 @@ impl<'src> Parser<'src> {
             Token::On => Some("on"),
             Token::When => Some("when"),
             Token::Join => Some("join"),
+            // Machine-block keywords that can also appear as external function names
+            // or identifiers in other positions.
+            Token::Entry => Some("entry"),
+            Token::Exit => Some("exit"),
+            Token::Emit => Some("emit"),
             _ => None,
         }
     }
@@ -2399,26 +2399,45 @@ impl<'src> Parser<'src> {
             if self.peek() == Some(&Token::State) {
                 self.advance();
                 let state_name = self.expect_ident()?;
-                let fields = if self.eat(&Token::LeftBrace) {
-                    let mut fields = Vec::new();
+                let mut fields = Vec::new();
+                let mut entry_block: Option<Block> = None;
+                let mut exit_block: Option<Block> = None;
+                if self.eat(&Token::LeftBrace) {
                     while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                        let field_name = self.expect_ident()?;
-                        self.expect(&Token::Colon)?;
-                        let ty = self.parse_type()?;
-                        if !self.eat(&Token::Semicolon) {
-                            self.eat(&Token::Comma);
+                        if self.peek() == Some(&Token::Entry) {
+                            self.advance();
+                            let block = self.parse_block()?;
+                            entry_block = Some(block);
+                        } else if self.peek() == Some(&Token::Exit) {
+                            self.advance();
+                            let block = self.parse_block()?;
+                            exit_block = Some(block);
+                        } else if self.peek() == Some(&Token::State) {
+                            // Nested states are reserved for v0.6 hierarchical statecharts.
+                            self.error(
+                                "hierarchical states are reserved for v0.6; \
+                                 nested `state` declarations inside a state body are not permitted"
+                                    .to_string(),
+                            );
+                            self.advance();
+                        } else {
+                            let field_name = self.expect_ident()?;
+                            self.expect(&Token::Colon)?;
+                            let ty = self.parse_type()?;
+                            if !self.eat(&Token::Semicolon) {
+                                self.eat(&Token::Comma);
+                            }
+                            fields.push((field_name, ty));
                         }
-                        fields.push((field_name, ty));
                     }
                     self.expect(&Token::RightBrace)?;
-                    fields
-                } else {
-                    Vec::new()
-                };
+                }
                 self.eat(&Token::Semicolon);
                 states.push(MachineState {
                     name: state_name,
                     fields,
+                    entry: entry_block,
+                    exit: exit_block,
                 });
             } else if self.peek() == Some(&Token::Event) {
                 self.advance();
@@ -2451,6 +2470,25 @@ impl<'src> Parser<'src> {
                 let source_state = self.parse_state_pattern()?;
                 self.expect(&Token::Arrow)?;
                 let target_state = self.parse_state_pattern()?;
+
+                // Optional `@reenter` annotation (self-transition Mealy re-entry).
+                // Lexes as `Token::Label("@reenter")` — the label value includes
+                // the leading `@` (consistent with loop-label tokens).
+                // Grammar slot: `on E: Src -> Tgt @reenter [when guard] [body]`.
+                let reenter = if let Some(Token::Label(label)) = self.peek() {
+                    if *label == "@reenter" {
+                        self.advance();
+                        true
+                    } else {
+                        self.error(format!(
+                            "unknown transition annotation `{label}`; \
+                             the only supported annotation here is `@reenter`"
+                        ));
+                        false
+                    }
+                } else {
+                    false
+                };
 
                 // Optional guard: `when <expr>`
                 let guard = if self.peek() == Some(&Token::When) {
@@ -2504,6 +2542,7 @@ impl<'src> Parser<'src> {
                     target_state,
                     guard,
                     body: (body, body_start..body_end),
+                    reenter,
                 });
             } else if self.peek() == Some(&Token::Default) {
                 // `default { self }` — unhandled events stay in current state
@@ -3670,9 +3709,6 @@ impl<'src> Parser<'src> {
                 | Expr::IfLet { .. }
                 | Expr::Match { .. }
                 | Expr::Scope { .. }
-                | Expr::Fork { .. }
-                | Expr::ScopeLaunch(_)
-                | Expr::ScopeSpawn(_)
                 | Expr::Unsafe(_)
                 | Expr::Select { .. }
         )
@@ -3780,6 +3816,27 @@ impl<'src> Parser<'src> {
                 self.advance();
                 let pattern = self.parse_pattern()?;
 
+                // `let r? = expr;` is syntactic sugar for `let r = expr?;`.
+                // The `?` must immediately follow a simple identifier pattern;
+                // complex patterns (tuples, constructors) cannot carry the
+                // propagation suffix — the binding site is ambiguous without a
+                // single name to anchor the unwrapped value to.
+                let propagate = if self.peek() == Some(&Token::Question) {
+                    let q_span = self.peek_span();
+                    if !matches!(pattern.0, Pattern::Identifier(_)) {
+                        self.error_at(
+                            "`?` propagation suffix requires a simple identifier pattern"
+                                .to_string(),
+                            q_span,
+                        );
+                        return None;
+                    }
+                    self.advance();
+                    true
+                } else {
+                    false
+                };
+
                 let ty = if self.eat(&Token::Colon) {
                     Some(self.parse_type()?)
                 } else {
@@ -3787,7 +3844,26 @@ impl<'src> Parser<'src> {
                 };
 
                 let value = if self.eat(&Token::Equal) {
-                    Some(self.parse_expr()?)
+                    let (expr, expr_span) = self.parse_expr()?;
+                    if propagate {
+                        // Desugar: wrap RHS in PostfixTry so `let r? = e;`
+                        // is exactly `let r = e?;` from the type-checker onward.
+                        // The span covers the full RHS so diagnostics from the
+                        // `?` type-check land on the expression, not on `r?`.
+                        let end = expr_span.end;
+                        Some((
+                            Expr::PostfixTry(Box::new((expr, expr_span))),
+                            pattern.1.start..end,
+                        ))
+                    } else {
+                        Some((expr, expr_span))
+                    }
+                } else if propagate {
+                    self.error(
+                        "`let r? = expr;` requires an initialiser; `let r?;` is not valid"
+                            .to_string(),
+                    );
+                    return None;
                 } else {
                     None
                 };
@@ -4258,6 +4334,51 @@ impl<'src> Parser<'src> {
                 break;
             }
 
+            // Detect the removed `<-` send operator: lexer now produces two tokens
+            // `<` (at pos) and `-` (at pos+1) adjacently.  Emit E_OPERATOR_REMOVED,
+            // then skip to the statement boundary (`;` or `}`) so that the caller
+            // does not produce cascading "unexpected token" diagnostics for the
+            // right-hand side tokens.
+            if self.peek() == Some(&Token::Less) {
+                let less_end = self.peek_span().end;
+                if self.peek_at(self.pos + 1) == Some(&Token::Minus) {
+                    let minus_start = self
+                        .tokens
+                        .get(self.pos + 1)
+                        .map_or(usize::MAX, |(_, s)| s.start);
+                    if less_end == minus_start {
+                        let op_span = self.peek_span().start..minus_start + 1;
+                        self.advance(); // consume `<`
+                        self.advance(); // consume `-`
+                        self.error_at_with_hint(
+                            "E_OPERATOR_REMOVED: the `<-` send operator has been removed; \
+                             use `handle(msg)` call syntax instead (HEW-SPEC-2026 §4.x)"
+                                .to_string(),
+                            op_span.clone(),
+                            "replace `target <- msg` with `target(msg)`".to_string(),
+                        );
+                        // Skip tokens through the end of the statement to suppress
+                        // cascading "unexpected token" diagnostics on the RHS.
+                        while !matches!(
+                            self.peek(),
+                            Some(&Token::Semicolon | &Token::RightBrace) | None
+                        ) {
+                            self.advance();
+                        }
+                        // Consume the `;` now so that parse_block treats this as a
+                        // fully consumed expression statement rather than seeing the
+                        // semicolon as unexpected.
+                        if self.peek() == Some(&Token::Semicolon) {
+                            self.advance();
+                        }
+                        // Return a synthetic unit expression so the block parser
+                        // completes the statement without entering the error-recovery path.
+                        lhs = (Expr::Tuple(vec![]), op_span);
+                        break;
+                    }
+                }
+            }
+
             let (op_tok, _) = self.advance()?;
             let Some(op) = token_to_binop(&op_tok) else {
                 self.error(format!("invalid binary operator token: {op_tok:?}"));
@@ -4422,47 +4543,6 @@ impl<'src> Parser<'src> {
                         name = format!("{name}::{segment}");
                     } else {
                         break;
-                    }
-                }
-
-                // Desugar scope handle method calls: s.launch { ... }, s.spawn { ... }, s.cancel(), s.is_cancelled()
-                if self.scope_binding.as_deref() == Some(&name) && self.peek() == Some(&Token::Dot)
-                {
-                    let saved_pos = self.save_pos();
-                    self.advance(); // consume .
-
-                    // `spawn` is a keyword token, so handle it before the identifier match
-                    if self.peek() == Some(&Token::Spawn) {
-                        self.advance(); // consume "spawn"
-                        let body = self.parse_block()?;
-                        let end = self.peek_span().start;
-                        return Some((Expr::ScopeSpawn(body), start..end));
-                    }
-
-                    if let Some(Token::Identifier(method)) = self.peek() {
-                        let method = method.to_string();
-                        match method.as_str() {
-                            "launch" => {
-                                self.advance(); // consume "launch"
-                                let body = self.parse_block()?;
-                                let end = self.peek_span().start;
-                                return Some((Expr::ScopeLaunch(body), start..end));
-                            }
-                            "cancel" => {
-                                self.advance(); // consume "cancel"
-                                self.expect(&Token::LeftParen)?;
-                                self.expect(&Token::RightParen)?;
-                                let end = self.peek_span().start;
-                                return Some((Expr::ScopeCancel, start..end));
-                            }
-
-                            _ => {
-                                // Not a scope method, restore and fall through
-                                self.restore_pos(saved_pos);
-                            }
-                        }
-                    } else {
-                        self.restore_pos(saved_pos);
                     }
                 }
 
@@ -4749,41 +4829,90 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::RightBrace)?;
                 Expr::Match { scrutinee, arms }
             }
+            // actor [move] |params| [-> Ret] { body }
+            // Lambda actor literal (replaces `spawn (...) => ...`).
+            Token::Actor => {
+                self.advance();
+
+                let is_move = self.eat(&Token::Move);
+
+                if self.peek() != Some(&Token::Pipe) {
+                    self.error_with_hint(
+                        "E_LEGACY_SPAWN_LAMBDA_SYNTAX: expected `|` to begin actor parameter list"
+                            .to_string(),
+                        "use `actor |params| { body }` to declare a lambda actor".to_string(),
+                    );
+                    return None;
+                }
+                self.advance(); // consume `|`
+
+                let params = self.try_parse_lambda_params().unwrap_or_default();
+
+                self.expect(&Token::Pipe)?;
+
+                let return_type = self.parse_opt_return_type()?;
+
+                // Lambda actor body must be a braced block; parse_block consumes the `{`.
+                if self.peek() != Some(&Token::LeftBrace) {
+                    self.error_with_hint(
+                        "E_LEGACY_SPAWN_LAMBDA_SYNTAX: expected `{` to begin actor body"
+                            .to_string(),
+                        "use `actor |params| { body }` — the body must be a braced block"
+                            .to_string(),
+                    );
+                    return None;
+                }
+                let body_block = self.parse_block()?;
+                let body_end = self.peek_span().start;
+                let body = Box::new((Expr::Block(body_block), start..body_end));
+
+                return Some((
+                    Expr::SpawnLambdaActor {
+                        is_move,
+                        params,
+                        return_type,
+                        body,
+                    },
+                    start..self.peek_span().start,
+                ));
+            }
             Token::Spawn => {
                 self.advance();
 
-                // Check for optional `move` keyword before lambda actor
-                let is_move = self.eat(&Token::Move);
+                // Check whether the user wrote the legacy `spawn (params) => body` form.
+                // This form was removed in favour of `actor |params| { body }`.
+                // Consume an optional `move` keyword only to detect legacy syntax; it is not
+                // used in the regular `spawn ActorName(...)` form.
+                let _is_move_legacy = self.eat(&Token::Move);
 
-                // Check for lambda actor: spawn [move] (params) => body
                 if self.peek() == Some(&Token::LeftParen) {
                     let saved_pos = self.save_pos();
                     self.advance();
-                    let is_lambda_actor = self.try_parse_lambda_params().is_some() && {
+                    let is_legacy_lambda = self.try_parse_lambda_params().is_some() && {
                         self.expect(&Token::RightParen).is_some()
-                            && self.peek() == Some(&Token::FatArrow)
+                            && (self.peek() == Some(&Token::FatArrow)
+                                || self.peek() == Some(&Token::Arrow))
                     };
                     self.restore_pos(saved_pos);
 
-                    if is_lambda_actor {
-                        self.advance(); // consume (
-                        let params = self.try_parse_lambda_params()?;
-                        self.expect(&Token::RightParen)?;
-
-                        let return_type = self.parse_opt_return_type()?;
-
-                        self.expect(&Token::FatArrow)?;
-                        let body = Box::new(self.parse_expr()?);
-
-                        return Some((
-                            Expr::SpawnLambdaActor {
-                                is_move,
-                                params,
-                                return_type,
-                                body,
-                            },
+                    if is_legacy_lambda {
+                        // Consume through the entire legacy form so recovery can continue.
+                        self.advance(); // (
+                        self.try_parse_lambda_params();
+                        self.expect(&Token::RightParen);
+                        self.parse_opt_return_type();
+                        if self.eat(&Token::FatArrow) {
+                            self.parse_expr();
+                        }
+                        self.error_at_with_hint(
+                            "E_LEGACY_SPAWN_LAMBDA_SYNTAX: `spawn (...) => ...` has been removed; \
+                             use `actor |...| { ... }` instead (HEW-SPEC-2026 §4.x)"
+                                .to_string(),
                             start..self.peek_span().start,
-                        ));
+                            "replace `spawn (params) => body` with `actor |params| { body }`"
+                                .to_string(),
+                        );
+                        return None;
                     }
                 }
 
@@ -4855,50 +4984,48 @@ impl<'src> Parser<'src> {
             }
             Token::Scope => {
                 self.advance();
-                // Reject old scope.method() syntax
+                // Reject obsolete surfaces: `scope.method()` and `scope |s| { ... }`.
                 if self.eat(&Token::Dot) {
                     self.error(
-                        "'scope.method()' syntax has been removed; use 'scope |s| { s.method() }' instead"
+                        "'scope.method()' syntax has been removed; use 'scope { ... }' with `fork name = expr;` bindings instead"
                             .to_string(),
                     );
                     return None;
                 }
-                // Parse optional binding: scope |s| { ... }
-                let binding = if self.eat(&Token::Pipe) {
+                if self.peek() == Some(&Token::Pipe) {
+                    self.error(
+                        "'scope |s| { s.launch / s.spawn / s.cancel }' has been removed; use 'scope { fork name = call(...); }' instead"
+                            .to_string(),
+                    );
+                    return None;
+                }
+                Expr::Scope {
+                    body: self.parse_block()?,
+                }
+            }
+            Token::Fork => {
+                self.advance();
+                // `fork` is now exclusively the child-start verb inside a scope block:
+                // `fork name = call(...);` or bare `fork call(...);`.
+                // The legacy `fork { ... }` block form was removed; use `scope { ... }`.
+                if self.peek() == Some(&Token::LeftBrace) {
+                    self.error(
+                        "'fork { ... }' block syntax has been removed; use 'scope { ... }' for structured concurrency"
+                            .to_string(),
+                    );
+                    return None;
+                }
+                let binding = if self.fork_starts_child_binding() {
                     let name = self.expect_ident()?;
-                    self.expect(&Token::Pipe)?;
+                    self.expect(&Token::Equal)?;
                     Some(name)
                 } else {
                     None
                 };
-                // Parse the scope body with the binding active
-                let prev_binding = self.scope_binding.take();
-                self.scope_binding.clone_from(&binding);
-                let body = self.parse_block()?;
-                self.scope_binding = prev_binding;
-                Expr::Scope { binding, body }
-            }
-            Token::Fork => {
-                self.advance();
-                // Disambiguation: `fork { ... }` is always the block form.
-                // Child form cannot treat `{` as its first expression token.
-                if self.peek() == Some(&Token::LeftBrace) {
-                    Expr::Fork {
-                        body: self.parse_block()?,
-                    }
-                } else {
-                    let binding = if self.fork_starts_child_binding() {
-                        let name = self.expect_ident()?;
-                        self.expect(&Token::Equal)?;
-                        Some(name)
-                    } else {
-                        None
-                    };
-                    let expr = self.parse_expr()?;
-                    Expr::ForkChild {
-                        binding,
-                        expr: Box::new(expr),
-                    }
+                let expr = self.parse_expr()?;
+                Expr::ForkChild {
+                    binding,
+                    expr: Box::new(expr),
                 }
             }
             Token::Try => {
@@ -4981,6 +5108,27 @@ impl<'src> Parser<'src> {
             Token::This => {
                 self.advance();
                 Expr::This
+            }
+            Token::Emit => {
+                self.advance();
+                let event_name = self.expect_ident()?;
+                let fields = if self.eat(&Token::LeftBrace) {
+                    let mut fields = Vec::new();
+                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                        let field_name = self.expect_ident()?;
+                        self.expect(&Token::Colon)?;
+                        let field_val = self.parse_expr()?;
+                        fields.push((field_name, field_val));
+                        if !self.eat(&Token::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Token::RightBrace)?;
+                    fields
+                } else {
+                    Vec::new()
+                };
+                Expr::MachineEmit { event_name, fields }
             }
             // Contextual keywords that can be used as identifiers in expressions
             tok if Self::contextual_keyword_name(tok).is_some() => {
@@ -5422,10 +5570,7 @@ impl<'src> Parser<'src> {
 
     fn parse_select_arm(&mut self) -> Option<SelectArm> {
         let binding = self.parse_pattern()?;
-        // Accept either `<-` or `from` for select arms
-        if !self.eat(&Token::LeftArrow) {
-            self.expect(&Token::From)?;
-        }
+        self.expect(&Token::From)?;
         let source = self.parse_expr()?;
         self.expect(&Token::FatArrow)?;
         let body = self.parse_expr()?;
@@ -5447,8 +5592,6 @@ fn infix_bp(op: &Token) -> Option<(u8, u8)> {
     // Precedence follows Rust's ordering: bitwise ops bind tighter than
     // comparisons, which bind tighter than logical ops.
     match op {
-        // Send: lowest
-        Token::LeftArrow => Some((1, 2)), // <- (right-assoc)
         // Range
         Token::DotDot | Token::DotDotEqual => Some((3, 4)),
         // Logical OR
@@ -5502,7 +5645,6 @@ fn token_to_binop(token: &Token) -> Option<BinaryOp> {
         Token::Caret => Some(BinaryOp::BitXor),
         Token::LessLess => Some(BinaryOp::Shl),
         Token::GreaterGreater => Some(BinaryOp::Shr),
-        Token::LeftArrow => Some(BinaryOp::Send),
         Token::DotDot => Some(BinaryOp::Range),
         Token::DotDotEqual => Some(BinaryOp::RangeInclusive),
         _ => None,
@@ -6991,29 +7133,32 @@ wire type Msg {
     }
 
     #[test]
-    fn fork_keyword_emits_distinct_ast_variant() {
-        let expr = parse_let_expr("fork { 1 }");
+    fn scope_keyword_emits_scope_ast_variant() {
+        let expr = parse_let_expr("scope { 1 }");
         assert!(
-            matches!(expr, Expr::Fork { .. }),
-            "expected Fork, got {expr:?}"
+            matches!(expr, Expr::Scope { .. }),
+            "expected Scope, got {expr:?}"
         );
     }
 
     #[test]
-    fn parser_fork_block_disambiguates_from_child() {
-        let body = parse_main_body("let block = fork { 1 };\nfork child = run();\n");
+    fn parser_scope_block_distinct_from_fork_child() {
+        let body = parse_main_body("let block = scope { 1 };\nscope { fork child = run(); };\n");
         let Stmt::Let {
-            value: Some((Expr::Fork { .. }, _)),
+            value: Some((Expr::Scope { .. }, _)),
             ..
         } = &body.stmts[0].0
         else {
             panic!(
-                "expected let binding to use fork block: {:?}",
+                "expected let binding to use scope block: {:?}",
                 body.stmts[0]
             );
         };
-        let Stmt::Expression((Expr::ForkChild { binding, .. }, _)) = &body.stmts[1].0 else {
-            panic!("expected child fork expression: {:?}", body.stmts[1]);
+        let Stmt::Expression((Expr::Scope { body: inner }, _)) = &body.stmts[1].0 else {
+            panic!("expected outer scope block: {:?}", body.stmts[1]);
+        };
+        let Stmt::Expression((Expr::ForkChild { binding, .. }, _)) = &inner.stmts[0].0 else {
+            panic!("expected child fork expression: {:?}", inner.stmts[0]);
         };
         assert_eq!(binding.as_deref(), Some("child"));
     }
@@ -7047,10 +7192,10 @@ wire type Msg {
     }
 
     #[test]
-    fn parse_nested_fork_block_and_child() {
-        let expr = parse_let_expr("fork { fork run(); fork child = work(); child }");
-        let Expr::Fork { body } = expr else {
-            panic!("expected fork block");
+    fn parse_nested_scope_block_and_child() {
+        let expr = parse_let_expr("scope { fork run(); fork child = work(); child }");
+        let Expr::Scope { body } = expr else {
+            panic!("expected scope block");
         };
         assert_eq!(body.stmts.len(), 2, "expected two child statements");
         assert!(matches!(

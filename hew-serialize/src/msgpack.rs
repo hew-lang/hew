@@ -668,11 +668,7 @@ fn walk_program<V: SideTableVisitor>(
                     collect_expr(value, tco, visitor, out);
                 }
             }
-            Expr::Block(block)
-            | Expr::Unsafe(block)
-            | Expr::ScopeLaunch(block)
-            | Expr::ScopeSpawn(block)
-            | Expr::Fork { body: block } => {
+            Expr::Block(block) | Expr::Unsafe(block) => {
                 collect_block(block, tco, visitor, out);
             }
             Expr::If {
@@ -716,7 +712,7 @@ fn walk_program<V: SideTableVisitor>(
                     collect_expr(arg, tco, visitor, out);
                 }
             }
-            Expr::Scope { body, .. } => collect_block(body, tco, visitor, out),
+            Expr::Scope { body } => collect_block(body, tco, visitor, out),
             Expr::ForkChild { expr, .. } => collect_expr(expr, tco, visitor, out),
             Expr::InterpolatedString(parts) => {
                 for part in parts {
@@ -735,14 +731,10 @@ fn walk_program<V: SideTableVisitor>(
                 collect_expr(receiver, tco, visitor, out);
                 collect_call_args(args, tco, visitor, out);
             }
-            Expr::StructInit { fields, .. } => {
+            Expr::StructInit { fields, .. } | Expr::MachineEmit { fields, .. } => {
                 for (_, value) in fields {
                     collect_expr(value, tco, visitor, out);
                 }
-            }
-            Expr::Send { target, message } => {
-                collect_expr(target, tco, visitor, out);
-                collect_expr(message, tco, visitor, out);
             }
             Expr::Select { arms, timeout } => {
                 for arm in arms {
@@ -780,7 +772,6 @@ fn walk_program<V: SideTableVisitor>(
             | Expr::Identifier(_)
             | Expr::Cooperate
             | Expr::This
-            | Expr::ScopeCancel
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}
@@ -1691,6 +1682,8 @@ mod tests {
                         MachineState {
                             name: "Red".into(),
                             fields: vec![],
+                            entry: None,
+                            exit: None,
                         },
                         MachineState {
                             name: "Green".into(),
@@ -1704,6 +1697,8 @@ mod tests {
                                     10..13,
                                 ),
                             )],
+                            entry: None,
+                            exit: None,
                         },
                     ],
                     events: vec![MachineEvent {
@@ -1715,6 +1710,7 @@ mod tests {
                         source_state: "Red".into(),
                         target_state: "Green".into(),
                         guard: None,
+                        reenter: false,
                         body: (
                             Expr::Block(Block {
                                 stmts: vec![],

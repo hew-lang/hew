@@ -56,7 +56,7 @@ fn test_multiple_actors() -> int {
 
 fn test_lambda_actor() -> int {
     println("--- test_lambda_actor ---");
-    let doubler = spawn (x: int) => {
+    let doubler = actor |x: int| {
         println(f"  doubled: {x * 2}");
     };
     doubler.send(21);
@@ -77,14 +77,14 @@ fn test_actor_factory() -> int {
 }
 
 fn make_multiplier(factor: int) -> Actor<int> {
-    spawn (x: int) => {
+    actor |x: int| {
         println(f"  multiplied: {x * factor}");
     }
 }
 
 fn test_complex_lambda() -> int {
     println("--- test_complex_lambda ---");
-    let processor = spawn (n: int) => {
+    let processor = actor |n: int| {
         if n > 10 {
             println(f"  large: {n}");
         } else {

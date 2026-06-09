@@ -38,6 +38,13 @@ impl Verifier {
                     // `lower_type_decl`.
                     self.node(decl.node, decl.span.clone());
                 }
+                HirItem::Machine(machine) => {
+                    // Machine declarations are structurally verified here.
+                    // Body expressions are not lowered to HirExpr in Lane A,
+                    // so there are no binding or site IDs to verify beyond
+                    // the machine's own node ID.
+                    self.node(machine.node, machine.span.clone());
+                }
             }
         }
     }
@@ -62,6 +69,12 @@ impl Verifier {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exhaustive match on all HirExprKind variants; splitting would \
+                  obscure the exhaustiveness requirement and scatter the fail-closed \
+                  Unsupported arm away from the variants it guards"
+    )]
     fn expr(&mut self, expr: &HirExpr) {
         self.node(expr.node, expr.span.clone());
         self.site(expr.site, expr.span.clone());
@@ -103,7 +116,7 @@ impl Verifier {
                 }
             }
             HirExprKind::Literal(_) => {}
-            HirExprKind::Fork { body } => self.block(body),
+            HirExprKind::Scope { body } => self.block(body),
             HirExprKind::AwaitTask { binding_id, .. } => {
                 // Verify the binding-id referenced by the await is known to the verifier.
                 // If it's not in `self.bindings`, that indicates a dangling reference.
@@ -138,6 +151,29 @@ impl Verifier {
                     }
                     self.expr(&arm.body);
                 }
+            }
+            HirExprKind::SpawnLambdaActor { body, captures, .. } => {
+                // The lambda body is a child expression — recurse for
+                // node/site/diagnostic coverage. The capture set is
+                // metadata produced by the resolver; verify each
+                // captured binding id was declared somewhere in the
+                // HIR (catches a resolver bug that records a freed
+                // binding id).
+                self.expr(body);
+                for capture in captures {
+                    if !self.bindings.contains(&capture.binding) {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::DanglingRef {
+                                resolved: ResolvedRef::Binding(capture.binding),
+                            },
+                            expr.span.clone(),
+                            "lambda-actor capture references a binding not declared in resolved HIR",
+                        ));
+                    }
+                }
+            }
+            HirExprKind::TupleIndex { tuple, .. } => {
+                self.expr(tuple);
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive

@@ -99,10 +99,10 @@ impl Checker {
             return;
         }
         match expr {
-            Expr::Scope { .. } | Expr::Fork { .. } | Expr::Join(_) => {
+            Expr::Scope { .. } | Expr::Join(_) => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::StructuredConcurrency);
             }
-            Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) | Expr::ForkChild { .. } => {
+            Expr::ForkChild { .. } => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Tasks);
             }
             _ => {}
@@ -355,9 +355,6 @@ impl Checker {
                 }
             }
 
-            // Send: target <- message
-            Expr::Send { target, message } => self.synthesize_send(target, message, span),
-
             // Yield
             Expr::Yield(value) => self.synthesize_yield(value.as_deref(), span),
 
@@ -604,18 +601,6 @@ impl Checker {
         } else {
             Ty::Unit
         }
-    }
-
-    pub(super) fn synthesize_send(
-        &mut self,
-        target: &Spanned<Expr>,
-        message: &Spanned<Expr>,
-        span: &Span,
-    ) -> Ty {
-        let _target_ty = self.synthesize(&target.0, &target.1);
-        let msg_ty_raw = self.synthesize(&message.0, &message.1);
-        self.enforce_actor_boundary_send(&message.0, &message.1, span, &msg_ty_raw);
-        Ty::Unit
     }
 
     pub(super) fn report_invalid_actor_send(&mut self, ty: &Ty, span: &Span) {
@@ -920,14 +905,14 @@ impl Checker {
     pub(super) fn synthesize_concurrency(&mut self, expr: &Expr, span: &Span) -> Ty {
         if self.in_pure_function {
             match expr {
-                Expr::Scope { .. } | Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) => {
+                Expr::Scope { .. } => {
                     self.report_error(
                         TypeErrorKind::PurityViolation,
                         span,
                         "cannot use `scope` in a pure function".to_string(),
                     );
                 }
-                Expr::Fork { .. } | Expr::ForkChild { .. } => {
+                Expr::ForkChild { .. } => {
                     self.report_error(
                         TypeErrorKind::PurityViolation,
                         span,
@@ -959,11 +944,11 @@ impl Checker {
             }
         }
         match expr {
-            Expr::Fork { .. } | Expr::ForkChild { .. } => {
+            Expr::ForkChild { .. } => {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
-                    "`fork` is parser-only in this build; type checking lands in a follow-up change"
+                    "`fork name = expr;` is parser-only in this build; type checking lands in a follow-up change"
                         .to_string(),
                 );
                 Ty::Error
@@ -974,47 +959,165 @@ impl Checker {
                 body,
                 ..
             } => {
-                let lambda_ty =
-                    self.check_lambda(None, params, return_type.as_ref(), body, None, span);
-                if let Ty::Closure { captures, .. } = lambda_ty {
-                    let mut non_send_captures = HashSet::new();
-                    for capture in captures {
-                        if !self.registry.implements_marker(&capture, MarkerTrait::Send)
-                            && non_send_captures.insert(capture.clone())
+                // Synthesise the body without propagating the return-type annotation as
+                // a contextual hint.  This lets us extract the actual body return type
+                // and emit targeted diagnostics rather than generic Mismatch errors:
+                //   - E_LAMBDA_RETURN_TYPE_MISMATCH: body return type ≠ declared reply type.
+                //   - E_LAMBDA_SELF_ESCAPE: body returns a Duplex handle (leaks the actor).
+                // Bidirectional hint for the body is intentionally omitted here (slight
+                // inference degradation for actor bodies) to keep diagnostics clean.
+                // WHEN-OBSOLETE: if a richer bidirectional inference mode is added that
+                // can propagate a "return type hint" without actually checking the body
+                // against it, restore the hint while keeping targeted diagnostics.
+                let lambda_ty = self.check_lambda(None, params, None, body, None, span);
+                // Check captures for Send (E_DUPLEX_NON_SEND).
+                let body_ret = match &lambda_ty {
+                    Ty::Function { ret, .. } | Ty::Closure { ret, .. } => {
+                        let mut non_send_captures = vec![];
+                        if let Ty::Closure { captures, .. } = &lambda_ty {
+                            let mut seen = HashSet::new();
+                            for capture in captures {
+                                if !self.registry.implements_marker(capture, MarkerTrait::Send)
+                                    && seen.insert(capture.clone())
+                                {
+                                    non_send_captures.push(capture.clone());
+                                }
+                            }
+                        }
+                        for capture in &non_send_captures {
+                            self.report_error(
+                                TypeErrorKind::InvalidSend,
+                                span,
+                                format!(
+                                    "cannot capture `{}` in spawned actor: type is not Send (E_DUPLEX_NON_SEND)",
+                                    capture.user_facing()
+                                ),
+                            );
+                        }
+                        (**ret).clone()
+                    }
+                    _ => Ty::Unit,
+                };
+                // E_LAMBDA_SELF_ESCAPE: the lambda body returns a Duplex handle.
+                // A lambda body that produces a Duplex<...> value is leaking an actor
+                // handle outside the actor boundary — the handle's lifetime is bound to
+                // the let-binding site, not to values the body produces.
+                //
+                // CONSERVATIVE APPROXIMATION (slice 2): any Duplex-typed body is rejected,
+                // including the "factory" pattern (actor body returns a *different* actor's
+                // handle). Slice 3 can narrow this to only reject Duplex values that alias
+                // a capture from the enclosing let-binding, using MIR-level alias analysis.
+                // Until then, returning any Duplex from an actor body is forbidden.
+                //
+                // WHEN-OBSOLETE: slice 3 adds MIR-level self-ref weak capture that covers
+                // the runtime dimension of self-escape; this is the static type-level gate.
+                if body_ret.as_duplex().is_some() {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "actor lambda body returns a Duplex handle — actor handles cannot \
+                         escape the actor boundary via a return value (E_LAMBDA_SELF_ESCAPE); \
+                         use a tell-shaped actor (no return type) instead"
+                            .to_string(),
+                    );
+                }
+                // Build the message type from the parameter list.
+                // Single param → that param's type; multiple params → Tuple.
+                // No params → Unit (actor takes no argument).
+                let msg_ty = {
+                    let param_types: Vec<Ty> = params
+                        .iter()
+                        .map(|p| {
+                            p.ty.as_ref().map_or(Ty::Var(TypeVar::fresh()), |ann| {
+                                self.resolve_type_expr(ann)
+                            })
+                        })
+                        .collect();
+                    match param_types.len() {
+                        0 => Ty::Unit,
+                        1 => param_types.into_iter().next().unwrap(),
+                        _ => Ty::Tuple(param_types),
+                    }
+                };
+                // The reply type determines tell vs ask:
+                //   tell-shaped (`actor |p| { ... }` — no explicit return type, or `-> ()`)
+                //     → `Duplex<Msg, ()>` — call-site returns `Result<(), SendError>`
+                //   ask-shaped (`actor |p| -> Reply { ... }`)
+                //     → `Duplex<Msg, Reply>` — call-site returns `Result<Reply, AskError>`
+                let reply_ty = if let Some(ret_ann) = return_type.as_ref() {
+                    let resolved = self.resolve_type_expr(ret_ann);
+                    if matches!(resolved, Ty::Unit) {
+                        Ty::Unit
+                    } else {
+                        // E_LAMBDA_RETURN_TYPE_MISMATCH: body return type ≠ declared return type
+                        // for ask-shaped actors. The generic Mismatch that check_lambda would
+                        // normally emit is suppressed because we passed `None` as the return
+                        // annotation hint; we emit the targeted diagnostic here instead.
+                        let resolved_body = self.subst.resolve(&body_ret);
+                        if !matches!(resolved_body, Ty::Error | Ty::Var(_)) {
+                            let snapshot = self.subst.snapshot();
+                            let mismatch =
+                                unify(&mut self.subst, &resolved_body, &resolved).is_err();
+                            self.subst.restore(snapshot);
+                            if mismatch {
+                                self.report_error(
+                                    TypeErrorKind::ReturnTypeMismatch,
+                                    span,
+                                    format!(
+                                        "ask-shaped actor body returns `{}` but the declared reply \
+                                         type is `{}` (E_LAMBDA_RETURN_TYPE_MISMATCH)",
+                                        resolved_body.user_facing(),
+                                        resolved.user_facing()
+                                    ),
+                                );
+                            }
+                        }
+                        // Validate: ask-shaped reply must be Send (crosses actor boundary).
+                        if !self
+                            .registry
+                            .implements_marker(&resolved, MarkerTrait::Send)
                         {
                             self.report_error(
                                 TypeErrorKind::InvalidSend,
                                 span,
                                 format!(
-                                    "cannot capture `{}` in spawned actor: type is not Send",
-                                    capture.user_facing()
+                                    "ask-shaped actor reply type `{}` is not Send (E_DUPLEX_NON_SEND)",
+                                    resolved.user_facing()
                                 ),
                             );
                         }
+                        resolved
                     }
+                } else {
+                    Ty::Unit
+                };
+                // Msg type must also be Send (it crosses the actor boundary on call).
+                if !matches!(msg_ty, Ty::Unit | Ty::Var(_))
+                    && !self.registry.implements_marker(&msg_ty, MarkerTrait::Send)
+                {
+                    self.report_error(
+                        TypeErrorKind::InvalidSend,
+                        span,
+                        format!(
+                            "lambda actor message type `{}` is not Send (E_DUPLEX_NON_SEND)",
+                            msg_ty.user_facing()
+                        ),
+                    );
                 }
-                let param_ty = params
-                    .first()
-                    .and_then(|p| p.ty.as_ref())
-                    .map_or(Ty::Var(TypeVar::fresh()), |annotation| {
-                        self.resolve_type_expr(annotation)
-                    });
-                Ty::Named {
-                    name: "Actor".to_string(),
-                    args: vec![param_ty],
-                }
+                Ty::duplex(msg_ty, reply_ty)
             }
-            Expr::Scope { body: block, .. } => self.check_block(block, None),
+            Expr::Scope { body: block } => {
+                // Type-check the block body for diagnostics; the scope itself is Unit
+                // (it is a lifetime boundary, not a value-producing block).
+                self.check_block(block, None);
+                Ty::Unit
+            }
             Expr::Unsafe(block) => {
                 let prev = self.in_unsafe;
                 self.in_unsafe = true;
                 let ty = self.check_block(block, None);
                 self.in_unsafe = prev;
                 ty
-            }
-            Expr::ScopeLaunch(block) | Expr::ScopeSpawn(block) => {
-                let body_ty = self.check_block(block, None);
-                Ty::Task(Box::new(body_ty))
             }
             Expr::Select { arms, timeout } => {
                 let mut result_ty: Option<Ty> = None;
@@ -1927,11 +2030,6 @@ impl Checker {
                     Ty::range(left_ty)
                 }
             }
-            BinaryOp::Send => {
-                // target <- message
-                self.enforce_actor_boundary_send(&right.0, &right.1, &right.1, &right_ty);
-                Ty::Unit
-            }
         }
     }
 
@@ -2733,13 +2831,11 @@ impl Checker {
             | Expr::Spawn { .. }
             | Expr::SpawnLambdaActor { .. }
             | Expr::Scope { .. }
-            | Expr::Fork { .. }
             | Expr::ForkChild { .. }
             | Expr::InterpolatedString(_)
             | Expr::Call { .. }
             | Expr::MethodCall { .. }
             | Expr::StructInit { .. }
-            | Expr::Send { .. }
             | Expr::Select { .. }
             | Expr::Join(_)
             | Expr::Timeout { .. }
@@ -2753,12 +2849,10 @@ impl Checker {
             | Expr::PostfixTry(_)
             | Expr::Range { .. }
             | Expr::Await(_)
-            | Expr::ScopeLaunch(_)
-            | Expr::ScopeSpawn(_)
-            | Expr::ScopeCancel
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
-            | Expr::ByteArrayLiteral(_) => {}
+            | Expr::ByteArrayLiteral(_)
+            | Expr::MachineEmit { .. } => {}
         }
     }
 

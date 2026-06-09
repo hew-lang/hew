@@ -41,8 +41,8 @@ example yet. Defer until a real workload makes the missing case concrete.
 
 **[Target: v0.6]**
 
-Edition 2026 cancellation is **scope-structural only**: a `fork {}`
-cancels its children when any child fails or when the scope exits. No
+Edition 2026 cancellation is **scope-structural only**: a `scope {}`
+block cancels its children when any child fails or when the scope exits. No
 user-visible `CancellationToken` type, no `Token.cancel()`, no
 `#[noncancellable]` attribute as a stabilised surface (it parses today
 but is gated to future-edition status).

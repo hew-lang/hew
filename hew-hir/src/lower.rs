@@ -1,16 +1,20 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{
-    BinaryOp, Block, Expr, FnDecl, Item, Literal, Pattern, Program, ResourceMarker, SelectArm,
-    Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
+    BinaryOp, Block, Expr, FnDecl, Item, LambdaParam, Literal, MachineDecl, Pattern, Program,
+    ResourceMarker, SelectArm, Span, Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl,
+    TypeExpr,
 };
-use hew_types::ResolvedTy;
+use hew_types::{MethodCallRewrite, ResolvedTy, SpanKey, TypeCheckOutput};
 
+use crate::builtin_type_classes::seed_builtin_type_classes;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef};
 use crate::node::{
-    HirBinding, HirBlock, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLiteral, HirModule,
-    HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirTypeDecl,
+    HirBinding, HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem,
+    HirLambdaCapture, HirLiteral, HirMachineDecl, HirMachineEvent, HirMachineState,
+    HirMachineTransition, HirModule, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt,
+    HirStmtKind, HirTypeDecl,
 };
 use crate::{IntentKind, ValueClass};
 
@@ -32,8 +36,12 @@ struct FnEntry {
 }
 
 #[must_use]
-pub fn lower_program(program: &Program, _ctx: &ResolutionCtx) -> LowerOutput {
-    let mut ctx = LowerCtx::default();
+pub fn lower_program(
+    program: &Program,
+    type_check_output: &TypeCheckOutput,
+    _ctx: &ResolutionCtx,
+) -> LowerOutput {
+    let mut ctx = LowerCtx::new(type_check_output);
 
     // First pass: collect all function signatures so that forward and mutual
     // references in call expressions resolve to the correct return type.
@@ -101,6 +109,11 @@ pub fn lower_program(program: &Program, _ctx: &ResolutionCtx) -> LowerOutput {
             Item::Function(func) => {
                 items.push(HirItem::Function(ctx.lower_fn(func, span.clone())));
             }
+            Item::Machine(machine) => {
+                if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
+                    items.push(HirItem::Machine(hir_machine));
+                }
+            }
             _ => ctx.unsupported(span.clone(), "top-level-item", "slice-2"),
         }
     }
@@ -114,7 +127,7 @@ pub fn lower_program(program: &Program, _ctx: &ResolutionCtx) -> LowerOutput {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct LowerCtx {
     ids: IdGen,
     scopes: Vec<HashMap<String, (BindingId, ResolvedTy)>>,
@@ -123,13 +136,20 @@ struct LowerCtx {
     /// Per-named-type marker + close-method registry. Pre-populated from
     /// every `Item::TypeDecl` before function bodies lower so that
     /// `ValueClass::of_ty` can resolve `Named` types as the body is walked.
+    /// Also seeded with M2 substrate types (Duplex, Sink, Stream, etc.) via
+    /// `builtin_type_classes::seed_builtin_type_classes` before the `TypeDecl` loop.
     type_classes: crate::value_class::TypeClassTable,
     diagnostics: Vec<HirDiagnostic>,
-    /// Depth counter for nested `fork{}` bodies. When > 0, statement-expression
-    /// calls are inferred as child-task spawns (TI-1); outside any fork body
+    /// Checker-owned method-call lowering decisions. Keyed by the method-call
+    /// expression span. `Expr::MethodCall` lowering looks up each call site
+    /// here and rewrites to `HirExprKind::Call` with the runtime symbol.
+    /// A missing entry is a fail-closed diagnostic (`MethodCallNoRewrite`).
+    method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Depth counter for nested `scope{}` bodies. When > 0, statement-expression
+    /// calls are inferred as child-task spawns (TI-1); outside any scope body
     /// all calls are synchronous (TI-3). Using a depth counter rather than a
-    /// bool supports nested `fork{}` blocks correctly.
-    fork_depth: u32,
+    /// bool supports nested `scope{}` blocks correctly.
+    scope_depth: u32,
     /// Set to `true` immediately before lowering the expression of a
     /// `Stmt::Expression` statement. `lower_expr` consumes it via
     /// `mem::replace(…, false)` at entry, so all recursive calls see `false`.
@@ -137,6 +157,36 @@ struct LowerCtx {
     /// a sub-expression of a return value, argument, binary operand, etc.
     /// (TI-4 position rule.)
     statement_position: bool,
+    /// `Some((let_id, let_name))` while lowering the body of an actor-lambda
+    /// that is the value of `let <let_name> = actor |..| { .. }`. The
+    /// capture-strength classifier inside the body walk compares each
+    /// resolved capture's `BindingId` to `let_id` to discriminate the
+    /// self-reference (Weak, §5.9 ratification 2) from every other captured
+    /// binding (Strong). Nested actor-lambdas restore the prior value via
+    /// `mem::replace` so the outer self-binding doesn't leak into an inner
+    /// lambda's classification.
+    current_actor_self: Option<(BindingId, String)>,
+}
+
+impl LowerCtx {
+    fn new(tc_output: &TypeCheckOutput) -> Self {
+        let mut type_classes = crate::value_class::TypeClassTable::default();
+        // Seed compiler-known M2 substrate types before source-order TypeDecls.
+        // This ensures `ValueClass::of_ty` resolves Duplex/Sink/Stream as
+        // AffineResource even though they are not user-declared TypeDecl items.
+        seed_builtin_type_classes(&mut type_classes);
+        Self {
+            ids: IdGen::default(),
+            scopes: Vec::new(),
+            fn_registry: HashMap::new(),
+            type_classes,
+            diagnostics: Vec::new(),
+            method_call_rewrites: tc_output.method_call_rewrites.clone(),
+            scope_depth: 0,
+            statement_position: false,
+            current_actor_self: None,
+        }
+    }
 }
 
 impl LowerCtx {
@@ -264,12 +314,295 @@ impl LowerCtx {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "machine lowering has three distinct phases (structure, checks, assembly) \
+                  that read more clearly as a single function than as multiple helpers"
+    )]
+    fn lower_machine(
+        &mut self,
+        decl: &MachineDecl,
+        span: std::ops::Range<usize>,
+    ) -> Option<HirMachineDecl> {
+        // Lower states.
+        let mut hir_states = Vec::new();
+        for state in &decl.states {
+            let fields: Vec<HirField> = state
+                .fields
+                .iter()
+                .map(|(name, ty)| HirField {
+                    name: name.clone(),
+                    ty: self.lower_type(ty),
+                    span: ty.1.clone(),
+                })
+                .collect();
+
+            // Shallow-scan the entry and exit blocks for field-assignment targets.
+            // Lane A does not fully lower block bodies; this is enough for
+            // effect-parity checking.
+            let entry_writes = state
+                .entry
+                .as_ref()
+                .map(collect_assigned_field_names)
+                .unwrap_or_default();
+            let exit_writes = state
+                .exit
+                .as_ref()
+                .map(collect_assigned_field_names)
+                .unwrap_or_default();
+
+            hir_states.push(HirMachineState {
+                name: state.name.clone(),
+                fields,
+                has_entry: state.entry.is_some(),
+                has_exit: state.exit.is_some(),
+                entry_writes,
+                exit_writes,
+                span: span.clone(),
+            });
+        }
+
+        // Lower events.
+        let hir_events: Vec<HirMachineEvent> = decl
+            .events
+            .iter()
+            .map(|ev| {
+                let fields = ev
+                    .fields
+                    .iter()
+                    .map(|(name, ty)| HirField {
+                        name: name.clone(),
+                        ty: self.lower_type(ty),
+                        span: ty.1.clone(),
+                    })
+                    .collect();
+                HirMachineEvent {
+                    name: ev.name.clone(),
+                    fields,
+                    span: span.clone(),
+                }
+            })
+            .collect();
+
+        // Lower transitions — shallow: record names, guard presence, body writes,
+        // and emitted event names (for static checks). Body expressions are not
+        // lowered to HirExpr in Lane A.
+        let hir_transitions: Vec<HirMachineTransition> = decl
+            .transitions
+            .iter()
+            .map(|tr| {
+                let is_self_transition =
+                    tr.source_state == tr.target_state && tr.source_state != "_";
+                let body_writes = collect_assigned_field_names_expr(&tr.body.0);
+                let body_emits = collect_emitted_events(&tr.body.0);
+                HirMachineTransition {
+                    event_name: tr.event_name.clone(),
+                    source_state: tr.source_state.clone(),
+                    target_state: tr.target_state.clone(),
+                    has_guard: tr.guard.is_some(),
+                    is_self_transition,
+                    reenter: tr.reenter,
+                    body_writes,
+                    body_emits,
+                    span: tr.body.1.clone(),
+                }
+            })
+            .collect();
+
+        // ── Static checks ────────────────────────────────────────────────────
+
+        // 1. Exhaustiveness: every concrete (state, event) pair must have a
+        //    transition, or a `default` arm must exist, or a wildcard source `_`
+        //    covers it.
+        if !decl.has_default {
+            let mut missing: Vec<(String, String)> = Vec::new();
+            for state in &decl.states {
+                for event in &decl.events {
+                    let covered = decl.transitions.iter().any(|tr| {
+                        tr.event_name == event.name
+                            && (tr.source_state == state.name || tr.source_state == "_")
+                    });
+                    if !covered {
+                        missing.push((state.name.clone(), event.name.clone()));
+                    }
+                }
+            }
+            if !missing.is_empty() {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::MachineExhaustivenessViolation {
+                        machine_name: decl.name.clone(),
+                        missing,
+                    },
+                    span.clone(),
+                    format!(
+                        "machine `{}` does not handle all (state, event) pairs; \
+                         add the missing transitions or a `default` arm",
+                        decl.name
+                    ),
+                ));
+                return None;
+            }
+        }
+
+        // 2. Self-transition @reenter rule: a non-empty self-loop body without
+        //    @reenter is a compile error. Empty body OR @reenter are both OK.
+        //    "Empty" means the body resolves to `Expr::Identifier(target_state)`
+        //    (the no-body semicolon shorthand) or an `Expr::Block` with no stmts
+        //    and no trailing expression.
+        for tr in decl.transitions.iter().zip(hir_transitions.iter()) {
+            let (ast_tr, hir_tr) = tr;
+            if !hir_tr.is_self_transition || hir_tr.reenter {
+                continue;
+            }
+            let body_is_empty = is_empty_self_body(&ast_tr.body.0, &hir_tr.target_state);
+            if !body_is_empty {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::MachineSelfTransitionNeedsReenter {
+                        machine_name: decl.name.clone(),
+                        state_name: hir_tr.source_state.clone(),
+                        event_name: hir_tr.event_name.clone(),
+                    },
+                    hir_tr.span.clone(),
+                    format!(
+                        "self-transition `on {event}` in state `{state}` has a non-empty body \
+                         but is not annotated `@reenter`; annotate with `@reenter` to opt in to \
+                         Mealy re-entry semantics, or remove the body",
+                        event = hir_tr.event_name,
+                        state = hir_tr.source_state,
+                    ),
+                ));
+            }
+        }
+
+        // 3. Effect-parity: a transition body that writes a field also written
+        //    by the *target* state's `entry` block or the *source* state's `exit`
+        //    block creates ambiguous initialization/teardown order.
+        for tr in &hir_transitions {
+            if tr.body_writes.is_empty() {
+                continue;
+            }
+            // Check target entry conflict.
+            if let Some(target) = hir_states.iter().find(|s| s.name == tr.target_state) {
+                for field in &tr.body_writes {
+                    if let Some((_, entry_assign_span)) =
+                        target.entry_writes.iter().find(|(n, _)| n == field)
+                    {
+                        self.diagnostics.push(
+                            HirDiagnostic::new(
+                                HirDiagnosticKind::MachineEffectParityViolation {
+                                    machine_name: decl.name.clone(),
+                                    state_name: tr.target_state.clone(),
+                                    field_name: field.clone(),
+                                    transition_event: tr.event_name.clone(),
+                                    is_entry_conflict: true,
+                                },
+                                tr.span.clone(),
+                                format!(
+                                    "transition `on {}` body and state `{}` entry block both \
+                                     write field `{}`; remove the write from one site",
+                                    tr.event_name, tr.target_state, field
+                                ),
+                            )
+                            .with_secondary_spans(vec![(
+                                entry_assign_span.clone(),
+                                format!(
+                                    "state `{}` entry block assigns `{}` here",
+                                    tr.target_state, field
+                                ),
+                            )]),
+                        );
+                    }
+                }
+            }
+            // Check source exit conflict.
+            if let Some(source) = hir_states.iter().find(|s| s.name == tr.source_state) {
+                for field in &tr.body_writes {
+                    if let Some((_, exit_assign_span)) =
+                        source.exit_writes.iter().find(|(n, _)| n == field)
+                    {
+                        self.diagnostics.push(
+                            HirDiagnostic::new(
+                                HirDiagnosticKind::MachineEffectParityViolation {
+                                    machine_name: decl.name.clone(),
+                                    state_name: tr.source_state.clone(),
+                                    field_name: field.clone(),
+                                    transition_event: tr.event_name.clone(),
+                                    is_entry_conflict: false,
+                                },
+                                tr.span.clone(),
+                                format!(
+                                    "transition `on {}` body and state `{}` exit block both \
+                                     write field `{}`; remove the write from one site",
+                                    tr.event_name, tr.source_state, field
+                                ),
+                            )
+                            .with_secondary_spans(vec![(
+                                exit_assign_span.clone(),
+                                format!(
+                                    "state `{}` exit block assigns `{}` here",
+                                    tr.source_state, field
+                                ),
+                            )]),
+                        );
+                    }
+                }
+            }
+        }
+
+        // 4. Emit-cycle: `on E` transition that directly emits `E` would
+        //    immediately re-trigger its own handler.
+        for tr in &hir_transitions {
+            if tr.body_emits.contains(&tr.event_name) {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::MachineEmitCycle {
+                        machine_name: decl.name.clone(),
+                        event_name: tr.event_name.clone(),
+                    },
+                    tr.span.clone(),
+                    format!(
+                        "transition `on {}` emits `{}` which immediately re-triggers itself; \
+                         rename the emitted event or remove the emit",
+                        tr.event_name, tr.event_name
+                    ),
+                ));
+            }
+        }
+
+        // Fail-closed: if any diagnostic was pushed for this machine, abort.
+        // (Effect-parity, self-transition, and emit-cycle diagnostics are not
+        // return-None by themselves but we abort to avoid a partially-valid
+        // machine in HIR.)
+        let has_machine_errors = self.diagnostics.iter().any(|d| {
+            matches!(
+                &d.kind,
+                HirDiagnosticKind::MachineSelfTransitionNeedsReenter { machine_name, .. }
+                | HirDiagnosticKind::MachineEffectParityViolation { machine_name, .. }
+                | HirDiagnosticKind::MachineEmitCycle { machine_name, .. }
+                if machine_name == &decl.name
+            )
+        });
+        if has_machine_errors {
+            return None;
+        }
+
+        Some(HirMachineDecl {
+            id: self.ids.item(),
+            node: self.ids.node(),
+            name: decl.name.clone(),
+            states: hir_states,
+            events: hir_events,
+            transitions: hir_transitions,
+            has_default: decl.has_default,
+            span,
+        })
+    }
+
     fn lower_block(&mut self, block: &Block, expected_ty: &ResolvedTy) -> HirBlock {
         self.push_scope();
         let scope = self.ids.scope();
         let mut statements = Vec::new();
         for (stmt, span) in &block.stmts {
-            statements.push(self.lower_stmt(stmt, span.clone(), expected_ty.clone()));
+            statements.extend(self.lower_stmt_multi(stmt, span.clone(), expected_ty.clone()));
         }
         let tail = block
             .trailing_expr
@@ -290,6 +623,164 @@ impl LowerCtx {
         }
     }
 
+    /// Lower a statement, returning zero or more `HirStmt`s.
+    ///
+    /// Most statements produce exactly one `HirStmt` (delegated to `lower_stmt`).
+    /// `let (a, b) = expr;` (Q33 tuple-let) produces:
+    ///   1. `let __tuple_N = expr;`    — binds the tuple value to a synthetic temp
+    ///   2. `let a = __tuple_N.0;`     — per-element projection (as many as elements)
+    ///   3. `let b = __tuple_N.1;`
+    ///
+    /// The element projections use a synthetic `HirExprKind::TupleIndex` node.
+    /// Downstream MIR lowering handles tuple projections in the `Expr::Call` return
+    /// path for `duplex_pair`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "tuple-let expansion has three phases (validation, temp-bind, per-element loop) \
+                  that read more clearly as a single function; splitting would obscure the \
+                  invariant that temp-bind and per-element refs share the same temp_name"
+    )]
+    fn lower_stmt_multi(
+        &mut self,
+        stmt: &Stmt,
+        span: std::ops::Range<usize>,
+        return_ty: ResolvedTy,
+    ) -> Vec<HirStmt> {
+        // Tuple-let: `let (a, b, ...) = value_expr;`
+        if let Stmt::Let {
+            pattern,
+            ty: annotation,
+            value: Some(value_expr),
+        } = stmt
+        {
+            if let Pattern::Tuple(element_patterns) = &pattern.0 {
+                // Lower the tuple value once into a synthetic temp binding.
+                let tuple_val = self.lower_expr(value_expr, IntentKind::Consume);
+                let tuple_ty = tuple_val.ty.clone();
+
+                // Validate the pattern element count against the inferred tuple type.
+                let element_tys: Vec<ResolvedTy> = if let ResolvedTy::Tuple(elems) = &tuple_ty {
+                    if elems.len() != element_patterns.len() {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CutoverUnsupported {
+                                construct: format!(
+                                    "tuple pattern with {} elements for tuple with {} elements",
+                                    element_patterns.len(),
+                                    elems.len()
+                                ),
+                                slice_target: "type-checker".to_string(),
+                            },
+                            span.clone(),
+                            "tuple pattern element count does not match tuple value arity",
+                        ));
+                        return vec![HirStmt {
+                            node: self.ids.node(),
+                            kind: HirStmtKind::Expr(
+                                self.unsupported_expr(span, "tuple arity mismatch"),
+                            ),
+                            span: 0..0,
+                        }];
+                    }
+                    elems.clone()
+                } else if annotation.is_none() {
+                    // Type not yet resolved — use Unit for each element (diagnostic
+                    // already emitted by the checker; HIR does best-effort lowering).
+                    vec![ResolvedTy::Unit; element_patterns.len()]
+                } else {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CutoverUnsupported {
+                            construct: "tuple pattern on non-tuple value".to_string(),
+                            slice_target: "type-checker".to_string(),
+                        },
+                        span.clone(),
+                        "tuple-let pattern requires the right-hand side to have a tuple type",
+                    ));
+                    return vec![HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(
+                            self.unsupported_expr(span, "tuple pattern on non-tuple"),
+                        ),
+                        span: 0..0,
+                    }];
+                };
+
+                // Synthetic temp name — unlikely to collide with user identifiers.
+                let temp_name = format!("__tuple_{}", self.ids.binding().0);
+                let temp_binding =
+                    self.bind(temp_name.clone(), tuple_ty.clone(), false, span.clone());
+                let temp_stmt = HirStmt {
+                    node: self.ids.node(),
+                    kind: HirStmtKind::Let(temp_binding, Some(tuple_val)),
+                    span: span.clone(),
+                };
+
+                let mut stmts = vec![temp_stmt];
+
+                // Per-element projection lets.
+                for (idx, (elem_pat, elem_ty)) in
+                    element_patterns.iter().zip(element_tys).enumerate()
+                {
+                    let elem_name = match &elem_pat.0 {
+                        Pattern::Identifier(n) => n.clone(),
+                        Pattern::Wildcard => format!("_{idx}"),
+                        _ => {
+                            // Nested tuple / constructor patterns are out of scope.
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CutoverUnsupported {
+                                    construct: "nested pattern in tuple-let".to_string(),
+                                    slice_target: "pattern-matching".to_string(),
+                                },
+                                elem_pat.1.clone(),
+                                "only identifier and wildcard patterns are supported \
+                                 inside tuple-let in v0.5",
+                            ));
+                            format!("__unsupported_{idx}")
+                        }
+                    };
+
+                    // Build a TupleIndex expression: `__tuple_N.<idx>`.
+                    let temp_ref = HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        value_class: ValueClass::of_ty(&tuple_ty, &self.type_classes),
+                        ty: tuple_ty.clone(),
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::BindingRef {
+                            name: temp_name.clone(),
+                            // The temp was just bound so it is always resolved.
+                            resolved: ResolvedRef::Unresolved,
+                        },
+                        span: span.clone(),
+                    };
+                    let projection = HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        value_class: ValueClass::of_ty(&elem_ty, &self.type_classes),
+                        ty: elem_ty.clone(),
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::TupleIndex {
+                            tuple: Box::new(temp_ref),
+                            index: idx,
+                        },
+                        span: elem_pat.1.clone(),
+                    };
+
+                    let elem_binding = self.bind(elem_name, elem_ty, false, elem_pat.1.clone());
+                    stmts.push(HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Let(elem_binding, Some(projection)),
+                        span: elem_pat.1.clone(),
+                    });
+                }
+
+                return stmts;
+            }
+        }
+
+        // Non-tuple statements: delegate to the single-statement path.
+        vec![self.lower_stmt(stmt, span, return_ty)]
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "single large match on stmt variants; splitting would hurt readability"
@@ -303,7 +794,7 @@ impl LowerCtx {
         let kind = match stmt {
             Stmt::Let { pattern, ty, value } => {
                 // `await expr` is only legal as a statement-expression inside a
-                // fork{} body (TI-4). Using it as a let-value is always rejected —
+                // scope{} body (TI-4). Using it as a let-value is always rejected —
                 // the await result is consumed immediately and has no place to bind.
                 if let Some(val_expr) = value {
                     if matches!(&val_expr.0, Expr::Await(_)) {
@@ -311,7 +802,7 @@ impl LowerCtx {
                             HirDiagnosticKind::AwaitOutOfPosition,
                             val_expr.1.clone(),
                             "`await` cannot be used as a let-value; \
-                             it is only legal as a statement-expression inside a `fork{}` body",
+                             it is only legal as a statement-expression inside a `scope{}` body",
                         ));
                         let name = self
                             .pattern_name(pattern)
@@ -328,6 +819,58 @@ impl LowerCtx {
                             span,
                         };
                     }
+                }
+                // Forward-bind for actor-lambda RHS. When the value is
+                // `actor |params| { body }` and the let-pattern is a bare
+                // identifier, the body may reference its own let-name for
+                // recursive self-dispatch (HEW-SPEC §5.9 ratification 2).
+                // Pre-bind the name BEFORE lowering the body so the body's
+                // identifier reference resolves to a
+                // `ResolvedRef::Binding(let_id)` rather than `Unresolved`.
+                // The capture-strength classifier in `lower_expr`'s
+                // `Expr::SpawnLambdaActor` arm checks the resolved id
+                // against this let's id to discriminate Weak (self) from
+                // Strong (every other free-variable capture).
+                //
+                // The pre-bind fires for both untyped and typed lets. The
+                // binding type follows the annotation when present (the
+                // type-checker layer reconciles the annotation against the
+                // lambda's synthesised Duplex shape) and falls back to the
+                // synthetic `Duplex<Msg, Reply>` derived from the lambda's
+                // parameter / return annotations otherwise.
+                if let (
+                    Pattern::Identifier(name),
+                    Some((
+                        Expr::SpawnLambdaActor {
+                            params: lambda_params,
+                            return_type,
+                            ..
+                        },
+                        _,
+                    )),
+                ) = (&pattern.0, value.as_ref())
+                {
+                    let binding_ty = match ty.as_ref() {
+                        Some(annotation) => self.lower_type(annotation),
+                        None => self.actor_lambda_duplex_ty(lambda_params, return_type.as_ref()),
+                    };
+                    // Pre-bind in the current scope; record the id so
+                    // we can detect a self-reference inside the body
+                    // walk via builder state.
+                    let pre_binding = self.bind(name.clone(), binding_ty, false, pattern.1.clone());
+                    let prior = self
+                        .current_actor_self
+                        .replace((pre_binding.id, name.clone()));
+                    let lowered_value = self.lower_expr(
+                        value.as_ref().expect("value Some checked above"),
+                        IntentKind::Consume,
+                    );
+                    self.current_actor_self = prior;
+                    return HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Let(pre_binding, Some(lowered_value)),
+                        span,
+                    };
                 }
                 let value = value
                     .as_ref()
@@ -362,8 +905,8 @@ impl LowerCtx {
                 HirStmtKind::Let(binding, value)
             }
             Stmt::Expression(expr) => {
-                // Inside a fork{} body, statement-expression calls are child-task
-                // spawns (TI-1). Outside fork{} bodies all calls are synchronous
+                // Inside a scope{} body, statement-expression calls are child-task
+                // spawns (TI-1). Outside scope{} bodies all calls are synchronous
                 // (TI-3). The TI-1 rewrite only applies when the expression is a
                 // direct call — nested calls inside sub-expressions remain sync.
                 //
@@ -373,7 +916,7 @@ impl LowerCtx {
                 // sub-expression). The flag is consumed by `mem::replace` at the
                 // top of `lower_expr`, so recursive calls see `false`.
                 self.statement_position = true;
-                if self.fork_depth > 0 {
+                if self.scope_depth > 0 {
                     if let Expr::Call { .. } = &expr.0 {
                         let spawned = self.lower_spawned_call(expr);
                         HirStmtKind::Expr(spawned)
@@ -396,7 +939,7 @@ impl LowerCtx {
                             HirDiagnosticKind::TaskCannotEscape,
                             value.1.clone(),
                             "a `Task<T>` handle cannot escape via `return`; \
-                             await it inside the `fork{}` body with `await name`",
+                             await it inside the `scope{}` body with `await name`",
                         ));
                     } else if expr.ty != return_ty && return_ty != ResolvedTy::Unit {
                         self.diagnostics.push(HirDiagnostic::new(
@@ -538,37 +1081,37 @@ impl LowerCtx {
                     },
                 )
             }
-            Expr::Fork { body } => {
-                // A `fork{}` block lowers to `HirExprKind::Fork`. Inside the
+            Expr::Scope { body } => {
+                // A `scope{}` block lowers to `HirExprKind::Scope`. Inside the
                 // body, statement-calls become spawned-call nodes (TI-1) and
                 // `fork name = call(...)` statements introduce `Task<T>` bindings
-                // (TI-2). The fork block's type is `Unit` — it does not produce
-                // a value at the use site.
-                self.fork_depth += 1;
-                let hir_body = self.lower_fork_block(body);
-                self.fork_depth -= 1;
-                (HirExprKind::Fork { body: hir_body }, ResolvedTy::Unit)
+                // (TI-2). The scope block's type is `Unit` — it is a lifetime
+                // boundary, not a value-producing expression.
+                self.scope_depth += 1;
+                let hir_body = self.lower_scope_block(body);
+                self.scope_depth -= 1;
+                (HirExprKind::Scope { body: hir_body }, ResolvedTy::Unit)
             }
             Expr::ForkChild { binding, expr } => {
-                // `fork name = expr` outside a `fork{}` body: no spawn context,
+                // `fork name = expr` outside a `scope{}` body: no spawn context,
                 // so this is malformed. Emit CutoverUnsupported — the grammar
-                // accepts this form but HIR-lowering requires fork context.
-                // (Inside fork{} bodies this variant is handled by lower_fork_block,
+                // accepts this form but HIR-lowering requires scope context.
+                // (Inside scope{} bodies this variant is handled by lower_scope_block,
                 // not by lower_expr directly.)
-                if self.fork_depth == 0 {
+                if self.scope_depth == 0 {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::AwaitOutOfPosition,
                         span.clone(),
-                        "`fork name = expr` is only valid inside a `fork{}` body",
+                        "`fork name = expr` is only valid inside a `scope{}` body",
                     ));
                     (
                         HirExprKind::Unsupported(
-                            "`fork name = expr` outside fork body".to_string(),
+                            "`fork name = expr` outside scope body".to_string(),
                         ),
                         ResolvedTy::Unit,
                     )
                 } else {
-                    // Inside a fork body, lower_fork_block handles this case;
+                    // Inside a scope body, lower_scope_block handles this case;
                     // reaching here means the expression appeared in a non-statement
                     // position (e.g. tail expression). Reject: task handles cannot
                     // be used as values.
@@ -587,17 +1130,17 @@ impl LowerCtx {
             }
             Expr::Await(inner) => {
                 // `await expr` — only legal as the direct statement-expression
-                // inside a `fork{}` body in v0.5 (TI-4). Sub-expression positions
+                // inside a `scope{}` body in v0.5 (TI-4). Sub-expression positions
                 // (return value, function argument, binary operand, let value, block
                 // tail, etc.) are rejected with `AwaitOutOfPosition`.
                 // `in_stmt_position` is set by `Stmt::Expression` in `lower_stmt`
                 // and consumed by `mem::replace` at the top of this function, so
                 // recursive calls always see `false`.
-                if self.fork_depth == 0 || !in_stmt_position {
+                if self.scope_depth == 0 || !in_stmt_position {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::AwaitOutOfPosition,
                         span.clone(),
-                        "`await` is only legal as a statement-expression inside a `fork{}` body \
+                        "`await` is only legal as a statement-expression inside a `scope{}` body \
                          in v0.5. It cannot be used as a return value, function argument, \
                          binary operand, or let-value. Move the await to its own statement.",
                     ));
@@ -675,6 +1218,17 @@ impl LowerCtx {
             Expr::Select { arms, timeout } => {
                 self.lower_select(arms, timeout.as_deref(), span.clone())
             }
+            Expr::SpawnLambdaActor {
+                params,
+                return_type,
+                body,
+                ..
+            } => self.lower_spawn_lambda_actor(params, return_type.as_ref(), body),
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => self.lower_method_call(receiver, method, args, span.clone()),
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -809,6 +1363,150 @@ impl LowerCtx {
 
         let result_ty = expected_ty.unwrap_or(ResolvedTy::Unit);
         (HirExprKind::Select(HirSelect { arms: hir_arms }), result_ty)
+    }
+
+    /// Build the `Duplex<Msg, Reply>` `ResolvedTy` for an actor-lambda
+    /// from its parameter list and optional return-type annotation.
+    /// Mirrors the forward-bind logic in `hew-types::check::statements`:
+    /// zero params → Unit message; one param → that param's type;
+    /// multiple params → tuple of param types. The HIR layer only needs
+    /// a placeholder shape so the forward-bind succeeds and capture
+    /// resolution sees the let-name.
+    ///
+    /// SHIM — `ResolvedTy::Unit` for missing param / return annotations.
+    ///
+    /// - WHY: HIR has no type-inference machinery; the slice-2 type
+    ///   checker uses `TypeVar::fresh()` to allocate inference variables
+    ///   which HIR cannot represent. The forward-bind only needs a
+    ///   syntactic placeholder so the body's recursive self-reference
+    ///   resolves to a `BindingId`; the actual type identity is
+    ///   reconstructed downstream.
+    /// - WHEN OBSOLETE: either HIR gains a placeholder type variant
+    ///   (an explicit `ResolvedTy::Hole` or equivalent) for forward-bind
+    ///   sites, or the post-typecheck pipeline rewrites HIR binding
+    ///   types from the slice-2 unifier's substitution table via a
+    ///   side-table keyed on `BindingId`.
+    /// - REAL SOLUTION: lift the slice-2 unifier's substitution into a
+    ///   `BindingId → Ty` side-table emitted alongside HIR and consumed
+    ///   by MIR lowering, so HIR never has to invent a stand-in.
+    fn actor_lambda_duplex_ty(
+        &mut self,
+        params: &[LambdaParam],
+        return_type: Option<&Spanned<TypeExpr>>,
+    ) -> ResolvedTy {
+        let param_tys: Vec<ResolvedTy> = params
+            .iter()
+            .map(|p| {
+                p.ty.as_ref()
+                    .map_or(ResolvedTy::Unit, |annotation| self.lower_type(annotation))
+            })
+            .collect();
+        let msg_ty = match param_tys.len() {
+            0 => ResolvedTy::Unit,
+            1 => param_tys.into_iter().next().unwrap(),
+            _ => ResolvedTy::Tuple(param_tys),
+        };
+        let reply_ty = return_type
+            .as_ref()
+            .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
+        ResolvedTy::Named {
+            name: "Duplex".to_string(),
+            args: vec![msg_ty, reply_ty],
+        }
+    }
+
+    /// Lower an `Expr::SpawnLambdaActor` to an
+    /// `HirExprKind::SpawnLambdaActor` with a resolved capture set.
+    ///
+    /// The lambda body lowers inside a fresh scope so the parameter
+    /// bindings shadow outer names; after the body is built the
+    /// `current_actor_self` field tells us whether the body lives
+    /// under a `let <name> = actor |..| { .. }` forward-bind. The
+    /// capture walker then collects every `BindingRef { resolved:
+    /// Binding(id) }` whose `id` refers to a binding from an outer
+    /// scope (not a parameter introduced by this lambda) and
+    /// classifies the strength: `id == current_actor_self.0` → Weak
+    /// (recursive self-dispatch, §5.9 ratification 2), else → Strong.
+    ///
+    /// The HIR `expr.ty` is the Duplex<Msg, Reply> handle type. The
+    /// MIR producer wires this directly into a
+    /// `Place::LambdaActorHandle` whose drop selects
+    /// `DropKind::LambdaActorRelease`.
+    fn lower_spawn_lambda_actor(
+        &mut self,
+        params: &[LambdaParam],
+        return_type: Option<&Spanned<TypeExpr>>,
+        body: &Spanned<Expr>,
+    ) -> (HirExprKind, ResolvedTy) {
+        let actor_ty = self.actor_lambda_duplex_ty(params, return_type);
+        let reply_ty = match &actor_ty {
+            ResolvedTy::Named { args, .. } if args.len() == 2 => args[1].clone(),
+            _ => ResolvedTy::Unit,
+        };
+        // Lower params + body inside a new scope. Track the parameter
+        // BindingIds so the capture walker can exclude them (params
+        // are intra-lambda bindings, not captures from the enclosing
+        // scope).
+        self.push_scope();
+        let mut hir_params: Vec<HirBinding> = Vec::with_capacity(params.len());
+        let mut param_ids: std::collections::HashSet<BindingId> =
+            std::collections::HashSet::with_capacity(params.len());
+        for param in params {
+            let ty = param
+                .ty
+                .as_ref()
+                .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
+            let binding = self.bind(param.name.clone(), ty, false, 0..0);
+            param_ids.insert(binding.id);
+            hir_params.push(binding);
+        }
+        // Lexically scope `current_actor_self` to THIS lambda body. If the
+        // caller (`lower_stmt`'s let-pre-bind path) set it before invoking
+        // `lower_expr`, that value is this lambda's self-id; otherwise this
+        // lambda is in expression position (anonymous) and has no self-id.
+        // Take the value out for the duration of the body walk so any
+        // nested actor-lambda lowered from within `body` does not inherit
+        // it — nested anonymous lambdas would otherwise misclassify
+        // captures of THIS lambda's enclosing-scope bindings as Weak.
+        // Restored before `collect_lambda_captures` so the capture-strength
+        // classifier sees the correct self-id, and restored to the caller's
+        // prior value on exit.
+        let my_self_id = self.current_actor_self.take();
+        let lowered_body = self.lower_expr(body, IntentKind::Read);
+        self.current_actor_self = my_self_id;
+        self.pop_scope();
+        let captures = self.collect_lambda_captures(&lowered_body, &param_ids);
+        (
+            HirExprKind::SpawnLambdaActor {
+                params: hir_params,
+                reply_ty,
+                body: Box::new(lowered_body),
+                captures,
+            },
+            actor_ty,
+        )
+    }
+
+    /// Walk a lowered lambda body collecting `BindingRef`s that resolve
+    /// to bindings from the enclosing scope. A reference is a capture
+    /// when its resolved binding id is not in `param_ids` (the lambda's
+    /// own parameters). Each unique binding is classified Weak when
+    /// its id matches `current_actor_self.0` (the let-name pre-bound
+    /// before body lowering) and Strong otherwise.
+    ///
+    /// Duplicate references to the same binding produce a single
+    /// capture entry — codegen needs the runtime to register the
+    /// captured handle once per binding, not once per use site.
+    fn collect_lambda_captures(
+        &self,
+        body: &HirExpr,
+        param_ids: &std::collections::HashSet<BindingId>,
+    ) -> Vec<HirLambdaCapture> {
+        let mut seen: std::collections::HashSet<BindingId> = std::collections::HashSet::new();
+        let mut captures: Vec<HirLambdaCapture> = Vec::new();
+        let self_id = self.current_actor_self.as_ref().map(|(id, _)| *id);
+        collect_captures_walk(body, param_ids, &mut seen, &mut captures, self_id);
+        captures
     }
 
     /// Recognise the sealed-form discriminator for a `select` arm
@@ -1105,6 +1803,99 @@ impl LowerCtx {
         }
     }
 
+    /// Lower `receiver.method(args)` using the checker's `method_call_rewrites` side-table.
+    ///
+    /// Fail-closed per `checker-output-boundary` (LESSONS P0): a missing entry for
+    /// this call site's span is a hard diagnostic — HIR never re-infers the runtime
+    /// symbol from the receiver type.  Only `RewriteToFunction` is recognised here;
+    /// other rewrite variants are rejected as unsupported (they target the C++/MLIR
+    /// pipeline, not the Rust MIR pipeline).
+    fn lower_method_call(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[hew_parser::ast::CallArg],
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let key = SpanKey::from(&span);
+        let rewrite = self.method_call_rewrites.get(&key).cloned();
+        match rewrite {
+            Some(MethodCallRewrite::RewriteToFunction { c_symbol }) => {
+                // Lower receiver + args, then prepend receiver as first argument.
+                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                let mut lowered_args = vec![lowered_receiver];
+                for arg in args {
+                    lowered_args.push(self.lower_expr(arg.expr(), IntentKind::Read));
+                }
+                // Synthetic callee: a runtime-symbol reference.  The function type
+                // uses `Unit` return (runtime send/recv return unit in the Rust MIR
+                // pipeline; future slices thread expr_types for richer return types).
+                // `params` is empty — the call arg list carries the real args.
+                let callee_ty = ResolvedTy::Function {
+                    params: Vec::new(),
+                    ret: Box::new(ResolvedTy::Unit),
+                };
+                let callee = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::PersistentShare,
+                    ty: callee_ty,
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::BindingRef {
+                        name: c_symbol,
+                        resolved: ResolvedRef::Unresolved,
+                    },
+                    span: span.clone(),
+                };
+                (
+                    HirExprKind::Call {
+                        callee: Box::new(callee),
+                        args: lowered_args,
+                    },
+                    ResolvedTy::Unit,
+                )
+            }
+            Some(
+                MethodCallRewrite::RewriteModuleQualifiedToFunction { .. }
+                | MethodCallRewrite::DeferToLowering,
+            ) => {
+                // These rewrite variants target the C++/MLIR pipeline and are
+                // not consumed by the Rust MIR pipeline.  Fail-closed.
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CutoverUnsupported {
+                        construct: format!("method-call rewrite variant for `.{method}`"),
+                        slice_target: "mir-pipeline".to_string(),
+                    },
+                    span,
+                    "this method-call rewrite variant is not supported in the Rust MIR pipeline",
+                ));
+                (
+                    HirExprKind::Unsupported(format!(
+                        "unsupported rewrite variant for method `{method}`"
+                    )),
+                    ResolvedTy::Unit,
+                )
+            }
+            None => {
+                // No rewrite entry — fail closed.  Do not re-infer from the receiver type.
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::MethodCallNoRewrite {
+                        method: method.to_string(),
+                    },
+                    span,
+                    "no checker-produced rewrite entry for this method call; \
+                     typecheck must record a rewrite before HIR lowering",
+                ));
+                (
+                    HirExprKind::Unsupported(format!(
+                        "method call `.{method}` has no rewrite entry"
+                    )),
+                    ResolvedTy::Unit,
+                )
+            }
+        }
+    }
+
     fn pattern_name(&mut self, pattern: &Spanned<Pattern>) -> Option<String> {
         if let Pattern::Identifier(name) = &pattern.0 {
             Some(name.clone())
@@ -1181,30 +1972,30 @@ impl LowerCtx {
         }
     }
 
-    /// Lower the body block of a `fork{}` expression. This is separate from
-    /// `lower_block` because statements inside a fork body follow different
+    /// Lower the body block of a `scope{}` expression. This is separate from
+    /// `lower_block` because statements inside a scope body follow different
     /// rules:
     ///
     /// - `Stmt::Expression(Expr::Call{..})` → `SpawnedCall` (TI-1)
     /// - `Stmt::Expression(Expr::ForkChild { binding: Some(name), expr })` →
     ///   `HirStmtKind::Let` with a `Task<T>` typed binding (TI-2)
     /// - `Stmt::Expression(Expr::Await(..))` → `AwaitTask` (TI-4)
-    /// - All other statements lower normally, including nested `fork{}` blocks.
+    /// - All other statements lower normally, including nested `scope{}` blocks.
     ///
-    /// The caller is responsible for setting `fork_depth` before calling this
+    /// The caller is responsible for setting `scope_depth` before calling this
     /// function and restoring it after.
     #[allow(
         clippy::too_many_lines,
-        reason = "single match on fork-body statement variants; splitting would hurt readability"
+        reason = "single match on scope-body statement variants; splitting would hurt readability"
     )]
-    fn lower_fork_block(&mut self, block: &Block) -> HirBlock {
+    fn lower_scope_block(&mut self, block: &Block) -> HirBlock {
         self.push_scope();
         let scope = self.ids.scope();
         let mut statements = Vec::new();
 
         for (stmt, span) in &block.stmts {
             let hir_stmt = match stmt {
-                // `fork name = call(...)` inside a fork body → TI-2: typed Task<T> binding.
+                // `fork name = call(...)` inside a scope body → TI-2: typed Task<T> binding.
                 Stmt::Expression(expr)
                     if matches!(
                         &expr.0,
@@ -1278,7 +2069,7 @@ impl LowerCtx {
                 }
 
                 // `fork name = call(...)` without a binding name (bare ForkChild with no
-                // name, e.g. `fork { fork = expr }` — the grammar produces binding: None).
+                // name, e.g. `scope { fork = expr }` — the grammar produces binding: None).
                 // Lower the child expression as a plain SpawnedCall; the result is not bound.
                 Stmt::Expression(expr)
                     if matches!(&expr.0, Expr::ForkChild { binding: None, .. }) =>
@@ -1316,9 +2107,9 @@ impl LowerCtx {
                 }
 
                 // All other statements lower normally (including regular calls,
-                // let bindings, nested fork{} blocks, etc.). Inside fork depth,
+                // let bindings, nested scope{} blocks, etc.). Inside scope depth,
                 // `lower_stmt` will already handle statement-expression calls as
-                // SpawnedCall nodes via TI-1 (the fork_depth > 0 path in lower_stmt).
+                // SpawnedCall nodes via TI-1 (the scope_depth > 0 path in lower_stmt).
                 _ => self.lower_stmt(stmt, span.clone(), ResolvedTy::Unit),
             };
             statements.push(hir_stmt);
@@ -1343,7 +2134,7 @@ impl LowerCtx {
         }
     }
 
-    /// Lower a call expression appearing as a statement inside a `fork{}` body
+    /// Lower a call expression appearing as a statement inside a `scope{}` body
     /// as a child-task spawn (TI-1). The resulting `HirExpr` has kind
     /// `SpawnedCall` and type `Task<call_return_ty>`.
     fn lower_spawned_call(&mut self, expr: &Spanned<Expr>) -> HirExpr {
@@ -1374,6 +2165,244 @@ impl LowerCtx {
     }
 }
 
+// ── Lambda-actor capture walker ─────────────────────────────────────────────
+
+/// Recursive walk over a lowered actor-lambda body collecting captures.
+///
+/// A capture is any `HirExprKind::BindingRef { resolved: Binding(id) }`
+/// whose `id` is NOT one of the lambda's own parameter bindings. The
+/// first occurrence of each capture is recorded with a strength
+/// classifier — `Weak` iff the id matches the lambda's let-binding id
+/// passed in `self_id` (the forward-bound recursive-self case, §5.9
+/// ratification 2), `Strong` otherwise. Subsequent references to the
+/// same binding are skipped — codegen wires one runtime capture per
+/// binding, not one per use site.
+///
+/// The walk is exhaustive over `HirExprKind` variants; nested lambdas
+/// (an actor lambda inside another actor lambda's body) are NOT
+/// descended into — their captures belong to the inner lambda's
+/// frame and are reported separately when that lambda's own
+/// `lower_spawn_lambda_actor` call ran. The nested lambda's appearance
+/// in the outer body's capture set, if any, would come from the
+/// outer body referencing a name that the inner lambda also referenced;
+/// but `BindingRef` lives only in the outer body's expression tree, so
+/// this falls out naturally from not descending into the inner body.
+fn collect_captures_walk(
+    expr: &HirExpr,
+    param_ids: &std::collections::HashSet<BindingId>,
+    seen: &mut std::collections::HashSet<BindingId>,
+    captures: &mut Vec<HirLambdaCapture>,
+    self_id: Option<BindingId>,
+) {
+    match &expr.kind {
+        HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(id),
+        } => {
+            // Parameters of the current lambda are intra-frame
+            // bindings, never captures from the enclosing scope.
+            if param_ids.contains(id) {
+                return;
+            }
+            if !seen.insert(*id) {
+                return;
+            }
+            let kind = if Some(*id) == self_id {
+                HirCaptureKind::Weak
+            } else {
+                HirCaptureKind::Strong
+            };
+            captures.push(HirLambdaCapture {
+                binding: *id,
+                name: name.clone(),
+                kind,
+            });
+        }
+        // Empty-body terminals: nothing to walk.
+        //   - BindingRef without a resolved binding (Item / Unresolved):
+        //     does not produce a capture from the enclosing scope.
+        //   - Literal: no sub-expressions.
+        //   - SpawnLambdaActor (nested): its captures belong to its own
+        //     frame and were classified when the inner lambda lowered.
+        //   - Unsupported: nothing to walk.
+        HirExprKind::BindingRef { .. }
+        | HirExprKind::Literal(_)
+        | HirExprKind::SpawnLambdaActor { .. }
+        | HirExprKind::Unsupported(_) => {}
+        HirExprKind::Binary { left, right, .. } => {
+            collect_captures_walk(left, param_ids, seen, captures, self_id);
+            collect_captures_walk(right, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            collect_captures_walk(callee, param_ids, seen, captures, self_id);
+            for arg in args {
+                collect_captures_walk(arg, param_ids, seen, captures, self_id);
+            }
+        }
+        HirExprKind::Block(block) | HirExprKind::Scope { body: block } => {
+            collect_captures_walk_block(block, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_captures_walk(condition, param_ids, seen, captures, self_id);
+            collect_captures_walk(then_expr, param_ids, seen, captures, self_id);
+            if let Some(else_expr) = else_expr {
+                collect_captures_walk(else_expr, param_ids, seen, captures, self_id);
+            }
+        }
+        HirExprKind::StructInit { fields, .. } => {
+            for (_, field) in fields {
+                collect_captures_walk(field, param_ids, seen, captures, self_id);
+            }
+        }
+        HirExprKind::AwaitTask { binding_id, .. } => {
+            // The awaited task handle is captured from the enclosing
+            // scope unless it is one of the lambda's own params.
+            if param_ids.contains(binding_id) || !seen.insert(*binding_id) {
+                return;
+            }
+            let kind = if Some(*binding_id) == self_id {
+                HirCaptureKind::Weak
+            } else {
+                HirCaptureKind::Strong
+            };
+            captures.push(HirLambdaCapture {
+                binding: *binding_id,
+                // The await arm doesn't carry the binding's surface
+                // name on its own — reach for the binding name via
+                // the binding_name slot.
+                name: String::new(),
+                kind,
+            });
+        }
+        HirExprKind::Select(select) => {
+            for arm in &select.arms {
+                match &arm.kind {
+                    HirSelectArmKind::StreamNext { stream } => {
+                        collect_captures_walk(stream, param_ids, seen, captures, self_id);
+                    }
+                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                        collect_captures_walk(actor, param_ids, seen, captures, self_id);
+                        for arg in args {
+                            collect_captures_walk(arg, param_ids, seen, captures, self_id);
+                        }
+                    }
+                    HirSelectArmKind::TaskAwait { task } => {
+                        collect_captures_walk(task, param_ids, seen, captures, self_id);
+                    }
+                    HirSelectArmKind::AfterTimer { duration } => {
+                        collect_captures_walk(duration, param_ids, seen, captures, self_id);
+                    }
+                }
+                collect_captures_walk(&arm.body, param_ids, seen, captures, self_id);
+            }
+        }
+        HirExprKind::TupleIndex { tuple, .. } => {
+            collect_captures_walk(tuple, param_ids, seen, captures, self_id);
+        }
+    }
+}
+
+fn collect_captures_walk_block(
+    block: &HirBlock,
+    param_ids: &std::collections::HashSet<BindingId>,
+    seen: &mut std::collections::HashSet<BindingId>,
+    captures: &mut Vec<HirLambdaCapture>,
+    self_id: Option<BindingId>,
+) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(_, Some(value)) => {
+                collect_captures_walk(value, param_ids, seen, captures, self_id);
+            }
+            HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
+                collect_captures_walk(expr, param_ids, seen, captures, self_id);
+            }
+            HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_captures_walk(tail, param_ids, seen, captures, self_id);
+    }
+}
+
+// ── Machine static-check helpers ────────────────────────────────────────────
+
+/// Determine whether a self-transition body is "empty" for the `@reenter` rule.
+///
+/// A body is considered empty when:
+/// - It is `Expr::Identifier(target_state)` — the no-body semicolon shorthand
+///   that the parser synthesises for `on E: S -> S;`.
+/// - It is `Expr::Block` with no statements and no trailing expression.
+///
+/// Any other form (statements, expressions) is non-empty and requires `@reenter`.
+fn is_empty_self_body(body: &Expr, target_state: &str) -> bool {
+    match body {
+        Expr::Identifier(name) => name == target_state,
+        Expr::Block(block) => block.stmts.is_empty() && block.trailing_expr.is_none(),
+        _ => false,
+    }
+}
+
+/// Shallow-scan a `Block` for field names appearing as the left-hand side of
+/// an assignment statement (`self.field = ...`). Used for effect-parity checking
+/// in entry blocks — the scan is intentionally shallow (depth = 1) since a
+/// full walk would require type information we don't have in Lane A.
+fn collect_assigned_field_names(block: &Block) -> Vec<(String, Span)> {
+    let mut names = Vec::new();
+    for (stmt, _) in &block.stmts {
+        if let Stmt::Assign { target, .. } = stmt {
+            if let Expr::FieldAccess { object, field } = &target.0 {
+                if matches!(object.0, Expr::This) {
+                    names.push((field.clone(), target.1.clone()));
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Shallow-scan an `Expr` (transition body) for `self.field = ...` assignments.
+fn collect_assigned_field_names_expr(expr: &Expr) -> Vec<String> {
+    if let Expr::Block(block) = expr {
+        collect_assigned_field_names(block)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Collect event names directly emitted by `emit EventName` expressions within
+/// an expression (transition body). Only direct emits are tracked; deeper nesting
+/// is deferred to runtime (per the plan's "direct cycles only" rule).
+fn collect_emitted_events(expr: &Expr) -> Vec<String> {
+    let mut events = Vec::new();
+    collect_emitted_events_inner(expr, &mut events);
+    events
+}
+
+fn collect_emitted_events_inner(expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        Expr::MachineEmit { event_name, .. } => out.push(event_name.clone()),
+        Expr::Block(block) => {
+            for (stmt, _) in &block.stmts {
+                if let Stmt::Expression((e, _)) = stmt {
+                    collect_emitted_events_inner(e, out);
+                }
+            }
+            if let Some(tail) = &block.trailing_expr {
+                collect_emitted_events_inner(&tail.0, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// One-token description of a parser `Expr` shape, used by
 /// `SelectArmNotSealedForm` diagnostic notes. Intentionally coarse — the
 /// goal is to tell the user "you wrote a literal where a sealed form
@@ -1391,8 +2420,6 @@ fn describe_select_source_shape(expr: &Expr) -> String {
         Expr::Index { .. } => "index expression".into(),
         Expr::Range { .. } => "range expression".into(),
         Expr::Cast { .. } => "cast expression".into(),
-        Expr::Send { .. } => "actor send".into(),
-        Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) | Expr::ScopeCancel => "scope expression".into(),
         Expr::Timeout { .. } => "timeout expression".into(),
         Expr::Unsafe(_) => "unsafe block".into(),
         Expr::Yield(_) => "yield expression".into(),

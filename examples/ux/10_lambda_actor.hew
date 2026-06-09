@@ -1,6 +1,6 @@
 // Lambda actor - inline actor definition
 fn main() {
-    let worker = spawn (msg: int) => {
+    let worker = actor |msg: int| {
         println(msg * 2);
     };
     worker.send(5);

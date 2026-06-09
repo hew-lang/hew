@@ -760,6 +760,47 @@ impl Checker {
                 self.check_arity(args, 0, "this function", span);
                 Ty::Unit
             }
+            // Duplex<Msg, Reply>: lambda-actor handle — call-syntax dispatch.
+            //
+            // tell-shaped: `Duplex<Msg, ()>` — `handle(msg)` returns `Result<(), SendError>`
+            // ask-shaped:  `Duplex<Msg, R>`  — `handle(msg)` returns `Result<R, AskError>`
+            //
+            // Exactly one argument required (the message). The message type must match
+            // the Duplex send-side type (S). The message must be Send (crosses actor boundary).
+            Ty::Named {
+                name,
+                args: ref type_args,
+            } if name == "Duplex" && type_args.len() == 2 => {
+                let msg_ty = type_args[0].clone();
+                let reply_ty = type_args[1].clone();
+                // Arity: exactly one call argument (the message).
+                self.check_arity(args, 1, "lambda actor handle", span);
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    let actual = self.check_against(expr, sp, &msg_ty);
+                    // Enforce Send on the call-site argument (E_DUPLEX_NON_SEND).
+                    if !matches!(actual, Ty::Error | Ty::Var(_))
+                        && !self.registry.implements_marker(&actual, MarkerTrait::Send)
+                    {
+                        self.report_error(
+                            TypeErrorKind::InvalidSend,
+                            sp,
+                            format!(
+                                "message type `{}` is not Send; lambda actor calls cross an actor boundary (E_DUPLEX_NON_SEND)",
+                                actual.user_facing()
+                            ),
+                        );
+                    }
+                }
+                // Return type depends on reply direction:
+                //   tell-shaped (Reply = ()) → Result<(), SendError>
+                //   ask-shaped  (Reply = R)  → Result<R, AskError>
+                if matches!(reply_ty, Ty::Unit) {
+                    Ty::result(Ty::Unit, Ty::send_error())
+                } else {
+                    Ty::result(reply_ty, Ty::ask_error())
+                }
+            }
             _ => {
                 // Synthesize args even when the callee type is already an error/var so that
                 // independent argument diagnostics are not cascade-suppressed.  This mirrors

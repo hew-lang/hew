@@ -892,7 +892,12 @@ impl Checker {
         };
         let resolved_inner = self.subst.resolve(&inner);
         match method {
-            "next" | "close" => {
+            // Channel-family naming: .recv() replaced .next() as the fundamental
+            // recv surface (routes to the same hew_stream_next runtime symbol).
+            // .try_recv() routes to hew_stream_try_next (non-blocking variant).
+            // .lines() and .collect() are iterator-style ops removed from the
+            // fundamental surface; they will land via trait impls in stdlib work.
+            "recv" | "try_recv" | "close" => {
                 let Some(c_symbol) = self.require_builtin_runtime_symbol(
                     span,
                     BuiltinNamedType::Stream.canonical_name(),
@@ -901,60 +906,6 @@ impl Checker {
                         BuiltinNamedType::Stream.canonical_name(),
                         method,
                         Self::runtime_stream_element_name(&resolved_inner),
-                    ),
-                ) else {
-                    return Ty::Error;
-                };
-                self.record_runtime_method_call_rewrite(span, c_symbol);
-                sig.return_type
-            }
-            "lines" => {
-                if inner != Ty::String {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`lines()` is only supported on `Stream<String>`, \
-                             not `Stream<{}>`",
-                            inner.user_facing()
-                        ),
-                    );
-                }
-                let Some(c_symbol) = self.require_builtin_runtime_symbol(
-                    span,
-                    BuiltinNamedType::Stream.canonical_name(),
-                    method,
-                    crate::stdlib::resolve_stream_method(
-                        BuiltinNamedType::Stream.canonical_name(),
-                        method,
-                        None,
-                    ),
-                ) else {
-                    return Ty::Error;
-                };
-                self.record_runtime_method_call_rewrite(span, c_symbol);
-                sig.return_type
-            }
-            "collect" => {
-                if inner != Ty::String {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`collect()` is only supported on `Stream<String>`, \
-                             not `Stream<{}>`",
-                            inner.user_facing()
-                        ),
-                    );
-                }
-                let Some(c_symbol) = self.require_builtin_runtime_symbol(
-                    span,
-                    BuiltinNamedType::Stream.canonical_name(),
-                    method,
-                    crate::stdlib::resolve_stream_method(
-                        BuiltinNamedType::Stream.canonical_name(),
-                        method,
-                        None,
                     ),
                 ) else {
                     return Ty::Error;
@@ -1011,6 +962,372 @@ impl Checker {
                     span,
                     format!("no method `{method}` on `Stream<{}>`", inner.user_facing()),
                     self.similar_methods(&receiver_ty, method),
+                );
+                Ty::Error
+            }
+        }
+    }
+
+    /// Type-check a method call on `Duplex<S, R>`.
+    ///
+    /// Wired methods:
+    ///   - `.send(msg: S)` → `Result<(), SendError>`  — verifies `S: @send`.
+    ///   - `.try_send(msg: S)` → `Result<(), SendError>` — non-blocking; same
+    ///     Send bound as `.send()`; returns `SendError::Full` if at capacity.
+    ///   - `.recv()` → `Result<R, RecvError>`.
+    ///   - `.try_recv()` → `Result<R, RecvError>` — non-blocking; returns
+    ///     `RecvError::Empty` if no message is waiting.
+    ///   - `.send_half()` → `SendHalf<S>`  — consuming; moves the receiver.
+    ///   - `.recv_half()` → `RecvHalf<R>`  — consuming; moves the receiver.
+    ///   - `.close()` → `Result<(), CloseError>`  — consuming; moves the receiver.
+    ///
+    /// Lambda-actor handles type as `Duplex<Msg, Reply>` underneath, so this
+    /// function handles both raw-duplex and lambda-actor method calls.
+    ///
+    /// Unknown methods fall through to a targeted `UndefinedMethod` error.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "mirrors check_stream_method arity; all params are load-bearing; \
+                  the match arms each encode a distinct method contract"
+    )]
+    pub(super) fn check_duplex_method(
+        &mut self,
+        type_args: &[Ty],
+        receiver_ty: &Ty,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        // Extract S and R from Duplex<S, R>; fabricate fresh vars if malformed.
+        let (s_ty, r_ty) = if let [s, r] = type_args {
+            (s.clone(), r.clone())
+        } else {
+            for arg in args {
+                let (expr, sp) = arg.expr();
+                self.synthesize(expr, sp);
+            }
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "internal error: Duplex type has wrong arity".to_string(),
+            );
+            return Ty::Error;
+        };
+
+        match method {
+            "send" => {
+                // Check the argument against S.
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    let ty = self.check_against(expr, sp, &s_ty);
+                    // Enforce Send bound: the payload must cross thread boundaries.
+                    let resolved = self.subst.resolve(&ty);
+                    self.enforce_actor_boundary_send(expr, sp, span, &resolved);
+                } else {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        "Duplex::send expects one argument (the message)".to_string(),
+                    );
+                }
+                // Synthesize extra args for recovery diagnostics.
+                for arg in args.iter().skip(1) {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_duplex_send");
+                // Return type depends on reply direction, mirroring call-syntax dispatch:
+                //   tell-shaped (R = ())  → Result<(), SendError>
+                //   ask-shaped  (R = R)   → Result<R, AskError>
+                let resolved_r = self.subst.resolve(&r_ty);
+                if matches!(resolved_r, Ty::Unit) {
+                    Ty::result(Ty::Unit, Ty::send_error())
+                } else {
+                    Ty::result(resolved_r, Ty::ask_error())
+                }
+            }
+            "try_send" => {
+                // Non-blocking send: same argument and Send-bound check as
+                // `.send()`, but routes to hew_duplex_try_send which returns
+                // SendError::Full instead of blocking when at capacity.
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    let ty = self.check_against(expr, sp, &s_ty);
+                    let resolved = self.subst.resolve(&ty);
+                    self.enforce_actor_boundary_send(expr, sp, span, &resolved);
+                } else {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        "Duplex::try_send expects one argument (the message)".to_string(),
+                    );
+                }
+                for arg in args.iter().skip(1) {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_duplex_try_send");
+                Ty::result(Ty::Unit, Ty::send_error())
+            }
+            "recv" => {
+                // No arguments expected.
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_duplex_recv");
+                let resolved_r = self.subst.resolve(&r_ty);
+                Ty::result(resolved_r, Ty::recv_error())
+            }
+            "try_recv" => {
+                // Non-blocking recv: returns RecvError::Empty instead of
+                // blocking when no message is waiting.
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_duplex_try_recv");
+                let resolved_r = self.subst.resolve(&r_ty);
+                Ty::result(resolved_r, Ty::recv_error())
+            }
+            "send_half" => {
+                // No arguments expected.
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_duplex_send_half");
+                // Consuming: the Duplex<S, R> binding is moved.
+                self.method_call_consumes_receiver
+                    .insert(SpanKey::from(span));
+                let resolved_recv = self.subst.resolve(receiver_ty);
+                self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
+                let resolved_s = self.subst.resolve(&s_ty);
+                Ty::send_half(resolved_s)
+            }
+            "recv_half" => {
+                // No arguments expected.
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_duplex_recv_half");
+                // Consuming: the Duplex<S, R> binding is moved.
+                self.method_call_consumes_receiver
+                    .insert(SpanKey::from(span));
+                let resolved_recv = self.subst.resolve(receiver_ty);
+                self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
+                let resolved_r = self.subst.resolve(&r_ty);
+                Ty::recv_half(resolved_r)
+            }
+            "close" => {
+                // No arguments expected.
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_duplex_close");
+                // Consuming: the Duplex<S, R> binding is moved.
+                self.method_call_consumes_receiver
+                    .insert(SpanKey::from(span));
+                let resolved_recv = self.subst.resolve(receiver_ty);
+                self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
+                Ty::result(Ty::Unit, Ty::duplex_close_error())
+            }
+            _ => {
+                // Synthesize args for error recovery.
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!(
+                        "no method `{method}` on `{}`; \
+                         supported methods: \
+                         send / try_send / recv / try_recv / \
+                         send_half / recv_half / close",
+                        receiver_ty.user_facing()
+                    ),
+                );
+                Ty::Error
+            }
+        }
+    }
+
+    /// Type-check a method call on `SendHalf<S>`.
+    ///
+    /// Wired methods:
+    ///   - `.send(msg: S)` → `Result<(), SendError>`  — verifies `S: @send`.
+    ///   - `.try_send(msg: S)` → `Result<(), SendError>` — non-blocking variant;
+    ///     returns `SendError::Full` if at capacity.
+    ///   - `.close()` → `Result<(), CloseError>`  — consuming; moves the receiver.
+    ///
+    /// `.recv()` / `.try_recv()` are rejected with targeted `UndefinedMethod` diagnostics.
+    pub(super) fn check_send_half_method(
+        &mut self,
+        type_args: &[Ty],
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let s_ty = type_args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Ty::Var(TypeVar::fresh()));
+
+        let receiver_ty = Ty::send_half(self.subst.resolve(&s_ty));
+
+        match method {
+            "send" => {
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    let ty = self.check_against(expr, sp, &s_ty);
+                    let resolved = self.subst.resolve(&ty);
+                    self.enforce_actor_boundary_send(expr, sp, span, &resolved);
+                } else {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        "SendHalf::send expects one argument (the message)".to_string(),
+                    );
+                }
+                for arg in args.iter().skip(1) {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_send_half_send");
+                Ty::result(Ty::Unit, Ty::send_error())
+            }
+            "try_send" => {
+                // Non-blocking: same Send bound as .send(); routes to
+                // hew_send_half_try_send which returns SendError::Full at capacity.
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    let ty = self.check_against(expr, sp, &s_ty);
+                    let resolved = self.subst.resolve(&ty);
+                    self.enforce_actor_boundary_send(expr, sp, span, &resolved);
+                } else {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        "SendHalf::try_send expects one argument (the message)".to_string(),
+                    );
+                }
+                for arg in args.iter().skip(1) {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_send_half_try_send");
+                Ty::result(Ty::Unit, Ty::send_error())
+            }
+            "close" => {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_duplex_close_half");
+                // Consuming: the SendHalf<S> binding is moved.
+                self.method_call_consumes_receiver
+                    .insert(SpanKey::from(span));
+                let resolved_recv = self.subst.resolve(&receiver_ty);
+                self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
+                Ty::result(Ty::Unit, Ty::duplex_close_error())
+            }
+            _ => {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!(
+                        "no method `{method}` on `{}`; \
+                         `SendHalf` only supports `.send()`, `.try_send()`, and `.close()`",
+                        receiver_ty.user_facing()
+                    ),
+                );
+                Ty::Error
+            }
+        }
+    }
+
+    /// Type-check a method call on `RecvHalf<R>`.
+    ///
+    /// Wired methods:
+    ///   - `.recv()` → `Result<R, RecvError>`.
+    ///   - `.try_recv()` → `Result<R, RecvError>` — non-blocking; returns
+    ///     `RecvError::Empty` if no message is waiting.
+    ///   - `.close()` → `Result<(), CloseError>`  — consuming; moves the receiver.
+    ///
+    /// `.send()` / `.try_send()` are rejected with targeted `UndefinedMethod` diagnostics.
+    pub(super) fn check_recv_half_method(
+        &mut self,
+        type_args: &[Ty],
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let r_ty = type_args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Ty::Var(TypeVar::fresh()));
+
+        let receiver_ty = Ty::recv_half(self.subst.resolve(&r_ty));
+
+        match method {
+            "recv" => {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_recv_half_recv");
+                let resolved_r = self.subst.resolve(&r_ty);
+                Ty::result(resolved_r, Ty::recv_error())
+            }
+            "try_recv" => {
+                // Non-blocking: returns RecvError::Empty instead of blocking
+                // when no message is waiting.
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_recv_half_try_recv");
+                let resolved_r = self.subst.resolve(&r_ty);
+                Ty::result(resolved_r, Ty::recv_error())
+            }
+            "close" => {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_duplex_close_half");
+                // Consuming: the RecvHalf<R> binding is moved.
+                self.method_call_consumes_receiver
+                    .insert(SpanKey::from(span));
+                let resolved_recv = self.subst.resolve(&receiver_ty);
+                self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
+                Ty::result(Ty::Unit, Ty::duplex_close_error())
+            }
+            _ => {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!(
+                        "no method `{method}` on `{}`; \
+                         `RecvHalf` only supports `.recv()`, `.try_recv()`, and `.close()`",
+                        receiver_ty.user_facing()
+                    ),
                 );
                 Ty::Error
             }
@@ -2126,6 +2443,50 @@ impl Checker {
                     Ty::Error
                 }
             }
+            // Duplex<S, R>: bidirectional channel handle.
+            //
+            // Methods: .send(msg) / .recv() / .send_half() / .recv_half() / .close()
+            //
+            // Lambda-actor handles are also typed as `Duplex<S, R>` underneath, so
+            // this arm handles both raw-duplex and lambda-actor method calls.
+            // Call-syntax `handle(msg)` is canonical for lambda-actor handles;
+            // `.send(msg)` is an allowed-secondary surface — both route to the same
+            // runtime symbol (`hew_duplex_send`).
+            (
+                Ty::Named {
+                    name,
+                    args: type_args,
+                },
+                _,
+            ) if name == "Duplex" => {
+                self.check_duplex_method(type_args, &receiver_ty, receiver, method, args, span)
+            }
+            // SendHalf<S>: send-direction half of a split Duplex<S, R>.
+            //
+            // Methods: .send(msg) / .close()
+            // Produced by `Duplex<S, R>::send_half()`.
+            (
+                Ty::Named {
+                    name,
+                    args: type_args,
+                },
+                _,
+            ) if name == "SendHalf" => {
+                self.check_send_half_method(type_args, receiver, method, args, span)
+            }
+            // RecvHalf<R>: receive-direction half of a split Duplex<S, R>.
+            //
+            // Methods: .recv() / .close()
+            // Produced by `Duplex<S, R>::recv_half()`.
+            (
+                Ty::Named {
+                    name,
+                    args: type_args,
+                },
+                _,
+            ) if name == "RecvHalf" => {
+                self.check_recv_half_method(type_args, receiver, method, args, span)
+            }
             // Named types that have built-in methods (Actor<T> from lambda actors)
             (
                 Ty::Named {
@@ -2205,7 +2566,13 @@ impl Checker {
                 }
                 let receiver_ty = Ty::sink(inner.clone());
                 match method {
-                    "write" => {
+                    // Channel-family naming: .send() replaced .write() as the
+                    // fundamental send surface (routes to the same
+                    // hew_sink_write_* runtime symbols). .try_send() routes to
+                    // hew_sink_try_write_* (non-blocking variant). .flush() is
+                    // removed from the fundamental surface; it may re-surface
+                    // via an I/O-sink trait in stdlib work.
+                    "send" | "try_send" => {
                         let Some(sig) = self.require_builtin_method_sig(
                             span,
                             &receiver_ty,
@@ -2235,7 +2602,7 @@ impl Checker {
                         self.record_runtime_method_call_rewrite(span, c_symbol);
                         sig.return_type
                     }
-                    "close" | "flush" => {
+                    "close" => {
                         let Some(c_symbol) = self.require_builtin_runtime_symbol(
                             span,
                             BuiltinNamedType::Sink.canonical_name(),

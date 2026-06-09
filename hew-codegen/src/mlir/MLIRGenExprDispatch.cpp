@@ -72,12 +72,6 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
           return generateMatchExpr(node, expr.span);
         } else if constexpr (std::is_same_v<NodeT, ast::ExprScope>) {
           return generateScopeExpr(node);
-        } else if constexpr (std::is_same_v<NodeT, ast::ExprScopeLaunch>) {
-          return generateScopeLaunchExpr(node);
-        } else if constexpr (std::is_same_v<NodeT, ast::ExprScopeSpawn>) {
-          return generateScopeSpawnExpr(node);
-        } else if constexpr (std::is_same_v<NodeT, ast::ExprScopeCancel>) {
-          return generateScopeCancelExpr();
         } else if constexpr (std::is_same_v<NodeT, ast::ExprSelect>) {
           return generateSelectExpr(node);
         } else if constexpr (std::is_same_v<NodeT, ast::ExprJoin>) {
@@ -86,8 +80,6 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
           return generateSpawnExpr(node);
         } else if constexpr (std::is_same_v<NodeT, ast::ExprSpawnLambdaActor>) {
           return generateSpawnLambdaActorExpr(node);
-        } else if constexpr (std::is_same_v<NodeT, ast::ExprSend>) {
-          return generateSendExpr(node);
         } else if constexpr (std::is_same_v<NodeT, ast::ExprStructInit>) {
           return generateStructInit(node, expr.span);
         } else if constexpr (std::is_same_v<NodeT, ast::ExprMethodCall>) {

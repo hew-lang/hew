@@ -1827,32 +1827,6 @@ def Hew_ScopeDestroyOp : Hew_Op<"scope.destroy"> {
   let assemblyFormat = "$actor_scope `,` $task_scope attr-dict `:` `(` type($actor_scope) `,` type($task_scope) `)`";
 }
 
-def Hew_ScopeLaunchOp : Hew_Op<"scope.launch"> {
-  let summary = "Launch a task on a new thread within a scope.";
-  let description = [{
-    Creates a new task handle, registers it with the task scope, and
-    spawns it on a thread using the given function pointer. The third
-    operand is an optional environment pointer (pass null when there are
-    no captured variables) that becomes accessible from the spawned task.
-
-    Lowers to `hew_task_new()`, `hew_task_scope_spawn(scope, task)`,
-    `hew_task_set_env(task, env_ptr)`, and `hew_task_spawn_thread(task, fn_ptr)`.
-
-    Returns the task handle pointer.
-
-    Example:
-    ```mlir
-    %task = hew.scope.launch %task_scope, %fn_ptr, %env_ptr
-              : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> !llvm.ptr
-    ```
-  }];
-
-  let arguments = (ins AnyType:$task_scope, AnyType:$fn_ptr, AnyType:$env_ptr);
-  let results = (outs AnyType:$result);
-
-  let assemblyFormat = "$task_scope `,` $fn_ptr `,` $env_ptr attr-dict `:` `(` type($task_scope) `,` type($fn_ptr) `,` type($env_ptr) `)` `->` type($result)";
-}
-
 def Hew_ScopeAwaitOp : Hew_Op<"scope.await"> {
   let summary = "Await a launched task, blocking until it completes.";
   let description = [{
@@ -1871,24 +1845,6 @@ def Hew_ScopeAwaitOp : Hew_Op<"scope.await"> {
   let results = (outs AnyType:$result);
 
   let assemblyFormat = "$task attr-dict `:` type($task) `->` type($result)";
-}
-
-def Hew_ScopeCancelOp : Hew_Op<"scope.cancel"> {
-  let summary = "Cancel all tasks in the current task scope.";
-  let description = [{
-    Signals cancellation to all tasks in the scope.
-
-    Lowers to `hew_task_scope_cancel(task_scope)`.
-
-    Example:
-    ```mlir
-    hew.scope.cancel %task_scope : !llvm.ptr
-    ```
-  }];
-
-  let arguments = (ins AnyType:$task_scope);
-
-  let assemblyFormat = "$task_scope attr-dict `:` type($task_scope)";
 }
 
 def Hew_TaskGetEnvOp : Hew_Op<"task.get_env"> {

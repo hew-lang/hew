@@ -18,5 +18,15 @@ serde.workspace = true
 
 [dev-dependencies]
 
+# Property-based testing for per-Return drop-plan live-set narrowing.
+# Dev-only — never linked into release builds. Scoped to non-wasm
+# targets because `proptest` transitively depends on `wait-timeout`,
+# which does not compile for `wasm32-wasip1` (matches the pattern
+# already established in hew-runtime/Cargo.toml). The property tests
+# that consume proptest are themselves native-only, so this scoping
+# costs no test coverage on wasm.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+proptest = "1"
+
 [lints]
 workspace = true

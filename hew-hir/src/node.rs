@@ -26,6 +26,74 @@ pub struct HirModule {
 pub enum HirItem {
     Function(HirFn),
     TypeDecl(HirTypeDecl),
+    Machine(HirMachineDecl),
+}
+
+// ── Machine declarations ─────────────────────────────────────────────────────
+
+/// Lowered machine declaration. Carries the full structural shape needed for
+/// static checks and visualisation; transition bodies are not lowered to `HirExpr`
+/// in Lane A (codegen/execution is Lane B).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirMachineDecl {
+    pub id: ItemId,
+    pub node: HirNodeId,
+    pub name: String,
+    pub states: Vec<HirMachineState>,
+    pub events: Vec<HirMachineEvent>,
+    pub transitions: Vec<HirMachineTransition>,
+    /// Whether an unhandled-event `default` arm is present. When true,
+    /// exhaustiveness checking is satisfied for any `(state, event)` pair
+    /// without an explicit transition.
+    pub has_default: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirMachineState {
+    pub name: String,
+    pub fields: Vec<HirField>,
+    /// Whether this state has an `entry { ... }` lifecycle block.
+    pub has_entry: bool,
+    /// Whether this state has an `exit { ... }` lifecycle block.
+    pub has_exit: bool,
+    /// Field names written by the `entry` block, each paired with the span of
+    /// the specific `self.field = ...` assignment (used for effect-parity
+    /// diagnostics that need to cite the offending entry-block site, not the
+    /// whole state).
+    pub entry_writes: Vec<(String, Span)>,
+    /// Field names written by the `exit` block, each paired with the span of
+    /// the specific `self.field = ...` assignment.
+    pub exit_writes: Vec<(String, Span)>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirMachineEvent {
+    pub name: String,
+    pub fields: Vec<HirField>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirMachineTransition {
+    pub event_name: String,
+    pub source_state: String,
+    pub target_state: String,
+    pub has_guard: bool,
+    /// True when `source_state == target_state` (self-transition). In a
+    /// Moore machine, self-transitions do not re-run entry/exit.
+    pub is_self_transition: bool,
+    /// True when the transition carries `@reenter`.  Only meaningful for self-
+    /// transitions; HIR rejects `@reenter` on non-self-transitions.  When true,
+    /// the Lane B codegen must fire `source.exit` and `target.entry` even though
+    /// the state identity does not change.
+    pub reenter: bool,
+    /// Field names written by the transition body (used for effect-parity checking).
+    pub body_writes: Vec<String>,
+    /// Event names emitted directly from the transition body (used for emit-cycle checking).
+    pub body_emits: Vec<String>,
+    pub span: Span,
 }
 
 /// Lowered top-level type declaration.
@@ -137,15 +205,16 @@ pub enum HirExprKind {
         type_args: Vec<ResolvedTy>,
         fields: Vec<(String, HirExpr)>,
     },
-    /// A `fork { stmts }` block. Every statement-call inside the body is a
+    /// A `scope { stmts }` block. Every statement-call inside the body is a
     /// child-task spawn (TI-1). Named bindings (`fork name = call(...)`)
     /// produce `Ty::Task(call_ret)` typed bindings (TI-2). The block joins
-    /// all anonymous children implicitly at block exit.
-    Fork {
+    /// all anonymous children implicitly at block exit. `scope` is the
+    /// structured-concurrency lifetime boundary; `fork` is the child-start verb.
+    Scope {
         body: HirBlock,
     },
     /// A call expression that is recognised as a child-task spawn because it
-    /// appears as a statement-expression inside a `fork {}` body. The callee
+    /// appears as a statement-expression inside a `scope {}` body. The callee
     /// and args are the same as `HirExprKind::Call`; the distinct kind routes
     /// MIR lowering to the task-spawn ABI rather than a direct synchronous
     /// call.
@@ -159,7 +228,7 @@ pub enum HirExprKind {
         task_ty: ResolvedTy,
     },
     /// `await name` consumes a `Task<T>` binding and produces `T`. Legal
-    /// positions in v0.5: statement-position inside a `fork{}` body. Future
+    /// positions in v0.5: statement-position inside a `scope{}` body. Future
     /// versions extend this to select-arm source expressions (cluster-5).
     ///
     /// `output_ty` is the inner `T` extracted from the binding's
@@ -184,7 +253,78 @@ pub enum HirExprKind {
     /// other surface shape is rejected with `SelectArmNotSealedForm`
     /// during lowering.
     Select(HirSelect),
+    /// `actor |params| { body }` — a lambda-actor literal. Produces a
+    /// `Duplex<Msg, Reply>` handle at runtime that addresses the
+    /// spawned actor's message queue (the surface call syntax dispatches
+    /// through this Duplex). The HIR shape carries the parameter
+    /// bindings, the optional reply-type annotation, the lambda body,
+    /// and the resolved capture set with per-capture strength
+    /// (Strong vs Weak).
+    ///
+    /// Capture-strength discipline (§5.9 ratification 2): each free
+    /// variable in the body that resolves to a binding from the
+    /// enclosing scope is recorded as a capture. When the captured
+    /// binding is the lambda's own let-binding name (the forward-bind
+    /// recursive case `let fib = actor |n| { fib(n - 1) }`), the
+    /// capture is `Weak` — the body must NOT keep the actor alive
+    /// past external refcount zero. Every other capture is `Strong`.
+    /// MIR's `LambdaCapture` side-table is populated directly from
+    /// this list at lowering.
+    SpawnLambdaActor {
+        params: Vec<HirBinding>,
+        reply_ty: ResolvedTy,
+        body: Box<HirExpr>,
+        captures: Vec<HirLambdaCapture>,
+    },
+    /// Project one element out of a tuple value: `expr.<index>`.
+    ///
+    /// Produced exclusively by tuple-let lowering (`let (a, b) = …`) — not a
+    /// surface syntax node.  `index` is the zero-based element position.
+    TupleIndex {
+        /// The tuple expression being projected.
+        tuple: Box<HirExpr>,
+        /// Zero-based element index.
+        index: usize,
+    },
     Unsupported(String),
+}
+
+/// One captured binding inside an `HirExprKind::SpawnLambdaActor`
+/// body. The `kind` discriminator selects the runtime refcount
+/// strength: `Strong` bumps the captured value's refcount so the
+/// actor body keeps the captured handle alive; `Weak` is the
+/// self-binding-name recursive case (§5.9 ratification 2) and does
+/// NOT bump the refcount.
+///
+/// The HIR `captures` field is the producer for the MIR
+/// `LambdaCapture` side-table; the structural fail-closed checker in
+/// `hew-mir` rejects malformed shapes (Weak on non-LambdaActorHandle,
+/// multiple Weak captures on the same handle) that would otherwise
+/// reach codegen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirLambdaCapture {
+    /// The captured binding's id in the enclosing scope.
+    pub binding: BindingId,
+    /// The captured binding's source name. Load-bearing for the
+    /// self-binding case — a `Weak` capture's name matches the
+    /// lambda's own let-binding name.
+    pub name: String,
+    /// Capture-strength discriminator.
+    pub kind: HirCaptureKind,
+}
+
+/// Capture-strength selector for an `HirLambdaCapture`. Mirrors
+/// the MIR-layer `CaptureKind` shape — kept HIR-local so the HIR
+/// crate doesn't depend on `hew-mir`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HirCaptureKind {
+    /// Strong capture: bumps the captured value's refcount. Default
+    /// for every non-self capture.
+    Strong,
+    /// Weak capture: does NOT bump the captured value's refcount.
+    /// Reserved for the lambda's own let-binding name (the
+    /// forward-bind recursive case, §5.9 ratification 2).
+    Weak,
 }
 
 /// Lowered `select{}` expression. See `HirSelectArmKind` for the four

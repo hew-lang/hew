@@ -1,9 +1,0 @@
-fn main() {
-    var result: int = 0;
-    scope |s| {
-        s.spawn {
-            result = 42;
-        };
-    }
-    println(result);
-}

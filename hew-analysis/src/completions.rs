@@ -519,18 +519,8 @@ fn collect_locals_from_stmt(
 )]
 fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<CompletionItem>) {
     match expr {
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block)
-        | Expr::Fork { body: block } => {
+        Expr::Block(block) | Expr::Unsafe(block) | Expr::Scope { body: block } => {
             collect_locals_from_block(block, offset, locals);
-        }
-        Expr::Scope { binding, body } => {
-            if let Some(name) = binding {
-                locals.push(local_completion(name));
-            }
-            collect_locals_from_block(body, offset, locals);
         }
         Expr::ForkChild { expr, .. } => collect_locals_from_expr(&expr.0, offset, locals),
         Expr::If {
@@ -604,10 +594,6 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
             for (_, value) in fields {
                 collect_locals_from_spanned_expr(value, offset, locals);
             }
-        }
-        Expr::Send { target, message } => {
-            collect_locals_from_spanned_expr(target, offset, locals);
-            collect_locals_from_spanned_expr(message, offset, locals);
         }
         Expr::Spawn { target, args } => {
             collect_locals_from_spanned_expr(target, offset, locals);
@@ -725,10 +711,6 @@ fn fn_sig_completion(name: &str, sig: &FnSig) -> CompletionItem {
 
 /// Snippet completions for common language constructs.
 #[must_use]
-#[expect(
-    clippy::too_many_lines,
-    reason = "each snippet entry is a simple data tuple; splitting would fragment the table"
-)]
 pub fn keyword_snippets() -> Vec<CompletionItem> {
     let snippets = [
         (
@@ -783,14 +765,14 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
         ),
         ("trait", "trait ${1:Name} {\n\t$0\n}", "trait Name { ... }"),
         (
-            "spawn lambda",
-            "let ${1:handle} = spawn (${2:param}: ${3:Type}) => {\n\t$0\n};",
-            "let handle = spawn (param: Type) => { ... };",
+            "actor lambda",
+            "let ${1:handle} = actor |${2:param}: ${3:Type}| {\n\t$0\n};",
+            "let handle = actor |param: Type| { ... };",
         ),
         (
             "select",
-            "select {\n\t${1:binding} <- ${2:source} => ${3:expr},\n\tafter ${4:duration} => ${0:timeout_expr},\n}",
-            "select { pattern <- source => expr, after duration => expr }",
+            "select {\n\t${1:binding} from ${2:source} => ${3:expr},\n\tafter ${4:duration} => ${0:timeout_expr},\n}",
+            "select { pattern from source => expr, after duration => expr }",
         ),
         (
             "select from",
@@ -817,11 +799,7 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
             "if let ${1:Some(value)} = ${2:expr} {\n\t$0\n}",
             "if let pattern = expr { ... }",
         ),
-        (
-            "scope",
-            "scope |${1:cancel}| {\n\t$0\n}",
-            "scope |cancel| { ... }",
-        ),
+        ("scope", "scope {\n\t$0\n}", "scope { ... }"),
     ];
     snippets
         .into_iter()

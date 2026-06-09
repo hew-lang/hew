@@ -5,7 +5,7 @@ fn main() -> int {
 
     // 1. Capture a scalar (int) from enclosing scope
     let factor = 3;
-    let multiplier = spawn (x: int) => {
+    let multiplier = actor |x: int| {
         println(x * factor);
     };
     multiplier.send(7);
@@ -13,17 +13,17 @@ fn main() -> int {
 
     // 2. Capture a string from enclosing scope
     let tag = "TAGGED";
-    let tagger = spawn (x: int) => {
+    let tagger = actor |x: int| {
         println(f"[{tag}] {x}");
     };
     tagger.send(42);
     await close(tagger);
 
     // 3. Capture an actor reference (pipeline pattern)
-    let printer = spawn (x: int) => {
+    let printer = actor |x: int| {
         println(f"Final: {x}");
     };
-    let doubler = spawn (x: int) => {
+    let doubler = actor |x: int| {
         printer.send(x * 2);
     };
     doubler.send(5);
@@ -37,7 +37,7 @@ fn main() -> int {
 }
 
 fn run_adder(base: int, value: int) {
-    let adder = spawn (x: int) => {
+    let adder = actor |x: int| {
         println(base + x);
     };
     adder.send(value);

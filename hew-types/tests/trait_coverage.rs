@@ -737,3 +737,48 @@ fn actor_ref_is_copy_clone_debug() {
     assert!(reg.implements_marker(&aref, MarkerTrait::Debug));
     assert!(!reg.implements_marker(&aref, MarkerTrait::Eq));
 }
+
+// ===========================================================================
+// Duplex @resource marker (design contract D3 — slice 2 codification)
+// ===========================================================================
+
+#[test]
+fn duplex_is_resource() {
+    let reg = TraitRegistry::new();
+    let duplex = named_with("Duplex", vec![Ty::I64, Ty::I64]);
+    assert!(
+        reg.implements_marker(&duplex, MarkerTrait::Resource),
+        "Duplex<int, int> must implement Resource (@resource D3 marker)"
+    );
+}
+
+#[test]
+fn duplex_is_not_copy_or_clone() {
+    let reg = TraitRegistry::new();
+    let duplex = named_with("Duplex", vec![Ty::I64, Ty::I64]);
+    assert!(
+        !reg.implements_marker(&duplex, MarkerTrait::Copy),
+        "Duplex must not be Copy (move-only resource)"
+    );
+    assert!(
+        !reg.implements_marker(&duplex, MarkerTrait::Clone),
+        "Duplex must not be Clone (no shared ownership in slice 2)"
+    );
+}
+
+#[test]
+fn primitives_are_not_resource() {
+    let reg = TraitRegistry::new();
+    for (ty, name) in [
+        (Ty::I64, "int"),
+        (Ty::Bool, "bool"),
+        (Ty::F32, "f32"),
+        (Ty::F64, "f64"),
+        (Ty::String, "string"),
+    ] {
+        assert!(
+            !reg.implements_marker(&ty, MarkerTrait::Resource),
+            "{name} must not be Resource"
+        );
+    }
+}

@@ -1601,6 +1601,7 @@ dependencies = [
  "hew-hir",
  "hew-parser",
  "hew-types",
+ "proptest",
  "serde",
 ]
 

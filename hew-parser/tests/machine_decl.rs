@@ -155,3 +155,146 @@ machine Noop {
         panic!("expected Machine item");
     }
 }
+
+#[test]
+fn parse_state_with_entry_exit_blocks() {
+    let source = r"
+machine Traffic {
+    state Red {
+        entry { log(entering_red); }
+        exit { log(leaving_red); }
+    }
+
+    state Green;
+
+    event Tick;
+
+    on Tick: Red -> Green;
+    on Tick: Green -> Red;
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
+        assert_eq!(m.states.len(), 2);
+        let red = &m.states[0];
+        assert_eq!(red.name, "Red");
+        assert!(red.entry.is_some(), "Red should have entry block");
+        assert!(red.exit.is_some(), "Red should have exit block");
+        let green = &m.states[1];
+        assert!(green.entry.is_none(), "Green has no entry block");
+        assert!(green.exit.is_none(), "Green has no exit block");
+    } else {
+        panic!("expected Machine item");
+    }
+}
+
+#[test]
+fn parse_emit_in_transition_body() {
+    let source = r"
+machine Counter {
+    state Idle;
+    state Running { count: Int; }
+
+    event Start;
+    event Tick;
+    event Overflow;
+
+    on Start: Idle -> Running {
+        emit Overflow { code: 0 };
+        Running { count: 0 }
+    }
+
+    on Tick: Running -> Running {
+        Running { count: self.count + 1 }
+    }
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
+        assert_eq!(m.name, "Counter");
+        assert_eq!(m.transitions.len(), 2);
+    } else {
+        panic!("expected Machine item");
+    }
+}
+
+#[test]
+fn reject_nested_state_in_state_body() {
+    let source = r"
+machine Bad {
+    state Outer {
+        state Inner;
+    }
+
+    event Ping;
+}
+";
+    let result = hew_parser::parse(source);
+    // Must have at least one error about nested state
+    assert!(
+        !result.errors.is_empty(),
+        "expected parse error for nested state, got none"
+    );
+    let has_nested_state_error = result
+        .errors
+        .iter()
+        .any(|e| format!("{e:?}").contains("hierarchical"));
+    assert!(
+        has_nested_state_error,
+        "expected hierarchical-states diagnostic, errors: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn extern_fn_named_entry_exit_emit_parses() {
+    // `entry`, `exit`, and `emit` are contextual keywords added for machine
+    // declarations.  They must remain valid as function names in `extern` blocks
+    // so existing FFI declarations are not broken.
+    let source = r#"
+extern "C" {
+    fn entry(code: i32) -> i32;
+    fn exit(code: i32) -> i32;
+    fn emit(code: i32) -> i32;
+}
+
+fn main() {}
+"#;
+    let result = hew_parser::parse(source);
+    let errors = &result.errors;
+    assert!(
+        result.errors.is_empty(),
+        "contextual keywords entry/exit/emit must be usable as extern fn names, got: {errors:?}"
+    );
+    // Confirm the extern block has exactly 3 functions.
+    let extern_block = result.program.items.iter().find_map(|item| {
+        if let hew_parser::ast::Item::ExternBlock(b) = &item.0 {
+            Some(b)
+        } else {
+            None
+        }
+    });
+    let extern_block = extern_block.expect("expected ExternBlock item");
+    assert_eq!(extern_block.functions.len(), 3);
+    let names: Vec<&str> = extern_block
+        .functions
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"entry") && names.contains(&"exit") && names.contains(&"emit"),
+        "expected entry, exit, emit functions in extern block, got: {names:?}"
+    );
+}

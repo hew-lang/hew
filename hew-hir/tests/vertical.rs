@@ -6,11 +6,12 @@ use hew_parser::ast::{
     Block, Expr, FnDecl, IntRadix, Item, Literal, Pattern, Program, SelectArm, Stmt, TimeoutClause,
     Visibility,
 };
+use hew_types::TypeCheckOutput;
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    lower_program(&parsed.program, &ResolutionCtx)
+    lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx)
 }
 
 #[test]
@@ -141,7 +142,7 @@ fn find_first_select(output: &hew_hir::LowerOutput) -> &hew_hir::HirSelect {
         .iter()
         .find_map(|item| match item {
             hew_hir::HirItem::Function(f) => Some(f),
-            hew_hir::HirItem::TypeDecl(_) => None,
+            hew_hir::HirItem::TypeDecl(_) | hew_hir::HirItem::Machine(_) => None,
         })
         .expect("expected at least one function in lowered module");
     for stmt in &func.body.statements {
@@ -438,7 +439,7 @@ fn select_stream_next_two_args_rejected() {
 fn task_handle_ti1_statement_call_inside_fork_becomes_spawned_call() {
     let output = lower(
         "fn worker() -> i64 { return 42; } \
-         fn main() { fork { worker(); } }",
+         fn main() { scope { worker(); } }",
     );
     // No diagnostic errors expected from HIR lowering (the fork expression
     // itself lowers cleanly; MIR-level CutoverUnsupported fires downstream).
@@ -458,11 +459,12 @@ fn task_handle_ti1_statement_call_inside_fork_becomes_spawned_call() {
         "fork body with bare call should lower cleanly: {hir_diags:?}"
     );
 
-    // The dump should mention `fork` and `spawned-call`.
+    // The dump should mention `scope` (renamed from `fork` in the rip+rename PR)
+    // and `spawned-call`.
     let dump = dump_hir(&output.module);
     assert!(
-        dump.contains("fork scope="),
-        "HIR dump should contain fork node: {dump}"
+        dump.contains("scope scope="),
+        "HIR dump should contain scope node: {dump}"
     );
     assert!(
         dump.contains("spawned-call"),
@@ -481,7 +483,7 @@ fn task_handle_ti1_statement_call_inside_fork_becomes_spawned_call() {
 fn task_handle_ti2_named_fork_child_binds_task_type() {
     let output = lower(
         "fn compute() -> i64 { return 7; } \
-         fn main() { fork { fork t = compute(); } }",
+         fn main() { scope { fork t = compute(); } }",
     );
     // No HIR-level non-infrastructure diagnostics expected.
     let real_diags: Vec<_> = output
@@ -534,7 +536,7 @@ fn task_handle_ti3_call_outside_fork_is_synchronous() {
 fn task_handle_ti4_await_task_binding_inside_fork_lowers_to_await_task() {
     let output = lower(
         "fn compute() -> i64 { return 99; } \
-         fn main() { fork { fork t = compute(); await t; } }",
+         fn main() { scope { fork t = compute(); await t; } }",
     );
     // No non-infrastructure HIR diagnostics.
     let real_diags: Vec<_> = output
@@ -579,7 +581,7 @@ fn task_handle_ti4_await_outside_fork_rejects_with_await_out_of_position() {
 #[test]
 fn task_handle_ti4_await_non_task_rejects_with_await_non_task() {
     // Inside a fork body so position is legal, but the operand is i64.
-    let output = lower("fn f() { fork { let x = 5; await x; } }");
+    let output = lower("fn f() { scope { let x = 5; await x; } }");
     assert!(
         output
             .diagnostics
@@ -593,7 +595,7 @@ fn task_handle_ti4_await_non_task_rejects_with_await_non_task() {
 /// TI-2 (reject): `fork name = non_call_expr` emits `ForkChildNotACall`.
 #[test]
 fn task_handle_ti2_fork_child_non_call_rhs_rejects() {
-    let output = lower("fn f() { fork { fork t = 42; } }");
+    let output = lower("fn f() { scope { fork t = 42; } }");
     assert!(
         output
             .diagnostics
@@ -629,7 +631,7 @@ fn task_handle_ti5_task_annotation_in_let_rejects_task_not_nameable() {
 fn task_handle_ti4_await_in_let_value_position_rejects() {
     let output = lower(
         "fn compute() -> i64 { return 1; } \
-         fn f() { fork { fork t = compute(); let x = await t; } }",
+         fn f() { scope { fork t = compute(); let x = await t; } }",
     );
     assert!(
         output
@@ -649,7 +651,7 @@ fn task_handle_ti4_await_in_let_value_position_rejects() {
 fn await_in_return_position_rejects() {
     let output = lower(
         "fn compute() -> i64 { return 1; } \
-         fn f() { fork { fork t = compute(); return await t; } }",
+         fn f() { scope { fork t = compute(); return await t; } }",
     );
     assert!(
         output
@@ -668,7 +670,7 @@ fn await_in_function_arg_rejects() {
     let output = lower(
         "fn compute() -> i64 { return 1; } \
          fn sink(x: i64) { } \
-         fn f() { fork { fork t = compute(); sink(await t); } }",
+         fn f() { scope { fork t = compute(); sink(await t); } }",
     );
     assert!(
         output
@@ -686,7 +688,7 @@ fn await_in_function_arg_rejects() {
 fn await_in_binary_operand_rejects() {
     let output = lower(
         "fn compute() -> i64 { return 1; } \
-         fn f() { fork { fork t = compute(); let x = (await t) + 1; } }",
+         fn f() { scope { fork t = compute(); let x = (await t) + 1; } }",
     );
     // This may fire AwaitOutOfPosition (binary operand) or the existing
     // let-value intercept — either satisfies the position-rejection rule.
@@ -712,7 +714,7 @@ fn await_in_binary_operand_rejects() {
 fn inferred_task_return_rejects() {
     let output = lower(
         "fn compute() -> i64 { return 1; } \
-         fn f() { fork { fork t = compute(); return t; } }",
+         fn f() { scope { fork t = compute(); return t; } }",
     );
     assert!(
         output
@@ -729,7 +731,7 @@ fn inferred_task_return_rejects() {
 fn non_task_return_inside_fork_accepts() {
     let output = lower(
         "fn compute() -> i64 { return 1; } \
-         fn f() { fork { fork t = compute(); await t; } }",
+         fn f() { scope { fork t = compute(); await t; } }",
     );
     let task_escape_errors: Vec<_> = output
         .diagnostics
@@ -742,13 +744,13 @@ fn non_task_return_inside_fork_accepts() {
     );
 }
 
-/// Verifier stability: a valid `fork { call(); }` program passes `verify_hir`
+/// Verifier stability: a valid `scope { call(); }` program passes `verify_hir`
 /// without dangling-ref or duplicate-id diagnostics.
 #[test]
 fn task_handle_fork_block_passes_verifier() {
     let output = lower(
         "fn work() -> i64 { return 1; } \
-         fn main() { fork { work(); } }",
+         fn main() { scope { work(); } }",
     );
     let verify = verify_hir(&output.module);
     // Verifier should not emit any DanglingRef, DuplicateBindingId, or
@@ -860,7 +862,7 @@ fn select_two_after_arms_rejected() {
         })),
     };
     let program = program_with_select(select_expr);
-    let output = lower_program(&program, &ResolutionCtx);
+    let output = lower_program(&program, &TypeCheckOutput::default(), &ResolutionCtx);
     assert!(
         output
             .diagnostics
@@ -889,5 +891,240 @@ fn select_one_after_arm_does_not_trigger_multiple_after() {
             .any(|d| matches!(d.kind, HirDiagnosticKind::SelectMultipleAfterArms)),
         "single after arm must not emit SelectMultipleAfterArms: {:?}",
         output.diagnostics
+    );
+}
+
+// ── actor-lambda capture lexical scoping ────────────────────────────────────
+//
+// Per HEW-SPEC-2026 §5.9 ratification 2, an actor-lambda's capture set
+// classifies each free variable as `Strong` (the body holds a refcount on the
+// captured handle) or `Weak` (the body's reference to its own let-binding
+// name, which must not keep the actor alive past external refcount zero).
+//
+// The discriminator is the lambda's lexical self-id — the BindingId of the
+// let-name that the actor-lambda is bound to via the forward-bind path. That
+// id is set on entry to the lambda body's walk and MUST be cleared (or saved
+// and overridden) when descending into a nested actor-lambda body, otherwise
+// the outer self-id leaks into the inner classifier and a Strong capture of
+// the outer name gets misclassified as Weak.
+
+/// Walk the lowered module, return every `HirExprKind::SpawnLambdaActor`
+/// reached. Used by the lambda-capture scoping tests below.
+fn collect_spawn_lambdas(output: &hew_hir::LowerOutput) -> Vec<&hew_hir::HirExpr> {
+    let mut out: Vec<&hew_hir::HirExpr> = Vec::new();
+    for item in &output.module.items {
+        if let hew_hir::HirItem::Function(f) = item {
+            for stmt in &f.body.statements {
+                if let HirStmtKind::Let(_, Some(expr)) = &stmt.kind {
+                    walk_expr_collect_lambdas(expr, &mut out);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn walk_expr_collect_lambdas<'a>(expr: &'a hew_hir::HirExpr, out: &mut Vec<&'a hew_hir::HirExpr>) {
+    if matches!(expr.kind, HirExprKind::SpawnLambdaActor { .. }) {
+        out.push(expr);
+    }
+    match &expr.kind {
+        HirExprKind::SpawnLambdaActor { body, .. } => {
+            walk_expr_collect_lambdas(body, out);
+        }
+        HirExprKind::Block(block) | HirExprKind::Scope { body: block } => {
+            for s in &block.statements {
+                if let HirStmtKind::Let(_, Some(e)) = &s.kind {
+                    walk_expr_collect_lambdas(e, out);
+                }
+                if let HirStmtKind::Expr(e) = &s.kind {
+                    walk_expr_collect_lambdas(e, out);
+                }
+            }
+            if let Some(tail) = &block.tail {
+                walk_expr_collect_lambdas(tail, out);
+            }
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            walk_expr_collect_lambdas(condition, out);
+            walk_expr_collect_lambdas(then_expr, out);
+            if let Some(e) = else_expr {
+                walk_expr_collect_lambdas(e, out);
+            }
+        }
+        HirExprKind::Binary { left, right, .. } => {
+            walk_expr_collect_lambdas(left, out);
+            walk_expr_collect_lambdas(right, out);
+        }
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            walk_expr_collect_lambdas(callee, out);
+            for a in args {
+                walk_expr_collect_lambdas(a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn nested_actor_lambda_does_not_inherit_outer_self_id() {
+    // Body:
+    //   let outer = actor |x: i64| -> i64 {
+    //       actor |y: i64| -> i64 { outer; 0 };
+    //       x + 1
+    //   };
+    //
+    // The expression-position (non-let) inner lambda's body references
+    // `outer`. `outer` is a free variable captured from the enclosing
+    // scope — it MUST be Strong. Before the lexical-scoping fix, the
+    // outer's `current_actor_self` leaked into the inner lambda's
+    // classifier (the inner lambda never sets its own self-id because
+    // there is no `lower_stmt` let-pre-bind for an anonymous lambda)
+    // and `outer` got misclassified as Weak.
+    let source = r"
+fn make() {
+    let outer = actor |x: i64| -> i64 {
+        actor |y: i64| -> i64 {
+            outer;
+            0
+        };
+        x + 1
+    };
+}
+";
+    let output = lower(source);
+    let lambdas = collect_spawn_lambdas(&output);
+    // The inner lambda is the one whose parameter is named `y`. Picking by
+    // param name avoids tangling with the outer lambda's `inner`-capture.
+    let inner = lambdas
+        .iter()
+        .find(|expr| match &expr.kind {
+            HirExprKind::SpawnLambdaActor { params, .. } => params.iter().any(|p| p.name == "y"),
+            _ => false,
+        })
+        .expect("inner actor-lambda (param `y`) must exist");
+    let HirExprKind::SpawnLambdaActor { captures, .. } = &inner.kind else {
+        unreachable!();
+    };
+    let outer_cap = captures
+        .iter()
+        .find(|c| c.name == "outer")
+        .unwrap_or_else(|| {
+            panic!("`outer` must appear in inner lambda's captures; got {captures:?}")
+        });
+    assert_eq!(
+        outer_cap.kind,
+        hew_hir::HirCaptureKind::Strong,
+        "`outer` is a free variable captured by the inner lambda; it must \
+         be Strong, not the inner's own self-binding. captures = {captures:?}",
+    );
+}
+
+#[test]
+fn nested_actor_lambda_classifies_own_self_as_weak() {
+    // Sibling positive case: the inner lambda's OWN self-reference
+    // (its own let-name) must still classify as Weak — the lexical
+    // scoping fix must not regress the §5.9 ratification 2 path.
+    let source = r"
+fn make() {
+    let outer = actor |x: i64| -> i64 {
+        let inner = actor |y: i64| -> i64 {
+            inner;
+            y + 1
+        };
+        inner;
+        x + 1
+    };
+}
+";
+    let output = lower(source);
+    let lambdas = collect_spawn_lambdas(&output);
+    // The inner lambda is the one whose parameter is named `y`.
+    let inner = lambdas
+        .iter()
+        .find(|expr| match &expr.kind {
+            HirExprKind::SpawnLambdaActor { params, .. } => params.iter().any(|p| p.name == "y"),
+            _ => false,
+        })
+        .expect("inner actor-lambda (param `y`) must exist");
+    let HirExprKind::SpawnLambdaActor { captures, .. } = &inner.kind else {
+        unreachable!();
+    };
+    let inner_cap = captures
+        .iter()
+        .find(|c| c.name == "inner")
+        .unwrap_or_else(|| {
+            panic!("`inner` must appear in inner lambda's captures; got {captures:?}")
+        });
+    assert_eq!(
+        inner_cap.kind,
+        hew_hir::HirCaptureKind::Weak,
+        "the inner lambda's reference to its own let-name `inner` must \
+         classify as Weak (§5.9 ratification 2). captures = {captures:?}",
+    );
+}
+
+// ── typed-let forward-bind for actor lambdas ────────────────────────────────
+//
+// The forward-bind path in `lower_stmt` pre-allocates the let-binding so
+// the actor body can reference its own name recursively. Initially this
+// only fired when the let had no type annotation; a typed-let bypassed
+// pre-binding and the body's self-reference resolved as Unresolved.
+//
+// The fix extends the pre-bind to typed actor-lets. The annotation is
+// respected for the binding type (not overridden by the synthetic
+// Duplex shape).
+
+#[test]
+fn typed_actor_let_forward_bind_resolves_self_reference() {
+    // `let fib: Duplex<i64, i64> = actor |n: i64| -> i64 { fib; n + 1 };`
+    // The annotation matches the synthesised Duplex<i64, i64>. The body's
+    // bare-identifier `fib` must resolve to the let's binding — not emit
+    // UnresolvedSymbol.
+    let source = r"
+fn make() {
+    let fib: Duplex<i64, i64> = actor |n: i64| -> i64 {
+        fib;
+        n + 1
+    };
+}
+";
+    let output = lower(source);
+    let unresolved_fib: Vec<_> = output
+        .diagnostics
+        .iter()
+        .filter(|d| match &d.kind {
+            HirDiagnosticKind::UnresolvedSymbol { name } => name == "fib",
+            _ => false,
+        })
+        .collect();
+    assert!(
+        unresolved_fib.is_empty(),
+        "typed actor-let must pre-bind the let-name so the body's `fib` \
+         resolves; diagnostics = {:?}",
+        output.diagnostics
+    );
+    // And the lambda's captures must contain a Weak self-capture for `fib`.
+    let lambdas = collect_spawn_lambdas(&output);
+    let lambda = lambdas
+        .iter()
+        .find(|expr| matches!(expr.kind, HirExprKind::SpawnLambdaActor { .. }))
+        .expect("typed actor-let must lower to a SpawnLambdaActor");
+    let HirExprKind::SpawnLambdaActor { captures, .. } = &lambda.kind else {
+        unreachable!();
+    };
+    let fib_cap = captures
+        .iter()
+        .find(|c| c.name == "fib")
+        .expect("body's `fib` must appear as a capture");
+    assert_eq!(
+        fib_cap.kind,
+        hew_hir::HirCaptureKind::Weak,
+        "typed actor-let recursive self-reference must classify as Weak; \
+         captures = {captures:?}",
     );
 }

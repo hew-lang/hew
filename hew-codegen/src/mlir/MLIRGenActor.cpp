@@ -1,7 +1,7 @@
 //===- MLIRGenActor.cpp - Actor codegen for Hew MLIRGen -------------------===//
 //
 // Actor-related generation: generateActorDecl, generateSpawnExpr,
-// generateSpawnLambdaActorExpr, generateActorMethodSend, generateSendExpr.
+// generateSpawnLambdaActorExpr, generateActorMethodSend.
 //
 //===----------------------------------------------------------------------===//
 
@@ -2002,88 +2002,4 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
   if (!recvInfo->returnType.has_value())
     return nullptr; // void handler — result is discarded by the caller
   return askOp.getResult();
-}
-
-// ============================================================================
-// Send expression generation (actor <- message)
-// ============================================================================
-
-mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
-  auto location = currentLoc;
-
-  auto actorVal = generateExpression(expr.target->value);
-  auto msgVal = generateExpression(expr.message->value);
-  if (!actorVal || !msgVal)
-    return nullptr;
-
-  // Check if the message type is a wire struct
-  const WireWrapperNames *wireNames = nullptr;
-  auto msgType = msgVal.getType();
-  if (auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(msgType)) {
-    auto name = structType.getName();
-    if (!name.empty()) {
-      auto it = wireStructNames.find(name.str());
-      if (it != wireStructNames.end())
-        wireNames = &it->second;
-    }
-  }
-
-  if (wireNames || actorBoundarySenderRetainsOwnership(msgType))
-    materializeTemporary(msgVal, expr.message->value);
-
-  if (wireNames) {
-    // Wire send path: encode struct → bytes, send bytes via runtime
-    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-    auto i32Type = builder.getI32Type();
-
-    // Call encode wrapper: Foo_encode_wrapper(struct) → HewVec* (bytes)
-    auto encodeFuncType = builder.getFunctionType({msgType}, {ptrType});
-    getOrCreateExternFunc(wireNames->encodeName, encodeFuncType);
-    auto bytesVec = mlir::func::CallOp::create(builder, location, wireNames->encodeName,
-                                               mlir::TypeRange{ptrType}, mlir::ValueRange{msgVal})
-                        .getResult(0);
-
-    // Cast actor ref to !llvm.ptr for runtime call
-    auto actorPtrCast = hew::BitcastOp::create(builder, location, ptrType, actorVal).getResult();
-
-    // Call hew_actor_send_wire(actor, msg_type=0, bytes)
-    auto sendWireFuncType = builder.getFunctionType({ptrType, i32Type, ptrType}, {});
-    getOrCreateExternFunc("hew_actor_send_wire", sendWireFuncType);
-    auto msgTypeVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type, 0);
-    mlir::func::CallOp::create(builder, location, "hew_actor_send_wire", mlir::TypeRange{},
-                               mlir::ValueRange{actorPtrCast, msgTypeVal, bytesVec});
-  } else {
-    // Standard path: hew.actor_send with msg_type = 0. The aliasing attr is
-    // looked up by the message expression's span — the same span the
-    // type-checker passed to `mark_expr_moved_if_non_copy` on the sender's
-    // binding (see `enforce_actor_boundary_send` for the BinaryOp::Send
-    // arm).
-    ast::Span msgSpan = expr.message->span;
-    auto sendAliasingAttr = aliasingAttrForSpans({msgSpan}, location);
-    hew::ActorSendOp::create(builder, location, actorVal, builder.getI32IntegerAttr(0),
-                             sendAliasingAttr, mlir::ValueRange{msgVal});
-  }
-
-  // Wire sends serialize the value into independent bytes — no sharing.
-  // Non-wire sends deep-copy String/Vec/HashMap/Closure and struct fields
-  // thereof — sender retains ownership.  Handle fields are transferred with
-  // source null-out.  Everything else shares the raw pointer — sender must
-  // not drop.
-  if (!wireNames) {
-    if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&expr.message->value.kind)) {
-      auto msgType = msgVal.getType();
-      bool senderRetains =
-          mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType, hew::ClosureType>(msgType);
-      if (!senderRetains && actorBoundarySenderRetainsOwnership(msgType)) {
-        senderRetains = true;
-        if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(msgType);
-            structTy && structTy.isIdentified())
-          nullOutTransferredHandleFields(identExpr->name, location);
-      }
-      if (!senderRetains)
-        unregisterDroppable(identExpr->name);
-    }
-  }
-
-  return nullptr; // send is a statement, returns void
 }

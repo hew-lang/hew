@@ -770,7 +770,6 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
   }
 
   mlir::Value value = nullptr;
-  lastScopeLaunchResultType.reset();
   if (stmt.value) {
     auto prevDirectBindingInitializerSpan = directBindingInitializerSpan;
     directBindingInitializerSpan = {
@@ -911,15 +910,6 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
           }
         }
       }
-    }
-
-    // Track scope.launch / scope.spawn task result types for await
-    if (stmt.value &&
-        (std::holds_alternative<ast::ExprScopeLaunch>(stmt.value->value.kind) ||
-         std::holds_alternative<ast::ExprScopeSpawn>(stmt.value->value.kind)) &&
-        lastScopeLaunchResultType.has_value()) {
-      taskResultTypes[varName] = *lastScopeLaunchResultType;
-      lastScopeLaunchResultType.reset();
     }
 
     // Track handle variables from type annotation (filled by enrich_program)
@@ -3836,14 +3826,10 @@ void MLIRGen::generateExprStmt(const ast::StmtExpression &stmt) {
       return ifExpr->else_block.has_value();
     if (std::holds_alternative<ast::ExprCall>(expr.kind) ||
         std::holds_alternative<ast::ExprMethodCall>(expr.kind) ||
-        std::holds_alternative<ast::ExprSend>(expr.kind) ||
         std::holds_alternative<ast::ExprJoin>(expr.kind) ||
         std::holds_alternative<ast::ExprTimeout>(expr.kind) ||
         std::holds_alternative<ast::ExprYield>(expr.kind) ||
-        std::holds_alternative<ast::ExprCooperate>(expr.kind) ||
-        std::holds_alternative<ast::ExprScopeLaunch>(expr.kind) ||
-        std::holds_alternative<ast::ExprScopeSpawn>(expr.kind) ||
-        std::holds_alternative<ast::ExprScopeCancel>(expr.kind))
+        std::holds_alternative<ast::ExprCooperate>(expr.kind))
       return false;
 
     return true;
@@ -3878,14 +3864,10 @@ void MLIRGen::generateExprStmt(const ast::StmtExpression &stmt) {
       return false;
     if (std::holds_alternative<ast::ExprCall>(expr.kind) ||
         std::holds_alternative<ast::ExprMethodCall>(expr.kind) ||
-        std::holds_alternative<ast::ExprSend>(expr.kind) ||
         std::holds_alternative<ast::ExprJoin>(expr.kind) ||
         std::holds_alternative<ast::ExprTimeout>(expr.kind) ||
         std::holds_alternative<ast::ExprYield>(expr.kind) ||
-        std::holds_alternative<ast::ExprCooperate>(expr.kind) ||
-        std::holds_alternative<ast::ExprScopeLaunch>(expr.kind) ||
-        std::holds_alternative<ast::ExprScopeSpawn>(expr.kind) ||
-        std::holds_alternative<ast::ExprScopeCancel>(expr.kind))
+        std::holds_alternative<ast::ExprCooperate>(expr.kind))
       return false;
 
     return true;

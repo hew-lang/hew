@@ -138,7 +138,6 @@ enum class BinaryOp {
   Shr,
   Range,
   RangeInclusive,
-  Send,
 };
 
 enum class UnaryOp {
@@ -367,7 +366,6 @@ struct ExprSpawnLambdaActor {
   std::unique_ptr<Spanned<Expr>> body;
 };
 struct ExprScope {
-  std::optional<std::string> binding;
   Block block;
 };
 struct ExprInterpolatedString {
@@ -405,10 +403,6 @@ struct ExprStructInit {
   /// Absent when the user omits them (backward-compatible: old wire payloads have no
   /// `type_args` key and deserialize to `std::nullopt`).
   std::optional<std::vector<Spanned<TypeExpr>>> type_args;
-};
-struct ExprSend {
-  std::unique_ptr<Spanned<Expr>> target;
-  std::unique_ptr<Spanned<Expr>> message;
 };
 struct ExprSelect {
   std::vector<SelectArm> arms;
@@ -452,14 +446,6 @@ struct ExprRange {
 struct ExprAwait {
   std::unique_ptr<Spanned<Expr>> inner;
 };
-struct ExprScopeLaunch {
-  Block block;
-};
-struct ExprScopeSpawn {
-  Block block;
-};
-struct ExprScopeCancel {};
-
 struct ExprRegexLiteral {
   std::string pattern;
 };
@@ -484,11 +470,11 @@ struct ExprMapLiteral {
 struct Expr {
   std::variant<ExprBinary, ExprUnary, ExprLiteral, ExprIdentifier, ExprTuple, ExprArray, ExprBlock,
                ExprIf, ExprIfLet, ExprMatch, ExprLambda, ExprSpawn, ExprSpawnLambdaActor, ExprScope,
-               ExprInterpolatedString, ExprCall, ExprMethodCall, ExprStructInit, ExprSend,
-               ExprSelect, ExprJoin, ExprTimeout, ExprUnsafe, ExprYield, ExprCooperate, ExprThis,
+               ExprInterpolatedString, ExprCall, ExprMethodCall, ExprStructInit, ExprSelect,
+               ExprJoin, ExprTimeout, ExprUnsafe, ExprYield, ExprCooperate, ExprThis,
                ExprFieldAccess, ExprIndex, ExprCast, ExprPostfixTry, ExprRange, ExprAwait,
-               ExprScopeLaunch, ExprScopeSpawn, ExprScopeCancel, ExprRegexLiteral, ExprArrayRepeat,
-               ExprByteStringLiteral, ExprByteArrayLiteral, ExprMapLiteral>
+               ExprRegexLiteral, ExprArrayRepeat, ExprByteStringLiteral, ExprByteArrayLiteral,
+               ExprMapLiteral>
       kind;
   Span span; // Copied from Spanned<Expr> wrapper for codegen convenience
 };
@@ -910,6 +896,8 @@ struct SupervisorDecl {
 struct MachineState {
   std::string name;
   std::vector<std::pair<std::string, Spanned<TypeExpr>>> fields;
+  std::optional<Block> entry; // entry hook — present when the state has an `entry { }` block
+  std::optional<Block> exit;  // exit hook  — present when the state has an `exit  { }` block
 };
 
 struct MachineEvent {
@@ -923,6 +911,7 @@ struct MachineTransition {
   std::string target_state;
   std::unique_ptr<Spanned<Expr>> guard; // nullptr if no guard
   Spanned<Expr> body;
+  bool reenter = false; // @reenter annotation: Mealy re-entry for self-transitions
 };
 
 struct MachineDecl {

@@ -91,16 +91,6 @@ impl<'ast> AstVisitor<'ast> for CallCollector {
                     span: span.clone(),
                 });
             }
-            Expr::Send { target, .. } => {
-                let send_name = match &target.0 {
-                    Expr::Identifier(name) => format!("{name}.send"),
-                    _ => "send".to_string(),
-                };
-                self.calls.push(CallSite {
-                    name: send_name,
-                    span: span.clone(),
-                });
-            }
             _ => {}
         }
     }
@@ -235,19 +225,6 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 collect_calls_in_block(block, calls);
             }
         }
-        Expr::Send { target, message } => {
-            // Actor message sends are treated as call edges.
-            let send_name = match &target.as_ref().0 {
-                Expr::Identifier(name) => format!("{name}.send"),
-                _ => "send".to_string(),
-            };
-            calls.push(CallSite {
-                name: send_name,
-                span: expr_span.clone(),
-            });
-            collect_calls_in_expr(target.as_ref(), calls);
-            collect_calls_in_expr(message.as_ref(), calls);
-        }
         Expr::Binary { left, right, .. } => {
             collect_calls_in_expr(left.as_ref(), calls);
             collect_calls_in_expr(right.as_ref(), calls);
@@ -329,10 +306,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 }
             }
         }
-        Expr::Scope { body, .. }
-        | Expr::ScopeLaunch(body)
-        | Expr::ScopeSpawn(body)
-        | Expr::Fork { body } => {
+        Expr::Scope { body } => {
             collect_calls_in_block(body, calls);
         }
         Expr::ForkChild { expr, .. } => collect_calls_in_expr(expr, calls),
@@ -345,7 +319,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 collect_calls_in_expr(tc.body.as_ref(), calls);
             }
         }
-        Expr::StructInit { fields, .. } => {
+        Expr::StructInit { fields, .. } | Expr::MachineEmit { fields, .. } => {
             for (_, v) in fields {
                 collect_calls_in_expr(v, calls);
             }
@@ -363,7 +337,6 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::Cooperate
-        | Expr::ScopeCancel
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)

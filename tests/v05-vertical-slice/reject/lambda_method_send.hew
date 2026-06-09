@@ -1,0 +1,13 @@
+// SUPERSEDED: This fixture previously rejected .send() on lambda-actor handles
+// with E_LAMBDA_NO_SEND_METHOD.  Per Q30=(a), `.send()` is now an allowed-secondary
+// surface because lambda-actor handles are `Duplex<Msg, Reply>` underneath.
+// The accept version of this fixture lives at accept/lambda_method_send.hew.
+//
+// This file is kept here so the run.sh block that references it can detect the
+// behaviour change: `hew check` now PASSES this file (exit 0) instead of failing.
+fn main() {
+    let printer = actor |x: int| {
+        println(x);
+    };
+    printer.send(42);
+}

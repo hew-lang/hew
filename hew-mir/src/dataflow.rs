@@ -465,6 +465,30 @@ mod tests {
         ]
     }
 
+    /// Wider exhaustive state-space for the M2 substrate's drop-plan
+    /// invariants. Includes multiple consume sites with non-trivial
+    /// ordering (1, 3, 7, 11) so the min-site rule for
+    /// Consumed/MaybeConsumed meets is exercised at every pair.
+    /// Property tests below sample every (state × state) and every
+    /// (state × state × state) tuple — the lattice has 9 elements
+    /// (Uninit + Live + 4×Consumed + 4×MaybeConsumed = 1+1+4+4 = 10),
+    /// so the exhaustive cube is 1000 tuples; fast enough to keep in
+    /// CI per the existing pattern.
+    fn states_wide() -> Vec<BindingState> {
+        vec![
+            BindingState::Uninit,
+            BindingState::Live,
+            BindingState::Consumed(SiteId(1)),
+            BindingState::Consumed(SiteId(3)),
+            BindingState::Consumed(SiteId(7)),
+            BindingState::Consumed(SiteId(11)),
+            BindingState::MaybeConsumed(SiteId(1)),
+            BindingState::MaybeConsumed(SiteId(3)),
+            BindingState::MaybeConsumed(SiteId(7)),
+            BindingState::MaybeConsumed(SiteId(11)),
+        ]
+    }
+
     #[test]
     fn meet_is_commutative() {
         for a in states() {
@@ -526,6 +550,145 @@ mod tests {
             BindingState::MaybeConsumed(s)
         );
     }
+
+    // ---------- Slice 3 (M2 substrate) lattice property pins ----------
+    //
+    // The M2 unified-concurrency substrate's per-Return drop-plan
+    // narrowing depends on the meet lattice for its correctness: each
+    // Duplex / lambda-actor handle's drop fires only when its state at
+    // the Return is `Live` (the binding is still owned) or
+    // `MaybeConsumed(_)` (the move-checker rejects upstream, but the
+    // elaborator treats it as still-needing-a-drop for graceful
+    // failure). A breaking change to the meet semantics would silently
+    // shift which drops emit at each Return — exactly the
+    // `cleanup-all-exits` invariant we cannot regress.
+    //
+    // These tests pin the slice-3 invariants over a wider state space
+    // (4 consume sites instead of 2) so the min-site rule for
+    // Consumed/MaybeConsumed pairs is exercised at every ordering.
+
+    #[test]
+    fn meet_is_commutative_on_wide_state_space() {
+        for a in states_wide() {
+            for b in states_wide() {
+                assert_eq!(
+                    meet(a, b),
+                    meet(b, a),
+                    "commutativity broke on ({a:?}, {b:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn meet_is_associative_on_wide_state_space() {
+        for a in states_wide() {
+            for b in states_wide() {
+                for c in states_wide() {
+                    let lhs = meet(meet(a, b), c);
+                    let rhs = meet(a, meet(b, c));
+                    assert_eq!(lhs, rhs, "associativity broke on ({a:?}, {b:?}, {c:?})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn meet_is_idempotent_on_wide_state_space() {
+        for a in states_wide() {
+            assert_eq!(meet(a, a), a, "idempotence broke on {a:?}");
+        }
+    }
+
+    #[test]
+    fn meet_consumed_pair_picks_min_site_over_wide_space() {
+        // For every Consumed(a) ⊓ Consumed(b) pair, the result is
+        // Consumed(min(a, b)). The min-site rule is the diagnostic
+        // anchor for "earliest consume site reaching this join" —
+        // pinning it across a wider site space catches a stray
+        // max-site or any-site implementation drift.
+        for a_site in [1u32, 3, 7, 11] {
+            for b_site in [1u32, 3, 7, 11] {
+                let a = BindingState::Consumed(SiteId(a_site));
+                let b = BindingState::Consumed(SiteId(b_site));
+                let result = meet(a, b);
+                let expected_min = a_site.min(b_site);
+                assert_eq!(
+                    result,
+                    BindingState::Consumed(SiteId(expected_min)),
+                    "Consumed({a_site}) ⊓ Consumed({b_site}) should be Consumed({expected_min})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn meet_maybe_consumed_pair_picks_min_site_over_wide_space() {
+        // Same min-site rule for MaybeConsumed ⊓ MaybeConsumed.
+        for a_site in [1u32, 3, 7, 11] {
+            for b_site in [1u32, 3, 7, 11] {
+                let a = BindingState::MaybeConsumed(SiteId(a_site));
+                let b = BindingState::MaybeConsumed(SiteId(b_site));
+                let result = meet(a, b);
+                let expected_min = a_site.min(b_site);
+                assert_eq!(
+                    result,
+                    BindingState::MaybeConsumed(SiteId(expected_min)),
+                    "MaybeConsumed({a_site}) ⊓ MaybeConsumed({b_site}) should be MaybeConsumed({expected_min})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn meet_consumed_vs_maybe_consumed_demotes_and_picks_min_site() {
+        // Consumed ⊓ MaybeConsumed = MaybeConsumed(min(a, b)). The
+        // "any-path-not-consumed" projection demotes Consumed to
+        // MaybeConsumed; the carried site is still the earliest for
+        // diagnostic anchoring. Wide-space pin.
+        for c_site in [1u32, 3, 7, 11] {
+            for m_site in [1u32, 3, 7, 11] {
+                let c = BindingState::Consumed(SiteId(c_site));
+                let m = BindingState::MaybeConsumed(SiteId(m_site));
+                let result = meet(c, m);
+                let expected_min = c_site.min(m_site);
+                assert_eq!(
+                    result,
+                    BindingState::MaybeConsumed(SiteId(expected_min)),
+                    "Consumed({c_site}) ⊓ MaybeConsumed({m_site}) should be MaybeConsumed({expected_min})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn meet_live_demotes_consumed_pair_to_maybe_consumed() {
+        // Three-way meet: Live ⊓ Consumed(a) ⊓ Consumed(b) =
+        // MaybeConsumed(min(a, b)). This is the canonical "binding
+        // was consumed on two paths and live on a third" shape —
+        // the M2 substrate's per-Return drop plan must observe this
+        // as MaybeConsumed so the drop still fires for the live-path
+        // case.
+        for a_site in [1u32, 3, 7, 11] {
+            for b_site in [1u32, 3, 7, 11] {
+                let result = meet(
+                    BindingState::Live,
+                    meet(
+                        BindingState::Consumed(SiteId(a_site)),
+                        BindingState::Consumed(SiteId(b_site)),
+                    ),
+                );
+                let expected_min = a_site.min(b_site);
+                assert_eq!(
+                    result,
+                    BindingState::MaybeConsumed(SiteId(expected_min)),
+                    "Live ⊓ Consumed({a_site}) ⊓ Consumed({b_site}) should be MaybeConsumed({expected_min})"
+                );
+            }
+        }
+    }
+
+    // Original property tests below — kept for narrow-space coverage.
 
     #[test]
     fn meet_consumed_picks_earlier_site() {

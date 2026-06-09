@@ -1540,7 +1540,7 @@ static hew::ast::Program makeDiscardedScopeBadTailProgram() {
 
   auto outerSpan = mkSpan();
   Expr outerExpr;
-  outerExpr.kind = ExprScope{std::nullopt, std::move(innerBlock)};
+  outerExpr.kind = ExprScope{std::move(innerBlock)};
   outerExpr.span = outerSpan;
 
   StmtExpression exprStmt;
@@ -1645,7 +1645,7 @@ static hew::ast::Program makeDiscardedIfBadPartProgram(DiscardedIfBadPart badPar
 
   auto scopeSpan = mkSpan();
   Expr expr;
-  expr.kind = ExprScope{std::nullopt, std::move(scopeBlock)};
+  expr.kind = ExprScope{std::move(scopeBlock)};
   expr.span = scopeSpan;
 
   StmtExpression exprStmt;
@@ -6005,131 +6005,6 @@ fn broken_to_string(x: int) -> string {
 }
 
 // ============================================================================
-// Test: inline scope.launch await lowers by consulting resolved task metadata
-// ============================================================================
-static void test_scope_await_inline_launch_uses_resolved_task_type() {
-  TEST(scope_await_inline_launch_uses_resolved_task_type);
-
-  mlir::MLIRContext ctx;
-  initContext(ctx);
-
-  auto module = generateMLIR(ctx, R"(
-fn main() -> int {
-    scope |s| {
-        await (s.launch {
-            1
-        })
-    }
-}
-  )");
-
-  if (!module) {
-    FAIL("MLIR generation failed for inline scope.await launch expression");
-    return;
-  }
-
-  auto mainFn = lookupFuncBySuffix(module, "main");
-  if (!mainFn) {
-    FAIL("main function not found for inline scope.await launch test");
-    module.getOperation()->destroy();
-    return;
-  }
-
-  hew::ScopeAwaitOp awaitOp;
-  mlir::LLVM::LoadOp awaitLoad;
-  mainFn.walk([&](hew::ScopeAwaitOp op) { awaitOp = op; });
-  mainFn.walk([&](mlir::LLVM::LoadOp op) {
-    if (awaitOp && op.getAddr() == awaitOp.getResult())
-      awaitLoad = op;
-  });
-
-  if (!awaitOp) {
-    FAIL("expected a hew.scope.await operation for inline task await");
-    module.getOperation()->destroy();
-    return;
-  }
-
-  if (!awaitLoad || !awaitLoad.getResult().getType().isInteger(64)) {
-    FAIL("expected inline task await to lower to an i64 load from the await result pointer");
-    module.getOperation()->destroy();
-    return;
-  }
-
-  module.getOperation()->destroy();
-  PASS();
-}
-
-// ============================================================================
-// Test: inline scope.launch await without expr_types fails closed
-// ============================================================================
-static void test_scope_await_inline_launch_missing_expr_type_fails_closed() {
-  TEST(scope_await_inline_launch_missing_expr_type_fails_closed);
-
-  hew::ast::Program program;
-  if (!loadProgramFromSource(R"(
-fn main() -> int {
-    scope |s| {
-        await (s.launch {
-            1
-        })
-    }
-}
-  )",
-                             program)) {
-    FAIL("failed to load typed program");
-    return;
-  }
-
-  auto *mainFn = findFunctionDecl(program, "main");
-  if (!mainFn || !mainFn->body.trailing_expr) {
-    FAIL("main function or trailing scope expression missing");
-    return;
-  }
-
-  auto *scopeExpr = std::get_if<hew::ast::ExprScope>(&mainFn->body.trailing_expr->value.kind);
-  if (!scopeExpr || !scopeExpr->block.trailing_expr) {
-    FAIL("expected scope expression with trailing await");
-    return;
-  }
-
-  auto *awaitExpr = std::get_if<hew::ast::ExprAwait>(&scopeExpr->block.trailing_expr->value.kind);
-  if (!awaitExpr || !awaitExpr->inner) {
-    FAIL("expected trailing await expression inside scope");
-    return;
-  }
-
-  if (!eraseExprTypeEntryForSpan(program, awaitExpr->inner->span)) {
-    FAIL("failed to remove expr_types entry for inline awaited task expression");
-    return;
-  }
-
-  mlir::MLIRContext ctx;
-  initContext(ctx);
-
-  hew::MLIRGen mlirGen(ctx);
-  mlir::ModuleOp module;
-  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
-
-  if (module) {
-    FAIL("expected MLIR generation failure when inline awaited task metadata is missing");
-    module.getOperation()->destroy();
-    return;
-  }
-
-  if (stderrText.find("missing expr_types entry for scope.await operand") == std::string::npos) {
-    FAIL("expected missing-expr_types diagnostic for inline awaited task expression");
-    return;
-  }
-
-  if (stderrText.find("module verification failed") != std::string::npos) {
-    FAIL("unexpected downstream verifier failure for missing inline task await metadata");
-    return;
-  }
-
-  PASS();
-}
-
-// ============================================================================
 // Test: for await on Receiver<T> with unresolved element type fails closed
 // ============================================================================
 static void test_for_await_receiver_missing_elem_type_fails_closed() {
@@ -9625,7 +9500,7 @@ static void test_lambda_actor_receive_string_param_drop() {
 
   auto module = generateMLIR(ctx, R"(
 fn main() {
-    let handler = spawn (msg: String) => {
+    let handler = actor |msg: String| {
     };
 }
   )");
@@ -9665,7 +9540,7 @@ static void test_lambda_actor_receive_clears_enclosing_drop_excludes() {
   auto module = generateMLIR(ctx, R"(
 fn make_actor() -> String {
     let kept = int_to_string(7);
-    let worker = spawn (kept: String) => {
+    let worker = actor |kept: String| {
     };
     kept
 }
@@ -11045,7 +10920,7 @@ static void test_nonstructural_actor_send_uses_resolved_metadata() {
   auto module = generateMLIR(ctx, R"(
 fn main() {
     ({
-        let printer = spawn (x: int) => {
+        let printer = actor |x: int| {
             println(x);
         };
         printer
@@ -11092,7 +10967,7 @@ static void test_nonstructural_actor_send_missing_expr_type_fails_closed() {
   if (!loadProgramFromSource(R"(
 fn main() {
     ({
-        let printer = spawn (x: int) => {
+        let printer = actor |x: int| {
             println(x);
         };
         printer
@@ -14404,8 +14279,6 @@ int main() {
   test_log_unknown_method_fails_closed();
   test_println_int_missing_expr_type_fails_closed();
   test_int_to_string_missing_expr_type_fails_closed();
-  test_scope_await_inline_launch_uses_resolved_task_type();
-  test_scope_await_inline_launch_missing_expr_type_fails_closed();
   test_for_await_receiver_missing_elem_type_fails_closed();
   test_for_await_bytes_stream_binding_fallback_uses_bytes_abi();
   test_for_await_bytes_stream_binding_fallback_overrides_conflicting_expr_type();

@@ -4,11 +4,11 @@ fn main() {
     println("=== Lambda Actor Pipeline ===");
 
     // Final stage - printer
-    let printer = spawn (x: i32) => {
+    let printer = actor |x: i32| {
         println(f"Final result: {x}");
     };
     // Middle stage - doubler that sends to printer
-    let doubler = spawn (x: i32) => {
+    let doubler = actor |x: i32| {
         let doubled = x * 2;
         print("Doubled: ");
         print(doubled);
@@ -16,7 +16,7 @@ fn main() {
         printer.send(doubled);
     };
     // First stage - adder that sends to doubler
-    let adder = spawn (x: i32) => {
+    let adder = actor |x: i32| {
         let added = x + 5;
         print("Added 5: ");
         print(added);
@@ -34,14 +34,14 @@ fn main() {
     sleep_ms(100);
 
     // More complex pipeline - 3 stage transformation
-    let formatter = spawn (x: i32) => {
+    let formatter = actor |x: i32| {
         println(f"[FORMATTED] {x}");
     };
-    let squarer = spawn (x: i32) => {
+    let squarer = actor |x: i32| {
         let squared = x * x;
         formatter.send(squared);
     };
-    let incrementer = spawn (x: i32) => {
+    let incrementer = actor |x: i32| {
         squarer.send(x + 1);
     };
     println("Complex pipeline: increment -> square -> format");

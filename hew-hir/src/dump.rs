@@ -71,6 +71,28 @@ pub fn dump_hir(module: &HirModule) -> String {
                     writeln!(out, "  consuming-method {method}").expect("write to string");
                 }
             }
+            HirItem::Machine(machine) => {
+                writeln!(out, "machine {} {}", machine.id, machine.name).expect("write to string");
+                for state in &machine.states {
+                    writeln!(
+                        out,
+                        "  state {} entry={} exit={}",
+                        state.name, state.has_entry, state.has_exit
+                    )
+                    .expect("write to string");
+                }
+                for event in &machine.events {
+                    writeln!(out, "  event {}", event.name).expect("write to string");
+                }
+                for tr in &machine.transitions {
+                    writeln!(
+                        out,
+                        "  transition on {}: {} -> {} self={}",
+                        tr.event_name, tr.source_state, tr.target_state, tr.is_self_transition
+                    )
+                    .expect("write to string");
+                }
+            }
         }
     }
     out
@@ -124,8 +146,8 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, value, indent + 4);
             }
         }
-        HirExprKind::Fork { body } => {
-            writeln!(out, "{pad}  fork scope={}", body.scope).expect("write to string");
+        HirExprKind::Scope { body } => {
+            writeln!(out, "{pad}  scope scope={}", body.scope).expect("write to string");
             for stmt in &body.statements {
                 match &stmt.kind {
                     HirStmtKind::Let(binding, value) => {
@@ -193,6 +215,34 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 writeln!(out, "{pad}    arm {kind_label} bind={binding_label}")
                     .expect("write to string");
             }
+        }
+        HirExprKind::SpawnLambdaActor {
+            params,
+            reply_ty,
+            body,
+            captures,
+        } => {
+            writeln!(
+                out,
+                "{pad}  spawn-lambda-actor params={} reply_ty={} captures={}",
+                params.len(),
+                reply_ty.user_facing(),
+                captures.len()
+            )
+            .expect("write to string");
+            for capture in captures {
+                writeln!(
+                    out,
+                    "{pad}    capture {} ({}) {:?}",
+                    capture.name, capture.binding, capture.kind
+                )
+                .expect("write to string");
+            }
+            dump_expr(out, body, indent + 4);
+        }
+        HirExprKind::TupleIndex { tuple, index } => {
+            writeln!(out, "{pad}  tuple-index .{index}").expect("write to string");
+            dump_expr(out, tuple, indent + 4);
         }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");

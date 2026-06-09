@@ -4,7 +4,7 @@ fn main() {
     println("=== Lambda Actor Patterns ===");
 
     // Simple lambda actor
-    let printer = spawn (x: int) => {
+    let printer = actor |x: int| {
         println(f"Received: {x}");
     };
     printer.send(42);

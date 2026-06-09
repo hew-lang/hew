@@ -123,7 +123,8 @@ fn diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         hew_mir::MirDiagnosticKind::UseAfterConsume { .. }
         | hew_mir::MirDiagnosticKind::InitialisedBeforeUse { .. }
         | hew_mir::MirDiagnosticKind::DecisionMapTotal { .. }
-        | hew_mir::MirDiagnosticKind::MustConsume { .. } => "E_MIR_CHECK",
+        | hew_mir::MirDiagnosticKind::MustConsume { .. }
+        | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. } => "E_MIR_CHECK",
         hew_mir::MirDiagnosticKind::CutoverUnsupported { .. } => "E_CUTOVER_UNSUPPORTED",
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
@@ -131,6 +132,11 @@ fn diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear CLI entry point: parse → typecheck → lower → MIR; \
+              splitting on line count would scatter a sequential pipeline"
+)]
 fn cmd_compile_v05(a: &args::CompileV05Args) {
     let input = a.input.display().to_string();
     let source = std::fs::read_to_string(&a.input).unwrap_or_else(|e| {
@@ -146,7 +152,21 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
         std::process::exit(1);
     }
 
-    let lower_output = hew_hir::lower_program(&parsed.program, &hew_hir::ResolutionCtx);
+    // Type-check the program and collect the side-table before HIR lowering.
+    // `method_call_rewrites` and other checker-produced metadata flow into the
+    // HIR bridge via `TypeCheckOutput`; without this call the bridge is empty
+    // and every method call fails closed in `lower_program`.
+    let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+    let mut checker = hew_types::Checker::new(registry);
+    let tc_output = checker.check_program(&parsed.program);
+    if !tc_output.errors.is_empty() {
+        for error in &tc_output.errors {
+            eprintln!("E_TYPE: {error:?}");
+        }
+        std::process::exit(1);
+    }
+
+    let lower_output = hew_hir::lower_program(&parsed.program, &tc_output, &hew_hir::ResolutionCtx);
     let mut diagnostics = lower_output.diagnostics;
     diagnostics.extend(hew_hir::verify_hir(&lower_output.module));
     if !diagnostics.is_empty() {

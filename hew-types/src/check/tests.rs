@@ -13993,14 +13993,12 @@ mod wasm_rejects {
     fn scope_tasks_source() -> &'static str {
         r"
             fn main() {
-                let result = scope |s| {
-                    let task = s.launch {
-                        42
-                    };
-                    await task
-                };
-                println(result);
+                scope {
+                    fork task = compute();
+                    await task;
+                }
             }
+            fn compute() -> int { 42 }
         "
     }
 
@@ -15099,21 +15097,22 @@ mod task_type_surface_rules {
         );
     }
 
-    // ── Accept path: scope.launch{} infers Ty::Task; await yields T ─────────
+    // ── Accept path: `fork name = call(...)` inside scope{} infers Ty::Task;
+    // `await name` consumes the binding and yields T ──────────────────────────
 
     #[test]
-    fn scope_launch_infers_task_and_await_yields_inner_type() {
-        // `scope |s| { let task = s.launch { 42 }; await task }` should
-        // type-check cleanly on a native target: the task binding gets
-        // Ty::Task(int) and await strips the wrapper.
+    fn scope_fork_binding_infers_task_and_await_consumes_it() {
+        // `scope { fork task = compute(); await task; }` is the new structured
+        // surface for spawning a child task and joining it; it must type-check
+        // without emitting TaskNotNameable.
         let output = check_source(
             r"
+            fn compute() -> int { 42 }
             fn main() {
-                let result = scope |s| {
-                    let task = s.launch { 42 };
-                    await task
-                };
-                println(result);
+                scope {
+                    fork task = compute();
+                    await task;
+                }
             }
             ",
         );
@@ -15122,7 +15121,7 @@ mod task_type_surface_rules {
                 .errors
                 .iter()
                 .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
-            "clean scope.launch + await must not emit TaskNotNameable; got: {:#?}",
+            "clean scope {{ fork x = call(); await x; }} must not emit TaskNotNameable; got: {:#?}",
             output.errors
         );
     }

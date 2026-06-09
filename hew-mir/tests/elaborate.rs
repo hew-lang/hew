@@ -11,11 +11,12 @@
 
 use hew_hir::{lower_program, verify_hir, ResolutionCtx};
 use hew_mir::{lower_hir_module, BlockKind, ElaboratedMirFunction, ExitPath, IrPipeline};
+use hew_types::TypeCheckOutput;
 
 fn pipeline(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let output = lower_program(&parsed.program, &ResolutionCtx);
+    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let verify = verify_hir(&output.module);
     assert!(verify.is_empty(), "{verify:?}");

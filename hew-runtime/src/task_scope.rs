@@ -1,9 +1,10 @@
 //! Hew runtime: task management for structured concurrency.
 //!
-//! Tasks are units of concurrent work spawned via `s.launch` (inside `scope |s| { ... }`). Each
-//! task runs on a separate OS thread (from the runtime's pool), providing
-//! true parallelism. Tasks do NOT share mutable state — like actors,
-//! they communicate via results, not shared memory.
+//! Tasks are units of concurrent work spawned via `fork name = call(...)`
+//! inside a `scope { ... }` block. Each task runs on a separate OS thread
+//! (from the runtime's pool), providing true parallelism. Tasks do NOT
+//! share mutable state — like actors, they communicate via results, not
+//! shared memory.
 //!
 //! Thread-safe completion notification uses `Mutex` + `Condvar` so that
 //! `await` can block until a task finishes.

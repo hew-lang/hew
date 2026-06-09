@@ -179,7 +179,6 @@ private:
   // ── Actor expressions ─────────────────────────────────────────────
   mlir::Value generateSpawnExpr(const ast::ExprSpawn &expr);
   mlir::Value generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActor &expr);
-  mlir::Value generateSendExpr(const ast::ExprSend &expr);
   void generateCoalesceKeyFn(const ActorInfo &actorInfo, const std::string &fnName);
   mlir::Value generateActorMethodSend(mlir::Value actorPtr, const ActorInfo &actorInfo,
                                       const std::string &methodName,
@@ -304,10 +303,6 @@ private:
   mlir::Value generateArrayRepeatExpr(const ast::ExprArrayRepeat &expr, const ast::Span &exprSpan);
   mlir::Value generateLambdaExpr(const ast::ExprLambda &expr);
   mlir::Value generateScopeExpr(const ast::ExprScope &expr, bool statementPosition = false);
-  mlir::Value generateScopeLaunchExpr(const ast::ExprScopeLaunch &expr);
-  mlir::Value generateScopeSpawnExpr(const ast::ExprScopeSpawn &expr);
-  mlir::Value generateScopeLaunchImpl(const ast::Block &block);
-  mlir::Value generateScopeCancelExpr();
 
   mlir::Value generateSelectExpr(const ast::ExprSelect &expr);
   mlir::Value generateJoinExpr(const ast::ExprJoin &expr);
@@ -895,11 +890,9 @@ private:
   unsigned taskCounter = 0;
 
   // ── Task result type tracking ────────────────────────────────────
-  // Maps variable name (let-bound to a scope.launch task) → the MLIR type
-  // of the body result, so that `await` can load the correct type.
+  // Maps variable name (let-bound to a task) → the MLIR type of the body
+  // result, so that `await` can load the correct type.
   std::unordered_map<std::string, mlir::Type> taskResultTypes;
-  // Scratch: the result type of the most recently compiled scope.launch.
-  std::optional<mlir::Type> lastScopeLaunchResultType;
 
   // ── Closure thunk cache ─────────────────────────────────────────
   // Maps top-level function name → thunk wrapper name (generated on demand

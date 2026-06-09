@@ -33,6 +33,15 @@
   accepted by the v0.4 parser has been removed. Migrate cleanup logic to a
   `#[on(stop)] fn <name>() { ... }` declaration inside the actor body; the
   field-access semantics are identical (see spec §9.1.2).
+- **BREAKING CHANGE: `<-` send operator removed** (see HEW-SPEC-2026 §2.1.1):
+  The `<-` infix operator for sending messages to actors no longer exists. The
+  parser emits `E_OPERATOR_REMOVED` when it encounters adjacent `<` and `-`
+  tokens (i.e. the legacy operator spelling). Use `handle.send(msg)` for
+  named-actor sends or call-syntax `handle(msg)` for lambda-actor handles.
+- **BREAKING CHANGE: `spawn (params) => body` lambda-actor syntax removed**
+  (see HEW-SPEC-2026 §2.1.3): The `spawn`-based lambda-actor literal form is
+  no longer accepted. The parser emits `E_LEGACY_SPAWN_LAMBDA_SYNTAX` with a
+  fixit note. Use `actor |params| { body }` instead.
 
 ## [0.4.0] - 2026-05-03
 

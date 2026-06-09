@@ -503,6 +503,12 @@ static ast::MachineState parseMachineState(const msgpack::object &obj) {
   ast::MachineState result;
   result.name = getString(mapReq(obj, "name"));
   result.fields = parseVec<std::pair<std::string, ast::Spanned<ast::TypeExpr>>>(mapReq(obj, "fields"), [](const msgpack::object &o) { uint32_t sz; const auto *arr = arrayData(o, sz); if (sz != 2) fail("tuple should have 2 elements"); return std::make_pair(getString(arr[0]), parseSpanned<ast::TypeExpr>(arr[1], parseTypeExpr)); });
+  const auto *entry = mapGet(obj, "entry");
+  if (entry && !isNil(*entry))
+    result.entry = parseBlock(*entry);
+  const auto *exit = mapGet(obj, "exit");
+  if (exit && !isNil(*exit))
+    result.exit = parseBlock(*exit);
   return result;
 }
 
@@ -784,7 +790,6 @@ static ast::BinaryOp parseBinaryOp(const msgpack::object &obj) {
   if (s == "Shr") return ast::BinaryOp::Shr;
   if (s == "Range") return ast::BinaryOp::Range;
   if (s == "RangeInclusive") return ast::BinaryOp::RangeInclusive;
-  if (s == "Send") return ast::BinaryOp::Send;
   fail("unknown BinaryOp: " + s);
 }
 
@@ -1248,9 +1253,6 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
   }
   if (name == "Scope") {
     ast::ExprScope e;
-    const auto *bind = mapGet(*payload, "binding");
-    if (bind && !isNil(*bind))
-      e.binding = getString(*bind);
     e.block = parseBlock(mapReq(*payload, "body"));
     return ast::Expr{std::move(e), {}};
   }
@@ -1315,14 +1317,6 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
       });
     }
-    return ast::Expr{std::move(e), {}};
-  }
-  if (name == "Send") {
-    ast::ExprSend e;
-    e.target = std::make_unique<ast::Spanned<ast::Expr>>(
-        parseSpanned<ast::Expr>(mapReq(*payload, "target"), parseExpr));
-    e.message = std::make_unique<ast::Spanned<ast::Expr>>(
-        parseSpanned<ast::Expr>(mapReq(*payload, "message"), parseExpr));
     return ast::Expr{std::move(e), {}};
   }
   if (name == "Select") {
@@ -1409,13 +1403,6 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*payload, parseExpr));
     return ast::Expr{std::move(e), {}};
   }
-  if (name == "ScopeLaunch")
-    return ast::Expr{ast::ExprScopeLaunch{parseBlock(*payload)}, {}};
-  if (name == "ScopeSpawn")
-    return ast::Expr{ast::ExprScopeSpawn{parseBlock(*payload)}, {}};
-  if (name == "ScopeCancel")
-    return ast::Expr{ast::ExprScopeCancel{}, {}};
-
   if (name == "RegexLiteral")
     return ast::Expr{ast::ExprRegexLiteral{getString(*payload)}, {}};
   if (name == "ByteStringLiteral")
@@ -1591,6 +1578,9 @@ static ast::MachineTransition parseMachineTransition(const msgpack::object &obj)
   if (g && !isNil(*g))
     mt.guard = parseSpannedPtr<ast::Expr>(*g, parseExpr);
   mt.body = parseSpanned<ast::Expr>(mapReq(obj, "body"), parseExpr);
+  const auto *r = mapGet(obj, "reenter");
+  if (r && !isNil(*r))
+    mt.reenter = getBool(*r);
   return mt;
 }
 

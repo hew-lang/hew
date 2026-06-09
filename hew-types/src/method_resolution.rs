@@ -273,8 +273,11 @@ mod tests {
 
         let type_def = lookup_type_def(&type_defs, "stream.Stream")
             .expect("builtin stream type def should resolve");
-        assert!(type_def.methods.contains_key("next"));
-        assert!(type_def.methods.contains_key("collect"));
+        // Channel-family naming: .recv() replaced .next() in the fundamental surface.
+        assert!(type_def.methods.contains_key("recv"));
+        // Iterator-style aliases are removed from the fundamental method table.
+        assert!(!type_def.methods.contains_key("next"));
+        assert!(!type_def.methods.contains_key("collect"));
         assert!(!type_def.methods.contains_key("decode"));
     }
 

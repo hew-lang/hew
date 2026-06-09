@@ -113,26 +113,24 @@ mod tests {
 
     #[test]
     fn stream_methods_resolve() {
+        // Channel-family naming: .recv() is the fundamental recv surface.
         assert_eq!(
-            resolve_stream_method(STREAM, "next", Some("String")),
+            resolve_stream_method(STREAM, "recv", Some("String")),
             Some("hew_stream_next")
         );
         assert_eq!(
-            resolve_stream_method(STREAM, "next", Some("bytes")),
+            resolve_stream_method(STREAM, "recv", Some("bytes")),
             Some("hew_stream_next_bytes")
         );
         assert_eq!(
             resolve_stream_method(STREAM, "close", None),
             Some("hew_stream_close")
         );
-        assert_eq!(
-            resolve_stream_method(STREAM, "collect", None),
-            Some("hew_stream_collect_string")
-        );
-        assert_eq!(
-            resolve_stream_method(STREAM, "lines", None),
-            Some("hew_stream_lines")
-        );
+        // Iterator-style aliases (.next, .collect, .lines) no longer resolve
+        // via the fundamental method table.
+        assert_eq!(resolve_stream_method(STREAM, "next", Some("String")), None);
+        assert_eq!(resolve_stream_method(STREAM, "collect", None), None);
+        assert_eq!(resolve_stream_method(STREAM, "lines", None), None);
         assert_eq!(
             resolve_stream_method(STREAM, "chunks", None),
             Some("hew_stream_chunks")
@@ -145,18 +143,18 @@ mod tests {
 
     #[test]
     fn sink_methods_resolve() {
+        // Channel-family naming: .send() is the fundamental send surface.
         assert_eq!(
-            resolve_stream_method(SINK, "write", Some("String")),
+            resolve_stream_method(SINK, "send", Some("String")),
             Some("hew_sink_write_string")
         );
         assert_eq!(
-            resolve_stream_method(SINK, "write", Some("bytes")),
+            resolve_stream_method(SINK, "send", Some("bytes")),
             Some("hew_sink_write_bytes")
         );
-        assert_eq!(
-            resolve_stream_method(SINK, "flush", None),
-            Some("hew_sink_flush")
-        );
+        // .write and .flush no longer resolve via the fundamental method table.
+        assert_eq!(resolve_stream_method(SINK, "write", Some("String")), None);
+        assert_eq!(resolve_stream_method(SINK, "flush", None), None);
         assert_eq!(
             resolve_stream_method(SINK, "close", None),
             Some("hew_sink_close")
@@ -166,19 +164,20 @@ mod tests {
     #[test]
     fn stream_unknown_method_returns_none() {
         assert_eq!(resolve_stream_method(STREAM, "nonexistent", None), None);
-        assert_eq!(resolve_stream_method("Unknown", "next", None), None);
+        assert_eq!(resolve_stream_method("Unknown", "recv", None), None);
     }
 
     #[test]
     fn stream_element_sensitive_methods_require_lowerable_metadata() {
-        assert_eq!(resolve_stream_method(STREAM, "next", None), None);
-        assert_eq!(resolve_stream_method(STREAM, "next", Some("Row")), None);
-        assert_eq!(resolve_stream_method(STREAM, "next", Some("string")), None);
-        assert_eq!(resolve_stream_method(STREAM, "next", Some("str")), None);
-        assert_eq!(resolve_stream_method(SINK, "write", None), None);
-        assert_eq!(resolve_stream_method(SINK, "write", Some("Row")), None);
-        assert_eq!(resolve_stream_method(SINK, "write", Some("string")), None);
-        assert_eq!(resolve_stream_method(SINK, "write", Some("str")), None);
+        // Element-sensitive methods return None for non-lowerable types.
+        assert_eq!(resolve_stream_method(STREAM, "recv", None), None);
+        assert_eq!(resolve_stream_method(STREAM, "recv", Some("Row")), None);
+        assert_eq!(resolve_stream_method(STREAM, "recv", Some("string")), None);
+        assert_eq!(resolve_stream_method(STREAM, "recv", Some("str")), None);
+        assert_eq!(resolve_stream_method(SINK, "send", None), None);
+        assert_eq!(resolve_stream_method(SINK, "send", Some("Row")), None);
+        assert_eq!(resolve_stream_method(SINK, "send", Some("string")), None);
+        assert_eq!(resolve_stream_method(SINK, "send", Some("str")), None);
     }
 
     // ── constants match expected string values ──────────────────────────────

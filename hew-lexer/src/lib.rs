@@ -270,6 +270,12 @@ pub enum Token<'src> {
     On,
     #[token("when")]
     When,
+    #[token("entry")]
+    Entry,
+    #[token("exit")]
+    Exit,
+    #[token("emit")]
+    Emit,
 
     // ── Multi-char operators (must precede single-char) ───────────────
     #[token("==")]
@@ -280,8 +286,6 @@ pub enum Token<'src> {
     FatArrow,
     #[token("->")]
     Arrow,
-    #[token("<-")]
-    LeftArrow,
     #[token("<<=")]
     LessLessEqual,
     #[token(">>=")]
@@ -492,7 +496,7 @@ impl std::fmt::Display for Token<'_> {
             Token::Question => f.write_str("`?`"),
             Token::FatArrow => f.write_str("`=>`"),
             Token::Arrow => f.write_str("`->`"),
-            Token::LeftArrow => f.write_str("`<-`"),
+
             Token::LessLess => f.write_str("`<<`"),
             Token::GreaterGreater => f.write_str("`>>`"),
             // Compound assignment
@@ -639,6 +643,9 @@ define_keywords! {
     Event      => "event",
     On         => "on",
     When       => "when",
+    Entry      => "entry",
+    Exit       => "exit",
+    Emit       => "emit",
 }
 
 impl Token<'_> {
@@ -665,7 +672,6 @@ impl Token<'_> {
                 | Token::PipePipe
                 | Token::Arrow
                 | Token::FatArrow
-                | Token::LeftArrow
                 | Token::DotDot
                 | Token::DotDotEqual
                 | Token::PlusEqual
@@ -806,13 +812,12 @@ mod tests {
     #[test]
     fn operators_multi_char() {
         assert_eq!(
-            tokens("== != => -> <- <= >= && || ..= .. :: #["),
+            tokens("== != => -> <= >= && || ..= .. :: #["),
             vec![
                 Token::EqualEqual,
                 Token::NotEqual,
                 Token::FatArrow,
                 Token::Arrow,
-                Token::LeftArrow,
                 Token::LessEqual,
                 Token::GreaterEqual,
                 Token::AmpAmp,

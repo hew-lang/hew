@@ -363,15 +363,8 @@ fn collect_inlay_hints_from_expr(
         Expr::SpawnLambdaActor { body, .. } => {
             collect_inlay_hints_from_expr(source, &body.0, tc, hints);
         }
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block)
-        | Expr::Fork { body: block } => {
+        Expr::Block(block) | Expr::Unsafe(block) | Expr::Scope { body: block } => {
             collect_inlay_hints_from_block(source, block, tc, hints);
-        }
-        Expr::Scope { body, .. } => {
-            collect_inlay_hints_from_block(source, body, tc, hints);
         }
         Expr::ForkChild { expr, .. } => {
             collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
@@ -448,14 +441,10 @@ fn collect_inlay_hints_from_expr(
                 collect_inlay_hints_from_expr(source, &value.0, tc, hints);
             }
         }
-        Expr::StructInit { fields, .. } => {
+        Expr::StructInit { fields, .. } | Expr::MachineEmit { fields, .. } => {
             for (_, value) in fields {
                 collect_inlay_hints_from_expr(source, &value.0, tc, hints);
             }
-        }
-        Expr::Send { target, message } => {
-            collect_inlay_hints_from_expr(source, &target.0, tc, hints);
-            collect_inlay_hints_from_expr(source, &message.0, tc, hints);
         }
         Expr::Spawn { target, args } => {
             collect_inlay_hints_from_expr(source, &target.0, tc, hints);
@@ -509,7 +498,6 @@ fn collect_inlay_hints_from_expr(
         | Expr::Identifier(_)
         | Expr::Cooperate
         | Expr::This
-        | Expr::ScopeCancel
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)

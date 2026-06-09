@@ -456,6 +456,93 @@ impl Checker {
             Ty::I64,
         );
 
+        // Duplex / channel constructors — compiler builtins.
+        //
+        // WHY: slice 5 codegen and the HIR-level accept fixtures below need these
+        //   names resolvable without importing a stdlib module.
+        // WHEN-OBSOLETE: once `std::channel` (stdlib slice 6) ships, the stdlib
+        //   module replaces these registrations and these calls are removed.
+        // WHAT-REAL-SOLUTION: `std/channel.hew` module with proper source definitions.
+        //
+        // `duplex_pair<S: Send, R: Send>(capacity: int) -> (Duplex<S, R>, Duplex<R, S>)`
+        // Returns a cross-wired pair of Duplex handles backed by a shared buffer.
+        // All construction goes through this; there is no per-direction constructor
+        // (`hew_duplex_new` was removed in the M2 runtime refactor).
+        self.register_builtin_fn_with_bounds(
+            "duplex_pair",
+            vec!["S".to_string(), "R".to_string()],
+            HashMap::from([
+                ("S".to_string(), vec!["Send".to_string()]),
+                ("R".to_string(), vec!["Send".to_string()]),
+            ]),
+            vec![Ty::I64],
+            Ty::Tuple(vec![
+                Ty::duplex(
+                    Ty::Named {
+                        name: "S".to_string(),
+                        args: vec![],
+                    },
+                    Ty::Named {
+                        name: "R".to_string(),
+                        args: vec![],
+                    },
+                ),
+                Ty::duplex(
+                    Ty::Named {
+                        name: "R".to_string(),
+                        args: vec![],
+                    },
+                    Ty::Named {
+                        name: "S".to_string(),
+                        args: vec![],
+                    },
+                ),
+            ]),
+        );
+
+        // `duplex<S: Send, R: Send>(capacity: int) -> Duplex<S, R>`
+        // Constructs a detached Duplex handle with no peer. A transport must be
+        // attached via `.attach(transport)` before send/recv will succeed (the
+        // go-nil / detached pattern per §5.16.7 + Q16).
+        self.register_builtin_fn_with_bounds(
+            "duplex",
+            vec!["S".to_string(), "R".to_string()],
+            HashMap::from([
+                ("S".to_string(), vec!["Send".to_string()]),
+                ("R".to_string(), vec!["Send".to_string()]),
+            ]),
+            vec![Ty::I64],
+            Ty::duplex(
+                Ty::Named {
+                    name: "S".to_string(),
+                    args: vec![],
+                },
+                Ty::Named {
+                    name: "R".to_string(),
+                    args: vec![],
+                },
+            ),
+        );
+
+        // `channel<T: Send>(capacity: int) -> (Sink<T>, Stream<T>)`
+        // Constructs a unidirectional channel pair: the Sink writes, the Stream reads.
+        self.register_builtin_fn_with_bounds(
+            "channel",
+            vec!["T".to_string()],
+            HashMap::from([("T".to_string(), vec!["Send".to_string()])]),
+            vec![Ty::I64],
+            Ty::Tuple(vec![
+                Ty::sink(Ty::Named {
+                    name: "T".to_string(),
+                    args: vec![],
+                }),
+                Ty::stream(Ty::Named {
+                    name: "T".to_string(),
+                    args: vec![],
+                }),
+            ]),
+        );
+
         // Register the eleven `impl Display for <primitive>` blanket impls
         // declared in `std/builtins.hew`.  Without this, method-form
         // primitive Display dispatch (`x.fmt()` for `x: i64` etc.) cannot

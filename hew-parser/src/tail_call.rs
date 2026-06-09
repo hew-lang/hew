@@ -154,10 +154,10 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         | Expr::Lambda { .. }
         | Expr::SpawnLambdaActor { .. }
         | Expr::Yield(None)
-        | Expr::ScopeCancel
-        | Expr::ScopeLaunch(_)
-        | Expr::ScopeSpawn(_)
         | Expr::ForkChild { .. } => false,
+        Expr::MachineEmit { fields, .. } => {
+            fields.iter().any(|(_, expr)| expr_contains_defer(&expr.0))
+        }
         Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
             items.iter().any(|(expr, _)| expr_contains_defer(expr))
         }
@@ -167,10 +167,9 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         Expr::MapLiteral { entries } => entries
             .iter()
             .any(|(key, value)| expr_contains_defer(&key.0) || expr_contains_defer(&value.0)),
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::Scope { body: block, .. }
-        | Expr::Fork { body: block } => block_contains_defer(block),
+        Expr::Block(block) | Expr::Unsafe(block) | Expr::Scope { body: block } => {
+            block_contains_defer(block)
+        }
         Expr::If {
             condition,
             then_block,
@@ -219,9 +218,6 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         }
         Expr::StructInit { fields, .. } => {
             fields.iter().any(|(_, expr)| expr_contains_defer(&expr.0))
-        }
-        Expr::Send { target, message } => {
-            expr_contains_defer(&target.0) || expr_contains_defer(&message.0)
         }
         Expr::Select { arms, timeout } => {
             arms.iter()
@@ -342,9 +338,6 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         | Expr::Lambda { .. }
         | Expr::SpawnLambdaActor { .. }
         | Expr::Yield(None)
-        | Expr::ScopeCancel
-        | Expr::ScopeLaunch(_)
-        | Expr::ScopeSpawn(_)
         | Expr::ForkChild { .. } => {}
         Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
             for (expr, _) in items {
@@ -361,10 +354,7 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
                 mark_expr(&mut value.0, false);
             }
         }
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::Scope { body: block, .. }
-        | Expr::Fork { body: block } => {
+        Expr::Block(block) | Expr::Unsafe(block) | Expr::Scope { body: block } => {
             mark_block(block, is_tail_position);
         }
         Expr::If {
@@ -432,14 +422,10 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
                 mark_expr(&mut arg.expr_mut().0, false);
             }
         }
-        Expr::StructInit { fields, .. } => {
+        Expr::StructInit { fields, .. } | Expr::MachineEmit { fields, .. } => {
             for (_, expr) in fields {
                 mark_expr(&mut expr.0, false);
             }
-        }
-        Expr::Send { target, message } => {
-            mark_expr(&mut target.0, false);
-            mark_expr(&mut message.0, false);
         }
         Expr::Select { arms, timeout } => {
             for arm in arms {

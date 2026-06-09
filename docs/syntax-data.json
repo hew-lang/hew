@@ -68,7 +68,7 @@
       "rest_for_one"
     ],
     "logical": ["true", "false"],
-    "machine": ["machine", "state", "event", "on", "when"],
+    "machine": ["machine", "state", "event", "on", "when", "entry", "exit", "emit"],
     "other": ["dyn", "unsafe", "pure"],
     "reserved_unused": ["try", "catch", "race", "foreign"]
   },
@@ -147,7 +147,10 @@
     "state",
     "event",
     "on",
-    "when"
+    "when",
+    "entry",
+    "exit",
+    "emit"
   ],
   "contextual_identifiers": {
     "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",

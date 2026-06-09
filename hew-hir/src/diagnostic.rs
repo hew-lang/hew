@@ -8,6 +8,10 @@ pub struct HirDiagnostic {
     pub kind: HirDiagnosticKind,
     pub span: Span,
     pub note: String,
+    /// Additional source locations referenced by this diagnostic.
+    /// Each entry is `(span, label)` — e.g. the entry/exit block site for
+    /// effect-parity diagnostics.  Empty for most diagnostics.
+    pub secondary_spans: Vec<(Span, String)>,
 }
 
 impl HirDiagnostic {
@@ -17,7 +21,15 @@ impl HirDiagnostic {
             kind,
             span,
             note: note.into(),
+            secondary_spans: Vec::new(),
         }
+    }
+
+    /// Attach secondary spans and return `self` (builder pattern).
+    #[must_use]
+    pub fn with_secondary_spans(mut self, spans: Vec<(Span, String)>) -> Self {
+        self.secondary_spans = spans;
+        self
     }
 }
 
@@ -71,8 +83,8 @@ pub enum HirDiagnosticKind {
     ResourceGenericUnsupported {
         name: String,
     },
-    /// `await` appeared outside a `fork{}` body or `select` arm. In v0.5,
-    /// `await` is a statement-only form inside `fork{}` bodies. Future
+    /// `await` appeared outside a `scope{}` body or `select` arm. In v0.5,
+    /// `await` is a statement-only form inside `scope{}` bodies. Future
     /// versions additionally permit it inside `select` arm source expressions.
     AwaitOutOfPosition,
     /// `await` was applied to an expression that does not have type
@@ -90,8 +102,8 @@ pub enum HirDiagnosticKind {
     /// use `fork name = call(...)` to create a task handle instead.
     TaskNotNameable,
     /// A `Task<T>` handle (inferred or explicit) was used in a `return`
-    /// expression, causing it to escape the `fork{}` body. Task handles are
-    /// fork-body-scoped; await them inside the body with `await name`.
+    /// expression, causing it to escape the `scope{}` body. Task handles are
+    /// scope-body-scoped; await them inside the body with `await name`.
     TaskCannotEscape,
     /// A `select` arm's source expression is not one of the four sealed
     /// forms (`next(stream)`, `actor.method(args)`, `await task`, or the
@@ -127,5 +139,50 @@ pub enum HirDiagnosticKind {
     /// exactly one argument.
     SelectStreamNextArity {
         arg_count: usize,
+    },
+
+    // ── Machine static checks ────────────────────────────────────────────
+    /// One or more `(state, event)` pairs have no matching transition and
+    /// the machine does not declare a `default` arm.
+    MachineExhaustivenessViolation {
+        machine_name: String,
+        missing: Vec<(String, String)>,
+    },
+    /// A self-transition (`source == target`) has a non-empty body but is not
+    /// annotated `@reenter`.  Moore-style self-loops must be empty; Mealy-style
+    /// re-entry requires the explicit `@reenter` annotation so the compiler can
+    /// enforce that `entry`/`exit` run correctly.
+    MachineSelfTransitionNeedsReenter {
+        machine_name: String,
+        state_name: String,
+        event_name: String,
+    },
+    /// A transition body writes a field that is also written by the target
+    /// state's `entry` block or the source state's `exit` block, creating
+    /// ambiguous initialization/teardown order.  `secondary_spans` points at
+    /// the conflicting entry/exit site.
+    MachineEffectParityViolation {
+        machine_name: String,
+        /// The state whose `entry` or `exit` block conflicts.
+        state_name: String,
+        field_name: String,
+        transition_event: String,
+        /// Whether the conflict is with the target `entry` block (`true`) or
+        /// the source `exit` block (`false`).
+        is_entry_conflict: bool,
+    },
+    /// A direct `emit(E)` cycle was detected: a transition's `on E` arm
+    /// contains `emit E`, which would immediately re-trigger the same handler.
+    MachineEmitCycle {
+        machine_name: String,
+        event_name: String,
+    },
+    /// A method call expression has no entry in `TypeCheckOutput.method_call_rewrites`
+    /// for its span.  Fail-closed per the `checker-output-boundary` invariant:
+    /// HIR lowering never re-infers a runtime symbol from the receiver type; every
+    /// lowerable method call must be backed by a checker-produced rewrite entry.
+    MethodCallNoRewrite {
+        /// The method name the user wrote (e.g. `send`).
+        method: String,
     },
 }

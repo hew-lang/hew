@@ -635,13 +635,12 @@ const EXPR_VARIANT_COVERAGE: &[(&str, VariantDisposition)] = &[
     ("Spawn", VariantDisposition::Parsed),
     ("SpawnLambdaActor", VariantDisposition::Parsed),
     ("Scope", VariantDisposition::Parsed),
-    ("Fork", VariantDisposition::Rejected),
     ("ForkChild", VariantDisposition::Rejected),
     ("InterpolatedString", VariantDisposition::Parsed),
     ("Call", VariantDisposition::Parsed),
     ("MethodCall", VariantDisposition::Parsed),
     ("StructInit", VariantDisposition::Parsed),
-    ("Send", VariantDisposition::Parsed),
+    ("MachineEmit", VariantDisposition::Rejected),
     ("Select", VariantDisposition::Parsed),
     ("Join", VariantDisposition::Parsed),
     ("Timeout", VariantDisposition::Parsed),
@@ -655,9 +654,6 @@ const EXPR_VARIANT_COVERAGE: &[(&str, VariantDisposition)] = &[
     ("PostfixTry", VariantDisposition::Parsed),
     ("Range", VariantDisposition::Parsed),
     ("Await", VariantDisposition::Parsed),
-    ("ScopeLaunch", VariantDisposition::Parsed),
-    ("ScopeSpawn", VariantDisposition::Parsed),
-    ("ScopeCancel", VariantDisposition::Parsed),
     ("RegexLiteral", VariantDisposition::Parsed),
     ("ByteStringLiteral", VariantDisposition::Parsed),
     ("ByteArrayLiteral", VariantDisposition::Parsed),
@@ -843,9 +839,6 @@ fn expr_actor_dispatcher() -> &'static str {
   }
   if (name == "Scope") {
     ast::ExprScope e;
-    const auto *bind = mapGet(*payload, "binding");
-    if (bind && !isNil(*bind))
-      e.binding = getString(*bind);
     e.block = parseBlock(mapReq(*payload, "body"));
     return ast::Expr{std::move(e), {}};
   }
@@ -914,14 +907,6 @@ fn expr_call_dispatcher() -> &'static str {
         return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
       });
     }
-    return ast::Expr{std::move(e), {}};
-  }
-  if (name == "Send") {
-    ast::ExprSend e;
-    e.target = std::make_unique<ast::Spanned<ast::Expr>>(
-        parseSpanned<ast::Expr>(mapReq(*payload, "target"), parseExpr));
-    e.message = std::make_unique<ast::Spanned<ast::Expr>>(
-        parseSpanned<ast::Expr>(mapReq(*payload, "message"), parseExpr));
     return ast::Expr{std::move(e), {}};
   }
 "#
@@ -1016,13 +1001,6 @@ fn expr_projection_dispatcher() -> &'static str {
         std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*payload, parseExpr));
     return ast::Expr{std::move(e), {}};
   }
-  if (name == "ScopeLaunch")
-    return ast::Expr{ast::ExprScopeLaunch{parseBlock(*payload)}, {}};
-  if (name == "ScopeSpawn")
-    return ast::Expr{ast::ExprScopeSpawn{parseBlock(*payload)}, {}};
-  if (name == "ScopeCancel")
-    return ast::Expr{ast::ExprScopeCancel{}, {}};
-
   if (name == "RegexLiteral")
     return ast::Expr{ast::ExprRegexLiteral{getString(*payload)}, {}};
   if (name == "ByteStringLiteral")
@@ -1263,6 +1241,9 @@ pub fn machine_transition_parser() -> &'static str {
   if (g && !isNil(*g))
     mt.guard = parseSpannedPtr<ast::Expr>(*g, parseExpr);
   mt.body = parseSpanned<ast::Expr>(mapReq(obj, "body"), parseExpr);
+  const auto *r = mapGet(obj, "reenter");
+  if (r && !isNil(*r))
+    mt.reenter = getBool(*r);
   return mt;
 }"#
 }
@@ -1678,7 +1659,7 @@ mod tests {
     fn expr_parser_stitches_topical_dispatchers() {
         let src = expr_parser();
         assert!(src.contains("name == \"Binary\""));
-        assert!(src.contains("name == \"ScopeCancel\""));
+        assert!(src.contains("name == \"Scope\""));
         assert!(src.contains("unknown Expr variant"));
     }
 

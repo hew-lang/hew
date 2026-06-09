@@ -683,11 +683,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&value.0, &value.1, body);
                 }
             }
-            Expr::Block(block)
-            | Expr::Unsafe(block)
-            | Expr::ScopeLaunch(block)
-            | Expr::ScopeSpawn(block)
-            | Expr::Fork { body: block } => {
+            Expr::Block(block) | Expr::Unsafe(block) => {
                 self.walk_block(block, body);
             }
             Expr::If {
@@ -741,16 +737,8 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&value.0, &value.1, body);
                 }
             }
-            Expr::Scope {
-                binding,
-                body: inner_body,
-            } => {
-                let scope_binding = binding.as_deref().map(|binding| {
-                    binding_from_name(self.source, binding, span, BindingKind::Local)
-                });
-                self.push_scope(scope_binding.into_iter().collect());
+            Expr::Scope { body: inner_body } => {
                 self.walk_block(inner_body, body);
-                self.pop_scope();
             }
             Expr::ForkChild { expr, .. } | Expr::Cast { expr, .. } => {
                 self.walk_expr(&expr.0, &expr.1, body);
@@ -776,14 +764,10 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&expr.0, &expr.1, body);
                 }
             }
-            Expr::StructInit { fields, .. } => {
+            Expr::StructInit { fields, .. } | Expr::MachineEmit { fields, .. } => {
                 for (_, value) in fields {
                     self.walk_expr(&value.0, &value.1, body);
                 }
-            }
-            Expr::Send { target, message } => {
-                self.walk_expr(&target.0, &target.1, body);
-                self.walk_expr(&message.0, &message.1, body);
             }
             Expr::Select { arms, timeout } => {
                 for arm in arms {
@@ -819,8 +803,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             | Expr::Yield(None)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
-            | Expr::ByteArrayLiteral(_)
-            | Expr::ScopeCancel => {}
+            | Expr::ByteArrayLiteral(_) => {}
         }
     }
 

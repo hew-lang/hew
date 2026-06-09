@@ -4,6 +4,7 @@
 //! value-bearing expression a stable identity before later THIR/MIR ownership
 //! analysis attaches value-model decisions.
 
+pub mod builtin_type_classes;
 pub mod diagnostic;
 pub mod dump;
 pub mod ids;
@@ -19,8 +20,10 @@ pub use ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 pub use intent::IntentKind;
 pub use lower::{lower_program, LowerOutput, ResolutionCtx};
 pub use node::{
-    HirBlock, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLiteral, HirModule, HirSelect,
-    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirTypeDecl,
+    HirBinding, HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem,
+    HirLambdaCapture, HirLiteral, HirMachineDecl, HirMachineEvent, HirMachineState,
+    HirMachineTransition, HirModule, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt,
+    HirStmtKind, HirTypeDecl,
 };
 pub use value_class::{contains_named_type, named_type_names, TypeClassTable, ValueClass};
 pub use verify::verify_hir;

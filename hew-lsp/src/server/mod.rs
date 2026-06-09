@@ -812,7 +812,7 @@ mod tests {
             .find(|item| item.label == "select...")
             .unwrap();
         let select_text = select.insert_text.as_deref().unwrap();
-        assert!(select_text.contains("<-"));
+        assert!(select_text.contains(" from "));
         assert!(select_text.contains("after"));
 
         let select_from = snippets
@@ -1041,7 +1041,8 @@ mod tests {
 
     #[test]
     fn dot_completions_for_builtin_stream() {
-        let source = "fn probe(s: Stream<String>) { s.next(); }";
+        // Stream<T> uses channel-family naming: .recv() not .next()
+        let source = "fn probe(s: Stream<String>) { s.recv(); }";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1063,7 +1064,7 @@ mod tests {
             type_output: Some(type_output),
             diagnostics_by_uri: HashMap::new(),
         };
-        let dot_pos = source.find("s.next").unwrap() + 2;
+        let dot_pos = source.find("s.recv").unwrap() + 2;
         let items = hew_analysis::completions::complete(
             &doc.source,
             &doc.parse_result,
@@ -1072,28 +1073,37 @@ mod tests {
         );
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(
-            labels.contains(&"next"),
-            "expected method 'next' in completions, got: {labels:?}"
+            labels.contains(&"recv"),
+            "expected method 'recv' in completions, got: {labels:?}"
         );
         assert!(
-            labels.contains(&"collect"),
-            "expected method 'collect' in completions, got: {labels:?}"
+            labels.contains(&"try_recv"),
+            "expected method 'try_recv' in completions, got: {labels:?}"
+        );
+        // .next, .collect, .lines are retired; channel-family naming uses .recv
+        assert!(
+            !labels.contains(&"next"),
+            "method 'next' should not appear in completions, got: {labels:?}"
         );
         assert!(
-            labels.contains(&"lines"),
-            "expected method 'lines' in completions, got: {labels:?}"
+            !labels.contains(&"collect"),
+            "method 'collect' should not appear in completions, got: {labels:?}"
         );
-        let next_item = items
+        assert!(
+            !labels.contains(&"lines"),
+            "method 'lines' should not appear in completions, got: {labels:?}"
+        );
+        let recv_item = items
             .iter()
-            .find(|item| item.label == "next")
-            .expect("next completion should exist");
+            .find(|item| item.label == "recv")
+            .expect("recv completion should exist");
         assert!(
-            next_item
+            recv_item
                 .detail
                 .as_deref()
-                .is_some_and(|detail| detail.contains("Option<String>")),
-            "expected Stream<String> detail for next(), got: {:?}",
-            next_item.detail
+                .is_some_and(|detail| detail.contains("String")),
+            "expected Stream<String> detail for recv(), got: {:?}",
+            recv_item.detail
         );
     }
 

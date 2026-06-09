@@ -854,16 +854,6 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
     return hew::TupleCreateOp::create(builder, location, tupleType, mlir::ValueRange{lhs, rhs});
   }
 
-  case ast::BinaryOp::Send: {
-    // The type-checker keys actor_send_aliasing on the right operand's span
-    // (`right.1` in `enforce_actor_boundary_send`).
-    ast::Span msgSpan = expr.right->span;
-    auto sendAliasingAttr = aliasingAttrForSpans({msgSpan}, location);
-    hew::ActorSendOp::create(builder, location, lhs, builder.getI32IntegerAttr(0), sendAliasingAttr,
-                             mlir::ValueRange{rhs});
-    return nullptr;
-  }
-
   default:
     ++errorCount_;
     emitError(location) << "unsupported binary operator";
@@ -2516,14 +2506,10 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
         return false;
       if (std::holds_alternative<ast::ExprCall>(expr.value.kind) ||
           std::holds_alternative<ast::ExprMethodCall>(expr.value.kind) ||
-          std::holds_alternative<ast::ExprSend>(expr.value.kind) ||
           std::holds_alternative<ast::ExprJoin>(expr.value.kind) ||
           std::holds_alternative<ast::ExprTimeout>(expr.value.kind) ||
           std::holds_alternative<ast::ExprYield>(expr.value.kind) ||
-          std::holds_alternative<ast::ExprCooperate>(expr.value.kind) ||
-          std::holds_alternative<ast::ExprScopeLaunch>(expr.value.kind) ||
-          std::holds_alternative<ast::ExprScopeSpawn>(expr.value.kind) ||
-          std::holds_alternative<ast::ExprScopeCancel>(expr.value.kind))
+          std::holds_alternative<ast::ExprCooperate>(expr.value.kind))
         return false;
 
       return true;
@@ -5872,9 +5858,6 @@ void MLIRGen::collectFreeVarsInExpr(const ast::Expr &expr, const std::set<std::s
     }
   } else if (auto *awaitE = std::get_if<ast::ExprAwait>(&expr.kind)) {
     collectFreeVarsInExpr(awaitE->inner->value, bound, freeVars);
-  } else if (auto *sendE = std::get_if<ast::ExprSend>(&expr.kind)) {
-    collectFreeVarsInExpr(sendE->target->value, bound, freeVars);
-    collectFreeVarsInExpr(sendE->message->value, bound, freeVars);
   } else if (auto *interp = std::get_if<ast::ExprInterpolatedString>(&expr.kind)) {
     for (const auto &part : interp->parts) {
       if (auto *ep = std::get_if<ast::StringPartExpr>(&part)) {
@@ -5915,14 +5898,7 @@ void MLIRGen::collectFreeVarsInExpr(const ast::Expr &expr, const std::set<std::s
     if (spawnLambda->body)
       collectFreeVarsInExpr(spawnLambda->body->value, lambdaBound, freeVars);
   } else if (auto *scope = std::get_if<ast::ExprScope>(&expr.kind)) {
-    auto scopeBound = bound;
-    if (scope->binding)
-      scopeBound.insert(*scope->binding);
-    collectFreeVarsInBlock(scope->block, scopeBound, freeVars);
-  } else if (auto *scopeLaunch = std::get_if<ast::ExprScopeLaunch>(&expr.kind)) {
-    collectFreeVarsInBlock(scopeLaunch->block, bound, freeVars);
-  } else if (auto *scopeSpawn = std::get_if<ast::ExprScopeSpawn>(&expr.kind)) {
-    collectFreeVarsInBlock(scopeSpawn->block, bound, freeVars);
+    collectFreeVarsInBlock(scope->block, bound, freeVars);
   } else if (auto *selectE = std::get_if<ast::ExprSelect>(&expr.kind)) {
     for (const auto &arm : selectE->arms) {
       if (arm.source)
@@ -6583,10 +6559,6 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se, bool statementP
   // This is critical because scope spawns create RC cells for mutable
   // captures; those cells must survive until tasks complete and the
   // env drops run (during scope.destroy).
-  SymbolTableScopeT bindingScope(symbolTable);
-  if (se.binding.has_value())
-    declareVariable(*se.binding, scopePtr);
-
   SymbolTableScopeT varScope(symbolTable);
   MutableTableScopeT mutScope(mutableVars);
   pushDropScope();
@@ -6678,206 +6650,6 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se, bool statementP
   earlyReturnFlag = savedEarlyReturnFlag;
 
   return bodyResult;
-}
-
-// ============================================================================
-// scope.launch { body }
-// ============================================================================
-
-mlir::Value MLIRGen::generateScopeLaunchExpr(const ast::ExprScopeLaunch &sle) {
-  return generateScopeLaunchImpl(sle.block);
-}
-
-// ============================================================================
-// scope.spawn { body } — identical to scope.launch for now
-// ============================================================================
-
-mlir::Value MLIRGen::generateScopeSpawnExpr(const ast::ExprScopeSpawn &sse) {
-  return generateScopeLaunchImpl(sse.block);
-}
-
-// ============================================================================
-// scope.launch / scope.spawn shared implementation
-// ============================================================================
-
-mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
-  auto location = currentLoc;
-  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-
-  std::set<std::string> boundNames;
-  std::set<std::string> freeVars;
-  collectFreeVarsInBlock(block, boundNames, freeVars);
-
-  std::vector<CapturedVarInfo> capturedVars;
-  gatherCapturedVars(freeVars, capturedVars, location);
-
-  llvm::SmallVector<mlir::Type, 4> capturedTypes;
-  mlir::LLVM::LLVMStructType envStructType = nullptr;
-  mlir::Value envPtrVal;
-  if (!capturedVars.empty()) {
-    for (const auto &cv : capturedVars)
-      capturedTypes.push_back(toLLVMStorageType(cv.value.getType()));
-    envStructType = mlir::LLVM::LLVMStructType::getLiteral(&context, capturedTypes);
-
-    auto envSize =
-        hew::SizeOfOp::create(builder, location, sizeType(), mlir::TypeAttr::get(envStructType));
-
-    auto envDropFnPtr = generateEnvDropFn(capturedVars, envStructType, location);
-    auto nullData = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-    envPtrVal = hew::RcNewOp::create(builder, location, ptrType, nullData, envSize, envDropFnPtr);
-
-    for (size_t i = 0; i < capturedVars.size(); ++i) {
-      if (mlir::isa<hew::ClosureType>(capturedVars[i].value.getType())) {
-        auto innerEnv =
-            hew::ClosureGetEnvOp::create(builder, location, ptrType, capturedVars[i].value);
-        hew::RcCloneOp::create(builder, location, ptrType, innerEnv);
-      }
-      if (capturedVars[i].isMutable)
-        hew::RcCloneOp::create(builder, location, ptrType, capturedVars[i].value);
-      auto gepOp = mlir::LLVM::GEPOp::create(
-          builder, location, ptrType, envStructType, envPtrVal,
-          llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0), static_cast<int32_t>(i)});
-      mlir::Value storeVal = capturedVars[i].value;
-      if (storeVal.getType() != capturedTypes[i]) {
-        storeVal = hew::BitcastOp::create(builder, location, capturedTypes[i], storeVal);
-      }
-      mlir::LLVM::StoreOp::create(builder, location, storeVal, gepOp);
-    }
-  } else {
-    envPtrVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-  }
-
-  auto savedIP = builder.saveInsertionPoint();
-
-  std::string taskFnName = "__scope_task_" + std::to_string(taskCounter++);
-  auto voidType = builder.getFunctionType({ptrType}, {});
-
-  builder.setInsertionPointToEnd(module.getBody());
-  auto taskFn = mlir::func::FuncOp::create(builder, location, taskFnName, voidType);
-  taskFn.setPrivate();
-
-  auto *entryBlock = taskFn.addEntryBlock();
-  builder.setInsertionPointToStart(entryBlock);
-
-  auto taskArg = entryBlock->getArgument(0);
-
-  FunctionGenerationScope funcScope(*this, taskFn);
-  auto savedScopePtr = currentScopePtr;
-  auto savedTaskScopePtr = currentTaskScopePtr;
-  currentScopePtr = nullptr;
-  currentTaskScopePtr = nullptr;
-
-  // Save/restore drop scope state so the task body's drops don't leak into
-  // the enclosing function's drop scopes (same pattern as lambda codegen).
-  auto savedDropScopeBase = funcLevelDropScopeBase;
-  auto savedExcludeVars = std::move(funcLevelDropExcludeVars);
-  auto savedReturnVarNames = std::move(funcLevelReturnVarNames);
-  auto savedEarlyReturnVarNames2 = std::move(funcLevelEarlyReturnVarNames);
-  auto savedExcludeValues = std::move(funcLevelDropExcludeValues);
-  auto savedExcludeResolvedNames = std::move(funcLevelDropExcludeResolvedNames);
-  auto savedEarlyReturnExcludeValues = std::move(funcLevelEarlyReturnExcludeValues);
-  auto savedEarlyReturnExcludeResolvedNames = std::move(funcLevelEarlyReturnExcludeResolvedNames);
-  funcLevelDropScopeBase = dropScopes.size();
-  funcLevelDropExcludeVars.clear();
-  funcLevelReturnVarNames.clear();
-  funcLevelEarlyReturnVarNames.clear();
-  funcLevelDropExcludeValues.clear();
-  funcLevelDropExcludeResolvedNames.clear();
-  funcLevelEarlyReturnExcludeValues.clear();
-  funcLevelEarlyReturnExcludeResolvedNames.clear();
-
-  SymbolTableScopeT taskVarScope(symbolTable);
-  MutableTableScopeT taskMutScope(mutableVars);
-
-  if (!capturedVars.empty()) {
-    auto envPtr = hew::TaskGetEnvOp::create(builder, location, ptrType, taskArg);
-    for (size_t i = 0; i < capturedVars.size(); ++i) {
-      auto gepOp = mlir::LLVM::GEPOp::create(
-          builder, location, ptrType, envStructType, envPtr,
-          llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0), static_cast<int32_t>(i)});
-      auto loadedVal = mlir::LLVM::LoadOp::create(builder, location, capturedTypes[i], gepOp);
-
-      if (capturedVars[i].isMutable) {
-        auto ptrMemrefType = mlir::MemRefType::get({}, ptrType);
-        auto alloca = mlir::memref::AllocaOp::create(builder, location, ptrMemrefType);
-        mlir::memref::StoreOp::create(builder, location, loadedVal, alloca);
-        auto internedName = intern(capturedVars[i].name);
-        mutableVars.insert(internedName, alloca);
-        heapCellValueTypes[alloca] = capturedVars[i].valueType;
-      } else {
-        mlir::Value capturedVal = loadedVal;
-        if (capturedTypes[i] != capturedVars[i].value.getType()) {
-          capturedVal =
-              hew::BitcastOp::create(builder, location, capturedVars[i].value.getType(), loadedVal);
-        }
-        declareVariable(capturedVars[i].name, capturedVal);
-      }
-    }
-  }
-
-  auto bodyResult = generateBlock(block);
-
-  funcLevelDropScopeBase = savedDropScopeBase;
-  funcLevelDropExcludeVars = std::move(savedExcludeVars);
-  funcLevelReturnVarNames = std::move(savedReturnVarNames);
-  funcLevelEarlyReturnVarNames = std::move(savedEarlyReturnVarNames2);
-  funcLevelDropExcludeValues = std::move(savedExcludeValues);
-  funcLevelDropExcludeResolvedNames = std::move(savedExcludeResolvedNames);
-  funcLevelEarlyReturnExcludeValues = std::move(savedEarlyReturnExcludeValues);
-  funcLevelEarlyReturnExcludeResolvedNames = std::move(savedEarlyReturnExcludeResolvedNames);
-
-  currentScopePtr = savedScopePtr;
-  currentTaskScopePtr = savedTaskScopePtr;
-
-  if (bodyResult) {
-    lastScopeLaunchResultType = bodyResult.getType();
-
-    auto sizeVal = hew::SizeOfOp::create(builder, location, sizeType(),
-                                         mlir::TypeAttr::get(bodyResult.getType()));
-
-    auto resultPtr = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
-                                                mlir::SymbolRefAttr::get(&context, "malloc"),
-                                                mlir::ValueRange{sizeVal})
-                         .getResult();
-    mlir::LLVM::StoreOp::create(builder, location, bodyResult, resultPtr);
-
-    hew::TaskSetResultOp::create(builder, location, taskArg, resultPtr, sizeVal);
-    // Free the temp buffer after result is copied into task
-    auto freeFuncType = mlir::FunctionType::get(&context, {ptrType}, {});
-    getOrCreateExternFunc("free", freeFuncType);
-    mlir::func::CallOp::create(builder, location, "free", mlir::TypeRange{},
-                               mlir::ValueRange{resultPtr});
-  }
-
-  hew::TaskCompleteOp::create(builder, location, taskArg);
-  mlir::func::ReturnOp::create(builder, location);
-
-  builder.restoreInsertionPoint(savedIP);
-
-  auto fnPtr = hew::FuncPtrOp::create(builder, location, ptrType,
-                                      mlir::SymbolRefAttr::get(builder.getContext(), taskFnName))
-                   .getResult();
-
-  auto taskPtr =
-      hew::ScopeLaunchOp::create(builder, location, ptrType, currentTaskScopePtr, fnPtr, envPtrVal);
-
-  return taskPtr;
-}
-
-// ============================================================================
-// scope.cancel()
-// ============================================================================
-
-mlir::Value MLIRGen::generateScopeCancelExpr() {
-  auto location = builder.getUnknownLoc();
-  if (!currentTaskScopePtr) {
-    ++errorCount_;
-    emitError(location) << "scope.cancel() used outside a scope block";
-    return nullptr;
-  }
-
-  hew::ScopeCancelOp::create(builder, location, currentTaskScopePtr);
-  return nullptr;
 }
 
 // ============================================================================

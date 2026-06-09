@@ -15,22 +15,12 @@ use std::os::raw::c_char;
 /// IMPORTANT: Hew's print intrinsics currently emit via `libc::printf`, so we
 /// must flush the *same* stdio buffer (not Rust's `std::io::stdout()`).
 fn flush_stdout() {
-    // SAFETY: `fflush` is safe to call with a valid `FILE*`. We ignore errors
-    // because failure to flush is non-fatal (e.g. broken pipe).
+    // SAFETY: `fflush(NULL)` is portable — it flushes every open output stream
+    // (typically just stdout/stderr) and needs no platform-specific stream symbol
+    // (`libc::stdout` is unbound on wasm32; `__stdoutp` is Darwin-only). Flush
+    // errors are non-fatal (e.g. broken pipe), so they are ignored.
     unsafe {
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
-        {
-            // On Darwin, `stdout` is a macro that expands to `__stdoutp`.
-            extern "C" {
-                static mut __stdoutp: *mut libc::FILE;
-            }
-            let _ = libc::fflush(__stdoutp);
-        }
-
-        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-        {
-            let _ = libc::fflush(libc::stdout);
-        }
+        let _ = libc::fflush(core::ptr::null_mut());
     }
 }
 

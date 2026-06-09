@@ -328,26 +328,34 @@ fn run_shape_mixed_match_fixture_executes() {
     run_enum_fixture_executes("run_shape_mixed_match");
 }
 
-/// End-to-end regression for `indirect enum` (spec §3.7.4) — recursive
-/// heap-allocated tagged-union evaluation.  Runs
-/// `examples/enums/run_indirect_enum_eval.hew` through the in-tree `hew`
-/// binary and diffs stdout against the `.expected` file.
+/// End-to-end regression for `indirect enum` (spec §3.7.4) — a two-variant
+/// recursive heap-allocated enum `Expr { Lit(i64); Neg(Expr) }`.
 ///
-/// Prior to the fix in this branch, the generated binary crashed with
-/// SIGTRAP (exit 133) due to a buffer overflow: the `Neg(Expr)` variant
-/// payload was sized for `Lit(i64)` (8 bytes) but attempted to store an
-/// inline `Expr` struct (16 bytes ABI).  The fix routes `indirect enum`
-/// types through `opaque_handle_names` so all variables hold a `ptr` to a
-/// heap-allocated struct, and emits `hew_alloc` at function entry for each
-/// non-parameter indirect-enum local.  This removed the SIGTRAP buffer
-/// overflow, but `hew run` on the eval fixture still exits non-zero (256):
-/// a residual indirect-enum runtime gap, separate from the state_clone
-/// classification this branch fixes. Tracked as a follow-up; un-ignore when
-/// indirect-enum runtime eval executes cleanly end-to-end.
-#[ignore = "residual indirect-enum runtime crash (exit 256): heap-alloc fix landed but `hew run` eval still exits non-zero; tracked follow-up gap"]
+/// Root cause: the `Node(Tree, Tree)` (or `Neg(Expr)`) variant payload was
+/// sized as 0 bytes because `resolve_ty` returned the opaque (zero-size) named
+/// struct for self-referential fields during `build_tagged_union_layout`, making
+/// `hew_alloc(0, 1)` → null → SIGSEGV.
+///
+/// Fix (G1): variant field types for names in the opaque set now resolve to
+/// `ptr` before the struct-layout lookup so self-referential indirect-enum
+/// fields contribute pointer-sized (8-byte) slots.  The heap allocation size
+/// is computed on an anonymous struct (same field list) to avoid the
+/// standalone-`TargetData` named-struct ABI-size bug.  Function parameters and
+/// return types of indirect-enum types are also declared as `ptr`.
 #[test]
 fn run_indirect_enum_eval_fixture_executes() {
     run_enum_fixture_executes("run_indirect_enum_eval");
+}
+
+/// End-to-end regression for a two-self-reference `indirect enum Tree`:
+/// `Node(Tree, Tree)` has two pointer-sized fields; sum() recurses correctly.
+///
+/// Exercises the same G1 fix as `run_indirect_enum_eval_fixture_executes` but
+/// with a branching (binary-tree) variant rather than a unary chain, ensuring
+/// both recursive fields are pointer-typed and the alloc size covers both.
+#[test]
+fn run_indirect_tree_sum_fixture_executes() {
+    run_enum_fixture_executes("run_indirect_tree_sum");
 }
 
 /// Shared helper: run `examples/enums/<name>.hew` through the in-tree

@@ -12228,10 +12228,30 @@ impl Builder {
             }
             // Tuples are BitCopy aggregates stored inline; same layout path.
             ResolvedTy::Tuple(_) => "hew_vec_get_layout",
+            // DIRECT (non-indirect) enums are stored inline in the vec buffer
+            // at the full tagged-union struct stride — same as BitCopy records.
+            // They must use `hew_vec_get_layout` so the runtime applies the
+            // correct per-element stride via the layout descriptor.
+            //
+            // INDIRECT enums are heap-allocated; each element slot holds an
+            // 8-byte pointer (same as a Resource/Linear handle), so they
+            // continue to use `hew_vec_get_ptr`.
+            //
+            // Without this branch, direct enums fell through to the
+            // `hew_vec_get_ptr` catch-all below — which uses an 8-byte pointer
+            // stride, mis-strides the buffer, and causes a runtime panic.
+            ResolvedTy::Named { name, .. }
+                if self.enum_layouts.iter().any(|el| {
+                    (el.name == name.as_str() || el.name == short_name(name)) && !el.is_indirect
+                }) =>
+            {
+                "hew_vec_get_layout"
+            }
             // Pointer-shaped heap handles (Resource, Linear): Duplex,
-            // LambdaActorHandle, and non-BitCopy Named types whose heap-backing
-            // is opaque to the element-load ABI. hew_vec_get_ptr returns a
-            // *mut c_void which codegen casts to the appropriate pointer.
+            // LambdaActorHandle, indirect enums, and other non-BitCopy Named
+            // types whose heap-backing is opaque to the element-load ABI.
+            // `hew_vec_get_ptr` returns a *mut c_void which codegen casts to
+            // the appropriate pointer.
             ResolvedTy::Named { .. } => "hew_vec_get_ptr",
             other => {
                 self.diagnostics.push(MirDiagnostic {

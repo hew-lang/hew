@@ -1,0 +1,38 @@
+// Exercises Vec<Enum> element access via v[i] subscript.
+// Regression for the G2 enum-storage-class bug: direct (non-indirect) enum
+// elements were routed to `hew_vec_get_ptr` (8-byte pointer stride), which
+// panics because enum elements are stored inline at the tagged-union struct
+// stride. After the fix, direct enums route to `hew_vec_get_layout` (correct
+// stride via the layout descriptor), while indirect enums continue to route
+// to `hew_vec_get_ptr` (pointer-sized slot).
+enum Colour {
+    Red;
+    Green(i64);
+    Blue(i64, i64);
+}
+
+fn main() {
+    let v: Vec<Colour> = Vec::new();
+    v.push(Red);
+    v.push(Green(42));
+    v.push(Blue(10, 20));
+    let c0 = v[0];
+    let c1 = v[1];
+    let c2 = v[2];
+    match c0 {
+        Red => println("c0=Red"),
+        Green(n) => println(f"c0=Green({n})"),
+        Blue(a, b) => println(f"c0=Blue({a},{b})"),
+    }
+    match c1 {
+        Red => println("c1=Red"),
+        Green(n) => println(f"c1=Green({n})"),
+        Blue(a, b) => println(f"c1=Blue({a},{b})"),
+    }
+    match c2 {
+        Red => println("c2=Red"),
+        Green(n) => println(f"c2=Green({n})"),
+        Blue(a, b) => println(f"c2=Blue({a},{b})"),
+    }
+    println("done");
+}

@@ -2520,6 +2520,7 @@ fn register_machine_layouts<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     machine_layouts: &[MachineLayout],
     record_layout_map: &mut RecordLayoutMap<'ctx>,
+    enum_layouts: &[EnumLayout],
     target_data: Option<&TargetData>,
 ) -> CodegenResult<MachineLayoutMap<'ctx>> {
     let mut map: MachineLayoutMap<'ctx> = HashMap::new();
@@ -2537,6 +2538,7 @@ fn register_machine_layouts<'ctx>(
             &layout.name,
             &layout.variants,
             record_layout_map,
+            enum_layouts,
             target_data,
         )?;
         // Build the per-machine state-name string table. Each entry is a
@@ -2564,6 +2566,7 @@ fn register_machine_layouts<'ctx>(
             &event_name,
             &layout.events,
             record_layout_map,
+            enum_layouts,
             target_data,
         )?;
         record_layout_map.insert(event_name.clone(), event_cg.outer_struct);
@@ -2684,6 +2687,7 @@ fn register_enum_layouts<'ctx>(
             &layout.name,
             &layout.variants,
             record_layout_map,
+            enum_layouts,
             target_data,
         )?;
         // Register the outer struct so `resolve_ty` resolves
@@ -2712,6 +2716,7 @@ fn build_tagged_union_layout<'ctx>(
     outer_name: &str,
     variants: &[MachineVariantLayout],
     record_layout_map: &RecordLayoutMap<'ctx>,
+    enum_layouts: &[EnumLayout],
     target_data: Option<&TargetData>,
 ) -> CodegenResult<MachineCodegenLayout<'ctx>> {
     // Build each variant's LLVM struct type first, then query its ABI size.
@@ -2724,7 +2729,33 @@ fn build_tagged_union_layout<'ctx>(
         let field_tys: Vec<BasicTypeEnum<'ctx>> = variant
             .field_tys
             .iter()
-            .map(|fty| resolve_ty(ctx, fty, record_layout_map))
+            .map(|fty| {
+                // `indirect enum` field types must resolve to `ptr` (not the
+                // named struct), because indirect-enum variables are
+                // heap-allocated and every field reference is a heap pointer.
+                // `resolve_ty` normally returns the named struct when the name
+                // appears in the struct-layout map (struct-first ordering for
+                // W4.011 collision safety: a user record can share a short name
+                // with a stdlib `#[opaque]` handle, e.g. user `Value` vs
+                // `json.Value`).
+                //
+                // Gate on `is_indirect_enum` — the same precise predicate that
+                // `declare_function`, `lower_function`, and `lower_vec_index`
+                // use — rather than the opaque-set proxy. The opaque set also
+                // contains every `#[opaque]` stdlib handle name; checking it
+                // before `resolve_ty` would invert the struct-first invariant
+                // for any user aggregate whose short name collides with an
+                // opaque-handle entry, causing an undersized payload (fail-open
+                // heap corruption). `#[opaque]` handle fields still resolve to
+                // `ptr` through `resolve_ty`'s own post-struct opaque check, so
+                // no field shape regresses.
+                if let ResolvedTy::Named { name, .. } = fty {
+                    if is_indirect_enum(name, enum_layouts) {
+                        return Ok(ctx.ptr_type(AddressSpace::default()).into());
+                    }
+                }
+                resolve_ty(ctx, fty, record_layout_map)
+            })
             .collect::<CodegenResult<Vec<_>>>()?;
         variant_struct_tys.push(ctx.struct_type(&field_tys, false));
         variant_field_tys.push(variant.field_tys.clone());
@@ -23652,6 +23683,7 @@ fn declare_function<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     func: &RawMirFunction,
     record_layouts: &RecordLayoutMap<'ctx>,
+    enum_layouts: &[EnumLayout],
     emit_wasm_entry_alias: bool,
 ) -> CodegenResult<FnSymbol<'ctx>> {
     let linkage = if func.name == "main" {
@@ -23659,7 +23691,19 @@ fn declare_function<'ctx>(
     } else {
         Some(Linkage::Internal)
     };
-    let return_ty_llvm = resolve_ty(ctx, &func.return_ty, record_layouts)?;
+    // `indirect enum` parameters and return values are heap-pointer-sized;
+    // resolve_ty returns the struct type (struct-layout-first invariant for
+    // collision safety), so override here for indirect enum names.
+    let resolve_value_ty = |ty: &ResolvedTy| -> CodegenResult<BasicTypeEnum<'ctx>> {
+        let raw = resolve_ty(ctx, ty, record_layouts)?;
+        if let ResolvedTy::Named { name, .. } = ty {
+            if is_indirect_enum(name, enum_layouts) {
+                return Ok(ctx.ptr_type(AddressSpace::default()).into());
+            }
+        }
+        Ok(raw)
+    };
+    let return_ty_llvm = resolve_value_ty(&func.return_ty)?;
     // Accept integer, float, pointer, and struct return types. Integer covers
     // the original Cluster 1 spine; pointer covers `String` (a
     // `*mut c_char` / opaque `ptr` in LLVM IR) which is lowerable via
@@ -23699,7 +23743,7 @@ fn declare_function<'ctx>(
         param_tys.push(ctx_ptr_ty.into());
     }
     for param_ty in &func.params {
-        let llvm_ty = resolve_ty(ctx, param_ty, record_layouts)?;
+        let llvm_ty = resolve_value_ty(param_ty)?;
         param_tys.push(metadata_type_from_basic(llvm_ty));
     }
     // P5-RX sub-stage 1: receive handlers gain a trailing `borrow_mode: i32`
@@ -24170,7 +24214,26 @@ fn lower_function<'ctx>(
         // D10-violation arm. Record-typed locals get an alloca sized to
         // the full struct; codegen for `RecordInit` writes into this slot
         // in place via per-field GEP+store.
-        let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
+        //
+        // Exception: `indirect enum` locals hold a *pointer* to a
+        // heap-allocated struct, not the struct inline. `resolve_ty` returns
+        // the struct type because it prioritises the layout map over the
+        // opaque set (collision-safety invariant for user records vs stdlib
+        // opaque handles). We override the alloca type to `ptr` here so the
+        // slot is pointer-sized and the `hew_alloc` prologue below can store
+        // the heap pointer without type-mismatch.
+        let llvm_ty = {
+            let raw_ty = resolve_ty(ctx, ty, record_layouts)?;
+            if let ResolvedTy::Named { name, .. } = ty {
+                if is_indirect_enum(name, enum_layouts) {
+                    ctx.ptr_type(inkwell::AddressSpace::default()).into()
+                } else {
+                    raw_ty
+                }
+            } else {
+                raw_ty
+            }
+        };
         let idx_u32 = u32::try_from(idx).map_err(|_| {
             CodegenError::FailClosed("function exceeds u32::MAX locals — impossible".into())
         })?;
@@ -24224,16 +24287,48 @@ fn lower_function<'ctx>(
         if !is_indirect_enum(ty_name, enum_layouts) {
             continue;
         }
-        // Locate the outer struct type to compute size + alignment.
+        // Locate the outer struct type for the indirect enum.
         let outer_struct = match record_layouts.get(ty_name) {
             Some(st) => *st,
             None => continue, // fail-safe: skip if not registered
         };
         let idx_u32 = u32::try_from(idx).expect("local index fits u32");
         let (slot, _) = *locals.get(&idx_u32).expect("local slot allocated above");
-        // Compute ABI size and alignment of the outer struct.
-        let size_bytes = target_data.get_abi_size(&outer_struct);
-        let align_bytes = target_data.get_abi_alignment(&outer_struct);
+        // Compute ABI size and alignment for the heap allocation.
+        //
+        // WHY anonymous struct: `TargetData::get_abi_size` on a named LLVM
+        // struct type returns 0 when the `TargetData` is constructed as a
+        // standalone layout string (the `host_target_data()` path, used by
+        // test harnesses where `target_machine == None`) rather than from a
+        // `TargetMachine` linked to a module context. Named structs are
+        // resolved through the LLVMContext; a layout-string-only `TargetData`
+        // cannot walk the context's type table. Primitive types and anonymous
+        // structs (which inline their field list) are sized correctly.
+        //
+        // In the `hew run` path the `TargetMachine`-linked `TargetData` is
+        // used (`build_module`'s `target_data` argument), where named structs
+        // size correctly (named == anon, measured). This anonymous-struct
+        // indirection is therefore DEFENSIVE for the `target_machine == None`
+        // harness paths, not load-bearing in the shipped run path.
+        //
+        // Fix: mirror the named struct's field list into a fresh anonymous
+        // struct (`packed = false`, same fields) and call `get_abi_size` on
+        // that. The ABI layout is identical: `{ tag_int, payload_array }` has
+        // the same field offsets and total size whether named or anonymous.
+        //
+        // WHEN-OBSOLETE: if the codegen pipeline is restructured so that all
+        // `TargetData` instances come from a `TargetMachine` (rather than
+        // `host_target_data()`), this anonymous-struct indirection can be
+        // removed and replaced with a direct `get_abi_size(&outer_struct)`.
+        let anon_outer = ctx.struct_type(&outer_struct.get_field_types(), false);
+        let size_bytes = target_data.get_abi_size(&anon_outer);
+        let align_bytes = target_data.get_abi_alignment(&anon_outer);
+        if size_bytes == 0 {
+            return Err(CodegenError::FailClosed(format!(
+                "indirect enum `{ty_name}`: cannot compute ABI size for heap allocation — \
+                 anonymous struct has 0 bytes (variant layout or target-data mismatch)"
+            )));
+        }
         let size_val = ctx.i64_type().const_int(size_bytes, false);
         let align_val = ctx.i64_type().const_int(u64::from(align_bytes), false);
         // Declare and call `hew_alloc(size: i64, align: i64) -> ptr`.
@@ -25131,6 +25226,7 @@ fn build_module_for_target<'ctx>(
         &llvm_mod,
         &pipeline.machine_layouts,
         &mut record_layouts,
+        &pipeline.enum_layouts,
         Some(&target_data),
     )?;
     machine_layouts.extend(machine_layout_map);
@@ -25156,7 +25252,14 @@ fn build_module_for_target<'ctx>(
         &record_layouts,
     )?;
     for func in &pipeline.raw_mir {
-        let sym = declare_function(ctx, &llvm_mod, func, &record_layouts, emit_wasm_entry_alias)?;
+        let sym = declare_function(
+            ctx,
+            &llvm_mod,
+            func,
+            &record_layouts,
+            &pipeline.enum_layouts,
+            emit_wasm_entry_alias,
+        )?;
         fn_symbols.insert(func.name.clone(), sym);
     }
     if emit_wasm_entry_alias {
